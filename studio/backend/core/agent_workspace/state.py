@@ -17,15 +17,11 @@ from .common import AgentWorkspaceError, now_ms
 _STATE_LOCK = threading.Lock()
 _READY_DATABASES: set[str] = set()
 _PLAN_STATUSES = frozenset({"active", "blocked", "completed", "cancelled"})
-_TASK_STATUSES = frozenset(
-    {"pending", "running", "blocked", "completed", "cancelled"}
-)
+_TASK_STATUSES = frozenset({"pending", "running", "blocked", "completed", "cancelled"})
 _BACKGROUND_STATUSES = frozenset(
     {"queued", "running", "cancelling", "cancelled", "completed", "failed", "interrupted"}
 )
-_WORKTREE_STATUSES = frozenset(
-    {"creating", "active", "removing", "removed", "needs_attention"}
-)
+_WORKTREE_STATUSES = frozenset({"creating", "active", "removing", "removed", "needs_attention"})
 _BACKGROUND_PAYLOAD_LIMIT = 256 * 1024
 _BACKGROUND_RESULT_LIMIT = 1024 * 1024
 _PLAN_SNAPSHOT_LIMIT = 512 * 1024
@@ -148,15 +144,11 @@ def _ensure_state_schema(conn: sqlite3.Connection) -> None:
             );
             """
         )
-        plan_columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(agent_plans)").fetchall()
-        }
+        plan_columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_plans)").fetchall()}
         if "goal_updated_at" not in plan_columns:
             conn.execute("ALTER TABLE agent_plans ADD COLUMN goal_updated_at INTEGER")
         if "revision" not in plan_columns:
-            conn.execute(
-                "ALTER TABLE agent_plans ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"
-            )
+            conn.execute("ALTER TABLE agent_plans ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
         worktree_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(agent_worktrees)").fetchall()
         }
@@ -169,10 +161,7 @@ def _ensure_state_schema(conn: sqlite3.Connection) -> None:
         if "merge_json" not in worktree_columns:
             conn.execute("ALTER TABLE agent_worktrees ADD COLUMN merge_json TEXT")
         background_columns = {
-            row[1]
-            for row in conn.execute(
-                "PRAGMA table_info(agent_background_tasks)"
-            ).fetchall()
+            row[1] for row in conn.execute("PRAGMA table_info(agent_background_tasks)").fetchall()
         }
         background_migrations = {
             "goal_snapshot": "TEXT",
@@ -186,12 +175,9 @@ def _ensure_state_schema(conn: sqlite3.Connection) -> None:
         }
         for column, type_name in background_migrations.items():
             if column not in background_columns:
-                conn.execute(
-                    f"ALTER TABLE agent_background_tasks ADD COLUMN {column} {type_name}"
-                )
+                conn.execute(f"ALTER TABLE agent_background_tasks ADD COLUMN {column} {type_name}")
         verification_run_columns = {
-            row[1]
-            for row in conn.execute("PRAGMA table_info(agent_verification_runs)").fetchall()
+            row[1] for row in conn.execute("PRAGMA table_info(agent_verification_runs)").fetchall()
         }
         if "worktree_id" not in verification_run_columns:
             conn.execute("ALTER TABLE agent_verification_runs ADD COLUMN worktree_id TEXT")
@@ -202,9 +188,7 @@ def _ensure_state_schema(conn: sqlite3.Connection) -> None:
             )
         verification_config_columns = {
             row[1]
-            for row in conn.execute(
-                "PRAGMA table_info(agent_verification_configs)"
-            ).fetchall()
+            for row in conn.execute("PRAGMA table_info(agent_verification_configs)").fetchall()
         }
         if "require_for_goal_completion" not in verification_config_columns:
             conn.execute(
@@ -336,9 +320,7 @@ def get_verification_config(project_id: str) -> dict:
         return {
             "projectId": project_id,
             "checks": _loads(row["checks_json"], []) if row else [],
-            "requireForGoalCompletion": bool(
-                row["require_for_goal_completion"] if row else False
-            ),
+            "requireForGoalCompletion": bool(row["require_for_goal_completion"] if row else False),
             "revision": int(row["revision"] if row else 0),
             "updatedAt": row["updated_at"] if row else None,
         }
@@ -502,9 +484,7 @@ def _plan(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         "completionSummary": {
             "counts": counts,
             "blockers": blockers,
-            "remaining": sum(
-                counts[status] for status in ("pending", "running", "blocked")
-            ),
+            "remaining": sum(counts[status] for status in ("pending", "running", "blocked")),
         },
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -596,7 +576,10 @@ def list_plans(project_id: str) -> list[dict]:
 
 
 def update_plan_status(
-    plan_id: str, status: str, *, expected_revision: Optional[int] = None
+    plan_id: str,
+    status: str,
+    *,
+    expected_revision: Optional[int] = None,
 ) -> Optional[dict]:
     if status not in _PLAN_STATUSES:
         raise AgentWorkspaceError("Invalid plan status.")
@@ -631,9 +614,7 @@ def update_plan_status(
             (status, now_ms(), plan_id, expected_revision, expected_revision),
         )
         if expected_revision is not None and not cursor.rowcount:
-            existing = conn.execute(
-                "SELECT 1 FROM agent_plans WHERE id = ?", (plan_id,)
-            ).fetchone()
+            existing = conn.execute("SELECT 1 FROM agent_plans WHERE id = ?", (plan_id,)).fetchone()
             if existing:
                 raise AgentWorkspaceError("Plan changed in another session. Refresh and retry.")
         conn.commit()
@@ -702,9 +683,7 @@ def update_plan_task(
             else _loads(existing_task["verification_json"], [])
         )
         if status == "completed":
-            _require_plan_task_verification(
-                str(revision["project_id"]), effective_verification
-            )
+            _require_plan_task_verification(str(revision["project_id"]), effective_verification)
         cursor = conn.execute(
             f"UPDATE agent_plan_tasks SET {', '.join(assignments)} WHERE id = ? AND plan_id = ?",
             (*values, task_id, plan_id),
@@ -724,7 +703,9 @@ def update_plan_task(
         conn.close()
 
 
-def _verification_requirement_name(requirement: Any) -> tuple[str, bool, Optional[str], Optional[str]]:
+def _verification_requirement_name(
+    requirement: Any,
+) -> tuple[str, bool, Optional[str], Optional[str]]:
     if isinstance(requirement, str):
         return requirement.strip(), True, None, None
     if not isinstance(requirement, dict):
@@ -742,11 +723,7 @@ def _verification_requirement_name(requirement: Any) -> tuple[str, bool, Optiona
 
 
 def _latest_verification_row(
-    conn: sqlite3.Connection,
-    project_id: str,
-    *,
-    run_id: Optional[str],
-    worktree_id: Optional[str],
+    conn: sqlite3.Connection, project_id: str, *, run_id: Optional[str], worktree_id: Optional[str]
 ) -> Optional[sqlite3.Row]:
     if run_id is not None:
         return conn.execute(
@@ -778,9 +755,7 @@ def _latest_verification_row(
 def _require_plan_task_verification(project_id: str, requirements: list[Any]) -> None:
     """Require current passing evidence before a verified plan task can complete."""
     normalized = [
-        parsed
-        for item in requirements
-        if (parsed := _verification_requirement_name(item))[1]
+        parsed for item in requirements if (parsed := _verification_requirement_name(item))[1]
     ]
     if not normalized:
         return
@@ -1168,9 +1143,7 @@ def claim_background_task(task_id: str) -> Optional[dict]:
             conn.rollback()
             return None
         if task["status"] != "queued":
-            raise AgentWorkspaceError(
-                "Only an unclaimed queued background task can be started."
-            )
+            raise AgentWorkspaceError("Only an unclaimed queued background task can be started.")
         if task["worktree_id"] is not None:
             worktree = conn.execute(
                 """
@@ -1183,14 +1156,9 @@ def claim_background_task(task_id: str) -> Optional[dict]:
                 worktree is None
                 or worktree["project_id"] != task["project_id"]
                 or worktree["status"] != "active"
-                or (
-                    task["kind"] == "agent"
-                    and worktree["background_task_id"] != task_id
-                )
+                or (task["kind"] == "agent" and worktree["background_task_id"] != task_id)
             ):
-                raise AgentWorkspaceError(
-                    "The task's linked worktree is not ready for execution."
-                )
+                raise AgentWorkspaceError("The task's linked worktree is not ready for execution.")
         cursor = conn.execute(
             """
             UPDATE agent_background_tasks
@@ -1201,9 +1169,7 @@ def claim_background_task(task_id: str) -> Optional[dict]:
         )
         if not cursor.rowcount:
             conn.rollback()
-            raise AgentWorkspaceError(
-                "Only an unclaimed queued background task can be started."
-            )
+            raise AgentWorkspaceError("Only an unclaimed queued background task can be started.")
         conn.commit()
         row = conn.execute(
             "SELECT * FROM agent_background_tasks WHERE id = ?", (task_id,)
@@ -1304,13 +1270,8 @@ def retry_background_task(task_id: str) -> dict:
                 or worktree["status"] != "active"
             ):
                 raise AgentWorkspaceError("Studio worktree is not active.")
-            if (
-                previous["kind"] == "agent"
-                and worktree["background_task_id"] != task_id
-            ):
-                raise AgentWorkspaceError(
-                    "Studio worktree belongs to another background task."
-                )
+            if previous["kind"] == "agent" and worktree["background_task_id"] != task_id:
+                raise AgentWorkspaceError("Studio worktree belongs to another background task.")
         conn.execute(
             """
             INSERT INTO agent_background_tasks(
@@ -1425,9 +1386,7 @@ def bind_background_task_worktree(
     return linked
 
 
-def release_failed_worktree_task_reservation(
-    task_id: str, worktree_id: str
-) -> None:
+def release_failed_worktree_task_reservation(task_id: str, worktree_id: str) -> None:
     """Release only a queued task reservation whose checkout never existed."""
     conn = connection()
     try:
@@ -1537,11 +1496,7 @@ def list_checkpoints(project_id: str) -> list[dict]:
         ).fetchall()
     finally:
         conn.close()
-    return [
-        record
-        for row in rows
-        if (record := get_checkpoint(row["id"])) is not None
-    ]
+    return [record for row in rows if (record := get_checkpoint(row["id"])) is not None]
 
 
 def delete_checkpoint(checkpoint_id: str, project_id: str) -> bool:
@@ -1577,17 +1532,11 @@ def save_worktree(record: dict) -> None:
                 (background_task_id,),
             ).fetchone()
             if task is None or task["project_id"] != record["projectId"]:
-                raise AgentWorkspaceError(
-                    "Background task does not belong to this project."
-                )
+                raise AgentWorkspaceError("Background task does not belong to this project.")
             if task["status"] != "queued":
-                raise AgentWorkspaceError(
-                    "Only a queued background task can reserve a worktree."
-                )
+                raise AgentWorkspaceError("Only a queued background task can reserve a worktree.")
             if task["worktree_id"] is not None:
-                raise AgentWorkspaceError(
-                    "Background task is already linked to another worktree."
-                )
+                raise AgentWorkspaceError("Background task is already linked to another worktree.")
         conn.execute(
             """
             INSERT INTO agent_worktrees(
@@ -1630,9 +1579,7 @@ def save_worktree(record: dict) -> None:
                 (record["id"], now_ms(), background_task_id),
             )
             if cursor.rowcount != 1:
-                raise AgentWorkspaceError(
-                    "Background task changed while reserving its worktree."
-                )
+                raise AgentWorkspaceError("Background task changed while reserving its worktree.")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1662,9 +1609,7 @@ def _worktree(row: sqlite3.Row) -> dict:
 def get_worktree(worktree_id: str) -> Optional[dict]:
     conn = connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM agent_worktrees WHERE id = ?", (worktree_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM agent_worktrees WHERE id = ?", (worktree_id,)).fetchone()
         return _worktree(row) if row is not None else None
     finally:
         conn.close()
@@ -1686,9 +1631,7 @@ def update_worktree_status(worktree_id: str, status: str) -> Optional[dict]:
 
 
 def transition_worktree_status(
-    worktree_id: str,
-    expected_statuses: set[str] | frozenset[str],
-    status: str,
+    worktree_id: str, expected_statuses: set[str] | frozenset[str], status: str
 ) -> Optional[dict]:
     """Atomically move a worktree lifecycle row from an expected state."""
     expected = sorted(set(expected_statuses))
@@ -1722,9 +1665,7 @@ def transition_worktree_status(
 
 
 def record_worktree_merge(worktree_id: str, merge: dict) -> dict:
-    encoded = _encoded_json(
-        merge, limit = 64 * 1024, label = "Worktree merge record"
-    )
+    encoded = _encoded_json(merge, limit = 64 * 1024, label = "Worktree merge record")
     conn = connection()
     try:
         cursor = conn.execute(

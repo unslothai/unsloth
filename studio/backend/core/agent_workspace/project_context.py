@@ -122,11 +122,7 @@ def fence_project_context_snapshots_for_deletion(project_id: str):
 def _replace_xml_controls(value: str) -> str:
     return "".join(
         "\ufffd"
-        if (
-            ord(character) <= 8
-            or ord(character) in (11, 12, 127)
-            or 14 <= ord(character) <= 31
-        )
+        if (ord(character) <= 8 or ord(character) in (11, 12, 127) or 14 <= ord(character) <= 31)
         else character
         for character in value
     )
@@ -186,11 +182,7 @@ def _project_context_block(project: dict) -> str:
             )
     fields = []
     if instructions:
-        fields.append(
-            "<project_instructions>\n"
-            + instructions
-            + "\n</project_instructions>"
-        )
+        fields.append("<project_instructions>\n" + instructions + "\n</project_instructions>")
     if goal:
         fields.append(goal)
     if not fields:
@@ -275,10 +267,7 @@ def _repository_instructions_block(
 
 
 def _repository_selection_block(
-    selected: list[dict],
-    *,
-    map_truncated: bool,
-    metadata_truncated: bool,
+    selected: list[dict], *, map_truncated: bool, metadata_truncated: bool
 ) -> str:
     if not selected:
         return ""
@@ -343,9 +332,7 @@ def resolve_repository_prompt_context(
     )
     return ResolvedRepositoryPromptContext(
         addition = "\n\n".join(
-            block
-            for block in (repository_instructions, repository_selection)
-            if block
+            block for block in (repository_instructions, repository_selection) if block
         ),
         repository_instructions = repository_instructions,
         repository_selection = repository_selection,
@@ -357,11 +344,7 @@ def project_query_from_messages(messages: Iterable[object]) -> str:
     """Return bounded text from the latest user turn, ignoring caller system text."""
     materialized = list(messages)
     for message in reversed(materialized):
-        role = (
-            message.get("role")
-            if isinstance(message, dict)
-            else getattr(message, "role", None)
-        )
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
         if role != "user":
             continue
         content = (
@@ -376,18 +359,10 @@ def project_query_from_messages(messages: Iterable[object]) -> str:
         fragments: list[str] = []
         remaining = MAX_REPOSITORY_QUERY_CHARACTERS
         for part in content:
-            part_type = (
-                part.get("type")
-                if isinstance(part, dict)
-                else getattr(part, "type", None)
-            )
+            part_type = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
             if part_type not in {"text", "input_text"}:
                 continue
-            text = (
-                part.get("text")
-                if isinstance(part, dict)
-                else getattr(part, "text", None)
-            )
+            text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
             if not isinstance(text, str) or not text:
                 continue
             take = text[:remaining]
@@ -465,9 +440,7 @@ def resolve_project_context(
     )
 
 
-def create_project_context_snapshot(
-    project_id: str, query: str = ""
-) -> ProjectContextSnapshot:
+def create_project_context_snapshot(project_id: str, query: str = "") -> ProjectContextSnapshot:
     """Freeze one bounded project context behind an opaque, expiring handle."""
     with _PROJECT_CONTEXT_SNAPSHOT_LOCK:
         resolved = resolve_project_context(
@@ -524,9 +497,7 @@ def resolve_project_context_snapshot(
     # it can be hydrated only by the authenticated workflow and exact run binding supplied by
     # the inference route. A normal UI or API request must not replay it as stale context.
     if not durable_research_run_id or not durable_owner_subject:
-        raise ProjectContextSnapshotInvalid(
-            "The project context snapshot is invalid or expired."
-        )
+        raise ProjectContextSnapshotInvalid("The project context snapshot is invalid or expired.")
     from storage import research_runs_db
 
     durable = research_runs_db.get_project_context_snapshot(
@@ -544,9 +515,7 @@ def resolve_project_context_snapshot(
             repository_instructions = str(context.get("repositoryInstructions") or ""),
             repository_selection = str(context.get("repositorySelection") or ""),
         )
-    raise ProjectContextSnapshotInvalid(
-        "The project context snapshot is invalid or expired."
-    )
+    raise ProjectContextSnapshotInvalid("The project context snapshot is invalid or expired.")
 
 
 def project_context_snapshot_response(snapshot: ProjectContextSnapshot) -> dict:

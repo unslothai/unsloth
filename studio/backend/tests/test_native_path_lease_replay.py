@@ -23,9 +23,7 @@ from utils.paths import studio_db_path
 
 
 _SECRET = b"durable-native-path-lease-test-secret"
-_RUST_V2_VECTOR = (
-    Path(__file__).parent / "fixtures" / "native_path_lease_v2_rust.json"
-)
+_RUST_V2_VECTOR = Path(__file__).parent / "fixtures" / "native_path_lease_v2_rust.json"
 
 
 @pytest.fixture(autouse = True)
@@ -112,23 +110,18 @@ def _sign_folder_v2(path: Path) -> str:
 def test_python_decoder_accepts_rust_v2_known_answer():
     vector = json.loads(_RUST_V2_VECTOR.read_text(encoding = "utf-8"))
     secret = base64.urlsafe_b64decode(
-        vector["secret_base64url"]
-        + "=" * (-len(vector["secret_base64url"]) % 4)
+        vector["secret_base64url"] + "=" * (-len(vector["secret_base64url"]) % 4)
     )
 
-    payload, envelope_version = leases._decode_authenticated_payload(
-        vector["lease"], secret
-    )
+    payload, envelope_version = leases._decode_authenticated_payload(vector["lease"], secret)
 
     assert envelope_version == 2
     assert payload == vector["payload"]
     envelope = base64.urlsafe_b64decode(
-        vector["lease"].split(".")[1]
-        + "=" * (-len(vector["lease"].split(".")[1]) % 4)
+        vector["lease"].split(".")[1] + "=" * (-len(vector["lease"].split(".")[1]) % 4)
     )
     expected_nonce = base64.urlsafe_b64decode(
-        vector["envelope_nonce_base64url"]
-        + "=" * (-len(vector["envelope_nonce_base64url"]) % 4)
+        vector["envelope_nonce_base64url"] + "=" * (-len(vector["envelope_nonce_base64url"]) % 4)
     )
     assert envelope[: leases._LEASE_V2_NONCE_BYTES] == expected_nonce
 
@@ -140,9 +133,7 @@ def test_v2_lease_is_opaque_and_authenticates_before_use(tmp_path):
 
     assert len(lease.split(".")) == 3
     assert str(folder) not in lease
-    envelope = base64.urlsafe_b64decode(
-        lease.split(".")[1] + "=" * (-len(lease.split(".")[1]) % 4)
-    )
+    envelope = base64.urlsafe_b64decode(lease.split(".")[1] + "=" * (-len(lease.split(".")[1]) % 4))
     assert str(folder).encode("utf-8") not in envelope
     assert _verify_folder(lease).canonical_path == folder
 
@@ -310,26 +301,17 @@ else:
                 process.wait(timeout = 5)
 
     assert [process.returncode for process in processes] == [0, 0], completed
-    assert sorted(stdout.strip() for stdout, _stderr in completed) == [
-        "accepted",
-        "replayed",
-    ]
+    assert sorted(stdout.strip() for stdout, _stderr in completed) == ["accepted", "replayed"]
 
 
 def test_nonce_store_cleans_expired_rows_and_refuses_live_overflow():
     first = hashlib.sha256(b"first-nonce").digest()
     second = hashlib.sha256(b"second-nonce").digest()
 
-    assert studio_db.consume_native_path_lease_nonce(
-        first, 2_000, now_ms = 1_000, max_entries = 1
-    )
+    assert studio_db.consume_native_path_lease_nonce(first, 2_000, now_ms = 1_000, max_entries = 1)
     with pytest.raises(studio_db.NativePathLeaseReplayCapacityError):
-        studio_db.consume_native_path_lease_nonce(
-            second, 3_000, now_ms = 1_500, max_entries = 1
-        )
-    assert studio_db.consume_native_path_lease_nonce(
-        second, 3_000, now_ms = 2_000, max_entries = 1
-    )
+        studio_db.consume_native_path_lease_nonce(second, 3_000, now_ms = 1_500, max_entries = 1)
+    assert studio_db.consume_native_path_lease_nonce(second, 3_000, now_ms = 2_000, max_entries = 1)
 
     connection = studio_db.get_connection()
     try:
@@ -338,9 +320,7 @@ def test_nonce_store_cleans_expired_rows_and_refuses_live_overflow():
         ).fetchall()
     finally:
         connection.close()
-    assert [(bytes(row["nonce_digest"]), row["expires_at_ms"]) for row in rows] == [
-        (second, 3_000)
-    ]
+    assert [(bytes(row["nonce_digest"]), row["expires_at_ms"]) for row in rows] == [(second, 3_000)]
 
 
 def test_nonce_store_persists_no_raw_nonce_path_or_secret(tmp_path):
@@ -354,9 +334,7 @@ def test_nonce_store_persists_no_raw_nonce_path_or_secret(tmp_path):
     try:
         columns = [
             row["name"]
-            for row in connection.execute(
-                "PRAGMA table_info(native_path_lease_consumptions)"
-            )
+            for row in connection.execute("PRAGMA table_info(native_path_lease_consumptions)")
         ]
         row = connection.execute(
             "SELECT nonce_digest, expires_at_ms FROM native_path_lease_consumptions"

@@ -123,9 +123,7 @@ def _is_sensitive_repository_path(relative: Path) -> bool:
         "tokens",
     }:
         return True
-    if name.startswith(".env.") and not any(
-        name.endswith(suffix) for suffix in _SAFE_ENV_SUFFIXES
-    ):
+    if name.startswith(".env.") and not any(name.endswith(suffix) for suffix in _SAFE_ENV_SUFFIXES):
         return True
     return False
 
@@ -197,7 +195,9 @@ def _ignored(relative: str, is_directory: bool, rules: Iterable[_IgnoreRule]) ->
 
 
 def _git_candidates(
-    root: Path, output_limit: int, cancelled = None
+    root: Path,
+    output_limit: int,
+    cancelled = None,
 ) -> tuple[Optional[list[str]], bool]:
     if cancelled is not None and cancelled():
         return [], False
@@ -380,9 +380,7 @@ def _open_beneath(root_fd: int, relative: Path) -> tuple[int, os.stat_result]:
         )
         metadata = os.fstat(file_fd)
         if not stat_module.S_ISREG(metadata.st_mode):
-            if stat_module.S_ISDIR(metadata.st_mode) and _directory_has_git_marker(
-                file_fd
-            ):
+            if stat_module.S_ISDIR(metadata.st_mode) and _directory_has_git_marker(file_fd):
                 os.close(file_fd)
                 raise _NestedRepositoryBoundary(str(relative))
             os.close(file_fd)
@@ -404,9 +402,7 @@ def _normalize_expected_identity(
 
 
 def _assert_root_identity(
-    root: Path,
-    root_fd: int,
-    expected_identity: Optional[tuple[int, int]],
+    root: Path, root_fd: int, expected_identity: Optional[tuple[int, int]]
 ) -> tuple[int, int]:
     try:
         current = root.stat(follow_symlinks = False)
@@ -424,9 +420,7 @@ def _assert_root_identity(
         or current_identity != opened_identity
         or (expected is not None and opened_identity != expected)
     ):
-        raise AgentWorkspaceError(
-            "Project root identity changed during repository discovery."
-        )
+        raise AgentWorkspaceError("Project root identity changed during repository discovery.")
     return opened_identity
 
 
@@ -440,9 +434,7 @@ def _open_verified_root(
         resolved = root.resolve(strict = True)
         descriptor = os.open(
             resolved,
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
         _assert_root_identity(resolved, descriptor, expected_identity)
         return resolved, descriptor
@@ -650,9 +642,7 @@ def build_repository_map(
     if min(max_paths, max_total_bytes, max_file_bytes) < 1 or preview_bytes < 0:
         raise ValueError("Repository-map bounds must be positive.")
     if not secure_repository_traversal_supported():
-        raise AgentWorkspaceError(
-            "Secure repository traversal is unavailable on this platform."
-        )
+        raise AgentWorkspaceError("Secure repository traversal is unavailable on this platform.")
     if preview_bytes:
         raise AgentWorkspaceError(
             "Repository maps are metadata-only. Read file content through an approved workspace tool."
@@ -788,9 +778,7 @@ def repository_query_terms(query: str) -> frozenset[str]:
     """Return bounded-selection terms without reading repository state."""
     raw_tokens = [token.casefold().strip("./-") for token in _QUERY_TOKEN.findall(query)]
     return frozenset(
-        token
-        for token in raw_tokens
-        if len(token) >= 3 and token not in _QUERY_STOP_WORDS
+        token for token in raw_tokens if len(token) >= 3 and token not in _QUERY_STOP_WORDS
     )
 
 
@@ -822,9 +810,7 @@ def select_relevant_repository_paths(
         basename = Path(path).name.casefold()
         stem = Path(path).stem.casefold()
         path_tokens = {
-            token.casefold()
-            for token in re.split(r"[^A-Za-z0-9_]+", folded_path)
-            if token
+            token.casefold() for token in re.split(r"[^A-Za-z0-9_]+", folded_path) if token
         }
         score = 0
         if folded_path in folded_query:

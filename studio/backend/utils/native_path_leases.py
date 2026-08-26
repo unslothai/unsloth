@@ -318,9 +318,7 @@ def _xor_lease_stream(secret: bytes, nonce: bytes, value: bytes) -> bytes:
     return bytes(output)
 
 
-def _decode_authenticated_payload(
-    lease: str, secret: bytes
-) -> tuple[dict[str, Any], int]:
+def _decode_authenticated_payload(lease: str, secret: bytes) -> tuple[dict[str, Any], int]:
     parts = _lease_parts(lease)
     if len(parts) == 3 and parts[0] == _LEASE_V2_PREFIX:
         envelope = _b64decode(parts[1])
@@ -338,9 +336,7 @@ def _decode_authenticated_payload(
             raise NativePathLeaseError("Native path grant signature is invalid.")
         nonce = envelope[:_LEASE_V2_NONCE_BYTES]
         ciphertext = envelope[_LEASE_V2_NONCE_BYTES:]
-        payload = _decode_payload_bytes(
-            _xor_lease_stream(secret, nonce, ciphertext)
-        )
+        payload = _decode_payload_bytes(_xor_lease_stream(secret, nonce, ciphertext))
         return payload, 2
     if len(parts) == 2:
         payload_b64, signature_b64 = parts
@@ -359,11 +355,7 @@ def _decode_authenticated_payload(
 
 
 def _validate_payload(
-    payload: dict[str, Any],
-    *,
-    operation: str,
-    expected_kind: str | None,
-    envelope_version: int,
+    payload: dict[str, Any], *, operation: str, expected_kind: str | None, envelope_version: int
 ) -> None:
     required = (
         "version",
@@ -442,16 +434,13 @@ def _consume_nonce(nonce: str, expires_at_ms: int) -> None:
     try:
         nonce_digest = hashlib.sha256(nonce.encode("utf-8")).digest()
         from storage.studio_db import consume_native_path_lease_nonce
-
         consumed = consume_native_path_lease_nonce(
             nonce_digest,
             expires_at_ms,
             now_ms = now_ms,
         )
     except Exception as exc:
-        raise NativePathLeaseError(
-            "Native path grant replay protection is unavailable."
-        ) from exc
+        raise NativePathLeaseError("Native path grant replay protection is unavailable.") from exc
     if not consumed:
         raise NativePathLeaseError("Native path grant was already used.")
 

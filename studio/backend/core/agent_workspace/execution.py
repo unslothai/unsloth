@@ -186,9 +186,7 @@ def execution_boundary_status(
     if name == "darwin":
         executable = _MACOS_SANDBOX
         if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
-            return ExecutionBoundaryStatus(
-                False, None, "macOS sandbox-exec is unavailable."
-            )
+            return ExecutionBoundaryStatus(False, None, "macOS sandbox-exec is unavailable.")
         if probe and not _probe_backend(name, executable):
             return ExecutionBoundaryStatus(
                 False, None, "macOS refused the project execution sandbox."
@@ -241,9 +239,7 @@ def _open_directory(path: Path) -> tuple[int, tuple[int, int]]:
         raise
 
 
-def _assert_regular_file_links_are_internal(
-    root_fd: int, root_identity: tuple[int, int]
-) -> None:
+def _assert_regular_file_links_are_internal(root_fd: int, root_identity: tuple[int, int]) -> None:
     """Reject regular-file inodes that also have a name outside the workspace.
 
     Path sandboxes cannot distinguish two hardlink names for the same inode. A
@@ -291,9 +287,7 @@ def _assert_regular_file_links_are_internal(
                         "The project folder changed before the command could start."
                     )
                 identity = (int(metadata.st_dev), int(metadata.st_ino))
-                record = observed_links.setdefault(
-                    identity, [0, int(metadata.st_nlink)]
-                )
+                record = observed_links.setdefault(identity, [0, int(metadata.st_nlink)])
                 if record[1] != int(metadata.st_nlink):
                     raise ProjectExecutionUnavailable(
                         "The project folder changed before the command could start."
@@ -317,9 +311,7 @@ def _assert_regular_file_links_are_internal(
         ) from exc
 
 
-def acquire_workspace_execution_slot(
-    identity: tuple[int, int], cancel_event = None
-) -> bool:
+def acquire_workspace_execution_slot(identity: tuple[int, int], cancel_event = None) -> bool:
     """Acquire the process-local mutation slot for one opened workspace root."""
     with _EXECUTION_CONDITION:
         while identity in _ACTIVE_EXECUTION_ROOTS:
@@ -355,9 +347,7 @@ def _install_python_wrapper(scratch: Path) -> Path:
     wrapper = wrapper_dir / "python"
     target = str(Path(sys.executable).resolve(strict = True))
     if any(character in target for character in ("\x00", "\n", "\r", "'")):
-        raise ProjectExecutionUnavailable(
-            "The Python runtime path cannot be represented safely."
-        )
+        raise ProjectExecutionUnavailable("The Python runtime path cannot be represented safely.")
     descriptor = os.open(
         wrapper,
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
@@ -446,10 +436,7 @@ def _linux_masked_roots(home: Path, temp: Path) -> list[Path]:
     # If one selected tree contains another, the outer tmpfs already hides it.
     minimal: list[Path] = []
     for candidate in sorted(canonical, key = lambda item: len(item.parts)):
-        if any(
-            candidate == parent or _path_is_within(candidate, parent)
-            for parent in minimal
-        ):
+        if any(candidate == parent or _path_is_within(candidate, parent) for parent in minimal):
             continue
         minimal.append(candidate)
     return minimal
@@ -459,7 +446,9 @@ class ProjectExecutionBoundary:
     """One opened and identity-bound project command boundary."""
 
     def __init__(
-        self, root: Path, expected_identity: Optional[tuple[int, int]] = None
+        self,
+        root: Path,
+        expected_identity: Optional[tuple[int, int]] = None,
     ):
         status = execution_boundary_status()
         if not status.available or status.backend is None:
@@ -478,15 +467,12 @@ class ProjectExecutionBoundary:
             ) from exc
         self.root = _validate_policy_path(resolved)
         self.runtime_root = _validate_policy_path(Path(sys.prefix).resolve(strict = True))
-        self.base_runtime_root = _validate_policy_path(
-            Path(sys.base_prefix).resolve(strict = True)
-        )
+        self.base_runtime_root = _validate_policy_path(Path(sys.base_prefix).resolve(strict = True))
         self.backend = status.backend
         self._root_fd, self._root_identity = _open_directory(resolved)
-        if (
-            expected_identity is not None
-            and self._root_identity
-            != (int(expected_identity[0]), int(expected_identity[1]))
+        if expected_identity is not None and self._root_identity != (
+            int(expected_identity[0]),
+            int(expected_identity[1]),
         ):
             os.close(self._root_fd)
             raise ProjectExecutionUnavailable(
@@ -509,9 +495,7 @@ class ProjectExecutionBoundary:
                 raise
         self.scratch = _validate_policy_path(
             Path(
-                tempfile.mkdtemp(
-                    prefix = "run-", dir = str(ensure_dir(tmp_root() / "agent-exec"))
-                )
+                tempfile.mkdtemp(prefix = "run-", dir = str(ensure_dir(tmp_root() / "agent-exec")))
             ).resolve(strict = True)
         )
         try:
@@ -579,9 +563,7 @@ class ProjectExecutionBoundary:
         self._execution_slot = None
         release_workspace_execution_slot(key)
 
-    def _assert_path_identity(
-        self, path: Path, descriptor: int, expected: tuple[int, int]
-    ) -> None:
+    def _assert_path_identity(self, path: Path, descriptor: int, expected: tuple[int, int]) -> None:
         try:
             current = path.stat(follow_symlinks = False)
             opened = os.fstat(descriptor)
@@ -602,9 +584,7 @@ class ProjectExecutionBoundary:
         if self._closed:
             raise ProjectExecutionUnavailable("The project execution boundary is closed.")
         self._assert_path_identity(self.root, self._root_fd, self._root_identity)
-        self._assert_path_identity(
-            self.scratch, self._scratch_fd, self._scratch_identity
-        )
+        self._assert_path_identity(self.scratch, self._scratch_fd, self._scratch_identity)
 
     def apply_environment(self, env: dict[str, str]) -> dict[str, str]:
         isolated = dict(env)
@@ -620,9 +600,7 @@ class ProjectExecutionBoundary:
         ):
             isolated[name] = scratch
         isolated["PATH"] = os.pathsep.join(
-            part
-            for part in (str(self._wrapper_dir), isolated.get("PATH", ""))
-            if part
+            part for part in (str(self._wrapper_dir), isolated.get("PATH", "")) if part
         )
         return isolated
 
@@ -683,9 +661,7 @@ class ProjectExecutionBoundary:
                             options.extend(["--dir", directory])
                             created_directories.add(directory)
             for destination, descriptor, mode in exposed:
-                options.extend(
-                    [mode, f"/proc/self/fd/{descriptor}", str(destination)]
-                )
+                options.extend([mode, f"/proc/self/fd/{descriptor}", str(destination)])
             options.extend(
                 [
                     "--chdir",
@@ -697,14 +673,10 @@ class ProjectExecutionBoundary:
             return options
         raise ProjectExecutionUnavailable("Project command execution is unavailable.")
 
-    def popen_kwargs(
-        self, preexec_fn: Optional[Callable[[], None]] = None
-    ) -> dict:
+    def popen_kwargs(self, preexec_fn: Optional[Callable[[], None]] = None) -> dict:
         """Arguments that keep the opened directory descriptors valid through exec."""
         self.recheck()
-        _assert_regular_file_links_are_internal(
-            self._root_fd, self._root_identity
-        )
+        _assert_regular_file_links_are_internal(self._root_fd, self._root_identity)
         self.recheck()
         descriptors = (
             self._root_fd,
@@ -715,9 +687,7 @@ class ProjectExecutionBoundary:
             return {
                 "cwd": None,
                 "pass_fds": descriptors,
-                "preexec_fn": _compose_preexec(
-                    preexec_fn, self._root_fd, self._root_identity
-                ),
+                "preexec_fn": _compose_preexec(preexec_fn, self._root_fd, self._root_identity),
             }
         if self.backend == "bubblewrap":
             options = {"cwd": "/", "pass_fds": descriptors}

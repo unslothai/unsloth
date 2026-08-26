@@ -367,9 +367,7 @@ def test_project_delete_blocks_while_studio_worktree_is_active(tmp_path):
     assert studio_db.get_chat_project(project["id"]) is not None
 
 
-def test_project_delete_removes_owned_checkpoint_refs_before_row_cascade(
-    tmp_path, monkeypatch
-):
+def test_project_delete_removes_owned_checkpoint_refs_before_row_cascade(tmp_path, monkeypatch):
     from core.agent_workspace.git_service import create_checkpoint
     from storage import studio_db
 
@@ -449,9 +447,7 @@ def test_project_delete_removes_owned_checkpoint_refs_before_row_cascade(
     assert deleted.id == project["id"]
     assert studio_db.get_chat_project(project["id"]) is None
     assert root.is_dir()
-    assert run_git("show-ref", "--verify", "--hash", foreign_ref) == run_git(
-        "rev-parse", "HEAD"
-    )
+    assert run_git("show-ref", "--verify", "--hash", foreign_ref) == run_git("rev-parse", "HEAD")
 
 
 def test_project_delete_stops_if_owned_checkpoint_ref_changed(tmp_path):
@@ -549,9 +545,7 @@ def test_project_delete_waits_for_agent_verification_worker(tmp_path, monkeypatc
         events.append("row-delete")
         return real_delete(project_id, delete_files = delete_files)
 
-    monkeypatch.setattr(
-        background_module, "run_project_verification", cancellable_verification
-    )
+    monkeypatch.setattr(background_module, "run_project_verification", cancellable_verification)
     monkeypatch.setattr(chat_history, "delete_chat_project", observed_delete)
     monkeypatch.setattr(chat_history, "_delete_project_rag_sources", lambda _id: None)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
@@ -578,9 +572,7 @@ def test_project_delete_waits_for_agent_verification_worker(tmp_path, monkeypatc
     assert studio_db.get_chat_project(project["id"]) is None
 
 
-def test_project_delete_cancels_and_waits_for_direct_verification_route(
-    tmp_path, monkeypatch
-):
+def test_project_delete_cancels_and_waits_for_direct_verification_route(tmp_path, monkeypatch):
     from core.agent_workspace import verification as verification_module
     from core.agent_workspace.state import set_verification_config
     from routes import agent_workspace as agent_workspace_routes
@@ -621,7 +613,12 @@ def test_project_delete_cancels_and_waits_for_direct_verification_route(
     route_errors = []
 
     def cancellable_check(
-        check, *, root, cancel_event, run_id, expected_root_identity = None
+        check,
+        *,
+        root,
+        cancel_event,
+        run_id,
+        expected_root_identity = None,
     ):
         entered.set()
         assert cancel_event.wait(timeout = 5)
@@ -661,9 +658,7 @@ def test_project_delete_cancels_and_waits_for_direct_verification_route(
             route_errors.append(exc)
 
     monkeypatch.setattr(verification_module, "execute_check", cancellable_check)
-    monkeypatch.setattr(
-        agent_workspace_routes, "_require_execution_boundary", lambda: None
-    )
+    monkeypatch.setattr(agent_workspace_routes, "_require_execution_boundary", lambda: None)
     monkeypatch.setattr(chat_history, "delete_chat_project", observed_delete)
     monkeypatch.setattr(chat_history, "_delete_project_rag_sources", lambda _id: None)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)

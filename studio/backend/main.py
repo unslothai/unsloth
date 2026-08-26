@@ -672,7 +672,6 @@ async def lifespan(app: FastAPI):
 
     try:
         from core.agent_workspace.worktrees import reconcile_worktrees_on_startup
-
         worktree_recovery = reconcile_worktrees_on_startup()
         if worktree_recovery["errors"] or worktree_recovery["attention"]:
             _lifespan_log.warning(
@@ -792,15 +791,11 @@ async def lifespan(app: FastAPI):
     # adapter that misses the bounded shutdown window is persisted as interrupted.
     try:
         from core.agent_workspace.background import manager as agent_background_manager
-
         agent_background_manager.prepare_for_app_exit(timeout_seconds = 10)
     except Exception as exc:
-        _lifespan_log.warning(
-            "project-agent background shutdown failed: %s", exc
-        )
+        _lifespan_log.warning("project-agent background shutdown failed: %s", exc)
     finally:
         from core.agent_workspace.background import register_agent_executor
-
         register_agent_executor(None)
 
     # Retire the coordinated warm at shutdown entry too. run_lifespan_shutdown() repeats

@@ -48,9 +48,7 @@ def test_linux_without_bubblewrap_does_not_advertise_execution(monkeypatch):
     assert "bubblewrap" in str(status.reason)
 
 
-def test_boundary_rejects_root_replacement_between_identity_check_and_open(
-    tmp_path, monkeypatch
-):
+def test_boundary_rejects_root_replacement_between_identity_check_and_open(tmp_path, monkeypatch):
     root = tmp_path / "repository"
     original = tmp_path / "original"
     root.mkdir()
@@ -94,19 +92,17 @@ def test_policy_parameters_reject_control_character_paths(tmp_path, monkeypatch)
 def test_macos_profile_is_self_contained_and_default_deny():
     profile = execution._MACOS_PROFILE
 
-    assert '(deny default)' in profile
-    assert '(deny network*)' in profile
-    assert 'system.sb' not in profile
-    assert '(allow file-read*)' not in profile
+    assert "(deny default)" in profile
+    assert "(deny network*)" in profile
+    assert "system.sb" not in profile
+    assert "(allow file-read*)" not in profile
     assert '(subpath "/Applications")' not in profile
     assert '(subpath "/Library")' not in profile
     assert '(subpath "/private/var/db")' not in profile
 
 
 @pytest.mark.skipif(not hasattr(os, "link"), reason = "hardlinks are unavailable")
-def test_boundary_rejects_regular_file_hardlinked_outside_workspace(
-    tmp_path, monkeypatch
-):
+def test_boundary_rejects_regular_file_hardlinked_outside_workspace(tmp_path, monkeypatch):
     root = tmp_path / "repository"
     root.mkdir()
     outside = tmp_path / "outside.txt"
@@ -126,9 +122,7 @@ def test_boundary_rejects_regular_file_hardlinked_outside_workspace(
 
 
 @pytest.mark.skipif(not hasattr(os, "link"), reason = "hardlinks are unavailable")
-def test_boundary_fails_closed_when_a_hardlink_directory_cannot_be_listed(
-    tmp_path, monkeypatch
-):
+def test_boundary_fails_closed_when_a_hardlink_directory_cannot_be_listed(tmp_path, monkeypatch):
     root = tmp_path / "repository"
     hidden = root / "execute-only"
     hidden.mkdir(parents = True)

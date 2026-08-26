@@ -66,9 +66,7 @@ def _project_worktree_operation(project_id: str) -> Iterator[None]:
             raise AgentWorkspaceError(
                 "Worktree operations are unavailable while the project is being deleted."
             )
-        _PROJECT_WORKTREE_ACTIVE[project_id] = (
-            _PROJECT_WORKTREE_ACTIVE.get(project_id, 0) + 1
-        )
+        _PROJECT_WORKTREE_ACTIVE[project_id] = _PROJECT_WORKTREE_ACTIVE.get(project_id, 0) + 1
     try:
         yield
     finally:
@@ -123,9 +121,7 @@ def _workspace_writer_slots(*roots: Path) -> Iterator[None]:
     try:
         for identity in identities:
             if not acquire_workspace_execution_slot(identity):
-                raise AgentWorkspaceError(
-                    "The worktree operation was cancelled before it started."
-                )
+                raise AgentWorkspaceError("The worktree operation was cancelled before it started.")
             acquired.append(identity)
         for identity, root in roots_by_identity.items():
             try:
@@ -186,7 +182,10 @@ def _project_storage_key(project_id: str) -> str:
 
 
 def _expected_paths(
-    project_id: str, worktree_id: str, *, create_root: bool = True
+    project_id: str,
+    worktree_id: str,
+    *,
+    create_root: bool = True,
 ) -> tuple[Path, Path, Path]:
     root = _worktree_root(create = create_root)
     container = root / _project_storage_key(project_id) / worktree_id
@@ -366,13 +365,13 @@ def _record_from_marker(marker: Path, payload: dict) -> dict:
             raise ValueError
     except ValueError as exc:
         raise AgentWorkspaceError("Worktree ownership marker is invalid.") from exc
-    if not project_id or len(project_id) > 512 or any(
-        character in project_id for character in "\x00\r\n"
+    if (
+        not project_id
+        or len(project_id) > 512
+        or any(character in project_id for character in "\x00\r\n")
     ):
         raise AgentWorkspaceError("Worktree ownership marker is invalid.")
-    container, target, expected_marker = _expected_paths(
-        project_id, worktree_id, create_root = False
-    )
+    container, target, expected_marker = _expected_paths(project_id, worktree_id, create_root = False)
     if marker != expected_marker or marker.parent != container:
         raise AgentWorkspaceError("Worktree ownership marker is misplaced.")
     branch = str(payload.get("branch") or "")
@@ -423,9 +422,7 @@ def _verify_owned_marker(
     container, target, marker = _expected_paths(
         record["projectId"], record["id"], create_root = False
     )
-    if not _same_path(record["path"], target) or not _same_path(
-        record["markerPath"], marker
-    ):
+    if not _same_path(record["path"], target) or not _same_path(record["markerPath"], marker):
         raise AgentWorkspaceError("Worktree is outside Studio-owned storage.")
     for directory in (container.parent, container):
         if not _plain_directory(directory):
@@ -502,9 +499,7 @@ def _require_linked_task_stopped(record: dict, marker_payload: dict) -> None:
             )
 
 
-def _worktree_entries(
-    repository: Path, *, timeout_seconds: float = 15
-) -> dict[str, dict]:
+def _worktree_entries(repository: Path, *, timeout_seconds: float = 15) -> dict[str, dict]:
     listing, _ = _git(
         repository,
         ["worktree", "list", "--porcelain", "-z"],
@@ -541,9 +536,7 @@ def _registration_matches(record: dict, entry: Optional[dict]) -> bool:
     )
 
 
-def _safe_transition(
-    worktree_id: str, expected: set[str], status: str
-) -> Optional[dict]:
+def _safe_transition(worktree_id: str, expected: set[str], status: str) -> Optional[dict]:
     try:
         return transition_worktree_status(worktree_id, expected, status)
     except Exception:  # noqa: BLE001 - recovery must preserve the filesystem first
@@ -573,9 +566,7 @@ def _settle_failed_creation(record: dict, repository: Path) -> None:
     removed = _safe_transition(record["id"], {"creating"}, "removed")
     if removed is not None and record.get("backgroundTaskId") is not None:
         try:
-            release_failed_worktree_task_reservation(
-                str(record["backgroundTaskId"]), record["id"]
-            )
+            release_failed_worktree_task_reservation(str(record["backgroundTaskId"]), record["id"])
         except AgentWorkspaceError:
             _mark_attention(removed)
             return
@@ -601,19 +592,13 @@ def create_worktree(
 
 
 def _create_worktree(
-    project_id: str,
-    *,
-    branch: Optional[str],
-    base_ref: str,
-    background_task_id: Optional[str],
+    project_id: str, *, branch: Optional[str], base_ref: str, background_task_id: Optional[str]
 ) -> dict:
     _, repository = _project_git(project_id, mutation = True)
     worktree_id = str(uuid.uuid4())
     branch_name = branch or f"unsloth-studio/task-{worktree_id[:12]}"
     if not _valid_branch(branch_name):
-        raise AgentWorkspaceError(
-            "Worktree branches must use the unsloth-studio/ namespace."
-        )
+        raise AgentWorkspaceError("Worktree branches must use the unsloth-studio/ namespace.")
     if not _valid_base_ref(base_ref):
         raise AgentWorkspaceError("Invalid worktree base reference.")
     if background_task_id:
@@ -621,13 +606,9 @@ def _create_worktree(
         if task is None or task["projectId"] != project_id:
             raise AgentWorkspaceError("Background task does not belong to this project.")
         if task["status"] != "queued":
-            raise AgentWorkspaceError(
-                "Only a queued background task can be linked to a worktree."
-            )
+            raise AgentWorkspaceError("Only a queued background task can be linked to a worktree.")
         if task.get("worktreeId") is not None:
-            raise AgentWorkspaceError(
-                "Background task is already linked to another worktree."
-            )
+            raise AgentWorkspaceError("Background task is already linked to another worktree.")
 
     container, target, marker = _expected_paths(project_id, worktree_id)
     token = secrets.token_urlsafe(32)
@@ -684,9 +665,7 @@ def _create_worktree(
                 "Studio preserved any checkout for recovery."
             ) from exc
         try:
-            active = transition_worktree_status(
-                worktree_id, {"creating"}, "active"
-            )
+            active = transition_worktree_status(worktree_id, {"creating"}, "active")
         except Exception as exc:
             raise AgentWorkspaceError(
                 "Worktree creation finished, but durable state could not be finalized. "
@@ -794,9 +773,7 @@ def _reconcile_record(
                 task_id = settled.get("backgroundTaskId")
                 if task_id is not None:
                     try:
-                        release_failed_worktree_task_reservation(
-                            str(task_id), settled["id"]
-                        )
+                        release_failed_worktree_task_reservation(str(task_id), settled["id"])
                     except AgentWorkspaceError:
                         return "attention"
                 _remove_empty_container(target.parent)
@@ -951,9 +928,7 @@ def reconcile_worktrees_on_startup() -> dict:
             if record["id"] in marker_ids:
                 continue
             try:
-                action = _reconcile_record(
-                    record, entries_cache, repository_cache
-                )
+                action = _reconcile_record(record, entries_cache, repository_cache)
             except Exception:  # noqa: BLE001 - no startup failure may destroy a checkout
                 action = "error"
             if action in result:
@@ -1049,11 +1024,7 @@ def _merge_conflict_paths(output: str) -> list[str]:
     return paths
 
 
-def merge_worktree(
-    project_id: str,
-    worktree_id: str,
-    expected_target_head: str,
-) -> dict:
+def merge_worktree(project_id: str, worktree_id: str, expected_target_head: str) -> dict:
     """Serialize merge inspection with managed writers for both workspace roots."""
     if not re.fullmatch(r"[0-9a-fA-F]{40,64}", expected_target_head):
         raise AgentWorkspaceError("Expected target head is invalid.")
@@ -1066,15 +1037,11 @@ def merge_worktree(
     path, _, marker_payload = _verify_owned_marker(record)
     _require_linked_task_stopped(record, marker_payload)
     with _workspace_writer_slots(repository, path):
-        return _merge_worktree_after_writer_slots(
-            project_id, worktree_id, expected_target_head
-        )
+        return _merge_worktree_after_writer_slots(project_id, worktree_id, expected_target_head)
 
 
 def _merge_worktree_after_writer_slots(
-    project_id: str,
-    worktree_id: str,
-    expected_target_head: str,
+    project_id: str, worktree_id: str, expected_target_head: str
 ) -> dict:
     """Merge a clean owned branch without reset, clean, force, or hidden fallback."""
     if not re.fullmatch(r"[0-9a-fA-F]{40,64}", expected_target_head):
@@ -1103,9 +1070,7 @@ def _merge_worktree_after_writer_slots(
             target_branch = target_branch.strip()
             if not target_branch or target_branch == record["branch"]:
                 raise AgentWorkspaceError("The primary repository branch is unavailable.")
-            target_head, _ = _git(
-                repository, ["rev-parse", "HEAD"], output_limit = 256
-            )
+            target_head, _ = _git(repository, ["rev-parse", "HEAD"], output_limit = 256)
             target_head = target_head.strip()
             if target_head.lower() != expected_target_head.lower():
                 raise AgentWorkspaceError(
@@ -1203,9 +1168,7 @@ def _merge_worktree_after_writer_slots(
             # Recheck both mutable inputs immediately before Git touches the primary
             # workspace. An unexpected real conflict is retained for explicit
             # resolution. Studio never invokes reset, clean, abort, or force.
-            current_head, _ = _git(
-                repository, ["rev-parse", "HEAD"], output_limit = 256
-            )
+            current_head, _ = _git(repository, ["rev-parse", "HEAD"], output_limit = 256)
             current_status, _ = _git(
                 repository,
                 ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -1233,9 +1196,7 @@ def _merge_worktree_after_writer_slots(
                     neutralize_filters = True,
                 )
                 conflict_paths = [
-                    value
-                    for value in conflicts.split("\x00")
-                    if value and not os.path.isabs(value)
+                    value for value in conflicts.split("\x00") if value and not os.path.isabs(value)
                 ][:200]
                 if conflict_paths:
                     return record_worktree_merge(
@@ -1269,9 +1230,7 @@ def _merge_worktree_after_writer_slots(
                 )
                 raise AgentWorkspaceError("Git could not merge the owned worktree.") from exc
 
-            result_head, _ = _git(
-                repository, ["rev-parse", "HEAD"], output_limit = 256
-            )
+            result_head, _ = _git(repository, ["rev-parse", "HEAD"], output_limit = 256)
             return record_worktree_merge(
                 worktree_id,
                 {
@@ -1339,13 +1298,9 @@ def _cleanup_worktree(project_id: str, worktree_id: str) -> dict:
                 "Worktree registration or branch no longer matches Studio ownership."
             )
         try:
-            removing = transition_worktree_status(
-                worktree_id, {"active"}, "removing"
-            )
+            removing = transition_worktree_status(worktree_id, {"active"}, "removing")
         except Exception as exc:
-            raise AgentWorkspaceError(
-                "Worktree cleanup could not reserve durable state."
-            ) from exc
+            raise AgentWorkspaceError("Worktree cleanup could not reserve durable state.") from exc
         if removing is None:
             raise AgentWorkspaceError("Studio worktree not found.")
         try:
@@ -1360,9 +1315,7 @@ def _cleanup_worktree(project_id: str, worktree_id: str) -> dict:
             _safe_transition(worktree_id, {"removing"}, "active")
             raise
         try:
-            removed = transition_worktree_status(
-                worktree_id, {"removing"}, "removed"
-            )
+            removed = transition_worktree_status(worktree_id, {"removing"}, "removed")
         except Exception as exc:
             raise AgentWorkspaceError(
                 "Git removed the worktree, but durable cleanup is pending startup recovery."

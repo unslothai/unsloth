@@ -85,8 +85,7 @@ def _create_project_run() -> dict:
 
 
 def test_project_research_persists_only_server_snapshot_id_and_survives_restart(
-    project_research_home: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    project_research_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
     run = _create_project_run()
     snapshot_id = run["config"]["projectContextSnapshotId"]
@@ -184,8 +183,7 @@ def test_durable_snapshot_binding_requires_the_deep_research_workflow(
 
 
 def test_whitespace_handoff_question_uses_the_message_for_context_selection(
-    project_research_home: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    project_research_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
     captured_queries: list[str] = []
     original = research_routes._project_context_snapshot_for_thread
@@ -210,8 +208,7 @@ def test_whitespace_handoff_question_uses_the_message_for_context_selection(
 
 
 def test_project_create_rejects_thread_move_after_snapshot(
-    project_research_home: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    project_research_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
     original = research_routes._project_context_snapshot_for_thread
 
@@ -233,8 +230,7 @@ def test_project_create_rejects_thread_move_after_snapshot(
 
 
 def test_non_project_create_rejects_concurrent_move_into_project(
-    project_research_home: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    project_research_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
     studio_db.update_chat_thread("thread-1", {"projectId": None})
 
@@ -256,8 +252,7 @@ def test_non_project_create_rejects_concurrent_move_into_project(
 
 
 def test_project_rebind_rejects_thread_move_after_snapshot(
-    project_research_home: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    project_research_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
     first = _create_project_run()
     first_snapshot_id = first["config"]["projectContextSnapshotId"]
@@ -305,8 +300,7 @@ def test_project_rebind_rejects_thread_move_after_snapshot(
 
 
 def test_project_stream_hop_carries_bound_session_and_snapshot(
-    project_research_home: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    project_research_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
     run = _create_project_run()
     sent: list[dict] = []
@@ -332,7 +326,12 @@ def test_project_stream_hop_carries_bound_session_and_snapshot(
         def build_request(self, method, url, **kwargs):
             return {"method": method, "url": url, **kwargs}
 
-        async def send(self, request, *, stream = False):
+        async def send(
+            self,
+            request,
+            *,
+            stream = False,
+        ):
             assert stream is True
             sent.append(request)
             return response
@@ -382,9 +381,7 @@ def test_project_research_snapshot_is_bound_to_run_and_project(project_research_
     )
 
 
-def test_rebound_project_research_atomically_replaces_its_snapshot(
-    project_research_home: Path,
-):
+def test_rebound_project_research_atomically_replaces_its_snapshot(project_research_home: Path):
     first = _create_project_run()
     first_snapshot_id = first["config"]["projectContextSnapshotId"]
     research_runs_db.request_cancel(first["id"])

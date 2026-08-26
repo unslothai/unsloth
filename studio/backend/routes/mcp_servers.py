@@ -412,11 +412,7 @@ async def import_mcp_servers(
             # http entries and reports the stdio ones.
             if is_stdio(url):
                 require_ui_session_for_local_commands(via_api_key)
-            if via_api_key and (
-                entry.headers
-                or entry.use_oauth
-                or _url_carries_credentials(url)
-            ):
+            if via_api_key and (entry.headers or entry.use_oauth or _url_carries_credentials(url)):
                 require_ui_session(via_api_key)
         except HTTPException as exc:
             errors.append(f"{entry.display_name}: {exc.detail}")

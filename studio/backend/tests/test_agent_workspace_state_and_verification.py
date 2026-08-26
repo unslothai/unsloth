@@ -122,12 +122,8 @@ def test_verification_persists_bounded_evidence_and_detects_staleness(tmp_path):
             "logLimitBytes": 1024,
         }
     ]
-    first_config = set_verification_config(
-        "project", checks, require_for_goal_completion = True
-    )
-    second_config = set_verification_config(
-        "project", checks, require_for_goal_completion = True
-    )
+    first_config = set_verification_config("project", checks, require_for_goal_completion = True)
+    second_config = set_verification_config("project", checks, require_for_goal_completion = True)
 
     assert first_config["revision"] == 1
     assert second_config["revision"] == 2
@@ -149,9 +145,7 @@ def test_verification_persists_bounded_evidence_and_detects_staleness(tmp_path):
     assert verification_run_with_freshness(run["id"])["stale"] is True
 
 
-def test_pre_agent_studio_database_migrates_with_api_usage_and_agent_state(
-    tmp_path, monkeypatch
-):
+def test_pre_agent_studio_database_migrates_with_api_usage_and_agent_state(tmp_path, monkeypatch):
     studio_home = tmp_path / "studio"
     projects_home = tmp_path / "projects"
     studio_home.mkdir()
@@ -202,9 +196,7 @@ def test_pre_agent_studio_database_migrates_with_api_usage_and_agent_state(
     state._READY_DATABASES.discard(str(db_path))
     conn = studio_db.get_connection()
     try:
-        project_columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(chat_projects)")
-        }
+        project_columns = {row[1] for row in conn.execute("PRAGMA table_info(chat_projects)")}
         assert {
             "workspace_kind",
             "workspace_device_id",
@@ -216,13 +208,13 @@ def test_pre_agent_studio_database_migrates_with_api_usage_and_agent_state(
             "goal_updated_at",
             "goal_revision",
         } <= project_columns
-        assert conn.execute(
-            "SELECT total_tokens FROM api_usage_events WHERE id = 'old-usage'"
-        ).fetchone()[0] == 5
-        indexes = {
-            row[1]
-            for row in conn.execute("PRAGMA index_list(api_usage_events)").fetchall()
-        }
+        assert (
+            conn.execute(
+                "SELECT total_tokens FROM api_usage_events WHERE id = 'old-usage'"
+            ).fetchone()[0]
+            == 5
+        )
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list(api_usage_events)").fetchall()}
         assert "idx_api_usage_events_subject_created_at" in indexes
     finally:
         conn.close()
@@ -239,9 +231,7 @@ def test_pre_agent_studio_database_migrates_with_api_usage_and_agent_state(
     assert root.is_dir()
     assert (root / "sandbox").is_dir()
 
-    verification = set_verification_config(
-        "legacy", [], require_for_goal_completion = False
-    )
+    verification = set_verification_config("legacy", [], require_for_goal_completion = False)
     plan = create_plan(
         "legacy",
         "Migration plan",
@@ -286,8 +276,7 @@ def test_pre_agent_studio_database_migrates_with_api_usage_and_agent_state(
         agent_tables = {
             row[0]
             for row in conn.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type = 'table' AND name LIKE 'agent_%'"
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'agent_%'"
             ).fetchall()
         }
         assert expected_agent_tables <= agent_tables
@@ -354,15 +343,11 @@ def test_verification_state_schema_migrates_policy_and_run_revisions(tmp_path):
     try:
         config_columns = {
             row[1]
-            for row in migrated.execute(
-                "PRAGMA table_info(agent_verification_configs)"
-            ).fetchall()
+            for row in migrated.execute("PRAGMA table_info(agent_verification_configs)").fetchall()
         }
         run_columns = {
             row[1]
-            for row in migrated.execute(
-                "PRAGMA table_info(agent_verification_runs)"
-            ).fetchall()
+            for row in migrated.execute("PRAGMA table_info(agent_verification_runs)").fetchall()
         }
     finally:
         migrated.close()
@@ -399,9 +384,7 @@ def test_verification_config_revision_is_monotonic_under_concurrent_saves(tmp_pa
 def test_goal_completion_gate_accepts_only_current_complete_primary_evidence(tmp_path):
     _folder_project(tmp_path)
     checks = [_required_check("test"), _required_check("lint")]
-    config = set_verification_config(
-        "project", checks, require_for_goal_completion = True
-    )
+    config = set_verification_config("project", checks, require_for_goal_completion = True)
 
     _record_verification(
         tmp_path,
@@ -411,9 +394,7 @@ def test_goal_completion_gate_accepts_only_current_complete_primary_evidence(tmp
     require_goal_completion_verification("project")
 
     (tmp_path / "changed.py").write_text("changed", encoding = "utf-8")
-    with pytest.raises(
-        AgentWorkspaceError, match = "fresh passing verification run"
-    ) as blocked:
+    with pytest.raises(AgentWorkspaceError, match = "fresh passing verification run") as blocked:
         require_goal_completion_verification("project")
     assert str(blocked.value) == GOAL_COMPLETION_VERIFICATION_DETAIL
     assert str(tmp_path) not in str(blocked.value)
@@ -422,9 +403,7 @@ def test_goal_completion_gate_accepts_only_current_complete_primary_evidence(tmp
 def test_goal_completion_gate_rejects_worktree_only_and_partial_evidence(tmp_path):
     _folder_project(tmp_path)
     checks = [_required_check("test"), _required_check("lint")]
-    config = set_verification_config(
-        "project", checks, require_for_goal_completion = True
-    )
+    config = set_verification_config("project", checks, require_for_goal_completion = True)
 
     _record_verification(
         tmp_path,
@@ -472,9 +451,7 @@ def test_goal_completion_gate_uses_latest_primary_run(tmp_path):
 
 def test_goal_completion_gate_is_optional(tmp_path):
     _folder_project(tmp_path)
-    set_verification_config(
-        "project", [_required_check()], require_for_goal_completion = False
-    )
+    set_verification_config("project", [_required_check()], require_for_goal_completion = False)
 
     require_goal_completion_verification("project")
 
@@ -482,21 +459,15 @@ def test_goal_completion_gate_is_optional(tmp_path):
 def test_goal_completion_gate_rejects_config_changes_and_no_checks(tmp_path):
     _folder_project(tmp_path)
     checks = [_required_check()]
-    initial = set_verification_config(
-        "project", checks, require_for_goal_completion = True
-    )
+    initial = set_verification_config("project", checks, require_for_goal_completion = True)
     _record_verification(tmp_path, config_revision = initial["revision"])
 
-    changed = set_verification_config(
-        "project", checks, require_for_goal_completion = True
-    )
+    changed = set_verification_config("project", checks, require_for_goal_completion = True)
     assert changed["revision"] > initial["revision"]
     with pytest.raises(AgentWorkspaceError, match = "verification-setting change"):
         require_goal_completion_verification("project")
 
-    empty = set_verification_config(
-        "project", [], require_for_goal_completion = True
-    )
+    empty = set_verification_config("project", [], require_for_goal_completion = True)
     assert empty["revision"] > changed["revision"]
     with pytest.raises(AgentWorkspaceError, match = "fresh passing verification run"):
         require_goal_completion_verification("project")
@@ -575,10 +546,7 @@ def test_project_create_route_cannot_upsert_or_bypass_goal_completion(tmp_path):
     assert stored["goalRevision"] == 0
 
 
-def test_goal_completion_rejects_policy_change_between_check_and_commit(
-    tmp_path,
-    monkeypatch,
-):
+def test_goal_completion_rejects_policy_change_between_check_and_commit(tmp_path, monkeypatch):
     project = _folder_project(tmp_path)
     initial = set_verification_config(
         project["id"],
@@ -683,9 +651,7 @@ def test_verification_timeout_cancels_process_and_bounds_output(tmp_path):
     assert len(result["output"].encode("utf-8")) <= 1024
 
 
-def test_verification_cancelled_while_waiting_for_workspace_slot(
-    tmp_path, monkeypatch
-):
+def test_verification_cancelled_while_waiting_for_workspace_slot(tmp_path, monkeypatch):
     cancel = threading.Event()
 
     class WaitingBoundary:
@@ -893,9 +859,7 @@ def test_concurrent_background_start_claims_task_once(tmp_path, monkeypatch):
     manager._executor.shutdown(wait = True)
 
 
-def test_project_deletion_cancels_queued_tasks_and_waits_for_running_worker(
-    tmp_path, monkeypatch
-):
+def test_project_deletion_cancels_queued_tasks_and_waits_for_running_worker(tmp_path, monkeypatch):
     _folder_project(tmp_path)
     entered = threading.Event()
     finished = threading.Event()
@@ -907,9 +871,7 @@ def test_project_deletion_cancels_queued_tasks_and_waits_for_running_worker(
         finished.set()
         return {"status": "cancelled"}
 
-    monkeypatch.setattr(
-        background_module, "run_project_verification", cancellable_verification
-    )
+    monkeypatch.setattr(background_module, "run_project_verification", cancellable_verification)
     manager = BackgroundTaskManager(max_workers = 1)
     try:
         running = manager.enqueue_verification("project", start = True)
@@ -920,9 +882,7 @@ def test_project_deletion_cancels_queued_tasks_and_waits_for_running_worker(
         try:
             with pytest.raises(AgentWorkspaceError, match = "deletion is in progress"):
                 manager.enqueue_verification("project", start = False)
-            stopped = manager.cancel_project_tasks_and_wait(
-                "project", timeout_seconds = 5
-            )
+            stopped = manager.cancel_project_tasks_and_wait("project", timeout_seconds = 5)
         finally:
             manager.finish_project_deletion("project")
 
@@ -1012,7 +972,7 @@ def test_bounded_runner_reaps_grandchild_after_shell_leader_exits(tmp_path):
 
     started = time.monotonic()
     code, output, _ = run_bounded(
-        ["/bin/sh", "-c", "printf '%s ' \"$$\"; sleep 30 & echo \"$!\""],
+        ["/bin/sh", "-c", 'printf \'%s \' "$$"; sleep 30 & echo "$!"'],
         cwd = tmp_path,
         timeout_seconds = 5,
         output_limit = 1024,

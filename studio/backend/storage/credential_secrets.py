@@ -60,9 +60,7 @@ def _secret_binding_digest(row: sqlite3.Row | None) -> str:
 
 
 def _decrypt_secret_row(
-    credential_kind: str,
-    scope_id: str,
-    row: sqlite3.Row | None,
+    credential_kind: str, scope_id: str, row: sqlite3.Row | None
 ) -> Optional[str]:
     if row is None or row["format_version"] != _FORMAT_VERSION:
         return None
@@ -221,9 +219,7 @@ def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
     return _decrypt_secret_row(credential_kind, scope_id, row)
 
 
-def get_secret_with_binding(
-    credential_kind: str, scope_id: str
-) -> tuple[Optional[str], str]:
+def get_secret_with_binding(credential_kind: str, scope_id: str) -> tuple[Optional[str], str]:
     """Read one credential and its replacement binding from the same DB row."""
     conn = get_connection()
     try:

@@ -38,9 +38,7 @@ _DISCOVERY_EXCLUDED_DIRECTORIES = frozenset(
 
 def secure_instruction_traversal_supported() -> bool:
     posix_supported = (
-        os.open in os.supports_dir_fd
-        and hasattr(os, "O_DIRECTORY")
-        and hasattr(os, "O_NOFOLLOW")
+        os.open in os.supports_dir_fd and hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW")
     )
     if posix_supported:
         return True
@@ -49,9 +47,7 @@ def secure_instruction_traversal_supported() -> bool:
     return windows_secure_traversal_supported()
 
 
-def _windows_instruction_target_directory(
-    root, parts: tuple[str, ...]
-) -> tuple[str, ...]:
+def _windows_instruction_target_directory(root, parts: tuple[str, ...]) -> tuple[str, ...]:
     if not parts:
         return ()
     try:
@@ -78,7 +74,6 @@ def _windows_not_found(exc: OSError) -> bool:
 
 def _read_instruction_windows(root, scope: tuple[str, ...], limit: int):
     from .windows_traversal import WindowsTraversalRejected
-
     for name in _INSTRUCTION_FILENAMES:
         try:
             data = root.read_file((*scope, name), limit)
@@ -108,9 +103,7 @@ def _read_regular_at(directory_fd: int, name: str, limit: int) -> tuple[bytes, b
         os.close(descriptor)
 
 
-def _read_instruction_at(
-    directory_fd: int, limit: int
-) -> tuple[str, bytes, bool] | None:
+def _read_instruction_at(directory_fd: int, limit: int) -> tuple[str, bytes, bool] | None:
     """Read the one applicable file for a scope, preferring the Codex override."""
     for name in _INSTRUCTION_FILENAMES:
         try:
@@ -207,9 +200,7 @@ def _normalize_expected_identity(
 
 
 def _assert_root_identity(
-    root: Path,
-    descriptor: int,
-    expected_identity: Optional[tuple[int, int]],
+    root: Path, descriptor: int, expected_identity: Optional[tuple[int, int]]
 ) -> tuple[int, int]:
     try:
         current = root.stat(follow_symlinks = False)
@@ -227,15 +218,12 @@ def _assert_root_identity(
         or current_identity != opened_identity
         or (expected is not None and opened_identity != expected)
     ):
-        raise AgentWorkspaceError(
-            "Project root identity changed during instruction loading."
-        )
+        raise AgentWorkspaceError("Project root identity changed during instruction loading.")
     return opened_identity
 
 
 def _open_verified_root(
-    root: Path,
-    expected_identity: Optional[tuple[int, int]] = None,
+    root: Path, expected_identity: Optional[tuple[int, int]] = None
 ) -> tuple[Path, int]:
     descriptor = None
     try:
@@ -280,12 +268,7 @@ def _decode_utf8_prefix(raw: bytes) -> str:
 
 
 def _append_windows_instruction_layer(
-    verified_root,
-    scope: tuple[str, ...],
-    *,
-    limit: int,
-    layers: list[dict],
-    issues: list[dict],
+    verified_root, scope: tuple[str, ...], *, limit: int, layers: list[dict], issues: list[dict]
 ) -> tuple[int, bool]:
     relative = "/".join((*scope, "AGENTS.md"))
     try:
@@ -391,18 +374,13 @@ def _resolve_targeted_repository_instructions_windows(
             normalized = "/".join(parts)
             if not normalized or normalized in seen_targets:
                 continue
-            directory_parts = _windows_instruction_target_directory(
-                verified_root, parts
-            )
+            directory_parts = _windows_instruction_target_directory(verified_root, parts)
             seen_targets.add(normalized)
             normalized_targets.append((normalized, directory_parts))
 
         scopes: set[tuple[str, ...]] = {()}
         for _target, directory_parts in normalized_targets:
-            scopes.update(
-                directory_parts[:depth]
-                for depth in range(1, len(directory_parts) + 1)
-            )
+            scopes.update(directory_parts[:depth] for depth in range(1, len(directory_parts) + 1))
         for scope in sorted(scopes, key = lambda value: (len(value), value)):
             if len(layers) >= max_files or remaining <= 0:
                 truncated = True
@@ -530,9 +508,7 @@ def resolve_agents_instructions(
             expected_identity = expected_identity,
         )
     if not secure_instruction_traversal_supported():
-        raise AgentWorkspaceError(
-            "Secure AGENTS.md traversal is unavailable on this platform."
-        )
+        raise AgentWorkspaceError("Secure AGENTS.md traversal is unavailable on this platform.")
     root, root_fd = _open_verified_root(root, expected_identity)
 
     try:
@@ -554,9 +530,7 @@ def resolve_agents_instructions(
                 break
             relative = "/".join((*scope_parts, "AGENTS.md"))
             try:
-                selected = _read_instruction_at(
-                    directory_fd, min(max_file_bytes, remaining)
-                )
+                selected = _read_instruction_at(directory_fd, min(max_file_bytes, remaining))
             except OSError as exc:
                 issues.append(
                     {
@@ -590,9 +564,7 @@ def resolve_agents_instructions(
             try:
                 next_fd = _open_directory_at(directory_fd, relative_parts[depth])
             except OSError as exc:
-                raise AgentWorkspaceError(
-                    "Instruction target changed during loading."
-                ) from exc
+                raise AgentWorkspaceError("Instruction target changed during loading.") from exc
             os.close(directory_fd)
             directory_fd = next_fd
             scope_parts.append(relative_parts[depth])
@@ -643,9 +615,7 @@ def resolve_targeted_repository_instructions(
             expected_identity = expected_identity,
         )
     if not secure_instruction_traversal_supported():
-        raise AgentWorkspaceError(
-            "Secure AGENTS.md traversal is unavailable on this platform."
-        )
+        raise AgentWorkspaceError("Secure AGENTS.md traversal is unavailable on this platform.")
 
     root, root_fd = _open_verified_root(root, expected_identity)
     issues: list[dict] = []
@@ -666,10 +636,7 @@ def resolve_targeted_repository_instructions(
 
         scopes: set[tuple[str, ...]] = {()}
         for _target, directory_parts in normalized_targets:
-            scopes.update(
-                directory_parts[:depth]
-                for depth in range(1, len(directory_parts) + 1)
-            )
+            scopes.update(directory_parts[:depth] for depth in range(1, len(directory_parts) + 1))
 
         for scope in sorted(scopes, key = lambda value: (len(value), value)):
             if len(layers) >= max_files or remaining <= 0:
@@ -688,16 +655,12 @@ def resolve_targeted_repository_instructions(
             try:
                 relative = "/".join((*scope, "AGENTS.md"))
                 try:
-                    selected = _read_instruction_at(
-                        directory_fd, min(max_file_bytes, remaining)
-                    )
+                    selected = _read_instruction_at(directory_fd, min(max_file_bytes, remaining))
                 except OSError as exc:
                     issues.append(
                         {
                             "path": relative,
-                            "reason": (
-                                "symlink" if exc.errno == errno.ELOOP else "unreadable"
-                            ),
+                            "reason": ("symlink" if exc.errno == errno.ELOOP else "unreadable"),
                         }
                     )
                     continue
@@ -770,9 +733,7 @@ def resolve_repository_instructions(
             expected_identity = expected_identity,
         )
     if not secure_instruction_traversal_supported() or os.listdir not in os.supports_fd:
-        raise AgentWorkspaceError(
-            "Secure AGENTS.md traversal is unavailable on this platform."
-        )
+        raise AgentWorkspaceError("Secure AGENTS.md traversal is unavailable on this platform.")
     root, root_fd = _open_verified_root(root, expected_identity)
     stack: list[tuple[str, ...]] = [()]
     layers: list[dict] = []
@@ -808,9 +769,7 @@ def resolve_repository_instructions(
                         issues.append(
                             {
                                 "path": relative,
-                                "reason": (
-                                    "symlink" if exc.errno == errno.ELOOP else "unreadable"
-                                ),
+                                "reason": ("symlink" if exc.errno == errno.ELOOP else "unreadable"),
                             }
                         )
                     else:
@@ -820,9 +779,7 @@ def resolve_repository_instructions(
                             try:
                                 content = _decode_utf8_prefix(raw)
                             except UnicodeDecodeError:
-                                issues.append(
-                                    {"path": relative, "reason": "invalid-utf8"}
-                                )
+                                issues.append({"path": relative, "reason": "invalid-utf8"})
                             else:
                                 layers.append(
                                     {

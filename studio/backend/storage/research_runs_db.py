@@ -75,11 +75,7 @@ def _commit_event(conn: sqlite3.Connection) -> None:
 
 
 def _replace_project_context_snapshot_locked(
-    conn: sqlite3.Connection,
-    *,
-    run_id: str,
-    snapshot: dict[str, Any] | None,
-    created_at: int,
+    conn: sqlite3.Connection, *, run_id: str, snapshot: dict[str, Any] | None, created_at: int
 ) -> None:
     """Replace one run's immutable server-owned project context snapshot."""
     conn.execute("DELETE FROM research_project_context_snapshots WHERE run_id=?", (run_id,))
@@ -115,9 +111,7 @@ def _require_thread_project_locked(
         (thread_id,),
     ).fetchone()
     normalized_expected_project_id = str(expected_project_id or "").strip() or None
-    actual_project_id = (
-        str(row["project_id"] or "").strip() or None if row is not None else None
-    )
+    actual_project_id = str(row["project_id"] or "").strip() or None if row is not None else None
     snapshot_project_id = (
         str(project_context_snapshot.get("projectId") or "").strip() or None
         if project_context_snapshot is not None
@@ -129,9 +123,7 @@ def _require_thread_project_locked(
         or (project_context_snapshot is None) != (normalized_expected_project_id is None)
         or snapshot_project_id != normalized_expected_project_id
     ):
-        raise ResearchConflictError(
-            "The thread project changed while Deep Research was starting"
-        )
+        raise ResearchConflictError("The thread project changed while Deep Research was starting")
 
 
 def get_project_context_snapshot(
@@ -356,9 +348,7 @@ def create_run(
         stored_config = dict(config)
         stored_config.pop("projectContextSnapshotId", None)
         if project_context_snapshot is not None:
-            stored_config["projectContextSnapshotId"] = str(
-                project_context_snapshot["id"]
-            )
+            stored_config["projectContextSnapshotId"] = str(project_context_snapshot["id"])
         conn.execute(
             """
             INSERT INTO research_runs
@@ -508,9 +498,7 @@ def rebind_cancelled(
         stored_config = dict(config)
         stored_config.pop("projectContextSnapshotId", None)
         if project_context_snapshot is not None:
-            stored_config["projectContextSnapshotId"] = str(
-                project_context_snapshot["id"]
-            )
+            stored_config["projectContextSnapshotId"] = str(project_context_snapshot["id"])
         conn.execute(
             "UPDATE research_runs SET user_message_id=?, assistant_message_id=?, "
             "status='planning', cancel_requested=0, plan_json=NULL, plan_hash=NULL, "

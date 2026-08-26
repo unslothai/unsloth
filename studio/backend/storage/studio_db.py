@@ -198,9 +198,7 @@ def managed_root_lifecycle_scope(root_path: str) -> Iterator[None]:
     non-reentrant lease a second time.
     """
     key = _managed_root_lifecycle_key(root_path)
-    token = _HELD_MANAGED_ROOT_LIFECYCLES.set(
-        _HELD_MANAGED_ROOT_LIFECYCLES.get() | {key}
-    )
+    token = _HELD_MANAGED_ROOT_LIFECYCLES.set(_HELD_MANAGED_ROOT_LIFECYCLES.get() | {key})
     try:
         yield
     finally:
@@ -277,9 +275,7 @@ def _project_goal_status(project: dict) -> str | None:
 
 
 def _workspace_identity_matches(
-    root: Path,
-    workspace_device_id: str | None,
-    workspace_file_id: str | None,
+    root: Path, workspace_device_id: str | None, workspace_file_id: str | None
 ) -> bool:
     """Recheck a persisted directory identity without following the final entry."""
     if workspace_device_id is None or workspace_file_id is None:
@@ -321,13 +317,9 @@ def _ensure_project_workspace(
             if not _workspace_identity_matches(
                 root_resolved, workspace_device_id, workspace_file_id
             ):
-                raise OSError(
-                    "Selected project folder identity no longer matches the native grant"
-                )
+                raise OSError("Selected project folder identity no longer matches the native grant")
             if not os.access(root_resolved, os.R_OK | os.W_OK | os.X_OK):
-                raise PermissionError(
-                    "Selected project folder must be readable and writable"
-                )
+                raise PermissionError("Selected project folder must be readable and writable")
         else:
             if root.is_symlink():
                 raise OSError("Managed project workspace is a symbolic link")
@@ -335,8 +327,7 @@ def _ensure_project_workspace(
             if root_resolved.is_symlink():
                 raise OSError("Managed project workspace is a symbolic link")
             if (
-                workspace_device_id is not None
-                or workspace_file_id is not None
+                workspace_device_id is not None or workspace_file_id is not None
             ) and not _workspace_identity_matches(
                 root_resolved, workspace_device_id, workspace_file_id
             ):
@@ -367,9 +358,7 @@ def _folder_workspace_health(
         resolved = root.resolve(strict = True)
         if not resolved.is_dir():
             raise NotADirectoryError(str(root))
-        if not _workspace_identity_matches(
-            resolved, workspace_device_id, workspace_file_id
-        ):
+        if not _workspace_identity_matches(resolved, workspace_device_id, workspace_file_id):
             raise OSError("folder identity changed")
         if not os.access(resolved, os.R_OK | os.W_OK | os.X_OK):
             raise PermissionError(str(root))
@@ -505,10 +494,7 @@ def _managed_root_is_referenced_elsewhere(
         "SELECT root_path FROM chat_projects WHERE id != ?",
         (project_id,),
     ).fetchall()
-    return any(
-        _workspace_paths_overlap(root_path, row["root_path"])
-        for row in rows
-    )
+    return any(_workspace_paths_overlap(root_path, row["root_path"]) for row in rows)
 
 
 def managed_root_is_referenced_elsewhere(project_id: str, root_path: str) -> bool:
@@ -520,9 +506,7 @@ def managed_root_is_referenced_elsewhere(project_id: str, root_path: str) -> boo
         conn.close()
 
 
-def _quarantine_project_workspace(
-    project: dict,
-) -> tuple[Path, Path, str, str] | None:
+def _quarantine_project_workspace(project: dict) -> tuple[Path, Path, str, str] | None:
     if _project_workspace_kind(project) == "folder":
         return None
     root_path = project.get("rootPath")
@@ -570,13 +554,10 @@ def _quarantine_project_workspace(
         return None
 
     project_id = str(project["id"])
-    legacy_suffix = (
-        re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
-    )
+    legacy_suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
     current_suffix = hashlib.sha256(project_id.encode("utf-8")).hexdigest()[:32]
     if not any(
-        root_absolute.name.endswith(f"-{suffix}")
-        for suffix in (legacy_suffix, current_suffix)
+        root_absolute.name.endswith(f"-{suffix}") for suffix in (legacy_suffix, current_suffix)
     ):
         logger.warning(
             "Skipping project workspace delete for unexpected project path %s",
@@ -696,12 +677,8 @@ def _restore_quarantined_project_workspace(
 
 
 def _remove_quarantined_project_workspace(
-    root_absolute: Path,
-    quarantine: Path,
-    expected_device_id: str,
-    expected_file_id: str,
+    root_absolute: Path, quarantine: Path, expected_device_id: str, expected_file_id: str
 ) -> None:
-
     try:
         shutil.rmtree(quarantine)
     finally:
@@ -1663,9 +1640,7 @@ def consume_native_path_lease_nonce(
             conn.commit()
             return False
         live_count = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM native_path_lease_consumptions"
-            ).fetchone()[0]
+            conn.execute("SELECT COUNT(*) FROM native_path_lease_consumptions").fetchone()[0]
         )
         if live_count >= max_entries:
             # Commit the expiry cleanup, but never evict a live nonce to admit a
@@ -2332,7 +2307,9 @@ def _chat_project_from_row(row: sqlite3.Row) -> dict:
         "sandboxPath": (
             root_path
             if root_path and workspace_kind == "folder"
-            else os.path.join(root_path, "sandbox") if root_path else None
+            else os.path.join(root_path, "sandbox")
+            if root_path
+            else None
         ),
         "workspaceKind": workspace_kind,
         "workspaceDeviceId": data.get("workspace_device_id"),
@@ -3056,9 +3033,7 @@ def _upsert_chat_project(project: dict, *, create_only: bool = False) -> dict:
             f"Project {project['id']} already exists. Use the project update route."
         )
     workspace_kind = (
-        _project_workspace_kind(existing)
-        if existing
-        else _project_workspace_kind(project)
+        _project_workspace_kind(existing) if existing else _project_workspace_kind(project)
     )
     root_path = existing.get("rootPath") if existing else None
     if not root_path:
@@ -3088,9 +3063,7 @@ def _upsert_chat_project(project: dict, *, create_only: bool = False) -> dict:
     expected_device_id = (
         workspace_device_id if workspace_kind == "folder" else managed_root_device_id
     )
-    expected_file_id = (
-        workspace_file_id if workspace_kind == "folder" else managed_root_file_id
-    )
+    expected_file_id = workspace_file_id if workspace_kind == "folder" else managed_root_file_id
     root_path = _ensure_project_workspace(
         root_path,
         workspace_kind,
@@ -3108,13 +3081,17 @@ def _upsert_chat_project(project: dict, *, create_only: bool = False) -> dict:
         managed_root_device_id, managed_root_file_id = _workspace_identity(Path(root_path))
         sandbox = Path(root_path) / "sandbox"
         sandbox_device_id, sandbox_file_id = _workspace_identity(sandbox)
-        if existing is not None and (
-            existing.get("workspaceDeviceId") is not None
-            or existing.get("workspaceFileId") is not None
-        ) and not _workspace_identity_matches(
-            sandbox,
-            existing.get("workspaceDeviceId"),
-            existing.get("workspaceFileId"),
+        if (
+            existing is not None
+            and (
+                existing.get("workspaceDeviceId") is not None
+                or existing.get("workspaceFileId") is not None
+            )
+            and not _workspace_identity_matches(
+                sandbox,
+                existing.get("workspaceDeviceId"),
+                existing.get("workspaceFileId"),
+            )
         ):
             raise ProjectWorkspaceError(
                 str(sandbox), OSError("Managed project sandbox identity changed")
@@ -3122,9 +3099,7 @@ def _upsert_chat_project(project: dict, *, create_only: bool = False) -> dict:
         workspace_device_id = sandbox_device_id
         workspace_file_id = sandbox_file_id
     else:
-        workspace_device_id = (
-            str(workspace_device_id) if workspace_device_id is not None else None
-        )
+        workspace_device_id = str(workspace_device_id) if workspace_device_id is not None else None
         workspace_file_id = str(workspace_file_id) if workspace_file_id is not None else None
         managed_root_device_id = None
         managed_root_file_id = None
@@ -3175,9 +3150,7 @@ def _upsert_chat_project(project: dict, *, create_only: bool = False) -> dict:
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
         {conflict_clause}
     """
-    conn = get_connection(
-        _CONTENDED_BUSY_TIMEOUT_SECONDS if create_only else _BUSY_TIMEOUT_SECONDS
-    )
+    conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS if create_only else _BUSY_TIMEOUT_SECONDS)
     try:
         if create_only:
             conn.execute("BEGIN IMMEDIATE")
@@ -3223,8 +3196,7 @@ def _upsert_chat_project(project: dict, *, create_only: bool = False) -> dict:
                 ).fetchone()
                 if collision is not None:
                     raise ChatProjectAlreadyExistsError(
-                        f"Project {project['id']} already exists. "
-                        "Use the project update route."
+                        f"Project {project['id']} already exists. Use the project update route."
                     ) from exc
             raise
         conn.commit()
@@ -3501,16 +3473,13 @@ def ensure_chat_project_workspace(id: str) -> Optional[dict]:
             project.get("workspaceDeviceId"),
             project.get("workspaceFileId"),
         )
-    if (
-        project.get("rootPath") == root_path
-        and (
-            workspace_kind != "managed"
-            or (
-                project.get("managedRootDeviceId") == managed_device_id
-                and project.get("managedRootFileId") == managed_file_id
-                and project.get("workspaceDeviceId") == sandbox_device_id
-                and project.get("workspaceFileId") == sandbox_file_id
-            )
+    if project.get("rootPath") == root_path and (
+        workspace_kind != "managed"
+        or (
+            project.get("managedRootDeviceId") == managed_device_id
+            and project.get("managedRootFileId") == managed_file_id
+            and project.get("workspaceDeviceId") == sandbox_device_id
+            and project.get("workspaceFileId") == sandbox_file_id
         )
     ):
         return project

@@ -65,9 +65,7 @@ def _setup(tmp_path: Path, monkeypatch) -> Path:
             "updatedAt": 1,
         }
     )
-    monkeypatch.setenv(
-        "UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects")
-    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects"))
     return repository
 
 
@@ -75,15 +73,11 @@ def _queued_agent() -> dict:
     return create_agent_background_task("project", "Work in the owned checkout")
 
 
-def test_create_worktree_binds_supplied_task_in_database_and_marker(
-    tmp_path, monkeypatch
-):
+def test_create_worktree_binds_supplied_task_in_database_and_marker(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     task = _queued_agent()
 
-    worktree = worktree_service.create_worktree(
-        "project", background_task_id = task["id"]
-    )
+    worktree = worktree_service.create_worktree("project", background_task_id = task["id"])
 
     linked_task = get_background_task(task["id"])
     linked_worktree = get_worktree(worktree["id"])
@@ -99,9 +93,7 @@ def test_create_worktree_binds_supplied_task_in_database_and_marker(
     worktree_service.cleanup_worktree("project", worktree["id"])
 
 
-def test_startup_reconciliation_completes_reserved_queued_task_activation(
-    tmp_path, monkeypatch
-):
+def test_startup_reconciliation_completes_reserved_queued_task_activation(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     task = _queued_agent()
     real_transition = worktree_service.transition_worktree_status
@@ -118,13 +110,9 @@ def test_startup_reconciliation_completes_reserved_queued_task_activation(
             fail_activation,
         )
         with pytest.raises(AgentWorkspaceError, match = "durable state"):
-            worktree_service.create_worktree(
-                "project", background_task_id = task["id"]
-            )
+            worktree_service.create_worktree("project", background_task_id = task["id"])
 
-    record = get_worktree(
-        worktree_service.list_worktrees("project")[0]["id"]
-    )
+    record = get_worktree(worktree_service.list_worktrees("project")[0]["id"])
     assert record["status"] == "creating"
     assert get_background_task(task["id"])["worktreeId"] == record["id"]
 
@@ -173,9 +161,7 @@ def test_reserved_task_cannot_start_until_worktree_is_active(tmp_path, monkeypat
     worktree_service.cleanup_worktree("project", worktree["id"])
 
 
-def test_failed_worktree_checkout_releases_queued_task_reservation(
-    tmp_path, monkeypatch
-):
+def test_failed_worktree_checkout_releases_queued_task_reservation(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     task = _queued_agent()
     original_git = worktree_service._git
@@ -187,9 +173,7 @@ def test_failed_worktree_checkout_releases_queued_task_reservation(
 
     monkeypatch.setattr(worktree_service, "_git", fail_checkout)
     with pytest.raises(AgentWorkspaceError, match = "injected checkout failure"):
-        worktree_service.create_worktree(
-            "project", background_task_id = task["id"]
-        )
+        worktree_service.create_worktree("project", background_task_id = task["id"])
 
     current = get_background_task(task["id"])
     record = worktree_service.list_worktrees("project")[0]
@@ -199,14 +183,10 @@ def test_failed_worktree_checkout_releases_queued_task_reservation(
     assert record["backgroundTaskId"] is None
 
 
-def test_retry_transfers_worktree_ownership_in_one_state_transaction(
-    tmp_path, monkeypatch
-):
+def test_retry_transfers_worktree_ownership_in_one_state_transaction(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     original = _queued_agent()
-    worktree = worktree_service.create_worktree(
-        "project", background_task_id = original["id"]
-    )
+    worktree = worktree_service.create_worktree("project", background_task_id = original["id"])
     update_background_task(original["id"], "cancelled")
 
     with monkeypatch.context() as patch:
@@ -221,9 +201,7 @@ def test_retry_transfers_worktree_ownership_in_one_state_transaction(
 
     assert retried["worktreeId"] == worktree["id"]
     assert get_worktree(worktree["id"])["backgroundTaskId"] == retried["id"]
-    worktree_service.sync_worktree_background_task_marker(
-        "project", worktree["id"], retried["id"]
-    )
+    worktree_service.sync_worktree_background_task_marker("project", worktree["id"], retried["id"])
     update_background_task(retried["id"], "cancelled")
     worktree_service.cleanup_worktree("project", worktree["id"])
 
@@ -231,9 +209,7 @@ def test_retry_transfers_worktree_ownership_in_one_state_transaction(
 def test_merge_and_cleanup_reject_every_live_agent_task_state(tmp_path, monkeypatch):
     repository = _setup(tmp_path, monkeypatch)
     task = _queued_agent()
-    worktree = worktree_service.create_worktree(
-        "project", background_task_id = task["id"]
-    )
+    worktree = worktree_service.create_worktree("project", background_task_id = task["id"])
     expected_head = _git(repository, "rev-parse", "HEAD")
 
     for status in ("queued", "running", "cancelling"):
@@ -248,9 +224,7 @@ def test_merge_and_cleanup_reject_every_live_agent_task_state(tmp_path, monkeypa
     assert worktree_service.cleanup_worktree("project", worktree["id"])["status"] == "removed"
 
 
-def test_task_side_verification_link_also_blocks_merge_and_cleanup(
-    tmp_path, monkeypatch
-):
+def test_task_side_verification_link_also_blocks_merge_and_cleanup(tmp_path, monkeypatch):
     repository = _setup(tmp_path, monkeypatch)
     worktree = worktree_service.create_worktree("project")
     task = create_background_task(
@@ -271,9 +245,7 @@ def test_task_side_verification_link_also_blocks_merge_and_cleanup(
     assert worktree_service.cleanup_worktree("project", worktree["id"])["status"] == "removed"
 
 
-def test_unexpected_real_merge_conflict_is_retained_for_explicit_resolution(
-    tmp_path, monkeypatch
-):
+def test_unexpected_real_merge_conflict_is_retained_for_explicit_resolution(tmp_path, monkeypatch):
     repository = _setup(tmp_path, monkeypatch)
     worktree = worktree_service.create_worktree("project")
     worktree_path = Path(worktree["path"])
@@ -293,9 +265,7 @@ def test_unexpected_real_merge_conflict_is_retained_for_explicit_resolution(
 
     monkeypatch.setattr(worktree_service, "_run_git", preflight_reports_clean)
 
-    conflict = worktree_service.merge_worktree(
-        "project", worktree["id"], expected_head
-    )
+    conflict = worktree_service.merge_worktree("project", worktree["id"], expected_head)
 
     assert conflict["merge"]["status"] == "conflict"
     assert conflict["merge"]["primaryWorkspaceChanged"] is True
@@ -329,9 +299,7 @@ def test_merge_waits_for_managed_writer_slot(tmp_path, monkeypatch, held_root):
             reached_held_slot.set()
         return real_acquire(identity, cancel_event)
 
-    monkeypatch.setattr(
-        worktree_service, "acquire_workspace_execution_slot", observed_acquire
-    )
+    monkeypatch.setattr(worktree_service, "acquire_workspace_execution_slot", observed_acquire)
     with ThreadPoolExecutor(max_workers = 1) as executor:
         future = executor.submit(
             worktree_service.merge_worktree,
@@ -366,13 +334,9 @@ def test_cleanup_waits_for_foreground_worktree_writer_slot(tmp_path, monkeypatch
             reached_slot.set()
         return real_acquire(requested, cancel_event)
 
-    monkeypatch.setattr(
-        worktree_service, "acquire_workspace_execution_slot", observed_acquire
-    )
+    monkeypatch.setattr(worktree_service, "acquire_workspace_execution_slot", observed_acquire)
     with ThreadPoolExecutor(max_workers = 1) as executor:
-        future = executor.submit(
-            worktree_service.cleanup_worktree, "project", worktree["id"]
-        )
+        future = executor.submit(worktree_service.cleanup_worktree, "project", worktree["id"])
         try:
             assert reached_slot.wait(timeout = 2)
             assert not future.done()

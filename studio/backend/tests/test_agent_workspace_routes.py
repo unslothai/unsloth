@@ -55,9 +55,7 @@ def test_workspace_capability_response_never_exposes_root(tmp_path):
 
 def test_context_snapshot_endpoint_returns_only_an_opaque_expiring_id(tmp_path):
     _folder_project(tmp_path)
-    response = _client().post(
-        "/api/agent-workspace/projects/project/context-snapshots"
-    )
+    response = _client().post("/api/agent-workspace/projects/project/context-snapshots")
 
     assert response.status_code == 200
     body = response.json()
@@ -74,28 +72,23 @@ def test_context_snapshot_endpoint_binds_the_compare_query(tmp_path, monkeypatch
     marker = object()
 
     def capture(project_id, query):
-        observed.update(projectId=project_id, query=query)
+        observed.update(projectId = project_id, query = query)
         return marker
 
     monkeypatch.setattr(agent_workspace_routes, "create_project_context_snapshot", capture)
     monkeypatch.setattr(
         agent_workspace_routes,
         "project_context_snapshot_response",
-        lambda value: {"id": "opaque-snapshot-id", "expiresAt": 123}
-        if value is marker
-        else None,
+        lambda value: {"id": "opaque-snapshot-id", "expiresAt": 123} if value is marker else None,
     )
 
     response = _client().post(
         "/api/agent-workspace/projects/project/context-snapshots",
-        json={"query": "Update src/service.py"},
+        json = {"query": "Update src/service.py"},
     )
 
     assert response.status_code == 200
-    assert observed == {
-        "projectId": "project",
-        "query": "Update src/service.py",
-    }
+    assert observed == {"projectId": "project", "query": "Update src/service.py"}
     assert response.json() == {"id": "opaque-snapshot-id", "expiresAt": 123}
 
 
@@ -140,7 +133,7 @@ def test_verification_route_persists_config_and_documents_shell_contract(tmp_pat
                     "timeoutSeconds": 60,
                     "logLimitBytes": 4096,
                 }
-            ]
+            ],
         },
     )
 
@@ -167,9 +160,7 @@ def test_verification_route_persists_config_and_documents_shell_contract(tmp_pat
     assert resaved.json()["revision"] == 2
 
 
-def test_unsupported_execution_host_disables_and_rejects_command_routes(
-    tmp_path, monkeypatch
-):
+def test_unsupported_execution_host_disables_and_rejects_command_routes(tmp_path, monkeypatch):
     _folder_project(tmp_path)
     monkeypatch.setattr(
         agent_workspace_routes,
@@ -179,9 +170,7 @@ def test_unsupported_execution_host_disables_and_rejects_command_routes(
     client = _client()
 
     workspace = client.get("/api/agent-workspace/projects/project/workspace")
-    verification = client.post(
-        "/api/agent-workspace/projects/project/verify", json = {}
-    )
+    verification = client.post("/api/agent-workspace/projects/project/verify", json = {})
     background = client.post(
         "/api/agent-workspace/projects/project/background/verification",
         json = {"start": False},
@@ -286,9 +275,7 @@ def test_agent_workspace_errors_redact_local_paths(tmp_path, monkeypatch):
 
     monkeypatch.setattr(agent_workspace_routes, "cleanup_worktree", fail_cleanup)
 
-    response = _client().delete(
-        "/api/agent-workspace/projects/project/worktrees/worktree"
-    )
+    response = _client().delete("/api/agent-workspace/projects/project/worktrees/worktree")
 
     assert response.status_code == 409
     assert str(hidden) not in response.text

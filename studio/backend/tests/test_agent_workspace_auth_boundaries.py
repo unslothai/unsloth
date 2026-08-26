@@ -81,9 +81,7 @@ def test_cancel_endpoint_ignores_server_owned_task_session(monkeypatch):
 
     class Request:
         async def json(self):
-            return {
-                "session_id": "agent-task-00000000-0000-0000-0000-000000000000"
-            }
+            return {"session_id": "agent-task-00000000-0000-0000-0000-000000000000"}
 
     result = asyncio.run(inference.cancel_inference(Request(), current_subject = "user"))
     assert result == {"cancelled": 0}
@@ -105,13 +103,9 @@ def test_thread_delete_cancellation_ignores_server_owned_task_session(monkeypatc
 
 
 def test_saved_mcp_inference_requires_ui_session():
-    request = SimpleNamespace(
-        headers={"authorization": "Bearer sk-unsloth-public-caller"}
-    )
+    request = SimpleNamespace(headers = {"authorization": "Bearer sk-unsloth-public-caller"})
     with pytest.raises(HTTPException) as exc:
-        inference._require_ui_for_installed_mcp(
-            SimpleNamespace(mcp_enabled = True), request
-        )
+        inference._require_ui_for_installed_mcp(SimpleNamespace(mcp_enabled = True), request)
     assert exc.value.status_code == 403
 
 

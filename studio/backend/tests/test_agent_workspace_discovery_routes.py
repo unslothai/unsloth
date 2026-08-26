@@ -66,9 +66,7 @@ def test_client_disconnect_cancels_live_repository_map_worker(tmp_path, monkeypa
     assert opened < 500
 
 
-def test_repository_map_rejects_root_replaced_after_project_resolution(
-    tmp_path, monkeypatch
-):
+def test_repository_map_rejects_root_replaced_after_project_resolution(tmp_path, monkeypatch):
     root = tmp_path / "repository"
     root.mkdir()
     metadata = root.stat()

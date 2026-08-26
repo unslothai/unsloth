@@ -18,9 +18,7 @@ from .common import AgentWorkspaceError
 _SCHEMA_LOCK = threading.Lock()
 _READY_DATABASES: set[str] = set()
 _MAX_PENDING_PREPARATIONS = 10_000
-_STATUSES = frozenset(
-    {"awaiting_confirmation", "confirming", "confirmed", "failed", "expired"}
-)
+_STATUSES = frozenset({"awaiting_confirmation", "confirming", "confirmed", "failed", "expired"})
 
 
 def _database_key(conn: sqlite3.Connection) -> str:
@@ -75,9 +73,7 @@ def _record(row: sqlite3.Row) -> dict:
         owned_paths = json.loads(row["owned_paths_json"])
     except (TypeError, ValueError):
         owned_paths = None
-    if not isinstance(owned_paths, list) or not all(
-        isinstance(path, str) for path in owned_paths
-    ):
+    if not isinstance(owned_paths, list) or not all(isinstance(path, str) for path in owned_paths):
         raise AgentWorkspaceError("Prepared commit state is invalid.")
     status = str(row["status"])
     if status not in _STATUSES:
@@ -99,9 +95,7 @@ def _record(row: sqlite3.Row) -> dict:
         "commitSha": str(row["commit_sha"]) if row["commit_sha"] else None,
         "createdAt": int(row["created_at"]),
         "expiresAt": int(row["expires_at"]),
-        "confirmedAt": (
-            int(row["confirmed_at"]) if row["confirmed_at"] is not None else None
-        ),
+        "confirmedAt": (int(row["confirmed_at"]) if row["confirmed_at"] is not None else None),
     }
 
 
@@ -124,9 +118,7 @@ def save_preparation(record: dict, raw_token: str, *, now: int) -> None:
             """
         ).fetchone()[0]
         if int(pending) >= _MAX_PENDING_PREPARATIONS:
-            raise AgentWorkspaceError(
-                "Too many prepared commits are awaiting confirmation."
-            )
+            raise AgentWorkspaceError("Too many prepared commits are awaiting confirmation.")
         conn.execute(
             """
             INSERT INTO agent_prepared_commits(
@@ -161,13 +153,7 @@ def save_preparation(record: dict, raw_token: str, *, now: int) -> None:
         conn.close()
 
 
-def reserve_confirmation(
-    preparation_id: str,
-    project_id: str,
-    raw_token: str,
-    *,
-    now: int,
-) -> dict:
+def reserve_confirmation(preparation_id: str, project_id: str, raw_token: str, *, now: int) -> dict:
     conn = _connection()
     try:
         conn.execute("BEGIN IMMEDIATE")

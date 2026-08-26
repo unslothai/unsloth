@@ -59,9 +59,7 @@ _PROJECT_CHECKPOINT_ACTIVE: dict[str, int] = {}
 _PROJECTS_DELETING: set[str] = set()
 _DISABLED_HOOKS_LOCK = threading.Lock()
 _EMPTY_CONFIG_LOCK = threading.Lock()
-_FILTER_CONFIG_KEY = re.compile(
-    r"^filter\.(?P<driver>.+)\.(?:clean|smudge|process|required)$"
-)
+_FILTER_CONFIG_KEY = re.compile(r"^filter\.(?P<driver>.+)\.(?:clean|smudge|process|required)$")
 _MERGE_DRIVER_CONFIG_KEY = re.compile(r"^merge\.(?P<driver>.+)\.driver$")
 _SAFE_FILTER_DRIVER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _ALLOWED_GIT_ENV = frozenset(
@@ -94,9 +92,7 @@ def _disabled_hooks_path() -> Path:
                 hooks.mkdir(mode = 0o700)
                 metadata = hooks.lstat()
             except OSError as exc:
-                raise AgentWorkspaceError(
-                    "Studio Git safety storage is unavailable."
-                ) from exc
+                raise AgentWorkspaceError("Studio Git safety storage is unavailable.") from exc
         if not stat.S_ISDIR(metadata.st_mode):
             raise AgentWorkspaceError("Studio Git safety storage is not a safe directory.")
         try:
@@ -108,9 +104,7 @@ def _disabled_hooks_path() -> Path:
         except AgentWorkspaceError:
             raise
         except OSError as exc:
-            raise AgentWorkspaceError(
-                "Studio Git safety storage is unavailable."
-            ) from exc
+            raise AgentWorkspaceError("Studio Git safety storage is unavailable.") from exc
     return hooks
 
 
@@ -134,9 +128,7 @@ def _empty_git_config_path() -> Path:
                 )
                 metadata = config.lstat()
             except OSError as exc:
-                raise AgentWorkspaceError(
-                    "Studio Git safety storage is unavailable."
-                ) from exc
+                raise AgentWorkspaceError("Studio Git safety storage is unavailable.") from exc
             finally:
                 if descriptor is not None:
                     os.close(descriptor)
@@ -145,9 +137,7 @@ def _empty_git_config_path() -> Path:
         try:
             config.chmod(0o600)
         except OSError as exc:
-            raise AgentWorkspaceError(
-                "Studio Git safety storage is unavailable."
-            ) from exc
+            raise AgentWorkspaceError("Studio Git safety storage is unavailable.") from exc
     return config
 
 
@@ -260,16 +250,12 @@ def _neutral_filter_overrides(root: Path, env: Optional[dict]) -> list[str]:
     if code == 1 and not output:
         return []
     if code != 0 or truncated:
-        raise AgentWorkspaceError(
-            "Git content filters could not be inspected safely."
-        )
+        raise AgentWorkspaceError("Git content filters could not be inspected safely.")
     drivers = set()
     for key in output.splitlines():
         match = _FILTER_CONFIG_KEY.fullmatch(key.strip())
         if match is None or not _SAFE_FILTER_DRIVER.fullmatch(match.group("driver")):
-            raise AgentWorkspaceError(
-                "Git content filter configuration is invalid."
-            )
+            raise AgentWorkspaceError("Git content filter configuration is invalid.")
         drivers.add(match.group("driver"))
     if not drivers:
         return []
@@ -384,9 +370,7 @@ def _project_checkpoint_operation(project_id: str) -> Iterator[None]:
             raise AgentWorkspaceError(
                 "Checkpoint operations are unavailable while the project is being deleted."
             )
-        _PROJECT_CHECKPOINT_ACTIVE[project_id] = (
-            _PROJECT_CHECKPOINT_ACTIVE.get(project_id, 0) + 1
-        )
+        _PROJECT_CHECKPOINT_ACTIVE[project_id] = _PROJECT_CHECKPOINT_ACTIVE.get(project_id, 0) + 1
     try:
         yield
     finally:
@@ -674,7 +658,12 @@ def git_status(project_id: str) -> dict:
     }
 
 
-def git_diff(project_id: str, *, staged: bool = False, max_bytes: int = 512_000) -> dict:
+def git_diff(
+    project_id: str,
+    *,
+    staged: bool = False,
+    max_bytes: int = 512_000,
+) -> dict:
     workspace, repository = _project_git(project_id)
     relative = workspace.relative_to(repository).as_posix()
     pathspec = "." if relative == "." else relative
@@ -858,14 +847,9 @@ def _attached_head(repository: Path) -> tuple[str, str]:
         output_limit = 4096,
     )
     if branch_code != 0:
-        raise AgentWorkspaceError(
-            "Prepared commits require an attached local branch."
-        )
+        raise AgentWorkspaceError("Prepared commits require an attached local branch.")
     branch_ref = branch_output.strip()
-    if (
-        not branch_ref.startswith("refs/heads/")
-        or not _SAFE_PATH.fullmatch(branch_ref)
-    ):
+    if not branch_ref.startswith("refs/heads/") or not _SAFE_PATH.fullmatch(branch_ref):
         raise AgentWorkspaceError("Git returned an invalid branch identity.")
     head, _ = _git(
         repository,
@@ -906,9 +890,7 @@ def _selected_change_preview(repository: Path, paths: list[str]) -> dict:
                 "Untracked files must be added to Git before commit preparation so their content is reviewable."
             )
         if code in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}:
-            raise AgentWorkspaceError(
-                "Resolve repository conflicts before preparing a commit."
-            )
+            raise AgentWorkspaceError("Resolve repository conflicts before preparing a commit.")
         if code[0] in {"R", "C"} or code[1] in {"R", "C"}:
             index += 1
             if index >= len(raw_records):
@@ -916,9 +898,7 @@ def _selected_change_preview(repository: Path, paths: list[str]) -> dict:
             item["oldPath"] = raw_records[index]
         files.append(item)
         if len(files) > 5_000:
-            raise AgentWorkspaceError(
-                "A prepared commit can contain at most 5,000 changed paths."
-            )
+            raise AgentWorkspaceError("A prepared commit can contain at most 5,000 changed paths.")
         index += 1
     if not files:
         raise AgentWorkspaceError("Selected paths have no changes to prepare.")
@@ -959,9 +939,9 @@ def _prepared_payload_digest(record: dict) -> str:
         "createdAt": record["createdAt"],
         "expiresAt": record["expiresAt"],
     }
-    encoded = json.dumps(
-        payload, ensure_ascii = False, separators = (",", ":"), sort_keys = True
-    ).encode("utf-8")
+    encoded = json.dumps(payload, ensure_ascii = False, separators = (",", ":"), sort_keys = True).encode(
+        "utf-8"
+    )
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -999,59 +979,51 @@ def prepare_commit(project_id: str, owned_paths: list[str], message: str) -> dic
         or "\x00" in normalized_message
         or len(normalized_message.encode("utf-8")) > 32_000
     ):
-        raise AgentWorkspaceError(
-            "Prepared commit messages must contain 1 to 32,000 UTF-8 bytes."
-        )
+        raise AgentWorkspaceError("Prepared commit messages must contain 1 to 32,000 UTF-8 bytes.")
     with _project_checkpoint_operation(project_id):
         root, repository = _project_git(project_id, mutation = True)
         with _workspace_writer_slot(root), _serialized_repository_mutation(repository):
-                paths = _owned_paths(root, owned_paths)
-                branch_ref, head_sha = _attached_head(repository)
-                status = git_status(project_id)
-                if status["truncated"]:
-                    raise AgentWorkspaceError(
-                        "Repository status is too large to prepare a commit safely."
-                    )
-                if status["counts"]["conflicted"]:
-                    raise AgentWorkspaceError(
-                        "Resolve repository conflicts before preparing a commit."
-                    )
-                preview = _selected_change_preview(repository, paths)
-                source_fingerprint = workspace_fingerprint(root)
-                if not workspace_common.workspace_fingerprint_complete(source_fingerprint):
-                    raise AgentWorkspaceError(
-                        "Repository evidence is incomplete. Reduce the change set and retry."
-                    )
-                created_at = now_ms()
-                preparation_id = str(uuid.uuid4())
-                record = {
-                    "id": preparation_id,
-                    "projectId": project_id,
-                    "operation": _PREPARED_COMMIT_OPERATION,
-                    "status": "awaiting_confirmation",
-                    "branchRef": branch_ref,
-                    "headSha": head_sha,
-                    "gitRoot": str(repository),
-                    "message": normalized_message,
-                    "ownedPaths": paths,
-                    "sourceFingerprint": source_fingerprint,
-                    "refName": (
-                        f"refs/unsloth-studio/prepared-commits/{preparation_id}"
-                    ),
-                    "createdAt": created_at,
-                    "expiresAt": created_at + _PREPARED_COMMIT_TTL_MS,
-                    **preview,
-                }
-                record["payloadDigest"] = _prepared_payload_digest(record)
-                confirmation_token = secrets.token_urlsafe(32)
-                save_preparation(record, confirmation_token, now = created_at)
-                record["confirmationToken"] = confirmation_token
-                return _prepared_public_record(record)
+            paths = _owned_paths(root, owned_paths)
+            branch_ref, head_sha = _attached_head(repository)
+            status = git_status(project_id)
+            if status["truncated"]:
+                raise AgentWorkspaceError(
+                    "Repository status is too large to prepare a commit safely."
+                )
+            if status["counts"]["conflicted"]:
+                raise AgentWorkspaceError("Resolve repository conflicts before preparing a commit.")
+            preview = _selected_change_preview(repository, paths)
+            source_fingerprint = workspace_fingerprint(root)
+            if not workspace_common.workspace_fingerprint_complete(source_fingerprint):
+                raise AgentWorkspaceError(
+                    "Repository evidence is incomplete. Reduce the change set and retry."
+                )
+            created_at = now_ms()
+            preparation_id = str(uuid.uuid4())
+            record = {
+                "id": preparation_id,
+                "projectId": project_id,
+                "operation": _PREPARED_COMMIT_OPERATION,
+                "status": "awaiting_confirmation",
+                "branchRef": branch_ref,
+                "headSha": head_sha,
+                "gitRoot": str(repository),
+                "message": normalized_message,
+                "ownedPaths": paths,
+                "sourceFingerprint": source_fingerprint,
+                "refName": (f"refs/unsloth-studio/prepared-commits/{preparation_id}"),
+                "createdAt": created_at,
+                "expiresAt": created_at + _PREPARED_COMMIT_TTL_MS,
+                **preview,
+            }
+            record["payloadDigest"] = _prepared_payload_digest(record)
+            confirmation_token = secrets.token_urlsafe(32)
+            save_preparation(record, confirmation_token, now = created_at)
+            record["confirmationToken"] = confirmation_token
+            return _prepared_public_record(record)
 
 
-def confirm_prepared_commit(
-    project_id: str, preparation_id: str, confirmation_token: str
-) -> dict:
+def confirm_prepared_commit(project_id: str, preparation_id: str, confirmation_token: str) -> dict:
     record = reserve_confirmation(
         preparation_id,
         project_id,
@@ -1107,18 +1079,13 @@ def confirm_prepared_commit(
                     timeout_seconds = 5,
                 )
                 if tree_sha == head_tree.strip():
-                    raise AgentWorkspaceError(
-                        "Selected paths have no changes to prepare."
-                    )
+                    raise AgentWorkspaceError("Selected paths have no changes to prepare.")
                 if workspace_fingerprint(root) != record["sourceFingerprint"]:
                     raise AgentWorkspaceError(
                         "The repository changed while the commit was being prepared."
                     )
                 final_branch, final_head = _attached_head(repository)
-                if (
-                    final_branch != record["branchRef"]
-                    or final_head != record["headSha"]
-                ):
+                if final_branch != record["branchRef"] or final_head != record["headSha"]:
                     raise AgentWorkspaceError(
                         "The branch or HEAD changed while the commit was being prepared."
                     )
@@ -1152,9 +1119,10 @@ def confirm_prepared_commit(
         if ref_created:
             try:
                 cleanup_root = Path(record["gitRoot"]).resolve(strict = True)
-                with _workspace_writer_slot(
-                    cleanup_root
-                ), _serialized_repository_mutation(cleanup_root):
+                with (
+                    _workspace_writer_slot(cleanup_root),
+                    _serialized_repository_mutation(cleanup_root),
+                ):
                     _git(
                         cleanup_root,
                         [
@@ -1255,9 +1223,7 @@ def reconcile_project_checkpoints_for_deletion(project_id: str) -> dict:
 
         for preparation in preparations:
             preparation_id = str(preparation["id"])
-            expected_ref = (
-                f"refs/unsloth-studio/prepared-commits/{preparation_id}"
-            )
+            expected_ref = f"refs/unsloth-studio/prepared-commits/{preparation_id}"
             ref_name = str(preparation["refName"])
             commit_sha = str(preparation["commitSha"])
             if ref_name != expected_ref or not _SAFE_OBJECT_ID.fullmatch(commit_sha):
@@ -1348,9 +1314,7 @@ def rollback_checkpoint(
     with _project_checkpoint_operation(project_id):
         root, _ = _project_git(project_id, mutation = True)
         with _workspace_writer_slot(root):
-            return _rollback_checkpoint(
-                project_id, checkpoint_id, expected_current_fingerprint
-            )
+            return _rollback_checkpoint(project_id, checkpoint_id, expected_current_fingerprint)
 
 
 def _rollback_checkpoint(
@@ -1368,12 +1332,9 @@ def _rollback_checkpoint(
             raise AgentWorkspaceError(
                 "The repository changed after rollback was prepared. Refresh and review it again."
             )
-        if (
-            not workspace_common.workspace_fingerprint_complete(current)
-            or not workspace_common.workspace_fingerprint_complete(
-                expected_current_fingerprint
-            )
-        ):
+        if not workspace_common.workspace_fingerprint_complete(
+            current
+        ) or not workspace_common.workspace_fingerprint_complete(expected_current_fingerprint):
             raise AgentWorkspaceError(
                 "Repository evidence is incomplete. Reduce the change set before rollback."
             )

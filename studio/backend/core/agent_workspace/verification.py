@@ -47,9 +47,7 @@ MAX_CHECKS = 32
 _ACTIVE_LOCK = threading.Lock()
 _ACTIVE_CANCEL: dict[str, threading.Event] = {}
 _ACTIVE_PROCESSES: dict[str, tuple[subprocess.Popen, Optional[int]]] = {}
-_ACTIVE_PROJECT_RUNS: dict[
-    str, dict[str, tuple[threading.Event, threading.Event]]
-] = {}
+_ACTIVE_PROJECT_RUNS: dict[str, dict[str, tuple[threading.Event, threading.Event]]] = {}
 _DELETING_PROJECTS: set[str] = set()
 GOAL_COMPLETION_VERIFICATION_DETAIL = (
     "Goal completion requires a fresh passing verification run from the main "
@@ -86,9 +84,7 @@ def _register_project_run(
     return invocation_id, completed
 
 
-def _finish_project_run(
-    project_id: str, invocation_id: str, completed: threading.Event
-) -> None:
+def _finish_project_run(project_id: str, invocation_id: str, completed: threading.Event) -> None:
     with _ACTIVE_LOCK:
         project_runs = _ACTIVE_PROJECT_RUNS.get(project_id)
         if project_runs is not None:
@@ -98,9 +94,7 @@ def _finish_project_run(
         completed.set()
 
 
-def cancel_project_verifications_and_wait(
-    project_id: str, *, timeout_seconds: float = 30
-) -> None:
+def cancel_project_verifications_and_wait(project_id: str, *, timeout_seconds: float = 30) -> None:
     """Cancel and join every registered verification before project deletion."""
     if timeout_seconds <= 0:
         raise AgentWorkspaceError("Project verification cancellation timed out.")
@@ -120,9 +114,7 @@ def cancel_project_verifications_and_wait(
     for _cancel_event, completed in runs:
         remaining = deadline - time.monotonic()
         if remaining <= 0 or not completed.wait(timeout = remaining):
-            raise AgentWorkspaceError(
-                "Timed out while stopping project verification runs."
-            )
+            raise AgentWorkspaceError("Timed out while stopping project verification runs.")
     with _ACTIVE_LOCK:
         if _ACTIVE_PROJECT_RUNS.get(project_id):
             raise AgentWorkspaceError(
@@ -136,9 +128,7 @@ def _shell_argv(command: str) -> list[str]:
     return ["/bin/sh", "-c", command]
 
 
-def _capture_output(
-    pipe, output: bytearray, counters: dict, output_limit: int
-) -> None:
+def _capture_output(pipe, output: bytearray, counters: dict, output_limit: int) -> None:
     try:
         while True:
             chunk = pipe.read(64 * 1024)
@@ -210,17 +200,13 @@ def execute_check(
     }
     popen_options["start_new_session"] = True
     lifetime_options = child_popen_kwargs()
-    popen_options.update(
-        boundary.popen_kwargs(lifetime_options.pop("preexec_fn", None))
-    )
+    popen_options.update(boundary.popen_kwargs(lifetime_options.pop("preexec_fn", None)))
     popen_options.update(lifetime_options)
 
     try:
         argv = boundary.wrap_argv(_shell_argv(command))
         initialize_parent_lifetime()
-        process = spawn_on_lifetime_thread(
-            lambda: subprocess.Popen(argv, **popen_options)
-        )
+        process = spawn_on_lifetime_thread(lambda: subprocess.Popen(argv, **popen_options))
     except ProjectExecutionUnavailable as exc:
         boundary.close()
         raise AgentWorkspaceError(str(exc)) from exc
@@ -302,15 +288,11 @@ def run_project_verification(
     try:
         workspace = project_workspace(project_id)
         execution_root = (
-            owned_worktree_path(project_id, worktree_id)
-            if worktree_id
-            else workspace.root
+            owned_worktree_path(project_id, worktree_id) if worktree_id else workspace.root
         )
         expected_root_identity = (
             (workspace.device_id, workspace.file_id)
-            if not worktree_id
-            and workspace.device_id is not None
-            and workspace.file_id is not None
+            if not worktree_id and workspace.device_id is not None and workspace.file_id is not None
             else None
         )
         config = get_verification_config(project_id)
@@ -321,9 +303,7 @@ def run_project_verification(
         if not checks:
             raise AgentWorkspaceError("No verification checks are configured.")
         if len(checks) > MAX_CHECKS:
-            raise AgentWorkspaceError(
-                f"At most {MAX_CHECKS} verification checks can run at once."
-            )
+            raise AgentWorkspaceError(f"At most {MAX_CHECKS} verification checks can run at once.")
 
         source = workspace_fingerprint(execution_root)
         record = begin_verification_run(
@@ -360,27 +340,20 @@ def run_project_verification(
                 results.append(result)
                 if results[-1]["status"] == "cancelled":
                     break
-            if cancel_event.is_set() or any(
-                item["status"] == "cancelled" for item in results
-            ):
+            if cancel_event.is_set() or any(item["status"] == "cancelled" for item in results):
                 status = "cancelled"
-            elif any(
-                item["required"] and item["status"] != "passed" for item in results
-            ):
+            elif any(item["required"] and item["status"] != "passed" for item in results):
                 status = "failed"
             else:
                 status = "passed"
             final = workspace_fingerprint(execution_root)
             record = finish_verification_run(run_id, status, final, results)
             record["changedDuringRun"] = source != final
-            record["evidenceComplete"] = (
-                workspace_fingerprint_complete(source)
-                and workspace_fingerprint_complete(final)
-            )
+            record["evidenceComplete"] = workspace_fingerprint_complete(
+                source
+            ) and workspace_fingerprint_complete(final)
             record["unverifiable"] = not record["evidenceComplete"]
-            record["stale"] = (
-                record["changedDuringRun"] or record["unverifiable"]
-            )
+            record["stale"] = record["changedDuringRun"] or record["unverifiable"]
             record["worktreeId"] = worktree_id
             return record
         except Exception:
@@ -425,9 +398,7 @@ def verification_run_with_freshness(run_id: str) -> Optional[dict]:
             for value in (run["sourceFingerprint"], final, current)
         )
         run["unverifiable"] = not run["evidenceComplete"]
-        run["stale"] = (
-            run["changedDuringRun"] or current != final or run["unverifiable"]
-        )
+        run["stale"] = run["changedDuringRun"] or current != final or run["unverifiable"]
         run["currentFingerprint"] = current
     except AgentWorkspaceError:
         run["changedDuringRun"] = (
@@ -457,11 +428,7 @@ def require_goal_completion_verification(project_id: str) -> int:
 
     checks = list(config["checks"])
     latest = latest_primary_verification_run(project_id)
-    run = (
-        verification_run_with_freshness(latest["id"])
-        if latest is not None
-        else None
-    )
+    run = verification_run_with_freshness(latest["id"]) if latest is not None else None
     required_names = [
         str(check.get("name") or "").strip()
         for check in checks

@@ -245,9 +245,7 @@ def test_update_regates_after_the_oauth_clear_await(tmp_path, monkeypatch, stdio
     assert mcp_servers_db.get_server("s1")["headers_json"] is None
 
 
-def test_update_refuses_secret_bearing_http_row_from_api_key(
-    tmp_path, monkeypatch, stdio_on
-):
+def test_update_refuses_secret_bearing_http_row_from_api_key(tmp_path, monkeypatch, stdio_on):
     import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
 
@@ -304,9 +302,7 @@ def test_refresh_allows_http_from_api_key(tmp_path, monkeypatch, stdio_on):
     assert res.ok is True
 
 
-def test_refresh_refuses_saved_http_headers_from_api_key(
-    tmp_path, monkeypatch, stdio_on, no_probe
-):
+def test_refresh_refuses_saved_http_headers_from_api_key(tmp_path, monkeypatch, stdio_on, no_probe):
     import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)

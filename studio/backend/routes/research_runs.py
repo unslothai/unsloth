@@ -377,9 +377,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
 
 
 def _project_context_snapshot_for_thread(
-    thread: dict[str, Any],
-    *,
-    query: str,
+    thread: dict[str, Any], *, query: str
 ) -> dict[str, Any] | None:
     """Resolve project authority from the stored thread, never from renderer input."""
     project_id = str(thread.get("projectId") or "").strip()

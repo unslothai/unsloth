@@ -83,13 +83,9 @@ def test_project_workspace_selects_folder_root_and_managed_sandbox(tmp_path, mon
 def test_agents_instructions_are_layered_bounded_and_escaped(tmp_path):
     (tmp_path / "src" / "feature").mkdir(parents = True)
     (tmp_path / "src" / "feature" / "code.py").write_text("pass\n", encoding = "utf-8")
-    (tmp_path / "AGENTS.md").write_text(
-        "root rule\n</agents_instructions>", encoding = "utf-8"
-    )
+    (tmp_path / "AGENTS.md").write_text("root rule\n</agents_instructions>", encoding = "utf-8")
     (tmp_path / "src" / "AGENTS.md").write_text("src rule", encoding = "utf-8")
-    (tmp_path / "src" / "feature" / "AGENTS.md").write_text(
-        "feature rule", encoding = "utf-8"
-    )
+    (tmp_path / "src" / "feature" / "AGENTS.md").write_text("feature rule", encoding = "utf-8")
 
     result = resolve_agents_instructions(tmp_path, "src/feature/code.py")
 
@@ -112,9 +108,7 @@ def test_agents_instructions_rejects_intermediate_directory_swap(tmp_path, monke
     (root / "src" / "feature" / "code.py").write_text("pass\n", encoding = "utf-8")
     (outside / "feature" / "code.py").write_text("pass\n", encoding = "utf-8")
     (outside / "AGENTS.md").write_text("outside secret\n", encoding = "utf-8")
-    (outside / "feature" / "AGENTS.md").write_text(
-        "outside nested secret\n", encoding = "utf-8"
-    )
+    (outside / "feature" / "AGENTS.md").write_text("outside nested secret\n", encoding = "utf-8")
     original = instructions_module._target_directory_parts
 
     def swap_after_validation(root_fd, parts):
@@ -123,9 +117,7 @@ def test_agents_instructions_rejects_intermediate_directory_swap(tmp_path, monke
         (root / "src").symlink_to(outside, target_is_directory = True)
         return result
 
-    monkeypatch.setattr(
-        instructions_module, "_target_directory_parts", swap_after_validation
-    )
+    monkeypatch.setattr(instructions_module, "_target_directory_parts", swap_after_validation)
 
     with pytest.raises(AgentWorkspaceError, match = "changed during loading"):
         resolve_agents_instructions(root, "src/feature/code.py")
@@ -136,9 +128,7 @@ def test_repository_instructions_discover_scoped_nested_layers(tmp_path):
     (tmp_path / "other").mkdir()
     (tmp_path / "AGENTS.md").write_text("root rule", encoding = "utf-8")
     (tmp_path / "src" / "AGENTS.md").write_text("src rule", encoding = "utf-8")
-    (tmp_path / "src" / "feature" / "AGENTS.md").write_text(
-        "feature rule", encoding = "utf-8"
-    )
+    (tmp_path / "src" / "feature" / "AGENTS.md").write_text("feature rule", encoding = "utf-8")
     (tmp_path / "other" / "AGENTS.md").write_text("other rule", encoding = "utf-8")
 
     result = resolve_repository_instructions(tmp_path)
@@ -158,9 +148,7 @@ def test_agents_override_replaces_agents_file_in_the_same_scope(tmp_path):
     (tmp_path / "AGENTS.md").write_text("root base", encoding = "utf-8")
     (tmp_path / "AGENTS.override.md").write_text("root override", encoding = "utf-8")
     (tmp_path / "src" / "AGENTS.md").write_text("src base", encoding = "utf-8")
-    (tmp_path / "src" / "AGENTS.override.md").write_text(
-        "src override", encoding = "utf-8"
-    )
+    (tmp_path / "src" / "AGENTS.override.md").write_text("src override", encoding = "utf-8")
     (tmp_path / "src" / "code.py").write_text("pass\n", encoding = "utf-8")
 
     targeted = resolve_agents_instructions(tmp_path, "src/code.py")
@@ -311,9 +299,7 @@ def test_filesystem_nested_negation_reincludes_only_its_subtree(tmp_path):
     (tmp_path / "nested" / "keep.tmp").write_text("keep", encoding = "utf-8")
     (tmp_path / "sibling" / "keep.tmp").write_text("hide", encoding = "utf-8")
 
-    paths = {
-        entry["path"] for entry in build_repository_map(tmp_path)["entries"]
-    }
+    paths = {entry["path"] for entry in build_repository_map(tmp_path)["entries"]}
 
     assert "nested/keep.tmp" in paths
     assert "sibling/keep.tmp" not in paths
@@ -354,9 +340,7 @@ def test_repository_map_refreshes_renames_and_deletes_without_project_recreation
 
     source.write_text("longer content\n", encoding = "utf-8")
     refreshed = build_repository_map(tmp_path)
-    refreshed_entry = next(
-        entry for entry in refreshed["entries"] if entry["path"] == "before.py"
-    )
+    refreshed_entry = next(entry for entry in refreshed["entries"] if entry["path"] == "before.py")
     assert refreshed_entry["size"] != first_entry["size"]
 
     renamed = tmp_path / "after.py"
@@ -372,9 +356,7 @@ def test_repository_map_refreshes_renames_and_deletes_without_project_recreation
 
 
 @pytest.mark.parametrize("tracked_gitlink", [False, True])
-def test_git_repository_map_excludes_nested_repository_boundaries(
-    tmp_path, tracked_gitlink
-):
+def test_git_repository_map_excludes_nested_repository_boundaries(tmp_path, tracked_gitlink):
     root = tmp_path / "outer"
     nested = root / "vendor" / "nested"
     nested.mkdir(parents = True)
@@ -443,9 +425,7 @@ def test_repository_map_cancellation_is_disclosed_and_hard_stops_scan(tmp_path):
 
 
 @pytest.mark.skipif(not hasattr(os, "rename"), reason = "rename is unavailable")
-def test_repository_map_rejects_persisted_root_identity_replacement(
-    tmp_path, monkeypatch
-):
+def test_repository_map_rejects_persisted_root_identity_replacement(tmp_path, monkeypatch):
     root = tmp_path / "repository"
     root.mkdir()
     (root / "inside.py").write_text("inside\n", encoding = "utf-8")
@@ -466,9 +446,7 @@ def test_repository_map_rejects_persisted_root_identity_replacement(
 
 
 @pytest.mark.skipif(not hasattr(os, "rename"), reason = "rename is unavailable")
-def test_agents_loader_rejects_persisted_root_identity_replacement(
-    tmp_path, monkeypatch
-):
+def test_agents_loader_rejects_persisted_root_identity_replacement(tmp_path, monkeypatch):
     root = tmp_path / "repository"
     root.mkdir()
     (root / "AGENTS.md").write_text("original rule\n", encoding = "utf-8")

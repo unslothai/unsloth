@@ -144,9 +144,7 @@ def test_a_database_folder_failure_is_not_blamed_on_the_projects_folder(monkeypa
     monkeypatch.setattr(
         chat_history,
         "upsert_chat_project",
-        lambda payload, **kwargs: (_ for _ in ()).throw(
-            PermissionError(13, "studio.db")
-        ),
+        lambda payload, **kwargs: (_ for _ in ()).throw(PermissionError(13, "studio.db")),
     )
 
     with pytest.raises(PermissionError):

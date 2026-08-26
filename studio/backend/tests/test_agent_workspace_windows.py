@@ -76,11 +76,7 @@ def test_windows_handle_traversal_supports_scoped_instructions_and_discovery(tmp
         "src/feature/module.py",
         expected_identity = identity,
     )
-    assert [layer["scope"] for layer in resolved["layers"]] == [
-        ".",
-        "src",
-        "src/feature",
-    ]
+    assert [layer["scope"] for layer in resolved["layers"]] == [".", "src", "src/feature"]
     assert [layer["content"] for layer in resolved["layers"]] == [
         "root rules",
         "src rules",
@@ -92,16 +88,10 @@ def test_windows_handle_traversal_supports_scoped_instructions_and_discovery(tmp
         ["src/feature/module.py"],
         expected_identity = identity,
     )
-    assert [layer["scope"] for layer in targeted["layers"]] == [
-        ".",
-        "src",
-        "src/feature",
-    ]
+    assert [layer["scope"] for layer in targeted["layers"]] == [".", "src", "src/feature"]
     assert all(layer["scope"] != "src/sibling" for layer in targeted["layers"])
 
-    repository_wide = resolve_repository_instructions(
-        root, expected_identity = identity
-    )
+    repository_wide = resolve_repository_instructions(root, expected_identity = identity)
     assert {layer["scope"] for layer in repository_wide["layers"]} == {
         ".",
         "src",
@@ -171,9 +161,7 @@ def test_windows_root_identity_and_reparse_escape_fail_closed(tmp_path):
             expected_identity = identity,
         )
     repository_map = build_repository_map(root, expected_identity = identity)
-    assert "escape/secret.txt" not in {
-        entry["path"] for entry in repository_map["entries"]
-    }
+    assert "escape/secret.txt" not in {entry["path"] for entry in repository_map["entries"]}
     assert repository_map["skipped"]["symlink"] >= 1
 
 

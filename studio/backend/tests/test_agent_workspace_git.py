@@ -85,7 +85,10 @@ def _folder_project(root: Path, project_id: str = "project") -> None:
 
 
 def _executable_marker_command(
-    root: Path, name: str, *, passthrough: bool = True
+    root: Path,
+    name: str,
+    *,
+    passthrough: bool = True,
 ) -> tuple[str, Path]:
     marker = root / f"{name}.executed"
     script = root / f"{name}.py"
@@ -125,9 +128,7 @@ def test_git_status_diff_checkpoint_and_owned_rollback(tmp_path):
     assert (tmp_path / "unrelated.txt").read_text(encoding = "utf-8") == "unrelated change\n"
 
 
-def test_git_operations_do_not_execute_repository_configured_commands(
-    tmp_path, monkeypatch
-):
+def test_git_operations_do_not_execute_repository_configured_commands(tmp_path, monkeypatch):
     repository = tmp_path / "repo"
     commands = tmp_path / "configured-commands"
     repository.mkdir()
@@ -155,9 +156,7 @@ def test_git_operations_do_not_execute_repository_configured_commands(
     generic_command, generic_marker = _executable_marker_command(
         commands, "generic-config-command", passthrough = False
     )
-    _hook_command, hook_marker = _executable_marker_command(
-        commands, "git-hook", passthrough = False
-    )
+    _hook_command, hook_marker = _executable_marker_command(commands, "git-hook", passthrough = False)
     markers = [
         clean_marker,
         smudge_marker,
@@ -226,9 +225,7 @@ def test_git_operations_do_not_execute_repository_configured_commands(
     expected = git_service_module.workspace_fingerprint(repository)
     rollback_checkpoint("project", checkpoint["id"], expected)
 
-    assert (repository / "owned.txt").read_text(encoding = "utf-8") == (
-        "checkpoint bytes\n"
-    )
+    assert (repository / "owned.txt").read_text(encoding = "utf-8") == ("checkpoint bytes\n")
     assert (repository / "binary.bin").read_bytes() == binary_checkpoint
     _assert_commands_not_executed(markers)
 
@@ -254,9 +251,7 @@ def test_verification_fingerprint_neutralizes_repository_executable_config(tmp_p
     process_command, process_marker = _executable_marker_command(
         commands, "verification-process", passthrough = False
     )
-    clean_command, clean_marker = _executable_marker_command(
-        commands, "verification-clean"
-    )
+    clean_command, clean_marker = _executable_marker_command(commands, "verification-clean")
     _git(repository, "config", "core.fsmonitor", fsmonitor_command)
     _git(repository, "config", "filter.hostile-process.process", process_command)
     _git(repository, "config", "filter.hostile-process.required", "true")
@@ -268,34 +263,24 @@ def test_verification_fingerprint_neutralizes_repository_executable_config(tmp_p
     fingerprint = verification_module.workspace_fingerprint(repository)
 
     assert len(fingerprint) == 64
-    _assert_commands_not_executed(
-        [fsmonitor_marker, process_marker, clean_marker]
-    )
+    _assert_commands_not_executed([fsmonitor_marker, process_marker, clean_marker])
 
 
-def test_worktree_checkout_does_not_execute_repository_content_filters(
-    tmp_path, monkeypatch
-):
+def test_worktree_checkout_does_not_execute_repository_content_filters(tmp_path, monkeypatch):
     repository = tmp_path / "repo"
     commands = tmp_path / "configured-commands"
     repository.mkdir()
     commands.mkdir()
     _repository(repository)
     _folder_project(repository)
-    monkeypatch.setenv(
-        "UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects")
-    )
-    (repository / ".gitattributes").write_text(
-        "*.txt filter=hostile\n", encoding = "utf-8"
-    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects"))
+    (repository / ".gitattributes").write_text("*.txt filter=hostile\n", encoding = "utf-8")
     (repository / "filtered.txt").write_text("tracked bytes\n", encoding = "utf-8")
     _git(repository, "add", ".gitattributes", "filtered.txt")
     _git(repository, "commit", "-qm", "add filtered checkout fixture")
 
     clean_command, clean_marker = _executable_marker_command(commands, "worktree-clean")
-    smudge_command, smudge_marker = _executable_marker_command(
-        commands, "worktree-smudge"
-    )
+    smudge_command, smudge_marker = _executable_marker_command(commands, "worktree-smudge")
     process_command, process_marker = _executable_marker_command(
         commands, "worktree-process", passthrough = False
     )
@@ -321,15 +306,9 @@ def test_worktree_merge_replaces_repository_custom_merge_driver(tmp_path, monkey
     commands.mkdir()
     _repository(repository)
     _folder_project(repository)
-    monkeypatch.setenv(
-        "UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects")
-    )
-    (repository / ".gitattributes").write_text(
-        "merge.txt merge=hostile\n", encoding = "utf-8"
-    )
-    (repository / "merge.txt").write_text(
-        "first\nsecond\nthird\n", encoding = "utf-8"
-    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects"))
+    (repository / ".gitattributes").write_text("merge.txt merge=hostile\n", encoding = "utf-8")
+    (repository / "merge.txt").write_text("first\nsecond\nthird\n", encoding = "utf-8")
     _git(repository, "add", ".gitattributes", "merge.txt")
     _git(repository, "commit", "-qm", "add merge driver fixture")
     worktree = create_worktree("project")
@@ -339,14 +318,10 @@ def test_worktree_merge_replaces_repository_custom_merge_driver(tmp_path, monkey
         commands, "custom-merge-driver", passthrough = False
     )
     _git(repository, "config", "merge.hostile.driver", driver_command)
-    (worktree_path / "merge.txt").write_text(
-        "agent\nsecond\nthird\n", encoding = "utf-8"
-    )
+    (worktree_path / "merge.txt").write_text("agent\nsecond\nthird\n", encoding = "utf-8")
     _git(worktree_path, "add", "merge.txt")
     _git(worktree_path, "commit", "-qm", "agent merge change")
-    (repository / "merge.txt").write_text(
-        "first\nsecond\nprimary\n", encoding = "utf-8"
-    )
+    (repository / "merge.txt").write_text("first\nsecond\nprimary\n", encoding = "utf-8")
     _git(repository, "add", "merge.txt")
     _git(repository, "commit", "-qm", "primary merge change")
     expected_head = _git(repository, "rev-parse", "HEAD")
@@ -354,9 +329,7 @@ def test_worktree_merge_replaces_repository_custom_merge_driver(tmp_path, monkey
     merged = merge_worktree("project", worktree["id"], expected_head)
 
     assert merged["merge"]["status"] == "merged"
-    assert (repository / "merge.txt").read_text(encoding = "utf-8") == (
-        "agent\nsecond\nprimary\n"
-    )
+    assert (repository / "merge.txt").read_text(encoding = "utf-8") == ("agent\nsecond\nprimary\n")
     assert not driver_marker.exists()
     cleanup_worktree("project", worktree["id"])
 
@@ -384,14 +357,17 @@ def test_checkpoint_captures_only_owned_changes_and_preserves_user_state(tmp_pat
     )
     assert _git(tmp_path, "show", f"{checkpoint['commitSha']}:owned.txt") == "checkpoint"
     assert _git(tmp_path, "show", f"{checkpoint['commitSha']}:unrelated.txt") == "base"
-    assert _git(
-        tmp_path,
-        "diff-tree",
-        "--no-commit-id",
-        "--name-only",
-        "-r",
-        checkpoint["commitSha"],
-    ) == "owned.txt"
+    assert (
+        _git(
+            tmp_path,
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            checkpoint["commitSha"],
+        )
+        == "owned.txt"
+    )
     missing_secret = subprocess.run(
         ["git", "cat-file", "-e", f"{checkpoint['commitSha']}:untracked-secret.txt"],
         cwd = tmp_path,
@@ -413,24 +389,17 @@ def test_prepared_commit_confirmation_preserves_head_index_and_worktree(tmp_path
     index_before = (tmp_path / ".git" / "index").read_bytes()
     status_before = _git(tmp_path, "status", "--porcelain=v1", "--untracked-files=all")
 
-    prepared = prepare_commit(
-        "project", ["owned.txt", "new.txt"], "Prepare selected files"
-    )
+    prepared = prepare_commit("project", ["owned.txt", "new.txt"], "Prepare selected files")
 
     assert prepared["status"] == "awaiting_confirmation"
     assert prepared["baseHead"] == head_before
     assert prepared["branch"] in {"main", "master"}
-    assert {item["path"] for item in prepared["files"]} == {
-        "new.txt",
-        "owned.txt",
-    }
+    assert {item["path"] for item in prepared["files"]} == {"new.txt", "owned.txt"}
     assert "prepared owned" in prepared["diff"]
     assert "prepared new" in prepared["diff"]
     assert _git(tmp_path, "rev-parse", "HEAD") == head_before
     assert (tmp_path / ".git" / "index").read_bytes() == index_before
-    assert _git(tmp_path, "status", "--porcelain=v1", "--untracked-files=all") == (
-        status_before
-    )
+    assert _git(tmp_path, "status", "--porcelain=v1", "--untracked-files=all") == (status_before)
     missing_ref = subprocess.run(
         ["git", "show-ref", "--verify", prepared["refName"]],
         cwd = tmp_path,
@@ -443,42 +412,30 @@ def test_prepared_commit_confirmation_preserves_head_index_and_worktree(tmp_path
     with pytest.raises(AgentWorkspaceError, match = "token is invalid"):
         confirm_prepared_commit("project", prepared["id"], "x" * 43)
 
-    confirmed = confirm_prepared_commit(
-        "project", prepared["id"], prepared["confirmationToken"]
-    )
+    confirmed = confirm_prepared_commit("project", prepared["id"], prepared["confirmationToken"])
 
     assert confirmed["status"] == "confirmed"
     assert confirmed["refName"] == prepared["refName"]
     assert _git(tmp_path, "rev-parse", "HEAD") == head_before
     assert _git(tmp_path, "rev-parse", f"{confirmed['commitSha']}^") == head_before
-    assert _git(tmp_path, "show", f"{confirmed['commitSha']}:owned.txt") == (
-        "prepared owned"
-    )
-    assert _git(tmp_path, "show", f"{confirmed['commitSha']}:new.txt") == (
-        "prepared new"
-    )
+    assert _git(tmp_path, "show", f"{confirmed['commitSha']}:owned.txt") == ("prepared owned")
+    assert _git(tmp_path, "show", f"{confirmed['commitSha']}:new.txt") == ("prepared new")
     assert _git(tmp_path, "show", f"{confirmed['commitSha']}:unrelated.txt") == "base"
     assert _git(tmp_path, "show", "-s", "--format=%B", confirmed["commitSha"]) == (
         "Prepare selected files"
     )
     assert (tmp_path / ".git" / "index").read_bytes() == index_before
-    assert _git(tmp_path, "status", "--porcelain=v1", "--untracked-files=all") == (
-        status_before
-    )
+    assert _git(tmp_path, "status", "--porcelain=v1", "--untracked-files=all") == (status_before)
     assert (tmp_path / "owned.txt").read_text(encoding = "utf-8") == "prepared owned\n"
     assert (tmp_path / "new.txt").read_text(encoding = "utf-8") == "prepared new\n"
     persisted = get_preparation(prepared["id"])
     assert persisted["status"] == "confirmed"
     assert persisted["tokenDigest"] is None
     with pytest.raises(AgentWorkspaceError, match = "already used"):
-        confirm_prepared_commit(
-            "project", prepared["id"], prepared["confirmationToken"]
-        )
+        confirm_prepared_commit("project", prepared["id"], prepared["confirmationToken"])
 
 
-def test_prepared_commit_confirmation_rejects_stale_and_expired_state(
-    tmp_path, monkeypatch
-):
+def test_prepared_commit_confirmation_rejects_stale_and_expired_state(tmp_path, monkeypatch):
     _repository(tmp_path)
     _folder_project(tmp_path)
     (tmp_path / "owned.txt").write_text("prepared\n", encoding = "utf-8")
@@ -486,14 +443,10 @@ def test_prepared_commit_confirmation_rejects_stale_and_expired_state(
     (tmp_path / "owned.txt").write_text("changed after preview\n", encoding = "utf-8")
 
     with pytest.raises(AgentWorkspaceError, match = "changed after commit preparation"):
-        confirm_prepared_commit(
-            "project", prepared["id"], prepared["confirmationToken"]
-        )
+        confirm_prepared_commit("project", prepared["id"], prepared["confirmationToken"])
     assert get_preparation(prepared["id"])["status"] == "failed"
     with pytest.raises(AgentWorkspaceError, match = "already used"):
-        confirm_prepared_commit(
-            "project", prepared["id"], prepared["confirmationToken"]
-        )
+        confirm_prepared_commit("project", prepared["id"], prepared["confirmationToken"])
 
     (tmp_path / "owned.txt").write_text("expiry fixture\n", encoding = "utf-8")
     monkeypatch.setattr(git_service_module, "now_ms", lambda: 1_000)
@@ -504,9 +457,7 @@ def test_prepared_commit_confirmation_rejects_stale_and_expired_state(
         lambda: 1_000 + git_service_module._PREPARED_COMMIT_TTL_MS + 1,
     )
     with pytest.raises(AgentWorkspaceError, match = "expired"):
-        confirm_prepared_commit(
-            "project", expiring["id"], expiring["confirmationToken"]
-        )
+        confirm_prepared_commit("project", expiring["id"], expiring["confirmationToken"])
     assert get_preparation(expiring["id"])["status"] == "expired"
 
 
@@ -535,9 +486,7 @@ def test_prepared_commit_rejects_untracked_content_until_it_is_reviewable(tmp_pa
     _git(tmp_path, "add", "new.txt")
     prepared = prepare_commit("project", ["new.txt"], "Review staged content")
     assert unseen in prepared["diff"]
-    confirmed = confirm_prepared_commit(
-        "project", prepared["id"], prepared["confirmationToken"]
-    )
+    confirmed = confirm_prepared_commit("project", prepared["id"], prepared["confirmationToken"])
     assert _git(tmp_path, "show", f"{confirmed['commitSha']}:new.txt") == unseen
 
 
@@ -572,9 +521,7 @@ def test_checkpoint_and_rollback_treat_pathspec_metacharacters_literally(tmp_pat
 
 
 @pytest.mark.parametrize("owned_path", [".", "/absolute.txt", "C:/absolute.txt", ".git/config"])
-def test_checkpoint_rejects_repository_wide_metadata_and_absolute_paths(
-    tmp_path, owned_path
-):
+def test_checkpoint_rejects_repository_wide_metadata_and_absolute_paths(tmp_path, owned_path):
     _repository(tmp_path)
     _folder_project(tmp_path)
 
@@ -638,9 +585,7 @@ def test_project_deletion_reconciles_confirmed_prepared_commit_ref(tmp_path):
     _folder_project(tmp_path)
     (tmp_path / "owned.txt").write_text("prepared\n", encoding = "utf-8")
     prepared = prepare_commit("project", ["owned.txt"], "Prepared for review")
-    confirmed = confirm_prepared_commit(
-        "project", prepared["id"], prepared["confirmationToken"]
-    )
+    confirmed = confirm_prepared_commit("project", prepared["id"], prepared["confirmationToken"])
 
     begin_project_deletion("project")
     try:
@@ -747,9 +692,7 @@ def test_checkpoint_waits_for_managed_workspace_writer_slot(tmp_path, monkeypatc
             attempted.set()
         return original_acquire(requested, cancel_event)
 
-    monkeypatch.setattr(
-        git_service_module, "acquire_workspace_execution_slot", observed_acquire
-    )
+    monkeypatch.setattr(git_service_module, "acquire_workspace_execution_slot", observed_acquire)
     with ThreadPoolExecutor(max_workers = 1) as executor:
         future = executor.submit(create_checkpoint, "project", ["owned.txt"])
         try:
@@ -771,9 +714,7 @@ def test_checkpoint_rejects_stale_confirmation(tmp_path):
         rollback_checkpoint("project", checkpoint["id"], "0" * 64)
 
 
-def test_checkpoint_rollback_rejects_incomplete_bounded_evidence(
-    tmp_path, monkeypatch
-):
+def test_checkpoint_rollback_rejects_incomplete_bounded_evidence(tmp_path, monkeypatch):
     _repository(tmp_path)
     _folder_project(tmp_path)
     (tmp_path / "owned.txt").write_text("checkpoint\n", encoding = "utf-8")
@@ -790,9 +731,7 @@ def test_checkpoint_rollback_rejects_incomplete_bounded_evidence(
     outside_bound = tmp_path / "z-unrelated.txt"
     outside_bound.write_text("outside-one\n", encoding = "utf-8")
     prepared = git_service_module.workspace_fingerprint(tmp_path)
-    assert not git_service_module.workspace_common.workspace_fingerprint_complete(
-        prepared
-    )
+    assert not git_service_module.workspace_common.workspace_fingerprint_complete(prepared)
 
     # This same-size edit is beyond the content budget. It proves why an
     # incomplete digest cannot authorize a destructive restore: the digest is
@@ -839,9 +778,7 @@ def test_git_status_parses_rename_as_one_record(tmp_path):
     status = git_status("project")
 
     assert status["counts"]["staged"] == 1
-    assert status["files"] == [
-        {"code": "R ", "path": "renamed.txt", "oldPath": "owned.txt"}
-    ]
+    assert status["files"] == [{"code": "R ", "path": "renamed.txt", "oldPath": "owned.txt"}]
 
 
 def test_studio_owned_worktree_lifecycle_and_marker_proof(tmp_path, monkeypatch):
@@ -983,9 +920,7 @@ def test_background_verification_runs_in_owned_worktree(tmp_path, monkeypatch):
         ],
     )
     manager = BackgroundTaskManager(max_workers = 1)
-    task = manager.enqueue_verification(
-        "project", worktree_id = worktree["id"], start = True
-    )
+    task = manager.enqueue_verification("project", worktree_id = worktree["id"], start = True)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         current = get_background_task(task["id"])

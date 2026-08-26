@@ -85,7 +85,12 @@ def project_workspace(project_id: str) -> ProjectWorkspace:
     )
 
 
-def contained_path(root: Path, relative: Optional[str], *, must_exist: bool = False) -> Path:
+def contained_path(
+    root: Path,
+    relative: Optional[str],
+    *,
+    must_exist: bool = False,
+) -> Path:
     """Resolve a project-relative path and reject traversal and symlink escapes."""
     value = relative or "."
     candidate = Path(value)
@@ -189,9 +194,7 @@ def run_bounded(
             _terminate_bounded_process(process, group_id)
             reader.join(timeout = 2)
             text, _ = bounded_text(bytes(captured), output_limit)
-            raise AgentWorkspaceError(
-                "Command timed out." + (f"\n{text}" if text else "")
-            ) from exc
+            raise AgentWorkspaceError("Command timed out." + (f"\n{text}" if text else "")) from exc
         reader.join(timeout = 0.2)
         if reader.is_alive():
             _terminate_bounded_process(process, group_id)
@@ -202,9 +205,7 @@ def run_bounded(
         forget_pid(process.pid)
 
 
-def _terminate_bounded_process(
-    process: subprocess.Popen, group_id: Optional[int] = None
-) -> None:
+def _terminate_bounded_process(process: subprocess.Popen, group_id: Optional[int] = None) -> None:
     if os.name == "nt":
         if process.pid <= 1:
             return
@@ -281,11 +282,7 @@ _FINGERPRINT_FILE_LIMIT = 100_000
 
 def _finish_fingerprint(digest: "hashlib._Hash", complete: bool) -> str:
     value = digest.hexdigest()
-    prefix = (
-        _COMPLETE_FINGERPRINT_PREFIX
-        if complete
-        else _INCOMPLETE_FINGERPRINT_PREFIX
-    )
+    prefix = _COMPLETE_FINGERPRINT_PREFIX if complete else _INCOMPLETE_FINGERPRINT_PREFIX
     return prefix + value[len(prefix) :]
 
 
@@ -295,10 +292,7 @@ def workspace_fingerprint_complete(value: Optional[str]) -> bool:
 
 
 def _hash_workspace_entry(
-    digest: "hashlib._Hash",
-    path: Path,
-    label: str,
-    remaining: int,
+    digest: "hashlib._Hash", path: Path, label: str, remaining: int
 ) -> tuple[int, bool]:
     """Hash one entry through a no-follow descriptor, returning budget and completeness."""
     digest.update(label.encode("utf-8", errors = "surrogateescape"))
@@ -396,7 +390,6 @@ def _git_workspace_fingerprint(root: Path) -> str:
     one hardened Git implementation while preserving the common non-Git fallback.
     """
     from .git_service import workspace_fingerprint as safe_git_fingerprint
-
     return safe_git_fingerprint(root)
 
 
@@ -406,9 +399,7 @@ def _filesystem_workspace_fingerprint(root: Path) -> str:
     seen = 0
     remaining = _FILESYSTEM_CONTENT_BUDGET
     walk_errors: list[OSError] = []
-    for current, dirs, files in os.walk(
-        root, followlinks = False, onerror = walk_errors.append
-    ):
+    for current, dirs, files in os.walk(root, followlinks = False, onerror = walk_errors.append):
         symlink_dirs = sorted(d for d in dirs if (Path(current) / d).is_symlink())
         dirs[:] = sorted(d for d in dirs if d not in symlink_dirs)
         for name in [*symlink_dirs, *sorted(files)]:
@@ -422,9 +413,7 @@ def _filesystem_workspace_fingerprint(root: Path) -> str:
             if seen > _FINGERPRINT_FILE_LIMIT:
                 digest.update(b"TRUNCATED-FILE-COUNT")
                 return _finish_fingerprint(digest, False)
-            remaining, entry_complete = _hash_workspace_entry(
-                digest, path, relative, remaining
-            )
+            remaining, entry_complete = _hash_workspace_entry(digest, path, relative, remaining)
             complete = complete and entry_complete
     if walk_errors:
         digest.update(b"WALK-ERROR")

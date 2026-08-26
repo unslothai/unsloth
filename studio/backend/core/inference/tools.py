@@ -7495,9 +7495,7 @@ def record_orphaned_project(
     """
     if not project_id or not workspace:
         return
-    recorded_root = (
-        os.path.abspath(os.path.expanduser(root_path)) if root_path else None
-    )
+    recorded_root = os.path.abspath(os.path.expanduser(root_path)) if root_path else None
     identity_was_omitted = (
         managed_root_device_id is _ORPHAN_IDENTITY_UNSET
         and managed_root_file_id is _ORPHAN_IDENTITY_UNSET
@@ -7524,14 +7522,10 @@ def record_orphaned_project(
             "rootPath": recorded_root,
             "pendingDelete": bool(pending_delete),
             "managedRootDeviceId": (
-                str(managed_root_device_id)
-                if managed_root_device_id is not None
-                else None
+                str(managed_root_device_id) if managed_root_device_id is not None else None
             ),
             "managedRootFileId": (
-                str(managed_root_file_id)
-                if managed_root_file_id is not None
-                else None
+                str(managed_root_file_id) if managed_root_file_id is not None else None
             ),
         },
     )
@@ -7760,9 +7754,7 @@ def _orphaned_project_workdir(project_id: str) -> "str | None":
         return recorded
     if not _usable_session_id(project_id):
         return None
-    legacy_suffix = (
-        re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
-    )
+    legacy_suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
     current_suffix = hashlib.sha256(project_id.encode("utf-8")).hexdigest()[:32]
     try:
         from utils.paths import project_workspaces_root
@@ -7771,10 +7763,7 @@ def _orphaned_project_workdir(project_id: str) -> "str | None":
     except Exception:
         return None
     for entry in names:
-        if not any(
-            entry.endswith(f"-{suffix}")
-            for suffix in (legacy_suffix, current_suffix)
-        ):
+        if not any(entry.endswith(f"-{suffix}") for suffix in (legacy_suffix, current_suffix)):
             continue
         candidate = os.path.join(root, entry, "sandbox")
         if os.path.isdir(candidate) and not os.path.islink(candidate):
@@ -7964,9 +7953,7 @@ def _get_project_workdir(session_id: str) -> str | None:
     root_path = project.get("rootPath")
     sandbox_path = project.get("sandboxPath")
     if not root_path or not sandbox_path:
-        raise RuntimeError(
-            "the project folder is unavailable; reconnect it before running tools"
-        )
+        raise RuntimeError("the project folder is unavailable; reconnect it before running tools")
     root_real = os.path.realpath(root_path)
     sandbox_real = os.path.realpath(sandbox_path)
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
@@ -7974,9 +7961,7 @@ def _get_project_workdir(session_id: str) -> str | None:
     return sandbox_real
 
 
-def _project_execution_boundary(
-    session_id: "str | None", workdir: str
-):
+def _project_execution_boundary(session_id: "str | None", workdir: str):
     """Open the fail-closed OS boundary for a real project-backed session.
 
     A project-shaped ordinary chat is deliberately excluded by
@@ -7991,10 +7976,7 @@ def _project_execution_boundary(
         if os.path.realpath(agent_scope["workdir"]) != os.path.realpath(workdir):
             raise RuntimeError("the background agent workspace changed before execution")
         from core.agent_workspace.execution import ProjectExecutionBoundary
-
-        return ProjectExecutionBoundary.open(
-            workdir, agent_scope["expected_identity"]
-        )
+        return ProjectExecutionBoundary.open(workdir, agent_scope["expected_identity"])
     if not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
     project_workdir = _get_project_workdir(session_id)
@@ -8041,7 +8023,6 @@ def _tracks_workspace_artifacts(session_id: "str | None") -> bool:
         return True
     try:
         from storage.studio_db import get_chat_project
-
         project = get_chat_project(project_id)
     except Exception:
         logger.warning(
@@ -9323,9 +9304,7 @@ _EDIT_FILE_DIR_FD_SUPPORTED = all(
 )
 
 
-def _project_edit_scope(
-    session_id: "str | None",
-) -> "tuple[bool, tuple[int, int] | None]":
+def _project_edit_scope(session_id: "str | None") -> "tuple[bool, tuple[int, int] | None]":
     """Return whether this is a real project session and its persisted identity."""
     if not session_id:
         return False, None
@@ -9340,7 +9319,6 @@ def _project_edit_scope(
     project_id = session_id[len(_PROJECT_SESSION_PREFIX) :]
     try:
         from core.agent_workspace.common import project_workspace
-
         workspace = project_workspace(project_id)
     except Exception:
         # Deleted projects can retain an owned orphan workspace for existing
@@ -9356,24 +9334,13 @@ def _project_edit_scope(
 class _ConfinedProjectEdit:
     """Descriptor-relative file access rooted at one identity-bound project."""
 
-    def __init__(
-        self,
-        workdir: str,
-        target: str,
-        expected_root_identity: "tuple[int, int] | None",
-    ):
+    def __init__(self, workdir: str, target: str, expected_root_identity: "tuple[int, int] | None"):
         if not _EDIT_FILE_DIR_FD_SUPPORTED:
-            raise OSError(
-                "secure descriptor-relative project edits are unavailable on this host"
-            )
+            raise OSError("secure descriptor-relative project edits are unavailable on this host")
         self.root = os.path.realpath(workdir)
         relative = os.path.relpath(target, self.root)
         parts = Path(relative).parts
-        if (
-            os.path.isabs(relative)
-            or not parts
-            or any(part in {"", ".", ".."} for part in parts)
-        ):
+        if os.path.isabs(relative) or not parts or any(part in {"", ".", ".."} for part in parts):
             raise OSError("the edit path escapes the project workspace")
         flags = os.O_RDONLY
         flags |= getattr(os, "O_DIRECTORY", 0)
@@ -9387,10 +9354,9 @@ class _ConfinedProjectEdit:
         if not stat.S_ISDIR(opened.st_mode) or self.root_identity != path_identity:
             os.close(self.root_fd)
             raise OSError("the project root changed before the edit")
-        if (
-            expected_root_identity is not None
-            and self.root_identity
-            != (int(expected_root_identity[0]), int(expected_root_identity[1]))
+        if expected_root_identity is not None and self.root_identity != (
+            int(expected_root_identity[0]),
+            int(expected_root_identity[1]),
         ):
             os.close(self.root_fd)
             raise OSError("the project root identity changed before the edit")
@@ -9514,12 +9480,7 @@ class _ConfinedProjectEdit:
             os.close(parent_fd)
 
     def replace(
-        self,
-        payload: bytes,
-        *,
-        expect: bytes,
-        mode: int,
-        identity: "tuple[int, int]",
+        self, payload: bytes, *, expect: bytes, mode: int, identity: "tuple[int, int]"
     ) -> "str | None":
         parent_fd, leaf = self._open_parent(create = False)
         temp_name = f".unsloth_edit_{uuid.uuid4().hex}"
@@ -9555,10 +9516,9 @@ class _ConfinedProjectEdit:
             current_fd = os.open(leaf, read_flags, dir_fd = parent_fd)
             try:
                 current = os.fstat(current_fd)
-                if (
-                    (int(current.st_dev), int(current.st_ino)) != identity
-                    or self._read_descriptor(current_fd, len(expect)) != expect
-                ):
+                if (int(current.st_dev), int(current.st_ino)) != identity or self._read_descriptor(
+                    current_fd, len(expect)
+                ) != expect:
                     return "changed"
             finally:
                 os.close(current_fd)
@@ -16422,12 +16382,8 @@ def _python_exec(
         _before = _snapshot_workdir_files(workdir) if track_artifacts else {}
         # In the workdir: Python puts it on sys.path[0], so an earlier call's
         # helper.py stays importable and __file__ resolves inside the sandbox.
-        script_dir = (
-            str(execution_boundary.scratch) if execution_boundary is not None else workdir
-        )
-        fd, tmp_path = tempfile.mkstemp(
-            suffix = ".py", prefix = "studio_exec_", dir = script_dir
-        )
+        script_dir = str(execution_boundary.scratch) if execution_boundary is not None else workdir
+        fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = script_dir)
         # utf-8 so non-ASCII in model-written code survives the OS default codec
         # (Windows cp1252 would otherwise raise UnicodeEncodeError).
         _scratch_name = os.path.basename(tmp_path)
@@ -16440,9 +16396,7 @@ def _python_exec(
         if execution_boundary is not None:
             safe_env = execution_boundary.apply_environment(safe_env)
             safe_env["PYTHONPATH"] = os.pathsep.join(
-                part
-                for part in (workdir, safe_env.get("PYTHONPATH", ""))
-                if part
+                part for part in (workdir, safe_env.get("PYTHONPATH", "")) if part
             )
         if disable_sandbox:
             # Match the sandboxed Python path without changing bypass shell I/O.
@@ -16460,9 +16414,7 @@ def _python_exec(
         )
         preexec = _bypass_preexec if disable_sandbox else _sandbox_preexec
         executable = (
-            os.path.realpath(sys.executable)
-            if execution_boundary is not None
-            else sys.executable
+            os.path.realpath(sys.executable) if execution_boundary is not None else sys.executable
         )
         argv = [executable, "-u", tmp_path]
         if execution_boundary is not None:

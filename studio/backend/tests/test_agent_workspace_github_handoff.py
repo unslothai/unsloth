@@ -153,9 +153,7 @@ def test_pull_request_handoff_is_redacted_and_requires_one_use_confirmation(tmp_
         ("head", "feature//unsafe", "head"),
     ],
 )
-def test_pull_request_handoff_rejects_ambiguous_targets(
-    tmp_path, field, value, message
-):
+def test_pull_request_handoff_rejects_ambiguous_targets(tmp_path, field, value, message):
     _project(tmp_path)
     with pytest.raises(AgentWorkspaceError, match = message):
         _prepare(tmp_path, **{field: value})
@@ -203,9 +201,7 @@ def test_pull_request_handoff_rejects_changed_connector_and_preview(tmp_path):
         )
 
     current = mcp_servers_db.get_server("github")
-    mcp_servers_db.update_server(
-        "github", {"url": "https://github.example.invalid/mcp"}
-    )
+    mcp_servers_db.update_server("github", {"url": "https://github.example.invalid/mcp"})
     assert current is not None
     digest_preview = _prepare(tmp_path)
     with pytest.raises(AgentWorkspaceError, match = "preview changed"):
@@ -272,9 +268,7 @@ def test_pull_request_handoff_requires_an_exact_compatible_mutation_tool(tmp_pat
         _prepare(tmp_path, tools = incompatible)
 
 
-def test_connected_pull_request_route_previews_then_calls_connector_once(
-    tmp_path, monkeypatch
-):
+def test_connected_pull_request_route_previews_then_calls_connector_once(tmp_path, monkeypatch):
     _project(tmp_path)
     calls = []
 

@@ -426,9 +426,7 @@ def test_reopen_moved_folder_reuses_persisted_identity(tmp_path):
     assert len(studio_db.list_chat_projects(True)) == 1
 
 
-def test_folder_workspace_rejects_missing_and_read_only_roots_without_a_row(
-    tmp_path, monkeypatch
-):
+def test_folder_workspace_rejects_missing_and_read_only_roots_without_a_row(tmp_path, monkeypatch):
     missing = tmp_path / "missing"
     with pytest.raises(studio_db.ProjectWorkspaceError):
         studio_db.upsert_chat_project(_folder_project("missing", tmp_path, rootPath = str(missing)))
@@ -572,9 +570,7 @@ def test_folder_project_python_cannot_escape_even_in_full_access(tmp_path):
 
 @pytest.mark.parametrize("disable_sandbox", [False, True], ids = ["sandboxed", "bypass"])
 @pytest.mark.parametrize("path_kind", ["absolute", "traversal"])
-def test_folder_project_edit_file_never_escapes_workspace(
-    tmp_path, disable_sandbox, path_kind
-):
+def test_folder_project_edit_file_never_escapes_workspace(tmp_path, disable_sandbox, path_kind):
     folder = tmp_path / "repository"
     folder.mkdir()
     project = studio_db.upsert_chat_project(_folder_project("folder-edit", folder))
@@ -659,9 +655,7 @@ def test_folder_project_edit_file_rejects_parent_symlink_swap(
 
 
 @pytest.mark.parametrize("replace", [False, True], ids = ["missing", "replaced"])
-def test_unavailable_folder_project_tool_fails_without_managed_fallback(
-    tmp_path, replace
-):
+def test_unavailable_folder_project_tool_fails_without_managed_fallback(tmp_path, replace):
     folder = tmp_path / "repository"
     original = tmp_path / "original-repository"
     folder.mkdir()
@@ -791,12 +785,8 @@ def test_managed_workspace_delete_requires_and_uses_persisted_root_identity(monk
 
 
 def test_managed_project_ids_with_the_same_legacy_prefix_get_distinct_roots():
-    first = studio_db.upsert_chat_project(
-        _managed_project("abcdefgh-first"), create_only=True
-    )
-    second = studio_db.upsert_chat_project(
-        _managed_project("abcdefgh-second"), create_only=True
-    )
+    first = studio_db.upsert_chat_project(_managed_project("abcdefgh-first"), create_only = True)
+    second = studio_db.upsert_chat_project(_managed_project("abcdefgh-second"), create_only = True)
 
     assert first["rootPath"] != second["rootPath"]
     assert Path(first["rootPath"]).is_dir()
@@ -807,27 +797,21 @@ def test_managed_create_atomically_rejects_an_overlapping_root(monkeypatch):
     shared = Path(os.environ["UNSLOTH_STUDIO_PROJECTS_HOME"]) / "Managed-abcdefgh"
     monkeypatch.setattr(studio_db, "_default_project_root", lambda _project: str(shared))
 
-    first = studio_db.upsert_chat_project(
-        _managed_project("abcdefgh-first"), create_only=True
-    )
+    first = studio_db.upsert_chat_project(_managed_project("abcdefgh-first"), create_only = True)
     with pytest.raises(studio_db.ProjectWorkspaceOverlapError):
-        studio_db.upsert_chat_project(
-            _managed_project("abcdefgh-second"), create_only=True
-        )
+        studio_db.upsert_chat_project(_managed_project("abcdefgh-second"), create_only = True)
 
     assert studio_db.get_chat_project(first["id"]) is not None
     assert studio_db.get_chat_project("abcdefgh-second") is None
 
 
-def test_managed_delete_refuses_a_root_referenced_by_another_live_project(
-    monkeypatch,
-):
+def test_managed_delete_refuses_a_root_referenced_by_another_live_project(monkeypatch):
     monkeypatch.setattr(studio_db, "_denied_path_prefixes", lambda: [])
     first = studio_db.upsert_chat_project(_managed_project("root-owner-one"))
     second = studio_db.upsert_chat_project(_managed_project("root-owner-two"))
     root = Path(first["rootPath"])
     sentinel = root / "preserve.txt"
-    sentinel.write_text("preserve", encoding="utf-8")
+    sentinel.write_text("preserve", encoding = "utf-8")
     conn = studio_db.get_connection()
     try:
         conn.execute(
@@ -841,7 +825,7 @@ def test_managed_delete_refuses_a_root_referenced_by_another_live_project(
     studio_db.delete_project_workspace(first)
 
     assert root.is_dir()
-    assert sentinel.read_text(encoding="utf-8") == "preserve"
+    assert sentinel.read_text(encoding = "utf-8") == "preserve"
 
 
 @pytest.mark.parametrize(
@@ -852,11 +836,7 @@ def test_managed_delete_refuses_a_root_referenced_by_another_live_project(
     ],
 )
 def test_managed_delete_serializes_recreation_after_the_final_check(
-    tmp_path,
-    monkeypatch,
-    old_id,
-    new_id,
-    legacy_collision,
+    tmp_path, monkeypatch, old_id, new_id, legacy_collision
 ):
     monkeypatch.setattr(studio_db, "_denied_path_prefixes", lambda: [])
     if legacy_collision:
@@ -866,12 +846,10 @@ def test_managed_delete_serializes_recreation_after_the_final_check(
             "_default_project_root",
             lambda _project: str(shared),
         )
-    project = studio_db.upsert_chat_project(
-        _managed_project(old_id), create_only=True
-    )
+    project = studio_db.upsert_chat_project(_managed_project(old_id), create_only = True)
     old_root = Path(project["rootPath"])
     old_marker = old_root / "old.txt"
-    old_marker.write_text("old", encoding="utf-8")
+    old_marker.write_text("old", encoding = "utf-8")
 
     after_final_check = threading.Event()
     allow_workspace_delete = threading.Event()
@@ -886,7 +864,7 @@ def test_managed_delete_serializes_recreation_after_the_final_check(
         # delete_project_workspace is entered only after the route's last live
         # row check. The recreating POST begins inside this barrier.
         after_final_check.set()
-        assert allow_workspace_delete.wait(timeout=5)
+        assert allow_workspace_delete.wait(timeout = 5)
         return real_delete_workspace(payload)
 
     monkeypatch.setattr(studio_db, "delete_project_workspace", blocked_workspace_delete)
@@ -911,9 +889,9 @@ def test_managed_delete_serializes_recreation_after_the_final_check(
                 asyncio.run(
                     chat_history.delete_project(
                         old_id,
-                        SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace())),
-                        delete_files=True,
-                        current_subject="tester",
+                        SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
+                        delete_files = True,
+                        current_subject = "tester",
                     )
                 )
             )
@@ -925,36 +903,34 @@ def test_managed_delete_serializes_recreation_after_the_final_check(
         try:
             chat_history.save_project(
                 chat_history.ChatProjectCreate(
-                    id=new_id,
-                    name="Managed",
-                    archived=False,
-                    createdAt=1_700_000_000_100,
-                    updatedAt=1_700_000_000_100,
+                    id = new_id,
+                    name = "Managed",
+                    archived = False,
+                    createdAt = 1_700_000_000_100,
+                    updatedAt = 1_700_000_000_100,
                 ),
-                current_subject="tester",
+                current_subject = "tester",
             )
             recreated = studio_db.get_chat_project(new_id)
             assert recreated is not None
-            (Path(recreated["rootPath"]) / "new.txt").write_text(
-                "new", encoding="utf-8"
-            )
+            (Path(recreated["rootPath"]) / "new.txt").write_text("new", encoding = "utf-8")
         except BaseException as exc:
             create_errors.append(exc)
         finally:
             creator_completed.set()
 
-    delete_thread = threading.Thread(target=run_delete)
-    create_thread = threading.Thread(target=run_create)
+    delete_thread = threading.Thread(target = run_delete)
+    create_thread = threading.Thread(target = run_create)
     delete_thread.start()
-    assert after_final_check.wait(timeout=5)
+    assert after_final_check.wait(timeout = 5)
     create_thread.start()
-    assert creator_started.wait(timeout=2)
-    assert not creator_completed.wait(timeout=0.2)
+    assert creator_started.wait(timeout = 2)
+    assert not creator_completed.wait(timeout = 0.2)
     assert studio_db.get_chat_project(new_id) is None
 
     allow_workspace_delete.set()
-    delete_thread.join(timeout=5)
-    create_thread.join(timeout=5)
+    delete_thread.join(timeout = 5)
+    create_thread.join(timeout = 5)
 
     assert not delete_thread.is_alive()
     assert not create_thread.is_alive()
@@ -966,7 +942,7 @@ def test_managed_delete_serializes_recreation_after_the_final_check(
     recreated_root = Path(recreated["rootPath"])
     assert recreated_root == old_root
     assert not old_marker.exists()
-    assert (recreated_root / "new.txt").read_text(encoding="utf-8") == "new"
+    assert (recreated_root / "new.txt").read_text(encoding = "utf-8") == "new"
 
 
 def test_managed_workspace_rejects_a_replaced_sandbox(tmp_path):
@@ -1005,9 +981,7 @@ def test_replaced_managed_root_symlink_never_deletes_its_target(tmp_path):
     assert sentinel.read_text(encoding = "utf-8") == "preserve"
 
 
-def test_managed_delete_rechecks_the_entry_moved_after_a_forced_symlink_swap(
-    tmp_path, monkeypatch
-):
+def test_managed_delete_rechecks_the_entry_moved_after_a_forced_symlink_swap(tmp_path, monkeypatch):
     monkeypatch.setattr(studio_db, "_denied_path_prefixes", lambda: [])
     project = studio_db.upsert_chat_project(_managed_project("managed-race"))
     root = Path(project["rootPath"])
@@ -1248,9 +1222,7 @@ def test_project_patch_authoritatively_gates_goal_completion(tmp_path):
         "timeoutSeconds": 10,
         "logLimitBytes": 1024,
     }
-    config = set_verification_config(
-        "goal-gated", [check], require_for_goal_completion = True
-    )
+    config = set_verification_config("goal-gated", [check], require_for_goal_completion = True)
     client = _project_api_client()
 
     blocked = client.patch(
@@ -1291,10 +1263,10 @@ def test_artifact_diffing_is_disabled_only_for_folder_project_workspaces(tmp_pat
     folder_project = studio_db.upsert_chat_project(_folder_project("folder-artifacts", folder))
     managed_project = studio_db.upsert_chat_project(_managed_project("managed-artifacts"))
 
-    assert tools._tracks_workspace_artifacts(
-        tools.project_session_id(folder_project["id"])
-    ) is False
-    assert tools._tracks_workspace_artifacts(
-        tools.project_session_id(managed_project["id"])
-    ) is True
+    assert (
+        tools._tracks_workspace_artifacts(tools.project_session_id(folder_project["id"])) is False
+    )
+    assert (
+        tools._tracks_workspace_artifacts(tools.project_session_id(managed_project["id"])) is True
+    )
     assert tools._tracks_workspace_artifacts("ordinary-chat") is True

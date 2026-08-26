@@ -69,9 +69,7 @@ def test_provider_credential_binding_changes_on_every_replacement():
     absent = credential_secrets.get_provider_api_key_binding("provider-1")
     credential_secrets.save_provider_api_key("provider-1", "same-secret")
     first = credential_secrets.get_provider_api_key_binding("provider-1")
-    value, atomic_first = credential_secrets.get_provider_api_key_with_binding(
-        "provider-1"
-    )
+    value, atomic_first = credential_secrets.get_provider_api_key_with_binding("provider-1")
     credential_secrets.save_provider_api_key("provider-1", "same-secret")
     second = credential_secrets.get_provider_api_key_binding("provider-1")
 

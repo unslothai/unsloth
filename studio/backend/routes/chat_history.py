@@ -357,21 +357,13 @@ class ChatProjectDeleted(ChatProject):
 
 def _public_project(project: dict) -> ChatProject:
     return ChatProject(
-        **{
-            field: project[field]
-            for field in ChatProject.model_fields
-            if field in project
-        }
+        **{field: project[field] for field in ChatProject.model_fields if field in project}
     )
 
 
 def _public_deleted_project(project: dict, sandboxes_kept: list[str]) -> ChatProjectDeleted:
     return ChatProjectDeleted(
-        **{
-            field: project[field]
-            for field in ChatProject.model_fields
-            if field in project
-        },
+        **{field: project[field] for field in ChatProject.model_fields if field in project},
         sandboxes_kept = sandboxes_kept,
     )
 
@@ -1060,9 +1052,7 @@ def delete_attachment(
 
 
 def _project_view(project: dict) -> dict:
-    if project.get("workspaceKind") == "folder" and not project.get(
-        "workspaceAvailable", True
-    ):
+    if project.get("workspaceKind") == "folder" and not project.get("workspaceAvailable", True):
         return project
     try:
         return ensure_chat_project_workspace(project["id"]) or project
@@ -1154,15 +1144,11 @@ def _same_project_path(first: str | None, second: str | None) -> bool:
 
 
 @router.post("/projects", response_model = ChatProject)
-def save_project(
-    payload: ChatProjectCreate, current_subject: str = Depends(get_current_subject)
-):
+def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_current_subject)):
     try:
         values = payload.model_dump()
         project = {
-            field: values[field]
-            for field in ChatProjectCreate.model_fields
-            if field in values
+            field: values[field] for field in ChatProjectCreate.model_fields if field in values
         }
         project["workspaceKind"] = "managed"
         project["workspaceAvailable"] = True
@@ -1193,8 +1179,7 @@ def save_project(
 
 @router.post("/projects/open-folder", response_model = ChatProject)
 def open_project_folder(
-    payload: OpenProjectFolderRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: OpenProjectFolderRequest, current_subject: str = Depends(get_current_subject)
 ):
     root_path, display_label, device_id, file_id = _resolve_project_folder_path(
         payload.nativePathLease
@@ -1308,9 +1293,7 @@ def patch_project(
             project = update_chat_project(
                 project_id,
                 patch,
-                expected_goal_revision = (
-                    expected_goal_revision if goal_mutation else None
-                ),
+                expected_goal_revision = (expected_goal_revision if goal_mutation else None),
             )
     except ChatProjectRevisionConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
@@ -1360,7 +1343,6 @@ def _fence_project_tool_session(handler):
             begin_project_session_deletion,
             finish_project_session_deletion,
         )
-
         try:
             begin_project_session_deletion(project_id)
         except ProjectSessionDeleting as exc:
@@ -1405,9 +1387,7 @@ def _serialize_project_lifecycle(handler):
 
     @wraps(handler)
     async def serialized(project_id: str, *args, **kwargs):
-        project_lease = await _acquire_lifecycle(
-            acquire_project_lifecycle, project_id
-        )
+        project_lease = await _acquire_lifecycle(acquire_project_lifecycle, project_id)
         managed_root_lease = None
         try:
             project = await asyncio.to_thread(get_chat_project, project_id)
@@ -1540,9 +1520,7 @@ async def delete_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    delete_workspace_files = (
-        delete_files and project.get("workspaceKind", "managed") == "managed"
-    )
+    delete_workspace_files = delete_files and project.get("workspaceKind", "managed") == "managed"
     # before any workspace work: the row is already gone, so a later failure must not
     # leave the scope owned by nothing
     try:

@@ -95,43 +95,37 @@ def _wait_task(task_id: str, timeout: float = 5) -> dict:
 
 def test_background_relevance_isolates_sibling_instruction_scopes(tmp_path):
     workspace = tmp_path / "workspace"
-    (workspace / "src").mkdir(parents=True)
+    (workspace / "src").mkdir(parents = True)
     (workspace / "docs").mkdir()
-    (workspace / "AGENTS.md").write_text("root background rule", encoding="utf-8")
-    (workspace / "src" / "AGENTS.md").write_text(
-        "src background rule", encoding="utf-8"
-    )
-    (workspace / "docs" / "AGENTS.md").write_text(
-        "docs background rule", encoding="utf-8"
-    )
-    (workspace / "src" / "worker.py").write_text("pass\n", encoding="utf-8")
-    (workspace / "docs" / "guide.md").write_text("guide\n", encoding="utf-8")
+    (workspace / "AGENTS.md").write_text("root background rule", encoding = "utf-8")
+    (workspace / "src" / "AGENTS.md").write_text("src background rule", encoding = "utf-8")
+    (workspace / "docs" / "AGENTS.md").write_text("docs background rule", encoding = "utf-8")
+    (workspace / "src" / "worker.py").write_text("pass\n", encoding = "utf-8")
+    (workspace / "docs" / "guide.md").write_text("guide\n", encoding = "utf-8")
     _folder_project(workspace)
     identity = (workspace.stat().st_dev, workspace.stat().st_ino)
 
     def context(instruction: str):
         return SimpleNamespace(
-            project_id="project",
-            cwd=workspace,
-            instruction=instruction,
-            expected_root_identity=identity,
-            goal_snapshot="Ship the task",
-            goal_status_snapshot="active",
-            plan_snapshot=None,
+            project_id = "project",
+            cwd = workspace,
+            instruction = instruction,
+            expected_root_identity = identity,
+            goal_snapshot = "Ship the task",
+            goal_status_snapshot = "active",
+            plan_snapshot = None,
         )
 
-    targeted = background_inference._agent_messages(
-        context("Update src/worker.py")
-    )[0]["content"]
+    targeted = background_inference._agent_messages(context("Update src/worker.py"))[0]["content"]
     assert "root background rule" in targeted
     assert "src background rule" in targeted
     assert "docs background rule" not in targeted
     assert 'path value="src/worker.py"' in targeted
     assert 'path value="docs/guide.md"' not in targeted
 
-    generic = background_inference._agent_messages(
-        context("Tell me about this project")
-    )[0]["content"]
+    generic = background_inference._agent_messages(context("Tell me about this project"))[0][
+        "content"
+    ]
     assert "root background rule" in generic
     assert "src background rule" not in generic
     assert "docs background rule" not in generic
@@ -140,17 +134,13 @@ def test_background_relevance_isolates_sibling_instruction_scopes(tmp_path):
 
 def _client() -> TestClient:
     app = FastAPI()
-    app.include_router(
-        agent_workspace_routes.router, prefix = "/api/agent-workspace"
-    )
+    app.include_router(agent_workspace_routes.router, prefix = "/api/agent-workspace")
     app.dependency_overrides[get_current_subject] = lambda: "test-subject"
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app)
 
 
-def test_runtime_snapshot_rejects_secrets_and_persists_only_saved_provider_identity(
-    monkeypatch,
-):
+def test_runtime_snapshot_rejects_secrets_and_persists_only_saved_provider_identity(monkeypatch):
     config = {
         "id": "provider-1",
         "provider_type": "openai",
@@ -234,9 +224,7 @@ def test_provider_routing_and_codex_account_bindings_reject_drift(monkeypatch):
         "models": ["gpt-5.4"],
         "updated_at": "first",
     }
-    monkeypatch.setattr(
-        providers_db, "get_provider", lambda _provider_id: dict(codex_config)
-    )
+    monkeypatch.setattr(providers_db, "get_provider", lambda _provider_id: dict(codex_config))
     monkeypatch.setattr(
         openai_codex_auth,
         "load_oauth_bundle",
@@ -267,9 +255,7 @@ def test_provider_routing_and_codex_account_bindings_reject_drift(monkeypatch):
         )
 
 
-def test_external_provider_task_rejects_credential_replacement_before_egress(
-    monkeypatch,
-):
+def test_external_provider_task_rejects_credential_replacement_before_egress(monkeypatch):
     config = {
         "id": "provider-1",
         "provider_type": "openai",
@@ -444,16 +430,12 @@ def test_primary_task_session_is_immutable_and_revalidated_after_stop(tmp_path):
         resolve_sandbox_workdir(background_task_session_id(str(uuid.uuid4())))
 
 
-def test_task_session_isolated_to_owned_worktree_and_rejects_tampering(
-    tmp_path, monkeypatch
-):
+def test_task_session_isolated_to_owned_worktree_and_rejects_tampering(tmp_path, monkeypatch):
     repository = tmp_path / "repo"
     repository.mkdir()
     _repository(repository)
     _folder_project(repository)
-    monkeypatch.setenv(
-        "UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects")
-    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects"))
     worktree = create_worktree("project")
     ready = threading.Event()
     release = threading.Event()
@@ -506,9 +488,7 @@ def test_task_session_isolated_to_owned_worktree_and_rejects_tampering(
         if original_marker is not None and marker.exists():
             marker.write_bytes(original_marker)
         record = get_worktree(worktree["id"])
-        if record is not None and record["status"] == "removed" and Path(
-            record["path"]
-        ).exists():
+        if record is not None and record["status"] == "removed" and Path(record["path"]).exists():
             transition_worktree_status(worktree["id"], {"removed"}, "active")
         release.set()
         manager._executor.shutdown(wait = True)
@@ -603,9 +583,7 @@ def test_production_executor_dispatches_loaded_llama_backend(tmp_path, monkeypat
     assert observed["bypass_permissions"] is True
 
 
-def test_production_executor_dispatches_external_provider_tool_loop(
-    tmp_path, monkeypatch
-):
+def test_production_executor_dispatches_external_provider_tool_loop(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     _folder_project(workspace)
@@ -677,18 +655,12 @@ def test_production_executor_dispatches_external_provider_tool_loop(
     assert finished["status"] == "completed"
     assert finished["result"]["engine"] == "openai"
     assert finished["result"]["output"] == "external completed"
-    assert observed["client"] == (
-        "openai",
-        "https://api.openai.com/v1",
-        "runtime-only-secret",
-    )
+    assert observed["client"] == ("openai", "https://api.openai.com/v1", "runtime-only-secret")
     assert observed["run"].session_id == background_task_session_id(task["id"])
     assert observed["policy"].permission_mode == "off"
     assert observed["cancelEvent"] is not None
     assert observed["closed"] is True
-    assert "runtime-only-secret" not in json.dumps(
-        get_background_task(task["id"])["payload"]
-    )
+    assert "runtime-only-secret" not in json.dumps(get_background_task(task["id"])["payload"])
 
 
 @pytest.mark.parametrize("mutation", ["remove", "replace"])
@@ -835,9 +807,7 @@ def test_production_executor_dispatches_codex_tool_loop(tmp_path, monkeypatch):
 
     monkeypatch.setattr(openai_codex_auth, "resolve_access", resolve_access)
     monkeypatch.setattr(openai_codex_client, "OpenAICodexClient", FakeCodexClient)
-    monkeypatch.setattr(
-        openai_codex_tool_loop, "stream_codex_with_studio_tools", fake_stream
-    )
+    monkeypatch.setattr(openai_codex_tool_loop, "stream_codex_with_studio_tools", fake_stream)
     manager = BackgroundTaskManager(max_workers = 1)
     manager.register_agent_executor(execute_background_agent)
     try:
@@ -864,9 +834,7 @@ def test_production_executor_dispatches_codex_tool_loop(tmp_path, monkeypatch):
     assert observed["policy"].permission_mode == "off"
     assert observed["cancelEvent"] is not None
     assert observed["closed"] is True
-    assert "runtime-only-token" not in json.dumps(
-        get_background_task(task["id"])["payload"]
-    )
+    assert "runtime-only-token" not in json.dumps(get_background_task(task["id"])["payload"])
     assert "account-1" not in json.dumps(get_background_task(task["id"])["payload"])
 
 

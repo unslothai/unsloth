@@ -23,7 +23,11 @@ from routes import chat_history as chat_history_routes
 from storage import studio_db
 
 
-def _git(root: Path, *args: str, check: bool = True) -> str:
+def _git(
+    root: Path,
+    *args: str,
+    check: bool = True,
+) -> str:
     result = subprocess.run(
         ["git", *args],
         cwd = root,
@@ -192,9 +196,7 @@ def test_marker_publish_failure_preserves_unproven_checkout_for_manual_recovery(
         worktree_service.cleanup_worktree("project", record["id"])
 
 
-def test_create_final_db_failure_is_activated_from_durable_marker_on_startup(
-    tmp_path, monkeypatch
-):
+def test_create_final_db_failure_is_activated_from_durable_marker_on_startup(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     real_transition = worktree_service.transition_worktree_status
     hidden = tmp_path / "private" / "studio.db"
@@ -221,9 +223,7 @@ def test_create_final_db_failure_is_activated_from_durable_marker_on_startup(
     assert _record()["status"] == "active"
 
 
-def test_startup_retains_orphan_marker_when_database_ownership_was_lost(
-    tmp_path, monkeypatch
-):
+def test_startup_retains_orphan_marker_when_database_ownership_was_lost(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     created = worktree_service.create_worktree("project")
     conn = workspace_state.connection()
@@ -243,9 +243,7 @@ def test_startup_retains_orphan_marker_when_database_ownership_was_lost(
     assert Path(created["markerPath"]).is_file()
 
 
-def test_cleanup_db_reservation_failure_leaves_active_worktree_untouched(
-    tmp_path, monkeypatch
-):
+def test_cleanup_db_reservation_failure_leaves_active_worktree_untouched(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     created = worktree_service.create_worktree("project")
     real_transition = worktree_service.transition_worktree_status
@@ -304,9 +302,7 @@ def test_dirty_cleanup_fails_closed_and_restores_active_state(tmp_path, monkeypa
     assert Path(created["markerPath"]).is_file()
 
 
-def test_cleanup_final_db_failure_is_completed_from_marker_on_startup(
-    tmp_path, monkeypatch
-):
+def test_cleanup_final_db_failure_is_completed_from_marker_on_startup(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     created = worktree_service.create_worktree("project")
     real_transition = worktree_service.transition_worktree_status
@@ -476,19 +472,13 @@ def test_worktree_api_hides_paths_from_unexpected_storage_errors(tmp_path, monke
     monkeypatch.setattr(
         agent_workspace_routes,
         "create_worktree",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            sqlite3.OperationalError(str(hidden))
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(sqlite3.OperationalError(str(hidden))),
     )
     app = FastAPI()
-    app.include_router(
-        agent_workspace_routes.router, prefix = "/api/agent-workspace"
-    )
+    app.include_router(agent_workspace_routes.router, prefix = "/api/agent-workspace")
     app.dependency_overrides[get_current_subject] = lambda: "test-subject"
 
-    response = TestClient(app).post(
-        "/api/agent-workspace/projects/project/worktrees", json = {}
-    )
+    response = TestClient(app).post("/api/agent-workspace/projects/project/worktrees", json = {})
 
     assert response.status_code == 500
     assert response.json()["detail"] == "Worktree creation could not be completed."
@@ -517,9 +507,7 @@ def test_project_delete_unwinds_prior_fences_when_worktree_fence_fails(monkeypat
         events.append("begin-worktree")
         raise AgentWorkspaceError("injected worktree fence failure")
 
-    monkeypatch.setattr(
-        chat_history_routes, "begin_worktree_project_deletion", fail_worktree_fence
-    )
+    monkeypatch.setattr(chat_history_routes, "begin_worktree_project_deletion", fail_worktree_fence)
     monkeypatch.setattr(
         chat_history_routes,
         "finish_checkpoint_project_deletion",
@@ -671,6 +659,5 @@ def test_startup_recovery_uses_one_repository_probe_and_listing_for_many_rows(
     assert result["removed"] == 64
     assert calls == {"repository": 1, "listing": 1}
     assert all(
-        record["status"] == "removed"
-        for record in workspace_state.list_worktrees("project")
+        record["status"] == "removed" for record in workspace_state.list_worktrees("project")
     )

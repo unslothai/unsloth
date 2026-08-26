@@ -254,27 +254,24 @@ def consume_pull_request_handoff(
         )
     require_pull_request_tool(tools)
     current_head, current_fingerprint = _review_binding(project_id)
-    if (
-        not hmac.compare_digest(pending.reviewed_head, current_head)
-        or not hmac.compare_digest(
-            pending.workspace_fingerprint,
-            current_fingerprint,
-        )
+    if not hmac.compare_digest(pending.reviewed_head, current_head) or not hmac.compare_digest(
+        pending.workspace_fingerprint,
+        current_fingerprint,
     ):
-        raise AgentWorkspaceError(
-            "The repository changed after preview. Create a new preview."
-        )
+        raise AgentWorkspaceError("The repository changed after preview. Create a new preview.")
     if include_review_binding:
-        return server, dict(pending.request), {
-            "head": pending.reviewed_head,
-            "workspaceFingerprint": pending.workspace_fingerprint,
-        }
+        return (
+            server,
+            dict(pending.request),
+            {
+                "head": pending.reviewed_head,
+                "workspaceFingerprint": pending.workspace_fingerprint,
+            },
+        )
     return server, dict(pending.request)
 
 
-def pull_request_review_binding_current(
-    project_id: str, binding: dict[str, str]
-) -> bool:
+def pull_request_review_binding_current(project_id: str, binding: dict[str, str]) -> bool:
     """Fail closed when a prepared handoff no longer names the current tree."""
     try:
         current_head, current_fingerprint = _review_binding(project_id)
@@ -282,9 +279,7 @@ def pull_request_review_binding_current(
         return False
     return hmac.compare_digest(
         str(binding.get("head") or ""), current_head
-    ) and hmac.compare_digest(
-        str(binding.get("workspaceFingerprint") or ""), current_fingerprint
-    )
+    ) and hmac.compare_digest(str(binding.get("workspaceFingerprint") or ""), current_fingerprint)
 
 
 def reset_pull_request_handoffs_for_tests() -> None:

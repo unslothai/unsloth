@@ -40,7 +40,12 @@ _WINDOWS_EPOCH_OFFSET_100NS = 116_444_736_000_000_000
 class WindowsTraversalRejected(OSError):
     """A Windows path could not be proven to be the expected local object."""
 
-    def __init__(self, reason: str, *, reparse: bool = False):
+    def __init__(
+        self,
+        reason: str,
+        *,
+        reparse: bool = False,
+    ):
         super().__init__(reason)
         self.reparse = reparse
 
@@ -198,9 +203,7 @@ def windows_path_key(path: str | os.PathLike[str]) -> str:
     return ntpath.normcase(normalize_windows_path(path)).rstrip("\\")
 
 
-def windows_path_is_within(
-    path: str | os.PathLike[str], root: str | os.PathLike[str]
-) -> bool:
+def windows_path_is_within(path: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
     candidate = windows_path_key(path)
     parent = windows_path_key(root)
     try:
@@ -277,9 +280,7 @@ def _final_path(handle: int) -> str:
     size = 1024
     while size <= 65_536:
         buffer = ctypes.create_unicode_buffer(size)
-        length = int(
-            api.kernel32.GetFinalPathNameByHandleW(handle, buffer, size, 0)
-        )
+        length = int(api.kernel32.GetFinalPathNameByHandleW(handle, buffer, size, 0))
         if length == 0:
             raise _win32_error("Windows could not resolve an opened path")
         if length < size:
@@ -329,15 +330,11 @@ def _assert_expected_handle(
     directory: Optional[bool] = None,
 ) -> None:
     if info.is_reparse:
-        raise WindowsTraversalRejected(
-            "Windows reparse points are not supported.", reparse = True
-        )
+        raise WindowsTraversalRejected("Windows reparse points are not supported.", reparse = True)
     if not windows_path_is_within(info.final_path, root_path):
         raise WindowsTraversalRejected("Workspace path escaped the project root.")
     if windows_path_key(info.final_path) != windows_path_key(expected_path):
-        raise WindowsTraversalRejected(
-            "Workspace path changed while it was being inspected."
-        )
+        raise WindowsTraversalRejected("Workspace path changed while it was being inspected.")
     if directory is True and not info.is_directory:
         raise NotADirectoryError(expected_path)
     if directory is False and info.is_directory:
@@ -440,15 +437,10 @@ class WindowsVerifiedRoot:
     def recheck(self) -> None:
         handle, info = self._open_verified((), directory = True)
         try:
-            if not any(
-                identity in self.identity_options for identity in info.identity_options
-            ):
+            if not any(identity in self.identity_options for identity in info.identity_options):
                 raise WindowsTraversalRejected("Project root identity changed.")
             original = _handle_info(self._handle)
-            if not any(
-                identity in self.identity_options
-                for identity in original.identity_options
-            ):
+            if not any(identity in self.identity_options for identity in original.identity_options):
                 raise WindowsTraversalRejected("Project root identity changed.")
         finally:
             _close_handle(handle)
@@ -489,8 +481,7 @@ class WindowsVerifiedRoot:
                 before.identity_options != after.identity_options
                 or before.size != after.size
                 or before.modified_ns != after.modified_ns
-                or windows_path_key(before.final_path)
-                != windows_path_key(after.final_path)
+                or windows_path_key(before.final_path) != windows_path_key(after.final_path)
             ):
                 raise WindowsTraversalRejected("File changed while it was being read.")
             return WindowsFileData(
@@ -542,9 +533,7 @@ class WindowsVerifiedRoot:
             after_handle, after = self._open_verified(parts, directory = True)
             _close_handle(after_handle)
             if before.identity_options != after.identity_options:
-                raise WindowsTraversalRejected(
-                    "Directory changed while it was being enumerated."
-                )
+                raise WindowsTraversalRejected("Directory changed while it was being enumerated.")
             return result
         finally:
             _close_handle(directory)

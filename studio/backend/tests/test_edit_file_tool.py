@@ -461,6 +461,7 @@ class TestPublicSchema:
 
     def test_bypass_permissions_documents_the_project_workspace_exception(self):
         from models.inference import ChatCompletionRequest
+
         description = ChatCompletionRequest.model_fields["bypass_permissions"].description
         assert "edit_file" in description
         assert "Project sessions remain confined" in description

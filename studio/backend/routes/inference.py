@@ -28,7 +28,17 @@ from fastapi import (
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from starlette.requests import ClientDisconnect
-from typing import Any, Callable, Collection, Iterable, List, NamedTuple, Optional, TYPE_CHECKING, Union
+from typing import (
+    Any,
+    Callable,
+    Collection,
+    Iterable,
+    List,
+    NamedTuple,
+    Optional,
+    TYPE_CHECKING,
+    Union,
+)
 import functools
 import json
 import httpx
@@ -12336,11 +12346,7 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
     # /v1/messages clients can cancel by their native id.
     for k in ("completion_id", "session_id", "message_id"):
         v = body.get(k)
-        if (
-            isinstance(v, str)
-            and v
-            and not is_reserved_agent_task_session_id(v)
-        ):
+        if isinstance(v, str) and v and not is_reserved_agent_task_session_id(v):
             keys.append(v)
 
     if not keys:
@@ -23088,9 +23094,7 @@ def _with_project_context_messages(
         return messages
 
     copied = [
-        dict(message)
-        if isinstance(message, dict)
-        else message.model_copy(deep = True)
+        dict(message) if isinstance(message, dict) else message.model_copy(deep = True)
         for message in messages
     ]
     caller_instructions = []
@@ -23111,15 +23115,9 @@ def _with_project_context_messages(
             cleaned = []
             for part in content:
                 part_type = (
-                    part.get("type")
-                    if isinstance(part, dict)
-                    else getattr(part, "type", None)
+                    part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
                 )
-                text = (
-                    part.get("text")
-                    if isinstance(part, dict)
-                    else getattr(part, "text", None)
-                )
+                text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
                 if part_type != "text" or not isinstance(text, str):
                     cleaned.append(part)
                     continue
@@ -23139,13 +23137,9 @@ def _with_project_context_messages(
     authoritative_context: list[Any] = []
     if resolved.addition:
         if not copied or not isinstance(copied[0], dict):
-            authoritative_context.append(
-                ChatMessage(role = "system", content = resolved.addition)
-            )
+            authoritative_context.append(ChatMessage(role = "system", content = resolved.addition))
         else:
-            authoritative_context.append(
-                {"role": "system", "content": resolved.addition}
-            )
+            authoritative_context.append({"role": "system", "content": resolved.addition})
     return [*caller_instructions, *authoritative_context, *conversation]
 
 
@@ -23195,22 +23189,12 @@ def _with_anthropic_project_context(
             if isinstance(part, str):
                 cleaned.append(strip_server_project_context(part))
                 continue
-            part_type = (
-                part.get("type")
-                if isinstance(part, dict)
-                else getattr(part, "type", None)
-            )
-            text = (
-                part.get("text")
-                if isinstance(part, dict)
-                else getattr(part, "text", None)
-            )
+            part_type = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+            text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
             if part_type != "text" or not isinstance(text, str):
                 cleaned.append(part)
             elif isinstance(part, dict):
-                cleaned.append(
-                    {**part, "text": strip_server_project_context(text)}
-                )
+                cleaned.append({**part, "text": strip_server_project_context(text)})
             else:
                 cloned = part.model_copy(deep = True)
                 cloned.text = strip_server_project_context(text)

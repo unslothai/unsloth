@@ -90,9 +90,7 @@ def _wait_task(task_id: str, timeout: float = 5) -> dict:
 
 def _client() -> TestClient:
     app = FastAPI()
-    app.include_router(
-        agent_workspace_routes.router, prefix = "/api/agent-workspace"
-    )
+    app.include_router(agent_workspace_routes.router, prefix = "/api/agent-workspace")
     app.dependency_overrides[get_current_subject] = lambda: "test-subject"
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app)
@@ -126,9 +124,7 @@ def test_plan_task_completion_requires_fresh_named_verification(tmp_path):
         update_plan_task(plan["id"], task["id"], status = "completed")
 
     fingerprint = workspace_fingerprint(tmp_path)
-    run = begin_verification_run(
-        "project", fingerprint, config_revision = config["revision"]
-    )
+    run = begin_verification_run("project", fingerprint, config_revision = config["revision"])
     finish_verification_run(
         run["id"],
         "passed",
@@ -143,9 +139,7 @@ def test_plan_task_completion_requires_fresh_named_verification(tmp_path):
 
 def test_agent_task_uses_immutable_goal_plan_and_primary_cwd(tmp_path):
     _folder_project(tmp_path)
-    plan = create_plan(
-        "project", "Plan v1", "Original goal", [{"title": "Scoped task"}]
-    )
+    plan = create_plan("project", "Plan v1", "Original goal", [{"title": "Scoped task"}])
     observed = {}
 
     def executor(context, cancel_event):
@@ -179,9 +173,7 @@ def test_agent_task_uses_immutable_goal_plan_and_primary_cwd(tmp_path):
                 "goalUpdatedAt": 9,
             }
         )
-        update_plan_task(
-            plan["id"], plan["tasks"][0]["id"], blocker = "changed after queue"
-        )
+        update_plan_task(plan["id"], plan["tasks"][0]["id"], blocker = "changed after queue")
 
         assert queued["status"] == "queued"
         assert queued["goalSnapshot"] == "Original goal"
@@ -285,9 +277,7 @@ def test_agent_start_requires_registered_adapter_without_claiming(tmp_path):
         manager._executor.shutdown(wait = True)
 
 
-def test_agent_route_queues_provider_neutral_task_with_explicit_runtime(
-    tmp_path, monkeypatch
-):
+def test_agent_route_queues_provider_neutral_task_with_explicit_runtime(tmp_path, monkeypatch):
     _folder_project(tmp_path)
     monkeypatch.setattr(agent_workspace_routes, "_require_execution_boundary", lambda: None)
     agent_workspace_routes.background_manager.register_agent_executor(None)
@@ -320,9 +310,7 @@ def test_parallel_agent_tasks_receive_isolated_owned_worktree_cwds(tmp_path, mon
     repository.mkdir()
     _repository(repository)
     _folder_project(repository)
-    monkeypatch.setenv(
-        "UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects")
-    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects"))
     first = create_worktree("project")
     second = create_worktree("project")
     barrier = threading.Barrier(2)
@@ -338,12 +326,8 @@ def test_parallel_agent_tasks_receive_isolated_owned_worktree_cwds(tmp_path, mon
     manager = BackgroundTaskManager(max_workers = 2)
     manager.register_agent_executor(executor)
     try:
-        one = manager.enqueue_agent(
-            "project", "one", worktree_id = first["id"], start = True
-        )
-        two = manager.enqueue_agent(
-            "project", "two", worktree_id = second["id"], start = True
-        )
+        one = manager.enqueue_agent("project", "one", worktree_id = first["id"], start = True)
+        two = manager.enqueue_agent("project", "two", worktree_id = second["id"], start = True)
         assert _wait_task(one["id"])["status"] == "completed"
         assert _wait_task(two["id"])["status"] == "completed"
     finally:
@@ -362,9 +346,7 @@ def test_cancelled_agent_cleans_only_clean_owned_worktree(tmp_path, monkeypatch)
     repository.mkdir()
     _repository(repository)
     _folder_project(repository)
-    monkeypatch.setenv(
-        "UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects")
-    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects"))
     worktree = create_worktree("project")
     entered = threading.Event()
 
@@ -405,15 +387,11 @@ def test_retry_preserves_durable_worktree_link_after_interruption(tmp_path, monk
     repository.mkdir()
     _repository(repository)
     _folder_project(repository)
-    monkeypatch.setenv(
-        "UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects")
-    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects"))
     worktree = create_worktree("project")
     manager = BackgroundTaskManager(max_workers = 1)
     try:
-        task = manager.enqueue_agent(
-            "project", "recover", worktree_id = worktree["id"], start = False
-        )
+        task = manager.enqueue_agent("project", "recover", worktree_id = worktree["id"], start = False)
         from core.agent_workspace.state import update_background_task
 
         update_background_task(task["id"], "running")
@@ -434,9 +412,7 @@ def test_owned_worktree_merge_records_success(tmp_path, monkeypatch):
     repository.mkdir()
     _repository(repository)
     _folder_project(repository)
-    monkeypatch.setenv(
-        "UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects")
-    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects"))
     worktree = create_worktree("project")
     worktree_path = Path(worktree["path"])
     (worktree_path / "agent.txt").write_text("agent\n", encoding = "utf-8")
@@ -458,9 +434,7 @@ def test_owned_worktree_merge_conflict_does_not_modify_primary(tmp_path, monkeyp
     repository.mkdir()
     _repository(repository)
     _folder_project(repository)
-    monkeypatch.setenv(
-        "UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects")
-    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "studio-projects"))
     worktree = create_worktree("project")
     worktree_path = Path(worktree["path"])
     (worktree_path / "shared.txt").write_text("agent\n", encoding = "utf-8")

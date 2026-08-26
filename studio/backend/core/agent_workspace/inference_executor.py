@@ -115,9 +115,7 @@ def capture_runtime_snapshot(selection: Mapping[str, Any]) -> dict[str, Any]:
         }
 
     provider_id = str(selection.get("providerId") or "").strip()
-    if not provider_id or len(provider_id) > 256 or any(
-        char in provider_id for char in "\x00\r\n"
-    ):
+    if not provider_id or len(provider_id) > 256 or any(char in provider_id for char in "\x00\r\n"):
         raise AgentWorkspaceError("A saved provider connection is required.")
     config = providers_db.get_provider(provider_id)
     if config is None or not config.get("is_enabled"):
@@ -134,9 +132,7 @@ def capture_runtime_snapshot(selection: Mapping[str, Any]) -> dict[str, Any]:
     if model not in selected_models:
         raise AgentWorkspaceError("The selected model is not enabled for this connection.")
     if not provider_model_runs_local_tools(provider_type, model):
-        raise AgentWorkspaceError(
-            "The selected provider model cannot run Studio coding tools."
-        )
+        raise AgentWorkspaceError("The selected provider model cannot run Studio coding tools.")
     snapshot = {
         "kind": "provider",
         "model": model,
@@ -150,8 +146,8 @@ def capture_runtime_snapshot(selection: Mapping[str, Any]) -> dict[str, Any]:
     if provider_type == "openai_codex":
         snapshot["credentialBindingDigest"] = _codex_account_digest(provider_id)
     else:
-        snapshot["credentialBindingDigest"] = (
-            credential_secrets.get_provider_api_key_binding(provider_id)
+        snapshot["credentialBindingDigest"] = credential_secrets.get_provider_api_key_binding(
+            provider_id
         )
     return snapshot
 
@@ -177,9 +173,7 @@ def _validate_snapshot(snapshot: Any) -> dict[str, Any]:
         or len(credential_binding) != 64
         or any(char not in "0123456789abcdef" for char in credential_binding)
     ):
-        raise AgentWorkspaceError(
-            "This provider task predates credential binding. Queue it again."
-        )
+        raise AgentWorkspaceError("This provider task predates credential binding. Queue it again.")
     # Background jobs have no interactive approval stream. Waiting on the chat
     # approval registry would hang indefinitely, while silently opting out would
     # weaken the permission choice captured at enqueue.
@@ -234,14 +228,10 @@ def _agent_messages(context: Any) -> list[dict[str, str]]:
     if goal:
         status = escape_project_context(str(context.goal_status_snapshot or "active"))
         sections.append(
-            f'<project_goal status="{status}">'
-            + escape_project_context(goal)
-            + "</project_goal>"
+            f'<project_goal status="{status}">' + escape_project_context(goal) + "</project_goal>"
         )
     if plan:
-        sections.append(
-            "<project_plan>" + escape_project_context(plan) + "</project_plan>"
-        )
+        sections.append("<project_plan>" + escape_project_context(plan) + "</project_plan>")
     if repository.addition:
         sections.append(repository.addition)
     return [
@@ -395,8 +385,10 @@ async def _run_local(
         getattr(llama, "_openai_advertised_id", None),
         getattr(llama, "hf_repo", None),
     )
-    if llama is not None and getattr(llama, "is_loaded", False) and any(
-        model_id_matches(model, candidate) for candidate in llama_candidates
+    if (
+        llama is not None
+        and getattr(llama, "is_loaded", False)
+        and any(model_id_matches(model, candidate) for candidate in llama_candidates)
     ):
         generator = llama.generate_chat_completion_with_tools(
             messages = messages,
@@ -462,19 +454,16 @@ def _current_provider(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     config = providers_db.get_provider(provider_id)
     if config is None or not config.get("is_enabled"):
         raise AgentWorkspaceError("The selected provider connection is unavailable.")
-    if (
-        str(config.get("provider_type") or "") != snapshot.get("providerType")
-        or _provider_routing_digest(config) != snapshot.get("routingDigest")
-    ):
+    if str(config.get("provider_type") or "") != snapshot.get(
+        "providerType"
+    ) or _provider_routing_digest(config) != snapshot.get("routingDigest"):
         raise AgentWorkspaceError(
             "The selected provider changed after this task was queued. Queue a new task."
         )
     return config
 
 
-async def _collect_provider_stream(
-    generator: Any, cancel_event: threading.Event
-) -> dict[str, Any]:
+async def _collect_provider_stream(generator: Any, cancel_event: threading.Event) -> dict[str, Any]:
     collector = _OutputCollector()
     try:
         async for line in generator:
@@ -584,10 +573,11 @@ async def _run_external(
         stream_with_studio_tools,
     )
     from state.active_generations import ActiveGeneration
+
     config = _current_provider(snapshot)
     base_url = validate_provider_base_url(str(config.get("base_url") or ""))
-    api_key_value, credential_binding = (
-        credential_secrets.get_provider_api_key_with_binding(snapshot["providerId"])
+    api_key_value, credential_binding = credential_secrets.get_provider_api_key_with_binding(
+        snapshot["providerId"]
     )
     if credential_binding != snapshot.get("credentialBindingDigest"):
         raise AgentWorkspaceError(
@@ -663,9 +653,7 @@ async def _execute(context: Any, cancel_event: threading.Event) -> dict[str, Any
     snapshot = _validate_snapshot(context.runtime_snapshot)
     session_id = background_task_session_id(context.task_id)
     bound_cwd = Path(resolve_sandbox_workdir(session_id)).resolve(strict = True)
-    if os.path.normcase(str(bound_cwd)) != os.path.normcase(
-        str(context.cwd.resolve(strict = True))
-    ):
+    if os.path.normcase(str(bound_cwd)) != os.path.normcase(str(context.cwd.resolve(strict = True))):
         raise AgentWorkspaceError("The background agent workspace binding changed.")
     messages = _agent_messages(context)
     tools = _agent_tools(snapshot["permissionMode"] == "full")
@@ -676,13 +664,9 @@ async def _execute(context: Any, cancel_event: threading.Event) -> dict[str, Any
     else:
         _current_provider(snapshot)
         if snapshot["providerType"] == "openai_codex":
-            result = await _run_codex(
-                snapshot, messages, tools, session_id, cancel_event
-            )
+            result = await _run_codex(snapshot, messages, tools, session_id, cancel_event)
         else:
-            result = await _run_external(
-                snapshot, messages, tools, session_id, cancel_event
-            )
+            result = await _run_external(snapshot, messages, tools, session_id, cancel_event)
     return {
         **result,
         "model": snapshot["model"],
@@ -694,9 +678,7 @@ async def _execute(context: Any, cancel_event: threading.Event) -> dict[str, Any
     }
 
 
-def execute_background_agent(
-    context: Any, cancel_event: threading.Event
-) -> dict[str, Any]:
+def execute_background_agent(context: Any, cancel_event: threading.Event) -> dict[str, Any]:
     """Run one durable task through the selected internal inference transport."""
     try:
         return asyncio.run(_execute(context, cancel_event))

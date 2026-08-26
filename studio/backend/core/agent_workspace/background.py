@@ -66,7 +66,6 @@ class AgentTaskContext:
     ) -> dict:
         """Run a CLI adapter inside the project boundary with process-tree cancellation."""
         from .verification import execute_check
-
         return execute_check(
             {
                 "name": "agent",
@@ -184,7 +183,6 @@ class BackgroundTaskManager:
             runtime_snapshot = None
             if runtime_selection is not None:
                 from .inference_executor import capture_runtime_snapshot
-
                 runtime_snapshot = capture_runtime_snapshot(runtime_selection)
             task = create_agent_background_task(
                 project_id,
@@ -197,9 +195,7 @@ class BackgroundTaskManager:
             )
             if worktree_id:
                 try:
-                    sync_worktree_background_task_marker(
-                        project_id, worktree_id, task["id"]
-                    )
+                    sync_worktree_background_task_marker(project_id, worktree_id, task["id"])
                 except Exception:
                     update_background_task(
                         task["id"],
@@ -255,19 +251,13 @@ class BackgroundTaskManager:
             else "sandboxPath"
         )
         try:
-            row_workspace_path = Path(str(row_workspace)).expanduser().resolve(
-                strict = True
-            )
+            row_workspace_path = Path(str(row_workspace)).expanduser().resolve(strict = True)
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             raise AgentWorkspaceError(
                 "The project workspace binding changed before execution."
             ) from exc
-        if os.path.normcase(str(row_workspace_path)) != os.path.normcase(
-            str(workspace.root)
-        ):
-            raise AgentWorkspaceError(
-                "The project workspace binding changed before execution."
-            )
+        if os.path.normcase(str(row_workspace_path)) != os.path.normcase(str(workspace.root)):
+            raise AgentWorkspaceError("The project workspace binding changed before execution.")
         project_root_identity = BackgroundTaskManager._directory_identity(
             workspace.root, label = "project workspace"
         )
@@ -304,9 +294,7 @@ class BackgroundTaskManager:
             expected_root_identity = expected_identity,
             project_root = workspace.root,
             expected_project_root_identity = project_root_identity,
-            project_workspace_binding = BackgroundTaskManager._project_workspace_binding(
-                project
-            ),
+            project_workspace_binding = BackgroundTaskManager._project_workspace_binding(project),
         )
 
     @staticmethod
@@ -340,18 +328,14 @@ class BackgroundTaskManager:
             BackgroundTaskManager._project_workspace_binding(project)
             != context.project_workspace_binding
         ):
-            raise AgentWorkspaceError(
-                "The project workspace binding changed before completion."
-            )
+            raise AgentWorkspaceError("The project workspace binding changed before completion.")
         if (
             BackgroundTaskManager._directory_identity(
                 context.project_root, label = "project workspace"
             )
             != context.expected_project_root_identity
         ):
-            raise AgentWorkspaceError(
-                "The project workspace identity changed before completion."
-            )
+            raise AgentWorkspaceError("The project workspace identity changed before completion.")
 
         from core.inference.tools import (
             background_task_session_id,
@@ -430,12 +414,7 @@ class BackgroundTaskManager:
         future.add_done_callback(lambda _future: self._forget(task_id))
         return running
 
-    def _run_agent(
-        self,
-        task_id: str,
-        event: threading.Event,
-        executor: AgentTaskExecutor,
-    ) -> None:
+    def _run_agent(self, task_id: str, event: threading.Event, executor: AgentTaskExecutor) -> None:
         task = get_background_task(task_id)
         if task is None:
             return
@@ -511,21 +490,19 @@ class BackgroundTaskManager:
             if task is None:
                 raise AgentWorkspaceError("Background task not found.")
             if task["status"] == "queued":
-                cancelled = update_background_task(
-                    task_id, "cancelled", cancel_requested = True
-                ) or task
+                cancelled = (
+                    update_background_task(task_id, "cancelled", cancel_requested = True) or task
+                )
                 if task["kind"] == "agent":
                     result = self._cancelled_worktree_result(task, {})
-                    cancelled = update_background_task(
-                        task_id, "cancelled", result = result
-                    ) or cancelled
+                    cancelled = (
+                        update_background_task(task_id, "cancelled", result = result) or cancelled
+                    )
                 return cancelled
             if task["status"] not in {"running", "cancelling"}:
                 return task
             if task["status"] == "running":
-                task = update_background_task(
-                    task_id, "cancelling", cancel_requested = True
-                ) or task
+                task = update_background_task(task_id, "cancelling", cancel_requested = True) or task
             event = self._cancellations.get(task_id)
             if event is not None:
                 event.set()
@@ -536,9 +513,7 @@ class BackgroundTaskManager:
         worktree_id = task.get("worktreeId")
         if not worktree_id:
             return result
-        cleanup_requested = bool(
-            task.get("payload", {}).get("cleanupWorktreeOnCancel", False)
-        )
+        cleanup_requested = bool(task.get("payload", {}).get("cleanupWorktreeOnCancel", False))
         if not cleanup_requested:
             return {**result, "worktreeCleanup": "retained"}
         try:
@@ -550,7 +525,10 @@ class BackgroundTaskManager:
             return {**result, "worktreeCleanup": "retained_needs_attention"}
 
     def cancel_project_tasks_and_wait(
-        self, project_id: str, *, timeout_seconds: float = 30
+        self,
+        project_id: str,
+        *,
+        timeout_seconds: float = 30,
     ) -> list[dict]:
         """Cancel every active project task and wait until no worker can outlive it."""
         if timeout_seconds <= 0:
@@ -569,9 +547,7 @@ class BackgroundTaskManager:
         for task_id, future in futures.items():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise AgentWorkspaceError(
-                    "Timed out while stopping project background tasks."
-                )
+                raise AgentWorkspaceError("Timed out while stopping project background tasks.")
             try:
                 future.result(timeout = remaining)
             except FutureTimeoutError as exc:
@@ -605,11 +581,7 @@ class BackgroundTaskManager:
             except AgentWorkspaceError:
                 pass
         with self._lock:
-            futures = [
-                self._futures[task["id"]]
-                for task in active
-                if task["id"] in self._futures
-            ]
+            futures = [self._futures[task["id"]] for task in active if task["id"] in self._futures]
         for future in futures:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -623,17 +595,25 @@ class BackgroundTaskManager:
             current = get_background_task(task["id"])
             if current and current["status"] in {"running", "cancelling"}:
                 try:
-                    current = update_background_task(
-                        task["id"],
-                        "interrupted",
-                        error = "Studio exited while the task was active.",
-                    ) or current
+                    current = (
+                        update_background_task(
+                            task["id"],
+                            "interrupted",
+                            error = "Studio exited while the task was active.",
+                        )
+                        or current
+                    )
                 except AgentWorkspaceError:
                     current = get_background_task(task["id"]) or current
             interrupted.append(current)
         return interrupted
 
-    def retry(self, task_id: str, *, start: bool = True) -> dict:
+    def retry(
+        self,
+        task_id: str,
+        *,
+        start: bool = True,
+    ) -> dict:
         previous = get_background_task(task_id)
         if previous is None:
             raise AgentWorkspaceError("Background task not found.")

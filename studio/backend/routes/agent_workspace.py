@@ -161,17 +161,13 @@ def _redact_background_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact_background_value(item) for item in value]
     if isinstance(value, dict):
-        return {
-            str(key): _redact_background_value(item) for key, item in value.items()
-        }
+        return {str(key): _redact_background_value(item) for key, item in value.items()}
     return value
 
 
 def _public_background_task(record: dict) -> dict:
     public = dict(record)
-    public["error"] = (
-        redact_review_text(str(record["error"]), "") if record.get("error") else None
-    )
+    public["error"] = redact_review_text(str(record["error"]), "") if record.get("error") else None
     public_result = _redact_background_value(record.get("result"))
     if isinstance(public_result, dict):
         # The reserved session is a server-owned execution binding. It is not a
@@ -216,9 +212,7 @@ async def _github_connector_tools(server_id: str) -> tuple[dict, list[dict]]:
             use_oauth = bool(server.get("use_oauth")),
         )
     except Exception as exc:
-        raise AgentWorkspaceError(
-            "The selected GitHub connector could not be reached."
-        ) from exc
+        raise AgentWorkspaceError("The selected GitHub connector could not be reached.") from exc
     return server, tools
 
 
@@ -286,9 +280,7 @@ class PlanPatchRequest(BaseModel):
 class PlanTaskPatchRequest(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
-    status: Optional[
-        Literal["pending", "running", "blocked", "completed", "cancelled"]
-    ] = None
+    status: Optional[Literal["pending", "running", "blocked", "completed", "cancelled"]] = None
     blocker: Optional[str] = Field(default = None, max_length = 4000)
     verification: Optional[list[dict[str, Any]]] = Field(default = None, max_length = 32)
     expectedRevision: int = Field(ge = 0)
@@ -666,9 +658,7 @@ def prepare_git_commit(
         raise _workspace_error(exc) from exc
 
 
-@router.post(
-    "/projects/{project_id}/git/commits/preparations/{preparation_id}/confirm"
-)
+@router.post("/projects/{project_id}/git/commits/preparations/{preparation_id}/confirm")
 def confirm_git_prepared_commit(
     project_id: str,
     preparation_id: str,
@@ -677,9 +667,7 @@ def confirm_git_prepared_commit(
 ) -> dict:
     try:
         return _public_prepared_commit(
-            confirm_prepared_commit(
-                project_id, preparation_id, payload.confirmationToken
-            )
+            confirm_prepared_commit(project_id, preparation_id, payload.confirmationToken)
         )
     except AgentWorkspaceError as exc:
         raise _workspace_error(exc) from exc
@@ -693,9 +681,7 @@ def rollback_git_checkpoint(
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
     try:
-        return rollback_checkpoint(
-            project_id, checkpoint_id, payload.expectedCurrentFingerprint
-        )
+        return rollback_checkpoint(project_id, checkpoint_id, payload.expectedCurrentFingerprint)
     except AgentWorkspaceError as exc:
         raise _workspace_error(exc) from exc
 
@@ -720,9 +706,7 @@ def save_plan(
 
 
 @router.get("/projects/{project_id}/plans")
-def project_plans(
-    project_id: str, current_subject: str = Depends(get_current_subject)
-) -> dict:
+def project_plans(project_id: str, current_subject: str = Depends(get_current_subject)) -> dict:
     _project(project_id)
     return {"plans": list_plans(project_id)}
 
@@ -738,9 +722,10 @@ def patch_plan(
     if plan is None or plan["projectId"] != project_id:
         raise HTTPException(status_code = 404, detail = "Plan not found.")
     try:
-        return update_plan_status(
-            plan_id, payload.status, expected_revision = payload.expectedRevision
-        ) or plan
+        return (
+            update_plan_status(plan_id, payload.status, expected_revision = payload.expectedRevision)
+            or plan
+        )
     except AgentWorkspaceError as exc:
         raise _workspace_error(exc) from exc
 
@@ -830,8 +815,7 @@ def background_tasks(
     _project(project_id)
     return {
         "tasks": [
-            _public_background_task(task)
-            for task in list_background_tasks(project_id, limit)
+            _public_background_task(task) for task in list_background_tasks(project_id, limit)
         ]
     }
 
@@ -919,20 +903,12 @@ def save_worktree(
 
 
 @router.get("/projects/{project_id}/worktrees")
-def project_worktrees(
-    project_id: str, current_subject: str = Depends(get_current_subject)
-) -> dict:
+def project_worktrees(project_id: str, current_subject: str = Depends(get_current_subject)) -> dict:
     _project(project_id)
     try:
-        return {
-            "worktrees": [
-                _public_worktree(record) for record in list_worktrees(project_id)
-            ]
-        }
+        return {"worktrees": [_public_worktree(record) for record in list_worktrees(project_id)]}
     except Exception as exc:
-        raise HTTPException(
-            status_code = 500, detail = "Worktree state is unavailable."
-        ) from exc
+        raise HTTPException(status_code = 500, detail = "Worktree state is unavailable.") from exc
 
 
 @router.delete("/projects/{project_id}/worktrees/{worktree_id}")
@@ -959,9 +935,7 @@ def merge_owned_worktree(
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
     try:
-        return _public_worktree(
-            merge_worktree(project_id, worktree_id, payload.expectedTargetHead)
-        )
+        return _public_worktree(merge_worktree(project_id, worktree_id, payload.expectedTargetHead))
     except AgentWorkspaceError as exc:
         raise _workspace_error(exc) from exc
     except Exception as exc:
@@ -971,9 +945,7 @@ def merge_owned_worktree(
 
 
 @router.get("/projects/{project_id}/review")
-def project_review(
-    project_id: str, current_subject: str = Depends(get_current_subject)
-) -> dict:
+def project_review(project_id: str, current_subject: str = Depends(get_current_subject)) -> dict:
     try:
         return build_review_summary(project_id)
     except AgentWorkspaceError as exc:
@@ -987,9 +959,7 @@ def pull_request_draft(
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
     try:
-        return build_pull_request_draft(
-            project_id, title = payload.title, body_note = payload.bodyNote
-        )
+        return build_pull_request_draft(project_id, title = payload.title, body_note = payload.bodyNote)
     except AgentWorkspaceError as exc:
         raise _workspace_error(exc) from exc
 
@@ -1022,9 +992,7 @@ async def prepare_connected_pull_request(
         raise _workspace_error(exc) from exc
 
 
-@router.post(
-    "/projects/{project_id}/review/pull-request-handoff/{handoff_id}/confirm"
-)
+@router.post("/projects/{project_id}/review/pull-request-handoff/{handoff_id}/confirm")
 async def confirm_connected_pull_request(
     project_id: str,
     handoff_id: str,
@@ -1069,9 +1037,7 @@ async def confirm_connected_pull_request(
             bool(current.get("use_oauth")),
             current.get("updated_at"),
         ) == expected_config
-        return connector_current and pull_request_review_binding_current(
-            project_id, review_binding
-        )
+        return connector_current and pull_request_review_binding_current(project_id, review_binding)
 
     result = await asyncio.to_thread(
         call_tool_sync,
