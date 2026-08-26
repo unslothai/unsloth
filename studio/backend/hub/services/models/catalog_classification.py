@@ -298,7 +298,6 @@ def _local_model_task(model) -> Optional[str]:
         return _gguf_path_task(path, id_hints)
     try:
         from core.inference.native_audio import native_audio_type_from_local_path
-
         if native_audio_type_from_local_path(path):
             return "text-to-speech"
     except Exception:
