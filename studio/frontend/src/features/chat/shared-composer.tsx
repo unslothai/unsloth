@@ -2767,7 +2767,7 @@ export function SharedComposer({
                       : "Stop dictation"
                   }
                 >
-                  <SquareIcon className="size-3 animate-pulse fill-current" />
+                  <SquareIcon className="aui-composer-cancel-icon size-3 animate-pulse fill-current" />
                 </TooltipIconButton>
               )}
             </>
@@ -2795,7 +2795,7 @@ export function SharedComposer({
               className="ml-1.5 size-9 rounded-full"
               onClick={stop}
             >
-              <SquareIcon className="size-3 fill-current" />
+              <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
             </Button>
           ) : (
             <TooltipIconButton
