@@ -14,6 +14,8 @@ export type EmbeddingModelSettings = {
   defaultEmbeddingModel: string;
   defaultEmbeddingGgufRepo: string;
   isCustom: boolean;
+  /** An embedder is held in memory right now, so Unload has something to do. */
+  loaded: boolean;
 };
 
 type ApiEmbeddingModelSettings = {
@@ -27,6 +29,7 @@ type ApiEmbeddingModelSettings = {
   default_embedding_gguf_repo: string;
   // biome-ignore lint/style/useNamingConvention: API schema
   is_custom: boolean;
+  loaded?: boolean;
 };
 
 /** 409 from the backend: the model could not be verified as an embedding model
@@ -44,6 +47,7 @@ function fromApi(settings: ApiEmbeddingModelSettings): EmbeddingModelSettings {
     defaultEmbeddingModel: settings.default_embedding_model,
     defaultEmbeddingGgufRepo: settings.default_embedding_gguf_repo,
     isCustom: settings.is_custom,
+    loaded: settings.loaded ?? false,
   };
 }
 
@@ -146,6 +150,18 @@ export async function resolveEmbeddingModel(
     sizeBytes: body.size_bytes,
     error: body.error,
   };
+}
+
+export async function unloadEmbeddingModel(): Promise<EmbeddingModelSettings> {
+  const res = await authFetch("/api/settings/embedding-model/unload", {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(res, "Failed to unload the embedding model"),
+    );
+  }
+  return fromApi(await res.json());
 }
 
 export async function resetEmbeddingModelSettings(): Promise<EmbeddingModelSettings> {

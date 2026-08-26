@@ -67,7 +67,7 @@ test("a model that is not on disk is offered as a real download", () => {
   // The whole point of the change: before this, saving only wrote the setting
   // and the weights arrived invisibly at the first index.
   assert.match(SECTION, /resolveEmbeddingModel\(trimmed, \{/);
-  assert.match(SECTION, /setPendingDownload\(resolution\)/);
+  assert.match(SECTION, /setResolution\(resolution\)/);
   // Same manager the Hub cards use, so progress, cancel and transport are shared.
   assert.match(SECTION, /downloadManager\.requestStart\(\{/);
   assert.match(SECTION, /kind: DOWNLOAD_KIND\.MODEL/);
@@ -89,15 +89,32 @@ test("the resolve runs before the save, not after it", () => {
 });
 
 test("the repo the resolve picked is what gets stored", () => {
-  // A conversion under another owner follows no naming rule, so the loader has
-  // to be told rather than left to re-derive it.
-  assert.match(SECTION, /persist\(\s*resolution\.embeddingModel,\s*resolution\.downloadRepo,/);
+  // A GGUF repo need not follow a naming rule, so the loader has to be told
+  // rather than left to re-derive it.
+  assert.match(SECTION, /persist\(trimmed, resolution\.downloadRepo, false\)/);
   assert.match(API, /gguf_repo: options\?\.ggufRepo \?\? null/);
 });
 
-test("the dialog names the repo it will download from", () => {
-  assert.match(SECTION, /settings\.general\.rag\.downloadSource/);
-  assert.equal(en.settings.general.rag.downloadSource, "From {repo}");
+test("a missing model gets a Download button, not a popup", () => {
+  // A modal for a one-click action was noise, and voice already had the shape.
+  assert.ok(!SECTION.includes("AlertDialog"), "no confirmation modal");
+  assert.match(SECTION, /const canDownload = Boolean\(/);
+  assert.match(SECTION, /onClick=\{\(\) => resolution && void startDownload\(resolution\)\}/);
+});
+
+test("the action slot offers Download or Unload, not Reset to default", () => {
+  assert.ok(
+    !SECTION.includes("resetEmbeddingModelSettings"),
+    "reset is reachable by picking the default in the list",
+  );
+  assert.match(SECTION, /settings\.general\.rag\.unload/);
+  assert.match(SECTION, /embeddingModel\?\.loaded \? \(/);
+});
+
+test("the button follows a transfer started anywhere", () => {
+  // Keyed off the shared manager, so a download begun from the Hub disables it too.
+  assert.match(SECTION, /useDownloadManagerStore\(\(state\) =>/);
+  assert.match(SECTION, /jobKeyOf\(/);
 });
 
 test("only the embedder's own GGUF is fetched, not every quant", () => {
@@ -129,5 +146,28 @@ test("General and Data show the same section, not two copies of it", () => {
       !tab.includes("loadEmbeddingModelSettings"),
       `${name} has no embedding logic of its own`,
     );
+  }
+});
+
+const VOICE_TAB = read("../src/features/settings/tabs/voice-tab.tsx");
+
+test("a dictation download is reported once, not twice", () => {
+  // Settings drew its own bar and Cancel beside the shared downloads panel,
+  // so one transfer showed two identical progress readouts.
+  assert.ok(!VOICE_TAB.includes("DownloadProgressBar"), "no second progress bar");
+  assert.ok(!VOICE_TAB.includes("sttCancelDownload"), "cancelling belongs to the panel");
+  // The status line still names the state; only the duplicate readout went.
+  assert.match(VOICE_TAB, /\{sttModelStatusText\}/);
+  assert.match(VOICE_TAB, /sttDownloading/);
+});
+
+test("the rate estimator went with the bar it fed", () => {
+  for (const dead of [
+    "downloadBytesPerSec",
+    "downloadEtaSeconds",
+    "computeTransferStats",
+    "downloadSamplesRef",
+  ]) {
+    assert.ok(!VOICE_TAB.includes(dead), `${dead} is unused now`);
   }
 });

@@ -339,6 +339,8 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
         "default_embedding_model": "unsloth/default-embed",
         "default_embedding_gguf_repo": "unsloth/default-embed-GGUF",
         "is_custom": True,
+        # Nothing is held in this process, so Unload has nothing to offer.
+        "loaded": False,
     }
 
 

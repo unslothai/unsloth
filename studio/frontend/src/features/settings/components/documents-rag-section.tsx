@@ -1,36 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogMedia,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { useChatRuntimeStore } from "@/features/chat";
 import { formatBytes, listCachedGguf, listCachedModels } from "@/features/hub";
+import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 import {
   DOWNLOAD_KIND,
   downloadManager,
+  jobKeyOf,
   scopedVariant,
+  useDownloadManagerStore,
 } from "@/features/hub/download-manager";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useCallback, useEffect, useState } from "react";
 import {
   EmbeddingModelBlockedError,
   type EmbeddingModelResolution,
   EmbeddingModelVerificationError,
-  resetEmbeddingModelSettings,
   resolveEmbeddingModel,
+  unloadEmbeddingModel,
   updateEmbeddingModelSettings,
 } from "../api/embedding-model";
 import { useEmbeddingModelStore } from "../stores/embedding-model-store";
@@ -65,10 +56,11 @@ export function DocumentsRagSection(): ReactElement {
   // Set after a 409 (unverifiable model); "Save anyway" applies to that pick only.
   const [forceCandidate, setForceCandidate] = useState<string | null>(null);
   const [isSavingEmbeddingModel, setIsSavingEmbeddingModel] = useState(false);
-  // Pending "download this?" confirmation, raised after a save lands on a
-  // model this machine does not hold.
-  const [pendingDownload, setPendingDownload] =
-    useState<EmbeddingModelResolution | null>(null);
+  // What /resolve last said about the saved model: drives the status line and
+  // whether the action row offers Download.
+  const [resolution, setResolution] = useState<EmbeddingModelResolution | null>(
+    null,
+  );
   // Repo ids with a complete cache, for the picker's on-device dot.
   const [cachedRepos, setCachedRepos] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -99,6 +91,24 @@ export function DocumentsRagSection(): ReactElement {
   useEffect(() => {
     void refreshCachedRepos();
   }, [refreshCachedRepos]);
+
+  // Resolve the model already saved, so the row reports its state on open
+  // rather than only after a pick.
+  const savedModel = embeddingModel?.embeddingModel;
+  useEffect(() => {
+    if (!savedModel) return;
+    let live = true;
+    void resolveEmbeddingModel(savedModel, { hfToken: hfToken || undefined })
+      .then((next) => {
+        if (live && next.embeddingModel === savedModel) setResolution(next);
+      })
+      .catch(() => {
+        // Offline: the row simply says nothing about disk state.
+      });
+    return () => {
+      live = false;
+    };
+  }, [savedModel, hfToken]);
 
   /** Persist the pick, recording the GGUF repo /resolve named so the loader
    * opens what was downloaded rather than re-deriving a name. */
@@ -153,7 +163,7 @@ export function DocumentsRagSection(): ReactElement {
         await persist(trimmed, null, true);
         return;
       }
-      let resolution: EmbeddingModelResolution | null = null;
+      let resolution: EmbeddingModelResolution;
       try {
         resolution = await resolveEmbeddingModel(trimmed, {
           hfToken: hfToken || undefined,
@@ -165,27 +175,21 @@ export function DocumentsRagSection(): ReactElement {
       }
       if (resolution.error) {
         // Forceable: the user may know something the probe cannot see.
+        setResolution(resolution);
         setForceCandidate(trimmed);
         setSaveError(resolution.error);
         return;
       }
+      setResolution(resolution);
       if (resolution.cached || !resolution.downloadRepo) {
         await persist(trimmed, resolution.downloadRepo, false);
         return;
       }
-      setPendingDownload(resolution);
+      // Not on disk: record the pick, then offer Download in the action row.
+      await persist(trimmed, resolution.downloadRepo, false);
     } finally {
       setIsSavingEmbeddingModel(false);
     }
-  };
-
-  const confirmDownload = async (resolution: EmbeddingModelResolution) => {
-    const saved = await persist(
-      resolution.embeddingModel,
-      resolution.downloadRepo,
-      false,
-    );
-    if (saved) await startDownload(resolution);
   };
 
   const startDownload = async (resolution: EmbeddingModelResolution) => {
@@ -219,26 +223,65 @@ export function DocumentsRagSection(): ReactElement {
     }
   };
 
-  const resetEmbeddingModel = async () => {
+  // The live job for the repo this model needs, so the button reflects a
+  // transfer started here or from anywhere else.
+  const downloadJobKey =
+    resolution?.downloadRepo && !resolution.cached
+      ? jobKeyOf(
+          DOWNLOAD_KIND.MODEL,
+          resolution.downloadRepo,
+          resolution.files?.length
+            ? scopedVariant(EMBEDDING_DOWNLOAD_SCOPE)
+            : null,
+        )
+      : null;
+  const downloading = useDownloadManagerStore((state) =>
+    downloadJobKey
+      ? state.jobs[downloadJobKey]?.state === "running" ||
+        state.jobs[downloadJobKey]?.state === "cancelling"
+      : false,
+  );
+  const canDownload = Boolean(
+    resolution && !resolution.cached && resolution.downloadRepo,
+  );
+  const onDevice = Boolean(resolution?.cached);
+  const statusTone: "pending" | "ready" | "error" | null = !embeddingModel
+    ? "pending"
+    : embeddingModelError
+      ? "error"
+      : downloading || isSavingEmbeddingModel
+        ? "pending"
+        : onDevice
+          ? "ready"
+          : null;
+  const statusText = !embeddingModel
+    ? t("settings.general.rag.checking")
+    : downloading
+      ? t("settings.general.rag.downloadingStatus")
+      : canDownload
+        ? resolution?.sizeBytes
+          ? t("settings.general.rag.notDownloadedSized", {
+              size: formatBytes(resolution.sizeBytes),
+            })
+          : t("settings.general.rag.notDownloaded")
+        : onDevice
+          ? embeddingModel.loaded
+            ? t("settings.general.rag.loaded")
+            : t("settings.general.rag.onDevice")
+          : "";
+
+  const unload = async () => {
     setIsSavingEmbeddingModel(true);
-    setSaveError(null);
-    setForceCandidate(null);
     try {
-      await save(resetEmbeddingModelSettings);
+      await save(unloadEmbeddingModel);
     } catch (error) {
-      setSaveError(
-        error instanceof Error
-          ? error.message
-          : t("settings.general.rag.saveError"),
-      );
+      toast.error(t("settings.general.rag.unloadFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
     } finally {
       setIsSavingEmbeddingModel(false);
     }
   };
-
-  const pendingSize = pendingDownload?.sizeBytes
-    ? formatBytes(pendingDownload.sizeBytes)
-    : null;
 
   return (
     <SettingsSection title={t("settings.general.rag.sectionTitle")}>
@@ -265,25 +308,52 @@ export function DocumentsRagSection(): ReactElement {
               {embeddingModelError}
             </span>
           ) : null}
-          <div className="flex items-center gap-2">
+          <div className="flex min-h-7 w-full items-center justify-between gap-3">
+            <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+              {statusTone ? (
+                <span
+                  className={cn(
+                    "size-1.5 shrink-0 rounded-full",
+                    statusTone === "pending"
+                      ? "animate-pulse bg-current"
+                      : statusTone === "ready"
+                        ? "bg-emerald-500"
+                        : "bg-destructive",
+                  )}
+                />
+              ) : null}
+              <span className="truncate">{statusText}</span>
+            </span>
             {forceCandidate ? (
               <Button
                 variant="outline"
                 size="sm"
+                className="h-7 shrink-0 px-2.5 text-xs"
                 disabled={isSavingEmbeddingModel}
                 onClick={() => void applyEmbeddingModel(forceCandidate, true)}
               >
                 {t("settings.general.rag.saveAnyway")}
               </Button>
-            ) : null}
-            {embeddingModel?.isCustom ? (
+            ) : canDownload ? (
               <Button
-                variant="ghost"
+                variant="outline"
                 size="sm"
-                disabled={isSavingEmbeddingModel}
-                onClick={() => void resetEmbeddingModel()}
+                className="h-7 shrink-0 px-2.5 text-xs"
+                disabled={downloading || isSavingEmbeddingModel}
+                onClick={() => resolution && void startDownload(resolution)}
               >
-                {t("settings.general.rag.resetAction")}
+                {downloading ? <Spinner className="mr-1.5" /> : null}
+                {t("settings.general.rag.download")}
+              </Button>
+            ) : embeddingModel?.loaded ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 shrink-0 px-2.5 text-xs"
+                disabled={isSavingEmbeddingModel}
+                onClick={() => void unload()}
+              >
+                {t("settings.general.rag.unload")}
               </Button>
             ) : null}
           </div>
@@ -292,60 +362,6 @@ export function DocumentsRagSection(): ReactElement {
           </span>
         </div>
       </SettingsRow>
-
-      <AlertDialog
-        open={pendingDownload !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingDownload(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogMedia className="size-12">
-              <HugeiconsIcon
-                icon={FileDatabaseIcon}
-                strokeWidth={1.75}
-                className="text-muted-foreground size-5"
-              />
-            </AlertDialogMedia>
-            <AlertDialogTitle>
-              {t("settings.general.rag.downloadConfirmTitle", {
-                model: pendingDownload?.embeddingModel ?? "",
-              })}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {pendingSize
-                ? t("settings.general.rag.downloadConfirmBody", {
-                    model: pendingDownload?.embeddingModel ?? "",
-                    size: pendingSize,
-                  })
-                : t("settings.general.rag.downloadConfirmBodyUnsized", {
-                    model: pendingDownload?.embeddingModel ?? "",
-                  })}
-            </AlertDialogDescription>
-            {pendingDownload?.downloadRepo ? (
-              <span className="text-muted-foreground font-mono text-ui-11">
-                {t("settings.general.rag.downloadSource", {
-                  repo: pendingDownload.downloadRepo,
-                })}
-              </span>
-            ) : null}
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(event) => {
-                event.preventDefault();
-                const request = pendingDownload;
-                setPendingDownload(null);
-                if (request) void confirmDownload(request);
-              }}
-            >
-              {t("settings.general.rag.download")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </SettingsSection>
   );
 }

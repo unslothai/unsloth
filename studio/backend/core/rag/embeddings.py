@@ -679,6 +679,32 @@ def _reset_backend() -> None:
         _backend_key = None
 
 
+def backend_is_loaded() -> bool:
+    """Whether an embedder is currently held in this process."""
+    with _backend_lock:
+        return _backend is not None
+
+
+def release_backend() -> bool:
+    """Drop the embedder and stop its llama-server, if one is running. Returns
+    whether anything was released.
+
+    Safe mid-ingestion: the next embed rebuilds, and the llama backend's own POST
+    retry already covers a server that went away under it."""
+    global _backend, _backend_key
+    with _backend_lock:
+        backend, _backend, _backend_key = _backend, None, None
+    if backend is None:
+        return False
+    shutdown = getattr(backend, "_shutdown", None)
+    if callable(shutdown):
+        try:
+            shutdown()
+        except Exception:  # noqa: BLE001 - already dropped; a stuck kill must not 500
+            logger.warning("embedding backend shutdown failed", exc_info = True)
+    return True
+
+
 def active_backend_is_llama() -> bool:
     """True when this process actually embeds via the llama-server (GGUF) backend.
 

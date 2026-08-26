@@ -1802,6 +1802,8 @@ class EmbeddingModelResponse(BaseModel):
     default_embedding_model: str
     default_embedding_gguf_repo: str
     is_custom: bool
+    # Whether an embedder is held in memory right now, for the Unload action.
+    loaded: bool = False
 
 
 def _embedding_model_response() -> EmbeddingModelResponse:
@@ -1811,7 +1813,16 @@ def _embedding_model_response() -> EmbeddingModelResponse:
         default_embedding_model = default_embedding_model(),
         default_embedding_gguf_repo = default_gguf_repo(),
         is_custom = get_stored_embedding_model() is not None,
+        loaded = _embedder_is_loaded(),
     )
+
+
+def _embedder_is_loaded() -> bool:
+    from core.rag import embeddings
+    try:
+        return embeddings.backend_is_loaded()
+    except Exception:  # noqa: BLE001 - probe must never block reading settings
+        return False
 
 
 def _ambient_hf_token() -> Optional[str]:
@@ -1896,9 +1907,9 @@ def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
         return None
     checked = " or ".join(repr(c) for c in candidates)
     return (
-        f"No GGUF weights found in {checked}, and no GGUF conversion of it was "
-        "found on Hugging Face. This install embeds with the llama-server backend, "
-        "which requires them."
+        f"No GGUF weights found in {checked}. This install embeds with the "
+        "llama-server backend, which needs them, and only the model's own "
+        "publisher is used as a source."
     )
 
 
@@ -1927,27 +1938,27 @@ def _embedding_gguf_candidates(model: str) -> list[str]:
     return rag_config.gguf_repo_candidates(model)
 
 
-# Owners whose GGUF conversions we will offer when the model's own owner
-# published none. Ordered; earlier is preferred.
-_GGUF_MIRROR_SEARCH_LIMIT = 12
+# A GGUF conversion must come from the same owner as the model. Repo names are
+# not proof of provenance, so an unsloth/ pick only ever downloads from unsloth.
+_GGUF_MIRROR_SEARCH_LIMIT = 25
 
 
 def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[str, str]]:
-    """``(repo, filename)`` for a GGUF conversion of ``model`` published under
-    another owner.
+    """``(repo, filename)`` for a GGUF conversion of ``model`` published by the same
+    owner under a name the -GGUF candidates do not cover.
 
-    Most embedders have no same-owner GGUF (unsloth/Qwen3-Embedding-4B has none;
-    Qwen/Qwen3-Embedding-4B-GGUF does), so without this the picker refuses almost
-    everything on a llama-server install. Only repos whose name starts with the
-    model's own name qualify, so this cannot wander onto an unrelated model."""
+    Same owner only: a third party's "Qwen3-Embedding-8B-GGUF" is an unverified
+    re-upload, and picking unsloth/X must download unsloth's own weights."""
     from core.rag import config as rag_config
     from core.rag.embed_llama_server import LlamaServerBackend
 
+    owner, _, name = model.rpartition("/")
+    if not owner:
+        return None
     try:
         from huggingface_hub import HfApi, list_repo_files
     except Exception:  # noqa: BLE001 - hub client unavailable
         return None
-    name = model.rpartition("/")[2]
     base = rag_config._QUANT_SUFFIX_RE.sub("", name).lower()
     if not base:
         return None
@@ -1955,6 +1966,7 @@ def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[
         hits = list(
             HfApi().list_models(
                 search = base,
+                author = owner,
                 filter = ["gguf"],
                 sort = "downloads",
                 limit = _GGUF_MIRROR_SEARCH_LIMIT,
@@ -1964,8 +1976,8 @@ def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[
     except Exception:  # noqa: BLE001 - offline or rate limited
         return None
     for hit in hits:
-        candidate = hit.id.rpartition("/")[2].lower()
-        if not candidate.startswith(base):
+        hit_owner, _, hit_name = hit.id.rpartition("/")
+        if hit_owner.lower() != owner.lower() or not hit_name.lower().startswith(base):
             continue
         try:
             filename = LlamaServerBackend._pick_gguf(list_repo_files(hit.id, token = hf_token))
@@ -2227,6 +2239,20 @@ def update_embedding_model(
         current_subject,
         model,
         payload.force,
+    )
+    return _embedding_model_response()
+
+
+@router.post("/embedding-model/unload", response_model = EmbeddingModelResponse)
+def unload_embedding_model(
+    current_subject: str = Depends(get_current_subject),
+) -> EmbeddingModelResponse:
+    """Drop the embedder and stop its llama-server. Indexing rebuilds it on demand."""
+    from core.rag import embeddings
+
+    released = embeddings.release_backend()
+    logger.info(
+        "settings.embedding_model_unloaded subject=%s released=%s", current_subject, released
     )
     return _embedding_model_response()
 

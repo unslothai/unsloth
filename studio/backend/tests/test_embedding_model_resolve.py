@@ -94,24 +94,48 @@ def test_cached_gguf_asks_for_no_download(client, monkeypatch):
     assert body["files"] is None
 
 
-def test_a_model_with_no_same_owner_gguf_falls_back_to_a_hub_conversion(client, monkeypatch):
-    """Most embedders have no same-owner GGUF: unsloth/Qwen3-Embedding-4B has none,
-    Qwen/Qwen3-Embedding-4B-GGUF does. Without the search fallback the picker
-    refused nearly everything on a llama-server install."""
+def test_the_search_fallback_finds_an_off_convention_name(client, monkeypatch):
+    """The companion may not be named "<model>-GGUF" at all, so the owner's repos
+    are searched before giving up."""
     monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
     monkeypatch.setattr(settings, "_cached_embedding_gguf", lambda candidates: False)
     monkeypatch.setattr(settings, "_remote_embedding_gguf_plan", lambda candidates, token: None)
     monkeypatch.setattr(
         settings,
         "_search_hub_for_gguf",
-        lambda m, token: ("Qwen/Qwen3-Embedding-4B-GGUF", "Qwen3-Embedding-4B-f16.gguf"),
+        lambda m, token: ("unsloth/embeddinggemma-300m-GGUF", "embeddinggemma-300M-F16.gguf"),
     )
     monkeypatch.setattr(settings, "_hf_files_size", lambda repo, files, token: None)
 
-    body = _resolve(client, "unsloth/Qwen3-Embedding-4B").json()
-    assert body["download_repo"] == "Qwen/Qwen3-Embedding-4B-GGUF"
-    assert body["files"] == ["Qwen3-Embedding-4B-f16.gguf"]
+    body = _resolve(client, "unsloth/embeddinggemma-300m-qat-q8_0-unquantized").json()
+    assert body["download_repo"] == "unsloth/embeddinggemma-300m-GGUF"
+    assert body["files"] == ["embeddinggemma-300M-F16.gguf"]
     assert body["error"] is None
+
+
+def test_the_search_never_leaves_the_model_owner(monkeypatch):
+    """Picking unsloth/X must download unsloth's own weights. A repo name is not
+    proof of provenance, so a third party's "X-GGUF" is not an acceptable source."""
+    seen: dict = {}
+
+    class _Hit:
+        def __init__(self, repo_id):
+            self.id = repo_id
+
+    class _Api:
+        def list_models(self, **kwargs):
+            seen.update(kwargs)
+            # The Hub can return neighbours; only the owner's own may be taken.
+            return [_Hit("someone-else/Qwen3-Embedding-8B-GGUF"), _Hit("unsloth/unrelated")]
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda *a, **k: ["x.gguf"])
+
+    assert settings._search_hub_for_gguf("unsloth/Qwen3-Embedding-8B", None) is None
+    # And the query itself is scoped to the owner, not filtered only afterwards.
+    assert seen["author"] == "unsloth"
 
 
 def test_nothing_anywhere_still_reports_the_save_reason(client, monkeypatch):
