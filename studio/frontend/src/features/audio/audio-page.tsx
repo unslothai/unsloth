@@ -319,6 +319,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   >([]);
   const [transcript, setTranscript] = useState("");
   const [transcribedName, setTranscribedName] = useState<string | null>(null);
+  const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [micRequestPending, setMicRequestPending] = useState(false);
   /** Safari and other WebKit builds ship no MediaRecorder, and an http LAN origin
@@ -510,6 +511,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     sttLoadedEngine,
   );
 
+  /** A transcript belongs to the pick that produced it, and never outlives it. */
+  const clearTranscript = useCallback(() => {
+    setTranscript("");
+    setTranscribedName(null);
+    setTranscriptError(null);
+  }, []);
+
   /** Forget the Transcribe pick, releasing its sidecar when this page owns it. */
   const releaseTranscribeSelection = useCallback(async () => {
     const selected = selectedSttRepoRef.current;
@@ -521,6 +529,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       selectedSttRepoRef.current = null;
       sttLoadGeneration.current += 1;
       sttLoadedByThisPage.current = null;
+      clearTranscript();
       setSelectedSttRepo(null);
     };
     if (!owned) {
@@ -535,7 +544,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     await unloadSttModel(sttEngineForRepoId(selected), claim);
     forget();
     await refreshSttStatus();
-  }, [refreshSttStatus, sttReady, sttLoadedModel]);
+  }, [clearTranscript, refreshSttStatus, sttReady, sttLoadedModel]);
 
   const ensureClipSrc = useCallback(async (clip: AudioGalleryClip) => {
     const cached = galleryCache.srcById.get(clip.id);
@@ -1173,6 +1182,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         if (!transitionMode("transcribe")) return;
         const sidecarKey = sttSidecarKeyFor(id);
         const engine = sttEngineForRepoId(id);
+        if (selectedSttRepoRef.current !== id) clearTranscript();
         deferredSttLoad.current = null;
         selectedSttRepoRef.current = id;
         setSelectedSttRepo(id);
@@ -1266,6 +1276,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       loadOrStageTtsModel(id, exactGguf, meta);
     },
     [
+      clearTranscript,
       ensureSttLoaded,
       isMac,
       loadOrStageTtsModel,
@@ -1555,6 +1566,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       const controller = new AbortController();
       transcriptionAbort.current = controller;
       setBusy("transcribing");
+      // A run owns the pane from the moment it starts: leaving the previous result up
+      // let a failure read as this file's transcript, and exported it under this name.
+      clearTranscript();
       setTranscribedName(name);
       try {
         const text = await transcribeAudioBlob(blob, {
@@ -1568,9 +1582,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         if (!text) toast.info("The model heard no speech in that audio.");
       } catch (error) {
         if (controller.signal.aborted) return;
-        toast.error(
-          error instanceof Error ? error.message : "Transcription failed.",
-        );
+        const message =
+          error instanceof Error ? error.message : "Transcription failed.";
+        if (activeRef.current) setTranscriptError(message);
+        toast.error(message);
       } finally {
         if (transcriptionAbort.current === controller) {
           transcriptionAbort.current = null;
@@ -1579,7 +1594,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         }
       }
     },
-    [selectedSttRepo, sttLoadedModel, sttLoadedEngine, refreshSttStatus],
+    [
+      clearTranscript,
+      selectedSttRepo,
+      sttLoadedModel,
+      sttLoadedEngine,
+      refreshSttStatus,
+    ],
   );
 
   const handleRecordToggle = useCallback(async () => {
@@ -2193,6 +2214,15 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                     {transcript}
                   </p>
                 </>
+              ) : transcriptError ? (
+                <div className="flex flex-col gap-1">
+                  <p className="text-ui-13 font-medium text-destructive">
+                    Could not transcribe {transcribedName ?? "that audio"}.
+                  </p>
+                  <p className="text-ui-13 text-muted-foreground">
+                    {transcriptError}
+                  </p>
+                </div>
               ) : busy !== "transcribing" ? (
                 <p className="text-ui-13 text-muted-foreground">
                   The transcript appears here. It is not stored: copy or
