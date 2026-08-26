@@ -721,13 +721,26 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         # (_resolve_inherited_extra_args); the stripper is imported rather than mirrored so
         # the two paths cannot drift over which flag belongs to which group -- the allow-list
         # this module stays out of is validate_extra_args, which remains the caller's job.
-        from core.inference.llama_server_args import strip_shadowing_flags
+        from core.inference.llama_server_args import (
+            matches_explicit_ctx_override,
+            strip_shadowing_flags,
+        )
+
+        # Context's load-time value is a VRAM-fit target, not an allocation, so a
+        # MATCHING -c/--ctx-size is the user's opt-in to exceed the safe threshold
+        # and survives; /props then publishes what was really allocated. Stale and
+        # malformed flags are still stripped. The test lives beside the stripper
+        # because /load's inheritance path asks it too and must not drift.
+        matching_explicit_ctx = matches_explicit_ctx_override(
+            kwargs["llama_extra_args"], kwargs.get("max_seq_length")
+        )
+
         kwargs["llama_extra_args"] = strip_shadowing_flags(
             kwargs["llama_extra_args"],
             # Only the groups this override actually supplies, as the route gates on its
             # request's set fields: a flag with no first-class field behind it is the user's
             # only way to set that knob and still passes through.
-            strip_context = "max_seq_length" in kwargs,
+            strip_context = "max_seq_length" in kwargs and not matching_explicit_ctx,
             strip_cache = "cache_type_kv" in kwargs,
             strip_spec = "speculative_type" in kwargs or "spec_draft_n_max" in kwargs,
             strip_template = "chat_template_override" in kwargs,

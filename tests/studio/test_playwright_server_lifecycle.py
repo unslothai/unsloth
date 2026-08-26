@@ -194,7 +194,7 @@ def test_start_vite_refuses_a_tree_with_no_frontend_toolchain(
 ) -> None:
     """The failure #9654 exists to name, and the reason the refusal has to be up front.
 
-    A job that installs Studio from a warm frontend-dist cache never builds the frontend, so
+    A job that installs Unsloth from a warm frontend-dist cache never builds the frontend, so
     setup.sh skips its npm install and node_modules is never created. Reaching npm in that
     state costs a spawn and returns `vite exited with code 127`, which is indistinguishable
     from vite crashing. So the assertion is not only that it raises: it is that nothing was

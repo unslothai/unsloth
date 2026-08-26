@@ -9,7 +9,7 @@ pure-ASGI middleware tracks in-flight inference requests so a long stream that
 outlives the TTL is never unloaded mid-response.
 
 The same loop and the same middleware drive the image/video side (media_keepwarm),
-so Studio has one idle mechanism rather than one per backend.
+so Unsloth has one idle mechanism rather than one per backend.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ _preview_inflight = 0
 # Blocked on the unload gate, not yet in _inflight: the idle loop must not unload while one waits.
 _pending = 0
 # Subset of _pending that is /p/ preview traffic, so the busy guard can tell a queued
-# Studio request from a queued preview.
+# Unsloth request from a queued preview.
 _preview_pending = 0
 # Non-preview requests past FastAPI auth at the local-inference choke point. The preview
 # busy guard counts these, not raw _inflight, so a pre-auth/unauthenticated tracked request
@@ -94,8 +94,8 @@ _INFERENCE_SUFFIXES = (
 
 # Tracked above (they hold the GPU, so the in-flight count must see them) but served by the
 # diffusion/video engines, never the llama slot. A successful one therefore did NOT run against
-# the resident chat model and must not adopt it for Studio: clearing the marker on an image or
-# video generation would leave a still-preview-owned checkpoint looking Studio-owned, and the
+# the resident chat model and must not adopt it for Unsloth: clearing the marker on an image or
+# video generation would leave a still-preview-owned checkpoint looking Unsloth-owned, and the
 # next preview for a different checkpoint would 503 on the slot guard.
 _NON_LLM_SLOT_SUFFIXES = (
     "/images/generate",
@@ -214,7 +214,7 @@ def other_admitted_inference_count() -> int:
 
 def other_non_preview_pending_count() -> int:
     """Non-preview requests queued on the lifecycle gate (_pending, not yet in flight).
-    The preview swap guard must count these: a queued Studio request would otherwise start
+    The preview swap guard must count these: a queued Unsloth request would otherwise start
     against the model a preview swapped in while it waited. The current request is a preview
     already in flight, so not in _pending."""
     with _lock:
@@ -280,9 +280,9 @@ def preview_swapped_since_entry(scope) -> bool:
 
 
 def _claim_non_preview_slot() -> None:
-    """A non-preview request that ran against the local model (2xx) adopts it for Studio,
+    """A non-preview request that ran against the local model (2xx) adopts it for Unsloth,
     so clear preview ownership -- a later preview for another checkpoint then 503s instead
-    of swapping the model out from under an active Studio conversation. Claiming on success
+    of swapping the model out from under an active Unsloth conversation. Claiming on success
     (not before) means a per-route-rejected request never strands a preview-owned model.
     Lazily imported: routes.inference imports this module."""
     try:
@@ -302,7 +302,7 @@ _UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_untracked"
 _TRACKED_SCOPE_KEY = "_unsloth_keepwarm_tracked"
 
 # A preview route waits on its own serializer after middleware admission. While queued it
-# must be pending, not active: a Studio swap holds the lifecycle gate while draining active
+# must be pending, not active: an Unsloth swap holds the lifecycle gate while draining active
 # requests, and the queued preview needs that same gate after it gets the serializer.
 _PREVIEW_SERIALIZER_WAIT_SCOPE_KEY = "_unsloth_keepwarm_preview_serializer_wait"
 
@@ -320,13 +320,13 @@ _SWAP_GEN_AT_ENTRY_KEY = "_unsloth_keepwarm_swap_gen_at_entry"
 # Set on the scope by a streaming route that failed after its 200 headers (an SSE error
 # chunk, a passthrough relaying a mid-stream error while HTTP stays 200). The claim keys
 # off HTTP status alone, so without this a failed stream would adopt a preview-owned model
-# for Studio; the claim skips a flagged response.
+# for Unsloth; the claim skips a flagged response.
 _RESPONSE_FAILED_SCOPE_KEY = "_unsloth_keepwarm_response_failed"
 
 
 def mark_response_failed(scope) -> None:
     """Flag a response that returned 2xx headers but then failed, so the middleware doesn't
-    treat it as a successful non-preview completion and claim the slot for Studio. Safe to
+    treat it as a successful non-preview completion and claim the slot for Unsloth. Safe to
     call repeatedly; a no-op on a non-dict scope."""
     if isinstance(scope, dict):
         scope[_RESPONSE_FAILED_SCOPE_KEY] = True
@@ -652,7 +652,7 @@ class LlamaKeepWarmMiddleware:
         ended = {"done": False}
         status = {"code": None}
         # Set once the terminal body frame (more_body False) is sent: only a response that
-        # completed cleanly adopts the model for Studio. A client disconnect after the 200
+        # completed cleanly adopts the model for Unsloth. A client disconnect after the 200
         # headers raises before that frame (an OSError that _SameTaskStreamingResponse turns
         # into a CancelledError for the body generator, which finishes the monitor and
         # re-raises without flagging the scope), so a cancelled stream never claims the slot.
@@ -669,12 +669,12 @@ class LlamaKeepWarmMiddleware:
             if not chat_tracked:
                 return
             # A non-preview 2xx that completed cleanly ran against the local model and adopts
-            # it for Studio, so clear preview ownership. Skip on a per-route 4xx/5xx (never
+            # it for Unsloth, so clear preview ownership. Skip on a per-route 4xx/5xx (never
             # strand a preview-owned model), count_tokens (tokenize only), a failed/cancelled
             # stream, and an untracked balance-only request. Claim BEFORE dropping the admitted
             # count (and the in-flight count) below: load_model_for_preview's busy guard keys on
             # other_admitted_inference_count(), so decrementing first opens a window where a
-            # preview sees no admitted Studio traffic and a still-preview-owned slot, swaps in,
+            # preview sees no admitted Unsloth traffic and a still-preview-owned slot, swaps in,
             # and this delayed claim then clears the wrong checkpoint; while still counted the
             # guard refuses that swap.
             if (

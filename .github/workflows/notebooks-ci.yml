@@ -293,6 +293,7 @@ jobs:
         # exist and the step fails with "Can't find 'action.yml'".
         uses: ./unsloth/.github/actions/pip-cache-restore
         with:
+          name: notebooks-api
           key-files: |
             unsloth/.github/workflows/notebooks-ci.yml
 
@@ -428,6 +429,7 @@ jobs:
         # exist and the step fails with "Can't find 'action.yml'".
         uses: ./unsloth/.github/actions/pip-cache-restore
         with:
+          name: notebooks-colab
           # The freeze is the pin set, so it is what the downloads depend on. The
           # workflow comes too because the seed step rewrites those pins in place
           # -- CPU index mapping, skips, spoofs -- so an edit there changes what

@@ -417,7 +417,7 @@ function SliderField({
   );
 }
 
-// Matches the field-label style used across Studio (export/chat settings).
+// Matches the field-label style used across Unsloth (export/chat settings).
 function Field({
   label,
   hint,

@@ -135,7 +135,7 @@ def is_downloadable_ref(requested: str) -> bool:
 
 
 def looks_like_gguf_hub_repo_id(repo_id: str) -> bool:
-    """Whether *repo_id* names a Studio catalog entry, not a LiteLLM/OpenRouter label.
+    """Whether *repo_id* names an Unsloth catalog entry, not a LiteLLM/OpenRouter label.
 
     Namespaced ids without a GGUF suffix are foreign routing labels (``openai/gpt-4o``).
     ``-GGUF`` and the ``unsloth/`` namespace mark ids clients pick from this server's
@@ -509,7 +509,7 @@ async def maybe_auto_download(
     only ever sees an already-downloaded model.
 
     ``subject`` and ``via_api_key`` describe the caller for the monitor row this
-    opens: the same /v1 endpoints serve Studio's own chat on a session JWT, so the
+    opens: the same /v1 endpoints serve Unsloth's own chat on a session JWT, so the
     download is not API-key traffic unless the request that asked for it was.
     """
     global _active
@@ -889,7 +889,7 @@ async def _dispatch(
 
     monitor_id = api_monitor.record_lifecycle(
         # Reason "api" since only /v1 reaches auto-download, but that is not API-key
-        # traffic: Studio's chat calls /v1 on a JWT, and marking its download would pop
+        # traffic: Unsloth's chat calls /v1 on a JWT, and marking its download would pop
         # the overlay mid-chat. So attribution comes from the request, plus its caller,
         # since the row is shared.
         event = "download",

@@ -9,7 +9,7 @@ the first install. A standard A/B at four repetitions is 24 cells of the 243 sec
 request after that answers 401. It presents as an intermittent failure and it is not one: it is
 the clock, and it is reproducible to the second.
 
-The fake Studio below issues tokens with a six second life instead of an hour's, and the tests drive
+The fake Unsloth below issues tokens with a six second life instead of an hour's, and the tests drive
 `token()` with a one second margin, so the ratio between the two is the harness's own (15 minutes
 against 60) at a scale a test can wait for. `test_the_token_a_run_was_handed_stops_working` is the
 control that shows the server really does stop accepting an expired token, so the tests underneath
@@ -42,7 +42,7 @@ from studiobench.runtime.lifecycle import (  # noqa: E402
 )
 from studiobench.runtime.seeder import Seeder  # noqa: E402
 
-#: How long the fake Studio's access tokens live. An hour compressed into something a test can sit
+#: How long the fake Unsloth's access tokens live. An hour compressed into something a test can sit
 #: through, and long enough that a loaded machine cannot expire one mid-request.
 TOKEN_TTL_S = 6.0
 #: The margin the tests below drive `token()` with. The REAL ratio matters: a margin far shorter
@@ -62,7 +62,7 @@ class _State:
         self.logins = 0
         self.login_attempts = 0
         self.rejections = 0
-        #: Set to reject EVERY token once, whatever its `exp` says: a Studio restarted underneath
+        #: Set to reject EVERY token once, whatever its `exp` says: an Unsloth restarted underneath
         #: the run, or a clock this process cannot see.
         self.reject_next = 0
         self.lock = threading.Lock()
@@ -226,7 +226,7 @@ def test_the_token_is_replaced_before_it_expires_not_after_it_fails(studio, monk
 
 def test_a_401_that_arrives_anyway_is_recovered(studio):
     """The reactive half. A token this process believes is fresh can still be refused: a clock
-    offset against the server, or a Studio restarted underneath the run. One retry, then the
+    offset against the server, or an Unsloth restarted underneath the run. One retry, then the
     refusal is real and is raised."""
     base_url, state = studio
     auth = authenticate(base_url, "bench", PASSWORD, new_password = PASSWORD)
@@ -275,7 +275,7 @@ def test_a_login_that_is_refused_is_not_retried_as_if_it_were_the_request(studio
 def test_a_clock_that_makes_every_token_look_stale_stops_the_proactive_half(studio):
     """The runaway guard. `needs_refresh` reads the server's `exp` against THIS process's clock.
 
-    A Studio 45 minutes behind, or one whose `ACCESS_TOKEN_EXPIRE_MINUTES` is shorter than the
+    An Unsloth 45 minutes behind, or one whose `ACCESS_TOKEN_EXPIRE_MINUTES` is shorter than the
     margin -- which is exactly this fake studio, six seconds against fifteen minutes -- makes every
     token ever issued look like it is about to expire, and every request would then log in again
     and append another init script to the browser context. One rotation is enough to find that out.

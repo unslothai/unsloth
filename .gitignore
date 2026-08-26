@@ -250,5 +250,5 @@ Speech_12dB_s16.flac
 
 # Generated at test time by tests/studio/install/test_selection_logic.py, which points
 # storage_roots.studio_root at it. It is a mutable SQLite runtime database, not a fixture,
-# so a test run or a Studio start rewrites it and dirties the checkout.
+# so a test run or an Unsloth start rewrites it and dirties the checkout.
 .studio-test-root/
