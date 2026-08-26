@@ -1998,7 +1998,7 @@ def test_a_superseded_catalog_read_does_not_commit(monkeypatch):
 def test_chat_drops_a_catalog_another_worker_rebound(monkeypatch):
     """The OAuth bundle is shared through the DB; the catalog is per process.
 
-    Studio serializes token refreshes across workers on purpose, so this process can hold
+    Unsloth serializes token refreshes across workers on purpose, so this process can hold
     a catalog for an account the connection has since moved off.
     """
     stale_slug = "gpt-5.7-nova"
@@ -2035,7 +2035,7 @@ def test_the_model_route_reports_a_dead_connection(monkeypatch):
             "provider-10", _credential = ("user", "session"), via_api_key = False
         )
     )
-    # Not a 401: authFetch would read that as an expired Studio session, refresh it and
+    # Not a 401: authFetch would read that as an expired Unsloth session, refresh it and
     # retry, and the retry would look like a healthy curated list.
     assert answered["source"] == "reauthorization_required"
     assert [model["id"] for model in answered["models"]] == curated

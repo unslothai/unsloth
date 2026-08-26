@@ -4283,7 +4283,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               specDrafterKind: null,
             }
           : {}),
-        // Switching to a connection whose provider cannot run Studio's tool
+        // Switching to a connection whose provider cannot run Unsloth's tool
         // loop disables Deep Research; a capable one keeps the user's choice.
         ...(clampsDeepResearch ? { deepResearchEnabled: false } : {}),
       };

@@ -1883,7 +1883,7 @@ function ThreadNewChatSwitch({
     // Guarded, unlike the reads elsewhere that pass an id the runtime just handed back: this
     // one is REMEMBERED, in a ref that outlives every view switch. getItemById() THROWS
     // "Entry not available in the store" for a dropped id rather than returning undefined, so
-    // the optional chain would not catch it and the effect would take the app down. Studio
+    // the optional chain would not catch it and the effect would take the app down. Unsloth
     // deletes through tombstones today; the point is not to depend on that.
     let recordedRemoteId: string | undefined;
     if (recorded) {
@@ -2147,7 +2147,7 @@ function NonceThreadResumeRestore({
     if (!remoteId) {
       return;
     }
-    // ...and neither must a chat the user deleted while they were away. Studio deletes by
+    // ...and neither must a chat the user deleted while they were away. Unsloth deletes by
     // tombstoning storage rather than calling runtime.threads.delete(), so the runtime item
     // and its remoteId both survive and every check above still passes. On remoteId, which
     // is the id storage and the sidebar delete agree on. Restoring here would undo

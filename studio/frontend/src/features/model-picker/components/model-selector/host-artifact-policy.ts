@@ -28,7 +28,7 @@ export function classifyHost({
   deviceBackend?: string | null;
   budgetKnown?: boolean;
 }): HostClass {
-  // Mac outranks the backend string. Apple GPUs report as available and Studio may name the
+  // Mac outranks the backend string. Apple GPUs report as available and Unsloth may name the
   // backend mlx or cpu depending on what torch found, but no Mac can place a Modular Diffusers
   // workflow: it needs mem_get_info, which torch.mps does not expose. video.py refuses the load.
   if (deviceType === "mac") return "gguf-only";

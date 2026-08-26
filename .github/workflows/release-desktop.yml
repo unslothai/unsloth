@@ -395,7 +395,7 @@ jobs:
           PY
 
           if [ "$GITHUB_REPOSITORY" = "wasimysaid/unsloth" ]; then
-            echo "Fork-only updater A/B build: skipping the upstream PyPI-to-Studio release stamp check."
+            echo "Fork-only updater A/B build: skipping the upstream PyPI-to-Unsloth release stamp check."
           elif [ -f scripts/stamp_studio_release.py ]; then
             mapfile -t dists < <(find "$RUNNER_TEMP/pypi-unsloth-dist" -type f \( -name '*.whl' -o -name '*.tar.gz' \) | sort)
             if [ "${#dists[@]}" -eq 0 ]; then

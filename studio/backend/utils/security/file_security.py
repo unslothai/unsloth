@@ -111,7 +111,7 @@ def _file_suffix(path: str) -> str:
 def _hf_cache_snapshot_ref(local_path: str) -> Optional[tuple[str, str, Path]]:
     """Return provenance for an HF-cache snapshot path, else ``None``.
 
-    An inactive Studio cache loads by its snapshot path but keeps the
+    An inactive Unsloth cache loads by its snapshot path but keeps the
     ``models--org--repo/snapshots/<rev>`` layout, so the gate recovers its provenance
     and scans that exact commit instead of exempting it.
     """

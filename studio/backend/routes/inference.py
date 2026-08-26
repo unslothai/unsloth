@@ -423,7 +423,7 @@ def _tts_max_new_tokens(payload, prompt: Optional[str] = None) -> int:
 
     ``prompt`` shares the loaded context with the output, so a Max tokens slider near the
     ceiling plus a long prompt overflowed the context the page loaded with. Capped here so
-    both the Studio and OpenAI routes inherit it.
+    both the Unsloth and OpenAI routes inherit it.
     """
     budget = min(
         AUDIO_GENERATION_MAX_TOKENS,
@@ -613,7 +613,7 @@ def _choice_seed(
 def _raise_unsupported_n(path_label: str, monitor_id: Optional[str] = None) -> None:
     """Refuse n > 1 on a path that cannot sample twice.
 
-    Pass the monitor row when one is already open, or Studio keeps reporting a
+    Pass the monitor row when one is already open, or Unsloth keeps reporting a
     generation that was refused before it began.
     """
     message = f"n > 1 is not supported for {path_label}."
@@ -1556,7 +1556,7 @@ def _openai_llama_admission_budget(llama_backend) -> Optional[int]:
     has it. ``context_length`` is NOT that once the server has been read back:
     ``_reconcile_effective_ctx_with_server`` adopts the PER-SLOT ``n_ctx`` from
     ``default_generation_settings`` into it, and computes the total alongside as
-    ``n_ctx * slots`` (slots being 1 only under ``--kv-unified``). Studio appends
+    ``n_ctx * slots`` (slots being 1 only under ``--kv-unified``). Unsloth appends
     that flag only when ``n_parallel > 1`` and the binary supports it, so a build
     without it, or a user ``--no-kv-unified``, gives N private caches while
     ``context_length`` names one of them: an N-fold under-budget that collapses
@@ -1598,7 +1598,7 @@ def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
 def _openai_llama_admission_media_tokens(payload) -> int:
     """Media the request carries in Unsloth's legacy top-level fields, in tokens.
 
-    Studio's own composer sends every attachment as ``image_base64`` /
+    Unsloth's own composer sends every attachment as ``image_base64`` /
     ``audio_base64`` / ``video_base64``, never as ``messages`` content parts, and the
     generation path splices them into the prompt AFTER this estimate is taken
     (``_openai_messages_for_gguf_chat``, ``_inject_audio_part``,
@@ -1682,7 +1682,7 @@ def _openai_llama_admission_tokens(
     # Keyed on the resolved execution path, NOT on payload.tools. The loop opens on
     # `enable_tools`, `mcp_enabled`, the CLI --enable-tools policy or a checkpoint
     # repair, none of which need a client `tools` array, so keying on the array
-    # undercharged Studio's own tool traffic; and a passthrough or /responses request
+    # undercharged Unsloth's own tool traffic; and a passthrough or /responses request
     # that merely forwards `tools` to llama-server runs ONE generation per HTTP call,
     # so charging it the whole cache serialised the client-driven loop for nothing.
     if tool_loop:
@@ -2600,7 +2600,7 @@ def _request_has_api_key(request: Any) -> bool:
 
 
 def _request_is_internal_workflow(request: Any) -> bool:
-    """True only for Studio's own workflow keys (Deep Research, data recipes).
+    """True only for Unsloth's own workflow keys (Deep Research, data recipes).
 
     Checked against the stored internal-key hashes, never a prefix, so a caller
     cannot mint one by sending an sk-unsloth-looking bearer. Fails closed when the
@@ -2620,7 +2620,7 @@ def _request_is_internal_workflow(request: Any) -> bool:
 def _request_is_saved_credential_workflow(request: Any) -> bool:
     """True only for the one workflow key allowed to spend a saved provider credential.
 
-    "Internal" is not the licence: Studio mints internal keys for data recipes
+    "Internal" is not the licence: Unsloth mints internal keys for data recipes
     too, and ``routes/data_recipe/jobs.py`` writes that key straight into the
     recipe's own provider block so a user-authored recipe subprocess holds it.
     Granting every internal key the saved-connection exception would therefore
@@ -2650,16 +2650,16 @@ def _request_is_saved_credential_workflow(request: Any) -> bool:
 def _request_used_api_key(request: Any) -> bool:
     """True when this request authenticated with a third party's sk-unsloth key.
 
-    Studio's own chat hits these same endpoints with a session JWT, so this is
+    Unsloth's own chat hits these same endpoints with a session JWT, so this is
     what separates "someone is using Unsloth as an API server" from "someone is
-    using Unsloth". Internal workflow keys (Deep Research, data recipes) are Studio
+    using Unsloth". Internal workflow keys (Deep Research, data recipes) are Unsloth
     itself and are excluded, or every research step would pop the API monitor open.
     """
     # Total by construction: this must never fail a load. It also gates durable API
-    # usage receipts, so an indeterminate key origin must not attribute Studio's own
+    # usage receipts, so an indeterminate key origin must not attribute Unsloth's own
     # workflow traffic to an external caller. Saved-secret authorization uses
     # _request_has_api_key instead, narrowed by _request_is_internal_workflow where a
-    # Studio workflow needs its own connection.
+    # Unsloth workflow needs its own connection.
     token = _request_api_key_token(request)
     if token is None:
         # keyless traffic is someone using Unsloth as an API server too
@@ -3209,13 +3209,13 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
 
     ``enable_tools: true`` plus ``enabled_tools: ["web_search", ...]`` is the
     documented way to ask a provider for its hosted tools, and it is what every
-    bundle shipped before Studio's loop reached external providers. Read only by
+    bundle shipped before Unsloth's loop reached external providers. Read only by
     name, the same bytes now also describe a local-loop request, and taking the
-    loop would swap the provider's search for Studio's and silently drop the
-    hosted-only names (code_execution, image_generation, web_fetch) that Studio
+    loop would swap the provider's search for Unsloth's and silently drop the
+    hosted-only names (code_execution, image_generation, web_fetch) that Unsloth
     has no implementation of.
 
-    Anything that names a Studio-only tool (python, terminal,
+    Anything that names an Unsloth-only tool (python, terminal,
     search_knowledge_base) or asks for MCP is unambiguous and keeps the loop, and
     so does every self-hosted provider, which declares no hosted tools at all.
     """
@@ -3230,13 +3230,13 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
         return False
     # Matched against the whole hosted vocabulary rather than this provider's own
     # slice: the pre-PR bundle sent one list of hosted names per turn, and a name
-    # the provider does not implement was simply ignored by it. Studio has no
+    # the provider does not implement was simply ignored by it. Unsloth has no
     # local implementation of those names either, so reading such a request as
     # "local" would drop them just the same, only after also replacing the
     # provider's search with ours.
     if not all(isinstance(name, str) and name in HOSTED_TOOL_NAMES for name in enabled):
         return False
-    # run_tools_locally only decides the ambiguous names, the ones Studio can
+    # run_tools_locally only decides the ambiguous names, the ones Unsloth can
     # also run itself. A selection with no SELECTED local stand-in stays hosted
     # whatever the flag says: honouring it would enter the loop, find an empty
     # catalog, fall back to the same passthrough, and skip the confirmation
@@ -3273,14 +3273,14 @@ def _tool_call_names(message) -> list[Optional[str]]:
 
 
 def _only_studio_memory_tool_history(payload) -> bool:
-    """True when the request's ONLY tool history is Studio's own conversation memory.
+    """True when the request's ONLY tool history is Unsloth's own conversation memory.
 
     Once the model uses `search_conversation`, the branch keeps an assistant `tool_calls`
     turn and its `role="tool"` result and the client replays both forever. Read as a CLIENT
     tool contract, that history routes every later turn to the llama-server passthrough,
     which runs no context fit, so the epoch, the carried-forward block and the automatic
-    recall vanish one turn after the compaction that created them. It is Studio's own
-    read-only tool run by Studio's own loop, so it must route as a tools-on Studio chat.
+    recall vanish one turn after the compaction that created them. It is Unsloth's own
+    read-only tool run by Unsloth's own loop, so it must route as a tools-on Unsloth chat.
 
     Deliberately strict: a caller-supplied `tools` catalog, an unnamed call or result, or
     any other tool name means "not ours", so a real client tool loop is never claimed.
@@ -4370,10 +4370,10 @@ async def _select_request_tools(
     # tool is still absent (the archive is written mid-request) and the forced recall
     # covers that turn. getattr, because this helper also serves the token-count request
     # model, which carries no thread_id.
-    # Follows the ARCHIVE, not the caller's allowlist: Studio always sends an explicit
+    # Follows the ARCHIVE, not the caller's allowlist: Unsloth always sends an explicit
     # enabled_tools array and has no reason to name an internal tool it shows no pill for,
     # so the filter above removed search_conversation and neither it nor the compaction
-    # nudge gated on it ever reached a Studio chat. It is read-only and always-safe, so it
+    # nudge gated on it ever reached an Unsloth chat. It is read-only and always-safe, so it
     # is added on that condition rather than requested.
     has_archive = _thread_has_conversation_archive(getattr(payload, "thread_id", None))
     tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
@@ -5653,7 +5653,7 @@ def _should_strip_tensor_split(request: LoadRequest) -> bool:
     free-VRAM split. Either way an inherited --tensor-split must go, else the
     cleared case silently keeps the stale ratio while status reports None.
     Unlike _should_strip_split_mode this leaves --split-mode untouched, so a
-    user's row/none/layer mode survives a Studio split-ratio edit. When the
+    user's row/none/layer mode survives an Unsloth split-ratio edit. When the
     Tensor Parallelism toggle IS overriding the mode, _should_strip_split_mode
     (called alongside this at every site) strips --split-mode anyway.
     """
@@ -6212,7 +6212,7 @@ def _llama_status_model_ids(llama_backend) -> "tuple[Optional[str], Optional[str
 
 
 def _llama_status_checkpoint_id(llama_backend) -> Optional[str]:
-    """The exact string a Studio client holds as ``params.checkpoint`` for the loaded
+    """The exact string an Unsloth client holds as ``params.checkpoint`` for the loaded
     GGUF: ``status.model_identifier ?? status.active_model``. Built from the same pair the
     status handler returns so the two cannot drift."""
     display_model_id, model_identifier = _llama_status_model_ids(llama_backend)
@@ -6488,7 +6488,7 @@ async def _maybe_auto_download_model(
             hf_token = _auto_download_hf_token(fastapi_request),
             require_vision = require_vision,
             subject = current_subject,
-            # These endpoints also serve Studio's chat on a JWT, so only mark real API traffic.
+            # These endpoints also serve Unsloth's chat on a JWT, so only mark real API traffic.
             via_api_key = _request_used_api_key(fastapi_request),
         )
     except Exception as exc:
@@ -6529,7 +6529,7 @@ def _record_refused_request(
     never runs. Only the caller that dispatched a download gets a row from
     ``record_lifecycle``; anyone refused while it runs left no trace at all, and a
     download some other caller started carries their attribution, so an API-key
-    client waiting on it never opened the overlay and read as Studio's own traffic.
+    client waiting on it never opened the overlay and read as Unsloth's own traffic.
     """
     state = getattr(fastapi_request, "state", None)
     if getattr(state, "skip_api_monitor", False):
@@ -6911,7 +6911,7 @@ async def _maybe_auto_switch_model(
     exits; a route that still has its own capability/backend checks that can reject
     (e.g. GGUF-only /v1/completions, /audio/generate) passes ``False`` and claims
     itself only after those checks pass, so a later rejection can't strand a
-    preview-owned model as Studio-owned. ``require_image`` makes the vision check
+    preview-owned model as Unsloth-owned. ``require_image`` makes the vision check
     that rejection modality-aware, since an audio request needs the projector but
     not a vision tower. ``modality_label`` names the inputs actually attached, so
     the rejection does not report a modality the request never carried.
@@ -6939,7 +6939,7 @@ async def _maybe_auto_switch_model(
     _swap_scope = getattr(fastapi_request, "scope", None)
     note_admitted_inference(_swap_scope)
     # A preview swapped a different checkpoint in since this request entered; running now
-    # would serve the preview's model to Studio, so reject and let the client retry. Covers a
+    # would serve the preview's model to Unsloth, so reject and let the client retry. Covers a
     # request that waited on the gate through the swap AND one that passed the gate before it
     # but is still pre-admission. Deferred here (not a middleware 503) so an external-provider
     # request that untracks and returns before this hook is never rejected for a swap it never
@@ -6955,7 +6955,7 @@ async def _maybe_auto_switch_model(
     # absent so it falls through instead of raising in the membership checks below.
     if not isinstance(requested_model, str) or not requested_model:
         # Omitted/default model on a non-preview call runs against the resident model,
-        # so claim it for Studio (a preview keeps its own ownership).
+        # so claim it for Unsloth (a preview keeps its own ownership).
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
         return
@@ -6980,7 +6980,7 @@ async def _maybe_auto_switch_model(
             _claim_slot_for_non_preview(fastapi_request)
         return
 
-    # The common Studio path names the model that is already serving. Resolve that
+    # The common Unsloth path names the model that is already serving. Resolve that
     # from resident state before consulting the filesystem index: rebuilding a stale
     # multi-root index here used to hold the request for seconds before streaming.
     if auto_switch_on and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
@@ -7041,7 +7041,7 @@ async def _maybe_auto_switch_model(
                 )
             ):
                 # Unknown name, model already resident: the non-preview call uses it,
-                # so claim it for Studio.
+                # so claim it for Unsloth.
                 if claim_resident:
                     _claim_slot_for_non_preview(fastapi_request)
                 return
@@ -7111,7 +7111,7 @@ async def _maybe_auto_switch_model(
                 b._openai_advertised_id = override_id
 
         if _already_serving():
-            # A non-preview request adopting this model claims it for Studio, so a later
+            # A non-preview request adopting this model claims it for Unsloth, so a later
             # preview can't swap it out from under an active OpenAI caller.
             if claim_resident:
                 _set_preview_resident(None)
@@ -7284,7 +7284,7 @@ async def _auto_switch_from_request_body(request: Request, current_subject: str)
     # Serves the GGUF-only /v1/completions and /v1/embeddings routes, which still 503 "No
     # GGUF model loaded" after this returns. Don't claim here (claim_resident=False); the
     # caller claims only once it confirms a GGUF is loaded, so that 503 can't strand a
-    # preview-owned non-GGUF model as Studio-owned.
+    # preview-owned non-GGUF model as Unsloth-owned.
     await _maybe_auto_switch_model(model, request, current_subject, claim_resident = False)
     return body
 
@@ -7349,7 +7349,7 @@ def _should_validate_before_switch() -> bool:
     and also when the slot is preview-owned: with both features off no load runs, but
     _maybe_auto_switch_model still claims the slot (clears the preview marker) for a
     non-preview turn. A request rejected after that claim would have converted the
-    preview-owned model into a Studio-owned one for nothing, stranding the next
+    preview-owned model into an Unsloth-owned one for nothing, stranding the next
     preview for a different checkpoint on the 503 slot guard, so validate first.
     """
     return _automatic_model_load_may_run() or _preview_slot_is_owned()
@@ -7370,7 +7370,7 @@ def _preview_same_checkpoint(loaded: str, requested: str) -> bool:
     """True when the resident slot already serves the preview's checkpoint. Exact string
     match first: it is the fast path and the only comparison that makes sense for a non-path
     identifier (an HF repo id like ``org/model``). Otherwise compare resolved filesystem
-    paths, so a checkpoint Studio loaded through an equivalent spelling -- a relative
+    paths, so a checkpoint Unsloth loaded through an equivalent spelling -- a relative
     ``outputs/run`` vs the absolute path the preview resolver produces -- still borrows the
     slot instead of 503'ing. realpath preserves case-sensitive distinct paths (it never
     lowercases, so /outputs/Run and /outputs/run stay distinct); a non-path identifier just
@@ -7384,10 +7384,10 @@ def _preview_same_checkpoint(loaded: str, requested: str) -> bool:
 
 
 def _claim_slot_for_non_preview(fastapi_request) -> None:
-    """Non-preview local generation adopts the resident model for Studio.
+    """Non-preview local generation adopts the resident model for Unsloth.
 
     Clearing the preview marker means a later preview for another checkpoint gets a
-    503 instead of swapping the model out from under an active Studio/OpenAI turn. A
+    503 instead of swapping the model out from under an active Unsloth/OpenAI turn. A
     ``/p`` preview request keeps its own ownership (it may still be swapped by the
     next preview), so skip when the request is a preview -- audio previews reach
     generate_audio through openai_chat_completions, so the path check, not the
@@ -7416,7 +7416,7 @@ async def load_model_for_preview(
     from utils.transformers_version import sidecar_swap_in_progress
 
     # A refused preview never touches the model, so it must not stamp keep-warm
-    # activity (public /p spam could otherwise pin an idle Studio model in VRAM);
+    # activity (public /p spam could otherwise pin an idle Unsloth model in VRAM);
     # untrack also balances the preview in-flight counter for the dropped request.
     scope = getattr(fastapi_request, "scope", None)
     async with _auto_switch_lock():
@@ -7445,7 +7445,7 @@ async def load_model_for_preview(
                 def _refuse_studio_owned_model() -> None:
                     if loaded is None or _is_preview_resident(loaded):
                         return
-                    # A LoRA preview forces adapters on. Borrowing a Studio-owned LoRA
+                    # A LoRA preview forces adapters on. Borrowing an Unsloth-owned LoRA
                     # would mutate its shared adapter state, so require an unload instead.
                     if (
                         same_target
@@ -7455,7 +7455,7 @@ async def load_model_for_preview(
                     untrack_current_request(scope)
                     raise HTTPException(
                         status_code = 503,
-                        detail = "Studio already has a different model loaded. Unload it before using this preview.",
+                        detail = "Unsloth already has a different model loaded. Unload it before using this preview.",
                         headers = {"Retry-After": "10"},
                     )
 
@@ -7463,23 +7463,23 @@ async def load_model_for_preview(
                 # For a real load (not a same-target borrow) mark the swap in progress BEFORE
                 # the admitted-count check below so the two are atomic against a concurrent
                 # non-preview request: preview_swapped_since_entry() keys on the live
-                # _preview_swap_inflight, so a Studio request reaching _maybe_auto_switch_model
+                # _preview_swap_inflight, so an Unsloth request reaching _maybe_auto_switch_model
                 # after this marker is rejected, while one admitted before it is caught by the
-                # busy check. Setting it only after the check left a gap where a Studio request
+                # busy check. Setting it only after the check left a gap where an Unsloth request
                 # admitted between the check and the marker ran against the slot this preview
                 # is about to replace. Skip it for a same-target borrow: that changes nothing
-                # (no counter bump), so marking would 503 concurrent Studio requests for no
+                # (no counter bump), so marking would 503 concurrent Unsloth requests for no
                 # reason. Cleared only after the lifecycle gate releases.
                 if not same_target:
                     note_preview_swap_begin()
                     _swap_begun = True
-                # A same-checkpoint request would still restart a Studio-owned GGUF whose
+                # A same-checkpoint request would still restart an Unsloth-owned GGUF whose
                 # live settings differ from these bare defaults (#5401), so admitted
-                # (post-auth) Studio inference blocks first. Only admitted local inference
+                # (post-auth) Unsloth inference blocks first. Only admitted local inference
                 # is counted, not raw _inflight: the middleware tracks a POST before
                 # FastAPI auth, so a pre-auth or unauthenticated non-preview request would
                 # otherwise starve previews. Queued (pending) requests are likewise not
-                # counted; a genuinely queued Studio request is protected by the swap
+                # counted; a genuinely queued Unsloth request is protected by the swap
                 # reject (it wakes to a retryable 503 rather than the swapped-in model).
                 if other_admitted_inference_count() > 0:
                     untrack_current_request(scope)
@@ -7493,13 +7493,13 @@ async def load_model_for_preview(
                 if same_target:
                     # The resident model already serves this exact checkpoint, so
                     # borrow it as-is instead of reloading with bare preview settings
-                    # (which would reconfigure/restart an idle Studio-owned GGUF,
-                    # #5401). Ownership is unchanged: Studio's model stays Studio's, a
+                    # (which would reconfigure/restart an idle Unsloth-owned GGUF,
+                    # #5401). Ownership is unchanged: Unsloth's model stays Unsloth's, a
                     # preview-owned one stays preview-owned.
                     return
                 # A real load reclaims the GPU for chat (_load_model_impl's acquire_for(CHAT)),
                 # which evicts a resident Images/Video pipeline -- unloading the engine out from
-                # under an in-flight Studio generation. Those routes never reach
+                # under an in-flight Unsloth generation. Those routes never reach
                 # note_admitted_inference (they don't touch the llama slot), and a video clip
                 # generates in the background after its POST returns, so the admitted-count guard
                 # above sees nothing; gate on GPU ownership instead, which is exactly what the
@@ -7518,16 +7518,16 @@ async def load_model_for_preview(
                     raise HTTPException(
                         status_code = 503,
                         detail = (
-                            "Studio is using the GPU for image or video generation. "
+                            "Unsloth is using the GPU for image or video generation. "
                             "Unload that model before using this preview."
                         ),
                         headers = {"Retry-After": "10"},
                     )
                 # _load_model_impl clears the preview marker mid-load (it reclaims the
-                # slot for Studio). If the load then fails while the prior model is
+                # slot for Unsloth). If the load then fails while the prior model is
                 # still resident (e.g. a GPU-selection or pre-spawn error), leaving the
                 # marker cleared would make the next preview for another checkpoint see
-                # that still-preview model as Studio-owned and 503. Restore the prior
+                # that still-preview model as Unsloth-owned and 503. Restore the prior
                 # ownership on failure; only a successful load takes the new marker.
                 prior_marker = _get_preview_resident()
                 loaded_ok = False
@@ -7542,7 +7542,7 @@ async def load_model_for_preview(
                         current_request_counted = True,
                         # Same active-generation gate load_model_gated applies, which the
                         # preview would otherwise bypass by calling the impl directly. Never
-                        # forced: a public preview must refuse rather than stop Studio chats.
+                        # forced: a public preview must refuse rather than stop Unsloth chats.
                         on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
                             force = False,
                             action = "Loading a model",
@@ -7556,7 +7556,7 @@ async def load_model_for_preview(
                     raise HTTPException(
                         status_code = 503,
                         detail = (
-                            "Studio is using the GPU for image or video generation. "
+                            "Unsloth is using the GPU for image or video generation. "
                             "Unload that model before using this preview."
                         ),
                         headers = {"Retry-After": "10"},
@@ -7749,7 +7749,7 @@ def _remote_gguf_companion_bytes(
 
 
 # What an unreadable remote drafter costs the guard. Sized to the largest drafter
-# class Studio knows of (a DSpark sidecar is about 11 GB) rather than a typical one,
+# class Unsloth knows of (a DSpark sidecar is about 11 GB) rather than a typical one,
 # since --spec-draft-hf names any repo and over-estimating is this guard's direction.
 # Only reached when the listing cannot be read, where llama-server may still open the
 # repo from the local HF cache and make every one of those bytes resident.
@@ -7860,7 +7860,7 @@ def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
         from core.inference.llama_cpp import _gguf_extra_shards
         from utils.models.drafters import dflash_budget_bytes
 
-        # The cache Studio is pointed at now, not the one huggingface_hub resolved at
+        # The cache Unsloth is pointed at now, not the one huggingface_hub resolved at
         # import: a moved cache is where the drafter that will load actually is.
         try:
             from utils.hf_cache_settings import active_hf_hub_cache
@@ -8205,12 +8205,12 @@ def _estimate_gguf_required_gb(
         # still arrive by a route this cannot see.
         _extras_own_draft_path = _extra_args_mtp_draft_path(llama_extra_args, env = {})
         # An extras draft path wins whether or not they own --spec-type: the launch
-        # appends the caller's flags after Studio's, so last-wins leaves exactly one
+        # appends the caller's flags after Unsloth's, so last-wins leaves exactly one
         # --model-draft resident. It is charged as _extras_bytes below, so charging
         # the repository's sidecar too is a double count that 409s a load that fits.
         _extras_own_drafter = bool(_extras_own_draft_path)
         # -ngld 0 / --spec-draft-device cpu applies to whichever separate drafter
-        # launches, Studio's included, so none of them belongs in a VRAM budget. An
+        # launches, Unsloth's included, so none of them belongs in a VRAM budget. An
         # embedded head ignores draft-only flags and is inside the weights anyway.
         _draft_pinned_to_cpu = _extra_args_draft_offloaded_to_cpu(llama_extra_args, env = os.environ)
         _forced_dspark = bool(
@@ -8317,7 +8317,7 @@ def _estimate_gguf_required_gb(
         # switch so the inherited-projector gate below can read it either way.
         _dv_opens_projector = True
         if extra_args_disable_mmproj(llama_extra_args):
-            # llama_cpp.py skips the resolve entirely, so nothing of Studio's own goes
+            # llama_cpp.py skips the resolve entirely, so nothing of Unsloth's own goes
             # on the command line and nothing is downloaded. (It does NOT unload an
             # inherited path, which is charged below.)
             _dv_opens_projector = False
@@ -8343,7 +8343,7 @@ def _estimate_gguf_required_gb(
             elif dflash_requested:
                 # Only when extras own --spec-type: _build_speculative_flags then
                 # returns before discovery's sidecar is emitted, so llama-server opens
-                # theirs alone. Without it Studio emits its own too and which lands is
+                # theirs alone. Without it Unsloth emits its own too and which lands is
                 # unknown, so both stay charged.
                 _manual_draft = (
                     _extra_args_mtp_draft_path(llama_extra_args, env = {})
@@ -8406,14 +8406,14 @@ def _estimate_gguf_required_gb(
 
         # A projector this config never named: llama-server reads LLAMA_ARG_MMPROJ
         # straight into params.mmproj.path, so an inherited one loads and takes VRAM
-        # that nothing above charged. Two things stop it, and only two. Studio's own
+        # that nothing above charged. Two things stop it, and only two. Unsloth's own
         # --mmproj overrides the env, argv being applied after set_env, so exactly one
         # file loads and charging both bills one projector twice. And under the vision
         # switch the loader keeps only an audio-only file, asked through the loader's
         # own helper so the two cannot answer differently.
         #
         # NOT the extras opt-out on its own. --no-mmproj / --no-mmproj-auto set
-        # params.no_mmproj, which stops Studio resolving a projector of its own and
+        # params.no_mmproj, which stops Unsloth resolving a projector of its own and
         # stops the HF auto-download, but server-context.cpp gates the load on a
         # non-empty mmproj.path and never reads that field. So an inherited path loads
         # straight through the opt-out. What the opt-out does do is empty the command
@@ -8427,7 +8427,7 @@ def _estimate_gguf_required_gb(
         # argv overrides the env, but only when there IS argv: a configured projector
         # the switch suppressed, or extras that skipped the resolve, both leave the
         # command line empty and let the inherited path load after all. So this asks
-        # what Studio actually emits, not merely what the config names -- the same
+        # what Unsloth actually emits, not merely what the config names -- the same
         # answer _sized_attrs above was built from, so the two cannot disagree about
         # which single projector this launch opens.
         _studio_mmproj_on_argv = bool(
@@ -9494,7 +9494,7 @@ def _resolve_inherited_extra_args(
         # chat_template_override. A bundled family template (e.g. gemma-4) counts as
         # a first-class template even when the request omits chat_template_override,
         # so strip the inherited --chat-template-file then too -- else the stale arg
-        # (appended last) shadows the bundled template while Studio reports its caps.
+        # (appended last) shadows the bundled template while Unsloth reports its caps.
         fields_set = getattr(request, "model_fields_set", set())
         stripped = strip_shadowing_flags(
             stored_args,
@@ -10264,7 +10264,7 @@ async def _load_model_impl(
                 return None
             api_monitor.discard(_load_event)
             logger.info("Model already loaded (GGUF): %s, skipping reload", model_log_label)
-            # A no-op Studio load of a preview-owned checkpoint still claims it.
+            # A no-op Unsloth load of a preview-owned checkpoint still claims it.
             _set_preview_resident(None)
             return _gguf_load_response(
                 llama_backend,
@@ -10302,7 +10302,7 @@ async def _load_model_impl(
             ) and _mlx_runtime_settings_match(backend, request):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
-                # A no-op Studio load of a preview-owned checkpoint still claims it.
+                # A no-op Unsloth load of a preview-owned checkpoint still claims it.
                 _set_preview_resident(None)
                 inference_config = load_inference_config(backend.active_model_name)
                 _model_info = backend.models.get(backend.active_model_name, {})
@@ -10633,7 +10633,7 @@ async def _load_model_impl(
             # A failed load can leave the prior preview checkpoint resident though the marker
             # was cleared before teardown (a non-GGUF load unloads only the new entry; a GGUF load can
             # raise before tearing down the old llama-server). Restore its ownership so a later
-            # preview isn't 503'd against a model Studio never adopted. Guarded on the prior
+            # preview isn't 503'd against a model Unsloth never adopted. Guarded on the prior
             # model still being resident, so it never mis-marks a torn-down/replaced model.
             if _prior_preview_marker is not None and _loaded_slot_ident() == _prior_preview_marker:
                 _set_preview_resident(_prior_preview_marker)
@@ -11674,7 +11674,7 @@ def _install_breaks_exact_resume(run_id: str) -> bool:
         return False
 
 
-# studio_router only: a Studio preflight, kept off the OpenAI-compatible /v1 mount.
+# studio_router only: an Unsloth preflight, kept off the OpenAI-compatible /v1 mount.
 @studio_router.post("/transformers-upgrade-check", response_model = TransformersUpgradeCheckResponse)
 async def check_transformers_upgrade_route(
     request: TransformersUpgradeCheckRequest, current_subject: str = Depends(get_current_subject)
@@ -12305,7 +12305,7 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     else:
         operating_status = "idle"
     # With request logging off, ``snapshot()`` returns an empty list -- the same shape
-    # as a Studio that simply hasn't served a request yet. Signal the disabled state so
+    # as an Unsloth that simply hasn't served a request yet. Signal the disabled state so
     # the UI can explain the empty list instead of claiming there was no API traffic.
     return {
         "status": operating_status,
@@ -12367,7 +12367,7 @@ async def generate_stream(
     For vision models, provide image_base64 (base64-encoded image).
     """
     # Enforce the preview-swap reject FIRST, before reading any backend state. If a public
-    # preview loaded a different checkpoint while this native Studio request waited on the
+    # preview loaded a different checkpoint while this native Unsloth request waited on the
     # keep-warm gate, the middleware flagged the scope; the loaded-model and image-capability
     # checks below would otherwise run against the swapped-in model and return a hard 400
     # instead of the intended retryable 503. generate_stream skips _maybe_auto_switch_model,
@@ -12478,7 +12478,7 @@ async def generate_stream(
                     # A backend sentinel (subprocess down, no active model, model being
                     # unloaded) delivered in-band under the already-sent 200. The stream ends
                     # cleanly, so flag it failed or the middleware reads this failed generation
-                    # as a successful Studio turn and claims a preview-owned model.
+                    # as a successful Unsloth turn and claims a preview-owned model.
                     mark_response_failed(_gs_scope)
                     yield f"data: {json.dumps({'error': _friendly_gen_stream_error(chunk)})}\n\n"
                     yield "data: [DONE]\n\n"
@@ -12966,7 +12966,7 @@ async def _generate_tts_wav(
 
     # Audio-capable backend confirmed. The middleware claims the slot on a 2xx, so no claim
     # here: claiming before the audio backend runs could strand a preview-owned checkpoint
-    # as Studio-owned if generation then fails.
+    # as Unsloth-owned if generation then fails.
     # Apply per-model recommended sampling + any operator UNSLOTH_SAMPLING_* pin before
     # generating, so `unsloth run --temperature` (and the other pins) and per-model
     # recommendations reach audio (TTS) generation too, not just chat. The gen lambdas read
@@ -13149,7 +13149,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
             allow_saved_key = not _request_has_api_key(request),
             prefer_saved_key = True,
         )
-        # The guard coordinates this process, while Studio can also be edited by
+        # The guard coordinates this process, while Unsloth can also be edited by
         # another backend process. Provider updates write routing metadata before
         # the replacement secret, so a final row check prevents an old URL from
         # being paired with the newly written key.
@@ -14828,7 +14828,7 @@ async def _proxy_to_external_provider(
             detail = "Either provider_id or provider_type is required for external provider routing.",
         )
 
-    # Studio's tools run on this host, so any provider whose wire format can
+    # Unsloth's tools run on this host, so any provider whose wire format can
     # carry a tool schema out and a result back can use them. The capability is
     # declared per provider type in the registry, not hardcoded here.
     #
@@ -14850,7 +14850,7 @@ async def _proxy_to_external_provider(
         and not _selects_only_provider_hosted_tools(payload, provider_type)
     )
     codex_studio_tool_loop = studio_tool_loop and provider_type == "openai_codex"
-    # Studio's UI asks for the gate by permission_mode, not by confirm_tool_calls,
+    # Unsloth's UI asks for the gate by permission_mode, not by confirm_tool_calls,
     # so reading the raw flag admits the exact request the local routes reject: a
     # non-streaming permission_mode="ask" with the flag omitted proxies through
     # with its tools live and no confirmation the caller explicitly asked for.
@@ -14936,7 +14936,7 @@ async def _proxy_to_external_provider(
         if _request_has_api_key(request) and not _request_is_saved_credential_workflow(request):
             raise HTTPException(
                 status_code = 403,
-                detail = "ChatGPT subscriptions are available only to Studio UI and internal workflows.",
+                detail = "ChatGPT subscriptions are available only to Unsloth UI and internal workflows.",
             )
         if not payload.provider_id or payload.encrypted_api_key:
             raise HTTPException(
@@ -15083,7 +15083,7 @@ async def _proxy_to_external_provider(
                 tools_on = _effective_enable_tools(payload) is True,
                 mcp_allowed = bool(payload.mcp_enabled),
             )
-            # The Studio loop owns its schemas. Do not also expose a caller-supplied
+            # The Unsloth loop owns its schemas. Do not also expose a caller-supplied
             # catalog: Codex would return calls that this server is not authorized to run.
             tool_payloads = studio_tool_payloads
             # This path runs python/terminal locally too (disable_sandbox =
@@ -15333,7 +15333,7 @@ async def _proxy_to_external_provider(
             # connection was already validated as an enabled saved one by
             # research_runs._sanitize_config, and the key is verified against storage.
             # Scoped to that one workflow rather than to "internal", because the other
-            # internal key Studio mints is held by a user-authored recipe subprocess.
+            # internal key Unsloth mints is held by a user-authored recipe subprocess.
             allow_saved_key = (
                 not _request_has_api_key(request) or _request_is_saved_credential_workflow(request)
             ),
@@ -15382,7 +15382,7 @@ async def _proxy_to_external_provider(
     # `model_fields_set` tracks explicit-vs-default per request.
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
 
-    # Studio-owned tool loop for every non-Codex provider that declares the
+    # Unsloth-owned tool loop for every non-Codex provider that declares the
     # capability. The catalog comes from the same selector the local and Codex
     # paths use, so an omitted enabled_tools means "all allowed built-ins" and an
     # explicit empty list stays empty.
@@ -15439,10 +15439,10 @@ async def _proxy_to_external_provider(
             response_format = _extract_response_format(payload),
         )
         if run_studio_tool_loop:
-            # The Studio loop owns the tool surface for this turn. The caller's
+            # The Unsloth loop owns the tool surface for this turn. The caller's
             # own catalog is dropped for the same reason the Codex path drops it
             # (the model would return calls this server is not authorized to
-            # run), and the hosted names Studio runs itself are withheld so the
+            # run), and the hosted names Unsloth runs itself are withheld so the
             # provider's builtins do not double up on the local web_search.
             # Hosted-only tools still ride along: Images and Fetch have their own
             # toggles and no local stand-in, so dropping them would turn a lit
@@ -16221,7 +16221,7 @@ async def openai_chat_completions(
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
         if payload.audio_base64 and model_info.get("has_audio_input"):
             # This route re-listens to the recording and answers afresh, so there is
-            # no boundary to resume from; the Studio UI already hides Continue here.
+            # no boundary to resume from; the Unsloth UI already hides Continue here.
             if _continue_final_message(payload):
                 raise HTTPException(
                     status_code = 400,
@@ -19788,7 +19788,7 @@ async def serve_sandbox_file(
     or image/svg+xml would be same-origin script execution. nosniff plus a
     Content-Disposition filename is what makes serving them safe.
 
-    Accepts auth via an Authorization header or a query token. Studio uses an
+    Accepts auth via an Authorization header or a query token. Unsloth uses an
     authenticated fetch and object URL; query auth remains for older clients.
     """
     # ── Authentication (header or query param) ──────────────────
@@ -20234,7 +20234,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         elif _pre is not _UNPARSEABLE_BODY:
             # A valid JSON body that is not an object (e.g. [] or null) is rejected below as
             # "Request body must be a JSON object"; reject it here, before the switch, so the
-            # slot claim can't convert a preview-owned model to Studio-owned for a request
+            # slot claim can't convert a preview-owned model to Unsloth-owned for a request
             # that never runs.
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
@@ -20258,7 +20258,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     # GGUF is loaded and the body is valid. The middleware claims the slot on a successful
     # 2xx, so no claim here: llama-server can still return a non-2xx for a valid body (e.g. a
     # no-pooling error on /v1/embeddings against a non-embedding GGUF), so claiming before the
-    # upstream response would strand a preview-owned checkpoint as Studio-owned.
+    # upstream response would strand a preview-owned checkpoint as Unsloth-owned.
 
     _resolved_max_tokens = _effective_openai_max_tokens_from_values(body.get("max_tokens"))
     body["max_tokens"] = (
@@ -20545,7 +20545,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         elif _pre is not _UNPARSEABLE_BODY:
             # A valid JSON body that is not an object (e.g. [] or null) is rejected below as
             # "Request body must be a JSON object"; reject it here, before the switch, so the
-            # slot claim can't convert a preview-owned model to Studio-owned for a request
+            # slot claim can't convert a preview-owned model to Unsloth-owned for a request
             # that never runs.
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
     # Embeddings is a model-bearing inference path too, so honor auto-switch. Unlike
@@ -20572,7 +20572,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # GGUF is loaded and the body is valid. The middleware claims the slot on a successful
     # 2xx, so no claim here: llama-server can still return a non-2xx for a valid body (e.g. a
     # no-pooling error on /v1/embeddings against a non-embedding GGUF), so claiming before the
-    # upstream response would strand a preview-owned checkpoint as Studio-owned.
+    # upstream response would strand a preview-owned checkpoint as Unsloth-owned.
 
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
@@ -22525,7 +22525,7 @@ async def openai_responses(
         current_subject,
         require_vision = _messages_have_image(messages),
         # Streaming Responses require a GGUF backend and 400 in _responses_stream after this
-        # switch; claiming here would strand a preview-owned model as Studio-owned for a
+        # switch; claiming here would strand a preview-owned model as Unsloth-owned for a
         # request that never generates. Defer to the middleware, which claims on a 2xx.
         claim_resident = False,
     )
@@ -27155,7 +27155,7 @@ async def _openai_passthrough_non_streaming_upstream(
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Diffusion (local text-to-image). Studio-only routes (studio_router is not mounted under /v1); the backend is in-process and
+# Diffusion (local text-to-image). Unsloth-only routes (studio_router is not mounted under /v1); the backend is in-process and
 # synchronous, so blocking calls are offloaded with asyncio.to_thread. Single error boundary: the backend raises, we map to HTTP.
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -27308,7 +27308,7 @@ async def diffusion_download_plan(
         # weights -- and then got the predictable 409. Both checks are network-free.
         # Not while a trainer holds the GPU. An UNCACHED scheme sends
         # assert_precision_available into a quantise-and-matmul smoke probe, which initialises
-        # CUDA and allocates in the Studio process -- the very thing the load route's training
+        # CUDA and allocates in the Unsloth process -- the very thing the load route's training
         # guard exists to prevent, and the plan runs BEFORE that guard has had a say. Staging
         # files during training is legitimate and needs no GPU, so the plan is answered without
         # the precision check; /images/load still refuses the same pick afterwards.
@@ -27882,7 +27882,7 @@ async def get_gallery_image_file(
 ):
     from core.inference import image_gallery
 
-    # Ownership-gate the serve like delete/clear: resolve only a Studio-owned PNG, so a guessed stem cannot stream out a foreign file.
+    # Ownership-gate the serve like delete/clear: resolve only an Unsloth-owned PNG, so a guessed stem cannot stream out a foreign file.
     path = await asyncio.to_thread(image_gallery.owned_image_path, image_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Image not found.")
@@ -28140,7 +28140,7 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
 
 # ──────────────────────────────────────────────────────────────────────────
 # OpenAI-compatible images API (POST /v1/images/generations). The inference router is mounted at both /api/inference and /v1, so this
-# also answers /v1/images/generations for OpenAI clients. The Studio Image tab uses the richer /images/generate above; this is the spec shape.
+# also answers /v1/images/generations for OpenAI clients. The Unsloth Image tab uses the richer /images/generate above; this is the spec shape.
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -28376,7 +28376,7 @@ async def _generate_openai_images(
                 raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
             # The activation refusal is the one message here written FOR the caller: it names the
             # resolution, the budget and the remedies. Sanitising it into "Image generation failed."
-            # left an OpenAI client with a 500 for a request only they can fix, while the Studio
+            # left an OpenAI client with a 500 for a request only they can fix, while the Unsloth
             # route showed the reason. Typed, so no other ValueError's raw text escapes.
             if isinstance(exc, ImageActivationShortfallError):
                 raise HTTPException(

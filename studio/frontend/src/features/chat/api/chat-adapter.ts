@@ -2429,7 +2429,7 @@ function isGgufLocalRow(row: LocalModelInfo): boolean {
 function runsOnThisPlatform(row: LocalModelInfo): boolean {
   const platform = usePlatformStore.getState();
   // Until the backend reports it, chatOnly is a BROWSER guess: a Mac browser on
-  // a remote Linux Studio would hide every local safetensors model and fetch
+  // a remote Linux Unsloth would hide every local safetensors model and fetch
   // the default. Failing open is safe: validation refuses an ineligible pick.
   if (!platform.fetched || !platform.isChatOnly()) return true;
   if (isGgufLocalRow(row)) {
@@ -2886,7 +2886,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       label,
       // Older backends and non-Error throws carry no detail; still name the model that failed.
       detail:
-        detail || "The server did not report a reason. Check the Studio logs.",
+        detail || "The server did not report a reason. Check the Unsloth logs.",
       blamesModel,
     };
   }
@@ -4109,7 +4109,7 @@ export function createOpenAIStreamAdapter(
             ) !== true)
         ) {
           throw new Error(
-            "Deep research requires a selected local model or a connection whose provider supports Studio tools.",
+            "Deep research requires a selected local model or a connection whose provider supports Unsloth tools.",
           );
         }
         const reasoningRequested =
@@ -4598,7 +4598,7 @@ export function createOpenAIStreamAdapter(
       // Which side of the connection the Code pill runs code on. Hosted
       // `code_execution` and local `python` / `terminal` are two trust
       // boundaries, not two spellings of one feature, so the stored pill keeps
-      // meaning the provider's sandbox wherever it meant that before the Studio
+      // meaning the provider's sandbox wherever it meant that before the Unsloth
       // loop reached these providers. See code-tool-placement.ts.
       const { local: studioLocalCodeTools, hosted: hostedCodeToolsForThisTurn } =
         selectCodeToolNames({
@@ -5567,7 +5567,7 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // Studio executes the calls for any provider that advertises the
+              // Unsloth executes the calls for any provider that advertises the
               // capability. Providers that do not keep their provider-hosted
               // tool envelope in the branch below.
               // studioLocalCodeTools, not codeToolsEnabled: a Code pill that
@@ -5589,13 +5589,13 @@ export function createOpenAIStreamAdapter(
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
                       ...studioLocalCodeTools,
-                      // Hosted tools Studio has no local stand-in for. Their
-                      // pills stay lit whether or not a Studio tool is on, so
+                      // Hosted tools Unsloth has no local stand-in for. Their
+                      // pills stay lit whether or not an Unsloth tool is on, so
                       // listing only the local names here would silently drop
                       // Images (or Fetch) the moment Search, Code, MCP or a
                       // project's automatic RAG selected this branch. Search
                       // deliberately does not ride along: that is the one
-                      // Studio runs itself just above. Code rides along only
+                      // Unsloth runs itself just above. Code rides along only
                       // when it resolved to the provider's sandbox, which is
                       // mutually exclusive with the local names above.
                       ...(imageGenerationEnabledForThisTurn
@@ -5939,7 +5939,7 @@ export function createOpenAIStreamAdapter(
                         "context. They are saved and searchable, and relevant parts are " +
                         "brought back automatically."
                       : "The full conversation is still visible and saved. " +
-                        "Studio removed complete older turns from this request so the chat can continue.",
+                        "Unsloth removed complete older turns from this request so the chat can continue.",
                     duration: 8000,
                   });
                 }
@@ -6580,7 +6580,7 @@ export function createOpenAIStreamAdapter(
                   const idx =
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
-                  // Studio's local Codex loop follows the OpenAI tool-call delta with
+                  // Unsloth's local Codex loop follows the OpenAI tool-call delta with
                   // tool_start/tool_end events. Resolve the backend id now so all three
                   // event shapes update one run-unique card instead of leaving the raw
                   // provisional card beside a second execution card.

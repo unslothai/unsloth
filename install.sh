@@ -3045,7 +3045,7 @@ _uv_venv_arm64() {  # label
 _uv_venv_requested() {  # label
     _uvvr_label="$1"
     _uvvr_req="$(_python_request "$PYTHON_VERSION")"
-    # Capture the hint while streaming Studio output live. If capture setup fails,
+    # Capture the hint while streaming Unsloth output live. If capture setup fails,
     # use the original venv path. The global directory is owned by trap cleanup.
     _UV_VENV_CAPTURE_DIR=""
     if ! command -v tee >/dev/null 2>&1 \
@@ -4760,7 +4760,7 @@ case "$_torch_index_leaf" in
             _amd_gpu_radeon=false
             # Routing the wheels is only half of unslothai#7331: ROCr rebuilds the agent
             # from HSA_OVERRIDE_GFX_VERSION in every LATER process (and this shell execs
-            # Studio further down), so leaving it set hands the freshly installed per-gfx
+            # Unsloth further down), so leaving it set hands the freshly installed per-gfx
             # wheels a device whose reported ISA matches none of their code. Only on this
             # branch, where the spoof was corroborated and native $_strix_gfx wheels are
             # going in; paths that keep generic wheels need the override as their only

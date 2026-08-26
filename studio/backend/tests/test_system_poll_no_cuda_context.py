@@ -8,7 +8,7 @@ monitor and every 3s from Settings -> Resources. Both land on
 get_backend_visible_gpu_info and get_visible_gpu_utilization. Where nvidia-smi is
 absent (ROCm, or any host without it on PATH) those used to reach
 torch.cuda.mem_get_info, which attaches a primary context worth ~612 MiB on this
-class of GPU and is never released while the process lives. An idle Studio would
+class of GPU and is never released while the process lives. An idle Unsloth would
 therefore lose that memory to telemetry alone.
 
 get_device_properties answers name and total capacity with no context, and it
