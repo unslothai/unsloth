@@ -649,7 +649,14 @@ jobs:
       - name: Test the harness
         run: |
           python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
-          python -m pip install --quiet pytest transformers peft
+          # Every third-party module tests/kaggle/test_*.py imports without a
+          # pytest.importorskip guard. pillow and pyyaml arrived transitively
+          # until now, which is luck rather than a dependency, and datasets did
+          # not arrive at all: run 32925226213 ran 803 of 805 tests and reported
+          # success on the step, because two vision-dataset guards raised
+          # ModuleNotFoundError. test_harness_dependencies.py keeps this line and
+          # that import set in agreement.
+          python -m pip install --quiet pytest transformers peft datasets pillow pyyaml
           python -c "import torch, sys; sys.exit(None if torch.version.cuda is None else 'torch %s is built for CUDA %s: the CPU-index install was skipped as already satisfied' % (torch.__version__, torch.version.cuda))"
           python -m pytest tests/kaggle -q
 
