@@ -733,7 +733,7 @@ def test_install_sh_wsl_reroute_propagates_tauri_need_sudo_exit():
 def test_uninstall_sh_preserves_shared_icon_for_surviving_shortcut():
     # %LOCALAPPDATA%\Unsloth Studio\unsloth.ico is shared with the native install
     # and other WSL distros; both removal paths must keep it while any "Unsloth
-    # Unsloth*.lnk" survives (reciprocal of uninstall.ps1's
+    # Studio*.lnk" survives (reciprocal of uninstall.ps1's
     # _RemoveDataDirKeepingWslIcon), not delete it unconditionally.
     text = (PACKAGE_ROOT / "scripts" / "uninstall.sh").read_text(encoding = "utf-8")
     assert "_drop_shared_icon_if_unused" in text, (

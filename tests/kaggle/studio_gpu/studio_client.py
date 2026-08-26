@@ -10,8 +10,8 @@ polling predicates in particular are where a green result gets fabricated:
 same ``phase`` for the first few seconds, and an export that failed reports
 the same ``is_export_active: false`` as one that succeeded.
 
-Nothing here prints. ``Unsloth.token`` is set from the bootstrap password and is
-never logged, echoed or written to a report, and neither is ``Unsloth.password``
+Nothing here prints. ``Studio.token`` is set from the bootstrap password and is
+never logged, echoed or written to a report, and neither is ``Studio.password``
 -- which IS held for the run, because Unsloth forces a password change on the
 bootstrap account and the repo's Playwright driver needs whatever the current
 password is. Scrubbing it out of anything that leaves the machine is the
