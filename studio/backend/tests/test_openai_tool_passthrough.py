@@ -1858,6 +1858,238 @@ class TestOpenAICompatibilityHelpers:
         assert chat_messages == [{"role": "user", "content": "hi"}]
         assert image_b64 is None
 
+    def test_latest_image_wins_over_earlier_turns(self):
+        def turn(letter):
+            return {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"what is {letter}?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{letter}"},
+                    },
+                ],
+            }
+
+        payload = ChatCompletionRequest(
+            messages = [
+                turn("AAAA"),
+                {"role": "assistant", "content": "the first one"},
+                turn("BBBB"),
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "BBBB"
+
+    def test_single_image_still_returned(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,AAAA"},
+                        },
+                    ],
+                }
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "AAAA"
+
+    def test_payloadless_later_image_keeps_earlier_one(self):
+        def turn(url):
+            return {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+            }
+
+        for empty_url in ("data:image/png;base64,", "data:image/png;base64"):
+            payload = ChatCompletionRequest(
+                messages = [
+                    turn("data:image/png;base64,AAAA"),
+                    {"role": "assistant", "content": "a cat"},
+                    turn(empty_url),
+                ]
+            )
+
+            _, _, image_b64 = _extract_content_parts(payload.messages)
+
+            assert image_b64 == "AAAA", empty_url
+
+    def test_user_attachment_outranks_assistant_generated_image(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,USERPHOTO"},
+                        },
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "here is a cartoon of it"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,GENERATED"},
+                        },
+                    ],
+                },
+                {"role": "user", "content": "what colour was the shirt?"},
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "USERPHOTO"
+
+    def test_assistant_only_image_is_still_returned(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                {"role": "user", "content": "show me something"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "here you go"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,GENERATED"},
+                        },
+                    ],
+                },
+                {"role": "user", "content": "describe it"},
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "GENERATED"
+
+    def test_first_image_wins_within_one_message(self):
+        # The composer allows multi-select, and findLatestUserImageBase64
+        # (chat-adapter.ts) names the first of them, so this must agree.
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "compare these"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,LEFT"},
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,RIGHT"},
+                        },
+                    ],
+                }
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "LEFT"
+
+    def test_later_turn_still_wins_over_a_multi_image_turn(self):
+        # Per-message first, per-thread latest: the two rules compose.
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "compare these"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,LEFT"},
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,RIGHT"},
+                        },
+                    ],
+                },
+                {"role": "assistant", "content": "two cats"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "and this?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,LATER"},
+                        },
+                    ],
+                },
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "LATER"
+
+    def test_payloadless_part_does_not_claim_the_message_slot(self):
+        # An empty data URL is not an image, so the first real one still wins.
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "compare these"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,"},
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,RIGHT"},
+                        },
+                    ],
+                }
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "RIGHT"
+
+    def test_earlier_real_image_survives_a_payloadless_opening_turn(self):
+        # The old helper latched "" here and suppressed every later image, so
+        # the request reached the model with none.
+        def turn(url):
+            return {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+            }
+
+        payload = ChatCompletionRequest(
+            messages = [
+                turn("data:image/png;base64,"),
+                {"role": "assistant", "content": "I cannot see an image"},
+                turn("data:image/png;base64,REAL"),
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "REAL"
+
 
 # =====================================================================
 # _friendly_error — httpx transport failures

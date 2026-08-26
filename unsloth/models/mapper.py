@@ -1386,6 +1386,11 @@ __INT_TO_FLOAT_MAPPER = \
         "meta-models/Muse-Glimmer-30B",
         "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit",
     ),
+    "unsloth/Qwen3.8-27B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3.8-27B",
+        "Qwen/Qwen3.8-27B",
+        "unsloth/Qwen3.8-27B-unsloth-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}

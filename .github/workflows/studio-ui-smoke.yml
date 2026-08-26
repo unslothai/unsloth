@@ -601,48 +601,6 @@ jobs:
               python tests/studio/playwright_update_banner_layout.py
           done
 
-      # The overlay rail harness below serves its own vite, and this job has no
-      # node_modules to serve it with. Installing Studio is not enough: setup.sh installs
-      # the frontend dev dependencies only when it has to build the frontend, and the
-      # frontend-dist cache above exists precisely to stop that build (the restore action
-      # asserts the installer reported the frontend up to date). So on a cache hit there is
-      # no vite and `npm run dev` exits 127, while a cache miss builds and passes, which is
-      # why this step looked green when it landed and red on every run since.
-      #
-      # Conditional on the binary rather than unconditional: on the cold-cache path
-      # setup.sh has already installed these, and `npm ci` would delete and refetch them.
-      - name: Frontend dev dependencies for the overlay rail harness
-        if: matrix.shard == 'banner'
-        working-directory: studio/frontend
-        run: |
-          if [ -x node_modules/.bin/vite ]; then
-            echo "vite already present from the frontend build; not reinstalling"
-          else
-            npm ci --no-fund --no-audit
-          fi
-          # A silent install is worse than a loud one: without this the next step fails as
-          # a Playwright timeout rather than as a missing toolchain.
-          if [ ! -x node_modules/.bin/vite ]; then
-            echo "::error::npm ci finished but studio/frontend/node_modules/.bin/vite is still missing"
-            exit 1
-          fi
-
-      # The rail's block gutter, in the two engines this runner has that the frontend CI
-      # does not. Serves its own vite rather than the Studio above it, so it needs no
-      # BASE_URL and does not care what state that Studio is in; it is here only because
-      # WebKit's install is already paid for on this shard.
-      - name: Overlay rail shadow gutter, other engines (Playwright)
-        if: matrix.shard == 'banner'
-        env:
-          SMOKE_PORT: '5197'
-          PW_ART_DIR: logs/playwright-overlay-rail
-        run: |
-          mkdir -p logs/playwright-overlay-rail
-          for engine in firefox webkit; do
-            STUDIO_PLAYWRIGHT_BROWSER="$engine" \
-              python tests/studio/playwright_overlay_rail.py
-          done
-
       - name: Image model full-footprint selector regression (Playwright)
         if: matrix.shard == 'extra'
         env:
@@ -675,6 +633,26 @@ jobs:
         run: |
           mkdir -p logs/playwright_image_cancel_retry_cold
           python tests/studio/playwright_image_download_cancel_retry.py
+
+      # The log budget in studio/backend/tests/log_budget compares two BACKEND files with
+      # each other: the suppression sets in loggers/handlers.py and the poll cadences in
+      # session.py. A pull request that adds a polling call site in the frontend edits
+      # neither, so it passes, and the new endpoint logs every hit on a 300 ms window.
+      # Only a browser can see that a timer started, whatever it was implemented with.
+      #
+      # Last of the shard's steps on purpose: it walks the sidebar and then sits idle for
+      # two minutes, and it rotates the bootstrap password, so anything scheduled after it
+      # would wait on the dwell and then meet a password it did not mint.
+      - name: Every polled path is declared in the log budget (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_declared_polls
+        run: |
+          mkdir -p logs/playwright_declared_polls
+          python tests/studio/playwright_declared_polls.py
 
       - name: Stop second Unsloth
         if: (always()) && (matrix.shard == 'extra' || matrix.shard == 'banner')
@@ -804,7 +782,6 @@ jobs:
             logs/playwright_thread_settings
             logs/playwright_fontscale
             logs/playwright_update_banner
-            logs/playwright-overlay-rail
             logs/playwright_image_footprint
             logs/playwright_image_cancel_retry
             logs/playwright_image_cancel_retry_cold

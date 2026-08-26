@@ -7336,7 +7336,6 @@ def _session_in_flight(session_id: "str | None"):
         # rename away. Only this session waits; every other chat is untouched.
         while key in _removing_sessions:
             _sessions_free.wait()
-        first = _active_sessions.get(key, 0) == 0
         _active_sessions[key] = _active_sessions.get(key, 0) + 1
     try:
         yield
@@ -7350,22 +7349,23 @@ def _session_in_flight(session_id: "str | None"):
                     _removing_sessions.add(key)
             else:
                 _active_sessions[key] -= 1
-        if not pending:
-            return
-        # Outside the lock: deciding whether the tree holds files can take
-        # seconds, and no other chat could start a call meanwhile. This session
-        # stays closed, so nothing starts in the directory being removed.
-        try:
-            for pending_id, pending_files in pending.items():
-                if _thread_exists(pending_id, unknown = True):
-                    # Recreated while that call ran: this delete belongs to the
-                    # chat that went, and the folder is the new one's now.
-                    continue
-                _remove_session_sandbox_locked(pending_id, pending_files)
-        finally:
-            with _sessions_free:
-                _removing_sessions.discard(key)
-                _sessions_free.notify_all()
+        # Not `if not pending: return` -- a return here swallows whatever the
+        # tool raised, and the caller reports it as an unknown tool instead.
+        if pending:
+            # Outside the lock: deciding whether the tree holds files can take
+            # seconds, and no other chat could start a call meanwhile. This
+            # session stays closed, so nothing starts in the directory removed.
+            try:
+                for pending_id, pending_files in pending.items():
+                    if _thread_exists(pending_id, unknown = True):
+                        # Recreated while that call ran: this delete belongs to
+                        # the chat that went, the folder is the new one's now.
+                        continue
+                    _remove_session_sandbox_locked(pending_id, pending_files)
+            finally:
+                with _sessions_free:
+                    _removing_sessions.discard(key)
+                    _sessions_free.notify_all()
 
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
@@ -11026,6 +11026,9 @@ _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
 # Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections
 # stripped during conversion; 512 KB still reaches article content.
 _MAX_FETCH_BYTES = 512 * 1024
+# "%" is safe so an already-encoded URL is not re-encoded into %25.
+_IRI_PATH_SAFE = "/%:@!$&'()*+,;="
+_IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"
 # PDF cross-reference data lives at EOF, so extraction needs the whole body.
 _MAX_PDF_FETCH_BYTES = 10 * 1024 * 1024
 _MAX_WEB_PDF_PAGES = 50
@@ -11562,7 +11565,7 @@ def _fetch_url_raw(
 
     try:
         from urllib.error import HTTPError as _HTTPError
-        from urllib.parse import urljoin, urlunparse
+        from urllib.parse import quote, urljoin, urlunparse
 
         max_bytes = _MAX_FETCH_BYTES
         current_url = url
@@ -11574,6 +11577,12 @@ def _fetch_url_raw(
             if budget_error is not None:
                 return budget_error, "", ""
             cp = urlparse(current_url)
+            # http.client rejects a non-ASCII selector outright.
+            cp = cp._replace(
+                path = quote(cp.path, safe = _IRI_PATH_SAFE),
+                params = quote(cp.params, safe = _IRI_PATH_SAFE),
+                query = quote(cp.query, safe = _IRI_QUERY_SAFE),
+            )
             # Bracket IPv6 so the netloc stays a valid URL.
             validated_netloc = f"[{current_host}]" if ":" in current_host else current_host
             if cp.port:

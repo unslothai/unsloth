@@ -20,6 +20,7 @@ import {
 import {
   LAN_ACCESS_POLL_MS,
   type LanAccessStatus,
+  keylessLanAccessDescription,
   lanAccessAutoStartReadOnly,
   lanAccessBlockMessage,
   lanAccessErrorMessage,
@@ -359,6 +360,18 @@ export function LanAccessSection() {
       <LanUrlPanel status={status} />
 
       <div className="border-t border-border/60 px-4 py-1">
+        <SettingsRow
+          label="Keyless API status"
+          description={keylessLanAccessDescription(status)}
+        >
+          <span className="text-xs font-medium text-muted-foreground">
+            {status?.keylessScope === "inference"
+              ? "Inference"
+              : status?.keylessScope === "full"
+                ? "Local full"
+                : "Off"}
+          </span>
+        </SettingsRow>
         <SettingsRow
           label="Start automatically"
           description="Put Unsloth on the network each time it starts. Stopping LAN access now won’t turn this off."

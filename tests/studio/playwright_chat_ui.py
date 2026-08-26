@@ -204,6 +204,57 @@ def exercise_permission_mode_controls(page, shoot):
             pass  # best-effort -- proceed even if network never idles
         expect(pill).to_be_visible(timeout = 30_000)
 
+    # choose() only drives THIS tab. The mirror to /api/chat/settings is a 400ms
+    # trailing-edge debounce (SETTINGS_DEBOUNCE_MS, chat-runtime-store.ts) whose
+    # only early flush is the beforeunload keepalive, so the pill turning over
+    # proves the click landed locally, not that the installation stored it.
+    #
+    # Measured on webkit, timed from the choose() below: choose returns at
+    # t+238ms, set_legacy_confirm at t+248ms, and the reload starts there. The
+    # debounce would not have fired until ~t+630ms, so the only PUT that goes out
+    # at all is the beforeunload keepalive at t+252ms, and the reloaded page's
+    # hydrating GET arrives at t+697ms. The assertion after the reload was
+    # therefore never testing the level this step chose. It was betting that an
+    # unload-time keepalive beats a hydrating GET by 445ms of loopback, on every
+    # engine, every run.
+    #
+    # When that bet loses, hydration returns the level the migration loop above
+    # left on the install ("off"), the pill reads "Run automatically", and the
+    # step fails as though migration were broken. That is what took webkit red at
+    # 20a98fd54 while chromium and firefox passed the same assertion in the same
+    # job.
+    #
+    # So: wait for the level to actually be ON the installation before reloading
+    # and asserting on it. Assert what was achieved, not what was commanded. This
+    # deliberately stops depending on the unload-time flush; that flush is worth a
+    # test of its own, but it was never what this step meant to assert.
+    def expect_server_mode(expected, timeout_ms = 15_000):
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        seen = "<never read>"
+        while True:
+            seen = page.evaluate(
+                """async () => {
+                    const token = localStorage.getItem("unsloth_auth_token");
+                    const res = await fetch("/api/chat/settings", {
+                        headers: token ? { Authorization: "Bearer " + token } : {},
+                        cache: "no-store",
+                    });
+                    if (!res.ok) return "<http " + res.status + ">";
+                    const body = await res.json();
+                    return (body && body.settings && body.settings.permissionMode) ?? null;
+                }"""
+            )
+            if seen == expected:
+                return
+            if time.monotonic() >= deadline:
+                break
+            page.wait_for_timeout(100)
+        fail(
+            f"permission level never reached the installation: /api/chat/settings "
+            f"reports permissionMode={seen!r} after {timeout_ms}ms, expected "
+            f"{expected!r} -- the debounced mirror never landed"
+        )
+
     page.route("**/api/chat/settings", refuse_settings_hydration)
     set_legacy_confirm(None)
     reload_and_wait_for_pill()
@@ -260,6 +311,7 @@ def exercise_permission_mode_controls(page, shoot):
     # rather than its own derivation.
     choose("Ask for approval")
     expect_mode("Ask for approval")
+    expect_server_mode("ask")
     set_legacy_confirm("false")
     reload_and_wait_for_pill()
     expect_mode("Ask for approval")
