@@ -3557,6 +3557,7 @@ const Composer: FC<{
               projectId: projectIdAtQueueStart,
               incognito: incognitoAtQueueStart,
               modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
+              modelGgufVariant: runSettingsAtQueueStart.activeGgufVariant,
               createdAt: Date.now(),
             });
           }
@@ -3586,6 +3587,7 @@ const Composer: FC<{
             // before any later navigation or compatibility check can observe it.
             await updateStoredChatThread(remoteId, {
               modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
+              modelGgufVariant: runSettingsAtQueueStart.activeGgufVariant,
             });
             shouldCorrectPersistedModel = false;
             if (
@@ -4088,6 +4090,7 @@ const Composer: FC<{
         projectId: projectScope,
         incognito: chatStateAtSend.incognito,
         modelId: chatStateAtSend.params.checkpoint ?? "",
+        modelGgufVariant: chatStateAtSend.activeGgufVariant,
         createdAt: Date.now(),
       });
       aui.composer().send();
