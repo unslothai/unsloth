@@ -177,18 +177,6 @@ test("the panel adopts a shared server config without overwriting a live edit", 
     PANEL,
     /sanitizedLocal = cleaned\.length > 0 \? cleaned : null;/,
   );
-  // What it WRITES is merged onto the stored record instead. An active model seeds
-  // the panel from loadedConfig, so persisting the shown config replaced remembered
-  // settings this browser never touched (a just-migrated legacy config among them)
-  // with whatever the resident model is running.
-  assert.match(
-    PANEL,
-    /const storedAtStart = resolveInitialConfig\(\s*\n?\s*configId,\s*\n?\s*target\.ggufVariant,\s*\n?\s*\)\.config;/,
-  );
-  assert.match(
-    PANEL,
-    /const rememberedConfig = fromApiOverride\(resolvedRow, storedAtStart\);/,
-  );
   // Whitespace-tolerant: the call carries an eviction list now, so it spans lines.
   assert.match(
     PANEL,
@@ -199,6 +187,39 @@ test("the panel adopts a shared server config without overwriting a live edit", 
   assert.match(PANEL, /setConfig\(serverConfig\);/);
   assert.match(PANEL, /setRemember\(true\);/);
   assert.match(PANEL, /setSavedRemember\(true\);/);
+});
+
+test("the hydration write-back merges against current storage", () => {
+  const requestStart = PANEL.indexOf("Promise.all([");
+  const responseStart = PANEL.indexOf(
+    ".then(([resolvedOverride, managed]) => {",
+    requestStart,
+  );
+  const adoptionStart = PANEL.indexOf(
+    "if (\n          resolvedRow &&",
+    responseStart,
+  );
+  const writeBackEnd = PANEL.indexOf(
+    "setSavedRemember(hydrationSaved);",
+    adoptionStart,
+  );
+  assert.ok(
+    requestStart >= 0 &&
+      responseStart > requestStart &&
+      adoptionStart > responseStart &&
+      writeBackEnd > adoptionStart,
+    "the storage read must be inside the successful hydration write-back",
+  );
+
+  const beforeResponse = PANEL.slice(requestStart, responseStart);
+  assert.doesNotMatch(beforeResponse, /resolveInitialConfig\(/);
+  assert.doesNotMatch(PANEL, /storedAtStart/);
+
+  const writeBack = PANEL.slice(adoptionStart, writeBackEnd);
+  assert.match(
+    writeBack,
+    /const storedConfig = resolveInitialConfig\(\s*configId,\s*target\.ggufVariant,\s*\)\.config;\s*const rememberedConfig = fromApiOverride\(resolvedRow, storedConfig\);[\s\S]*savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
+  );
 });
 
 test("a build that serves one slot does not raise the floor", () => {
