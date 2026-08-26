@@ -366,6 +366,18 @@ def test_export_masks_continued_classified_environment_values(client, name):
     assert "ordinary: kept" in exported
 
 
+def test_export_masks_classified_environment_values_in_structured_logs(client):
+    secret = "plainopaquecredential123456"
+    path = _seed_server_log(f'{{"GITHUB_TOKEN":"{secret}","request_id":"req-42"}}\n')
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert secret not in exported
+    assert '"GITHUB_TOKEN":"<redacted>"' in exported
+    assert '"request_id":"req-42"' in exported
+
+
 def test_export_preserves_siblings_after_an_indented_quoted_secret_key(client):
     secret = "correct-horse-battery-staple"
     path = _seed_server_log(

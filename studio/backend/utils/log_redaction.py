@@ -115,6 +115,14 @@ _ENV_ASSIGNMENT_RE = re.compile(
     + _QUOTED_VALUE
     + r")(?P=quote)|(?P<val>(?:\\[^\r\n]|[^\s\\])+))"
 )
+_STRUCTURED_ENV_KV_RE = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    r"(?P<key_text>(?:(?P<key_quote>[\"'])(?P<quoted_key>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?P=key_quote)|(?P<plain_key>[A-Za-z_][A-Za-z0-9_]*)))"
+    r"(?P<sep>\s*:\s*)"
+    r"(?:(?P<quote>[\"'])(?P<quoted>" + _QUOTED_VALUE + r")(?P=quote)|"
+    r"(?P<val>[^\"'\s,;}\]]+))"
+)
 _QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?P<quote>[\"'])"
@@ -293,6 +301,21 @@ def _redact_env_assignment(match: re.Match[str]) -> str:
     return f"{key}{match.group('sep')}{quote}{REDACTED}{quote}"
 
 
+def _redact_structured_env_kv(match: re.Match[str]) -> str:
+    """Mask env-style credentials in JSON, Python mappings, and YAML."""
+    key = match.group("quoted_key") or match.group("plain_key")
+    # Structured records also contain ordinary application fields. Limit the
+    # broad shared env classifier to conventional uppercase env names, while
+    # still matching every explicitly inventoried name case-insensitively.
+    upper = key.upper()
+    if key != upper and upper not in SECRET_ENV_NAMES:
+        return match.group(0)
+    if not _is_shell_secret_env_name(key):
+        return match.group(0)
+    quote = match.group("quote") or ""
+    return f"{match.group('key_text')}{match.group('sep')}" f"{quote}{REDACTED}{quote}"
+
+
 def _is_shell_secret_env_name(name: str) -> bool:
     """Apply the env classifier without treating model token metadata as env."""
     if not is_secret_env_name(name):
@@ -444,6 +467,7 @@ def redact_log_text(text: str) -> str:
     # Use the same env-name classifier as the tool sandbox. Shell assignments
     # end at whitespace, so later command arguments remain useful diagnostics.
     text = _ENV_ASSIGNMENT_RE.sub(_redact_env_assignment, text)
+    text = _STRUCTURED_ENV_KV_RE.sub(_redact_structured_env_kv, text)
     # Exact Authorization assignments are unambiguous even when the scheme is
     # uncommon (Negotiate, AWS SigV4, or a provider-specific extension).
     text = _QUOTED_AUTH_RE.sub(_redact_auth_assignment, text)

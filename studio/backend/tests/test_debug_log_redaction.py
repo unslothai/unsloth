@@ -327,6 +327,43 @@ def test_studio_secret_environment_inventory_is_masked(name):
 
 
 @pytest.mark.parametrize(
+    "line,expected",
+    [
+        (
+            '{"GITHUB_TOKEN":"plainopaquecredential123456","status":401}',
+            '{"GITHUB_TOKEN":"<redacted>","status":401}',
+        ),
+        (
+            "{'REPLICATE_API_TOKEN': 'r8_plainopaquecredential123456'}",
+            "{'REPLICATE_API_TOKEN': '<redacted>'}",
+        ),
+        (
+            "AZURE_CLIENT_CREDENTIAL: plainopaquecredential123456",
+            "AZURE_CLIENT_CREDENTIAL: <redacted>",
+        ),
+        (
+            '{"github_token":"plainopaquecredential123456"}',
+            '{"github_token":"<redacted>"}',
+        ),
+    ],
+)
+def test_structured_secret_environment_inventory_is_masked(line, expected):
+    assert redact_log_text(line) == expected
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '{"author":"Sam","status":200}',
+        '{"AWS_EC2_METADATA_DISABLED":"true"}',
+        '{"n_tokens":4096}',
+    ],
+)
+def test_structured_non_secret_fields_remain_visible(line):
+    assert redact_log_text(line) == line
+
+
+@pytest.mark.parametrize(
     "field",
     ["AccountKey", "SharedAccessKey", "AccessKey", "Pwd"],
 )
