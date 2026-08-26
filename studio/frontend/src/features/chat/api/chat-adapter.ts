@@ -62,6 +62,7 @@ import {
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
 import { ggufCompactionRequestFields } from "../utils/auto-compaction";
+import { hasOnlyStudioOwnedToolHistory } from "../utils/studio-tool-history";
 import {
   consumeQueuedChatRunSettings,
   shouldPersistResolvedQueuedModel,
@@ -992,26 +993,6 @@ function getToolReplayProvenance(
     return null;
   }
   return provenance as ToolReplayProvenance;
-}
-
-export function hasOnlyStudioOwnedToolHistory(messages: RunMessages): boolean {
-  let sawToolCall = false;
-  for (const message of messages) {
-    for (const part of message.content ?? []) {
-      if (part.type !== "tool-call") continue;
-      const toolPart = part as ToolCallMessagePart;
-      if (!serializeAssistantToolCallPart(toolPart)) continue;
-      const hasReplay =
-        serializeToolResultPart(toolPart) !== null ||
-        canReplayToolCallWithoutRoleTool(toolPart);
-      if (!hasReplay) continue;
-      sawToolCall = true;
-      if (getToolReplayProvenance(toolPart)?.source !== "local") {
-        return false;
-      }
-    }
-  }
-  return sawToolCall;
 }
 
 function hasToolReplayResult(part: ToolCallMessagePart): boolean {
