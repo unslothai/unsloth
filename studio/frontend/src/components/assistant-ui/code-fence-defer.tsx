@@ -15,6 +15,7 @@ import { flushSync } from "react-dom";
 
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { type FenceMode, resolveFenceMode } from "./code-fence-mode";
+import { normalizeLanguage } from "./code-plugin";
 
 /*
  * MONOTONIC fence highlighting: a fence is rendered as a plain shell until the
@@ -337,7 +338,9 @@ const upgradeEverythingForPrint = (): void => {
  *
  * One fence per language, so `latchNow`'s synchronous path cannot be defeated by a still-loading
  * grammar: on a jump into a language the reader has not met, and on a print, where there is no
- * later frame to correct in. Nothing runs when nothing is deferred.
+ * later frame to correct in. Nothing runs when nothing is deferred. "Per language" means per
+ * GRAMMAR, `normalizeLanguage`, not per fence tag: ```py and ```python are one grammar to the
+ * highlighter, and two keys here would warm it twice, on two different fences.
  *
  * IT USED TO WARM ON AN EMPTY STRING. Loading a grammar is the cheap half; running it over text
  * the first time is not, and `""` never does the second. So the first REAL tokenization still paid
@@ -382,7 +385,9 @@ let warmScheduled = false;
 const warmGrammars = (): void => {
   warmScheduled = false;
   for (const gate of unreached) {
-    const language = gate.language ?? "text";
+    // Keyed the way `highlight` keys it, or `py` and `Python` warm the same grammar twice, on two
+    // different fences, and each is a real tokenization rather than the old empty-string cache hit.
+    const language = normalizeLanguage(gate.language ?? "text");
     if (grammarsWarmed.has(language)) continue;
     if (gate.chars > MAX_HIGHLIGHT_CHARS) {
       // Grammar only, then keep looking: another fence in this language may be small enough.

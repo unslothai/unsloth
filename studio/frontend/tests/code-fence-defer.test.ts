@@ -542,3 +542,30 @@ test("the idle warm yields between languages", () => {
     "the chain terminates only because each task marks one more language done",
   );
 });
+
+test("the warm dedupes on the grammar, not on the spelling", async () => {
+  /*
+   * `grammarsWarmed` keyed the raw fence tag while `code.highlight` lower-cases and resolves
+   * aliases, so a thread mixing ```py and ```python warmed one grammar twice -- and after this PR
+   * each spelling is a real tokenization of a different fence, not the old empty-string cache hit.
+   */
+  const { normalizeLanguage } = await import(
+    "../src/components/assistant-ui/code-plugin.ts"
+  );
+  // Run the identity rather than describe it: aliases, overrides and case all collapse.
+  for (const [tag, canonical] of [["py", "python"], ["Python", "python"], ["JS", "javascript"],
+                                  ["c++", "cpp"], ["bash", "shellscript"], ["text", "text"]]) {
+    assert.equal(normalizeLanguage(tag), canonical, tag);
+  }
+  const warm = SOURCE.slice(SOURCE.indexOf("const warmGrammars"));
+  const body = warm.slice(0, warm.indexOf("\n};"));
+  assert.match(
+    body,
+    /const language = normalizeLanguage\(gate\.language \?\? "text"\)/,
+    "the warm sets must be keyed by the same identity the highlighter uses",
+  );
+  assert.ok(
+    CODE_PLUGIN.includes("export const normalizeLanguage"),
+    "one definition, exported, so the two keyings cannot drift apart",
+  );
+});
