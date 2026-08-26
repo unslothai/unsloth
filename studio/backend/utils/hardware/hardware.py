@@ -4632,6 +4632,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                 "devices": [],
                 "index_kind": "relative",
             }
+        memory_total_gb = round(mem.get("total_gb", 0), 2)
         return {
             "available": True,
             "backend": _backend_label(device),
@@ -4643,7 +4644,9 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                     "index_kind": "relative",
                     "visible_ordinal": 0,
                     "name": mem.get("device_name", "MLX"),
-                    "memory_total_gb": round(mem.get("total_gb", 0), 2),
+                    "memory_total_gb": memory_total_gb,
+                    "shared_memory": True,
+                    "shared_memory_host_backed_gb": memory_total_gb,
                 }
             ],
             "index_kind": "relative",
