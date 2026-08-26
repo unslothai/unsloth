@@ -791,7 +791,12 @@ class TestChatCompletionRequestToolFields:
         assert "one image per message" in entry["error"]
         assert monitor.active_count() == 0
 
-    def _standard_vision_client(self, monkeypatch, monitor, is_vision = True):
+    def _standard_vision_client(
+        self,
+        monkeypatch,
+        monitor,
+        is_vision = True,
+    ):
         """A loaded safetensors backend on the standard path, recording generation."""
         import routes.inference as inference_route
 
@@ -877,7 +882,10 @@ class TestChatCompletionRequestToolFields:
                         "role": "user",
                         "content": [
                             {"type": "text", "text": "what is this?"},
-                            {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "https://example.com/a.png"},
+                            },
                         ],
                     }
                 ]
