@@ -62,6 +62,10 @@ import {
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
 import {
+  newDeepResearchHandoff,
+  readDeepResearchToolEvent,
+} from "../utils/deep-research-handoff";
+import {
   consumeQueuedChatRunSettings,
   shouldPersistResolvedQueuedModel,
   snapshotQueuedChatRunSettings,
@@ -167,7 +171,7 @@ import type {
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
 } from "../types/api";
-import type { ChatModelSummary } from "../types/runtime";
+import { modelReadsSamplingSeed, type ChatModelRow } from "../types/runtime";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
 import {
   getStoredChatThread,
@@ -1851,6 +1855,7 @@ export async function buildLocalTokenCountExtras(
     ragTopK,
     autoHealToolCalls,
     bypassPermissions,
+    deepResearchEnabled,
   } = useChatRuntimeStore.getState();
   if (!supportsTools) return {};
 
@@ -1864,7 +1869,8 @@ export async function buildLocalTokenCountExtras(
     !codeToolsEnabled &&
     !artifactsEnabled &&
     !mcpEnabledForChat &&
-    !ragOn
+    !ragOn &&
+    !deepResearchEnabled
   ) {
     // Explicit false, not an omitted field: the server defaults tools on for a
     // request that never mentions them, so every pill being off has to say so.
@@ -1890,6 +1896,8 @@ export async function buildLocalTokenCountExtras(
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
+    // Armed research puts the deep_research schema in the prompt, so the count carries it.
+    ...(deepResearchEnabled ? { deep_research_armed: true } : {}),
     // the ids name the attached documents in the nudge server-side; no retrieval runs for a count.
     ...(ragOn
       ? {
@@ -2310,6 +2318,9 @@ function queuedResolvedModelFromStore(
       ? {
           isVision: activeModel.isVision,
           isGguf: activeModel.isGguf,
+          // The queued run mints its own summary for a model with no catalog row, and
+          // the sampling seed is gated on this.
+          isMlx: activeModel.isMlx,
           isAudio: activeModel.isAudio,
           audioType: activeModel.audioType,
           hasAudioInput: activeModel.hasAudioInput,
@@ -3672,12 +3683,15 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             maxTokensCap: loadResp.context_length ?? undefined,
           },
         );
-        const defaultModel: ChatModelSummary = {
+        const defaultModel: ChatModelRow = {
           id: DEFAULT_CHAT_MODEL_REPO,
           name: loadResp.display_name ?? DEFAULT_CHAT_MODEL_LABEL,
           isVision: loadResp.is_vision ?? false,
           isLora: false,
           isGguf: true,
+          isMlx: false,
+          isAudio: false,
+          hasAudioInput: false,
         };
         if (!store.models.some((m) => m.id === DEFAULT_CHAT_MODEL_REPO)) {
           store.setModels([...store.models, defaultModel]);
@@ -3806,6 +3820,7 @@ async function resolveQueuedEmptyLocalModel(
             modelCapabilities: {
               isVision: status.is_vision ?? false,
               isGguf: status.is_gguf ?? false,
+              isMlx: status.is_mlx ?? false,
               isAudio: status.is_audio ?? false,
               audioType: status.audio_type ?? null,
               hasAudioInput: status.has_audio_input ?? false,
@@ -3985,15 +4000,16 @@ export function createOpenAIStreamAdapter(
           runtime = useChatRuntimeStore.getState();
         }
       }
-      if (
-        runtime.deepResearchEnabled &&
-        !options.pairId &&
-        (options.modelType === undefined || options.modelType === "base")
+      // Started only when the model hands this turn off, never on the toggle alone: arming
+      // research offers it the tool, and it decides whether the message wants researching.
+      const startDeepResearch = async function* (
+        researchQuestion: string,
+        transitionSignal: AbortSignal = abortSignal,
       ) {
         if (runtime.modelLoading) {
           toast.info("Waiting for model to finish loading…");
           try {
-            await waitForModelReady(abortSignal);
+            await waitForModelReady(transitionSignal);
           } catch (error) {
             throw error;
           }
@@ -4003,7 +4019,7 @@ export function createOpenAIStreamAdapter(
             ReturnType<typeof resolveQueuedEmptyLocalModel>
           >;
           try {
-            resolution = await resolveQueuedEmptyLocalModel(abortSignal);
+            resolution = await resolveQueuedEmptyLocalModel(transitionSignal);
           } catch (error) {
             throw error;
           }
@@ -4025,58 +4041,52 @@ export function createOpenAIStreamAdapter(
             throw new Error("Load a model first.");
           }
         }
-        const liveRuntime = useChatRuntimeStore.getState();
+        // The turn's own settings, not the store's now. This generator runs AFTER the
+        // model's stream, and the model selector stays usable while a turn is streaming: a
+        // live read researched the question model A handed off with whichever model B had
+        // since been picked, or failed outright when B runs no Studio tools. The one thing
+        // that legitimately happened after the send is the empty-model resolution above.
+        const sendTimeRuntime = runtime;
+        const withResolvedModel = <T extends typeof sendTimeRuntime>(base: T): T =>
+          queuedEmptyModelRuntime === null
+            ? base
+            : {
+                ...base,
+                params: {
+                  ...base.params,
+                  checkpoint: queuedEmptyModelRuntime.checkpoint,
+                },
+                activeGgufVariant: queuedEmptyModelRuntime.activeGgufVariant,
+                supportsTools: queuedEmptyModelRuntime.supportsTools,
+                supportsReasoning: queuedEmptyModelRuntime.supportsReasoning,
+                reasoningAlwaysOn: queuedEmptyModelRuntime.reasoningAlwaysOn,
+                reasoningStyle: queuedEmptyModelRuntime.reasoningStyle,
+                supportsReasoningOff: queuedEmptyModelRuntime.supportsReasoningOff,
+                reasoningEffortLevels: queuedEmptyModelRuntime.reasoningEffortLevels,
+                supportsPreserveThinking:
+                  queuedEmptyModelRuntime.supportsPreserveThinking,
+                preserveThinking: queuedEmptyModelRuntime.preserveThinking,
+                ggufContextLength: queuedEmptyModelRuntime.ggufContextLength,
+                models: mergeQueuedModelCapabilities(
+                  base.models,
+                  queuedEmptyModelRuntime.checkpoint,
+                  queuedEmptyModelRuntime.modelCapabilities,
+                ),
+              };
         runtime = queuedRunSettings
           ? queuedRunSettings.params.checkpoint
-            ? { ...liveRuntime, ...queuedRunSettings }
-            : {
-                ...liveRuntime,
+            ? { ...sendTimeRuntime, ...queuedRunSettings }
+            : withResolvedModel({
+                ...sendTimeRuntime,
                 ...queuedRunSettings,
+                // The queued snapshot carries no model of its own; without a resolution
+                // this turn's own is the answer.
                 params: {
                   ...queuedRunSettings.params,
-                  checkpoint:
-                    queuedEmptyModelRuntime?.checkpoint ??
-                    liveRuntime.params.checkpoint,
+                  checkpoint: sendTimeRuntime.params.checkpoint,
                 },
-                activeGgufVariant:
-                  queuedEmptyModelRuntime !== null
-                    ? queuedEmptyModelRuntime.activeGgufVariant
-                    : liveRuntime.activeGgufVariant,
-                supportsTools:
-                  queuedEmptyModelRuntime?.supportsTools ??
-                  liveRuntime.supportsTools,
-                supportsReasoning:
-                  queuedEmptyModelRuntime?.supportsReasoning ??
-                  liveRuntime.supportsReasoning,
-                reasoningAlwaysOn:
-                  queuedEmptyModelRuntime?.reasoningAlwaysOn ??
-                  liveRuntime.reasoningAlwaysOn,
-                reasoningStyle:
-                  queuedEmptyModelRuntime?.reasoningStyle ??
-                  liveRuntime.reasoningStyle,
-                supportsReasoningOff:
-                  queuedEmptyModelRuntime?.supportsReasoningOff ??
-                  liveRuntime.supportsReasoningOff,
-                reasoningEffortLevels:
-                  queuedEmptyModelRuntime?.reasoningEffortLevels ??
-                  liveRuntime.reasoningEffortLevels,
-                supportsPreserveThinking:
-                  queuedEmptyModelRuntime?.supportsPreserveThinking ??
-                  liveRuntime.supportsPreserveThinking,
-                preserveThinking:
-                  queuedEmptyModelRuntime?.preserveThinking ??
-                  liveRuntime.preserveThinking,
-                ggufContextLength:
-                  queuedEmptyModelRuntime !== null
-                    ? queuedEmptyModelRuntime.ggufContextLength
-                    : liveRuntime.ggufContextLength,
-                models: mergeQueuedModelCapabilities(
-                  liveRuntime.models,
-                  queuedEmptyModelRuntime?.checkpoint ?? "",
-                  queuedEmptyModelRuntime?.modelCapabilities ?? null,
-                ),
-              }
-          : liveRuntime;
+              })
+          : withResolvedModel(sendTimeRuntime);
         if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
         if (!unstable_assistantMessageId) {
           throw new Error(
@@ -4147,6 +4157,7 @@ export function createOpenAIStreamAdapter(
           params.systemVariables,
           readThreadRecord,
         );
+        if (transitionSignal.aborted) return;
         const ragScope =
           runtime.ragEnabled || projectRagEnabled
             ? runtime.ragEnabled && runtime.ragSource.type === "kb"
@@ -4219,6 +4230,9 @@ export function createOpenAIStreamAdapter(
             userMessageId: userMessage.id,
             assistantMessageId: unstable_assistantMessageId,
             inferenceRequest,
+            // Omitted when empty rather than sent as "": CreateResearchRun forbids unknown
+            // fields, so an unconditional send 422s against a backend that predates it.
+            ...(researchQuestion ? { question: researchQuestion } : {}),
             ...(researchInstructions ? { instructions: researchInstructions } : {}),
             ...(ragScope ? { ragScope } : {}),
             budgets: {
@@ -4240,13 +4254,8 @@ export function createOpenAIStreamAdapter(
             createdRun,
             detachResearchFollow,
           );
-          if (
-            !queuedRunSettings ||
-            resolvedThreadId ===
-              useChatRuntimeStore.getState().activeThreadId
-          ) {
-            runtime.setDeepResearchEnabled(false);
-          }
+          // The toggle stays on through the run: it is what the user turned on, and it is what
+          // is happening. The composer takes it away only once the chat's research is spent.
           if (abortSignal.aborted) {
             const detached = Boolean(
               (abortSignal.reason as { detach?: boolean } | undefined)?.detach,
@@ -4296,8 +4305,13 @@ export function createOpenAIStreamAdapter(
           runtime.clearThreadServerCancel(threadKey, researchServerCancel);
           runtime.setThreadRunning(threadKey, false, { owner: researchServerCancel });
         }
-        return;
-      }
+      };
+      const deepResearchHandoff = newDeepResearchHandoff();
+      const continuation = readContinuationRequest(runConfig);
+      let deepResearchArmed =
+        runtime.deepResearchEnabled &&
+        !options.pairId &&
+        (options.modelType === undefined || options.modelType === "base");
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns, panes and conversations, so scope by pane
       // AND thread. unstable_threadId alone, no activeThreadId fallback: the reader has only
@@ -4464,6 +4478,18 @@ export function createOpenAIStreamAdapter(
         ragAutoInject,
         ragAutoInjectMinScore,
       } = runtime;
+      if (
+        deepResearchArmed &&
+        !supportsTools &&
+        !isExternalModelId(params.checkpoint)
+      ) {
+        deepResearchArmed = false;
+        if (!queuedRunSettings) {
+          runtime.setDeepResearchEnabled(false);
+        }
+        runtime = { ...runtime, deepResearchEnabled: false };
+        toast.info("Deep Research needs a model that supports tools");
+      }
       // Project sources auto-scope: a chat inside a project retrieves from the
       // project's indexed sources even when the Docs pill is off. The probe is
       // cached, so this is one round trip per project every ~30s at most.
@@ -4664,7 +4690,6 @@ export function createOpenAIStreamAdapter(
 
       // The run's messages stop at the user turn (this is a sibling branch), so the
       // partial is appended here for the backend to resume.
-      const continuation = readContinuationRequest(runConfig);
       if (continuation) {
         outboundMessages.push({
           role: "assistant",
@@ -5580,7 +5605,12 @@ export function createOpenAIStreamAdapter(
                 studioLocalCodeTools.length > 0 ||
                 mcpEnabledForChat ||
                 ragEnabled ||
-                projectRagEnabled)
+                projectRagEnabled ||
+                // Armed research needs Studio's loop for the same reason the local body
+                // does: deep_research is appended past every tool filter, but only for a
+                // request that asked for the loop at all. Without it the turn proxies
+                // through, the model is never offered the tool, and arming does nothing.
+                deepResearchArmed)
                 ? {
                     enable_tools: true,
                     enabled_tools: [
@@ -5682,6 +5712,9 @@ export function createOpenAIStreamAdapter(
                     // server's tools-on default, which would bill provider
                     // server tools.
                     { enable_tools: false }),
+              // Also on this body, not just the local one: a provider whose models run Studio
+              // tools can hand off too, and omitting it here makes arming research a no-op.
+              ...(deepResearchArmed ? { deep_research_armed: true } : {}),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
               external_model: externalSelection.modelId,
@@ -5760,6 +5793,12 @@ export function createOpenAIStreamAdapter(
             min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,
             presence_penalty: params.presencePenalty,
+            // Omitted when unset so the server keeps drawing a fresh seed, and when the
+            // backend does not read one, so a pin left over from a GGUF is not sent
+            // invisibly after a switch to transformers.
+            ...(params.seed == null || !modelReadsSamplingSeed(activeModel)
+              ? {}
+              : { seed: params.seed }),
             image_base64: imageBase64,
             audio_base64: audioBase64,
             video_base64: videoBase64,
@@ -5804,13 +5843,15 @@ export function createOpenAIStreamAdapter(
               ? {}
               : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,
+            ...(deepResearchArmed ? { deep_research_armed: true } : {}),
             ...(supportsTools &&
             (toolsEnabled ||
               codeToolsEnabled ||
               renderHtmlToolEnabledForThisTurn ||
               mcpEnabledForChat ||
               ragEnabled ||
-              projectRagEnabled)
+              projectRagEnabled ||
+              deepResearchArmed)
               ? {
                   enable_tools: true,
                   enabled_tools: [
@@ -5990,6 +6031,17 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
+                // Deep Research is an ordinary tool to every loop that runs it, so the handoff
+                // is read off the events they all publish rather than a bespoke frame. An
+                // ungated pair is not rendered: the research card is the reply, a tool pill
+                // would just precede it saying the same thing.
+                if (
+                  toolEvent.tool_name === "deep_research" &&
+                  readDeepResearchToolEvent(deepResearchHandoff, toolEvent)
+                ) {
+                  if (deepResearchHandoff.question !== null) break;
+                  continue;
+                }
                 // Persist container_id onto the thread (OpenAI / Anthropic).
                 if (toolEvent.type === "container_ready") {
                   const newContainerId = toolEvent.container_id as
@@ -6840,8 +6892,39 @@ export function createOpenAIStreamAdapter(
               retriedWithRefreshedKey = true;
               continue;
             }
+            // The tool ran, so the run it announced is owed whatever the acknowledgement
+            // did next: a small model that stalls on the follow-up sentence, a timeout, a
+            // dropped connection. Its card replaces this reply anyway, so nothing the
+            // failed acknowledgement would have said is lost. Not after Stop.
+            if (deepResearchHandoff.question !== null && !runSignal.aborted) {
+              try {
+                yield* startDeepResearch(deepResearchHandoff.question, runSignal);
+                return;
+              } catch (researchError) {
+                toast.error("Deep research could not start", {
+                  description:
+                    researchError instanceof Error
+                      ? researchError.message
+                      : String(researchError),
+                });
+              }
+            }
             throw streamError;
           }
+        }
+        // The model asked for Deep Research, so the run takes over from here and its card
+        // replaces this reply. Not after Stop: the user ended the turn before it got there.
+        if (deepResearchHandoff.question !== null && !runSignal.aborted) {
+          try {
+            yield* startDeepResearch(deepResearchHandoff.question, runSignal);
+          } catch (error) {
+            // The reply the model already wrote stays; the user can send again.
+            toast.error("Deep research could not start", {
+              description:
+                error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
         }
         // Strip a trailing ${...} template-literal fragment from external
         // streams (mistral magistral occasionally emits one at the end of an

@@ -2817,7 +2817,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self.assertEqual(seen["ctx"], 131072)
             self.assertEqual(seen["n_parallel"], 1)  # default single slot
             self.assertFalse(seen["swa_full"])
-            self.assertFalse(seen["flash_attn"])
+            # load_model appends --flash-attn on to every launch whose build has the
+            # flag, so the guard sizes the cache the launch will actually allocate.
+            # False here padded variable-width V tensors to the model-wide maximum.
+            self.assertTrue(seen["flash_attn"])
             # override below max_seq_length -> larger (max_seq_length) wins
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "1024"]), 4.0)
             self.assertEqual(seen["ctx"], 4096)
