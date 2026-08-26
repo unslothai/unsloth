@@ -311,52 +311,76 @@ class TestTheEstimateMatchesTheConfiguredLoad:
     def test_saved_context_checkpoints_are_priced(self, monkeypatch, tmp_path):
         """Each checkpoint is an SWA snapshot per slot, so this is not small."""
         fields = {
-            "context_length": 131072, "block_count": 48,
-            "attention.head_count": 32, "attention.head_count_kv": 8,
+            "context_length": 131072,
+            "block_count": 48,
+            "attention.head_count": 32,
+            "attention.head_count_kv": 8,
             "embedding_length": 4096,
-            "attention.key_length": 128, "attention.value_length": 128,
+            "attention.key_length": 128,
+            "attention.value_length": 128,
             "attention.sliding_window": 4096,
             "attention.sliding_window_pattern": [True, True, True, False],
         }
         gguf = _write_gguf(tmp_path / "swa-Q4_K_M.gguf", fields)
         none = _call_route(
-            monkeypatch, path = gguf, weights_bytes = 4096,
-            repo_id = "org/swa", speculative_type = None, n_parallel = 4,
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/swa",
+            speculative_type = None,
+            n_parallel = 4,
         )
         many = _call_route(
-            monkeypatch, path = gguf, weights_bytes = 4096,
-            repo_id = "org/swa", speculative_type = None, n_parallel = 4,
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/swa",
+            speculative_type = None,
+            n_parallel = 4,
             ctx_checkpoints = 32,
         )
-        assert many["kv_bytes"] > none["kv_bytes"], (
-            "saved ctx_checkpoints did not reach the KV estimator"
-        )
+        assert (
+            many["kv_bytes"] > none["kv_bytes"]
+        ), "saved ctx_checkpoints did not reach the KV estimator"
 
     def test_draft_depth_is_priced_on_a_hybrid_mamba_target(self, monkeypatch, tmp_path):
         """The rollback copies dominate the reserve; the zero default omits them."""
         fields = {
-            "context_length": 131072, "block_count": 48,
-            "attention.head_count": 32, "attention.head_count_kv": 8,
+            "context_length": 131072,
+            "block_count": 48,
+            "attention.head_count": 32,
+            "attention.head_count_kv": 8,
             "embedding_length": 4096,
-            "attention.key_length": 128, "attention.value_length": 128,
-            "ssm.inner_size": 6144, "ssm.state_size": 128,
-            "ssm.group_count": 16, "ssm.conv_kernel": 4,
+            "attention.key_length": 128,
+            "attention.value_length": 128,
+            "ssm.inner_size": 6144,
+            "ssm.state_size": 128,
+            "ssm.group_count": 16,
+            "ssm.conv_kernel": 4,
             "full_attention_interval": 4,
             "nextn_predict_layers": 1,
         }
         gguf = _write_gguf(tmp_path / "mamba-Q4_K_M.gguf", fields)
         shallow = _call_route(
-            monkeypatch, path = gguf, weights_bytes = 4096,
-            repo_id = "org/mamba", speculative_type = "mtp", n_parallel = 4,
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/mamba",
+            speculative_type = "mtp",
+            n_parallel = 4,
         )
         deep = _call_route(
-            monkeypatch, path = gguf, weights_bytes = 4096,
-            repo_id = "org/mamba", speculative_type = "mtp", n_parallel = 4,
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/mamba",
+            speculative_type = "mtp",
+            n_parallel = 4,
             spec_draft_n_max = 16,
         )
-        assert deep["spec_bytes"] > shallow["spec_bytes"] * 10, (
-            "spec_draft_n_max did not reach the MTP estimator"
-        )
+        assert (
+            deep["spec_bytes"] > shallow["spec_bytes"] * 10
+        ), "spec_draft_n_max did not reach the MTP estimator"
 
     def test_a_split_drafter_is_billed_for_every_shard(self, tmp_path):
         snap = TestDrafterDiscoveryMatchesTheLoader._snapshot(tmp_path)
@@ -369,19 +393,20 @@ class TestTheEstimateMatchesTheConfiguredLoad:
 
         got, size = models_routes._resolve_mtp_drafter(str(snap / "model-Q4_K_M.gguf"))
         assert got == str(one), "llama-server is handed shard 1"
-        assert size >= one.stat().st_size + two.stat().st_size, (
-            f"billed {size} bytes, which is shard 1 alone rather than the family"
-        )
+        assert (
+            size >= one.stat().st_size + two.stat().st_size
+        ), f"billed {size} bytes, which is shard 1 alone rather than the family"
 
-    def test_a_dspark_or_dflash_mode_reports_its_reserve_unpriced(
-        self, monkeypatch, tmp_path
-    ):
+    def test_a_dspark_or_dflash_mode_reports_its_reserve_unpriced(self, monkeypatch, tmp_path):
         """Rather than a fit that omits the launch's largest allocation."""
         gguf = _write_gguf(tmp_path / "plain-Q4_K_M.gguf", _MLA_NO_HEAD)
         for mode in ("dspark", "dflash"):
             out = _call_route(
-                monkeypatch, path = gguf, weights_bytes = 4096,
-                repo_id = "org/plain", speculative_type = mode,
+                monkeypatch,
+                path = gguf,
+                weights_bytes = 4096,
+                repo_id = "org/plain",
+                speculative_type = mode,
             )
             assert out["spec_unpriced"] is True, f"{mode} claimed to be priced"
             assert out["spec_bytes"] is None
@@ -390,29 +415,38 @@ class TestTheEstimateMatchesTheConfiguredLoad:
         gguf = _write_gguf(tmp_path / "plain-Q4_K_M.gguf", _MLA_NO_HEAD)
         for mode in (None, "ngram", "mtp", "auto"):
             out = _call_route(
-                monkeypatch, path = gguf, weights_bytes = 4096,
-                repo_id = "org/plain", speculative_type = mode,
+                monkeypatch,
+                path = gguf,
+                weights_bytes = 4096,
+                repo_id = "org/plain",
+                speculative_type = mode,
             )
             assert out["spec_unpriced"] is False, f"{mode} wrongly marked unpriced"
 
-    def test_the_vision_projector_is_charged_unless_vision_is_off(
-        self, monkeypatch, tmp_path
-    ):
+    def test_the_vision_projector_is_charged_unless_vision_is_off(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "vision-Q4_K_M.gguf", _MLA_NO_HEAD)
         mmproj = tmp_path / "mmproj-F16.gguf"
         mmproj.write_bytes(b"\x00" * 800_000)
 
         on = _call_route(
-            monkeypatch, path = gguf, weights_bytes = 4096,
-            repo_id = str(tmp_path), speculative_type = None, is_local = True,
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = str(tmp_path),
+            speculative_type = None,
+            is_local = True,
         )
-        assert on["projector_bytes"] and on["projector_bytes"] > mmproj.stat().st_size, (
-            "the projector is charged above its file size (_MMPROJ_VRAM_SAFETY)"
-        )
+        assert (
+            on["projector_bytes"] and on["projector_bytes"] > mmproj.stat().st_size
+        ), "the projector is charged above its file size (_MMPROJ_VRAM_SAFETY)"
 
         off = _call_route(
-            monkeypatch, path = gguf, weights_bytes = 4096,
-            repo_id = str(tmp_path), speculative_type = None, is_local = True,
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = str(tmp_path),
+            speculative_type = None,
+            is_local = True,
             disable_vision = True,
         )
         assert off["projector_bytes"] is None, "vision off must free the projector"
@@ -420,7 +454,11 @@ class TestTheEstimateMatchesTheConfiguredLoad:
     def test_a_model_with_no_projector_reports_none(self, monkeypatch, tmp_path):
         gguf = _write_gguf(tmp_path / "text-Q4_K_M.gguf", _MLA_NO_HEAD)
         out = _call_route(
-            monkeypatch, path = gguf, weights_bytes = 4096,
-            repo_id = str(tmp_path), speculative_type = None, is_local = True,
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = str(tmp_path),
+            speculative_type = None,
+            is_local = True,
         )
         assert out["projector_bytes"] is None

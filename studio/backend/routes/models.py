@@ -3815,13 +3815,9 @@ async def get_kv_cache_estimate(
                     from core.inference.llama_cpp import LlamaCppBackend as _Be
                     from utils.models.model_config import detect_mmproj_file
 
-                    mmproj = detect_mmproj_file(
-                        path, search_root = repo_id if is_local else None
-                    )
+                    mmproj = detect_mmproj_file(path, search_root = repo_id if is_local else None)
                     if mmproj:
-                        projector = int(
-                            _Be._get_gguf_size_bytes(mmproj) * _Be._MMPROJ_VRAM_SAFETY
-                        )
+                        projector = int(_Be._get_gguf_size_bytes(mmproj) * _Be._MMPROJ_VRAM_SAFETY)
                 except Exception as e:
                     logger.debug(f"mmproj estimate failed for '{repo_id}' {quant}: {e}")
 
