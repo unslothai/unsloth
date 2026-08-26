@@ -737,7 +737,6 @@ def test_continuations_stay_on_the_legacy_stream():
     assert "!continuation" in candidate
 
 
-
 def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():
     reset = _between(
         SHARED_COMPOSER,
