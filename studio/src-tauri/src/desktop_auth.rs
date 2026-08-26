@@ -191,9 +191,15 @@ async fn exchange_desktop_secret(
     client: &Client,
     port: u16,
     secret: &str,
+    access_only: bool,
 ) -> Result<Option<DesktopAuthResponse>, AuthError> {
+    let route = if access_only {
+        "desktop-login?access_only=true"
+    } else {
+        "desktop-login"
+    };
     let response = client
-        .post(auth_url(port, "desktop-login"))
+        .post(auth_url(port, route))
         .json(&DesktopAuthRequest {
             secret: secret.to_string(),
         })
@@ -274,6 +280,7 @@ async fn retry_on_discovered_port(
     state: &tauri::State<'_, BackendState>,
     previous: BackendPort,
     secret: &str,
+    access_only: bool,
 ) -> Result<Option<(Option<DesktopAuthResponse>, BackendPort)>, String> {
     if !can_retry_on_discovered_port(state.inner(), previous.source)? {
         return Ok(None);
@@ -290,7 +297,7 @@ async fn retry_on_discovered_port(
         port,
         source: PortSource::Discovered,
     };
-    exchange_desktop_secret(client, port, secret)
+    exchange_desktop_secret(client, port, secret, access_only)
         .await
         .map(|tokens| Some((tokens, backend)))
         .map_err(AuthError::message)
@@ -301,8 +308,9 @@ async fn authenticate_with_stale_port_retry(
     state: &tauri::State<'_, BackendState>,
     backend: BackendPort,
     secret: &str,
+    access_only: bool,
 ) -> Result<(Option<DesktopAuthResponse>, BackendPort), String> {
-    match exchange_desktop_secret(client, backend.port, secret).await {
+    match exchange_desktop_secret(client, backend.port, secret, access_only).await {
         Ok(Some(tokens)) => Ok((Some(tokens), backend)),
         Ok(None) => {
             // 401 means the backend is reachable but the cached secret is stale.
@@ -312,7 +320,9 @@ async fn authenticate_with_stale_port_retry(
             Ok((None, backend))
         }
         Err(error) if should_retry_with_discovered_port(backend.source, &error) => {
-            if let Some(retried) = retry_on_discovered_port(client, state, backend, secret).await? {
+            if let Some(retried) =
+                retry_on_discovered_port(client, state, backend, secret, access_only).await?
+            {
                 return Ok(retried);
             }
             Err(error.message())
@@ -326,7 +336,7 @@ pub async fn desktop_auth(
     state: tauri::State<'_, BackendState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<DesktopAuthResponse, String> {
-    let result = desktop_auth_inner(&state, diagnostics.inner()).await;
+    let result = desktop_auth_inner(&state, diagnostics.inner(), false).await;
     if let Err(message) = &result {
         let port = state.lock().ok().and_then(|proc| proc.port);
         diagnostics::record_auth_failure(&diagnostics, "desktop_auth", port, message);
@@ -334,9 +344,22 @@ pub async fn desktop_auth(
     result
 }
 
+pub(crate) async fn desktop_access(
+    state: tauri::State<'_, BackendState>,
+    diagnostics: tauri::State<'_, DiagnosticsState>,
+) -> Result<DesktopAuthResponse, String> {
+    let result = desktop_auth_inner(&state, diagnostics.inner(), true).await;
+    if let Err(message) = &result {
+        let port = state.lock().ok().and_then(|proc| proc.port);
+        diagnostics::record_auth_failure(&diagnostics, "desktop_access", port, message);
+    }
+    result
+}
+
 async fn desktop_auth_inner(
     state: &tauri::State<'_, BackendState>,
     diagnostics: &DiagnosticsState,
+    access_only: bool,
 ) -> Result<DesktopAuthResponse, String> {
     let _auth_guard = DESKTOP_AUTH_LOCK.lock().await;
     let mut backend = current_backend_port(state).await?;
@@ -359,7 +382,8 @@ async fn desktop_auth_inner(
 
         info!("Desktop auth: exchanging desktop secret");
         let (tokens, resolved_backend) =
-            authenticate_with_stale_port_retry(&client, state, backend, &secret).await?;
+            authenticate_with_stale_port_retry(&client, state, backend, &secret, access_only)
+                .await?;
         backend = resolved_backend;
         if backend.source == PortSource::Discovered {
             diagnostics::record_attached_external_backend(diagnostics, backend.port);
@@ -459,13 +483,13 @@ mod tests {
     #[tokio::test]
     async fn exchange_desktop_secret_handles_unauthorized_and_not_found() {
         let port = login_server("401 Unauthorized").await;
-        let tokens = exchange_desktop_secret(&Client::new(), port, "desktop-stale")
+        let tokens = exchange_desktop_secret(&Client::new(), port, "desktop-stale", false)
             .await
             .unwrap();
         assert!(tokens.is_none());
 
         let port = login_server("404 Not Found").await;
-        let error = exchange_desktop_secret(&Client::new(), port, "desktop-secret")
+        let error = exchange_desktop_secret(&Client::new(), port, "desktop-secret", false)
             .await
             .unwrap_err()
             .message();

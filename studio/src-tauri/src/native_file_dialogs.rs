@@ -437,7 +437,7 @@ pub async fn save_native_file_from_url(
         return Ok(None);
     };
     let (url, bearer_token) = if refresh_desktop_auth.unwrap_or(false) {
-        let auth = crate::desktop_auth::desktop_auth(backend_state, diagnostics).await?;
+        let auth = crate::desktop_auth::desktop_access(backend_state, diagnostics).await?;
         (
             rebase_loopback_url(&url, auth.backend_port)?,
             Some(auth.access_token),

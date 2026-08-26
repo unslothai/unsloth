@@ -393,6 +393,24 @@ def test_export_masks_a_tuple_style_continued_cookie(client):
     assert "ordinary: kept" in exported
 
 
+def test_export_masks_a_pem_private_key_block(client):
+    key_body = "PRIVATEKEYBODYSHOULDNOTSURVIVE"
+    path = _seed_server_log(
+        "-----BEGIN PRIVATE KEY-----\n"
+        f"{key_body}\n"
+        "-----END PRIVATE KEY-----\n"
+        "ordinary: kept\n"
+    )
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert key_body not in exported
+    assert "BEGIN PRIVATE KEY" not in exported
+    assert "END PRIVATE KEY" not in exported
+    assert "ordinary: kept" in exported
+
+
 def test_export_treats_doubled_yaml_single_quotes_as_escapes(client):
     first = "correct"
     second = "it''s still secret"

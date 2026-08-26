@@ -47,6 +47,10 @@ SECRETS = [
         "deadbeef0123456789",
     ),
     (
+        "https://storage.googleapis.com/bucket/object?X-Goog-Signature=deadbeef0123456789&x-goog-expires=900",
+        "deadbeef0123456789",
+    ),
+    (
         "git clone https://dan:ghp_ABCDEFGHIJKLMNOPQRST0123@github.com/x/y",
         "ghp_ABCDEFGHIJKLMNOPQRST0123",
     ),
@@ -69,6 +73,7 @@ SECRETS = [
         "0123456789abcdef0123456789abcdef01234567",
     ),
     ("DATABASE_PASSWORD=hunter2hunter2", "hunter2hunter2"),
+    ("SSH_KEY_PASSPHRASE=correct-horse-battery-staple", "correct-horse-battery-staple"),
     ("training config: wandb_token='local-9f8e7d6c5b4a3210'", "local-9f8e7d6c5b4a3210"),
     # The key/value rule captures the scheme word as the "value", so the
     # credential after it was never looked at.

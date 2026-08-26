@@ -53,7 +53,7 @@ _SECRET_KEYS = (
     # prefix of its own for a shape rule to catch.
     "secret[-_]?access[-_]?key|shared[-_]?access[-_]?key|access[-_]?key|"
     "account[-_]?key|pwd|"
-    "password|passwd|secret"
+    "password|passwd|passphrase|secret"
 )
 
 # No leading \b: "_" is a word character, so \b never fires inside
@@ -90,7 +90,7 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
             r"(?i)([?&](?:token|api[-_]key|apikey|sig|signature|x-amz-signature|"
-            r"x-amz-credential|x-amz-security-token|access_token)=)[^&\s\"']+"
+            r"x-amz-credential|x-amz-security-token|x-goog-signature|access_token)=)[^&\s\"']+"
         ),
         r"\1" + REDACTED,
     ),
@@ -238,6 +238,18 @@ _COOKIE_RE = re.compile(
 # sentinels, which communicate that no credential was configured.
 _NON_SECRET_SENTINELS = frozenset({"none", "null"})
 _YAML_BLOCK_MARKER_RE = re.compile(r"[|>](?:[1-9][+-]?|[+-][1-9]?|[+-])?")
+_PRIVATE_KEY_BLOCK_RE = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+    re.IGNORECASE | re.DOTALL,
+)
+_PRIVATE_KEY_BEGIN_RE = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----",
+    re.IGNORECASE,
+)
+_PRIVATE_KEY_END_RE = re.compile(
+    r"-----END [A-Z0-9 ]*PRIVATE KEY-----",
+    re.IGNORECASE,
+)
 
 
 def _looks_like_credential(value: str) -> bool:
@@ -298,6 +310,7 @@ def _is_shell_secret_env_name(name: str) -> bool:
         "SECRET",
         "PASSWORD",
         "PASSWD",
+        "PASSPHRASE",
         "CREDENTIAL",
         "PRIVATE_KEY",
         "AUTH",
@@ -425,6 +438,7 @@ def redact_log_text(text: str) -> str:
     """Mask credentials. Idempotent, and a no-op on ordinary log content."""
     if not text:
         return text
+    text = _PRIVATE_KEY_BLOCK_RE.sub(REDACTED, text)
     # Nothing anchored below survives an escape between a key and its value, so
     # strip first, guarded by one introducer scan: ordinary content is untouched.
     if _ANSI_INTRODUCER_RE.search(text):
@@ -469,6 +483,7 @@ class StreamingLogRedactor:
         self._cookie_key_indent: int | None = None
         self._cookie_has_value = False
         self._quoted_secret: str | None = None
+        self._private_key_block = False
 
     @staticmethod
     def _masked_record(text: str) -> str:
@@ -620,6 +635,14 @@ class StreamingLogRedactor:
     def redact_record(self, text: str) -> str:
         physical = text.rstrip("\r\n")
         physical_context = self._context_view(physical)
+        if self._private_key_block:
+            if _PRIVATE_KEY_END_RE.search(physical):
+                self._private_key_block = False
+            return self._masked_record(text)
+        begin = _PRIVATE_KEY_BEGIN_RE.search(physical)
+        if begin:
+            self._private_key_block = _PRIVATE_KEY_END_RE.search(physical, begin.end()) is None
+            return self._masked_record(text)
         if self._quoted_secret is not None:
             quote = self._quoted_secret
             if self._has_unescaped_quote(physical, quote):

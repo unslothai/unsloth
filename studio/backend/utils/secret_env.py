@@ -45,6 +45,7 @@ SECRET_ENV_MARKERS = (
     "SECRET",
     "PASSWORD",
     "PASSWD",
+    "PASSPHRASE",
     "CREDENTIAL",
     "PRIVATE_KEY",
     "AUTH",
