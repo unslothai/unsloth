@@ -1385,7 +1385,7 @@ export function useChatModelRuntime() {
               const mlxBaseDescription = isLora
                 ? `Loading the adapter with ${validation.mlx_loads_base_model} in place of its bitsandbytes base, downloading it first if needed.`
                 : `Loading ${validation.mlx_loads_base_model} instead, downloading it first if needed.`;
-              progressModelIds = isLora
+              progressModelIds = isLora && !isLocal
                 ? [modelId, validation.mlx_loads_base_model]
                 : [validation.mlx_loads_base_model];
               downloadComplete = false;

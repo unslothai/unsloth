@@ -49,6 +49,10 @@ test("validated LoRA status controls download tracking", () => {
   );
 });
 
+test("local LoRA tracks only the substituted base download", () => {
+  assert.match(VALIDATION, /progressModelIds = isLora && !isLocal/);
+});
+
 test("a pre-substitution progress response cannot complete the base download", () => {
   assert.match(
     DOWNLOAD_POLL,
