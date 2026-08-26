@@ -14432,6 +14432,11 @@ def _latest_user_image_payload(messages: list) -> "Optional[str]":
     only, first image part in the turn. ``extractImageBase64`` strips the prefix of
     a ``data:`` URL and returns anything else unchanged, which is also how
     :func:`_extract_content_parts` decides a part carries an inline payload.
+
+    An image part that yields nothing does not end the scan: the frontend walks on
+    past a falsy result (`if (encoded) return encoded`). Stopping on one read a
+    payloadless newest part as the echoed value, so Studio resending a valid
+    earlier image looked like a second attachment and was refused.
     """
     for msg in reversed(messages):
         if msg.role != "user" or not isinstance(msg.content, list):
@@ -14440,7 +14445,9 @@ def _latest_user_image_payload(messages: list) -> "Optional[str]":
             if part.type != "image_url":
                 continue
             url = part.image_url.url
-            return url.partition(",")[2] if url.startswith("data:") else url
+            encoded = url.partition(",")[2] if url.startswith("data:") else url
+            if encoded:
+                return encoded
     return None
 
 
@@ -16234,6 +16241,19 @@ async def openai_chat_completions(
                     "request to a text model to use guided decoding.",
                 )
             _reject_audio_output_continuation(payload)
+            # Same reason as the non-GGUF audio branch below: this returns before
+            # every image check, and the waveform is spoken from the newest user
+            # TEXT, so an attached image would go unread and unmentioned. Nothing
+            # is running yet (monitor_id is still None, and _monitored_generate_audio
+            # opens its own row), so a bare raise leaves nothing open.
+            if _images_in_last_user_message(payload.messages) or _legacy_image_is_distinct(payload):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "This model generates speech and does not read images."
+                        " Load a vision model to send one."
+                    ),
+                )
             return await _monitored_generate_audio(
                 model_name,
                 context_length = llama_backend.context_length,

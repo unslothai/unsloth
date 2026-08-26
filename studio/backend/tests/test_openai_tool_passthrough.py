@@ -1107,6 +1107,84 @@ class TestChatCompletionRequestToolFields:
         assert backend.generated == []
         assert monitor.active_count() == 0
 
+    def test_a_payloadless_newest_image_does_not_end_the_echo_scan(self, monkeypatch):
+        """findLatestUserImageBase64 walks on past a falsy read (`if (encoded) return
+        encoded`), so an empty newest part is not the value the field carries. Stopping
+        on it made Studio's echo of a valid earlier image look like a second attachment
+        and refused a legitimate one-image request."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        older = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_RED_PNG_B64}"}}
+        empty = {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}}
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "first"}, older]},
+                    {"role": "assistant", "content": "ok"},
+                    {"role": "user", "content": [{"type": "text", "text": "second"}, empty]},
+                ],
+                "image_base64": _RED_PNG_B64,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(backend.generated) == 1
+        assert monitor.active_count() == 0
+
+    @pytest.mark.parametrize(
+        "n_images,expected",
+        [(1, 400), (0, 200)],
+        ids = ["image_on_a_gguf_speech_model_is_refused", "no_image_still_speaks"],
+    )
+    def test_a_gguf_speech_model_refuses_an_image(self, n_images, expected, monkeypatch):
+        """The GGUF audio branch returns before every image check, exactly as the
+        safetensors audio branch does, and speaks the newest user TEXT. An attached
+        image went unread and unmentioned."""
+        import routes.inference as inference_route
+
+        spoken = []
+
+        class _LlamaTts:
+            is_loaded = True
+            model_identifier = "tts.gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = True
+            _audio_type = "snac"
+            context_length = 4096
+
+            def generate_audio_response(self, **kwargs):
+                spoken.append(kwargs)
+                import numpy as np
+                return np.zeros(16000, dtype = "float32"), 16000
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _LlamaTts(), None)
+        image = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_RED_PNG_B64}"}}
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "say hi"}] + [image] * n_images,
+                    }
+                ]
+            },
+        )
+
+        assert resp.status_code == expected
+        assert monitor.active_count() == 0
+        if expected == 400:
+            assert "does not read images" in resp.text
+            assert spoken == []
+        else:
+            assert len(spoken) == 1
+
     def test_a_legacy_image_alone_is_still_served(self, monkeypatch):
         """With nothing extracted from the messages the top-level image IS the one
         that gets used, so it must not be refused as a second image."""
