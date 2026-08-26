@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { SortablePromptItems } from "./sortable-prompt-items";
+import { acquire, release } from "./mutation-lock";
 import { Tick02Icon } from "@/lib/tick-icon";
 import {
   type ReactElement,
@@ -1487,6 +1488,8 @@ function PromptDetail({
   onExport,
   onRefresh,
   onDeleted,
+  pending,
+  runMutation,
 }: {
   entry: PromptEntry;
   draft: PromptDraft | undefined;
@@ -1495,6 +1498,8 @@ function PromptDetail({
   onExport: (entry: PromptEntry) => void;
   onRefresh: () => void;
   onDeleted: (deletedId: string) => void;
+  pending: boolean;
+  runMutation: (id: string, fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
   const pinnedPromptIds = usePlusMenuPrefsStore((s) => s.pinnedPromptIds);
   const togglePinnedPrompt = usePlusMenuPrefsStore((s) => s.togglePinnedPrompt);
@@ -1515,50 +1520,48 @@ function PromptDetail({
     [name, text, entry.name, entry.text, onDraftChange],
   );
 
-  // One mutation at a time. PUT is an unconditional upsert, so a Save pressed
-  // while a DELETE is still in flight writes the row straight back.
-  const [pending, setPending] = useState(false);
-
+  // One mutation at a time, and the lock lives in the parent: this pane is
+  // keyed by row id, so selecting another row unmounts it and a local lock
+  // would come back false. PUT is an unconditional upsert, so a Save still in
+  // flight can land after a DELETE and write the deleted row straight back.
   const handleSave = useCallback(async () => {
     const trimText = text.trim();
     if (!trimText) return;
-    setPending(true);
-    try {
-      await savePromptEntry({
-        ...entry,
-        name: name.trim() || "Untitled Prompt",
-        text: trimText,
-        updatedAt: now(),
-      });
-      onDraftChange(undefined);
-      onRefresh();
-    } catch (err) {
-      toast.error("Could not save prompt", {
-        description: err instanceof Error ? err.message : "Please try again.",
-      });
-    } finally {
-      setPending(false);
-    }
-  }, [entry, name, text, onDraftChange, onRefresh]);
+    await runMutation(entry.id, async () => {
+      try {
+        await savePromptEntry({
+          ...entry,
+          name: name.trim() || "Untitled Prompt",
+          text: trimText,
+          updatedAt: now(),
+        });
+        onDraftChange(undefined);
+        onRefresh();
+      } catch (err) {
+        toast.error("Could not save prompt", {
+          description: err instanceof Error ? err.message : "Please try again.",
+        });
+      }
+    });
+  }, [entry, name, text, onDraftChange, onRefresh, runMutation]);
 
   const handleDelete = useCallback(async () => {
-    setPending(true);
-    try {
-      await deletePromptEntry(entry.id);
-    } catch (err) {
-      toast.error("Could not delete prompt", {
-        description: err instanceof Error ? err.message : "Please try again.",
-      });
-      setPending(false);
-      return;
-    }
-    onDraftChange(undefined);
-    // Id goes up so the parent only clears if this row is still selected: the
-    // delete is awaited, and a click elsewhere meanwhile would be undone.
-    onDeleted(entry.id);
-    onRefresh();
-    setPending(false);
-  }, [entry.id, onDraftChange, onDeleted, onRefresh]);
+    await runMutation(entry.id, async () => {
+      try {
+        await deletePromptEntry(entry.id);
+      } catch (err) {
+        toast.error("Could not delete prompt", {
+          description: err instanceof Error ? err.message : "Please try again.",
+        });
+        return;
+      }
+      onDraftChange(undefined);
+      // Id goes up so the parent only clears if this row is still selected: the
+      // delete is awaited, and a click elsewhere meanwhile would be undone.
+      onDeleted(entry.id);
+      onRefresh();
+    });
+  }, [entry.id, onDraftChange, onDeleted, onRefresh, runMutation]);
 
   // Export what the pane shows, normalised as saving would, or a dirty entry
   // writes a file that does not match the screen.
@@ -1739,6 +1742,8 @@ function PromptListDetail({
   onExport,
   onRefresh,
   onDeleted,
+  pending,
+  runMutation,
 }: {
   entry: PromptListEntry;
   draft: ListDraft | undefined;
@@ -1747,6 +1752,8 @@ function PromptListDetail({
   onExport: (entry: PromptListEntry) => void;
   onRefresh: () => void;
   onDeleted: (deletedId: string) => void;
+  pending: boolean;
+  runMutation: (id: string, fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
   const [preview, setPreview] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -1770,47 +1777,45 @@ function PromptListDetail({
   );
 
   // See PromptDetail: a Save landing after a DELETE would upsert the row back.
-  const [pending, setPending] = useState(false);
-
+  // See PromptDetail: the lock is the parent's because this pane is keyed by
+  // row id and unmounts on a row switch.
   const handleSave = useCallback(async () => {
     const filtered = items.filter((t) => t.trim());
     if (filtered.length === 0) return;
-    setPending(true);
-    try {
-      await savePromptList({
-        ...entry,
-        name: name.trim() || "Untitled List",
-        items: filtered,
-        updatedAt: now(),
-      });
-      onDraftChange(undefined);
-      onRefresh();
-    } catch (err) {
-      toast.error("Could not save list", {
-        description: err instanceof Error ? err.message : "Please try again.",
-      });
-    } finally {
-      setPending(false);
-    }
-  }, [entry, name, items, onDraftChange, onRefresh]);
+    await runMutation(entry.id, async () => {
+      try {
+        await savePromptList({
+          ...entry,
+          name: name.trim() || "Untitled List",
+          items: filtered,
+          updatedAt: now(),
+        });
+        onDraftChange(undefined);
+        onRefresh();
+      } catch (err) {
+        toast.error("Could not save list", {
+          description: err instanceof Error ? err.message : "Please try again.",
+        });
+      }
+    });
+  }, [entry, name, items, onDraftChange, onRefresh, runMutation]);
 
   const handleDelete = useCallback(async () => {
-    setPending(true);
-    try {
-      await deletePromptList(entry.id);
-    } catch (err) {
-      toast.error("Could not delete list", {
-        description: err instanceof Error ? err.message : "Please try again.",
-      });
-      setPending(false);
-      return;
-    }
-    onDraftChange(undefined);
-    // See PromptDetail: only the parent knows whether this row is still current.
-    onDeleted(entry.id);
-    onRefresh();
-    setPending(false);
-  }, [entry.id, onDraftChange, onDeleted, onRefresh]);
+    await runMutation(entry.id, async () => {
+      try {
+        await deletePromptList(entry.id);
+      } catch (err) {
+        toast.error("Could not delete list", {
+          description: err instanceof Error ? err.message : "Please try again.",
+        });
+        return;
+      }
+      onDraftChange(undefined);
+      // See PromptDetail: only the parent knows whether this row is still current.
+      onDeleted(entry.id);
+      onRefresh();
+    });
+  }, [entry.id, onDraftChange, onDeleted, onRefresh, runMutation]);
 
   // Run what the editor shows. Off entry.items, deleting every draft item left
   // the button enabled on the stored length and ran the old list.
@@ -2064,6 +2069,33 @@ export function PromptStorageDialog({
       return new Map(prev).set(id, draft);
     });
   }, []);
+
+  // Mutation locks live here rather than in the detail panes, which are keyed by
+  // row id and so unmount the moment another row is selected. Held by id until
+  // the request settles, or a Save in flight during a row switch comes back
+  // unlocked and its unconditional PUT can land after a DELETE.
+  const [mutatingIds, setMutatingIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  const runMutation = useCallback(
+    async (id: string, fn: () => Promise<void>) => {
+      let started = false;
+      setMutatingIds((prev) => {
+        const [next, took] = acquire(prev, id);
+        started = took;
+        return next;
+      });
+      // The buttons are disabled while locked, but a second caller reaching here
+      // anyway must not run and must not clear the first one's lock.
+      if (!started) return;
+      try {
+        await fn();
+      } finally {
+        setMutatingIds((prev) => release(prev, id));
+      }
+    },
+    [],
+  );
 
   const refreshEntries = useCallback(async () => {
     try { setPromptEntries(await listPromptEntries()); } catch {}
@@ -2473,6 +2505,8 @@ export function PromptStorageDialog({
                     onDeleted={(deletedId) =>
                       setSelectedPromptId((prev) => (prev === deletedId ? null : prev))
                     }
+                    pending={mutatingIds.has(selectedPrompt.id)}
+                    runMutation={runMutation}
                   />
                 ) : (
                   <EmptyDetail
@@ -2507,6 +2541,8 @@ export function PromptStorageDialog({
                     onDeleted={(deletedId) =>
                       setSelectedListId((prev) => (prev === deletedId ? null : prev))
                     }
+                    pending={mutatingIds.has(selectedList.id)}
+                    runMutation={runMutation}
                   />
                 ) : (
                   <EmptyDetail
