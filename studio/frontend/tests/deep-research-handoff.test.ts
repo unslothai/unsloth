@@ -14,7 +14,6 @@ import {
   DEEP_RESEARCH_STARTED_MARKER,
   newDeepResearchHandoff,
   readDeepResearchToolEvent,
-  shouldStartDirectDeepResearch,
 } from "../src/features/chat/utils/deep-research-handoff.ts";
 
 const STARTED = `${DEEP_RESEARCH_STARTED_MARKER} on that question. Reply with one short sentence.`;
@@ -32,50 +31,6 @@ const end = (over: Record<string, unknown> = {}) => ({
   tool_call_id: "call_r",
   result: STARTED,
   ...over,
-});
-
-test("tool-less research starts directly only for a new text-bearing turn", () => {
-  assert.equal(
-    shouldStartDirectDeepResearch({
-      armed: true,
-      supportsTools: false,
-      isContinuation: false,
-      hasResearchableText: true,
-    }),
-    true,
-  );
-
-  for (const blocked of [
-    {
-      armed: true,
-      supportsTools: false,
-      isContinuation: true,
-      hasResearchableText: true,
-    },
-    {
-      armed: true,
-      supportsTools: false,
-      isContinuation: false,
-      hasResearchableText: false,
-    },
-    {
-      armed: false,
-      supportsTools: false,
-      isContinuation: false,
-      hasResearchableText: true,
-    },
-    {
-      armed: true,
-      supportsTools: true,
-      isContinuation: false,
-      hasResearchableText: true,
-    },
-  ]) {
-    assert.equal(
-      shouldStartDirectDeepResearch(blocked),
-      false,
-    );
-  }
 });
 
 test("a call that ran hands off its question and draws no tool card", () => {

@@ -64,7 +64,6 @@ import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
 import {
   newDeepResearchHandoff,
   readDeepResearchToolEvent,
-  shouldStartDirectDeepResearch,
 } from "../utils/deep-research-handoff";
 import {
   consumeQueuedChatRunSettings,
@@ -4302,7 +4301,7 @@ export function createOpenAIStreamAdapter(
       };
       const deepResearchHandoff = newDeepResearchHandoff();
       const continuation = readContinuationRequest(runConfig);
-      const deepResearchArmed =
+      let deepResearchArmed =
         runtime.deepResearchEnabled &&
         !options.pairId &&
         (options.modelType === undefined || options.modelType === "base");
@@ -4472,28 +4471,17 @@ export function createOpenAIStreamAdapter(
         ragAutoInject,
         ragAutoInjectMinScore,
       } = runtime;
-      const latestUserMessage = [...messages]
-        .reverse()
-        .find((message) => message.role === "user");
-      const hasResearchableText = Boolean(
-        latestUserMessage &&
-          collectTextParts(latestUserMessage).some(
-            (text) => text.trim().length > 0,
-          ),
-      );
-      // A model that cannot call tools cannot hand a text turn off, so arming research still
-      // starts it outright. Continuations and attachment-only multimodal turns must reach the
-      // model instead: the former resumes its partial, and the latter has no valid question.
       if (
-        shouldStartDirectDeepResearch({
-          armed: deepResearchArmed,
-          supportsTools,
-          isContinuation: continuation !== null,
-          hasResearchableText,
-        })
+        deepResearchArmed &&
+        !supportsTools &&
+        !isExternalModelId(params.checkpoint)
       ) {
-        yield* startDeepResearch("");
-        return;
+        deepResearchArmed = false;
+        if (!queuedRunSettings) {
+          runtime.setDeepResearchEnabled(false);
+        }
+        runtime = { ...runtime, deepResearchEnabled: false };
+        toast.info("Deep Research needs a model that supports tools");
       }
       // Project sources auto-scope: a chat inside a project retrieves from the
       // project's indexed sources even when the Docs pill is off. The probe is
@@ -6038,6 +6026,7 @@ export function createOpenAIStreamAdapter(
                   toolEvent.tool_name === "deep_research" &&
                   readDeepResearchToolEvent(deepResearchHandoff, toolEvent)
                 ) {
+                  if (deepResearchHandoff.question !== null) break;
                   continue;
                 }
                 // Persist container_id onto the thread (OpenAI / Anthropic).
