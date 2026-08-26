@@ -355,21 +355,21 @@ def test_a_unc_path_gets_forward_slashes_on_every_host(as_host):
         )
 
 
-@pytest.mark.parametrize("host", ["linux", "macos"])
+@pytest.mark.parametrize("host", ["linux", "macos", "wsl"])
 def test_a_backslash_in_a_posix_name_is_left_alone(as_host, host):
     """Regression guard.
 
-    A backslash is a legal character in a Linux or macOS filename. Rewriting it to "/"
-    unconditionally turns one real directory into a two-segment path that does not
-    exist, and the folder vanishes from the picker with nothing logged.
+    A backslash is a legal character in a POSIX filename, WSL included. Rewriting it to
+    "/" turns one real directory into a two-segment path that does not exist, and the
+    folder vanishes from the picker with nothing logged.
     """
     as_host(host)
     assert path_utils.host_normalize_path("/home/u/models\\backup") == "/home/u/models\\backup"
 
 
-@pytest.mark.parametrize("host", ["windows", "wsl"])
-def test_a_backslash_is_a_separator_where_it_really_is_one(as_host, host):
-    as_host(host)
+def test_a_backslash_is_a_separator_on_windows(as_host):
+    """Only there can it not be part of a name."""
+    as_host("windows")
     assert path_utils.host_normalize_path("relative\\models") == "relative/models"
 
 

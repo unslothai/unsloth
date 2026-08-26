@@ -175,9 +175,10 @@ def host_normalize_path(path: str) -> str:
     Not :func:`normalize_path`: that hard-codes ``/mnt/`` to predict where the model
     *loader* will look, while a path read from another tool's config is stat-ed here.
 
-    Separators are rewritten only when the path is Windows-shaped or the host treats a
-    backslash as one. On Linux and macOS it is a legal filename character, so rewriting
-    it unconditionally silently loses a directory that has one in its name.
+    Separators are rewritten only when the path is Windows-shaped, or on Windows itself
+    where a backslash cannot be anything else. Everywhere else, WSL included, a path that
+    names no drive is a POSIX path, and a backslash in it is a legal filename character:
+    rewriting it would silently lose a directory that has one in its name.
     """
     if not path:
         return path
@@ -189,7 +190,7 @@ def host_normalize_path(path: str) -> str:
             return f"{_WSL_AUTOMOUNT_ROOT}{drive}/{rest}"
         return path.replace("\\", "/")
 
-    if os.name == "nt" or _IS_WSL:
+    if os.name == "nt":
         return path.replace("\\", "/")
 
     return path
