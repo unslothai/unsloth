@@ -1199,6 +1199,29 @@ def test_a_request_can_override_compaction_headroom_ratio():
     assert none_info["prompt_tokens_after"] > default_info["prompt_tokens_after"]
 
 
+def test_zero_headroom_drops_only_the_oldest_turn_needed_to_fit():
+    messages = []
+    for _ in range(100):
+        messages.append({"role": "user", "content": "u" * 5})
+        messages.append({"role": "assistant", "content": "a" * 5})
+    messages.append({"role": "user", "content": "x"})
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 1100,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+        keeps_boundary = True,
+        headroom_ratio = 0.0,
+    )
+
+    assert info is not None and info["fits"]
+    assert info["prompt_tokens_before"] == 1001
+    assert info["prompt_tokens_after"] == 991
+    assert info["dropped_messages"] == 2
+    assert fitted == messages[2:]
+
+
 def test_clamp_compaction_headroom_ratio_rejects_junk():
     from core.inference.context_window import clamp_compaction_headroom_ratio
 
