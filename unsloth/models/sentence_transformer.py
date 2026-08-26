@@ -1167,6 +1167,7 @@ class FastSentenceTransformer(FastModel):
             "return_dict",
         }
         if preinit_model_forward_params is None:
+            # ST 6 uses None to allow arbitrary **kwargs
             transformer_module.model_forward_params = None
         else:
             transformer_module.model_forward_params |= preinit_model_forward_params
