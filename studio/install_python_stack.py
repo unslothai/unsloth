@@ -4197,9 +4197,7 @@ def _hashed_requirement_file(wheel: str) -> str:
     """
     try:
         digest = hashlib.sha256(Path(wheel).read_bytes()).hexdigest()
-        handle = tempfile.NamedTemporaryFile(
-            "w", suffix = ".txt", delete = False, encoding = "utf-8"
-        )
+        handle = tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False, encoding = "utf-8")
         with handle:
             handle.write(f"{os.path.abspath(wheel)} --hash=sha256:{digest}\n")
     except OSError:
@@ -4775,7 +4773,11 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
 # remote source, and the pinned branch discards it along with the rest of pip.conf, which
 # is exactly the kind of silent override this notice exists to disclose.
 _PIP_CONFIG_KEYS = (
-    "require-hashes", "only-binary", "no-binary", "uploaded-prior-to", "no-index",
+    "require-hashes",
+    "only-binary",
+    "no-binary",
+    "uploaded-prior-to",
+    "no-index",
 )
 
 
@@ -4920,9 +4922,7 @@ def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
             if _canonical_policy_key(option) in cancelled:
                 continue
             for command in _PIP_COMMANDS:
-                value = settings.get(
-                    (command, option), settings.get(("global", option))
-                )
+                value = settings.get((command, option), settings.get(("global", option)))
                 if value is not None and _config_value_is_on(value, option):
                     on.append(("pip", "pip.conf", option))
                     break
