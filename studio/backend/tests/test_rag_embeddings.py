@@ -426,9 +426,7 @@ def test_unload_clears_the_sentence_transformer_weights(monkeypatch):
     assert embeddings._name is None
 
 
-def test_pending_sentence_transformer_refuses_implicit_download_and_llama_fallback(
-    monkeypatch,
-):
+def test_pending_sentence_transformer_refuses_implicit_download_and_llama_fallback(monkeypatch):
     import utils.embedding_model_settings as ems
     import utils.utils as utils
 
