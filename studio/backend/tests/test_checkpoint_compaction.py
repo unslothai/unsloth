@@ -1226,9 +1226,7 @@ def test_request_compaction_overrides_are_optional():
     )
     assert routes_mod._request_context_policy(payload) == "rolling"
     assert routes_mod._request_compaction_headroom_ratio(payload) == 0.1
-    assert routes_mod._request_context_policy(
-        types.SimpleNamespace(context_policy = "nope")
-    ) is None
+    assert routes_mod._request_context_policy(types.SimpleNamespace(context_policy = "nope")) is None
 
 
 def test_a_degraded_archive_stops_the_block_promising_a_lookup_that_returns_nothing(monkeypatch):

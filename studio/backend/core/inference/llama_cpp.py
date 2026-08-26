@@ -202,8 +202,7 @@ def _archive_is_degraded() -> bool:
 
 
 def _compaction_fit_kwargs(
-    context_policy: Optional[str] = None,
-    compaction_headroom_ratio: Optional[float] = None,
+    context_policy: Optional[str] = None, compaction_headroom_ratio: Optional[float] = None
 ) -> dict:
     """Per-request overrides the four rolling-fit call sites share.
 
@@ -235,10 +234,9 @@ def _fit_context(messages, **kwargs):
         requested_policy = None
     try:
         from core.inference import checkpoint
+
         use_checkpoint = (
-            checkpoint.enabled()
-            if requested_policy is None
-            else requested_policy == "checkpoint"
+            checkpoint.enabled() if requested_policy is None else requested_policy == "checkpoint"
         )
         if not can_reset and use_checkpoint and int(kwargs.get("sticky_dropped") or 0) > 0:
             # An epoch is in force but THIS request may not reset. Falling straight through

@@ -730,10 +730,7 @@ def _request_context_policy(payload) -> Optional[str]:
 
 def _request_compaction_headroom_ratio(payload) -> Optional[float]:
     from core.inference.context_window import clamp_compaction_headroom_ratio
-
-    return clamp_compaction_headroom_ratio(
-        getattr(payload, "compaction_headroom_ratio", None)
-    )
+    return clamp_compaction_headroom_ratio(getattr(payload, "compaction_headroom_ratio", None))
 
 
 def _overflow_truncation_requested(payload) -> bool:
