@@ -122,7 +122,6 @@ def _requires_rag():
     here would only make the suite red on macOS.
     """
     from storage import rag_db
-
     if not rag_db.rag_available():
         pytest.skip("sqlite-vec unavailable here, so there is no roster to migrate into")
 
