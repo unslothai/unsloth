@@ -1037,6 +1037,36 @@ class TestChatCompletionRequestToolFields:
         else:
             assert len(spoken) == 1
 
+    def test_a_comma_in_a_remote_url_is_not_an_echo(self, monkeypatch):
+        """Only a data: URL carries an inline payload, the way _extract_content_parts
+        reads it. Splitting every URL on its first comma let a remote URL that merely
+        contains one pose as an echo of the top-level image, hiding a second image."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "x"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"https://h.example/img,{_RED_PNG_B64}"},
+                            },
+                        ],
+                    }
+                ],
+                "image_base64": _RED_PNG_B64,
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "one image per message" in resp.text
+        assert backend.generated == []
+        assert monitor.active_count() == 0
+
     def test_a_legacy_image_alone_is_still_served(self, monkeypatch):
         """With nothing extracted from the messages the top-level image IS the one
         that gets used, so it must not be refused as a second image."""
@@ -1397,6 +1427,79 @@ class TestChatCompletionRequestToolFields:
                     {"role": "user", "content": "and this one?"},
                 ],
                 "image_base64": "TkVX",
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "audio or an image in one message" in resp.text
+        assert calls == []
+        assert monitor.active_count() == 0
+
+    def test_an_assistant_image_cannot_hide_a_top_level_attachment(self, monkeypatch):
+        """findLatestUserImageBase64 derives the legacy field only from USER turns,
+        so an image on an assistant turn is not something it could be an echo of.
+        Matching any role let an explicitly attached image be discarded here."""
+        import numpy as np
+
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        calls = []
+
+        class _OmniBackend:
+            active_model_name = "omni-sf"
+            models = {
+                "omni-sf": {
+                    "is_vision": True,
+                    "has_audio_input": True,
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+
+            def resize_image(self, image):
+                return image
+
+            def generate_audio_input_response(self, **kwargs):
+                calls.append(kwargs)
+                yield "answered from the audio"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+        generated = {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{_BLUE_PNG_B64}"},
+        }
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {"role": "user", "content": "draw one"},
+                    {"role": "assistant", "content": [generated]},
+                    {"role": "user", "content": "describe it"},
+                ],
+                "image_base64": _BLUE_PNG_B64,
                 "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
             },
         )

@@ -14173,17 +14173,24 @@ def _legacy_image_is_distinct(payload) -> bool:
     it unannounced. Comparing the payload, rather than asking whether any part
     exists, is what separates Studio's echo from a client attaching a new image to
     a thread that already carries one.
+
+    Mirror the echo exactly, in both directions, or the comparison hides a real
+    attachment. ``findLatestUserImageBase64`` reads only USER turns, so an image
+    from an assistant, system or tool turn is not something that field could have
+    been derived from. And only a ``data:`` URL carries an inline payload, the way
+    :func:`_extract_content_parts` reads it, so splitting every URL on its first
+    comma would let a remote URL that merely contains one pose as an echo.
     """
     if not payload.image_base64:
         return False
     for msg in payload.messages:
-        if not isinstance(msg.content, list):
+        if msg.role != "user" or not isinstance(msg.content, list):
             continue
         for part in msg.content:
             if part.type != "image_url":
                 continue
             url = part.image_url.url
-            if (url.partition(",")[2] or url) == payload.image_base64:
+            if url.startswith("data:") and url.partition(",")[2] == payload.image_base64:
                 return False
     return True
 
