@@ -44,10 +44,8 @@ def settings_store(monkeypatch):
         return True
 
     monkeypatch.setattr(studio_db, "compare_and_set_app_setting", _cas)
-    # The memo is process-wide and outlives the patched store, so a resolution
-    # recorded here would otherwise answer for the same model in every later test
-    # file: a default saved pending in this one made the llama loader refuse to
-    # fetch anything for the rest of the session.
+    # Process-wide and outliving the patched store, so a resolution recorded here
+    # would answer for the same model in every later test file.
     ems._resolved_gguf_memo.clear()
     ems._invalidate_cache()
     yield store

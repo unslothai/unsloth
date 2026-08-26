@@ -107,10 +107,9 @@ class LlamaServerBackend:
         self._port: int | None = None
         self._stdout_lines: list[str] = []
         self._stdout_thread: threading.Thread | None = None
-        # Belongs to whichever model the one subprocess is serving, so dim() takes
-        # the same _serve_lock the request path does. Reentrant precisely because
-        # dim() -> encode() -> _ensure_ready() re-enters it on one thread, which a
-        # plain lock held across the probe would self-deadlock.
+        # Belongs to whichever model the one subprocess serves, so dim() takes the
+        # same _serve_lock the request path does. Reentrant because
+        # dim() -> encode() -> _ensure_ready() re-enters it on one thread.
         self._dim: int | None = None
         # One subprocess serves one GGUF, so readiness and the request relying on
         # it must be indivisible: otherwise a swap between them lands A's POST on
@@ -440,14 +439,11 @@ class LlamaServerBackend:
         local = self._resolve_local_gguf(model)
         if local is not None:
             return self._adopt_model_path(local, desired)
-        # The exact family the picker planned, whenever it is on disk, and ahead of
-        # the configured-variant lookup. The record names the artifact this model's
-        # vectors were produced with, and the stored identity carries the model and
-        # the repo but not the file, so a preferred variant arriving later (a
-        # full-repo download, a republished revision) would otherwise change the
-        # weights under an existing index without changing its tag. Consulted after
-        # completion as well as during it, which is what makes the record an
-        # identity rather than a transfer receipt.
+        # The planned family whenever it is on disk, ahead of the variant lookup.
+        # Identity carries the model and repo but not the file, so a preferred
+        # variant arriving later would otherwise change the weights under an
+        # existing index without changing its tag. Consulted after completion too,
+        # which is what makes the record an identity, not a transfer receipt.
         planned = self._planned_family_path(model, desired)
         if planned is not None:
             try:
@@ -488,23 +484,21 @@ class LlamaServerBackend:
             cached = self._resolve_cached_gguf(desired, require_variant = False)
             if cached is not None:
                 # Reaching here means the configured variant is NOT cached (the
-                # strict pass above already returned if it were). Two ways that
-                # happens, and they need opposite answers.
+                # strict pass returned if it were), which happens two ways that
+                # need opposite answers.
                 if self._is_planned_family(model, desired, cached):
-                    # The repo publishes no such variant, so the picker advertised
-                    # and fetched this quant instead. The advertised transfer is
-                    # complete: retire the marker, or the model stays cache-only
-                    # for the life of the install and a later eviction refuses to
-                    # index something that did finish downloading.
+                    # The repo publishes no such variant, so this quant is what
+                    # the picker advertised and fetched. Retire the marker, or the
+                    # model stays cache-only and a later eviction refuses to index
+                    # something that did finish downloading.
                     try:
                         from utils.embedding_model_settings import clear_stored_download_pending
                         clear_stored_download_pending(model)
                     except Exception:  # noqa: BLE001 - a settings write must not fail a load
                         pass
-                # Otherwise it is some other quant left by an earlier setting (or a
-                # record too old to say). Serve it rather than failing the index, but
-                # leave the marker set: the advertised transfer has not landed, and
-                # retiring on a stand-in would keep this model on the wrong quant.
+                # Otherwise a quant left by an earlier setting, or a record too old
+                # to say. Serve it rather than fail the index, but leave the marker:
+                # retiring on a stand-in would pin this model to the wrong quant.
                 return self._adopt_model_path(cached, desired)
             raise RuntimeError(
                 f"Embedding model {model!r} is not downloaded yet. "

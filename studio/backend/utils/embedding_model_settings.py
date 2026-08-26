@@ -39,9 +39,9 @@ _StoredState = tuple[
     Optional[str], Optional[str], Optional[str], Optional[str], bool, Optional[dict]
 ]
 # (override model, resolved model, GGUF repo, backend, download pending, raw record).
-# The raw record is carried so a conditional write can compare against exactly what
-# is stored rather than a reconstruction, which would never match a record written
-# by a build that had one field fewer.
+# The raw record is carried so a conditional write compares against exactly what
+# is stored: a reconstruction never matches a record written by a build with one
+# field fewer.
 _cached: tuple[float, _StoredState] | None = None
 # Bumped on every write/invalidate. A reader captures it before the DB read and
 # only fills the cache if it is unchanged afterward, so a read that overlapped a
@@ -338,20 +338,16 @@ def reset_rag_embedding_model() -> str:
     from storage.studio_db import upsert_app_settings
 
     restored = default_embedding_model()
-    # The memo survives a reset, because it is per model and consulted only when
-    # the store has nothing, so it is what a job still pinned to a model reads.
-    # But the restored default is not a running job: new work resolves through it
-    # too, and a process-only answer would change identity on the next restart,
-    # stranding whatever was indexed in between. So if this process remembers a
-    # resolution for the model the reset restores, write it back durably instead
-    # of dropping it into memory-only state.
+    # The memo survives a reset: it is per model and consulted only when the store
+    # has nothing, so it is what a job still pinned to a model reads. The restored
+    # default is not a running job, though -- new work resolves through it too, and
+    # a process-only answer would change identity on the next restart. So write any
+    # remembered resolution for it back durably rather than leave it in memory.
     remembered = _remembered(restored)
     resolution = None
     # The pending flag counts as much as a repo or a backend: a default saved over
     # a failed resolution legitimately remembers (None, None, True), and that flag
-    # is the only thing keeping the first index from starting the implicit
-    # download this picker exists to replace. Dropping it here restored the model
-    # without its cache-only marker.
+    # is what keeps the first index from starting the implicit download.
     if remembered and (remembered[0] or remembered[1] or remembered[2]):
         resolution = {
             "model": restored,

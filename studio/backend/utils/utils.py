@@ -566,9 +566,9 @@ def cached_st_source(model_name: str) -> Optional[tuple]:
     satisfied by the first finalized shard of a transfer still in flight.
     """
     for candidate in st_repo_id_candidates(model_name):
-        # Exactly this candidate: the alias-expanding lookup answers the literal
-        # slashless name with the namespaced snapshot, so the pair returned named
-        # a repo that had not supplied anything.
+        # Exactly this candidate: the alias-expanding lookup answers a literal
+        # slashless name with the namespaced snapshot, pairing a directory with a
+        # repo id that supplied nothing.
         snapshot = hf_cache_snapshot_dir_for_repo(candidate)
         if snapshot is None:
             continue
@@ -577,10 +577,9 @@ def cached_st_source(model_name: str) -> Optional[tuple]:
                 continue
         except OSError:
             continue
-        # This snapshot, not whatever the alias-expanding lookup would find for
-        # the same id: with several cache roots configured those differ, and a
-        # complete namespaced copy in one root would then vouch for a partial
-        # literal one in another that is what actually gets loaded.
+        # This snapshot, not whatever the alias-expanding lookup would find: with
+        # several cache roots those differ, and a complete namespaced copy in one
+        # would vouch for the partial literal copy in another that gets loaded.
         if snapshot_is_loadable(snapshot, candidate):
             return (candidate, snapshot)
     return None

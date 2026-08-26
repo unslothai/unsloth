@@ -118,11 +118,10 @@ def _load_device() -> str:
 
 
 _torchao_stub_done = False
-# Guards the stub's one-shot state and the sentence-transformers import that has to
-# follow it. Its own lock, not ``_lock``: that one is held across a whole model
-# construction, so borrowing it made a preflight probe wait out someone else's
-# multi-minute download. Always taken innermost, so there is no ordering to get
-# wrong.
+# Guards the stub's one-shot state and the import that must follow it. Its own
+# lock, not ``_lock``: that one is held across a whole model construction, so
+# borrowing it made a preflight probe wait out someone else's download. Taken
+# innermost, so there is no ordering to get wrong.
 _stub_lock = threading.Lock()
 
 
@@ -468,11 +467,10 @@ def _get(model_name: str | None = None):
             # weights alone are satisfied by the first finalized shard of a
             # transfer still in flight.
             #
-            # Asked only of repo ids. A local path IS the artifact the resolver
-            # accepted, and the picker takes a slashless relative directory, so a
-            # folder named all-MiniLM-L6-v2 beside a cached sentence-transformers/
-            # copy of that name would otherwise be answered with the Hub's weights
-            # while the vectors kept the local path's identity.
+            # Repo ids only. A local path IS the artifact the resolver accepted,
+            # and the picker takes a slashless relative directory, so a folder
+            # named all-MiniLM-L6-v2 beside a cached sentence-transformers/ copy
+            # would load the Hub's weights under the local path's identity.
             st_source = None if is_local_path(name) else cached_st_source(name)
             if not local_only and st_source is not None:
                 # Settings reported this model on-device off the same predicate, so
@@ -731,11 +729,9 @@ def _model_names_gguf_repo(model: str | None) -> bool:
             return False
     except Exception:  # noqa: BLE001 - unparseable path is not a repo id either
         return False
-    # config's own predicate, not a suffix test: gguf_repo_candidates already
-    # treats "gguf" as a whole name segment, so owner/GGUF-model and
-    # owner/model-GGUF-Q8 are direct GGUF repos there. Deciding it differently
-    # here routed those to sentence-transformers, which has nothing to open, and
-    # the rejection stuck even under a forced selection.
+    # config's predicate, not a second opinion: gguf_repo_candidates already
+    # counts "gguf" as a whole name segment, so owner/GGUF-model is a GGUF repo
+    # there and must not be a sentence-transformers one here.
     return config._names_gguf(model.strip().rstrip("/").rsplit("/", 1)[-1])
 
 
@@ -746,11 +742,9 @@ def _resolve_auto_for_model(model_name: str | None = None) -> str:
     records that choice; the hardware default would send it to llama-server,
     which has nothing to open."""
     model = model_name or config.effective_embedding_model()
-    # Ahead of the stored record, because the filesystem was asked rather than
-    # guessed at: a local .gguf is not a sentence-transformers artifact under any
-    # hardware, and a stored ST record for one can only come from a force-save
-    # that then failed. Only ``auto`` consults this, so an explicit
-    # RAG_EMBED_BACKEND still wins.
+    # Ahead of the stored record: the filesystem was asked, not guessed at, and a
+    # stored ST record for a .gguf can only come from a force-save that failed.
+    # Only ``auto`` consults this, so an explicit RAG_EMBED_BACKEND still wins.
     if _model_is_local_gguf(model):
         return "llama-server"
     try:
@@ -762,20 +756,13 @@ def _resolve_auto_for_model(model_name: str | None = None) -> str:
         key = stored.strip().lower()
         if key in _ST_ALIASES or key in _LLAMA_ALIASES:
             return key
-    # Nothing validated for this model, so fall back to reading the name. A repo
-    # id ending in -GGUF publishes weights only llama-server can open, and
-    # _resolve_auto answers "sentence-transformers" whenever a GPU is present: a
-    # typed or API-selected `owner/model-GGUF` resolved as ST is searched for
-    # safetensors, found to publish none, and can then only be saved over that
-    # error -- which records no backend and sets the pending marker, and _get()
-    # answers a pending ST model with "not downloaded" before the runtime
-    # fallback to llama-server can run. The repo would never load on such a host
-    # even with llama-server installed and the GGUF cached.
-    #
-    # Below the stored record and not beside the local check, because this one is
-    # only a guess about a name. The same repo may publish a torn GGUF family and
-    # usable safetensors, in which case the resolver validated the ST plan and
-    # persisted it, and overruling that fails the first index as "not downloaded".
+    # Nothing validated, so read the name. _resolve_auto answers
+    # "sentence-transformers" on any GPU host, and a GGUF repo resolved as ST is
+    # rejected for publishing no safetensors, saveable only over that error --
+    # which leaves it pending, and _get() refuses a pending ST model before the
+    # llama fallback can run. Below the stored record, though, since a name is
+    # only a guess: a repo with a torn GGUF family and usable safetensors has a
+    # validated ST plan that overruling would fail as "not downloaded".
     if _model_names_gguf_repo(model):
         return "llama-server"
     return _resolve_auto()
@@ -1026,12 +1013,10 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
     """
     backend = _backend
     if backend is None:
-        # No published backend does not mean nothing is loaded. An ST wrapper
-        # descheduled between _get_backend() returning it and its encode starting
-        # is retired by an unload that lands in the gap, and then reloads the
-        # module-level model. Answering False there stranded it: release_backend
-        # saw no backend and returned without freeing anything, so the weights sat
-        # in memory for the life of the process while Settings reported unloaded.
+        # No published backend does not mean nothing is loaded: an ST wrapper
+        # retired by an unload that lands between _get_backend() and its encode
+        # reloads the module-level model with nothing to publish. Answering False
+        # stranded those weights, since release_backend returns on the same test.
         if model_name is None:
             return _model is not None
         return _model is not None and _name == model_name
@@ -1071,10 +1056,9 @@ def release_backend() -> bool:
         _forced_backends.clear()
         backend, _backend, _backend_key = _backend, None, None
     if backend is None:
-        # Nothing published, but the module-level model can still be there: an
-        # encode holding a wrapper an earlier unload retired reloads it with no
-        # backend to publish. Freeing it here is what stops that unload's leak
-        # from being permanent, and it is a no-op when nothing is resident.
+        # Nothing published, but the module-level model can still be there (see
+        # backend_is_loaded). Freeing it here is what keeps that leak from being
+        # permanent; a no-op when nothing is resident.
         return _release_st_model()
     _dispose_replaced_backend(backend)
     return True

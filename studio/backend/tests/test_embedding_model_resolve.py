@@ -347,8 +347,7 @@ def test_resolution_shares_one_deadline_across_every_remote_fallback(monkeypatch
     monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda *a, **k: [])
     monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
-    # An install that embeds with llama-server has the binary; the test host does
-    # not, and a plan only llama can serve is refused without one.
+    # An install that embeds with llama-server has the binary; the test host does not.
     monkeypatch.setattr(settings, "_llama_runtime_available", lambda: True)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda model: False)
     monkeypatch.setattr(settings, "_local_gguf_backend_error", lambda model: None)
@@ -488,8 +487,7 @@ def test_nothing_anywhere_still_reports_the_save_reason(client, monkeypatch):
 
 def test_a_local_gguf_is_already_the_artifact(client, monkeypatch):
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
-    # An install that embeds with llama-server has the binary; the test host does
-    # not, and a plan only llama can serve is refused without one.
+    # An install that embeds with llama-server has the binary; the test host does not.
     monkeypatch.setattr(settings, "_llama_runtime_available", lambda: True)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: True)
 

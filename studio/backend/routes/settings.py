@@ -2380,11 +2380,10 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
             return False
         if not any(_is_st_weight_name(child.name) and child.is_file() for child in p.rglob("*")):
             return False
-        # And a WHOLE one. A single shard of a two-shard family, or a module
-        # modules.json declares that the directory does not have, reported ready
-        # here and then failed at the first index when ST opened it. Same
-        # completeness test a Hub snapshot gets, so a local copy of a model is
-        # judged the way the downloaded one is.
+        # And a WHOLE one: half a shard family, or a module modules.json declares
+        # and the directory lacks, read as ready and failed at the first index.
+        # Same completeness test a Hub snapshot gets, so a local copy of a model
+        # is judged the way the downloaded one is.
         from utils.utils import checkpoint_directory_is_complete
 
         return checkpoint_directory_is_complete(p)
@@ -2420,11 +2419,10 @@ def _resolve_embedding_model_plan(
         # the loadable check PER CANDIDATE. Conjoining the generic one asked it
         # about whichever cache directory matched first, so a stale literal entry
         # beside a complete sentence-transformers/ snapshot reported uncached.
-        # The repo the cache hit came from, not just whether there was one: for a
-        # slashless alias that is the sentence-transformers/ candidate, and the PUT
-        # verifies and scans whatever this names. Reporting the literal alias sent
-        # both at a top-level repo that usually does not exist, rejecting a cached
-        # model with a 409 that the loader would have opened.
+        # The repo the cache hit came from, not just whether there was one: the
+        # PUT verifies and scans whatever this names, and for a slashless alias
+        # that is the sentence-transformers/ candidate. The literal id sent both
+        # at a repo that usually does not exist, 409ing a model already on disk.
         cached_source = _cached_st_source(resolved)
         cached = cached_source is not None
         source = None if cached else _st_weight_source(resolved, token)
@@ -2459,12 +2457,10 @@ def _resolve_embedding_model_plan(
         )
 
     local_gguf = _resolves_as_local_gguf(resolved)
-    # A GGUF-named model is routed here whatever the hardware says, because nothing
-    # else can open those weights. That routing does not make the backend runnable:
-    # without a binary the plan is advertised as valid and the transfer persisted,
-    # and the first warm or index then fails in _resolve_binary. Scoped to models
-    # only llama can serve -- one that publishes safetensors still has the
-    # ST fallback further down, which is a usable plan rather than an error.
+    # Routing a model here does not make the backend runnable: without a binary
+    # the plan is advertised as valid and the transfer persisted, and the first
+    # warm fails in _resolve_binary. Scoped to models only llama can serve, since
+    # one with safetensors still has the usable ST fallback further down.
     llama_only = (
         local_gguf
         or _model_names_gguf_repo(resolved)
@@ -2733,11 +2729,11 @@ def update_embedding_model(
     trusted_download_pending = False
     if plan.error is None:
         trusted_backend = "llama-server" if destination_is_llama else "sentence-transformers"
-        # The exact family this transfer delivers. A repo that publishes no
-        # RAG_EMBED_GGUF_VARIANT is served a different quant on purpose, which the
-        # loader's variant-matching lookup cannot recognize as the thing that was
-        # downloaded; without this it leaves the model cache-only for good, and a
-        # later eviction reads as "never downloaded" though the transfer finished.
+        # The exact family this transfer delivers. A repo publishing no
+        # RAG_EMBED_GGUF_VARIANT is served another quant on purpose, which the
+        # loader's variant lookup cannot recognize as what was downloaded, so
+        # without this the model stays cache-only and an eviction reads as
+        # "never downloaded" though the transfer finished.
         trusted_gguf_files = plan.files if destination_is_llama else None
         # A sentence-transformers download repo is not a GGUF source. Keeping
         # it out also prevents a later runtime fallback from mislabelling it.
