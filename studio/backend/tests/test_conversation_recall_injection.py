@@ -307,11 +307,18 @@ def _fake_studio_db(monkeypatch, messages):
     import sys
     import types
 
+    from core.inference import checkpoint
+
     module = types.SimpleNamespace(list_chat_messages = lambda thread_id: messages)
     package = types.ModuleType("storage")
     package.studio_db = module
     monkeypatch.setitem(sys.modules, "storage", package)
     monkeypatch.setitem(sys.modules, "storage.studio_db", module)
+    # These fixtures store rolling-shaped records (`fits` + `dropped_messages`, no
+    # `checkpoint` key). Sticky replay treats a missing key as rolling, and the
+    # process default is checkpoint, so pin rolling here or every omitted-key
+    # record is refused. Policy-switch coverage lives in test_checkpoint_compaction.
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
 
 
 def test_sticky_boundary_reads_the_newest_assistant_truncation(monkeypatch):
