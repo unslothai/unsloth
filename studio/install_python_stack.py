@@ -3737,13 +3737,11 @@ NO_TORCH_SKIP_PACKAGES = {
     "librosa",
 }
 
-# An operator who hardens pip/uv (require-hashes, no-build, only-binary) has their policy
-# relaxed for the installer's OWN dependency installs, because every requirements file we
-# ship is unhashed and a few requirements have no wheel at any version (#8530). The
-# relaxation is scoped to this module's child commands and never written back to
-# os.environ, but it is still their control being set aside, so it is announced once and
-# this variable turns every part of it off. The install then fails on the first step the
-# policy forbids, which is the correct answer for an operator who means it.
+# The installer relaxes a hardened pip/uv policy for its OWN dependency installs: every
+# requirements file we ship is unhashed and a few have no wheel at any version (#8530).
+# That is still the operator's control being set aside, so it is announced once, and this
+# variable turns every part of it off -- the install then fails on the first step the
+# policy forbids, which is the right answer for an operator who means it.
 _POLICY_OPT_OUT_ENV = "UNSLOTH_RESPECT_PM_POLICY"
 
 
@@ -4687,12 +4685,10 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
     return {"PIP_REQUIRE_HASHES": "0"}
 
 
-# Settings whose presence means the host has deliberately hardened its package manager,
-# as opposed to merely configuring a mirror. Named in the notice so the operator can see
-# which of their controls the installer is about to set aside. The `-package` and
-# `exclude-newer` spellings are here for the same reason UV_EXCLUDE_NEWER is in
-# _PM_POLICY_ENV_VARS: an upload cutoff is a reproducibility control, and relaxing one
-# silently is the thing this notice exists to stop.
+# Hardening, as opposed to a mirror, which is merely configuration. Named in the notice so
+# the operator sees which control is being set aside. `exclude-newer` is here for the same
+# reason UV_EXCLUDE_NEWER is in _PM_POLICY_ENV_VARS: an upload cutoff is a reproducibility
+# control, and relaxing one silently is what this notice exists to stop.
 _HARDENED_CONFIG_KEYS = (
     "require-hashes",
     "only-binary",
@@ -4726,13 +4722,10 @@ def _toml_value_is_on(value: object) -> bool:
 def _hardened_keys_in_toml(text: str, tables: "tuple[tuple[str, ...], ...]") -> "list[str]":
     """Hardened keys switched ON inside the named tables of a TOML document.
 
-    `tables` is the path to each table to look in, so a uv.toml is read at its root and
-    under `[pip]`, and a pyproject under `[tool.uv]` / `[tool.uv.pip]`, without a stray
-    `no-build` in some unrelated tool's table counting as uv policy.
-
-    tomllib is 3.11+, and this module still runs on older interpreters, so the fallback
-    is a value-capturing regex. Both test the VALUE: reporting `no-build = false` would
-    put a security notice in front of a user who had switched the policy off.
+    `tables` scopes the search, so a stray `no-build` in an unrelated tool's table is not
+    read as uv policy. tomllib is 3.11+ and this module runs on older interpreters, hence
+    the regex fallback; both test the VALUE, since reporting `no-build = false` would put
+    a security notice in front of a user who switched the policy off.
     """
     found: list[str] = []
     data = None
@@ -4779,19 +4772,15 @@ def _existing_files(candidates: "list[str]") -> "list[str]":
 def _hardened_uv_config_paths() -> "list[str]":
     """The uv config files this host has, where a no-build / require-hashes could live.
 
-    System, user, invocation directory and the cwd pyproject, which is what uv actually
-    reads: `~/.config/uv/uv.toml` on macOS AND Linux (not Application Support) and
-    `%APPDATA%\\uv\\uv.toml` on Windows, with `/etc/uv/uv.toml` and `%PROGRAMDATA%\\uv`
-    as the system-wide pair. The system one matters most: a fleet operator hardening every
-    machine puts `no-build` there.
+    `~/.config/uv/uv.toml` on macOS AND Linux (not Application Support), `%APPDATA%\\uv`
+    on Windows, plus the system pair `/etc/uv/uv.toml` and `%PROGRAMDATA%\\uv`. The system
+    one matters most: a fleet operator hardening every machine puts `no-build` there.
 
-    The cwd `pyproject.toml` is included because uv 0.12.1 (the pinned version) really
-    does read it -- measured, `[tool.uv.pip] require-hashes = true` there fails a
-    `uv pip install`, and `-v` logs "Found workspace configuration". A PARENT directory's
-    `pyproject.toml` or `uv.toml` is NOT read by `uv pip install`, and neither is a bare
-    `./uv.toml`: the same probe logs only "Searching for user configuration" and the
-    policy does not apply. `./uv.toml` is kept in the list anyway, since it costs a line
-    of output and other uv subcommands this module drives may yet read it.
+    Measured on the pinned uv 0.12.1: the cwd `pyproject.toml` IS read by `uv pip install`
+    (`[tool.uv.pip] require-hashes = true` fails it, `-v` logs "Found workspace
+    configuration"), while a PARENT `pyproject.toml`/`uv.toml` and even a bare `./uv.toml`
+    are NOT. `./uv.toml` is kept anyway: it costs a line of output, and other uv
+    subcommands this module drives may yet read it.
     """
     candidates = []
     explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
@@ -4822,12 +4811,11 @@ def _hardened_uv_config_paths() -> "list[str]":
 def _hardened_pip_config_paths() -> "list[str]":
     """pip's documented configuration files, for when `python -m pip` cannot be run.
 
-    install.sh creates the venv with uv, which does not seed pip, so at the moment this
-    notice runs `python -m pip config list` returns nonzero and a require-hashes living
-    only in pip.conf is invisible -- while the pip FALLBACK later in the install reads it
-    perfectly well. Locations are pip's own (global, user, site, then PIP_CONFIG_FILE);
-    the subprocess answer is still preferred when it works, because pip merges them in
-    its own documented order and reports the winner.
+    install.sh builds the venv with uv, which seeds no pip, so when this notice runs
+    `pip config list` returns nonzero and a require-hashes living only in pip.conf is
+    invisible -- while the pip FALLBACK later in the install reads it fine. Order is pip's
+    own (global, user, site, PIP_CONFIG_FILE); the subprocess answer still wins when it
+    works, since pip merges them itself.
     """
     name = "pip.ini" if IS_WINDOWS else "pip.conf"
     explicit = os.environ.get("PIP_CONFIG_FILE", "").strip()
@@ -5268,13 +5256,13 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     the pin is itself a provenance control and the opt-out is not a request to weaken it
     -- but the policy variables survive, pip.conf is left readable, and uv's config
     discovery is left on, so require-hashes, no-build and only-binary apply to the pinned
-    installs too. Config discovery has to stay: measured on the pinned uv 0.12.1, a user
-    `~/.config/uv/uv.toml` with `[pip] require-hashes = true` fails a pinned install and
-    UV_NO_CONFIG=1 makes the same install succeed, so keeping it would discard exactly the
-    control the opt-out promises to honour. The residual cost is symmetric on both tools:
-    an `extra-index-url` in pip.conf, or an `[[index]]` in that uv.toml, can still add a
-    candidate source under the opt-out. That is the price of reading the same files'
-    security settings, and it is why the default path does the opposite.
+    installs too. Config discovery has to stay on: measured on the pinned uv 0.12.1, a
+    user `~/.config/uv/uv.toml` with `[pip] require-hashes = true` fails a pinned install
+    and UV_NO_CONFIG=1 makes it succeed, so setting it would discard the very control the
+    opt-out promises. The cost is symmetric on both tools: an `extra-index-url` in
+    pip.conf, or an `[[index]]` in that uv.toml, can still add a candidate source. That is
+    the price of reading the same files' security settings, and why the default is the
+    opposite.
     """
     if not _is_pinned_index_cmd(cmd):
         relaxed = _relaxed_pip_policy_env(cmd)
@@ -5398,10 +5386,9 @@ def pip_install(
                     _safe_print(_redact_install_output(result.stdout))
                 return
             if _respect_pm_policy():
-                # The fallback exists to rescue a uv failure, but pip reads none of uv's
-                # policy: under the opt-out it would retry the very install uv refused
-                # and succeed, which is the bypass the flag was set to prevent. Stop
-                # instead, on the same terms as any other fatal step.
+                # pip reads none of uv's policy, so under the opt-out the fallback would
+                # retry the very install uv refused, and succeed. Stop instead, on the
+                # same terms as any other fatal step.
                 if result.stdout:
                     _safe_print(_redact_install_output(result.stdout))
                 _safe_print(
@@ -5573,13 +5560,9 @@ def install_python_stack() -> int:
     # absent torch as a stale venv, and tries to delete the running environment.
     install_manifest.set_no_torch_marker(NO_TORCH)
 
-    # Before the bar starts, so the line cannot land mid-progress: on a hardened host,
-    # say which controls are relaxed for the installer's own dependency installs and how
-    # to keep them. Silent on every ordinary machine.
-    #
-    # Guarded because this is a message, not a step. It probes pip and reads files the
-    # install itself never touches, and no failure of that probing is worth aborting an
-    # install over -- the worst case is that the notice is missing.
+    # Before the bar starts, so the line cannot land mid-progress. Silent on an ordinary
+    # machine. Guarded because this is a message, not a step: it probes pip and reads
+    # files the install never touches, and no failure of that is worth aborting over.
     try:
         _announce_pm_policy()
     except Exception:
