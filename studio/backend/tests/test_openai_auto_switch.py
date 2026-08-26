@@ -8875,6 +8875,60 @@ def test_the_advertised_alias_is_cleared_before_a_replacement_load(tmp_path):
     assert clear < load, "the alias must be cleared before load_model publishes the new model"
 
 
+def test_a_failed_replacement_keeps_the_surviving_model_advertised():
+    """A repair raises SidecarSwapInProgress before the old worker is torn down, so the
+    orchestrator keeps active_model_name and that model goes on serving. The alias was
+    already cleared for the load that never happened, so without restoring it the still
+    resident model loses the id /v1/models and response ids report it under."""
+
+    class _Orchestrator:
+        def __init__(self, active):
+            self.active_model_name = active
+            self._openai_advertised_id = None
+
+    # the load raised but the previous model survived, so its alias comes back.
+    survived = _Orchestrator("/srv/models/Qwen3-8B-MLX")
+    inference_route._restore_alias_if_failed_load_left_the_prior_model(
+        survived, "mlx-community/Qwen3-8B-4bit", "/srv/models/Qwen3-8B-MLX"
+    )
+    assert survived._openai_advertised_id == "mlx-community/Qwen3-8B-4bit"
+
+    # a real failure clears active_model_name, so nothing is resident to advertise.
+    torn_down = _Orchestrator(None)
+    inference_route._restore_alias_if_failed_load_left_the_prior_model(
+        torn_down, "mlx-community/Qwen3-8B-4bit", "/srv/models/Qwen3-8B-MLX"
+    )
+    assert torn_down._openai_advertised_id is None
+
+    # a different model is resident, so the old alias must not be pinned onto it.
+    replaced = _Orchestrator("/srv/models/Other")
+    inference_route._restore_alias_if_failed_load_left_the_prior_model(
+        replaced, "mlx-community/Qwen3-8B-4bit", "/srv/models/Qwen3-8B-MLX"
+    )
+    assert replaced._openai_advertised_id is None
+
+    # nothing was loaded before the attempt, so there is no alias to put back.
+    cold = _Orchestrator(None)
+    inference_route._restore_alias_if_failed_load_left_the_prior_model(cold, None, None)
+    assert cold._openai_advertised_id is None
+
+
+def test_both_failed_load_exits_restore_the_alias():
+    # the raise and the falsy-success exit are separate paths; a fix on one alone leaks.
+    import inspect
+
+    src = inspect.getsource(inference_route._load_model_impl)
+    assert src.count("_restore_alias_if_failed_load_left_the_prior_model(") == 2
+    clear = src.index("\n        backend._openai_advertised_id = None")
+    assert src.index("_restore_alias_if_failed_load_left_the_prior_model(") > clear
+    # the second call sits on the falsy-success exit, past the raise the first one guards.
+    assert (
+        src.index("_restore_alias_if_failed_load_left_the_prior_model(", clear)
+        < src.index("\n        if not success:")
+        < src.rindex("_restore_alias_if_failed_load_left_the_prior_model(")
+    )
+
+
 def test_a_stale_alias_after_unload_is_not_a_resident_identity(monkeypatch):
     # Codex P2: the alias outlives an unload, so reading it ungated made an unrelated
     # org/model request look like a mismatch against a model that is no longer loaded.

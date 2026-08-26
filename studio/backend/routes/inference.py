@@ -10153,6 +10153,23 @@ async def load_model_gated(
         _finish_load_attempt(attempt)
 
 
+def _restore_alias_if_failed_load_left_the_prior_model(
+    backend, prior_alias: Optional[str], prior_active: Optional[str]
+) -> None:
+    """Put the advertised alias back when a failed load left the previous model serving.
+
+    :func:`_load_model_impl` clears the alias before calling ``load_model`` so a request
+    naming the old model cannot be answered by the new weights. A repair raises
+    ``SidecarSwapInProgress`` before the old worker is torn down, so the orchestrator keeps
+    ``active_model_name`` and its mirrors and that model goes on serving. Without this it
+    would go on serving stripped of the id ``/v1/models``, the monitor and response ids
+    report it under.
+    """
+    if prior_active is None or getattr(backend, "active_model_name", None) != prior_active:
+        return
+    backend._openai_advertised_id = prior_alias
+
+
 async def _load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -10893,6 +10910,8 @@ async def _load_model_impl(
         # Cleared before the load, not after: load_model publishes active_model_name for
         # the new weights, and a concurrent request matching the old alias in that window
         # would be answered by them. Auto-switch sets the repo id once this returns.
+        _prior_alias = getattr(backend, "_openai_advertised_id", None)
+        _prior_active = getattr(backend, "active_model_name", None)
         backend._openai_advertised_id = None
         try:
             success = await asyncio.to_thread(
@@ -10911,10 +10930,12 @@ async def _load_model_impl(
             )
         except Exception:
             _restore_marker_if_prior_preview_still_resident()
+            _restore_alias_if_failed_load_left_the_prior_model(backend, _prior_alias, _prior_active)
             raise
 
         if not success:
             _restore_marker_if_prior_preview_still_resident()
+            _restore_alias_if_failed_load_left_the_prior_model(backend, _prior_alias, _prior_active)
             # Check if YAML says this model needs trust_remote_code.
             if not request.trust_remote_code:
                 model_defaults = load_model_defaults(config.identifier)
