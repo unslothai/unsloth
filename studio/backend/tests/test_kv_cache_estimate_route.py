@@ -117,6 +117,7 @@ def _call_route(
     spec_draft_n_max: int | None = None,
     ctx_checkpoints: int | None = None,
     disable_vision: bool = False,
+    n_ctx: int | None = 32768,
 ):
     """Drive the real handler with the quant already resolved to *path*."""
     monkeypatch.setattr(
@@ -136,7 +137,7 @@ def _call_route(
         models_routes.get_kv_cache_estimate(
             repo_id = repo_id,
             quant = "Q4_K_M",
-            n_ctx = 32768,
+            n_ctx = n_ctx,
             cache_type_kv = None,
             n_parallel = n_parallel,
             speculative_type = speculative_type,
@@ -710,3 +711,70 @@ class TestADirectGgufFileResolves:
         # whatever happened to be there.
         missing, _ = models_routes._resolve_quant_gguf(str(model_dir), "Q2_K", True)
         assert missing is None
+
+
+class TestTheInheritedEnvironmentIsPriced:
+    """Studio can be launched with llama.cpp's own environment variables set, and
+    the child inherits them. The estimate has to price what the child will run,
+    not what the request said."""
+
+    def test_an_inherited_context_beats_the_native_length(self, monkeypatch, tmp_path):
+        # load_model drops an inherited context only when it is zero, so a
+        # positive one is the legitimate way to set the window. Falling through
+        # to native priced a 4k load at the header's length.
+        gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
+        monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
+        out = _call_route(
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/repo",
+            speculative_type = None,
+            n_ctx = None,
+        )
+        assert out["n_ctx"] == 4096, (
+            "the estimate used the header's native window for a launch the "
+            "environment pins to 4096"
+        )
+        assert out["native_context"] == _PLAIN_GQA["context_length"]
+
+    def test_no_inherited_context_still_uses_native(self, monkeypatch, tmp_path):
+        gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
+        monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
+        out = _call_route(
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/repo",
+            speculative_type = None,
+            n_ctx = None,
+        )
+        assert out["n_ctx"] == _PLAIN_GQA["context_length"]
+
+    def test_an_inherited_cache_type_sizes_the_cache(self, monkeypatch, tmp_path):
+        # A q8_0 cache is roughly half an f16 one. Pricing f16 while the child
+        # opens q8_0 makes the KV segment and the per-token readout contradict
+        # the planner total drawn beside them.
+        gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
+        monkeypatch.delenv("LLAMA_ARG_CACHE_TYPE_K", raising = False)
+        monkeypatch.delenv("LLAMA_ARG_CACHE_TYPE_V", raising = False)
+        default = _call_route(
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/repo",
+            speculative_type = None,
+        )
+        monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_K", "q8_0")
+        monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_V", "q8_0")
+        inherited = _call_route(
+            monkeypatch,
+            path = gguf,
+            weights_bytes = 4096,
+            repo_id = "org/repo",
+            speculative_type = None,
+        )
+        assert inherited["kv_bytes"] < default["kv_bytes"], (
+            "an inherited q8_0 cache was priced as f16, so the KV segment was "
+            "about twice the size the launch reserves"
+        )

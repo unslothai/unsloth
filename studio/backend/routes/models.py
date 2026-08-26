@@ -3829,16 +3829,49 @@ async def get_kv_cache_estimate(
             except Exception as e:
                 logger.debug(f"slot clamp unavailable for '{repo_id}' {quant}: {e}")
 
-            n_ctx = n_ctx or be._context_length
+            # Whether the caller pinned a context, kept before the default below
+            # overwrites it. The planner reads the inherited LLAMA_ARG_CTX_SIZE
+            # only when its own n_ctx input is zero, so handing it the native
+            # length here priced the header's window for a child that will run at
+            # the environment's -- and an inherited context LARGER than native is
+            # then underpriced while still reading as auto-fitted.
+            _ctx_was_omitted = not n_ctx
+            # Same precedence the launch uses: an inherited positive context beats
+            # the header, since load_model drops it only when it is zero.
+            if _ctx_was_omitted:
+                try:
+                    from routes.inference import _inherited_ctx_size
+                    n_ctx = _inherited_ctx_size() or be._context_length
+                except Exception as e:
+                    logger.debug(f"inherited context unavailable: {e}")
+                    n_ctx = be._context_length
             if not n_ctx or n_ctx < 1:
                 return null
+
+            # The K/V types the launch will really open, including an inherited
+            # LLAMA_ARG_CACHE_TYPE_K/V that no structured setting overrode. The
+            # planner already resolves these for gpu_bytes; without the same
+            # resolution here kv_bytes stayed at f16 and the KV segment, the
+            # per-token rate and the readout all contradicted the total beside
+            # them. The heavier of the pair, matching the planner's own choice.
+            _effective_cache_type = cache_type_kv
+            try:
+                from core.inference.llama_cpp import (
+                    _kv_bytes_per_elem,
+                    _planned_main_cache_types,
+                )
+                _effective_cache_type = max(
+                    _planned_main_cache_types(cache_type_kv, None), key = _kv_bytes_per_elem
+                )
+            except Exception as e:
+                logger.debug(f"cache type resolution failed for '{repo_id}': {e}")
 
             # ctx_checkpoints is not a rounding error: each saved checkpoint is an
             # SWA snapshot per slot, so a 4-slot SWA model at 32k measures 5.82 GiB
             # with none and 11.82 GiB at the llama.cpp default of 32.
             kv = be._estimate_kv_cache_bytes(
                 n_ctx,
-                cache_type_kv,
+                _effective_cache_type,
                 n_parallel = n_parallel,
                 ctx_checkpoints = ctx_checkpoints or 0,
                 n_ubatch = n_ubatch,
@@ -3856,7 +3889,7 @@ async def get_kv_cache_estimate(
             if ctx_checkpoints:
                 _kv_without = be._estimate_kv_cache_bytes(
                     n_ctx,
-                    cache_type_kv,
+                    _effective_cache_type,
                     n_parallel = n_parallel,
                     ctx_checkpoints = 0,
                     n_ubatch = n_ubatch,
@@ -4133,7 +4166,7 @@ async def get_kv_cache_estimate(
                     _b = _gguf_memory_breakdown(
                         _cfg,
                         path,
-                        n_ctx = n_ctx or 0,
+                        n_ctx = 0 if _ctx_was_omitted else n_ctx,
                         speculative_type = speculative_type,
                         n_parallel = n_parallel,
                         cache_type_kv = cache_type_kv,

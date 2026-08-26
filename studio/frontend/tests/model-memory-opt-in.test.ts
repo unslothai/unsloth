@@ -100,3 +100,45 @@ test("Reset All clears the memory-bar opt-in", () => {
     `Reset All does not clear ${key[1]}`,
   );
 });
+
+test("only a row that could draw a bar watches the runtime store", () => {
+  // The subscription watches the whole chat runtime store, which ticks on every
+  // streamed token, and re-reads the epoch (localStorage included) each time.
+  // Every mounted picker row calls this hook, most with no source at all, so
+  // gating on the opt-in alone multiplied each token by the row count.
+  assert.match(
+    HOOK,
+    /const watching = enabled && source != null;/,
+    "the store subscription is not gated on the row having a source",
+  );
+  assert.match(
+    HOOK,
+    /useSyncExternalStore\(\s*watching \? subscribeToConfigChanges : subscribeNothing/,
+    "the subscription does not stand down for a row that cannot draw",
+  );
+});
+
+test("the session GPU pin moves the config epoch", () => {
+  // budgetIsMeaningful reads selectedGpuIds, but the pin lives in the runtime
+  // store rather than in a saved config, so a preset changes it with no config
+  // write. Without it in the snapshot the store update fires and
+  // useSyncExternalStore suppresses the rerender anyway, leaving a bar drawn
+  // against aggregate VRAM after the launch was pinned to one card.
+  assert.match(
+    HOOK,
+    /pinSignature[\s\S]{0,160}selectedGpuIds/,
+    "the epoch signature ignores the session GPU pin",
+  );
+  // The namespace too: the same ordinals mean different cards under a different
+  // index kind, and the field is selectedGpuIndexKind, not gpuIndexKind.
+  assert.match(
+    HOOK,
+    /selectedGpuIndexKind/,
+    "the epoch signature ignores the pin's index namespace",
+  );
+  assert.match(
+    HOOK,
+    /const prefSignature = [^;]*pinSignature/,
+    "pinSignature is computed but not folded into the epoch signature",
+  );
+});

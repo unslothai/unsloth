@@ -213,7 +213,15 @@ function readConfigEpoch(): number {
   // budget the load would no longer use, and turning MTP on globally left the
   // draft reserve missing, until the row happened to remount. Both are two
   // short strings, so they are cheap to check on every read.
-  const prefSignature = `${readPersistedGpuMemoryMode()} ${readPersistedSpeculativeType()}`;
+  // The session GPU pin belongs here because budgetIsMeaningful reads it. It
+  // lives in the runtime store rather than in a saved config, so a preset or a
+  // session-only load configuration changes it with no config write: the
+  // whole-store subscription did fire, but this snapshot did not move, so
+  // useSyncExternalStore suppressed the rerender and a bar stayed drawn against
+  // aggregate multi-GPU VRAM after the launch had been pinned to one card.
+  const pin = useChatRuntimeStore.getState();
+  const pinSignature = `${(pin.selectedGpuIds ?? []).join(",")} ${pin.selectedGpuIndexKind ?? ""}`;
+  const prefSignature = `${readPersistedGpuMemoryMode()} ${readPersistedSpeculativeType()} ${pinSignature}`;
   if (prefSignature !== lastPrefSignature) {
     lastPrefSignature = prefSignature;
     configEpoch += 1;
@@ -390,9 +398,14 @@ export function useModelMemory(
   // it would not use -- including with the feature switched off entirely. Both
   // branches are module-level constants, so swapping between them resubscribes
   // once on toggle rather than on every render.
+  // `source` as well as `enabled`: an unselected picker row calls this hook with
+  // no source and can never draw a bar, but it still reached the subscription
+  // and so re-read the epoch -- localStorage included -- on every streamed
+  // token. A long list multiplied each token by the number of mounted rows.
+  const watching = enabled && source != null;
   const epoch = useSyncExternalStore(
-    enabled ? subscribeToConfigChanges : subscribeNothing,
-    enabled ? readConfigEpoch : readZeroEpoch,
+    watching ? subscribeToConfigChanges : subscribeNothing,
+    watching ? readConfigEpoch : readZeroEpoch,
     () => 0,
   );
 
