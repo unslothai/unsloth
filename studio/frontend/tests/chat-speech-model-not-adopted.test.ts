@@ -12,6 +12,7 @@ import test from "node:test";
 
 import {
   type SpeechOnlyStatusInput,
+  isIdleUnloadedStatus,
   isSpeechOnlyStatus,
 } from "../src/features/chat/lib/speech-only-status.ts";
 
@@ -48,6 +49,18 @@ test("whisper is not speech-only", () => {
 test("an audio-input chat model is not speech-only", () => {
   assert.equal(
     isSpeechOnlyStatus(status({ is_audio: true, audio_type: "audio_vlm" })),
+    false,
+  );
+});
+
+test("only an armed idle unload preserves an empty resident slot", () => {
+  assert.equal(isIdleUnloadedStatus(status({ active_model: null }), true), true);
+  assert.equal(isIdleUnloadedStatus(status({ active_model: null }), false), false);
+  assert.equal(
+    isIdleUnloadedStatus(
+      status({ active_model: "my-voice", is_audio: true, audio_type: "snac" }),
+      true,
+    ),
     false,
   );
 });
@@ -112,7 +125,10 @@ test("chat re-reads status when a different tab returns to the foreground", () =
     "../src/features/chat/hooks/use-chat-model-runtime.ts",
   );
   assert.match(hook, /subscribeResidentStatusRefresh\(\(\) => \{/);
-  assert.match(hook, /void refresh\(\{ includeLoras: false \}\);/);
+  assert.match(
+    hook,
+    /void refresh\(\{ includeLoras: false, preserveIdleUnloaded: true \}\);/,
+  );
 });
 
 // tryAdoptServerActiveModel is not the only door into params.checkpoint: these two call

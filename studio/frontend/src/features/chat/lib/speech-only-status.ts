@@ -5,6 +5,7 @@
 // in the whole chat runtime store.
 
 export type SpeechOnlyStatusInput = {
+  active_model?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;
 };
@@ -23,4 +24,11 @@ export function isSpeechOnlyStatus(status: SpeechOnlyStatusInput): boolean {
     status.audio_type !== "whisper" &&
     status.audio_type !== "audio_vlm"
   );
+}
+
+export function isIdleUnloadedStatus(
+  status: SpeechOnlyStatusInput,
+  idleUnloadArmed: boolean,
+): boolean {
+  return idleUnloadArmed && !status.active_model;
 }

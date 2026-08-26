@@ -25,6 +25,7 @@ import {
 import { isSettingsRouteAbsent } from "@/features/settings/api/settings-route-absent";
 import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
 import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
+import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -75,7 +76,10 @@ import {
   normalizeSpeculativeType,
   resolveInferenceCheckpointId,
 } from "../lib/apply-inference-status-to-store";
-import { isSpeechOnlyStatus } from "../lib/speech-only-status";
+import {
+  isIdleUnloadedStatus,
+  isSpeechOnlyStatus,
+} from "../lib/speech-only-status";
 import {
   residentRuntimeMatchesConfig,
   residentSpeculativeNeedsRepair,
@@ -379,10 +383,22 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
 // last and re-pin the model the newer one had just seen released, leaving chat
 // claiming a model that 400s on send until the load finally settled.
 let syncGeneration = 0;
+let lastIdleUnloadArmed = false;
+
+async function readIdleUnloadArmed(): Promise<boolean> {
+  try {
+    const settings = await loadOpenAIAutoSwitchSettings();
+    lastIdleUnloadArmed = settings.idleUnloadActive;
+  } catch {
+    // Preserve the last answer: treating a settings blip as disarmed would discard the pick.
+  }
+  return lastIdleUnloadArmed;
+}
 
 async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
+  preserveIdleUnloaded?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
   const includeLoras = options?.includeLoras ?? true;
@@ -393,10 +409,13 @@ async function syncInferenceStatusToStore(options?: {
     useChatRuntimeStore.getState();
   setModelsError(null);
   try {
-    const [listRes, statusRes, lorasRes] = await Promise.all([
+    const [listRes, statusRes, lorasRes, idleUnloadArmed] = await Promise.all([
       listModels(),
       getInferenceStatus(),
       includeLoras ? listLoras() : Promise.resolve(null),
+      options?.preserveIdleUnloaded
+        ? readIdleUnloadArmed()
+        : Promise.resolve(false),
     ]);
 
     // Cancellation can land while the requests above are in flight. Bail
@@ -455,6 +474,7 @@ async function syncInferenceStatusToStore(options?: {
         }
       }
     } else if (!chatActiveModel && !isExternalSelectionActive) {
+      if (isIdleUnloadedStatus(statusRes, idleUnloadArmed)) return;
       // Loading an image, video or audio model evicts the chat one (the GPU arbiter
       // allows a single owner), and nothing else here would say so: the picker
       // keeps the selection, so the header would go on claiming it is loaded
@@ -608,7 +628,11 @@ export function useChatModelRuntime() {
   );
 
   const refresh = useCallback(
-    (options?: { signal?: AbortSignal; includeLoras?: boolean }) =>
+    (options?: {
+      signal?: AbortSignal;
+      includeLoras?: boolean;
+      preserveIdleUnloaded?: boolean;
+    }) =>
       syncInferenceStatusToStore(options),
     [],
   );
@@ -637,7 +661,7 @@ export function useChatModelRuntime() {
   useEffect(
     () =>
       subscribeResidentStatusRefresh(() => {
-        void refresh({ includeLoras: false });
+        void refresh({ includeLoras: false, preserveIdleUnloaded: true });
       }),
     [refresh],
   );
