@@ -20,6 +20,8 @@ const {
 const {
   providerModelSupportsVision,
   setProviderModelCapabilities,
+  reasoningFieldsForProviderSave,
+  supportsPerModelReasoningPin,
   supportsProviderReasoningToggle,
 } = await import("../src/features/chat/external-providers.ts");
 
@@ -179,6 +181,8 @@ test("Ollama offers the connection-level reasoning toggle, like vLLM", () => {
   assert.equal(supportsProviderReasoningToggle("vllm"), true);
   assert.equal(supportsProviderReasoningToggle("llama_cpp"), false);
   assert.equal(supportsProviderReasoningToggle("custom"), false);
+  assert.equal(supportsPerModelReasoningPin("ollama"), true);
+  assert.equal(supportsPerModelReasoningPin("vllm"), false);
 });
 
 test("Ollama hides Thinking unless the connection is flagged as a reasoning model", () => {
@@ -194,6 +198,7 @@ test("Ollama hides Thinking unless the connection is flagged as a reasoning mode
 
   const flagged = getExternalReasoningCapabilities("ollama", model, {
     isReasoningProvider: true,
+    reasoningModelIds: [model],
   });
   assert.equal(flagged.supportsReasoning, true);
   assert.equal(flagged.reasoningStyle, "reasoning_effort");
@@ -204,4 +209,69 @@ test("Ollama hides Thinking unless the connection is flagged as a reasoning mode
     "medium",
     "high",
   ]);
+});
+
+test("Ollama only advertises Thinking for models pinned on the connection", () => {
+  const thinking = "thinkingcap-27b-bottlecap:latest";
+  const instruct = "llama3.2:latest";
+  const mixed = {
+    isReasoningProvider: true,
+    reasoningModelIds: [thinking],
+  } as const;
+
+  const pinned = getExternalReasoningCapabilities("ollama", thinking, mixed);
+  assert.equal(pinned.supportsReasoning, true);
+  assert.equal(pinned.reasoningStyle, "reasoning_effort");
+
+  const other = getExternalReasoningCapabilities("ollama", instruct, mixed);
+  assert.equal(other.supportsReasoning, false);
+
+  const noneMarked = getExternalReasoningCapabilities("ollama", thinking, {
+    isReasoningProvider: true,
+    reasoningModelIds: [],
+  });
+  assert.equal(noneMarked.supportsReasoning, false);
+
+  // Legacy connection-wide pin: no per-model list yet.
+  const legacy = getExternalReasoningCapabilities("ollama", instruct, {
+    isReasoningProvider: true,
+  });
+  assert.equal(legacy.supportsReasoning, true);
+
+  // vLLM stays connection-wide even if a leftover Ollama pin list is present.
+  assert.equal(
+    getExternalReasoningCapabilities("vllm", instruct, {
+      isReasoningProvider: true,
+      reasoningModelIds: [],
+    }).supportsReasoning,
+    true,
+  );
+});
+
+test("Ollama save persists an explicit per-model pin, including none", () => {
+  assert.deepEqual(
+    reasoningFieldsForProviderSave(
+      "ollama",
+      true,
+      ["thinkingcap-27b-bottlecap:latest", "llama3.2:latest"],
+      ["thinkingcap-27b-bottlecap:latest", "dropped"],
+    ),
+    {
+      isReasoningModel: true,
+      reasoningModelIds: ["thinkingcap-27b-bottlecap:latest"],
+    },
+  );
+  assert.deepEqual(
+    reasoningFieldsForProviderSave(
+      "ollama",
+      true,
+      ["llama3.2:latest"],
+      [],
+    ),
+    { isReasoningModel: true, reasoningModelIds: [] },
+  );
+  assert.deepEqual(reasoningFieldsForProviderSave("vllm", true, ["m"], ["m"]), {
+    isReasoningModel: true,
+    reasoningModelIds: undefined,
+  });
 });

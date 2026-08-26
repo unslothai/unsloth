@@ -154,6 +154,7 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
+  externalReasoningOptionsFromProvider,
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
@@ -722,11 +723,7 @@ export function SharedComposer({
       ? getExternalReasoningCapabilities(
           selectedExternalProvider?.providerType,
           effectiveExternalModelId,
-          {
-            isReasoningProvider:
-              selectedExternalProvider?.isReasoningModel === true,
-            baseUrl: selectedExternalProvider?.baseUrl ?? null,
-          },
+          externalReasoningOptionsFromProvider(selectedExternalProvider),
         )
       : null;
   const isExternalOpenAIReasoning =

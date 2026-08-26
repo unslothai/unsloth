@@ -48,6 +48,12 @@ export interface ExternalProviderConfig {
    */
   isReasoningModel?: boolean;
   /**
+   * Ollama: model ids marked as thinking-capable on this connection. An empty
+   * list means none; omit (with `isReasoningModel`) is the legacy all-models pin.
+   * vLLM ignores this.
+   */
+  reasoningModelIds?: string[];
+  /**
    * Default idle-timeout (minutes) for new OpenAI shell containers. Pre-fills the
    * "Create container" dialog and is the TTL the auto-create-per-thread path POSTs
    * to /v1/containers. OpenAI's hard default is 20. Only for OpenAI cloud.
@@ -101,6 +107,53 @@ export function supportsProviderReasoningToggle(
   return (
     providerType != null && REASONING_TOGGLE_PROVIDER_TYPES.has(providerType)
   );
+}
+
+/** Ollama is the only reasoning-toggle provider that serves a mixed catalog. */
+export function supportsPerModelReasoningPin(
+  providerType: string | null | undefined,
+): boolean {
+  return providerType === "ollama";
+}
+
+export function normalizeReasoningModelIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const id = entry.trim();
+    if (!id) continue;
+    const key = id.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(id);
+  }
+  return out;
+}
+
+export function reasoningFieldsForProviderSave(
+  providerType: string,
+  isReasoningModel: boolean,
+  enabledModels: readonly string[],
+  markedIds: readonly string[],
+): Pick<ExternalProviderConfig, "isReasoningModel" | "reasoningModelIds"> {
+  if (!supportsProviderReasoningToggle(providerType)) {
+    return {};
+  }
+  if (!supportsPerModelReasoningPin(providerType)) {
+    return { isReasoningModel, reasoningModelIds: undefined };
+  }
+  if (!isReasoningModel) {
+    return { isReasoningModel: false, reasoningModelIds: undefined };
+  }
+  const enabledKeys = new Set(
+    enabledModels.map((id) => id.trim().toLowerCase()).filter((id) => id.length > 0),
+  );
+  const marked = (normalizeReasoningModelIds(markedIds) ?? []).filter((id) =>
+    enabledKeys.has(id.trim().toLowerCase()),
+  );
+  return { isReasoningModel: true, reasoningModelIds: marked };
 }
 
 // Known text-only providers on their main chat endpoint.
@@ -510,6 +563,33 @@ function mapLegacyPresetToProviderType(presetId: string): string {
   return presetId;
 }
 
+function modelIdKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function resolveStoredReasoningModelIds(
+  raw: ExternalProviderConfig,
+  providerType: string,
+): string[] | undefined {
+  if (
+    !supportsPerModelReasoningPin(providerType) ||
+    raw.isReasoningModel !== true
+  ) {
+    return undefined;
+  }
+  const stored = normalizeReasoningModelIds(raw.reasoningModelIds);
+  if (stored !== undefined) {
+    const enabled = new Set(
+      raw.models.map((model) => modelIdKey(model)).filter((id) => id.length > 0),
+    );
+    return stored.filter((id) => enabled.has(modelIdKey(id)));
+  }
+  // Legacy connection-level pin: every enabled model was implied.
+  return raw.models
+    .map((model) => model.trim())
+    .filter((model) => model.length > 0);
+}
+
 function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig {
   const providerType = raw.providerType.trim();
   return {
@@ -541,6 +621,7 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? raw.isReasoningModel === true
       : undefined,
+    reasoningModelIds: resolveStoredReasoningModelIds(raw, providerType),
     openaiContainerTtlMinutes:
       providerType === "openai" &&
       typeof raw.openaiContainerTtlMinutes === "number" &&

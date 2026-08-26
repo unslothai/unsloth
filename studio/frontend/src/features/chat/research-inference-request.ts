@@ -65,14 +65,19 @@ export function buildResearchInferenceRequest(input: {
     request.enableThinking = input.reasoningRequested;
   }
   if (
-    input.reasoningRequested &&
-    (input.reasoningStyle === "reasoning_effort" ||
-      input.reasoningStyle === "enable_thinking_effort")
+    input.reasoningStyle === "reasoning_effort" ||
+    input.reasoningStyle === "enable_thinking_effort"
   ) {
-    request.reasoningEffort = input.clampReasoningEffort(
-      input.reasoningEffort,
-      input.reasoningEffortLevels,
-    );
+    if (input.reasoningRequested) {
+      request.reasoningEffort = input.clampReasoningEffort(
+        input.reasoningEffort,
+        input.reasoningEffortLevels,
+      );
+    } else if (input.reasoningEffortLevels.includes("none")) {
+      // Off-capable reasoning_effort (Ollama) must send "none". Omitting the
+      // field lets the model keep its default thinking.
+      request.reasoningEffort = "none";
+    }
   }
   return request;
 }

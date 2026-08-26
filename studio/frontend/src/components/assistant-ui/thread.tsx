@@ -154,7 +154,10 @@ import {
   useShortcut,
 } from "@/features/settings";
 import { create } from "zustand";
-import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
+import {
+  getExternalReasoningCapabilities,
+  externalReasoningOptionsFromProvider,
+} from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
@@ -5150,12 +5153,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
       ? getExternalReasoningCapabilities(
           selectedExternalProvider?.providerType,
           effectiveExternalModelId,
-          {
-            isReasoningProvider:
-              selectedExternalProvider?.isReasoningModel === true,
-            // Lets the resolver detect custom Gemini OAI-compat gateways.
-            baseUrl: selectedExternalProvider?.baseUrl ?? null,
-          },
+          externalReasoningOptionsFromProvider(selectedExternalProvider),
         )
       : null;
   const effectiveReasoningStyle =

@@ -172,6 +172,7 @@ import {
 } from "./lib/training-compare-handoff";
 import {
   clampReasoningEffortToLevels,
+  externalReasoningOptionsFromProvider,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   providerHostsCodeExecution,
@@ -2411,10 +2412,7 @@ export function ChatPage({
     const reasoningCaps = getExternalReasoningCapabilities(
       provider?.providerType,
       selection.modelId,
-      {
-        isReasoningProvider: provider?.isReasoningModel === true,
-        baseUrl: provider?.baseUrl ?? null,
-      },
+      externalReasoningOptionsFromProvider(provider),
     );
     const state = useChatRuntimeStore.getState();
     const preferredEffort = state.reasoningEffort;
@@ -3050,10 +3048,7 @@ export function ChatPage({
         const reasoningCaps = getExternalReasoningCapabilities(
           selectedProvider?.providerType,
           selectedExternal?.modelId,
-          {
-            isReasoningProvider: selectedProvider?.isReasoningModel === true,
-            baseUrl: selectedProvider?.baseUrl ?? null,
-          },
+          externalReasoningOptionsFromProvider(selectedProvider),
         );
         const preferredEffort = store.reasoningEffort;
         const effortLevels = reasoningCaps.reasoningEffortLevels;

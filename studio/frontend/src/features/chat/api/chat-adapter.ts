@@ -116,6 +116,7 @@ import {
 import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
+  externalReasoningOptionsFromProvider,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
@@ -5353,11 +5354,7 @@ export function createOpenAIStreamAdapter(
             ? getExternalReasoningCapabilities(
                 externalProvider.providerType,
                 externalSelection.modelId,
-                {
-                  isReasoningProvider:
-                    externalProvider.isReasoningModel === true,
-                  baseUrl: externalProvider.baseUrl ?? null,
-                },
+                externalReasoningOptionsFromProvider(externalProvider),
               )
             : {
                 supportsReasoning,

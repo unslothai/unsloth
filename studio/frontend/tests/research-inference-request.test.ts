@@ -56,3 +56,34 @@ test("invalid optional settings do not leak into a local research request", () =
     { model: "local/model.gguf", enableThinking: false },
   );
 });
+
+test("Ollama-style research serializes reasoningEffort none when Thinking is off", () => {
+  assert.deepEqual(
+    buildResearchInferenceRequest({
+      checkpoint: "external::ollama::thinkingcap-27b-bottlecap:latest",
+      external: {
+        providerId: "ollama-local",
+        providerType: "ollama",
+        modelId: "thinkingcap-27b-bottlecap:latest",
+      },
+      temperature: 0.2,
+      topP: 0.9,
+      maxTokens: 2048,
+      reasoningRequested: false,
+      reasoningStyle: "reasoning_effort",
+      reasoningEffort: "medium",
+      reasoningEffortLevels: ["none", "low", "medium", "high"],
+      clampReasoningEffort: clamp,
+    }),
+    {
+      model: "thinkingcap-27b-bottlecap:latest",
+      providerId: "ollama-local",
+      providerType: "ollama",
+      externalModel: "thinkingcap-27b-bottlecap:latest",
+      temperature: 0.2,
+      topP: 0.9,
+      maxTokens: 2048,
+      reasoningEffort: "none",
+    },
+  );
+});

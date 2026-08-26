@@ -30,6 +30,7 @@ import {
   setProviderModelCapabilities,
   supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
+  supportsPerModelReasoningPin,
   supportsProviderReasoningToggle,
 } from "./external-providers";
 
@@ -172,6 +173,9 @@ export function mergeLocalProviderOptions(
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? (existing.isReasoningModel ?? synced.isReasoningModel)
       : undefined,
+    reasoningModelIds: supportsPerModelReasoningPin(providerType)
+      ? (existing.reasoningModelIds ?? synced.reasoningModelIds)
+      : undefined,
     openaiContainerTtlMinutes:
       providerType === "openai" &&
       typeof existing.openaiContainerTtlMinutes === "number" &&
@@ -305,6 +309,9 @@ export async function syncExternalProvidersFromBackend(
           : undefined,
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
           ? existing?.isReasoningModel === true
+          : undefined,
+        reasoningModelIds: supportsPerModelReasoningPin(uiProviderType)
+          ? existing?.reasoningModelIds
           : undefined,
         createdAt: existing?.createdAt ?? createdAt,
         updatedAt,
