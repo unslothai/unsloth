@@ -143,6 +143,10 @@ def test_sentence_transformers_local_path_is_already_present(client, monkeypatch
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
     local = tmp_path / "embedder"
     local.mkdir()
+    # "Present" means a checkpoint is there. An empty directory used to pass on
+    # existence alone; see test_a_local_dir_without_weights_is_not_already_present.
+    (local / "modules.json").write_text("[]")
+    (local / "model.safetensors").write_bytes(b"ST")
 
     body = _resolve(client, str(local)).json()
     assert body["backend"] == "sentence-transformers"
@@ -648,6 +652,7 @@ def test_a_local_gguf_is_not_reported_as_a_ready_sentence_transformers_model(
     # A real ST folder on the same filesystem is still recognised.
     folder = tmp_path / "st-model"
     folder.mkdir()
+    (folder / "model.safetensors").write_bytes(b"ST")
     assert settings._local_sentence_transformer_is_present(str(folder)) is True
 
     body = _resolve(client, str(gguf)).json()
@@ -715,3 +720,31 @@ def test_a_cached_safetensors_model_is_selectable_offline(client, monkeypatch, t
     assert body["download_repo"] == "org/st-only"
     assert body["cached"] is True
     assert body["error"] is None
+
+
+def test_a_local_dir_without_weights_is_not_already_present(client, monkeypatch, tmp_path):
+    """A folder holding modules.json and no checkpoint also passes
+    is_embedding_model's local-path check, so it was reported cached and accepted
+    without force, then failed at the first index when SentenceTransformer went
+    looking for the weights."""
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
+    monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
+    import utils.utils as utils
+
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: False)
+
+    empty = tmp_path / "metadata-only"
+    empty.mkdir()
+    (empty / "modules.json").write_text("[]")
+    (empty / "config.json").write_text("{}")
+    assert settings._local_sentence_transformer_is_present(str(empty)) is False
+
+    body = _resolve(client, str(empty)).json()
+    assert body["cached"] is False
+    assert "no checkpoint this backend can load" in body["error"]
+
+    # One weight file anywhere under it is enough, including an ST module subdir.
+    module = empty / "0_Transformer"
+    module.mkdir()
+    (module / "model.safetensors").write_bytes(b"ST")
+    assert settings._local_sentence_transformer_is_present(str(empty)) is True

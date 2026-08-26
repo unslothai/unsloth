@@ -101,7 +101,7 @@ def test_shutdown_waits_for_an_active_embedding_operation(monkeypatch):
     finish = threading.Event()
     shutdown_done = threading.Event()
 
-    def _post(path, payload):
+    def _post(path, payload, **_kwargs):
         entered.set()
         assert finish.wait(timeout = 2)
         return {"data": [{"index": 0, "embedding": [1.0, 0.0]}]}
@@ -304,7 +304,9 @@ def _patch_spawn_deps(
     # Force CPU so spawn never depends on a host GPU.
     monkeypatch.setattr(config, "EMBED_DEVICE", "cpu")
     monkeypatch.setattr(LlamaServerBackend, "_resolve_binary", lambda self: "/bin/llama-server")
-    monkeypatch.setattr(LlamaServerBackend, "_resolve_model_path", lambda self: "/m/bge.gguf")
+    monkeypatch.setattr(
+        LlamaServerBackend, "_resolve_model_path", lambda self, model_name = None: "/m/bge.gguf"
+    )
     monkeypatch.setattr(LlamaServerBackend, "_find_free_port", staticmethod(lambda: free_port))
     monkeypatch.setattr(mod.subprocess, "Popen", lambda *a, **k: proc)
 
@@ -341,7 +343,7 @@ def test_spawn_auto_falls_back_to_cpu_on_gpu_failure(monkeypatch):
     b = LlamaServerBackend()
     calls = []
 
-    def fake_spawn_once(use_gpu):
+    def fake_spawn_once(use_gpu, model_name = None):
         calls.append(use_gpu)
         if use_gpu:
             raise RuntimeError("CUDA out of memory")
@@ -356,7 +358,7 @@ def test_spawn_explicit_gpu_does_not_fall_back(monkeypatch):
     monkeypatch.setattr(config, "EMBED_DEVICE", "gpu")
     b = LlamaServerBackend()
 
-    def fake_spawn_once(use_gpu):
+    def fake_spawn_once(use_gpu, model_name = None):
         raise RuntimeError("CUDA out of memory")
 
     monkeypatch.setattr(b, "_spawn_once", fake_spawn_once)
@@ -373,10 +375,10 @@ def _embed_response(vectors):
 
 def test_encode_orders_and_returns_float32(monkeypatch):
     b = LlamaServerBackend()
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
     captured = {}
 
-    def fake_post(path, payload):
+    def fake_post(path, payload, **_kwargs):
         captured["path"] = path
         captured["input"] = payload["input"]
         return _embed_response([[3.0, 4.0], [0.0, 5.0]])
@@ -391,8 +393,8 @@ def test_encode_orders_and_returns_float32(monkeypatch):
 
 def test_encode_normalizes(monkeypatch):
     b = LlamaServerBackend()
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
-    monkeypatch.setattr(b, "_post", lambda p, pl: _embed_response([[3.0, 4.0]]))
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
+    monkeypatch.setattr(b, "_post", lambda p, pl, **_k: _embed_response([[3.0, 4.0]]))
     out = b.encode(["a"], normalize = True)
     np.testing.assert_allclose(np.linalg.norm(out, axis = 1), [1.0], rtol = 1e-6)
 
@@ -400,7 +402,7 @@ def test_encode_normalizes(monkeypatch):
 def test_encode_empty_returns_zero_rows(monkeypatch):
     b = LlamaServerBackend()
     b._dim = 384
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
     out = b.encode([])
     assert out.shape == (0, 384)
     assert out.dtype == np.float32
@@ -408,8 +410,10 @@ def test_encode_empty_returns_zero_rows(monkeypatch):
 
 def test_encode_rejects_count_mismatch(monkeypatch):
     b = LlamaServerBackend()
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
-    monkeypatch.setattr(b, "_post", lambda p, pl: {"data": [{"index": 0, "embedding": [1.0]}]})
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        b, "_post", lambda p, pl, **_k: {"data": [{"index": 0, "embedding": [1.0]}]}
+    )
     with pytest.raises(RuntimeError, match = "vectors for"):
         b.encode(["a", "b"], normalize = False)
 
@@ -417,10 +421,10 @@ def test_encode_rejects_count_mismatch(monkeypatch):
 def test_encode_batches(monkeypatch):
     monkeypatch.setattr(config, "EMBED_BATCH", 2)
     b = LlamaServerBackend()
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
     calls = []
 
-    def fake_post(path, payload):
+    def fake_post(path, payload, **_kwargs):
         chunk = payload["input"]
         calls.append(len(chunk))
         return _embed_response([[1.0, 0.0]] * len(chunk))
@@ -433,10 +437,10 @@ def test_encode_batches(monkeypatch):
 
 def test_dim_probes_once_and_caches(monkeypatch):
     b = LlamaServerBackend()
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
     n_calls = {"n": 0}
 
-    def fake_post(path, payload):
+    def fake_post(path, payload, **_kwargs):
         n_calls["n"] += 1
         return _embed_response([[0.1] * 384])
 
@@ -448,10 +452,10 @@ def test_dim_probes_once_and_caches(monkeypatch):
 
 def test_token_counter_hits_tokenize(monkeypatch):
     b = LlamaServerBackend()
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
     seen = {}
 
-    def fake_post(path, payload):
+    def fake_post(path, payload, **_kwargs):
         seen["path"] = path
         seen["content"] = payload["content"]
         return {"tokens": [1, 2, 3, 4]}
@@ -468,7 +472,7 @@ def test_ensure_ready_respawns_dead_process(monkeypatch):
     b._process = _FakeProc(alive = False, returncode = 0)
     spawned = {"n": 0}
 
-    def fake_spawn():
+    def fake_spawn(model_name = None):
         spawned["n"] += 1
         b._process = _FakeProc(alive = True)
         # _current() now also checks the served repo, so mark it current.
@@ -499,7 +503,7 @@ def test_path_save_restarts_embedder_with_new_binary(monkeypatch):
     )
     spawned = []
 
-    def fake_spawn():
+    def fake_spawn(model_name = None):
         spawned.append(backend._binary)
         backend._process = _FakeProc(alive = True)
         backend._model_repo = config.effective_gguf_repo()
@@ -518,9 +522,11 @@ def test_post_restarts_once_on_connect_error(monkeypatch):
 
     b = LlamaServerBackend()
     b._port = 9000
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
     restarts = {"n": 0}
-    monkeypatch.setattr(b, "_restart", lambda: restarts.__setitem__("n", restarts["n"] + 1))
+    monkeypatch.setattr(
+        b, "_restart", lambda *_a, **_k: restarts.__setitem__("n", restarts["n"] + 1)
+    )
 
     attempts = {"n": 0}
 
@@ -551,9 +557,11 @@ def test_post_restarts_once_on_read_timeout(monkeypatch):
 
     b = LlamaServerBackend()
     b._port = 9000
-    monkeypatch.setattr(b, "_ensure_ready", lambda: None)
+    monkeypatch.setattr(b, "_ensure_ready", lambda *_a, **_k: None)
     restarts = {"n": 0}
-    monkeypatch.setattr(b, "_restart", lambda: restarts.__setitem__("n", restarts["n"] + 1))
+    monkeypatch.setattr(
+        b, "_restart", lambda *_a, **_k: restarts.__setitem__("n", restarts["n"] + 1)
+    )
 
     attempts = {"n": 0}
 
@@ -693,7 +701,11 @@ def test_gpu_opt_in_still_falls_back_to_cpu(monkeypatch):
         backend = LlamaServerBackend()
         calls: list[bool] = []
 
-        def fake_spawn_once(use_gpu, _calls = calls):
+        def fake_spawn_once(
+            use_gpu,
+            model_name = None,
+            _calls = calls,
+        ):
             _calls.append(use_gpu)
             if use_gpu:
                 raise RuntimeError("GPU start failed")
@@ -710,7 +722,9 @@ def test_literal_gpu_remains_a_hard_request(monkeypatch):
         monkeypatch.setattr(config, "EMBED_DEVICE", requested)
         backend = LlamaServerBackend()
         monkeypatch.setattr(
-            backend, "_spawn_once", lambda use_gpu: (_ for _ in ()).throw(RuntimeError("no cuda"))
+            backend,
+            "_spawn_once",
+            lambda use_gpu, *_a: (_ for _ in ()).throw(RuntimeError("no cuda")),
         )
         with pytest.raises(RuntimeError, match = "no cuda"):
             backend._spawn()
@@ -729,7 +743,11 @@ def test_a_soft_gpu_opt_in_keeps_its_own_cpu_fallback(monkeypatch):
         backend = LlamaServerBackend()
         calls: list[bool] = []
 
-        def fake_spawn_once(use_gpu, _calls = calls):
+        def fake_spawn_once(
+            use_gpu,
+            model_name = None,
+            _calls = calls,
+        ):
             _calls.append(use_gpu)
             if use_gpu:
                 raise RuntimeError("GPU start failed")
@@ -1376,3 +1394,61 @@ def test_the_planned_variant_landing_retires_the_pending_marker(monkeypatch, tmp
 
     assert backend._resolve_model_path().endswith("pending-F16.gguf")
     assert cleared == ["org/pending"]
+
+
+def test_a_pinned_request_serves_the_pinned_models_gguf_not_the_live_setting(monkeypatch):
+    """One subprocess serves one GGUF. The lifecycle read the live setting, so a
+    job pinned to A kept tagging its vectors as A while this served B's weights
+    the moment Settings changed: mislabelled vectors, silently."""
+    from core.rag import config
+
+    b = LlamaServerBackend()
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/model-b")
+    monkeypatch.setattr(
+        config,
+        "effective_gguf_repo_for_embedding_model",
+        lambda model: f"{model}-GGUF",
+    )
+    monkeypatch.setattr(b, "_process_alive", lambda: True)
+    monkeypatch.setattr(b, "_binary_path_revision", None, raising = False)
+    import utils.llama_cpp_path_settings as paths
+
+    monkeypatch.setattr(paths, "custom_llama_cpp_path_revision", lambda: None)
+
+    # A live server on A's weights.
+    b._model_repo = "org/model-a-GGUF"
+
+    # The live setting is B, so an unpinned request finds the server stale.
+    assert b._current() is False
+    # A request pinned to A is served by exactly that server, no respawn.
+    assert b._current("org/model-a") is True
+    # And a request pinned to B is not.
+    assert b._current("org/model-b") is False
+
+
+def test_resolution_follows_the_pinned_model(monkeypatch, tmp_path):
+    """_resolve_model_path derived both the repo and the local-path probe from the
+    live setting, so the pinned model never reached either."""
+    from core.rag import config
+
+    gguf = tmp_path / "pinned.gguf"
+    gguf.write_bytes(b"GGUF")
+    b = LlamaServerBackend()
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/model-b")
+    monkeypatch.setattr(
+        config, "effective_gguf_repo_for_embedding_model", lambda model: f"{model}-GGUF"
+    )
+    seen = []
+    monkeypatch.setattr(
+        LlamaServerBackend,
+        "_resolve_local_gguf",
+        staticmethod(
+            lambda model: seen.append(model) or (str(gguf) if "model-a" in model else None)
+        ),
+    )
+
+    assert b._resolve_model_path("org/model-a") == str(gguf)
+    assert seen == ["org/model-a"]
+    # Tagged with the repo it was resolved FOR, so a later unpinned request sees
+    # it as stale rather than serving A's weights under B's name.
+    assert b._model_repo == "org/model-a-GGUF"

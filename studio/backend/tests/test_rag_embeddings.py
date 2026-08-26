@@ -182,7 +182,7 @@ def test_token_counter_reacquires_backend_retired_between_chunk_calls(monkeypatc
     monkeypatch.setattr(
         replacement,
         "_post",
-        lambda path, payload: {"tokens": [1, 2, 3]},
+        lambda path, payload, **_k: {"tokens": [1, 2, 3]},
     )
 
     assert count("the next chunk") == 3
@@ -937,3 +937,50 @@ def test_the_st_probe_warms_the_pinned_model_not_the_live_setting(monkeypatch):
         embeddings._reset_backend()
 
     assert warmed == ["org/pinned"]
+
+
+def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatch, tmp_path):
+    """The gate ran on the repo id before load_target was chosen. When the cache
+    holds an older revision than the Hub's current one, that scanned a commit the
+    load never opens, so an unsafe pickle present only in the cached revision
+    passed. evaluate_file_security recovers the repo and exact commit from a
+    canonical snapshot path, so it has to be given that path."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    scanned = []
+    monkeypatch.setattr(
+        embeddings, "_guard_model_security", lambda target, local_only = False: scanned.append(target)
+    )
+
+    class _ST:
+        def __init__(self, target, **_kwargs):
+            self.loaded = target
+            self.tokenizer = None
+
+        def get_sentence_embedding_dimension(self):
+            return 8
+
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_st_accepts_local_files_only", lambda _c: False)
+    import utils.utils as utils
+
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+    import sys as _sys
+    import types as _t
+
+    st_mod = _t.ModuleType("sentence_transformers")
+    st_mod.SentenceTransformer = _ST
+    monkeypatch.setitem(_sys.modules, "sentence_transformers", st_mod)
+    embeddings._model = None
+    embeddings._name = None
+    try:
+        model = embeddings._get("org/embedder")
+    finally:
+        embeddings._model = None
+        embeddings._name = None
+
+    # The snapshot was loaded, and it is the same string the gate was handed.
+    assert model.loaded == str(snapshot)
+    assert scanned == [str(snapshot)]

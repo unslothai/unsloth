@@ -434,7 +434,6 @@ def _get(model_name: str | None = None):
             from utils.hf_cache_settings import active_hf_hub_cache
 
             logger.info("loading embedding model %s on %s", name, device)
-            _guard_model_security(name, local_only)
             st_kwargs = dict(
                 device = device,
                 cache_folder = active_hf_hub_cache(),
@@ -490,6 +489,14 @@ def _get(model_name: str | None = None):
                     )
                 elif _st_accepts_local_files_only(SentenceTransformer):
                     st_kwargs["local_files_only"] = True
+            # Scan what is actually about to be deserialized, which is why this runs
+            # after load_target is settled rather than on the repo id. When the cache
+            # holds an older revision than the Hub's current one, scanning `name`
+            # checked a commit this load never opens, and an unsafe pickle present
+            # only in the cached revision passed. evaluate_file_security recovers the
+            # repo id and exact commit from a canonical snapshot path, and falls back
+            # to a local fail-closed inspection when the Hub cannot answer.
+            _guard_model_security(load_target, local_only)
             with _quiet_transformers_load() as report:
                 # The re-emit runs in finally: a load that raises after transformers
                 # wrote its report is exactly when a MISSING or MISMATCH line matters,

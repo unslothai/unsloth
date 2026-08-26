@@ -418,22 +418,26 @@ class LlamaServerBackend:
             files = [p for p in files if p != pick]
         return None
 
-    def _resolve_model_path(self) -> str:
+    def _resolve_model_path(self, model_name: str | None = None) -> str:
         """Download (or cache-hit) the variant-matching, non-mmproj GGUF embedder,
         returning its local path. Re-resolves when the effective repo changed (a
-        custom model was saved in Settings)."""
+        custom model was saved in Settings).
+
+        ``model_name`` is the model the caller pinned. Reading the live setting
+        here instead meant a job pinned to A kept tagging its vectors as A while
+        this resolved B's weights the moment Settings changed."""
+        model = model_name or config.effective_embedding_model()
         # Captured once: if the setting changes mid-download, the path must stay
         # tagged with the repo it was resolved FOR, so _current() sees the new
         # setting as stale and respawns instead of serving the old model.
-        desired = config.effective_gguf_repo()
+        desired = config.effective_gguf_repo_for_embedding_model(model)
         if self._model_path is not None and self._model_repo == desired:
             return self._model_path
-        local = self._resolve_local_gguf(config.effective_embedding_model())
+        local = self._resolve_local_gguf(model)
         if local is not None:
             return self._adopt_model_path(local, desired)
         # Companion repo, then the naming variants, then the model repo itself.
         repo = desired
-        model = config.effective_embedding_model()
         candidates = list(dict.fromkeys([repo, *config.gguf_repo_candidates(model)]))
         # Only the preferred repo. A file cached under the fallback candidate must not
         # pre-empt a companion repo the hub can still resolve, which is the order the
@@ -707,23 +711,27 @@ class LlamaServerBackend:
         except Exception:  # noqa: BLE001 - drain thread must never raise
             pass
 
-    def _spawn(self) -> None:
+    def _spawn(self, model_name: str | None = None) -> None:
         """Start the embed server (caller holds the lock). A failed GPU start falls
         back to CPU once, unless ``RAG_EMBED_DEVICE`` is the literal ``gpu``."""
         use_gpu = self._use_gpu()
         try:
-            self._spawn_once(use_gpu)
+            self._spawn_once(use_gpu, model_name)
         except RuntimeError:
             if use_gpu and not config.embed_device_requires_gpu():
                 logger.warning("embed server GPU start failed; falling back to CPU")
                 self._force_cpu = True
-                self._spawn_once(False)
+                self._spawn_once(False, model_name)
             else:
                 raise
 
-    def _spawn_once(self, use_gpu: bool) -> None:
+    def _spawn_once(
+        self,
+        use_gpu: bool,
+        model_name: str | None = None,
+    ) -> None:
         binary = self._resolve_binary()
-        model_path = self._resolve_model_path()
+        model_path = self._resolve_model_path(model_name)
         port = config.EMBED_PORT or self._find_free_port()
         env = self._build_env(binary, use_gpu = use_gpu)
         cmd = self._build_cmd(binary, model_path, port, use_gpu = use_gpu)
@@ -794,24 +802,32 @@ class LlamaServerBackend:
     def _process_alive(self) -> bool:
         return self._process is not None and self._process.poll() is None
 
-    def _current(self) -> bool:
-        """Alive AND serving the effective repo (a Settings model change makes a
-        live server stale)."""
+    def _current(self, model_name: str | None = None) -> bool:
+        """Alive AND serving the repo for ``model_name`` (a Settings model change,
+        or a request pinned to a different model, makes a live server stale)."""
         from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
+
+        desired = config.effective_gguf_repo_for_embedding_model(
+            model_name or config.effective_embedding_model()
+        )
         return (
             self._process_alive()
-            and self._model_repo == config.effective_gguf_repo()
+            and self._model_repo == desired
             and self._binary_path_revision == custom_llama_cpp_path_revision()
         )
 
-    def _ensure_ready(self) -> None:
-        """Guarantee a live server on the effective model, (re)spawning if needed.
+    def _ensure_ready(self, model_name: str | None = None) -> None:
+        """Guarantee a live server on ``model_name``, (re)spawning if needed.
         Double-checked so the current path takes no lock; self-heals after the
-        chat reaper kills us and re-resolves after a Settings model change."""
-        if self._current():
+        chat reaper kills us and re-resolves after a Settings model change.
+
+        One subprocess serves one GGUF, so a request pinned to a model the live
+        server is not serving respawns onto it rather than silently answering
+        from the other model's weights."""
+        if self._current(model_name):
             return
         with self._lifecycle_lock:
-            if self._current():
+            if self._current(model_name):
                 return
             self._kill_process()
             from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
@@ -819,12 +835,12 @@ class LlamaServerBackend:
             if self._binary_path_revision != custom_llama_cpp_path_revision():
                 self._binary = None
                 self._binary_path_revision = None
-            self._spawn()
+            self._spawn(model_name)
 
-    def _restart(self) -> None:
+    def _restart(self, model_name: str | None = None) -> None:
         with self._lifecycle_lock:
             self._kill_process()
-            self._spawn()
+            self._spawn(model_name)
 
     def _kill_process(self) -> None:
         proc = self._process
@@ -874,17 +890,27 @@ class LlamaServerBackend:
             except Exception:  # noqa: BLE001 - teardown must not raise
                 pass
 
-    def _post(self, path: str, payload: dict) -> dict:
+    def _post(
+        self,
+        path: str,
+        payload: dict,
+        model_name: str | None = None,
+    ) -> dict:
         """POST to the server, restarting once and retrying on a dropped connection
         (the reaper may have killed us) or a timeout (the bundled build sometimes
         wedges a request); a fresh server unsticks both."""
         with self._operation():
-            return self._post_active(path, payload)
+            return self._post_active(path, payload, model_name)
 
-    def _post_active(self, path: str, payload: dict) -> dict:
+    def _post_active(
+        self,
+        path: str,
+        payload: dict,
+        model_name: str | None = None,
+    ) -> dict:
         last_exc: Exception | None = None
         for attempt in range(2):
-            self._ensure_ready()
+            self._ensure_ready(model_name)
             try:
                 resp = self._client.post(f"{self._base_url}{path}", json = payload)
                 resp.raise_for_status()
@@ -892,7 +918,7 @@ class LlamaServerBackend:
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as e:
                 last_exc = e
                 if attempt == 0:
-                    self._restart()
+                    self._restart(model_name)
                     continue
             except httpx.HTTPStatusError as e:
                 body = e.response.text[:500] if e.response is not None else ""
@@ -908,20 +934,23 @@ class LlamaServerBackend:
         model_name = None,
         normalize = True,
     ):
-        """Embed texts -> (N, dim) float32. ``model_name`` is ignored (the GGUF is
-        fixed by config). Normalizes in Python to match the ST backend."""
+        """Embed texts -> (N, dim) float32. ``model_name`` pins which GGUF serves
+        the request, so a job that started on one model is not silently answered
+        from another after a Settings change. Normalizes in Python to match the ST
+        backend."""
         with self._operation():
-            return self._encode_active(texts, normalize = normalize)
+            return self._encode_active(texts, normalize = normalize, model_name = model_name)
 
     def _encode_active(
         self,
         texts,
         *,
         normalize = True,
+        model_name = None,
     ):
         n = len(texts)
         if n == 0:
-            return np.zeros((0, self.dim()), dtype = np.float32)
+            return np.zeros((0, self.dim(model_name = model_name)), dtype = np.float32)
         rows: list[list[float]] = []
         batch = max(1, config.EMBED_BATCH)
         for start in range(0, n, batch):
@@ -929,6 +958,7 @@ class LlamaServerBackend:
             data = self._post(
                 "/v1/embeddings",
                 {"input": chunk, "model": "embedding", "encoding_format": "float"},
+                model_name = model_name,
             )
             items = data.get("data", [])
             if len(items) != len(chunk):
@@ -953,11 +983,11 @@ class LlamaServerBackend:
         Unlocked: concurrent probes are benign, and locking would deadlock when
         the probe's encode respawns onto a changed model (see __init__)."""
         with self._operation():
-            self._ensure_ready()
+            self._ensure_ready(model_name)
             cached = self._dim
             if cached is not None:
                 return cached
-            vec = self.encode(["x"], normalize = False)
+            vec = self.encode(["x"], normalize = False, model_name = model_name)
             width = int(vec.shape[1])
             self._dim = width
             return width
@@ -965,8 +995,8 @@ class LlamaServerBackend:
     def warm(self, *, model_name = None) -> None:
         """Start the server and probe dim off the request path."""
         with self._operation():
-            self._ensure_ready()
-            self.dim()
+            self._ensure_ready(model_name)
+            self.dim(model_name = model_name)
 
     def token_counter(self, *, model_name = None):
         """Count tokens via the GGUF's /tokenize so chunk sizing matches the
@@ -975,7 +1005,11 @@ class LlamaServerBackend:
         @lru_cache(maxsize = 4096)
         def _count(text: str) -> int:
             with self._operation():
-                data = self._post("/tokenize", {"content": text, "add_special": False})
+                data = self._post(
+                    "/tokenize",
+                    {"content": text, "add_special": False},
+                    model_name = model_name,
+                )
                 return len(data.get("tokens", []))
 
         return _count

@@ -2310,7 +2310,18 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
         # through instead reaches the no-loadable-weights error, which says so.
         if p.is_file() and p.suffix.lower() == ".gguf":
             return False
-        return p.exists()
+        if not p.exists():
+            return False
+        # A directory has to hold a checkpoint, not merely exist. A folder with
+        # modules.json and no weights also passes is_embedding_model's local-path
+        # check, so it was reported cached and accepted without force, then failed
+        # at the first index when SentenceTransformer looked for the weights.
+        if p.is_dir():
+            return any(
+                child.suffix.lower() in _ST_WEIGHT_SUFFIXES and child.is_file()
+                for child in p.rglob("*")
+            )
+        return True
     except Exception:  # noqa: BLE001 - filesystem oddity is a cache miss
         return False
 
