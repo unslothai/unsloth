@@ -826,7 +826,23 @@ def _make_venv(idx, system_site):
             subprocess.run([sys.executable, "-m", "pip", "install", "-q", "uv"],
                            check=True, timeout=900)
             uv = "uv"
-        venv_cmd = [uv, "venv", str(vdir), "--seed"]
+        # PIN THE INTERPRETER TO THE DRIVER'S OWN, and it is not cosmetic.
+        #
+        # uv's default python-preference is `managed`, so once ANY managed
+        # CPython exists under ~/.local/share/uv/python -- which something in a
+        # longer kernel eventually downloads -- a bare `uv venv` silently builds
+        # on THAT interpreter instead of the image's. `--system-site-packages`
+        # is still honoured and still inherits nothing, because a 3.13 venv
+        # cannot see a 3.12 site-packages.
+        #
+        # Measured, 6 sessions, deterministic per arm: the Default leg came up
+        # on python 3.13.13 / torch 2.12.1+cu130 / datasets 5.0.1 in all three
+        # arm-B runs and on 3.12.13 / torch 2.10.0+cu128 / datasets 4.3.0 in
+        # all three arm-A runs, from one commit. Every other leg stayed on
+        # 3.12. The 3.13 runs then failed 3/3 in `Dataset.from_dict` -- see the
+        # overlay comment below for why -- and the whole leg was resolving a
+        # stack no Kaggle user has.
+        venv_cmd = [uv, "venv", str(vdir), "--seed", "--python", sys.executable]
         if system_site:
             venv_cmd.append("--system-site-packages")
         subprocess.run(venv_cmd, check=True, timeout=900)
@@ -836,8 +852,16 @@ def _make_venv(idx, system_site):
         kname = f"t4ci{{idx}}"
         subprocess.run([str(py), "-m", "ipykernel", "install", "--user",
                         "--name", kname], check=True, timeout=600)
+        # The version is REPORTED, not assumed. A venv on the wrong interpreter
+        # is invisible in the driver log otherwise, and it was: three sessions
+        # went red before anyone read a python version out of a leg's report.
+        _ver = subprocess.run(
+            [str(py), "-c", "import sys;print('%d.%d.%d' % sys.version_info[:3])"],
+            capture_output=True, text=True, timeout=120).stdout.strip()
         print(f"{DRIVER_SENTINEL}_VENV " + json.dumps(
-            {{"idx": idx, "kernel": kname, "system_site": system_site}}),
+            {{"idx": idx, "kernel": kname, "system_site": system_site,
+              "python": _ver,
+              "driver_python": "%d.%d.%d" % sys.version_info[:3]}}),
               flush=True)
         return str(py), kname, str(vdir / "bin")
     except Exception as exc:
@@ -945,7 +969,30 @@ def run_one(name, gpu_index, idx):
     # standing the leg down and reporting nothing at all.
     _ov_specs = OVERLAYS.get(name) or ()
     if _ov_specs:
-        _ov_dir = VENV_ROOT / ("overlay_" + pathlib.Path(name).stem)
+        # The trailing `site-packages` is LOAD-BEARING, and it is the one part
+        # of this path that looks like decoration.
+        #
+        # dill decides whether to pickle a module by REFERENCE or BY VALUE with
+        # `_is_builtin_module` (dill/_dill.py), which answers yes only if the
+        # module's __file__ starts with a sys prefix, ends with an extension
+        # suffix, or contains the literal string 'site-packages'. A plain
+        # `pip install --target /tmp/t4ci_venvs/overlay_X` satisfies none of
+        # those, so every package in the overlay is pickled by value.
+        #
+        # That matters because `Dataset.from_dict` fingerprints through dill:
+        # `datasets/utils/_dill.py:_save_arrowTable` saves `create_arrowTable`,
+        # dill walks its globals, reaches the pyarrow MODULE, pickles it by
+        # value, and hits pyarrow's Cython `MonthDayNano`, whose __module__ is
+        # `builtins`. The result is
+        #     PicklingError: Can't pickle <class 'MonthDayNano'>:
+        #     it's not found as builtins.MonthDayNano
+        # from a two-line `Dataset.from_dict` on a dict of plain strings, with
+        # nothing in the traceback that names this driver.
+        #
+        # Reproduced on CPU in seconds against a byte-identical package tree,
+        # with the DIRECTORY NAME as the only variable: the plain --target dir
+        # raised, the copy named site-packages returned a fingerprint.
+        _ov_dir = VENV_ROOT / ("overlay_" + pathlib.Path(name).stem) / "site-packages"
         _ov_report = _leg_tmp / "overlay_report.json"
         _ov_t0 = time.time()
         _ov_rec = {{"payload": name, "requested": list(_ov_specs)}}
