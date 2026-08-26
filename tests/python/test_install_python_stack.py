@@ -853,13 +853,16 @@ class TestConfigDetectionReadsValuesNotJustKeys:
             assert ips._hardened_pip_config_paths() == []
 
     def test_documented_pip_locations_are_searched(self):
+        # Separator-normalised: these force IS_WINDOWS=False to exercise the POSIX branch,
+        # but os.path.join still uses the RUNNER's separator, so a literal "/etc/pip.conf"
+        # would fail the whole suite on windows-latest.
         with (
             mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.object(os.path, "isfile", lambda path: True),
         ):
-            posix = ips._hardened_pip_config_paths()
+            posix = [path.replace(os.sep, "/") for path in ips._hardened_pip_config_paths()]
         assert "/etc/pip.conf" in posix
         assert "/etc/xdg/pip/pip.conf" in posix
         assert "/home/u/.config/pip/pip.conf" in posix
@@ -870,7 +873,7 @@ class TestConfigDetectionReadsValuesNotJustKeys:
             mock.patch.object(ips, "IS_MACOS", True),
             mock.patch.object(os.path, "isfile", lambda path: True),
         ):
-            macos = ips._hardened_pip_config_paths()
+            macos = [path.replace(os.sep, "/") for path in ips._hardened_pip_config_paths()]
         assert "/home/u/Library/Application Support/pip/pip.conf" in macos
         with (
             mock.patch.dict(
@@ -880,8 +883,8 @@ class TestConfigDetectionReadsValuesNotJustKeys:
             mock.patch.object(os.path, "isfile", lambda path: True),
         ):
             windows = ips._hardened_pip_config_paths()
-        assert all(path.endswith("pip.ini") for path in windows if "pip" in path)
-        assert any("C:\\pd" in path for path in windows)
+        assert windows and all(path.endswith("pip.ini") for path in windows)
+        assert any(path.startswith("C:\\pd") for path in windows)
 
     def test_a_malformed_pip_conf_is_survivable(self, tmp_path):
         config = tmp_path / "pip.conf"
@@ -1008,12 +1011,14 @@ class TestTheNoticeCannotTakeAnInstallDown:
         """uv reads ~/.config/uv/uv.toml on macOS AND Linux (not Application Support),
         %APPDATA%\\uv on Windows, with /etc/uv and %PROGRAMDATA%\\uv system-wide. The
         system one is where a fleet operator puts the policy this notice is about."""
+        # Separator-normalised for the same reason as the pip locations above: os.path.join
+        # follows the RUNNER, not the patched IS_WINDOWS.
         with (
             mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(os.path, "isfile", lambda path: True),
         ):
-            posix = ips._hardened_uv_config_paths()
+            posix = [path.replace(os.sep, "/") for path in ips._hardened_uv_config_paths()]
         assert "/home/u/.config/uv/uv.toml" in posix
         assert "/etc/uv/uv.toml" in posix
         with (
@@ -1024,9 +1029,9 @@ class TestTheNoticeCannotTakeAnInstallDown:
             mock.patch.object(os.path, "isfile", lambda path: True),
         ):
             windows = ips._hardened_uv_config_paths()
-        assert any("C:\\a" in path for path in windows)
-        assert any("C:\\pd" in path for path in windows)
-        assert not any(path.startswith("/etc/uv") for path in windows)
+        assert any(path.startswith("C:\\a") for path in windows)
+        assert any(path.startswith("C:\\pd") for path in windows)
+        assert not any(path.replace(os.sep, "/").startswith("/etc/uv") for path in windows)
 
     def test_a_deleted_working_directory_is_survivable(self):
         with (
