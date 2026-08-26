@@ -1051,8 +1051,6 @@ def _resolve_gguf_dir(path: Path) -> Optional[Path]:
     return None
 
 
-
-
 def list_local_gguf_variants(
     directory: str, model_root: Optional[str] = None
 ) -> tuple[list[GgufVariantInfo], bool]:

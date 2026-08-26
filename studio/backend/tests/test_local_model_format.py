@@ -275,7 +275,6 @@ def _local(
 
 def test_windows_cloud_recall_attributes_are_not_local():
     from utils.paths.path_utils import file_contents_available_locally
-
     for attribute in (0x00001000, 0x00040000, 0x00400000):
         assert not file_contents_available_locally(
             "unused", types.SimpleNamespace(st_file_attributes = attribute)
