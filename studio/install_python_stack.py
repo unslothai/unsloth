@@ -5226,9 +5226,7 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
         # a section, which is why every file's sections are pooled and only resolved
         # against each other at the end. Collapsing a file before reading the next let a
         # low-priority setting erase a higher-priority one pip still applies.
-        pooled: "dict[str, dict[str, tuple[str, str]]]" = {
-            name: {} for name in _PIP_SECTIONS
-        }
+        pooled: "dict[str, dict[str, tuple[str, str]]]" = {name: {} for name in _PIP_SECTIONS}
         for path in _hardened_pip_config_paths():
             text = _read_text(path)
             if text is None:

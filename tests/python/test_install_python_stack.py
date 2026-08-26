@@ -1372,9 +1372,7 @@ class TestDetectionMatchesWhatTheManagersActuallyEnforce:
         first.write_text("[install]\nrequire-hashes = true\n", encoding = "utf-8")
         second = tmp_path / "site.conf"
         second.write_text("[global]\nrequire-hashes = false\n", encoding = "utf-8")
-        assert self._names({}, pip_files = [str(first), str(second)]) == (
-            "user.conf require-hashes",
-        )
+        assert self._names({}, pip_files = [str(first), str(second)]) == ("user.conf require-hashes",)
 
     def test_the_underscore_spelling_is_normalised(self, tmp_path):
         """pip's _normalize_name lowercases and turns underscores into dashes, so
