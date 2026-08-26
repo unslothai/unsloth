@@ -263,3 +263,41 @@ def test_retiring_the_pending_marker_retires_it_in_the_memo_too(settings_store, 
     assert ems.get_stored_download_pending("org/embedder") is False
     # The backend it was resolved with is still remembered.
     assert ems.get_stored_backend("org/embedder") == "sentence-transformers"
+
+
+def test_a_reset_makes_the_restored_defaults_resolution_durable(settings_store, monkeypatch):
+    """The memo survives a reset for jobs still pinned to a model, but the restored
+    default is not a running job: new work resolves through it too, and a
+    process-only answer would change identity on the next restart, stranding
+    whatever was indexed in between."""
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    ems._resolved_gguf_memo.clear()
+    default = ems.default_embedding_model()
+
+    # The default itself was resolved to an off-convention mirror...
+    ems.set_rag_embedding_model(
+        default, gguf_repo = "mirror/off-convention-GGUF", backend = "llama-server"
+    )
+    assert ems.get_stored_gguf_repo(default) == "mirror/off-convention-GGUF"
+    # ...then another model is selected, taking the single record with it...
+    ems.set_rag_embedding_model("org/other", gguf_repo = None, backend = None)
+    # ...and the selection is reset.
+    assert ems.reset_rag_embedding_model() == default
+
+    # The override is gone, but the default's resolution is durable again, not
+    # living only in this process.
+    assert ems.get_stored_embedding_model() is None
+    ems._resolved_gguf_memo.clear()
+    assert ems.get_stored_gguf_repo(default) == "mirror/off-convention-GGUF"
+    assert ems.get_stored_backend(default) == "llama-server"
+
+
+def test_a_reset_with_nothing_remembered_stays_a_plain_reset(settings_store, monkeypatch):
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    ems._resolved_gguf_memo.clear()
+
+    ems.set_rag_embedding_model("org/other", gguf_repo = None, backend = "sentence-transformers")
+    assert ems.reset_rag_embedding_model() == ems.default_embedding_model()
+
+    assert ems.get_stored_embedding_model() is None
+    assert settings_store[ems.EMBEDDING_RESOLUTION_SETTING_KEY] is None

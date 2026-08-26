@@ -1371,3 +1371,58 @@ def test_a_pending_transfer_does_not_make_the_security_scan_offline(monkeypatch,
         embeddings._model = None
         embeddings._name = None
     assert seen["local_only"] is True
+
+
+def test_a_failed_st_constructor_keeps_the_pending_marker(monkeypatch, tmp_path):
+    """The snapshot can be complete while the constructor still fails: an
+    unsupported architecture, or a device that cannot initialize. Retiring the
+    marker before that point let _build_st_backend_or_fallback swap to
+    llama-server with nothing left to stop it fetching the GGUF companion during
+    the first index."""
+    from core.rag import embeddings
+    import utils.embedding_model_settings as ems
+    import utils.utils as utils
+
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model.safetensors").write_bytes(b"ST")
+
+    cleared = []
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda m: cleared.append(m) or True)
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: True)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    monkeypatch.setattr(embeddings, "_st_accepts_local_files_only", lambda _c: False)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("unsupported architecture")
+
+    st_mod = types.ModuleType("sentence_transformers")
+    st_mod.SentenceTransformer = _boom
+    monkeypatch.setitem(sys.modules, "sentence_transformers", st_mod)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    embeddings._model = None
+    embeddings._name = None
+    try:
+        with pytest.raises(RuntimeError, match = "unsupported architecture"):
+            embeddings._get("org/unloadable")
+    finally:
+        embeddings._model = None
+        embeddings._name = None
+
+    assert cleared == [], "a llama fallback must not inherit a cleared marker"
+
+    # It does retire once the model actually constructs.
+    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer = None)
+    embeddings._model = None
+    embeddings._name = None
+    try:
+        embeddings._get("org/unloadable")
+    finally:
+        embeddings._model = None
+        embeddings._name = None
+    assert cleared == ["org/unloadable"]

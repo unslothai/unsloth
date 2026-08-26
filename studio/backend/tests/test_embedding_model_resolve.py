@@ -862,3 +862,41 @@ def test_a_cached_alias_names_the_namespace_it_is_filed_under(client, monkeypatc
     )
     # A name with no cached snapshot anywhere still falls through to the listing.
     assert settings._safetensors_plan("org/uncached", None) is None
+
+
+def test_a_stale_literal_cache_does_not_hide_a_complete_alias_snapshot(
+    client, monkeypatch, tmp_path
+):
+    """hf_cache_snapshot_is_loadable stops at the first matching cache directory
+    while the ST predicate walks candidates for a complete one. Conjoining them
+    let a stale models--all-MiniLM-L6-v2 entry report the model uncached even with
+    a complete sentence-transformers/ snapshot beside it; offline the Hub probe
+    then failed and /resolve returned an error the loader would have disagreed
+    with."""
+    literal = tmp_path / "literal"
+    literal.mkdir()
+    (literal / "config.json").write_text("{}")
+    alias = tmp_path / "alias"
+    alias.mkdir()
+    (alias / "config.json").write_text("{}")
+    (alias / "model.safetensors").write_bytes(b"ST")
+    import utils.utils as utils
+
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
+    monkeypatch.setattr(
+        utils,
+        "hf_cache_snapshot_dir",
+        lambda repo: alias if repo == "sentence-transformers/all-MiniLM-L6-v2" else literal,
+    )
+    # The generic check answers about the stale literal entry.
+    monkeypatch.setattr(
+        utils,
+        "hf_cache_snapshot_is_loadable",
+        lambda repo: repo == "sentence-transformers/all-MiniLM-L6-v2",
+    )
+    # Offline: the Hub probe cannot rescue it.
+    monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
+
+    body = _resolve(client, "all-MiniLM-L6-v2").json()
+    assert body["cached"] is True
+    assert body["error"] is None

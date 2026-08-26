@@ -2358,8 +2358,6 @@ def _resolve_embedding_model_plan(
     The PUT must not persist a client assertion that the GET never validated,
     so both routes use this exact resolver.
     """
-    from utils.utils import hf_cache_snapshot_is_loadable
-
     # Resolve for the model being selected, not the backend still serving the
     # previous model. A model-scoped runtime fallback must not force the next
     # selection onto llama-server.
@@ -2375,11 +2373,11 @@ def _resolve_embedding_model_plan(
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved, backend = backend, cached = True
             )
-        # The shared loadable check accepts .gguf, so a cached GGUF-only repo
-        # would report ready here and skip the Hub check below.
-        cached = hf_cache_snapshot_is_loadable(resolved) and _cached_snapshot_has_st_weights(
-            resolved
-        )
+        # The alias-aware predicate alone: it already pairs the ST file family with
+        # the loadable check PER CANDIDATE. Conjoining the generic one asked it
+        # about whichever cache directory matched first, so a stale literal entry
+        # beside a complete sentence-transformers/ snapshot reported uncached.
+        cached = _cached_snapshot_has_st_weights(resolved)
         source = None if cached else _st_weight_source(resolved, token)
         if not cached and source is None:
             # is_embedding_model gates on tags, so a feature-extraction repo
@@ -2457,7 +2455,9 @@ def _resolve_embedding_model_plan(
             embedding_model = resolved,
             backend = "sentence-transformers",
             download_repo = st_repo,
-            cached = hf_cache_snapshot_is_loadable(resolved),
+            # Same alias-aware predicate, asked about the repo the plan named
+            # rather than the alias the user typed.
+            cached = _cached_snapshot_has_st_weights(st_repo),
             size_bytes = _hf_snapshot_size(st_repo, token),
         )
     repo, files = plan

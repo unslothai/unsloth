@@ -478,17 +478,6 @@ def _get(model_name: str | None = None):
                         "Finish its Settings download before indexing documents."
                     )
                 snapshot = st_source[1] if st_source else hf_cache_snapshot_dir(name)
-                if snapshot is not None and download_pending:
-                    # Only once the snapshot path is in hand: off the loadable check
-                    # alone, an eviction in between cleared the marker AND raised,
-                    # freeing the next attempt to reach the Hub.
-                    try:
-                        from utils.embedding_model_settings import (
-                            clear_stored_download_pending,
-                        )
-                        clear_stored_download_pending(name)
-                    except Exception:  # noqa: BLE001 - a settings write must not fail a load
-                        pass
                 if snapshot is not None:
                     # Load from the local snapshot dir: a local path never touches the Hub, so
                     # this is offline-safe on ANY sentence-transformers version (even ones
@@ -518,6 +507,17 @@ def _get(model_name: str | None = None):
                 finally:
                     _emit_load_reports(report)
             _name = name
+            if download_pending:
+                # Only once the model is actually constructed. Retiring it before
+                # the constructor let an unsupported architecture or a device that
+                # cannot initialize fall through to llama-server with no marker
+                # left, so the fallback was free to fetch the GGUF companion
+                # during the first index: the unapproved transfer this replaces.
+                try:
+                    from utils.embedding_model_settings import clear_stored_download_pending
+                    clear_stored_download_pending(name)
+                except Exception:  # noqa: BLE001 - a settings write must not fail a load
+                    pass
         return _model
 
 

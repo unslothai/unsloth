@@ -289,16 +289,30 @@ def reset_rag_embedding_model() -> str:
     """Clear the override; returns the (env/default) model now in effect."""
     from storage.studio_db import upsert_app_settings
 
+    restored = default_embedding_model()
+    # The memo survives a reset, because it is per model and consulted only when
+    # the store has nothing, so it is what a job still pinned to a model reads.
+    # But the restored default is not a running job: new work resolves through it
+    # too, and a process-only answer would change identity on the next restart,
+    # stranding whatever was indexed in between. So if this process remembers a
+    # resolution for the model the reset restores, write it back durably instead
+    # of dropping it into memory-only state.
+    remembered = _remembered(restored)
+    resolution = None
+    if remembered and (remembered[0] or remembered[1]):
+        resolution = {
+            "model": restored,
+            "gguf_repo": remembered[0],
+            "backend": remembered[1],
+            "download_pending": remembered[2],
+        }
     upsert_app_settings(
         {
             EMBEDDING_MODEL_SETTING_KEY: None,
-            EMBEDDING_RESOLUTION_SETTING_KEY: None,
+            EMBEDDING_RESOLUTION_SETTING_KEY: resolution,
             EMBEDDING_GGUF_SETTING_KEY: None,
             EMBEDDING_BACKEND_SETTING_KEY: None,
         }
     )
-    # The memo deliberately survives: it is per model and consulted only when the
-    # store has nothing, so it exists for jobs still pinned to a model. Clearing it
-    # here moved a running ingestion onto the derived <model>-GGUF mid-run.
     _invalidate_cache()
-    return default_embedding_model()
+    return restored
