@@ -3,7 +3,7 @@
 #
 # Unsloth Studio on a real CUDA GPU, on free Kaggle T4 hardware.
 #
-# Why this exists: Studio has ZERO CUDA coverage. Every Studio workflow in
+# Why this exists: Unsloth has ZERO CUDA coverage. Every Unsloth workflow in
 # this repo runs on ubuntu-latest, macos-15 or windows-latest, and nothing
 # matches `runs-on:.*(gpu|a100|t4|nvidia|self-hosted)`. macOS gives Metal and
 # MLX some hardware; the CUDA path is exercised by nothing at all.
@@ -12,7 +12,7 @@
 # tell a working GPU path from a CPU fallback.
 #
 # What runs: tests/kaggle/studio_gpu/run_studio_gpu.py, one payload per
-# kernel. It installs Studio the supported way (`install.sh --local`, which
+# kernel. It installs Unsloth the supported way (`install.sh --local`, which
 # builds the frontend, makes the venv and fetches a CUDA llama.cpp), starts
 # the server headless, and asserts three things.
 #
@@ -21,7 +21,7 @@
 #      offload line, device-wide VRAM growth -- and a rule that no evidence
 #      is a FAILURE rather than a pass. "The model returned text" is
 #      explicitly not evidence: a CPU fallback returns text too, which is why
-#      no existing Studio job can catch one. Then tool calling through
+#      no existing Unsloth job can catch one. Then tool calling through
 #      /v1/chat/completions with tool_choice=required, asserting
 #      finish_reason == "tool_calls".
 #   B. A LoRA training run finishes and leaves an adapter. Tested on no
@@ -32,7 +32,7 @@
 #   C. GGUF export runs against a CUDA llama.cpp build and the output loads.
 #      The install kind on disk is asserted to be a CUDA bundle, the output
 #      is checked for the GGUF magic rather than for existence, and "it
-#      loads" is asserted by loading it back into Studio and generating.
+#      loads" is asserted by loading it back into Unsloth and generating.
 #
 # Then the repo's existing tests/studio/playwright_chat_ui.py is driven
 # against the same server, last, because its final phase clicks "Stop server"
@@ -47,7 +47,7 @@
 # allowed up to 50 of those 60; the last 10 are held for human use and are
 # what `--reserve-hours 10` protects.
 #
-# Studio is sampled HARDER than the notebook leg because Studio changes land
+# Unsloth is sampled HARDER than the notebook leg because Unsloth changes land
 # far more often. That comes out as MORE launches, far more GPU-hours, a
 # bigger share of the allowance -- and as a LOWER percentage. The percentage
 # moves the other way because the eligible event stream here is about three
@@ -57,7 +57,7 @@
 #
 #   MEASURED, 7 days to 2026-08-11 on unslothai/unsloth:
 #     479 commits landed on main (the wider week the numbers below use is
-#     514), of which 199 -- 41.5% -- touched the GPU-relevant Studio surface
+#     514), of which 199 -- 41.5% -- touched the GPU-relevant Unsloth surface
 #     this workflow filters on. 67% touched studio/ at all; the filter is
 #     narrower than that on purpose, see PATHS below.
 #     Of a 40-PR sample of pull requests opened in the same window, 13
@@ -76,7 +76,7 @@
 #     git clone + install.sh --local (venv, frontend build,
 #       CUDA torch, llama.cpp prebuilt)                        ~20 min
 #     playwright chromium + system deps                         ~3 min
-#     Studio boot to healthy                                    ~1 min
+#     Unsloth boot to healthy                                    ~1 min
 #     chat GGUF download (~1.5 GB) + assertions A               ~5 min
 #     assertion B (0.5B base download, 8 LoRA steps, save)      ~6 min
 #     assertion C (merge, GGUF convert, quantize, reload)       ~6 min
@@ -109,7 +109,7 @@
 #     sampling rate        5%       vs 15%
 #
 #   THE PERCENTAGE IS THE ONE AXIS THAT INVERTS, AND IT CANNOT BE MADE TO
-#   AGREE. Studio's eligible stream is ~3.3x the notebook leg's busy-week
+#   AGREE. Unsloth's eligible stream is ~3.3x the notebook leg's busy-week
 #   count and each launch costs 3x as much, so a percentage point here buys
 #   ~10x the GPU-hours it does there. At a common rate r the two cost 570r
 #   and 58r; equalising the rate at anything this leg can afford would leave
@@ -124,9 +124,9 @@
 #
 #   ONE PAYLOAD, NOT TWO. The notebook leg runs a payload on each T4 of a
 #   session because the second card is free. Here the second card is left
-#   idle on purpose: Studio is a server, a browser and a llama.cpp process
+#   idle on purpose: Unsloth is a server, a browser and a llama.cpp process
 #   contending for four CPU cores, and a second copy of all that on the same
-#   box measures contention rather than Studio.
+#   box measures contention rather than Unsloth.
 #
 # ---------------------------------------------------------------------
 # PATHS
@@ -164,11 +164,11 @@
 # notebook and nothing else. Fork pull requests do not receive the secret and
 # the gate skips cleanly when it is absent.
 #
-# The payload mints its own Studio bootstrap password inside the kernel and
-# scrubs it out of every log that leaves the machine, because Studio's
+# The payload mints its own Unsloth bootstrap password inside the kernel and
+# scrubs it out of every log that leaves the machine, because Unsloth's
 # startup banner prints it and those logs become an artifact.
 
-name: Kaggle T4 Studio GPU CI
+name: Kaggle T4 Unsloth GPU CI
 
 on:
   pull_request:
@@ -319,7 +319,7 @@ jobs:
             --reserve-hours 10
 
   studio-gpu:
-    name: Studio GPU smoke
+    name: Unsloth GPU smoke
     needs: gate
     if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest

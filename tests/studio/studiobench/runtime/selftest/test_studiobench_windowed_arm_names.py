@@ -4,7 +4,7 @@
 """A MISTYPED FLAG MUST NOT COST A BROWSER AND TWO STUDIO SERVERS.
 
 `--windowed-arm` names the arm that is allowed the windowed readiness gate, and the name is checked
-against the arms the run actually has. That check used to happen after both Studio installs had
+against the arms the run actually has. That check used to happen after both Unsloth installs had
 been launched, the pacer bound and the browser opened, and the `SystemExit` it raises for
 `--windowed-arm treatments` was raised from a place with no cleanup around it: the `finally` that
 calls `bundle.close()`, `pacer.stop()`, `stop_studio()` and cancels the watchdog does not begin
@@ -65,7 +65,7 @@ def test_a_bad_arm_name_is_refused_before_any_process_is_started(monkeypatch):
     """THE DEFECT. Every entry point that starts something is trapped here, so if the refusal moves
     back below any of them this fails with the trap's own error instead of the SystemExit.
 
-    The watchdog is the first of them in `run`, then the Studio install or the health check on an
+    The watchdog is the first of them in `run`, then the Unsloth install or the health check on an
     attached one, then the pacer, then the browser. None of them is reached.
     """
     from studiobench import pacer as pacer_mod
@@ -83,8 +83,8 @@ def test_a_bad_arm_name_is_refused_before_any_process_is_started(monkeypatch):
 
     monkeypatch.setattr(browser_mod, "install_wall_clock_watchdog", _trap("the watchdog"))
     monkeypatch.setattr(browser_mod, "launch", _trap("the browser"))
-    monkeypatch.setattr(lifecycle, "install_studio", _trap("the Studio install"))
-    monkeypatch.setattr(lifecycle, "launch_studio", _trap("the Studio launch"))
+    monkeypatch.setattr(lifecycle, "install_studio", _trap("the Unsloth install"))
+    monkeypatch.setattr(lifecycle, "launch_studio", _trap("the Unsloth launch"))
     monkeypatch.setattr(lifecycle, "wait_for_healthz", _trap("the health check"))
     monkeypatch.setattr(pacer_mod, "Pacer", _trap("the pacer"))
 

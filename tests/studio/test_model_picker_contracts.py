@@ -1247,7 +1247,7 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
 def test_legacy_migration_is_idempotent_and_non_destructive():
     """The v1->v2 localStorage migration (unsloth_load_settings -> unsloth_model_configs)
     is invoked on every store read, so it must be idempotent: repeated reads, browser
-    reloads, and Studio restarts must never re-migrate, duplicate records, or overwrite
+    reloads, and Unsloth restarts must never re-migrate, duplicate records, or overwrite
     a newer per-model config."""
     raw = _read("features/model-picker/model-config/per-model-config.ts")
     src = " ".join(raw.split())
@@ -2622,7 +2622,7 @@ def test_api_reach_copy_is_limited_to_gguf_models():
     GGUFs only."""
     src = " ".join(_read("features/hub/catalog/hub-model-settings-view.tsx").split())
     assert "{(target.apiLoadable ?? target.isGguf)" in src
-    assert "Saved settings apply everywhere Studio loads this model." in src
+    assert "Saved settings apply everywhere Unsloth loads this model." in src
 
 
 def test_backfill_includes_a_standalone_gguf_with_no_variant():
@@ -2665,7 +2665,7 @@ def test_override_writes_are_ordered_per_model():
 
 
 def test_backfill_skips_future_schema_local_records():
-    """loadPerModelConfig refuses to apply a record written by a newer Studio and eviction
+    """loadPerModelConfig refuses to apply a record written by a newer Unsloth and eviction
     refuses to drop one, because this client cannot interpret that schema."""
     src = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     listing = src[src.index("export function listPerModelConfigs()") :]
@@ -3372,7 +3372,7 @@ def test_autoload_local_rows_follow_the_picker_policy():
 
 
 def test_default_model_download_is_visible_and_cancellable():
-    """On a genuinely empty device Studio still fetches a model, but as a managed
+    """On a genuinely empty device Unsloth still fetches a model, but as a managed
     download with progress and a Cancel, never an inline pull inside /load."""
     src = _read("features/chat/api/chat-adapter.ts")
     helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
@@ -3648,7 +3648,7 @@ def test_non_chat_conditional_generation_is_excluded_before_the_suffix_check():
 
 def test_format_gates_wait_for_the_server_reported_platform():
     """The store's initial chatOnly is a browser guess: a Mac browser on a remote
-    Linux Studio would hide every local safetensors model."""
+    Linux Unsloth would hide every local safetensors model."""
     src = _read("features/chat/api/chat-adapter.ts")
     gate = src.split("function runsOnThisPlatform", 1)[1].split("\n}", 1)[0]
     assert "if (!platform.fetched || !platform.isChatOnly()) return true;" in gate

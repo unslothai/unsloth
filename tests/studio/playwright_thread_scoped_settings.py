@@ -319,7 +319,7 @@ def main():
 
         step("pin the installation default every later step compares against")
         # The install is shared, not fresh: the UI workflow boots this server on the same
-        # Studio home the chat-ui and cross-browser permission tests have already used, and
+        # Unsloth home the chat-ui and cross-browser permission tests have already used, and
         # those leave a permission level behind in the mirrored settings. Every assertion
         # below names a literal level, so the default is set here rather than assumed.
         # No chat is open, so this writes the installation default itself.

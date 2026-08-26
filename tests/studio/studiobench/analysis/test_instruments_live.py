@@ -12,7 +12,7 @@ It uses the real `Cell`, `Window`, `BenchContext` and `Paths` from
 `runtime.types`, the real `instruments.build(level)` registry, and calls
 `attach / start_cell / open / close / end_cell / detach` in the documented order
 with the documented reverse-order close. Nothing is mocked except the page,
-which is a local synthetic instead of a Studio install.
+which is a local synthetic instead of an Unsloth install.
 
 Requires Playwright with Chromium. Skips cleanly without it, because a machine
 that cannot run a browser should report that rather than fail.

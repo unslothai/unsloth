@@ -8,7 +8,7 @@
 before the first cell. The deadline was three times the TIER budget -- 15 minutes on fast and
 quick, the two tiers people iterate with -- armed before the first install, so a slow download
 tripped `os._exit(2)` during setup. It exits through `os._exit`, so the `finally` that stops the
-Studios and the pacer does not run either: the run dies, leaves its processes behind, and never
+Unsloth instances and the pacer does not run either: the run dies, leaves its processes behind, and never
 reaches the measurement it advertised.
 
 The deadline is asserted at the real entry point, by driving `run()` until the first install.
@@ -113,7 +113,7 @@ def test_a_standard_ab_at_four_reps_is_not_hard_exited_part_way_through(monkeypa
     That is 5,832 seconds of film before a thread is seeded, and the deadline was
     `TIER_BUDGET_S["standard"] * 3` = 3,600 seconds with nothing added for an attached pair -- so
     the watchdog fired 40% of the way through a perfectly healthy run, through `os._exit`, taking
-    the `finally` that stops the Studios with it.
+    the `finally` that stops the Unsloth instances with it.
     """
 
     deadline = _armed_deadline(
@@ -185,7 +185,7 @@ def test_the_scaled_deadline_is_still_capped(monkeypatch, tmp_path):
 
 
 def test_a_single_arm_tier_ladder_keeps_its_documented_budget(monkeypatch, tmp_path):
-    """Every tier's own ladder, run once against one attached Studio, is unchanged.
+    """Every tier's own ladder, run once against one attached Unsloth, is unchanged.
 
     This is the regression guard on the change: the deadline may only grow where the caller asked
     for more work than the tier describes.

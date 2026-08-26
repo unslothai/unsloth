@@ -465,7 +465,7 @@ def test_check_health_accepts_matching_studio_root_id():
 
 
 def test_check_health_rejects_mismatched_studio_root_id():
-    """Mismatched studio_root_id rejects attach (workspace isolation across same-port Studios)."""
+    """Mismatched studio_root_id rejects attach (workspace isolation across same-port Unsloth instances)."""
     expected_id = "a" * 64
     other_id = "b" * 64
     rc = _run_check_health(

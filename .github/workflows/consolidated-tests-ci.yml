@@ -406,7 +406,7 @@ jobs:
         # against simulated CPU counts and memory so the result is identical on
         # a 4-vCPU runner and a 192-core box.
         #
-        # The Studio file runs here rather than in studio-backend-ci, which
+        # The Unsloth file runs here rather than in studio-backend-ci, which
         # installs studio.txt and so has no unsloth_zoo at all. Note the policy
         # module is not on unsloth_zoo main either until the companion PR lands,
         # and this job clones UNSLOTH_ZOO_REF (main by default) -- so those cases

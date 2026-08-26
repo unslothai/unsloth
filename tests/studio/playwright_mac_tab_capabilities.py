@@ -21,7 +21,7 @@ Covers the two field failures from Unsloth Desktop 0.1.524-beta on Apple Silicon
    C-extension imports, so probes time out while the process is perfectly alive.
    This polls the backend across the whole warm window and asserts it survives.
 
-Runs against a live Studio; drives the real UI. Env contract matches the other
+Runs against a live Unsloth; drives the real UI. Env contract matches the other
 scripts here: BASE_URL, STUDIO_OLD_PW, PW_ART_DIR.
 """
 
@@ -209,7 +209,7 @@ class BackendSurvivalPoller:
 def rotate_password(page) -> None:
     """Complete the forced password change a bootstrap login lands on.
 
-    Studio seeds a one-time bootstrap password and requires it to be replaced before
+    Unsloth seeds a one-time bootstrap password and requires it to be replaced before
     the app proper is reachable. A harness that rotates it over the API first (the
     staging one does) never sees this screen; a harness that hands over the raw
     bootstrap password (this repo's macOS smoke does) always does. Handling it here
