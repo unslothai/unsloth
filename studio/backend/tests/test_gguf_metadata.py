@@ -463,6 +463,16 @@ def test_pairing_score_hosted_and_bare_repo_ids_match():
     assert pairing_score(weight, mmproj) == 100
 
 
+def test_pairing_score_non_hf_url_and_bare_repo_ids_do_not_match():
+    weight = {
+        "general.base_model.0.repo_url": "https://github.com/acme/Model",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "acme/Model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
 def test_pairing_score_derivative_url_requires_basename_evidence():
     weight = {
         "general.base_model.0.repo_url": "https://huggingface.co/vendor/model-v2-GGUF",

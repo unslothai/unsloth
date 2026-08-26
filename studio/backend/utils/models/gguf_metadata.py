@@ -667,7 +667,11 @@ def _same_repo_reference(left: str, right: str) -> bool:
         return True
     left_is_url = (left or "").strip().lower().startswith(("https://", "http://"))
     right_is_url = (right or "").strip().lower().startswith(("https://", "http://"))
-    return left_is_url != right_is_url and _repo_path_from_url(left) == _repo_path_from_url(right)
+    if left_is_url == right_is_url:
+        return False
+    hosted = left_normalized if left_is_url else right_normalized
+    host, _, _ = hosted.partition("/")
+    return host == "huggingface.co" and _repo_path_from_url(left) == _repo_path_from_url(right)
 
 
 def _hf_repo_slug_from_url(url: str) -> Optional[str]:
