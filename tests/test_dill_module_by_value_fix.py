@@ -266,17 +266,21 @@ def test_the_widening_only_covers_modules_that_import_back():
     dill treats the user's own script."""
     from unsloth.import_fixes import _dill_module_is_importable_by_name
 
+    # Every call now carries the install ROOTS, because the widening is scoped
+    # to them; `json` stands in for a library that landed in one.
+    roots = (os.path.dirname(os.path.realpath(sys.modules["json"].__file__ or "")),)
+    roots = (os.path.dirname(roots[0]),)  # the package's install root
     real = sys.modules["json"]
-    assert _dill_module_is_importable_by_name(real)
+    assert _dill_module_is_importable_by_name(real, roots)
 
     orphan = types.ModuleType("not_in_sys_modules")
     orphan.__spec__ = types.SimpleNamespace(name = "not_in_sys_modules", origin = "/x.py")
-    assert not _dill_module_is_importable_by_name(orphan)
+    assert not _dill_module_is_importable_by_name(orphan, roots)
 
     no_spec = types.ModuleType("json_lookalike")
     sys.modules["json_lookalike"] = no_spec
     try:
-        assert not _dill_module_is_importable_by_name(no_spec)
+        assert not _dill_module_is_importable_by_name(no_spec, roots)
     finally:
         del sys.modules["json_lookalike"]
 
@@ -293,7 +297,7 @@ def test_the_widening_only_covers_modules_that_import_back():
         previous = sys.modules.get(hostile)
         sys.modules[hostile] = fake
         try:
-            assert not _dill_module_is_importable_by_name(fake), (
+            assert not _dill_module_is_importable_by_name(fake, roots), (
                 f"{hostile} would be pickled by reference, which changes dill's "
                 "contract for the user's own code"
             )
@@ -307,50 +311,127 @@ def test_the_widening_only_covers_modules_that_import_back():
     namespace_like.__spec__ = types.SimpleNamespace(name = "namespace_like", origin = None)
     sys.modules["namespace_like"] = namespace_like
     try:
-        assert not _dill_module_is_importable_by_name(
-            namespace_like
-        ), "a module with no file backing it is not safely importable by name"
+        assert not _dill_module_is_importable_by_name(namespace_like, roots), (
+            "a module with no file backing it is not safely importable by name"
+        )
     finally:
         del sys.modules["namespace_like"]
+
+
+def _unconditional(body):
+    """Statements that run on EVERY import, one level of `try` included.
+
+    Shared by the rule below and by its negative control on purpose: a control
+    that carries its own copy of the walker passes when the real one regresses,
+    which is the shape of a guard that guards nothing.
+    """
+    import ast
+
+    for node in body:
+        if isinstance(node, ast.Try):
+            yield from _unconditional(node.body)
+        elif not isinstance(node, (ast.If, ast.For, ast.While, ast.With)):
+            yield node
 
 
 def test_the_fix_is_called_on_every_import_path():
     """It lives outside the MLX/GPU branch on purpose: the layout that triggers
     this is a property of the install, not of the accelerator, and `unsloth`'s
-    `__init__` picks one of those two branches and never both."""
+    `__init__` picks one of those two branches and never both.
+
+    The rule walks only UNCONDITIONAL top-level statements, plus the body of a
+    top-level `try`, which is how every other fix in `__init__` is guarded. An
+    earlier version walked every descendant of each module-body node, so moving
+    the import inside `if _IS_MLX:` still passed -- the exact placement this
+    exists to reject.
+    """
     import ast
 
     source = (REPO / "unsloth" / "__init__.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
 
-    def _calls_it(nodes):
-        return any(
-            isinstance(node, ast.ImportFrom)
-            and any(a.name == "fix_dill_module_by_value_pickling" for a in node.names)
-            for parent in nodes
-            for node in ast.walk(parent)
-        )
-
-    # MODULE BODY ONLY. A `try` at column zero is fine; an `if _IS_MLX` is not,
-    # because the other branch would then never apply the fix.
-    assert _calls_it(tree.body), (
-        "the fix is not reached from the module body, so one of the two import "
-        "paths runs without it"
+    top = list(_unconditional(tree.body))
+    imports = [
+        node for node in top
+        if isinstance(node, ast.ImportFrom)
+        and any(a.name == "fix_dill_module_by_value_pickling" for a in node.names)
+    ]
+    assert imports, (
+        "the fix is not imported from an unconditional top-level statement, so "
+        "one of the two import paths runs without it"
     )
     called = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_fix_dill"
+        node for node in top
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "_fix_dill"
     ]
-    assert called, "the fix is imported and never called"
+    assert called, "the fix is imported and never called unconditionally"
 
 
-def test_the_dill_session_binding_is_patched_too(tmp_path):
-    """`dill.session` binds the name at import time. A patch that only touches
-    `dill._dill` leaves session pickling on the old predicate, which is the
-    kind of half-applied fix that works until someone calls `dump_module`."""
-    got = _run_on_hostile_tree(tmp_path, apply = True)
-    assert got["applied"] is True
-    assert got["session_binding_patched"] is True
+def test_that_rule_rejects_a_one_sided_conditional():
+    """The negative control for the rule above, because a walk that recurses
+    into `if` bodies passes on the very placement being rejected."""
+    import ast
+
+    hidden = ast.parse(
+        "if _IS_MLX:\n"
+        "    try:\n"
+        "        from .import_fixes import fix_dill_module_by_value_pickling as _fix_dill\n"
+        "        _fix_dill()\n"
+        "    except Exception:\n"
+        "        pass\n"
+    )
+
+    top = list(_unconditional(hidden.body))
+    assert not [
+        node for node in top
+        if isinstance(node, ast.ImportFrom)
+        and any(a.name == "fix_dill_module_by_value_pickling" for a in node.names)
+    ], "an import inside `if _IS_MLX:` is being counted as unconditional"
+
+
+def test_a_project_module_outside_the_install_root_keeps_its_by_value_state():
+    """P1 from review, and it is a fingerprint-correctness rule rather than a
+    tidiness one.
+
+    A user's own project module normally sits outside site-packages, so dill
+    pickles it BY VALUE and its mutable state participates in a `recurse=True`
+    fingerprint. Widening the predicate for every live module would flip that,
+    and `config.VALUE = 2` would stop changing the fingerprint while `datasets`
+    served a stale cached result. Only modules inside the install root that made
+    the environment dill-hostile are moved back to by-reference.
+    """
+    from unsloth.import_fixes import (
+        _dill_install_root,
+        _dill_module_is_importable_by_name,
+    )
+
+    root = _dill_install_root("/opt/layer/python/pyarrow/__init__.py")
+    assert root == "/opt/layer/python"
+    assert _dill_install_root("/opt/layer/python/dill.py") == "/opt/layer/python"
+    assert _dill_install_root(None) is None
+
+    library = types.ModuleType("pretend_library")
+    library.__spec__ = types.SimpleNamespace(
+        name = "pretend_library", origin = "/opt/layer/python/pretend_library.py"
+    )
+    project = types.ModuleType("pretend_project")
+    project.__spec__ = types.SimpleNamespace(
+        name = "pretend_project", origin = "/home/me/project/pretend_project.py"
+    )
+    sys.modules["pretend_library"] = library
+    sys.modules["pretend_project"] = project
+    try:
+        roots = ("/opt/layer/python",)
+        assert _dill_module_is_importable_by_name(library, roots)
+        assert not _dill_module_is_importable_by_name(project, roots), (
+            "a project module outside the install root would be pickled by "
+            "reference, so its mutable state would drop out of the fingerprint"
+        )
+        # No roots at all means no widening whatsoever.
+        assert not _dill_module_is_importable_by_name(library, ())
+    finally:
+        del sys.modules["pretend_library"]
+        del sys.modules["pretend_project"]

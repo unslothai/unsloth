@@ -5615,15 +5615,44 @@ def _dill_environment_is_affected():
     return False
 
 
-def _dill_module_is_importable_by_name(module):
-    """Whether pickling `module` BY REFERENCE is valid.
+def _dill_install_root(origin):
+    """The directory a package was installed INTO, from one module's origin.
 
-    It is valid exactly when an unpickler can get the same object back with
+    `/opt/layer/python/pyarrow/__init__.py` and `/opt/layer/python/dill.py`
+    both give `/opt/layer/python`, which is the `--target` directory or the
+    PYTHONPATH entry -- the site-packages equivalent for this install.
+    """
+    if not origin:
+        return None
+    try:
+        real = os.path.realpath(origin)
+    except Exception:
+        return None
+    parent = os.path.dirname(real)
+    if os.path.basename(real) == "__init__.py":
+        parent = os.path.dirname(parent)
+    return parent or None
+
+
+def _dill_module_is_importable_by_name(module, roots = ()):
+    """Whether pickling `module` BY REFERENCE is valid AND in scope.
+
+    Valid exactly when an unpickler can get the same object back with
     `import <name>`, which is what an ordinary site-packages install already
-    does for every one of these modules. Deliberately narrow: the module must
-    be the live entry in `sys.modules` under its own name and be file-backed,
-    so an interactive namespace, a synthesised module or a shadowed name keeps
-    dill's existing by-value behaviour.
+    does for every one of these modules.
+
+    In scope only when the module lives in one of the install ROOTS that made
+    this environment dill-hostile in the first place. That restriction is not
+    tidiness. A user's own project module normally sits outside site-packages,
+    so dill pickles it BY VALUE and its mutable state participates in a
+    `recurse=True` fingerprint; widening the predicate for every live module
+    would flip that, and `config.VALUE = 2` would stop changing the fingerprint
+    while `datasets` served a stale cached result. Only the misplaced LIBRARIES
+    are moved back to the behaviour they would have in an ordinary install.
+
+    Deliberately narrow in three further ways: the module must be the live
+    entry in `sys.modules` under its own name, must be file-backed, and
+    `__main__` / `__mp_main__` are excluded outright.
     """
     name = getattr(module, "__name__", None)
     if not name or name in _DILL_NEVER_BY_REFERENCE:
@@ -5633,7 +5662,19 @@ def _dill_module_is_importable_by_name(module):
     spec = getattr(module, "__spec__", None)
     if spec is None or getattr(spec, "name", None) != name:
         return False
-    return bool(getattr(spec, "origin", None))
+    origin = getattr(spec, "origin", None)
+    if not origin:
+        return False
+    if not roots:
+        return False
+    try:
+        real = os.path.realpath(origin)
+    except Exception:
+        return False
+    return any(
+        real == root or real.startswith(root.rstrip(os.sep) + os.sep)
+        for root in roots
+    )
 
 
 def fix_dill_module_by_value_pickling():
@@ -5659,6 +5700,7 @@ def fix_dill_module_by_value_pickling():
     # dill's rule and a copy can go stale. If the real predicate is happy with
     # this install, there is nothing to fix.
     probe = None
+    roots = []
     for name in ("datasets", "pyarrow"):
         candidate = sys.modules.get(name)
         if candidate is None:
@@ -5671,22 +5713,24 @@ def fix_dill_module_by_value_pickling():
             candidate = importlib.util.module_from_spec(spec)
         try:
             if not original(candidate):
-                probe = candidate
-                break
+                probe = probe or candidate
+                root = _dill_install_root(getattr(candidate, "__file__", None))
+                if root and root not in roots:
+                    roots.append(root)
         except Exception:
             continue
-    if probe is None:
+    if probe is None or not roots:
         return False
 
     @functools.wraps(original)
-    def _is_builtin_module(module, _original = original):
+    def _is_builtin_module(module, _original = original, _roots = tuple(roots)):
         try:
             if _original(module):
                 return True
         except Exception:
             return False
         try:
-            return _dill_module_is_importable_by_name(module)
+            return _dill_module_is_importable_by_name(module, _roots)
         except Exception:
             return False
 
