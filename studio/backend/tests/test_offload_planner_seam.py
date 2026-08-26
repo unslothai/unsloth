@@ -29,6 +29,20 @@ GIB = 1024**3
 MIB = 1024 * 1024
 
 
+@pytest.fixture(autouse = True)
+def _discrete_host(monkeypatch):
+    """Pin the one host fact the seam reads live.
+
+    _planned_tensor_spill calls is_apple_silicon() directly, so on an arm64 Mac
+    every case in this file declines and the suite grades the runner instead of
+    the planner. Every test here means "a discrete host"; the Apple answer is
+    asserted deliberately, below.
+    """
+    import utils.hardware
+
+    monkeypatch.setattr(utils.hardware, "is_apple_silicon", lambda: False)
+
+
 class _Stub:
     """Only what the seam touches."""
 
@@ -1064,6 +1078,47 @@ def test_a_reconciliation_still_strips_a_non_layer_split_mode_env():
     compact = "".join(src.split())
     assert 'if_inherited_smand_inherited_sm!="layer":' in compact
     assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)' in compact
+    # The paired -ts goes with it, which is what the test below relies on.
+    assert (
+        'env.pop("LLAMA_ARG_SPLIT_MODE",None)env.pop("LLAMA_ARG_TENSOR_SPLIT",None)' in compact
+    )
+
+
+def test_an_inherited_tensor_split_scrubbed_with_its_mode_is_not_planned_against():
+    """The -ts mirror of the decline above. An inherited LLAMA_ARG_TENSOR_SPLIT is
+    popped together with a non-layer LLAMA_ARG_SPLIT_MODE, so with `-sm layer` on
+    argv (which keeps the mode itself plannable) the child ends up with NEITHER:
+    it splits the rows by free VRAM. Proving row ownership against the scrubbed
+    9:1 shares can approve a device that then overflows under --fit off, so the
+    weights must come from the reconciled child env."""
+    import core.inference.offload_planner as mod
+
+    two_cards = [(0, 8 * 1024), (1, 16 * 1024)]
+    seen = {}
+    real = mod.plan_placement
+
+    def spy(*a, **kw):
+        seen["w"] = kw.get("split_weights_per_device")
+        return real(*a, **kw)
+
+    mod.plan_placement = spy
+    try:
+        _plan(
+            _Stub(),
+            gpus = two_cards,
+            extra_args = ["-sm", "layer"],
+            env = {"LLAMA_ARG_SPLIT_MODE": "row", "LLAMA_ARG_TENSOR_SPLIT": "9,1"},
+        )
+        scrubbed = seen.pop("w", None)
+        _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_TENSOR_SPLIT": "9,1"})
+        survives = seen.pop("w", None)
+    finally:
+        mod.plan_placement = real
+
+    assert scrubbed == [8 * 1024 * MIB, 16 * 1024 * MIB], "the child never sees that -ts"
+    # Not vacuous: with no inherited mode to drag it out of the env, it IS the
+    # row weight, scaled onto the same magnitude as the free-VRAM numbers.
+    assert survives == [9 * 16 * 1024 * MIB, 16 * 1024 * MIB]
 
 
 @pytest.mark.parametrize("value", ["nan,1", "inf,1", "1,nan", "-nan,1", "infinity,1"])
@@ -1195,11 +1250,32 @@ def test_flash_disabled_v_padding_reaches_the_layer_weights():
 
 def test_the_seam_passes_the_flash_state_and_cache_type_to_the_kv_vector():
     """Reachability: both knobs must travel from the launch path, beside the
-    swa_full/parallel/unified/ubatch ones."""
-    import inspect
+    swa_full/parallel/unified/ubatch ones.
 
-    src = inspect.getsource(LlamaCppBackend.load_model)
-    call = src[src.index('"kv_layer_weights"') :][:600]
-    compact = "".join(call.split())
-    assert "flash_attn=planned_flash_attn" in compact
-    assert "cache_type_kv=cache_type_kv" in compact
+    load_model is far too large to drive from here, so this reads the call site
+    rather than observing a call. It does so through the AST: matching formatted
+    source text would pass on a mention in a comment and fail on a reflow, and
+    neither has anything to do with what the seam passes.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model)))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_kv_layer_weights"
+    ]
+    assert calls, "the launch path no longer builds a KV layer vector"
+
+    for call in calls:
+        passed = {
+            kw.arg: kw.value
+            for kw in call.keywords
+            if kw.arg and isinstance(kw.value, ast.Name)
+        }
+        assert getattr(passed.get("flash_attn"), "id", None) == "planned_flash_attn"
+        assert getattr(passed.get("cache_type_kv"), "id", None) == "cache_type_kv"

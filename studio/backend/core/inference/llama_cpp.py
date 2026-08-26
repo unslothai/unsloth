@@ -23938,10 +23938,20 @@ class LlamaCppBackend:
         # it is the row-ownership weight, handed over directly. A share of 0 means
         # the card draws no rows, which _device_slots already models. Length must
         # match the kept list, or the two lists stop describing the same devices.
-        _ts = _extra_args_tensor_split(extra_args, source_env)
+        # Read it out of the env the CHILD will get, not the one we inherited.
+        # load_model reconciles them before launch and pops LLAMA_ARG_TENSOR_SPLIT
+        # together with a non-layer LLAMA_ARG_SPLIT_MODE (llama_cpp.py:20505-20511),
+        # so an inherited -ts riding alongside such a mode never reaches the child
+        # -- it splits by free VRAM instead, and proving row ownership against the
+        # scrubbed shares approves the wrong device and then pins it with
+        # --fit off. The -ts mirror of the inherited -sm decline above; argv is
+        # untouched by that reconciliation, so it is always read.
+        _inherited_sm = str(source_env.get("LLAMA_ARG_SPLIT_MODE", "")).strip().lower()
+        _ts_env = source_env if _inherited_sm in ("", "layer") else {}
+        _ts = _extra_args_tensor_split(extra_args, _ts_env)
         if _ts is None and (
             _extra_args_set_any_flag(extra_args, _TENSOR_SPLIT_FLAGS)
-            or str(source_env.get("LLAMA_ARG_TENSOR_SPLIT", "")).strip()
+            or str(_ts_env.get("LLAMA_ARG_TENSOR_SPLIT", "")).strip()
         ):
             # A -ts we could not read is NOT "no -ts": the child still gets one,
             # and planning on free-VRAM proportions under it is the exact
