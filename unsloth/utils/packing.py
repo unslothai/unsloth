@@ -364,12 +364,47 @@ def _callable_accepts_named_seq_idx(fn) -> Optional[str]:
     return "mamba2 fused kernel does not accept seq_idx"
 
 
+_MAMBA2_MIXER_KERNEL_ATTRS = (
+    "cuda_kernels_forward",
+    "forward",
+    "torch_forward",
+)
+
+
+def _iter_mixer_kernel_globals(module):
+    """Global dicts ``cuda_kernels_forward`` actually LOAD_GLOBALs from.
+
+    transformers 5.5 Nemotron-H resolves ``mamba_split_conv1d_scan_combined``
+    in ``__init__`` via ``lazy_load_kernel`` / ``resolve_internal_import`` and
+    then calls it with hardcoded ``seq_idx=None``. Unsloth compiles that method
+    into ``unsloth_compiled_cache``; the live kernel is the name in *that*
+    function's ``__globals__``, which is not necessarily ``mamba_ssm``'s export.
+    """
+    seen: set[int] = set()
+    candidates = []
+    for attr in _MAMBA2_MIXER_KERNEL_ATTRS:
+        candidates.append(getattr(module, attr, None))
+        candidates.append(getattr(type(module), attr, None))
+    for fn in candidates:
+        if not callable(fn):
+            continue
+        try:
+            fn = inspect.unwrap(fn)
+        except Exception:
+            pass
+        globs = getattr(fn, "__globals__", None)
+        if not isinstance(globs, dict) or id(globs) in seen:
+            continue
+        seen.add(id(globs))
+        yield fn, globs
+
+
 def _resolve_mamba2_fused(module):
     """Locate the fused conv1d+scan kernel this mixer will call.
 
     Prefers an instance attribute (tests / some vendor copies), then the
-    mixer's owning module (transformers ``mamba2_split_conv1d_scan_combined``),
-    then ``mamba_ssm``.
+    kernel name ``cuda_kernels_forward`` LOAD_GLOBALs, then the mixer's owning
+    module, then ``mamba_ssm``.
     """
     orig = getattr(module, "_unsloth_varlen_orig_fused", None)
     if callable(orig):
@@ -378,12 +413,19 @@ def _resolve_mamba2_fused(module):
         fn = getattr(module, name, None)
         if callable(fn):
             return fn, ("instance", None, name)
+    for _fn, globs in _iter_mixer_kernel_globals(module):
+        for name in _MAMBA2_FUSED_NAMES:
+            cand = globs.get(name)
+            if callable(cand):
+                return cand, ("globals", globs, name)
     modeling = inspect.getmodule(type(module))
     if modeling is not None:
-        for name in _MAMBA2_FUSED_NAMES:
-            fn = getattr(modeling, name, None)
-            if callable(fn):
-                return fn, ("modeling", modeling, name)
+        modeling_dict = getattr(modeling, "__dict__", None)
+        if isinstance(modeling_dict, dict):
+            for name in _MAMBA2_FUSED_NAMES:
+                fn = modeling_dict.get(name)
+                if callable(fn):
+                    return fn, ("modeling", modeling, name)
     try:
         from mamba_ssm.ops.triton.ssd_combined import (  # type: ignore
             mamba_split_conv1d_scan_combined as fn,
@@ -765,6 +807,16 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             modeling._unsloth_mamba2_fused_wrapped = True
         elif kind == "ssm":
             module._unsloth_varlen_orig_fused = fn
+        elif kind == "globals" and wrapped is not None:
+            globs, name = loc[1], loc[2]
+            globs[name] = wrapped
+        for _meth, globs in _iter_mixer_kernel_globals(module):
+            for name in _MAMBA2_FUSED_NAMES:
+                cand = globs.get(name)
+                if callable(cand):
+                    globs[name] = _ensure_mamba2_fused_wrapped(cand)
+            if fn is not None and wrapped is not None:
+                _rewrite_callable_refs(_meth, fn, wrapped)
         if fn is not None and wrapped is not None:
             _rewrite_callable_refs(getattr(type(module), "forward", None), fn, wrapped)
             _rewrite_callable_refs(module.forward, fn, wrapped)

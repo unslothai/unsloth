@@ -603,6 +603,52 @@ def test_patch_mamba2_varlen_rebinds_compiled_module_alias(monkeypatch):
         sys.modules.pop(compiled.__name__, None)
 
 
+def test_patch_mamba2_varlen_rewrites_cuda_kernels_forward_global(monkeypatch):
+    # transformers 5.5 Nemotron-H LOAD_GLOBALs mamba_split_conv1d_scan_combined
+    # from cuda_kernels_forward and hardcodes seq_idx=None. That is the H200 abort.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import types
+
+    ns: dict = {"__name__": "transformers_modules.fake_nemotron_h"}
+    exec(
+        """
+def mamba_split_conv1d_scan_combined(*args, seq_idx=None, **kwargs):
+    mamba_split_conv1d_scan_combined.calls.append(seq_idx)
+    return args[0]
+mamba_split_conv1d_scan_combined.calls = []
+def cuda_kernels_forward(self, hidden_states, cache_params=None, attention_mask=None):
+    return mamba_split_conv1d_scan_combined(hidden_states, seq_idx=None)
+""",
+        ns,
+    )
+
+    class _HubNemotronHMamba2Mixer(_FakeNemotronHMamba2Mixer):
+        def __init__(self):
+            super().__init__()
+            del self.mamba2_split_conv1d_scan_combined
+            self.cuda_kernels_forward = types.MethodType(ns["cuda_kernels_forward"], self)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.cuda_kernels_forward(hidden_states)
+
+    class _HubModel(_FakeMamba2Model):
+        def __init__(self):
+            super().__init__()
+            self.mixer = _HubNemotronHMamba2Mixer()
+
+    model = _HubModel()
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    ns["mamba_split_conv1d_scan_combined"].calls.clear()
+    model(
+        input_ids = torch.zeros(1, 6, dtype = torch.long),
+        packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+        use_cache = False,
+    )
+    seq_idx = ns["mamba_split_conv1d_scan_combined"].calls[-1]
+    assert seq_idx is not None
+    assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
+
+
 def test_patch_mamba2_varlen_no_fused_dispatch_aborts(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
 
