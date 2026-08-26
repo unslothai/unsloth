@@ -245,6 +245,7 @@ test("typing is not rewritten before the entry is finished", () => {
 test("an abandoned entry does not outlive the box it was typed into", () => {
   // Blur is the only commit and removing a focused element fires none, so both keys
   // matter: a model switch and the field going away each strand a draft in committedSeed.
+  // Shape only: there is no DOM here, so the no-blur premise was measured in a browser.
   const sheet = read("../src/features/chat/chat-settings-sheet.tsx");
   const reset = slice(sheet, "useEffect(() => {\n    setSeedDraft(null);", ");");
   assert.match(reset, /\[currentCheckpoint, showSeed\]/);
