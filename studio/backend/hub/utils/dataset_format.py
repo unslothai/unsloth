@@ -358,6 +358,7 @@ def detect_multimodal_dataset(dataset):
             "audio_columns": [],
             "detected_audio_column": None,
             "detected_text_column": None,
+            "detected_instruction_column": None,
             "detected_speaker_column": None,
         }
     column_names = list(sample.keys())
@@ -426,6 +427,17 @@ def detect_multimodal_dataset(dataset):
             if col_name.lower() in ["source", "speaker", "speaker_id"]:
                 detected_speaker_col = col_name
                 break
+    detected_instruction_col = None
+    if audio_columns:
+        for col_name in column_names:
+            value = sample[col_name]
+            if (
+                col_name.lower() in ("instruction", "prompt", "query", "question", "request")
+                and isinstance(value, str)
+                and value.strip()
+            ):
+                detected_instruction_col = col_name
+                break
     return {
         "is_image": len(multimodal_columns) > 0,
         "multimodal_columns": multimodal_columns,
@@ -434,6 +446,7 @@ def detect_multimodal_dataset(dataset):
         "audio_columns": audio_columns,
         "detected_audio_column": audio_columns[0] if audio_columns else None,
         "detected_text_column": detected_text_col,
+        "detected_instruction_column": detected_instruction_col,
         "detected_speaker_column": detected_speaker_col,
     }
 
@@ -639,7 +652,9 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "suggested_mapping": None,
             "detected_image_column": None,
             "detected_text_column": detected_text,
-            "detected_instruction_column": None,
+            "detected_instruction_column": (
+                multimodal_info.get("detected_instruction_column") if is_vlm else None
+            ),
             "chat_column": None,
             "is_image": False,
             "multimodal_columns": multimodal_info.get("audio_columns"),

@@ -8,6 +8,7 @@ const ALPACA_ROLES = ["instruction", "input", "output"] as const;
 const SHAREGPT_ROLES = ["system", "human", "gpt"] as const;
 const VLM_ROLES = ["image", "text", "user"] as const;
 const AUDIO_ROLES = ["audio", "text", "speaker_id"] as const;
+const AUDIO_VLM_ROLES = ["audio", "user", "text"] as const;
 
 const TO_CANONICAL: Record<string, string> = {
   user: "user",
@@ -33,9 +34,10 @@ export function getAvailableRoles(
   isVlm: boolean,
   format?: string,
   isAudio?: boolean,
+  isAudioVlm?: boolean,
 ): readonly string[] {
   if (isAudio) {
-    return AUDIO_ROLES;
+    return isAudioVlm ? AUDIO_VLM_ROLES : AUDIO_ROLES;
   }
   if (isVlm) {
     return VLM_ROLES;
@@ -89,6 +91,7 @@ export function deriveDefaultMapping(
   isVlm: boolean,
   format?: string,
   isAudio?: boolean,
+  isAudioVlm?: boolean,
 ): Record<string, string> {
   if (data.suggested_mapping) {
     return remapRolesForFormat({ ...data.suggested_mapping }, format);
@@ -100,6 +103,9 @@ export function deriveDefaultMapping(
     }
     if (data.detected_text_column) {
       result[data.detected_text_column] = "text";
+    }
+    if (isAudioVlm && data.detected_instruction_column) {
+      result[data.detected_instruction_column] = "user";
     }
     if (data.detected_speaker_column) {
       result[data.detected_speaker_column] = "speaker_id";

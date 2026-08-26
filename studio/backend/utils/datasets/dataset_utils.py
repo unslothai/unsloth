@@ -87,7 +87,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         "detected_speaker_column": multimodal_info.get("detected_speaker_column"),
     }
 
-    if is_vlm:
+    if is_vlm and not is_audio:
         vlm_structure = detect_vlm_dataset_structure(dataset)
         requires_mapping = vlm_structure["format"] == "unknown"
 
@@ -113,6 +113,7 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "suggested_mapping": None,
             "detected_image_column": vlm_structure.get("image_column"),
             "detected_text_column": vlm_structure.get("text_column"),
+            "detected_instruction_column": multimodal_info.get("detected_instruction_column"),
             "is_image": multimodal_info["is_image"],
             "multimodal_columns": multimodal_info.get("multimodal_columns"),
             "warning": warning,
@@ -131,6 +132,9 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "suggested_mapping": None,
             "detected_image_column": None,
             "detected_text_column": multimodal_info.get("detected_text_column"),
+            "detected_instruction_column": (
+                multimodal_info.get("detected_instruction_column") if is_vlm else None
+            ),
             "is_image": False,
             "multimodal_columns": multimodal_info.get("audio_columns"),
             **audio_fields,

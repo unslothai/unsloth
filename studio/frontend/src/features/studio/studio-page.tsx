@@ -300,7 +300,11 @@ export function StudioPage(): ReactElement {
             datasetSplit={config.datasetSplit}
             mode={dialogMode}
             initialData={dialogInitial}
-            isVlm={config.isVisionModel && config.isDatasetImage === true}
+            isVlm={
+              config.isVisionModel &&
+              (config.isDatasetImage === true ||
+                (config.isAudioModel && config.isDatasetAudio === true))
+            }
           />
         </div>
       </Tabs>

@@ -518,6 +518,19 @@ def detect_multimodal_dataset(dataset):
                 detected_text_col = col_name
                 break
 
+    detected_instruction_col = None
+    if audio_columns:
+        instruction_keywords = ["instruction", "prompt", "query", "question", "request"]
+        for col_name in column_names:
+            value = sample[col_name]
+            if (
+                col_name.lower() in instruction_keywords
+                and isinstance(value, str)
+                and value.strip()
+            ):
+                detected_instruction_col = col_name
+                break
+
     is_audio = len(audio_columns) > 0
 
     # speaker_id column for TTS datasets (CSM, Orpheus, Spark)
@@ -537,6 +550,7 @@ def detect_multimodal_dataset(dataset):
         "audio_columns": audio_columns,
         "detected_audio_column": audio_columns[0] if audio_columns else None,
         "detected_text_column": detected_text_col,
+        "detected_instruction_column": detected_instruction_col,
         "detected_speaker_column": detected_speaker_col,
     }
 

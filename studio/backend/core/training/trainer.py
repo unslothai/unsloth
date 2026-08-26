@@ -799,27 +799,32 @@ class UnslothTrainer:
         dataset,
         custom_format_mapping: dict = None,
     ):
-        """Resolve audio/text/speaker columns from user mapping or fallback.
+        """Resolve audio/text/instruction/speaker columns from user mapping or fallback.
 
-        Returns dict with keys audio_col, text_col, speaker_col (may be None).
+        Returns dict with keys audio_col, text_col, instruction_col, speaker_col (may be None).
         """
         cols = dataset.column_names
 
         if custom_format_mapping:
             audio_col = None
             text_col = None
+            instruction_col = None
             speaker_col = None
             for col, role in custom_format_mapping.items():
                 if role == "audio":
                     audio_col = col
                 elif role == "text":
                     text_col = col
+                elif role in ("user", "instruction"):
+                    instruction_col = col
                 elif role == "speaker_id":
                     speaker_col = col
             if audio_col and audio_col in cols and text_col and text_col in cols:
+                instruction_col = instruction_col if instruction_col in cols else None
                 return {
                     "audio_col": audio_col,
                     "text_col": text_col,
+                    "instruction_col": instruction_col,
                     "speaker_col": speaker_col,
                 }
 
@@ -839,6 +844,7 @@ class UnslothTrainer:
         return {
             "audio_col": audio_col,
             "text_col": text_col,
+            "instruction_col": None,
             "speaker_col": speaker_col,
         }
 
@@ -1806,6 +1812,7 @@ class UnslothTrainer:
         resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
         audio_col = resolved["audio_col"]
         text_col = resolved["text_col"]
+        instruction_col = resolved["instruction_col"]
         if not audio_col or not text_col:
             raise ValueError(
                 f"Audio VLM dataset needs 'audio' and 'text' columns, got: {dataset.column_names}"
@@ -1822,6 +1829,11 @@ class UnslothTrainer:
             for idx in range(len(samples[audio_col])):
                 audio = samples[audio_col][idx]["array"]
                 label = str(samples[text_col][idx])
+                instruction = (
+                    str(samples[instruction_col][idx]).strip()
+                    if instruction_col and samples[instruction_col][idx] is not None
+                    else ""
+                )
                 message = [
                     {
                         "role": "system",
@@ -1836,7 +1848,10 @@ class UnslothTrainer:
                         "role": "user",
                         "content": [
                             {"type": "audio", "audio": audio},
-                            {"type": "text", "text": "Please transcribe this audio."},
+                            {
+                                "type": "text",
+                                "text": instruction or "Please transcribe this audio.",
+                            },
                         ],
                     },
                     {"role": "assistant", "content": [{"type": "text", "text": label}]},
