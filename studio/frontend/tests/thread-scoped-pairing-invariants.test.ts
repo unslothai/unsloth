@@ -36,11 +36,61 @@ test("the read waits for this chat's own write before it can be believed", () =>
   // returns the pre-edit snapshot, which is then applied over what the user set.
   const sync = slice(provider, "const sync = () => {", "// The read did not answer");
   assert.match(sync, /awaitThreadScopedSettingsWrite\(activeThreadId\)/);
+  // And the row's own creation: initialize() resolves as soon as the id is minted and leaves
+  // the POST tracked, so a first send's read can overtake it, see no row, and release this
+  // chat's held edits into the installation defaults.
+  assert.match(sync, /awaitStoredChatThreadWrites\(activeThreadId\)/);
   // and the read only happens after it, not alongside
   assert.ok(
     sync.indexOf("awaitThreadScopedSettingsWrite") <
       sync.indexOf("getStoredChatThreadReadResult"),
     "the read is not sequenced after the write",
+  );
+});
+
+/** sync()'s body with comments removed, for the two order assertions below. These call
+ * sites are heavily commented, and a prose mention of a call ahead of the call itself
+ * would otherwise read as the call being in the wrong place. */
+function syncCode(): string {
+  return slice(provider, "const sync = () => {", "// The read did not answer")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
+}
+
+test("both waits sit inside the attempt's deadline, not in front of it", () => {
+  // Neither wait is bounded on its own, so in front of the deadline their time goes
+  // uncounted and a stalled write ends in a refused send. The reasoning is at the call site.
+  const sync = syncCode();
+  const race = sync.indexOf("Promise.race");
+  assert.ok(race !== -1, "the per-attempt deadline is gone");
+
+  for (const wait of ["awaitThreadScopedSettingsWrite", "awaitStoredChatThreadWrites"]) {
+    assert.ok(
+      sync.indexOf(wait) > race,
+      `${wait}() is awaited before the deadline opens, so its time is unbounded`,
+    );
+  }
+});
+
+test("the pairing wait still outlasts the worst case read chain", () => {
+  // The arithmetic THREAD_PAIRING_WAIT_MS's own comment claims. Read from source so the
+  // two cannot drift apart: whichever constant moves, this is what catches it.
+  const constant = (source: string, name: string): number => {
+    const match = source.match(new RegExp(`${name}\\s*=\\s*([0-9_]+)`));
+    assert.ok(match, `${name} not found`);
+    return Number(match[1].replace(/_/g, ""));
+  };
+  const store = read("../src/features/chat/stores/chat-runtime-store.ts");
+
+  const attempts = constant(provider, "THREAD_READ_RETRIES") + 1;
+  const worstCase =
+    attempts * constant(provider, "THREAD_READ_TIMEOUT_MS") +
+    (attempts - 1) * constant(provider, "THREAD_READ_RETRY_MS");
+
+  assert.ok(
+    worstCase < constant(store, "THREAD_PAIRING_WAIT_MS"),
+    `the read chain can take ${worstCase}ms, at or past the gate's give-up, so a slow ` +
+      "read refuses the user's send instead of falling back to the installation defaults",
   );
 });
 
@@ -462,17 +512,28 @@ test("a fork stops when the chat's settings could not be saved", () => {
 });
 
 test("an unsaved chat's edit reaches the installation defaults without a round trip", () => {
-  // assistant-ui gives an unsaved thread a `__LOCALID_` id (RemoteThreadListThreadList
-  // RuntimeCore), which no row can exist for, so its read can only 404. Holding edits
-  // behind that certain-to-fail read is what stopped a pill clicked on a fresh /chat
-  // from reaching localStorage straight away, which playwright_chat_ui asserts.
+  // Holding edits behind a read certain to 404 is what stopped a pill clicked on a fresh
+  // /chat from reaching localStorage at once, which playwright_chat_ui asserts. A chat is
+  // unsaved only until its first send, so the test is the runtime's pending-new-thread id:
+  // the `__LOCALID_` prefix stays for good and gated every app-created chat out of its own
+  // settings (#8686).
   const effect = slice(
     provider,
     "const { applyThreadScopedSettings } = useChatRuntimeStore.getState();",
     "if (!enabled) {",
   );
-  assert.match(effect, /isAssistantLocalThreadId\(activeThreadId\)/);
+  assert.match(effect, /activeThreadId === pendingNewThreadId/);
+  assert.doesNotMatch(effect, /isAssistantLocalThreadId/);
   assert.match(effect, /applyThreadScopedSettings\(null, null\)/);
+});
+
+test("the pairing effect tracks the runtime's pending new thread", () => {
+  assert.match(
+    provider,
+    /const pendingNewThreadId = useAuiState\(\(\{ threads \}\) => threads\.newThreadId\)/,
+  );
+  const deps = slice(provider, "}, [activeThreadId, enabled,", ");");
+  assert.match(deps, /pendingNewThreadId/);
 });
 
 test("a run whose pairing never settled is refused, not run on another chat's settings", () => {

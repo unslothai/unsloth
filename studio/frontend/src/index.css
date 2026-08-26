@@ -1196,13 +1196,25 @@ html[data-chat-font] .aui-root {
 		color: #fff;
 	}
 
+	/* pr-3, not pr-4: header actions end where a hovered row's "…" does (right-0
+	   + pr-1.5 inside a pill the list inset by px-1.5 = 12px). The desktop
+	   titlebar insets by 5px, so those headers override this in app-sidebar.tsx. */
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-4 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. */
 		color: #80868b;
 		letter-spacing: 0;
+	}
+	/* These compound selectors must beat the base label's pr-3 declaration.
+	   Tailwind emits utility classes before this components block, so putting
+	   pr-[11px]/pr-[13px] on the element would lose the cascade. */
+	.sidebar-sticky-label.sidebar-sticky-label-desktop {
+		padding-right: 11px;
+	}
+	.sidebar-sticky-label.sidebar-sticky-label-desktop-recents {
+		padding-right: 13px;
 	}
 	.sidebar-sticky-label-following {
 		@apply pt-[21px];
@@ -2547,7 +2559,7 @@ html[data-chat-font] .aui-root {
 	 *    #8977 disproves. It is kept for the flicker alone. Do not reach
 	 *    back for `content-visibility: auto` here: WebKit below Safari 26
 	 *    cannot find skipped content with find-in-page (webkit.org/b/283846)
-	 *    and Studio has no in-thread search to fall back on. Containment on
+	 *    and Unsloth has no in-thread search to fall back on. Containment on
 	 *    the message roots was measured as no help either; what grows with
 	 *    thread length is inherited-property style recalc, not layout.
 	 *
@@ -3154,6 +3166,13 @@ html[data-chat-font] .aui-root {
 	& svg.unsloth-send-icon {
 		width: calc(var(--ui-icon-size) * 1.15);
 		height: calc(var(--ui-icon-size) * 1.15);
+		/* The stroked arrow rasterizes half a Retina pixel to the right. */
+		transform: translateX(-0.25px);
+	}
+	/* The filled stop glyph lands one Retina pixel right of the circular
+	   action's center even though its SVG box is flex-centered. */
+	& svg.aui-composer-cancel-icon {
+		transform: translateX(-0.5px);
 	}
 	/* Composer plus keeps its pre-#7400 22px base (1.375x the token is the same
 	   curve a 22px glyph would follow), so only its scaling changed. */

@@ -221,7 +221,7 @@ def test_the_budget_is_rechecked_after_an_idle_model_is_restored():
     restore = next(
         i
         for i, line in enumerate(source.splitlines())
-        if "_maybe_auto_switch_model(_RELOAD_ONLY_MODEL" in line
+        if "_RELOAD_ONLY_MODEL, request, current_subject" in line
     )
     assert len(guards) == 2, "one check before the restore, one after"
     assert guards[0] < restore < guards[1]

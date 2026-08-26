@@ -21,6 +21,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useShortcut } from "@/features/settings";
 
 import {
   type McpServerConfig,
@@ -30,6 +31,8 @@ import {
 } from "./api/mcp-servers-api";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { useMcpServersDialogStore } from "./stores/mcp-servers-dialog-store";
+import { useChatActive } from "./runtime-provider";
 
 // Matches the Thinking pill chevron so the affordance reads the same.
 const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
@@ -103,7 +106,8 @@ export function McpComposerButton({
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
 
   const [servers, setServers] = useState<McpServerConfig[]>([]);
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const dialogOpen = useMcpServersDialogStore((s) => s.open);
+  const setDialogOpen = useMcpServersDialogStore((s) => s.setOpen);
   const [menuOpen, setMenuOpen] = useState(false);
   const [pendingUrl, setPendingUrl] = useState<string | null>(null);
   const [hintKey, setHintKey] = useState<string | null>(null);
@@ -121,10 +125,12 @@ export function McpComposerButton({
     }
   }, []);
 
-  // Load the server list on mount and whenever the menu opens.
+  // Load the server list on mount, and again when the dialog closes: it can
+  // be opened from the chord as well as from this menu.
   useEffect(() => {
+    if (dialogOpen) return;
     void refresh();
-  }, [refresh]);
+  }, [refresh, dialogOpen]);
 
   const enabledUrls = new Set(
     servers.filter((s) => s.is_enabled).map((s) => normalizeMcpUrl(s.url)),
@@ -345,14 +351,36 @@ export function McpComposerButton({
           </TooltipContent>
         </Tooltip>
       )}
-      <ChatMcpServersDialog
-        open={dialogOpen}
-        onOpenChange={(next) => {
-          setDialogOpen(next);
-          // Resync after managing servers.
-          if (!next) void refresh();
-        }}
-      />
     </>
+  );
+}
+
+/**
+ * The dialog itself, plus the chord that opens it, mounted for the chat rather
+ * than for the pill above: MCP ships off and the pill only renders once it is
+ * on, so anything living there is out of the shortcut's reach.
+ */
+export function McpServersDialogMount() {
+  const open = useMcpServersDialogStore((s) => s.open);
+  const setOpen = useMcpServersDialogStore((s) => s.setOpen);
+  // Not gated on tool support: this is where servers are configured, and a
+  // model that cannot use them yet is the usual reason to come here.
+  const chatActive = useChatActive();
+  useShortcut("openMcpServers", () => setOpen(true), { enabled: chatActive });
+  // Leaving the chat closes it for good rather than parking it: the flag
+  // outlives this subtree, so a dialog left open would come back on the next
+  // visit as a ghost of the last one.
+  useEffect(() => {
+    if (!chatActive && open) setOpen(false);
+  }, [chatActive, open, setOpen]);
+  // Going off-route is not the only way to leave. Logout, or a session that
+  // expires, moves the root to /login and takes this whole subtree with it, so
+  // no chatActive=false render ever happens and the flag above survives to
+  // reopen the dialog on the next visit. Close on the way out as well.
+  useEffect(() => {
+    return () => useMcpServersDialogStore.getState().setOpen(false);
+  }, []);
+  return (
+    <ChatMcpServersDialog open={chatActive && open} onOpenChange={setOpen} />
   );
 }

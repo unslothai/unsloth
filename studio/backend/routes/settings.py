@@ -47,6 +47,10 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
+from utils.download_transport_settings import (
+    get_download_transport_mode,
+    set_download_transport_mode,
+)
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.model_memory_settings import (
@@ -574,6 +578,19 @@ class HelperPrecacheResponse(BaseModel):
     disabled_by_env: bool
 
 
+class DownloadTransportPayload(BaseModel):
+    mode: Literal["auto", "xet", "http"]
+
+
+class DownloadTransportResponse(BaseModel):
+    mode: str
+    xet_available: bool
+    xet_unavailable_reason: Optional[str] = None
+    # What "auto" resolves to here right now, and why.
+    auto_resolves_to: str
+    auto_reason: Optional[str] = None
+
+
 class XetNoticeReservePayload(BaseModel):
     # A legacy localStorage count from a client that has not reported one before.
     # Can only raise the stored count (see reserve_xet_notice), so a client cannot
@@ -844,6 +861,20 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     )
 
 
+def _download_transport_response(mode: str | None = None) -> DownloadTransportResponse:
+    # No Xet probe: this renders a row, not a download start. The free-RAM gate is asked for
+    # anyway, since the row states what the next download will use.
+    from hub.utils.download_registry import get_download_transport_capabilities
+    caps = get_download_transport_capabilities(ram_gate = True)
+    return DownloadTransportResponse(
+        mode = get_download_transport_mode() if mode is None else mode,
+        xet_available = caps.xet.available,
+        xet_unavailable_reason = caps.xet.reason,
+        auto_resolves_to = caps.auto_resolves_to,
+        auto_reason = caps.auto_reason,
+    )
+
+
 # Distinct from None, which is a real launch this policy does not govern.
 _NO_LAUNCH = object()
 
@@ -1021,7 +1052,7 @@ def update_llama_cpp_path(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> LlamaCppPathResponse:
-    # Only the interactive Studio UI may change this executable setting.
+    # Only the interactive Unsloth UI may change this executable setting.
     require_ui_session(via_api_key)
     try:
         set_custom_llama_cpp_path(payload.path)
@@ -1083,6 +1114,30 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+@router.get("/download-transport", response_model = DownloadTransportResponse)
+def get_download_transport(
+    current_subject: str = Depends(get_current_subject),
+) -> DownloadTransportResponse:
+    return _download_transport_response()
+
+
+@router.put("/download-transport", response_model = DownloadTransportResponse)
+def update_download_transport(
+    payload: DownloadTransportPayload, current_subject: str = Depends(get_current_subject)
+) -> DownloadTransportResponse:
+    try:
+        mode = set_download_transport_mode(payload.mode)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid download transport."),
+            event = "settings.update_download_transport_failed",
+            log = logger,
+        ) from exc
+    return _download_transport_response(mode)
 
 
 @router.post("/xet-notice/reserve", response_model = XetNoticeResponse)

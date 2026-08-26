@@ -108,7 +108,16 @@ class DownloadTransportCapabilities:
     partials_resumable: bool = True
 
 
-def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTransportCapabilities:
+def get_download_transport_capabilities(
+    *, probe: bool = False, ram_gate: bool = False
+) -> DownloadTransportCapabilities:
+    """What this machine can do, and what Auto resolves to on it.
+
+    ``probe`` runs the live Xet health check and is only for the frontend resolving Auto at
+    download start. ``ram_gate`` applies the free-RAM half of that same verdict WITHOUT the
+    network probe, for a surface that has to state what the next download will pick: the
+    settings row said "Auto is using Xet" while the download path, which probes, chose HTTP.
+    """
     xet_available = importlib.util.find_spec("hf_xet") is not None
     auto_transport = TRANSPORT_XET if xet_available else TRANSPORT_HTTP
     auto_reason: Optional[str] = None
@@ -120,7 +129,10 @@ def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTrans
             # Ordinary UI polls are read-only and must not load Zoo. `probe=True` is different:
             # the frontend sends it only while resolving Auto for a download, then submits the
             # concrete answer as xet/http, so this is the actual first-download decision.
-            health_fn = xet_health if probe else cached_xet_health
+            # `ram_gate` loads it too, without probing: an empty cache reads as the optimistic
+            # Xet, so the row promised Xet while the next download loaded an unhealthy verdict
+            # and chose HTTP. Still `probe=probe`, so only a download start probes live.
+            health_fn = xet_health if (probe or ram_gate) else cached_xet_health
             health = health_fn(probe = probe)
             if health is not None:
                 auto_transport = TRANSPORT_XET if health.use_xet else TRANSPORT_HTTP
@@ -138,11 +150,16 @@ def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTrans
         except Exception:
             # No opinion: keep the optimistic default; the download-time ladder still recovers.
             pass
-    if xet_available and probe and auto_transport == TRANSPORT_XET and not auto_forced:
+    if (
+        xet_available
+        and (probe or ram_gate)
+        and auto_transport == TRANSPORT_XET
+        and not auto_forced
+    ):
         # Free RAM belongs in the same verdict: this IS the Auto decision, since the UI submits the
         # answer as an explicit xet/http. Read outside the health try, because a health module that
-        # is missing or raising says nothing about RAM. Probe-only, so an ordinary poll stays
-        # read-only and still does not load Zoo.
+        # is missing or raising says nothing about RAM. Never on an ordinary poll, which stays
+        # read-only and still does not load Zoo -- only for a probe or an explicit ram_gate.
         try:
             from utils.hf_xet_fallback import free_ram_pressure_reason
             pressure = free_ram_pressure_reason()
@@ -539,7 +556,7 @@ def _purge_incomplete_blobs(
     cost of that mistake is another client's whole download.
 
     ``owned_hashes``, or ``owns_all_blobs`` for a job that owns its whole repo dir (one with no
-    variant, which claim() will not let a sibling share), are blobs whose only Studio-side
+    variant, which claim() will not let a sibling share), are blobs whose only Unsloth-side
     writer has just been reaped. Those do not wait out the full grace -- the corpse would
     outlive the retry that follows a cancel, which is the frozen bar this whole change is
     about -- but they are not simply trusted either: registry ownership proves OUR writer is

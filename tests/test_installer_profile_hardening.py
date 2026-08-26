@@ -198,7 +198,7 @@ def test_setup_ps1_handoff_never_inherits_the_profile():
     whole file is about ran setup.ps1 with the user's profile loaded and its bare `uv` calls
     exposed to the same alias."""
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
-    start = _locate(src, 'powershell_args = ["powershell.exe"]', "the setup.ps1 launch")
+    start = _locate(src, "powershell_args = [powershell]", "the setup.ps1 launch")
     branch = _locate(src[start:], "_should_hide_windows_subprocesses()", "the hidden-window branch")
     assert (
         '"-NoProfile"' in src[start : start + branch]
@@ -713,7 +713,7 @@ def test_the_setup_launch_reapplies_the_proxy_it_told_the_child_to_forget():
     assert "_UNSLOTH_PS_PROXY_DEFAULTS" in prelude, "the child must read it back"
 
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
-    start = _locate(src, 'powershell_args = ["powershell.exe"]', "the setup.ps1 launch")
+    start = _locate(src, "powershell_args = [powershell]", "the setup.ps1 launch")
     # The f-string itself, not the comment above it that also quotes *>&1.
     command = _locate(src[start:], 'f"', "the -Command f-string")
     assert (
@@ -882,7 +882,7 @@ def test_a_standalone_update_reconstructs_the_proxy_for_itself():
     never reach this Python process. So it is asked for, before -NoProfile drops it."""
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
     assert "_probe_profile_proxy_defaults" in src
-    start = _locate(src, 'powershell_args = ["powershell.exe"]', "the setup.ps1 launch")
+    start = _locate(src, "powershell_args = [powershell]", "the setup.ps1 launch")
     guard = _locate(src[start:], "_probe_profile_proxy_defaults(", "the probe call")
     noprofile = _locate(src[start:], '"-NoProfile"', "the -NoProfile flag")
     assert guard < noprofile, "the probe has to run while the profile is still reachable"

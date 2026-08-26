@@ -69,9 +69,9 @@ def test_the_hooks_are_off_unless_asked_for(main_src: str, monkeypatch):
 
 
 def test_the_probe_path_is_validated_before_anything_is_started(main_src: str):
-    """A path typo must not leave a detached Studio holding a port.
+    """A path typo must not leave a detached Unsloth holding a port.
 
-    The source is not needed until the browser launches, but reading it there raises after Studio
+    The source is not needed until the browser launches, but reading it there raises after Unsloth
     and the pacer are up and before the cleanup `finally` around the cell loop is entered, so
     nothing stops them. Reading it in the first second of the run fails while there is nothing to
     clean up.
@@ -92,11 +92,11 @@ def test_the_probe_path_is_validated_before_anything_is_started(main_src: str):
 
 
 def test_the_probe_is_installed_without_eval(main_src: str):
-    """CSP, not style. Studio serves `script-src 'self'` with no `'unsafe-eval'`, and the DEFAULT
+    """CSP, not style. Unsloth serves `script-src 'self'` with no `'unsafe-eval'`, and the DEFAULT
     engine on Linux and macOS is webkit, which enforces that against an init script.
 
     The probe was briefly handed to indirect eval as a string so that a malformed file could not
-    stop the scene scripts. Measured against a page carrying Studio's own header, with the real
+    stop the scene scripts. Measured against a page carrying Unsloth's own header, with the real
     `content_visibility_probe.js`: chromium and firefox installed the probe either way, and webkit
     refused the eval with `EvalError` and installed NOTHING. The isolation was not real there
     either -- Playwright gives webkit its init scripts as one bootstrap unit, so a parse error
@@ -107,10 +107,10 @@ def test_the_probe_is_installed_without_eval(main_src: str):
     assert "def _probe_init_scripts(" in main_src
     assert "init_scripts.extend(_probe_init_scripts(extra_init, extra_init_source))" in main_src
     assert "(0, eval)(" not in main_src, (
-        "the probe is back on eval; Studio's script-src 'self' blocks it and the probe will not "
+        "the probe is back on eval; Unsloth's script-src 'self' blocks it and the probe will not "
         "install at all on the default engine"
     )
-    assert "eval(" not in main_src, "any string evaluation is refused by Studio's CSP"
+    assert "eval(" not in main_src, "any string evaluation is refused by Unsloth's CSP"
 
 
 def test_the_probe_exists_and_is_not_a_stub(probe_src: str):

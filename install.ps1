@@ -128,7 +128,7 @@ function Install-UnslothStudio {
     # Not restored afterwards, deliberately. $env: is the process environment,
     # so running this script in an interactive console leaves the reordering in
     # place for that session. A try/finally would not change that for the case
-    # it is raised about: the interactive path ends by running Studio in the
+    # it is raised about: the interactive path ends by running Unsloth in the
     # foreground, so the finally would not fire until the user stops the server.
     # Narrowing the trigger instead would risk skipping the fix on some chain
     # this list does not anticipate, and the cost of that is the install failing
@@ -395,7 +395,7 @@ function Install-UnslothStudio {
 
     function Remove-StudioStalePrivateTempDirectories {
         param([Parameter(Mandatory = $true)][string]$Root)
-        # These outlive the install (an autostarted Studio inherits one as its own
+        # These outlive the install (an autostarted Unsloth inherits one as its own
         # %TEMP%), so bound the pile by age instead of deleting one still in use.
         try {
             $cutoff = (Get-Date).AddDays(-1)
@@ -424,7 +424,7 @@ function Install-UnslothStudio {
                 # Age alone is not proof it is unused, and this sweep runs before the
                 # runtime mutex, so it could delete a live process's %TEMP%. owner.pid
                 # names the process that INHERITED this directory (the autostarted
-                # Studio, which outlives the installer); the PID in the name is only
+                # Unsloth, which outlives the installer); the PID in the name is only
                 # the installer's and is already gone. If the owner is alive, leave it.
                 # PID reuse only ever costs a directory its cleanup.
                 $ownerPid = 0
@@ -441,7 +441,7 @@ function Install-UnslothStudio {
                 # Whether the owner was RECORDED, or only guessed from the name.
                 # The name carries the installer's PID, and an installer that was
                 # killed between Start-Process and the owner.pid write leaves a dead
-                # PID in the name while the Studio it started is very much alive on
+                # PID in the name while the Unsloth it started is very much alive on
                 # that directory as its own %TEMP%. Guessing therefore proves much
                 # less than reading, and the two are not treated alike below.
                 $ownerRecorded = ($ownerPid -gt 0)
@@ -450,7 +450,7 @@ function Install-UnslothStudio {
                 }
                 # No recorded owner: unknown, not abandoned. Still collected, so the
                 # pile stays bounded, but only once it has gone a whole week without
-                # a single entry being created in it, which a Studio actually using
+                # a single entry being created in it, which an Unsloth actually using
                 # it as %TEMP% would not manage.
                 if (-not $ownerRecorded -and $stale.LastWriteTime -ge (Get-Date).AddDays(-7)) {
                     continue
@@ -638,7 +638,7 @@ function Install-UnslothStudio {
         else { Remove-Item Env:\TMP -ErrorAction SilentlyContinue }
         if ($override.TempSet) { $env:TEMP = $override.TempValue }
         else { Remove-Item Env:\TEMP -ErrorAction SilentlyContinue }
-        # The directory stays: an autostarted Studio inherited it as its own %TEMP%,
+        # The directory stays: an autostarted Unsloth inherited it as its own %TEMP%,
         # and the host's real one is broken. The next run sweeps the old ones.
     }
 
@@ -743,7 +743,7 @@ function Install-UnslothStudio {
     # interpreter the desktop app spawns) compiles by writing the source to %TEMP%
     # and running csc.exe. When that directory is unusable, or a scanner eats the
     # source, Add-Type throws CS2001, which used to abort a first launch as "Could
-    # not create the Studio install lock" (issue #9140). Try once, retry with a
+    # not create the Unsloth install lock" (issue #9140). Try once, retry with a
     # %TEMP% we own, cache the answer (callers resolve dozens of paths), then let
     # Get-StudioLexicalPath carry the run.
     $script:StudioFinalPathNativeState = $null
@@ -1031,7 +1031,7 @@ public static class UnslothStudioFinalPathV2
         try { $current = [System.IO.Path]::GetFullPath($Path) } catch { return $Path }
         # Fold a SUBST drive BEFORE walking components: the Python runtime gate
         # resolves it, so leaving it would give the two sides different mutex names
-        # for one directory and hide a running Studio from the in-use scan.
+        # for one directory and hide a running Unsloth from the in-use scan.
         $substituted = Get-StudioSubstTarget -Path $current
         if ($substituted) {
             try { $current = [System.IO.Path]::GetFullPath($substituted) } catch {}
@@ -1123,7 +1123,7 @@ public static class UnslothStudioFinalPathV2
             # Every extended spelling, INCLUDING \\?\Volume{GUID}\, because this string
             # is hashed into the runtime mutex name and unsloth_cli/_studio_runtime_gate.py
             # strips \\?\ unconditionally (_resolved_windows_path). Keeping the prefix
-            # here made the installer and a running Studio compute different names for
+            # here made the installer and a running Unsloth compute different names for
             # one directory, so neither would exclude the other. Rootedness does matter
             # while a link target is being anchored, and Resolve-StudioLinkTarget keeps
             # the extended form for exactly that; nothing after this point anchors
@@ -1596,7 +1596,7 @@ public static class UnslothStudioFinalPathV2
             (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
     }
 
-    # Shared default cache, or the custom Studio home's llama.cpp tree.
+    # Shared default cache, or the custom Unsloth home's llama.cpp tree.
     function Get-ManagedLlamaCppDir {
         if (-not (Test-StudioHomeIsCustom)) {
             return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
@@ -2137,6 +2137,14 @@ public static class UnslothStudioFinalPathV2
             if ((Test-Path -LiteralPath $_studioIdFile) -and `
                 ((Get-Item -LiteralPath $_studioIdFile).Length -gt 0)) {
                 $_studioRootId = ([System.IO.File]::ReadAllText($_studioIdFile)).Trim()
+                # Same contract as the backend and the desktop app: 64
+                # lowercase hex. -cnotmatch because -notmatch is case
+                # insensitive and would take uppercase the backend rejects.
+                # Anything else lands in a single-quoted assignment in the
+                # generated launcher, so a planted quote would be code.
+                if ($_studioRootId -cnotmatch '^[0-9a-f]{64}$') {
+                    $_studioRootId = ""
+                }
             }
             if (-not $_studioRootId) {
                 $_idBytes = New-Object byte[] 32
@@ -2155,11 +2163,12 @@ public static class UnslothStudioFinalPathV2
                     try {
                         $_adoptedRootId = ([System.IO.File]::ReadAllText($_studioIdFile)).Trim()
                     } catch { }
-                    if ($_adoptedRootId) {
+                    if ($_adoptedRootId -cmatch '^[0-9a-f]{64}$') {
                         $_studioRootId = $_adoptedRootId
                     } else {
-                        # Zero-length incumbent is an interrupted write, not an
-                        # id. Replace it with one atomic rename, no unlink.
+                        # Zero-length or malformed is an interrupted write
+                        # or a planted value, not an id: replace it with one
+                        # atomic rename, no unlink.
                         Move-Item -LiteralPath $_idTmp -Destination $_studioIdFile -Force
                     }
                 } finally {
@@ -2539,7 +2548,7 @@ exit 0
             $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$launcherPs1`""
             # A launcher on a share is a REMOTE script to PowerShell and RemoteSigned refuses an
             # unsigned one, so a roaming profile would get a shortcut that exits without starting
-            # Studio. Bypass for that case only, and without the hidden window: a console beats
+            # Unsloth. Bypass for that case only, and without the hidden window: a console beats
             # nothing launching. A mapped drive (H:, Z:) is the same share and the same zone, and
             # DriveInfo on the root reports Network for both.
             $launcherIsRemote = $launcherPs1 -like "\\*"
@@ -2705,7 +2714,7 @@ exit 0
     # then rolls back. Relocating is safe: nothing here reads the caller's directory
     # ($RepoRoot from $PSCommandPath, $StudioHome from the environment), so only
     # --with-llama-cpp-dir needs a rebase first. Not restored at the end, same reason as
-    # the PSModulePath fix at the top: the interactive path ends running Studio in the
+    # the PSModulePath fix at the top: the interactive path ends running Unsloth in the
     # foreground, so a finally would not fire until it stops.
     $SystemRootDir = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
     $SystemRootDir = [System.IO.Path]::GetFullPath($SystemRootDir).TrimEnd('\')
@@ -2859,7 +2868,7 @@ exit 0
             $leftInfo = Resolve-StudioFinalPathInfo -Path $Left
             $rightInfo = Resolve-StudioFinalPathInfo -Path $Right
         } catch {
-            Write-StudioLine "[WARN] Could not resolve Studio path identity; using the runtime lock." -ForegroundColor Yellow
+            Write-StudioLine "[WARN] Could not resolve Unsloth path identity; using the runtime lock." -ForegroundColor Yellow
             return $null
         }
         if ([string]::Equals(
@@ -2871,7 +2880,7 @@ exit 0
         # exactly; otherwise they may be aliases of one. $null is the caller's
         # "identity unresolved" signal and makes it take both runtime locks.
         if (-not $leftInfo.Exact -or -not $rightInfo.Exact) {
-            Write-StudioLine "[WARN] Could not resolve Studio path identity; using the runtime lock." -ForegroundColor Yellow
+            Write-StudioLine "[WARN] Could not resolve Unsloth path identity; using the runtime lock." -ForegroundColor Yellow
             return $null
         }
         return $false
@@ -2909,7 +2918,7 @@ exit 0
     function Get-StudioCurrentUserSid {
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
         if ($null -eq $identity) {
-            throw "Could not determine the Windows user for the Studio runtime lock"
+            throw "Could not determine the Windows user for the Unsloth runtime lock"
         }
         try {
             $sid = if ($identity.User) { $identity.User.Value } else { $null }
@@ -2917,7 +2926,7 @@ exit 0
             $identity.Dispose()
         }
         if ([string]::IsNullOrWhiteSpace($sid)) {
-            throw "Could not determine the Windows user SID for the Studio runtime lock"
+            throw "Could not determine the Windows user SID for the Unsloth runtime lock"
         }
         return $sid
     }
@@ -3003,7 +3012,7 @@ exit 0
 
     # QueryFullProcessImageNameW answers for processes whose MainModule is not
     # readable here, but needs the compiled helper. Without a fallback a host that
-    # cannot compile would find NO running processes and overwrite a venv Studio has
+    # cannot compile would find NO running processes and overwrite a venv Unsloth has
     # open, so the ladder ends at Win32_Process. Every rung reports a real executable
     # image; a command line or working directory mentioning the path is never proof.
     $script:StudioProcessImageTable = $null
@@ -3019,7 +3028,7 @@ exit 0
         }
         if (-not $script:StudioProcessImageWarned) {
             $script:StudioProcessImageWarned = $true
-            Write-StudioLine "[WARN] Scanning for running Studio processes without the native helper; a process this shell cannot inspect may go unnoticed." -ForegroundColor Yellow
+            Write-StudioLine "[WARN] Scanning for running Unsloth processes without the native helper; a process this shell cannot inspect may go unnoticed." -ForegroundColor Yellow
         }
         $process = $null
         try { $process = Get-Process -Id $ProcessId -ErrorAction Stop } catch { $process = $null }
@@ -3055,7 +3064,7 @@ exit 0
         try {
             $resolvedPath = (Get-StudioFinalPath -Path $VenvPath).TrimEnd('\', '/')
         } catch {
-            throw "Could not resolve managed Studio process path '$VenvPath': $($_.Exception.Message)"
+            throw "Could not resolve managed Unsloth process path '$VenvPath': $($_.Exception.Message)"
         }
         # No root-relative fallback here: without the native helper EVERY path is
         # inexact, so it compared path tails across unrelated drives and an ordinary
@@ -3083,8 +3092,8 @@ exit 0
     try {
         $studioInstallMutex = Enter-StudioInstallMutex -Path $StudioHome
     } catch {
-        Write-StudioLine "[ERROR] Could not create the Studio install lock: $($_.Exception.Message)" -ForegroundColor Red
-        return (Exit-InstallFailure "Could not create the Studio install lock")
+        Write-StudioLine "[ERROR] Could not create the Unsloth install lock: $($_.Exception.Message)" -ForegroundColor Red
+        return (Exit-InstallFailure "Could not create the Unsloth install lock")
     }
     if ($null -eq $studioInstallMutex) {
         Write-StudioLine "[ERROR] Another Unsloth Studio install or repair is already running." -ForegroundColor Red
@@ -3114,13 +3123,13 @@ exit 0
                     if ($null -eq $mutex) {
                         Write-StudioLine "[ERROR] Unsloth Studio is starting or installation is already running." -ForegroundColor Red
                         Write-StudioLine "        Close Unsloth Studio completely, wait for the other operation, then re-run install.ps1." -ForegroundColor Yellow
-                        return (Exit-InstallFailure "The managed Studio environment is busy")
+                        return (Exit-InstallFailure "The managed Unsloth environment is busy")
                     }
                     $studioRuntimeMutexes += $mutex
                 }
             } catch {
-                Write-StudioLine "[ERROR] Could not create the Studio runtime lock: $($_.Exception.Message)" -ForegroundColor Red
-                return (Exit-InstallFailure "Could not create the Studio runtime lock")
+                Write-StudioLine "[ERROR] Could not create the Unsloth runtime lock: $($_.Exception.Message)" -ForegroundColor Red
+                return (Exit-InstallFailure "Could not create the Unsloth runtime lock")
             }
         }
 
@@ -5647,7 +5656,7 @@ exit 0
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.8.19" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.8.21" }
 
     if ($_Migrated) {
         # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving
@@ -5657,7 +5666,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.13" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.15" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -5671,7 +5680,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.13" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.15" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -5798,7 +5807,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.13" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.15" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -5810,7 +5819,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.13" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.8.15" }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" }
@@ -5839,7 +5848,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.13" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.15" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -6115,7 +6124,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     # so it answers there, but antivirus QUARANTINES it, deleting it out of a venv that
     # is otherwise perfectly able to run. Nothing after this point executes it -- the
     # setup handoff, the shortcuts and bin\unsloth.cmd all go through $VenvPython -- so
-    # failing here would refuse to install or repair Studio for exactly the machines
+    # failing here would refuse to install or repair Unsloth for exactly the machines
     # this change is for. Ask the interpreter instead, and only then give up.
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
     if (-not (Test-Path -LiteralPath $UnslothExe)) {
@@ -6353,7 +6362,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
             Write-StudioLine "       $($_.Exception.Message)" -ForegroundColor Yellow
             # The interpreter, not $UnslothExe: this arm is reached on machines whose
             # policy denies the generated console script, where that advice cannot work.
-            Write-StudioLine "       Until the next successful install, start Studio with:" -ForegroundColor Yellow
+            Write-StudioLine "       Until the next successful install, start Unsloth with:" -ForegroundColor Yellow
             Write-StudioLine "       & '$VenvPython' -I -m unsloth_cli studio -p 8888" -ForegroundColor Yellow
         }
     }
@@ -6455,7 +6464,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         $reply = Read-Host "  Start Unsloth Studio now? [Y/n]"
         if ([string]::IsNullOrWhiteSpace($reply) -or $reply -match '^[Yy]') {
             # Keep both locks until the process exists: a second installer can
-            # then take them, but its scan sees Studio before it mutates.
+            # then take them, but its scan sees Unsloth before it mutates.
             $_runtimeGateHandoff = $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF
             try {
                 $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"

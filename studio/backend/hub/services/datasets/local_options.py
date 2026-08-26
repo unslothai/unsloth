@@ -263,7 +263,7 @@ def _read_card_metadata(path: Path) -> Any:
 # The contract is that an offered split has to be trainable: anything looser is offered and
 # then 422s, anything tighter hides a usable option. Deliberately tighter in two places,
 # both to keep training inside the cache: a file whose symlink leaves the repository is
-# refused, and only the extensions Studio can train on are offered.
+# refused, and only the extensions Unsloth can train on are offered.
 
 # Only names are read during the scan, so this can sit well above any real snapshot. Past
 # it the result would depend on traversal order, so nothing is offered.
@@ -280,9 +280,9 @@ _IGNORED_DATA_FILENAMES = frozenset(
         "dummy_data.zip",
     }
 )
-# What fsspec can decompress in a Studio install, as suffixes that sit after the real one.
+# What fsspec can decompress in an Unsloth install, as suffixes that sit after the real one.
 _COMPRESSION_EXTENSIONS = frozenset({".gz", ".gzip", ".bz2", ".xz", ".zip"})
-# Named by datasets but needing codecs a Studio install does not ship, so they raise
+# Named by datasets but needing codecs an Unsloth install does not ship, so they raise
 # "Compression type not supported" and offering them would put a dead split in the picker.
 # .lzma is the legacy alone-format: datasets registers .xz for its filter, not this.
 _UNREADABLE_COMPRESSION = frozenset({".zst", ".zstd", ".lz4", ".lzma"})
@@ -398,7 +398,7 @@ def _file_module(name: str) -> Optional[str]:
 
 
 def _trainable_name(name: str) -> bool:
-    """Whether Studio can train on this file. Narrower than what datasets would read."""
+    """Whether Unsloth can train on this file. Narrower than what datasets would read."""
     suffix = _data_suffix(name)
     return suffix is not None and suffix in TRAINING_DATA_EXTS
 
@@ -520,7 +520,7 @@ def _blocked_by_compression(name: str, module: str) -> bool:
 
 
 def _offerable(entries: list[PurePosixPath], snapshot: Path, module: str) -> Optional[bool]:
-    """True when the split holds data Studio can train on, False when it holds none, None
+    """True when the split holds data Unsloth can train on, False when it holds none, None
     when the config is unusable. datasets reads every file in the split, so one file that
     escapes the cache, or one the builder chokes on, condemns the config rather than
     the single file."""

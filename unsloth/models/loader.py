@@ -38,6 +38,7 @@ from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
+    OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _offline_quantize_to_fp8,
@@ -443,7 +444,7 @@ class FastLanguageModel(FastLlamaModel):
         resize_model_vocab = None,
         revision = None,
         use_exact_model_name = False,
-        offload_embedding = False,
+        offload_embedding = OFFLOAD_EMBEDDING_AUTO,
         float32_mixed_precision = None,  # Forces float32 mixed precision
         fast_inference = False,  # uses vLLM
         gpu_memory_utilization = 0.5,
@@ -654,16 +655,20 @@ class FastLanguageModel(FastLlamaModel):
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
         ):
-            # Only the plain flags are dropped; a user quantization_config stays
-            # in **kwargs and still quantizes, so stay quiet in that case.
-            if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
-                "quantization_config", None
-            ) is None:
+            # A user quantization_config stays in **kwargs and still quantizes.
+            # `load_in_4bit` defaults to True, so a set flag is not proof of a
+            # request; an explicit `load_in_16bit` IS one, for exactly this load.
+            if (
+                not load_in_16bit
+                and (load_in_4bit or load_in_8bit or load_in_fp8 != False)
+                and kwargs.get("quantization_config", None) is None
+            ):
                 print(
-                    f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
-                    f"requested 4bit/8bit/fp8 loading is disabled and the model will "
-                    f"load in 16bit. Point at the 4bit repo instead if that is not "
-                    f"what you wanted -- a 16bit load needs far more VRAM."
+                    f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
+                    f"4bit/8bit/fp8 loading is disabled and the model will "
+                    f"load in 16bit, which needs far more VRAM. Unsloth loads "
+                    f"4bit by default; point at the 4bit repo instead if you "
+                    f"wanted that."
                 )
             load_in_4bit = False
             load_in_8bit = False
@@ -848,16 +853,20 @@ class FastLanguageModel(FastLlamaModel):
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
             ):
-                # Only the plain flags are dropped; a user quantization_config
-                # stays in **kwargs and still quantizes, so stay quiet then.
-                if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
-                    "quantization_config", None
-                ) is None:
+                # A user quantization_config stays in **kwargs and still quantizes.
+                # `load_in_4bit` defaults to True, so a set flag is not proof of a
+                # request; an explicit `load_in_16bit` IS one, for exactly this load.
+                if (
+                    not load_in_16bit
+                    and (load_in_4bit or load_in_8bit or load_in_fp8 != False)
+                    and kwargs.get("quantization_config", None) is None
+                ):
                     print(
-                        f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
-                        f"requested 4bit/8bit/fp8 loading is disabled and the model will "
-                        f"load in 16bit. Point at the 4bit repo instead if that is not "
-                        f"what you wanted -- a 16bit load needs far more VRAM."
+                        f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
+                        f"4bit/8bit/fp8 loading is disabled and the model will "
+                        f"load in 16bit, which needs far more VRAM. Unsloth loads "
+                        f"4bit by default; point at the 4bit repo instead if you "
+                        f"wanted that."
                     )
                 load_in_4bit = False
                 load_in_8bit = False
@@ -1024,6 +1033,16 @@ class FastLanguageModel(FastLlamaModel):
             patch_compiling_bitsandbytes()
         except Exception as e:
             print(f"Unsloth: Could not patch bitsandbytes for torch.compile - {e}")
+
+        # The optimized path has never carried `offload_embedding`, so a request for one is
+        # dropped rather than honoured; say so instead of leaving the caller to infer it
+        # from memory use. `"auto"` stays quiet: it promises a decision, and off is one.
+        if offload_embedding != OFFLOAD_EMBEDDING_AUTO and offload_embedding:
+            print(
+                "Unsloth: Not offloading embeddings; the optimized path for this "
+                "architecture does not support it. Pass `device_map` or use FastModel "
+                "if you need the offload."
+            )
 
         model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
@@ -1242,7 +1261,7 @@ class FastModel(FastBaseModel):
         whisper_language = None,
         whisper_task = None,
         unsloth_force_compile = False,
-        offload_embedding = False,
+        offload_embedding = OFFLOAD_EMBEDDING_AUTO,
         float32_mixed_precision = None,  # Forces float32 mixed precision
         # Add the missing vLLM/inference parameters
         fast_inference = False,  # uses vLLM
@@ -1453,16 +1472,20 @@ class FastModel(FastBaseModel):
         if model_name.lower().endswith("-bf16") and (
             load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
         ):
-            # Only the plain flags are dropped; a user quantization_config stays
-            # in **kwargs and still quantizes, so stay quiet in that case.
-            if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
-                "quantization_config", None
-            ) is None:
+            # A user quantization_config stays in **kwargs and still quantizes.
+            # `load_in_4bit` defaults to True, so a set flag is not proof of a
+            # request; an explicit `load_in_16bit` IS one, for exactly this load.
+            if (
+                not load_in_16bit
+                and (load_in_4bit or load_in_8bit or load_in_fp8 != False)
+                and kwargs.get("quantization_config", None) is None
+            ):
                 print(
-                    f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
-                    f"requested 4bit/8bit/fp8 loading is disabled and the model will "
-                    f"load in 16bit. Point at the 4bit repo instead if that is not "
-                    f"what you wanted -- a 16bit load needs far more VRAM."
+                    f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
+                    f"4bit/8bit/fp8 loading is disabled and the model will "
+                    f"load in 16bit, which needs far more VRAM. Unsloth loads "
+                    f"4bit by default; point at the 4bit repo instead if you "
+                    f"wanted that."
                 )
             load_in_4bit = False
             load_in_8bit = False
@@ -1852,16 +1875,20 @@ class FastModel(FastBaseModel):
             if model_name.lower().endswith("-bf16") and (
                 load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
             ):
-                # Only the plain flags are dropped; a user quantization_config
-                # stays in **kwargs and still quantizes, so stay quiet then.
-                if (load_in_4bit or load_in_8bit or load_in_fp8 != False) and kwargs.get(
-                    "quantization_config", None
-                ) is None:
+                # A user quantization_config stays in **kwargs and still quantizes.
+                # `load_in_4bit` defaults to True, so a set flag is not proof of a
+                # request; an explicit `load_in_16bit` IS one, for exactly this load.
+                if (
+                    not load_in_16bit
+                    and (load_in_4bit or load_in_8bit or load_in_fp8 != False)
+                    and kwargs.get("quantization_config", None) is None
+                ):
                     print(
-                        f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so the "
-                        f"requested 4bit/8bit/fp8 loading is disabled and the model will "
-                        f"load in 16bit. Point at the 4bit repo instead if that is not "
-                        f"what you wanted -- a 16bit load needs far more VRAM."
+                        f"Unsloth: `{model_name}` is a 16bit (-bf16) checkpoint, so "
+                        f"4bit/8bit/fp8 loading is disabled and the model will "
+                        f"load in 16bit, which needs far more VRAM. Unsloth loads "
+                        f"4bit by default; point at the 4bit repo instead if you "
+                        f"wanted that."
                     )
                 load_in_4bit = False
                 load_in_8bit = False
@@ -2072,7 +2099,16 @@ class FastModel(FastBaseModel):
             whisper_language = whisper_language,
             whisper_task = whisper_task,
             auto_config = model_config,
-            offload_embedding = offload_embedding,
+            auto_config_from_caller = user_config is not None,
+            # `resize_token_embeddings` below replaces the embedding module and hooks do
+            # not travel to the replacement, so an offload installed during the load would
+            # leave a CPU embedding feeding a GPU decoder. An explicit request is left
+            # alone, since that combination was already this caller's to get wrong.
+            offload_embedding = (
+                False
+                if resize_model_vocab is not None and offload_embedding == OFFLOAD_EMBEDDING_AUTO
+                else offload_embedding
+            ),
             float32_mixed_precision = float32_mixed_precision,
             # Pass vLLM/inference parameters
             fast_inference = fast_inference,

@@ -1356,7 +1356,7 @@ with sync_playwright() as p:
     # completion often enough to appear in 3 of 8 sampled runs, and the clause
     # held anyway every time, so it never had the coverage its wording implies.
     # A content-based replacement would be flakier than what it replaces, because
-    # an empty completion is the model's behaviour, not a defect in Studio.
+    # an empty completion is the model's behaviour, not a defect in Unsloth.
     #
     # It matters now because the assistant action bar autohides on every reply but
     # the newest, so for the older of the two this reads, the labels are no longer in

@@ -13,7 +13,7 @@ for 3.
 Four workflows used to declare `push: branches: [main]` with no `paths:` filter while their
 `pull_request` trigger was carefully scoped. The effect was invisible on a PR and only
 appeared after merge: commit 6371f46a changes README.md and nothing else, and it started
-`Mac Studio GGUF CI`, `Mac Studio UI + API + Update CI`, `Mac Studio Install Matrix CI` and
+`Mac Unsloth GGUF CI`, `Mac Unsloth UI + API + Update CI`, `Mac Unsloth Install Matrix CI` and
 `Unsloth Tauri CI` -- seven macOS legs, 40% over the entire account cap, for a
 documentation typo. Every one of those runs then queued behind the others.
 
