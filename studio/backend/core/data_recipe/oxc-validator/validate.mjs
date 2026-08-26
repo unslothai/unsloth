@@ -21,9 +21,8 @@ const CODE_SHAPES = new Set(["auto", "module", "snippet"]);
 const SNIPPET_PREFIX = "(() => {\n";
 const SNIPPET_SUFFIX = "\n})();\nexport {};\n";
 const OXLINT_SUPPRESSED_RULES = ["no-unused-vars", "no-new-array"];
-// The caller kills only this wrapper, so a wedged oxlint has to die here or it is
-// orphaned. It gets the caller's budget minus what this process already spent, measured
-// monotonically from process start so the two cannot drift apart on a clock step.
+// The caller kills only this wrapper, so a wedged oxlint has to die here or it is orphaned.
+// It gets the caller's budget minus what this process spent, on the same monotonic basis.
 const OXLINT_DEFAULT_BUDGET_MS = 30_000;
 // Covers the spawn, which precedes this process, plus its own wind-down.
 const OXLINT_BUDGET_MARGIN_MS = 2_000;

@@ -47,18 +47,16 @@ def test_oxc_batch_falls_back_when_node_times_out(monkeypatch, tmp_path):
 
 
 def test_the_wrapper_kills_oxlint_against_the_remaining_caller_budget():
-    # Python's timeout SIGKILLs only the wrapper, so oxlint has to die inside validate.mjs.
-    # A fixed inner bound is not enough: parsing runs first, so oxlint gets what is left of
-    # the caller's budget. Guarded on the source because the backend ships no JS test runner.
+    # Python's timeout SIGKILLs only the wrapper, so oxlint has to die inside validate.mjs,
+    # against what is left of the caller's budget. On the source: no JS test runner ships.
     source = validators._OXC_RUNNER_PATH.read_text(encoding = "utf-8")
 
     assert re.search(
         r"mapBudgetMs\(payload\?\.timeout_ms\)", source
     ), "the oxlint budget must come from the timeout_ms the caller sends"
 
-    # performance.now() is monotonic ms since the process started, the same basis as the
-    # caller's timeout, and it already counts node boot and the oxc-parser import.
-    # Date.now() would drift from the caller on any wall-clock step.
+    # performance.now() is monotonic ms since process start, the same basis as the caller's
+    # timeout; Date.now() would drift from it on a wall-clock step.
     remaining = re.search(r"const timeoutMs = ([^;]+);", source)
     assert remaining, "runLintBatch must compute what is left of the caller's budget"
     assert "performance.now()" in remaining.group(1)
