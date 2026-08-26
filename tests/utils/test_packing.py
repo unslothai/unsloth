@@ -883,10 +883,29 @@ def NemotronHMamba2Mixer_forward(self, hidden_states, cache_params=None, attenti
 
     _CompiledNemotronHMamba2Mixer.__module__ = compiled.__name__
 
+    class _EmptyCache:
+        def has_previous_state(self, layer_idx):
+            return False
+
     class _CompiledModel(_FakeMamba2Model):
         def __init__(self):
             super().__init__()
             self.mixer = _CompiledNemotronHMamba2Mixer()
+
+        def forward(
+            self,
+            input_ids = None,
+            packed_seq_lengths = None,
+            use_cache = None,
+            **kwargs,
+        ):
+            # Nemotron-H builds an empty Cache inside the model and passes it
+            # to mixers; it is not a trainer-batch kwarg.
+            return self.mixer(
+                input_ids.float(),
+                cache_params = _EmptyCache(),
+                **kwargs,
+            )
 
     try:
         model = _CompiledModel()
