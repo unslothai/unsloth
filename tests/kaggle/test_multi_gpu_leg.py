@@ -214,11 +214,49 @@ def test_the_leg_is_small_enough_to_co_tenant():
     (12.78 of the 13.0 budget) for its entire life and the kernel would get
     longer, which is the one thing this was built not to do."""
     leg = legs.LEGS["multi_gpu"]
-    assert leg.vram_gb <= 1.0, leg.vram_gb
-    assert leg.vram_gb + legs.LEGS["gptoss"].vram_gb > 13.0, (
+    budget = 13.0  # CARD_VRAM_BUDGET_GB in build_kernel.py
+
+    # Expressed against the budget rather than a round number. The first
+    # version of this rule asserted `vram_gb <= 1.0`, which was a figure with no
+    # reasoning behind it, and it went red the moment the declaration was
+    # corrected from a guessed 0.7 to the measured 1.2 -- a guard failing on a
+    # measurement replacing a guess is the guard being wrong.
+    #
+    # What has to hold is that this leg can still SHARE with any ordinary leg,
+    # since running on both cards while excluding everything from both is the
+    # opposite of free.
+    others = [
+        other.vram_gb for name, other in legs.LEGS.items()
+        if name != "multi_gpu" and other.vram_gb < budget / 2
+    ]
+    assert others
+    assert leg.vram_gb + max(others) <= budget, (
+        f"at {leg.vram_gb} GB on EVERY card this leg cannot share with a "
+        f"{max(others)} GB leg, so it takes both cards outright"
+    )
+    assert leg.vram_gb + legs.LEGS["gptoss"].vram_gb > budget, (
         "gptoss must still be unable to share a card with this leg; if that "
         "stopped being true the co-tenancy argument changed"
     )
+
+
+def test_the_declaration_is_measured_and_not_copied_from_a_sibling():
+    """`vram_gb` was 0.7 for one commit, copied from the other Qwen legs. It is
+    wrong for this leg specifically -- it holds a CUDA context on BOTH cards --
+    and the repo-wide check could not say so, because it compares against
+    measured_vram.json and this leg was simply absent from it. A guard that
+    passes by finding nothing is the shape this directory keeps being caught
+    by."""
+    import json
+
+    measured = json.loads(
+        (SMOKE_DIR / "measured_vram.json").read_text(encoding = "utf-8")
+    )["peak_reserved_gb"]
+    assert "multi_gpu" in measured, (
+        "the leg is not in the measured file, so the declaration check passes "
+        "on it vacuously"
+    )
+    assert legs.LEGS["multi_gpu"].vram_gb >= measured["multi_gpu"]
 
 
 def test_it_does_not_export_a_gguf_and_the_reason_is_recorded():

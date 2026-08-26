@@ -531,7 +531,13 @@ LEGS: dict[str, Leg] = {
         # Small, and it has to be: this leg reserves its share on EVERY card, so
         # a big appetite here would block gptoss (12.78 of the 13.0 budget) for
         # its whole life rather than for the window the schedule has slack for.
-        vram_gb = 0.7,
+        #
+        # 1.2, MEASURED on kernel unsloth-probe-multigpu-r2-a280e2, both cycles.
+        # It was 0.7 first, copied from the other Qwen legs, and that was a
+        # guess dressed as a figure: this leg holds a CUDA context on both cards
+        # rather than one, and 0.7 under-declared the card the weights are on.
+        # Under-declaring is the exact failure Leg.vram_gb's own comment names.
+        vram_gb = 1.2,
         name = "Multi_GPU",
         summary = "Qwen3-0.6B with BOTH T4s visible: unsloth's DEVICE_COUNT > 1 bindings",
         install = BASE_INSTALL,
