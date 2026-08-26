@@ -3218,6 +3218,10 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     Anything that names an Unsloth-only tool (python, terminal,
     search_knowledge_base) or asks for MCP is unambiguous and keeps the loop, and
     so does every self-hosted provider, which declares no hosted tools at all.
+
+    A local GGUF/safetensors request has no provider_type, so this is False
+    even when ``enabled_tools`` is only ``web_search`` -- that name is Studio's
+    own tool there (#9730).
     """
     if getattr(payload, "mcp_enabled", False):
         return False
@@ -16458,6 +16462,21 @@ async def openai_chat_completions(
             api_monitor.fail(monitor_id, fail_detail)
         return HTTPException(status_code = status_code, detail = detail)
 
+    def _reject_missing_forced_tool(tool_choice, selected_tools) -> None:
+        from core.inference.chat_template_helpers import catalog_tool_names, forced_tool_name
+
+        forced_name = forced_tool_name(tool_choice)
+        if forced_name and forced_name not in catalog_tool_names(selected_tools):
+            raise _reject(
+                400,
+                openai_error_body(
+                    f"Invalid 'tool_choice': function '{forced_name}' is not enabled.",
+                    status = 400,
+                    code = "invalid_value",
+                    param = "tool_choice",
+                ),
+            )
+
     def _reject_unsupported_n(path_label: str) -> "HTTPException":
         return _reject(
             400,
@@ -16773,6 +16792,7 @@ async def openai_chat_completions(
                 # reset is POSSIBLE somewhere, not that this request can perform one.
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
             )
+            _reject_missing_forced_tool(payload.tool_choice, tools_to_use)
             # Skip the tool loop when no tool survived, so the safetensors
             # loop's "empty = allow all" semantic can't reach built-in tools
             # the caller didn't opt into. Callers who omit enabled_tools still
@@ -16900,6 +16920,7 @@ async def openai_chat_completions(
                     continue_final_message = _continue_final_message(payload),
                     auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                     nudge_tool_calls = payload.nudge_tool_calls,
+                    tool_choice = payload.tool_choice,
                     max_tool_iterations = payload.max_tool_calls_per_message
                     if payload.max_tool_calls_per_message is not None
                     else 25,
@@ -18436,6 +18457,7 @@ async def openai_chat_completions(
         _sf_tools_to_use = await _select_request_tools(
             payload, tools_on = _sf_tools_on, mcp_allowed = _sf_mcp_allowed
         )
+        _reject_missing_forced_tool(payload.tool_choice, _sf_tools_to_use)
         # Mirror the GGUF path: refuse to enter the tool loop when nothing
         # survived, so a model-emitted built-in call can't piggy-back on the
         # empty allow-list.
@@ -23658,6 +23680,33 @@ async def anthropic_messages(
         if _full_access:
             openai_tools = apply_full_access_tool_descriptions(openai_tools)
 
+        server_tool_choice = openai_tool_choice
+        if isinstance(server_tool_choice, dict):
+            forced_function = server_tool_choice.get("function")
+            forced_name = (
+                forced_function.get("name") if isinstance(forced_function, dict) else None
+            )
+            canonical_name = _STUDIO_ANTHROPIC_TOOL_ALIASES.get(forced_name)
+            if canonical_name:
+                server_tool_choice = {
+                    "type": "function",
+                    "function": {"name": canonical_name},
+                }
+        from core.inference.chat_template_helpers import catalog_tool_names, forced_tool_name
+
+        forced_name = forced_tool_name(server_tool_choice)
+        if forced_name and forced_name not in catalog_tool_names(openai_tools):
+            message = f"Invalid 'tool_choice': function '{forced_name}' is not enabled."
+            api_monitor.fail(monitor_id, message)
+            raise HTTPException(
+                status_code = 400,
+                detail = anthropic_error_body(
+                    message,
+                    status = 400,
+                    err_type = "invalid_request_error",
+                ),
+            )
+
         # Build tool-use system prompt nudge (same logic as /chat/completions)
         _nudge = _build_tool_action_nudge(
             tools = openai_tools,
@@ -23702,6 +23751,7 @@ async def anthropic_messages(
                 max_tool_iterations = 25,
                 auto_heal_tool_calls = True,
                 nudge_tool_calls = payload.nudge_tool_calls,
+                tool_choice = server_tool_choice,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
                 thread_id = payload.thread_id,
