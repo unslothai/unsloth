@@ -92,9 +92,9 @@ def test_a_blocked_loop_dumps_after_consecutive_slow_probes(loop_in_thread, tmp_
 
     text = dump_path.read_text(errors = "replace")
     assert "consecutive slow probes" in text
-    assert "blocked_in_a_syscall" in text, (
-        "the dump does not show the frame the loop is stuck in; it cannot answer what #9712 asks"
-    )
+    assert (
+        "blocked_in_a_syscall" in text
+    ), "the dump does not show the frame the loop is stuck in; it cannot answer what #9712 asks"
 
 
 def test_a_gil_holding_stall_is_dumped_mid_stall(loop_in_thread, tmp_path):
@@ -338,9 +338,9 @@ def test_the_lifespan_wires_it_in():
     """Cross-file guard: the module only does anything because main.py starts it at
     startup and retires it at shutdown entry, and either side can be edited alone."""
     source = (_BACKEND_DIR / "main.py").read_text(encoding = "utf-8")
-    assert "start_stall_watchdog(asyncio.get_running_loop()" in source, (
-        "main.py no longer starts the stall watchdog; the next #9712 stall leaves no dump behind"
-    )
+    assert (
+        "start_stall_watchdog(asyncio.get_running_loop()" in source
+    ), "main.py no longer starts the stall watchdog; the next #9712 stall leaves no dump behind"
     assert "suppress = stand_down_for_the_warm" in source, (
         "the watchdog no longer stands down for the warm; every cold start would "
         "dump over the torch import"
@@ -350,10 +350,7 @@ def test_the_lifespan_wires_it_in():
         "reads as a stall and dumps into the exit log"
     )
 
-    workflow = (
-        _BACKEND_DIR.parent.parent
-        / ".github" / "workflows" / "studio-mac-ui-smoke.yml"
-    )
+    workflow = _BACKEND_DIR.parent.parent / ".github" / "workflows" / "studio-mac-ui-smoke.yml"
     assert workflow.is_file(), f"{workflow} moved; update this guard"
     assert "UNSLOTH_STUDIO_STALL_WATCHDOG" in workflow.read_text(encoding = "utf-8"), (
         "the watchdog is opt-in and the mac smoke workflow no longer opts in; the "
