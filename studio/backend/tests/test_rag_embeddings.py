@@ -898,6 +898,7 @@ def test_a_local_gguf_beats_a_stored_sentence_transformers_record(monkeypatch, t
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
     monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
     import utils.embedding_model_settings as ems
+
     monkeypatch.setattr(ems, "get_stored_backend", lambda _m: "sentence-transformers")
 
     assert embeddings._resolve_auto_for_model(str(gguf)) == "llama-server"

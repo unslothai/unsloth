@@ -666,9 +666,11 @@ def _model_is_local_gguf(model: str | None) -> bool:
         return False
     try:
         from utils.paths import is_local_path
+
         if not is_local_path(model):
             return False
         from core.rag.embed_llama_server import LlamaServerBackend
+
         return LlamaServerBackend._resolve_local_gguf(model) is not None
     except Exception:  # noqa: BLE001 - filesystem oddity is not a llama signal
         return False

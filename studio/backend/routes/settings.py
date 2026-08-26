@@ -2276,6 +2276,7 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
     try:
         from pathlib import Path
         from utils.paths import is_local_path, normalize_path
+
         if not is_local_path(model):
             return False
         p = Path(normalize_path(model)).expanduser()
