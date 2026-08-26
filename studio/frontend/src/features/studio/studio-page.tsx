@@ -69,7 +69,9 @@ export function StudioPage(): ReactElement {
       datasetSubset: s.datasetSubset,
       datasetSplit: s.datasetSplit,
       isVisionModel: s.isVisionModel,
+      isAudioModel: s.isAudioModel,
       isDatasetImage: s.isDatasetImage,
+      isDatasetAudio: s.isDatasetAudio,
     })),
   );
   // Unknown until /api/health reports; see the showTrainingHydrating note below.
