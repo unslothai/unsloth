@@ -9921,13 +9921,14 @@ def _gguf_memory_breakdown(
     embedded_mtp = bool(
         not charged_drafter and _embedded_mtp_engages(probe, config, speculative_type, extras)
     )
-    if embedded_mtp and _extra_args_draft_offloaded_to_cpu(extras):
-        # --spec-draft-ngl 0 or a CPU draft device MOVES the head, it does not switch
-        # speculation off, so the allocation is still made -- in host RAM. Gating the
-        # sizing on the pin dropped it from the total as well, which is the direction
-        # that turns a multi-gigabyte load into a fit. The pin belongs here, on where
-        # the bytes sit, and nowhere else.
-        drafter_on_gpu = False
+    # Deliberately NOT re-placed by the draft-only pins. --spec-draft-ngl 0 and
+    # --spec-draft-device cpu carry params.speculative.n_gpu_layers and .devices, which
+    # llama.cpp copies into the model params only on the has_draft path; an embedded
+    # head takes llama_init_from_model(model_tgt) and keeps the target's placement.
+    # _extra_args_draft_offloaded_to_cpu says so in its own docstring and the launch
+    # budget enforces it (_draft_cpu_no_embedded), so moving the head's cache to host
+    # here dropped gigabytes out of gpu_bytes for a load that allocates them on the
+    # card -- an under-report, and the direction that turns an overflow into a fit.
     if charged_drafter or embedded_mtp:
         drafter_path, drafter_kind = charged_drafter or (None, "mtp")
         # K and V are independent overrides, and extras beat the panel field the same

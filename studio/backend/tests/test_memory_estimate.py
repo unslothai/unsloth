@@ -2370,20 +2370,31 @@ class TestAnEmbeddedMtpHeadIsPriced:
         assert priced is not None
         assert priced.drafter_runtime_bytes == 0
 
-    def test_a_cpu_pinned_head_keeps_its_bytes_in_the_total(self, nextn_model):
-        """--spec-draft-ngl 0 moves the head to host RAM; it does not switch it off.
+    def test_a_draft_pin_does_not_move_the_embedded_head(self, nextn_model):
+        """--spec-draft-ngl 0 does not switch the head off, and does not move it either.
 
-        The allocation is still made, so it belongs in the total. Gating the sizing on
-        the pin dropped it from BOTH figures, which is the direction that turns a
-        multi-gigabyte load into a fit.
+        Both flags carry ``params.speculative.n_gpu_layers`` / ``.devices``, which
+        llama.cpp copies into the model params only on the ``has_draft`` path. An
+        embedded head has no draft model to load: ``llama_init_from_model(model_tgt)``
+        builds its context against the target and it keeps the target's placement.
+        ``_extra_args_draft_offloaded_to_cpu`` documents that, and the launch budget
+        enforces it through ``_draft_cpu_no_embedded``.
+
+        So the allocation is still made AND still on the card. Gating the sizing on the
+        pin dropped it from both figures; placing it in host RAM dropped it from the
+        GPU one. Both are the direction that turns a multi-gigabyte load into a fit.
         """
         gguf, config = nextn_model
+        unpinned = ri._gguf_memory_breakdown(config, gguf, n_ctx = 131072)
+        assert unpinned is not None
+        assert unpinned.drafter_runtime_gpu_bytes > 0
         for pin in (["--spec-draft-ngl", "0"], ["--spec-draft-device", "cpu"]):
             pinned = ri._gguf_memory_breakdown(config, gguf, n_ctx = 131072, llama_extra_args = pin)
             assert pinned is not None, pin
             assert pinned.drafter_runtime_bytes > 0, pin
-            # In host RAM, so it is in the total and out of the GPU share.
-            assert pinned.drafter_runtime_gpu_bytes == 0, pin
+            # Unmoved: the same bytes on the same device as with no pin at all.
+            assert pinned.drafter_runtime_gpu_bytes == unpinned.drafter_runtime_gpu_bytes, pin
+            assert pinned.drafter_runtime_bytes == unpinned.drafter_runtime_bytes, pin
 
 
 class TestACpuOnlyHostShowsNoGpuFootprint:
