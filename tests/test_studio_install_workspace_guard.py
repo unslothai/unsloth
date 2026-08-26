@@ -942,8 +942,7 @@ def test_install_sh_replaces_an_empty_id_even_when_it_cannot_read_it(tmp_path):
     id_file.write_bytes(b"")
     id_file.chmod(0o000)
     probe = (
-        _install_id_helpers()
-        + f'if out=$(_css_read_valid_install_id "{id_file}"); then\n'
+        _install_id_helpers() + f'if out=$(_css_read_valid_install_id "{id_file}"); then\n'
         '    printf "READ_OK=[%s]\\n" "$out"\n'
         "else\n"
         '    printf "READ_FAILED\\n"\n'
@@ -954,9 +953,9 @@ def test_install_sh_replaces_an_empty_id_even_when_it_cannot_read_it(tmp_path):
     finally:
         id_file.chmod(0o600)
     assert res.returncode == 0, res.stderr
-    assert "READ_OK=[]" in res.stdout, (
-        f"an empty id must be regenerated, not refused; got {res.stdout!r}"
-    )
+    assert (
+        "READ_OK=[]" in res.stdout
+    ), f"an empty id must be regenerated, not refused; got {res.stdout!r}"
 
 
 @pytest.mark.skipif(
