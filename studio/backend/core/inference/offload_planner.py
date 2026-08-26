@@ -853,13 +853,25 @@ def plan_to_args(plan: Plan) -> list[str]:
     return args
 
 
-def smart_offload_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether the launch path may emit a spill plan.
+_SMART_OFFLOAD_ON = ("1", "true", "yes", "on", "enabled")
 
-    Off by default. The planner changes how a model is placed, and the failure
-    mode of getting it wrong is a load that OOMs where llama.cpp's own default
-    would have paged, so it opts in rather than out until it has run on more
-    than one machine.
+
+def smart_offload_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether the launch path may plan a spill. ON unless explicitly disabled.
+
+    It shipped opt-in "until it has run on more than one machine". It has: 118
+    paired runs across T4, L4, RTX PRO 6000, A100, B200 and a real gfx1151 APU,
+    faster on generation in 111, and 100% KV cache retention in all 83 runs
+    where the layer-count arm would have split the cache to host RAM.
+
+    Default does not mean it places every load: it abstains often, and every
+    abstain still falls through to ``--fit on``.
+
+    An UNRECOGNISED value disables. The typos are not symmetric for an opt-OUT
+    flag: ``flase`` meaning off must not hand back the thing it was switching
+    off, while fumbling an on-spelling only keeps the old behaviour.
     """
-    raw = (os.environ if env is None else env).get("UNSLOTH_SMART_OFFLOAD", "")
-    return str(raw).strip().lower() in ("1", "true", "yes", "on", "enabled")
+    raw = (os.environ if env is None else env).get("UNSLOTH_SMART_OFFLOAD")
+    if raw is None:
+        return True
+    return str(raw).strip().lower() in _SMART_OFFLOAD_ON

@@ -42,6 +42,24 @@ def _discrete_host(monkeypatch):
     monkeypatch.setattr(utils.hardware, "is_apple_silicon", lambda: False)
 
 
+@pytest.fixture(scope = "session")
+def sparse_adapter(tmp_path_factory):
+    """A 3 GiB adapter file that costs neither RAM nor (on ext4/APFS) disk.
+
+    ``_sidecar_adapter_bytes`` reads ``os.stat().st_size`` and nothing else, so
+    the fixture only has to be the right SIZE. Materialising it as real zeros
+    spiked RSS by 3 GiB per test and left up to 9 GiB in the session's tmp dir
+    (pytest keeps every test's directory for the whole run), which the 14 GB
+    runner disk does not have to spare. ``truncate`` sets the length without
+    writing: a hole on ext4/APFS, and on NTFS space that is reserved but never
+    zero-filled. One file for the session, since every caller only stats it.
+    """
+    path = tmp_path_factory.mktemp("adapters") / "adapter.gguf"
+    with open(path, "wb") as handle:
+        handle.truncate(3 * GIB)
+    return path
+
+
 class _Stub:
     """Only what the seam touches."""
 
@@ -53,9 +71,15 @@ class _Stub:
     # Bytes of trailing nextn/MTP blocks the layout dropped. 0 = an ordinary
     # model, which is every existing case here.
     _excluded_bytes = 0
+    # Discrete CUDA by default. An integrated SoC (Jetson, DGX Spark) is the
+    # unified-memory answer on the CUDA side, exercised deliberately below.
+    _integrated_cuda = False
 
     def _amd_apu_wants_unified_memory(self, gpu_indices = None):
         return self._unified
+
+    def _integrated_cuda_unified_memory(self, gpu_indices = None):
+        return self._integrated_cuda
 
     def __init__(
         self,
@@ -124,6 +148,9 @@ def _inputs(
     n_parallel = 1,
     compute_flat = 0,
     ctx_compute = 0,
+    env_mmproj = 0,
+    env_mmproj_unsized = False,
+    separate_draft = False,
 ):
     return {
         "model_size": model_size,
@@ -133,12 +160,15 @@ def _inputs(
         "compute_buffer_flat": compute_flat,
         "ctx_compute_per_device": ctx_compute,
         "extra_gpu_bytes": extra_gpu,
+        "env_mmproj_bytes": env_mmproj,
+        "env_mmproj_unsized": env_mmproj_unsized,
         "gpu_indices": indices,
         "soft_overhead": 0,
         "model_path": "/models/stub.gguf",
         "n_ctx": 32768,
         "n_parallel": n_parallel,
         "shared_gpu_ids": set() if shared is None else set(shared),
+        "separate_draft_on_gpu": separate_draft,
         **({} if mtp is None else {"mtp_will_engage": mtp}),
     }
 
@@ -159,10 +189,16 @@ def _plan(
 # ------------------------------------------------------------------ the gate
 
 
-def test_the_planner_is_off_by_default():
-    """No env, no plan. An old install cannot change behaviour by upgrading."""
-    assert smart_offload_enabled({}) is False
-    assert _Stub()._planned_tensor_spill(_inputs(), env = {}) is None
+def test_the_planner_is_on_by_default():
+    """No env, a plan. The flag is now opt-OUT."""
+    assert smart_offload_enabled({}) is True
+    # A load that fits is still PLANNED, it just spills nothing.
+    roomy = _Stub()._planned_tensor_spill(_inputs(), env = {})
+    assert roomy is not None and not roomy.spills_anything
+
+    # A load that does not fit gets a real plan with no env set at all.
+    tight = _Stub()._planned_tensor_spill(_inputs(free_mib = 14 * 1024), env = {})
+    assert tight is not None and tight.spills_anything
 
 
 @pytest.mark.parametrize("value", ["1", "on", "true", "yes", "enabled", "ON", " 1 "])
@@ -170,8 +206,18 @@ def test_the_gate_accepts_the_usual_spellings(value):
     assert smart_offload_enabled({"UNSLOTH_SMART_OFFLOAD": value}) is True
 
 
-@pytest.mark.parametrize("value", ["0", "off", "", "no", "nope"])
-def test_the_gate_rejects_everything_else(value):
+@pytest.mark.parametrize("value", ["0", "off", "", "no", "disabled", "false"])
+def test_an_explicit_off_still_disables(value):
+    """The escape hatch has to keep working."""
+    assert smart_offload_enabled({"UNSLOTH_SMART_OFFLOAD": value}) is False
+    assert _Stub()._planned_tensor_spill(_inputs(), env = {"UNSLOTH_SMART_OFFLOAD": value}) is None
+
+
+@pytest.mark.parametrize("value", ["nope", "flase", "onn", "2"])
+def test_an_unrecognised_value_disables_rather_than_enables(value):
+    """The typos are not symmetric for an opt-OUT flag: `flase` meaning off must
+    not hand back the thing it was switching off, while fumbling an on-spelling
+    only keeps the previous behaviour."""
     assert smart_offload_enabled({"UNSLOTH_SMART_OFFLOAD": value}) is False
 
 
@@ -912,6 +958,292 @@ def test_a_pass_through_parallel_that_grows_the_cache_declines_the_plan():
     assert _plan(stub, n_parallel = 1) is not None
 
 
+# --------------------------------------- newly reachable now the gate is default-on
+
+
+@pytest.mark.parametrize(
+    "extra_args,env",
+    [
+        (["--rpc", "10.0.0.2:50052"], None),
+        (["--rpc=10.0.0.2:50052"], None),
+        (None, {"LLAMA_ARG_RPC": "10.0.0.2:50052"}),
+    ],
+)
+def test_an_rpc_device_declines_the_plan(extra_args, env):
+    """--rpc devices are REMOTE and llama.cpp puts them at the FRONT of the device
+    list (llama.cpp:275), so the row split hands the first slice of layers to a
+    card this planner never saw: every number it has comes from Studio's LOCAL
+    gpus snapshot. Crediting local VRAM for layers that went to another host and
+    then pinning it with --fit off has nothing left to catch it."""
+    assert _plan(_Stub(), extra_args = extra_args, env = env) is None
+    assert _plan(_Stub()) is not None, "not vacuous: the same load plans without it"
+
+
+@pytest.mark.parametrize(
+    "extra_args,env",
+    [
+        (["--fit-target", "4096"], None),
+        (["-fitt", "4096"], None),
+        (["--fit-target=4096,4096"], None),
+        (None, {"LLAMA_ARG_FIT_TARGET": "4096"}),
+    ],
+)
+def test_an_explicit_fit_target_declines_the_plan(extra_args, env):
+    """--fit-target is VRAM the user told the fitter it may not spend: it becomes
+    `targets.push_back(dmds_full[id].free - margins[id])` (common/fit.cpp:282-288).
+    This planner credits that same VRAM and emits --fit off, so
+    common_params_fit_impl never runs and the reservation is silently dropped
+    while Studio's own load-mode fit still honours it."""
+    assert _plan(_Stub(), extra_args = extra_args, env = env) is None
+    assert _plan(_Stub()) is not None, "not vacuous"
+
+
+def test_a_pass_through_adapter_is_charged_as_resident_vram(sparse_adapter, monkeypatch):
+    """LoRA and control-vector sidecars are GPU-resident and in NO other term
+    here: they are created on the base layer's buffer type (llama-adapter.cpp:335,
+    :67) and neither mmaps (:407). `model_size` is the base GGUF alone, so an
+    unpriced adapter is a plan claiming a fit that is not there."""
+    adapter = sparse_adapter
+
+    # Sized so the base load fits with room to spare and the adapter is what
+    # tips it over: the term has to be load-bearing, not merely present.
+    stub = _Stub()
+    free = 17 * 1024
+    bare = _plan(stub, free_mib = free)
+    with_lora = _plan(stub, free_mib = free, extra_args = ["--lora", str(adapter)])
+    assert bare is not None and with_lora is not None
+    assert not bare.spills_anything, "the base load fits on its own"
+    assert with_lora.spills_anything, "3 GiB of resident adapter comes out of the same VRAM"
+
+    ctrl = _plan(stub, free_mib = free, extra_args = ["--control-vector", str(adapter)])
+    assert ctrl.spilled_blocks == with_lora.spilled_blocks
+
+    # The colon-scaled form, from a directory the path can be spelled relative to.
+    # An ABSOLUTE path is not usable here: on Windows it carries a drive letter,
+    # and `C:\...\adapter.gguf:0.5` is three parts to string_split, which upstream
+    # rejects outright (`parts.size() != 2` -> throw, common/arg.cpp:2944-2946).
+    # Pricing a token that never starts a child would be the wrong answer, so the
+    # test asks for the reading that exists on every platform.
+    monkeypatch.chdir(adapter.parent)
+    scaled = _plan(stub, free_mib = free, extra_args = ["--lora-scaled", "adapter.gguf:0.5"])
+    assert scaled.spilled_blocks == with_lora.spilled_blocks
+
+
+def test_a_drive_lettered_scaled_adapter_is_skipped_rather_than_priced():
+    """The other half of the same syntax. string_split on ':' gives three parts for
+    `C:\\dir\\adapter.gguf:0.5`, so upstream throws and the child never starts;
+    there is no placement to misprice, and guessing which colon was the separator
+    would price a launch that cannot happen. Skipped, not sized, not abstained.
+
+    No file is created: the drive-lettered form names a path that exists on no
+    runner, and the point is that it is never stat'd."""
+    drive_lettered = "C:\\dir\\adapter.gguf:0.5"
+
+    stub = _Stub()
+    free = 17 * 1024
+    plan = _plan(stub, free_mib = free, extra_args = ["--lora-scaled", drive_lettered])
+    assert plan is not None, "a form the child rejects is not the unsized-abstain case"
+    assert not plan.spills_anything, "nothing priced, so the base load still fits"
+
+
+def test_an_unreadable_adapter_abstains():
+    """Engaged but unsized: os.stat fails, so abstain rather than plan a footprint
+    short by an unknown amount. Same answer _fits_without_paging gives."""
+    assert _plan(_Stub(), extra_args = ["--lora", "/no/such/adapter.gguf"]) is None
+    assert _plan(_Stub()) is not None, "not vacuous"
+
+
+def test_an_inherited_projector_is_charged_rather_than_ignored():
+    """A projector that arrives only through LLAMA_ARG_MMPROJ is still GPU
+    resident: arg.cpp applies the environment before argv (common/arg.cpp:780-802,
+    the handler loop that runs ahead of parse_cli_args), and `extra_gpu_bytes`
+    carries only the projector Studio itself resolved. Unbudgeted bytes here are a
+    plan pinned with --fit off over a footprint that does not fit."""
+    stub = _Stub()
+    free = 17 * 1024
+    bare = _plan(stub, free_mib = free)
+    inherited = _plan(stub, free_mib = free, env_mmproj = 3 * GIB)
+    assert bare is not None and inherited is not None
+    assert not bare.spills_anything, "the base load fits on its own"
+    assert inherited.spills_anything, "3 GiB of inherited projector comes out of the same VRAM"
+
+
+def test_an_unsized_inherited_projector_abstains():
+    """LLAMA_ARG_MMPROJ_URL names a download that has not happened yet (and it
+    outranks even the --mmproj this launch emits: the fetch rewrites
+    params.mmproj.path, common/arg.cpp:500-503, :632-634), and an unreadable path
+    cannot be stat'd. Unknown bytes, so abstain rather than plan short."""
+    assert _plan(_Stub(), free_mib = 14 * 1024, env_mmproj_unsized = True) is None
+    assert _plan(_Stub(), free_mib = 14 * 1024) is not None, "not vacuous"
+
+
+def test_the_seam_hands_the_planner_the_inherited_projector():
+    """The planner can only charge what the launch path snapshots for it, and the
+    load-mode fit already computes exactly these two values."""
+    import inspect
+
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    assert '_spill_inputs["env_mmproj_unsized"]=_fit_env_mmproj_unsized' in compact
+    assert '_spill_inputs["env_mmproj_bytes"]=' in compact
+
+
+class _FlatAttentionStub(_Stub):
+    """A layout _per_device_shortfall can actually check: every layer holds a
+    cache, no sliding window, no trailing blocks. The default stub abstains on the
+    per-device test, which hides what a multi-GPU plan does with a flat term."""
+
+    def _tensor_spill_layout(self, model_path):
+        n = 8
+        return ModelLayout(
+            arch = "qwen35",
+            n_layers = n,
+            n_attention_layers = n,
+            blocks = tuple(
+                BlockLayout(index = i, spillable_bytes = 2 * GIB, resident_bytes = GIB // 2)
+                for i in range(n)
+            ),
+            lm_head_bytes = 1 * GIB,
+            token_embd_bytes = 512 * MIB,
+            kv_bytes_per_token_f16 = 16384,
+            n_ctx_train = 262144,
+            complete = True,
+        )
+
+
+def test_a_multi_gpu_adapter_declines_rather_than_booking_it_all_on_device_0(sparse_adapter):
+    """Adapter bytes are not a device-0 lump on a layer split.
+
+    A LoRA tensor is allocated on its BASE tensor's buffer
+    (`ggml_backend_buffer_get_type(model_tensor->buffer)`, llama-adapter.cpp:335)
+    and a control-vector row on `model.select_buft(il)` (:67), so they follow the
+    contiguous layer ranges llama.cpp hands each card. `extra_resident_bytes`, on
+    the other hand, is charged entirely to device 0 by `_per_device_shortfall`, so
+    a tight second card passes the per-device check on bytes it will really be
+    asked to hold -- and the plan then emits --fit off, so common/fit.cpp never
+    runs to catch the overflow. The base GGUF's layout carries no adapter tensor
+    table, so the split cannot be derived; abstain instead.
+    """
+    adapter = sparse_adapter
+
+    stub = _FlatAttentionStub()
+    # 10 + 3 GiB free with a 3 GiB adapter: the deficit needs EVERY block spilled,
+    # which is the only multi-GPU shape that reaches the per-device check at all
+    # (a partial spill already abstains above it). Before this abstain the same
+    # inputs produced a real plan -- all 8 blocks spilled, -ngl -1 --fit off
+    # emitted -- with the whole 3 GiB booked on device 0 and nothing on device 1,
+    # which is where the adapter rows for that card's layers actually go.
+    two_cards = dict(model_size = 21 * GIB, kv = 2 * GIB, gpus = [(0, 10 * 1024), (1, 3 * 1024)])
+    for flag in ("--lora", "--control-vector"):
+        assert _plan(stub, extra_args = [flag, str(adapter)], **two_cards) is None
+
+    # Only the adapter is refused: the same two-card load still reaches the
+    # planner, so the abstain above is not the whole configuration being dropped.
+    assert _plan(stub, **two_cards) is not None
+
+    # Single card is unchanged: there the flat charge IS the right one, and the
+    # adapter is still priced rather than ignored.
+    one_card = _plan(_Stub(), free_mib = 17 * 1024, extra_args = ["--lora", str(adapter)])
+    assert one_card is not None and one_card.spills_anything
+
+
+def test_apple_silicon_declines_the_plan(monkeypatch):
+    """Unified memory: an -ot spill moves bytes inside one pool, so the trade does
+    not exist, and Metal keeps mmap zero copy through buffer_from_host_ptr. The
+    seam reads this from the host, so it is the one fact the autouse fixture pins
+    and the one that has to be asserted with the fixture overridden."""
+    import utils.hardware
+
+    monkeypatch.setattr(utils.hardware, "is_apple_silicon", lambda: True)
+    assert _plan(_Stub(), free_mib = 14 * 1024) is None
+
+    monkeypatch.setattr(utils.hardware, "is_apple_silicon", lambda: False)
+    assert _plan(_Stub(), free_mib = 14 * 1024) is not None, "not vacuous"
+
+
+def test_an_integrated_cuda_device_declines_the_plan():
+    """A CUDA SoC (Jetson, DGX Spark) is unified memory and no other guard sees it.
+
+    `_amd_apu_wants_unified_memory` answers only for ROCm, and `shared_gpu_ids`
+    is filled only on Vulkan (an iGPU reports total VRAM 0), so an integrated
+    CUDA device arrives with its "VRAM" credited AND host RAM credited: one pool
+    counted twice. Spilling out of it frees no device memory, and the plan then
+    pins that with --fit off, which is the load llama.cpp's own fitter used to
+    place. The repository already classifies such a device as unified memory for
+    the diffusion path (diffusion_memory.py:292-294, cudaDeviceProp::integrated
+    via torch's is_integrated).
+    """
+    discrete = _Stub()
+    soc = _Stub()
+    soc._integrated_cuda = True
+
+    # Same numbers either way, so the difference is attributable to the flag.
+    assert _plan(soc, free_mib = 14 * 1024) is None
+    assert _plan(discrete, free_mib = 14 * 1024) is not None, "not vacuous"
+
+
+def test_a_multi_gpu_separate_drafter_declines_rather_than_booking_it_on_device_0():
+    """An unpinned drafter is distributed, not a device-0 lump.
+
+    `common_base_params_to_speculative` copies the draft device list verbatim
+    (common/speculative.cpp:2319-2331) and an EMPTY one drops
+    `llama_prepare_model_devices` into its default enumeration of every visible
+    GPU (llama.cpp:184-276), so the drafter's weights and its context follow the
+    free-memory row split onto every card. `_mtp_reserve_bytes` rides in
+    `extra_resident_bytes`, which `_per_device_shortfall` books entirely on
+    device 0, so a tight second card passes the per-device check on bytes it will
+    really be asked to hold -- and --fit off means common/fit.cpp never runs to
+    catch the overflow. A PINNED drafter already declines on
+    `_extra_args_draft_device_pin`.
+    """
+    stub = _FlatAttentionStub()
+    # The all-blocks-spilled shape, the only multi-GPU one that reaches the
+    # per-device check at all (a partial spill abstains above it). extra_gpu is
+    # the drafter's own reserve, which is how the seam really carries it: the
+    # snapshot folds _mtp_reserve_bytes into extra_gpu_bytes.
+    two_cards = dict(
+        model_size = 21 * GIB,
+        kv = 2 * GIB,
+        extra_gpu = 3 * GIB,
+        gpus = [(0, 10 * 1024), (1, 3 * 1024)],
+    )
+    # Before this abstain the same inputs produced a real plan -- every block
+    # spilled, -ngl -1 --fit off emitted -- with the whole 3 GiB booked on
+    # device 0 and nothing on device 1, which is where the drafter's rows for
+    # that card's layers actually go.
+    assert _plan(stub, separate_draft = True, **two_cards) is None
+
+    # Only the drafter is refused: the same two cards without one still plan, and
+    # really spill, so the abstain is not the whole configuration being dropped.
+    without = _plan(stub, **two_cards)
+    assert without is not None and without.spills_anything
+
+    # Single card is unchanged: there the flat charge IS the right one.
+    one_card = _plan(_Stub(), free_mib = 14 * 1024, separate_draft = True)
+    assert one_card is not None and one_card.spills_anything
+
+
+def test_the_flat_mtp_reserve_reaches_the_spill_budget():
+    """An unsized draft KV is paid for with _MTP_VRAM_RESERVE_FRAC of every card.
+
+    The placement paths spend `_pin_fraction = _vram_frac - _MTP_VRAM_RESERVE_FRAC`
+    when the byte-accurate `mtp_overhead_fn` cannot size the draft KV, and
+    `_mtp_reserve_bytes` carries no replacement for the unsized part (it is 0 when
+    `mtp_overhead_fn is None`). The snapshot has to hand the planner that same
+    reduced budget, or the plan spends 5% of VRAM the fit deliberately kept free
+    and then pins it with --fit off.
+    """
+    import inspect
+
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    assert '"gpu_usable_mib":{_idx:max(0.0,_gpu_usable((_idx,_free),_pin_fraction))' in compact
+
+    # And the budget really is what the planner spends: the same load plans a
+    # bigger spill on the smaller budget.
+    stub = _Stub()
+    generous = _plan(stub, free_mib = 24 * 1024, usable_mib = 15 * 1024)
+    reserved = _plan(stub, free_mib = 24 * 1024, usable_mib = 14 * 1024)
+    assert generous is not None and reserved is not None
+    assert len(reserved.spilled_blocks) > len(generous.spilled_blocks)
 def test_the_seam_computes_a_per_layer_kv_vector():
     """The data already existed on the backend (_sliding_window_pattern); it just
     never crossed into the planner. Only the RATIOS travel: full attention holds
