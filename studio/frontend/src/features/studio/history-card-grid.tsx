@@ -14,7 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Spinner } from "@/components/ui/spinner";
-import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { usePlatformStore } from "@/config/env";
 import { bumpInventoryVersion } from "@/features/hub";
 import type { TrainingRunSummary } from "@/features/training";
 import {
@@ -604,11 +604,6 @@ export function HistoryCardGrid({
                   className="absolute bottom-3 right-4 z-10 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
                   onClick={async (e) => {
                     e.stopPropagation();
-                    try {
-                      await fetchDeviceType({ force: true });
-                    } catch {
-                      // Fall back to the last known server URL or this origin.
-                    }
                     // Encode each segment but keep "/" so the /p route matches.
                     const ref = (run.preview_ref ?? "")
                       .split("/")

@@ -46,6 +46,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -294,9 +295,23 @@ export function QuantOptionsMenu({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const revealLabel =
     deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
+  const cachedPathRef = useRef<string | null>(null);
+  const prefetchCachedPath = useCallback(() => {
+    if (!downloaded || cachedPathRef.current) {
+      return;
+    }
+    getCachedModelPath(repoId, quant)
+      .then(({ path }) => {
+        cachedPathRef.current = path;
+      })
+      .catch(() => undefined);
+  }, [downloaded, repoId, quant]);
   const handleCopyPath = useCallback(async () => {
     try {
-      const { path } = await getCachedModelPath(repoId, quant);
+      // Safari drops the click's clipboard permission after any other await.
+      const path =
+        cachedPathRef.current ?? (await getCachedModelPath(repoId, quant)).path;
+      cachedPathRef.current = path;
       if (await copyToClipboard(path)) {
         toast.success("Copied path");
       } else {
@@ -318,7 +333,7 @@ export function QuantOptionsMenu({
   }, [repoId, quant]);
 
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={(open) => open && prefetchCachedPath()}>
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
