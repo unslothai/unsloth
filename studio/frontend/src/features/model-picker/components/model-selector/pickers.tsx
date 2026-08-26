@@ -80,7 +80,6 @@ import {
   AudioWave01Icon,
   Cancel01Icon,
   DashboardCircleIcon,
-  Download01Icon,
   Flag01Icon,
   FlimSlateIcon,
   Folder02Icon,
@@ -601,20 +600,27 @@ function FormatTag({ tone, label }: { tone: FormatTone; label: string }) {
   );
 }
 
-/** "Already on disk", shown on Hub rows that are also downloaded. */
+/** "Already on disk", shown on Hub rows that are also downloaded. The Hub's own
+ *  on-device dot: a download arrow read as "click to fetch" on the one row that
+ *  needs no fetching. Hit area and tooltip as FormatTag. */
 function DownloadedBadge() {
   return (
-    <span
-      title="Already downloaded"
-      aria-label="Already downloaded"
-      className="flex h-[18px] shrink-0 items-center justify-center text-status-success"
-    >
-      <HugeiconsIcon
-        icon={Download01Icon}
-        className="size-3"
-        strokeWidth={1.8}
-      />
-    </span>
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        <span
+          aria-label="On device"
+          className="flex h-[18px] w-[14px] shrink-0 items-center justify-center"
+        >
+          <span
+            aria-hidden="true"
+            className="size-[5px] rounded-full bg-status-success"
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        On device
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
