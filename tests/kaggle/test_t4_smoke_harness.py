@@ -2449,9 +2449,20 @@ def test_an_unwired_note_says_what_is_unknown_or_what_replaced_it():
     must say WHAT WOULD UNBLOCK IT -- otherwise "rejected" reads as permanent
     and the measurement behind it is never revisited.
 
-    So the rule is: say which of the three it is, name the superseding leg if
-    it was superseded, and name the unblock condition if it was rejected. A
-    bare note passes none of them.
+    A leg that is UNDER RE-MEASUREMENT is the fourth, and it exists because a
+    rejection can turn out to rest on a defect somewhere else. multi_gpu was
+    rejected partly for breaking the Default leg; that break was this driver
+    building the leg on the wrong python and installing pyarrow where dill
+    pickles it by value, and it is fixed. Leaving the note reading REJECTED
+    would keep a withdrawn measurement standing as a finding, which is the
+    failure this file exists to catch, and forcing it to read STILL UNKNOWN
+    would throw away everything that IS known. Such a note owes the reader the
+    run that will settle it, by name, so the answer is collectable rather than
+    perpetually pending.
+
+    So the rule is: say which of the four it is, name the superseding leg if it
+    was superseded, name the unblock condition if it was rejected, and name the
+    deciding run if it is being re-measured. A bare note passes none of them.
     """
     from legs import LEGS, UNWIRED
     for name, note in UNWIRED.items():
@@ -2467,6 +2478,18 @@ def test_an_unwired_note_says_what_is_unknown_or_what_replaced_it():
                 f"{name} says it was measured and rejected without saying what "
                 f"would change that; a rejection with no way back is a deletion "
                 f"that keeps costing a reader the time to re-derive it"
+            )
+            continue
+        if "UNDER RE-MEASUREMENT" in note:
+            assert "WHAT WOULD UNBLOCK IT" in note, (
+                f"{name} says it is being re-measured without saying what would "
+                f"settle it, which is a rejection with the deadline removed"
+            )
+            # The deciding run has to be NAMED. "we will re-run it" is how a
+            # measurement stays pending for a year.
+            assert re.search(r"\b(ab\d+|unsloth-probe-[a-z0-9-]+)\b", note), (
+                f"{name} is under re-measurement and names no run that will "
+                f"decide it, so nobody can go and read the answer"
             )
             continue
         assert "STILL UNKNOWN" in note, (
