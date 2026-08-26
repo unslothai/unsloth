@@ -76,6 +76,8 @@ interface Estimate {
   specFixedBytes: number | null;
   /** llama.cpp's compute buffers, which every launch reserves. */
   computeBytes: number | null;
+  /** False only when the loader is free to shrink the context to fit. */
+  contextIsPinned: boolean | null;
   /** The planner's own GPU-resident total, which supersedes the segment sum. */
   gpuTotalBytes: number | null;
   /** What the planner still reserves at the shortest context. */
@@ -140,6 +142,7 @@ const MISS: Estimate = {
   kvCheckpointBytes: null,
   specFixedBytes: null,
   computeBytes: null,
+  contextIsPinned: null,
   gpuTotalBytes: null,
   gpuFloorBytes: null,
   specUnpriced: false,
@@ -220,7 +223,9 @@ function readConfigEpoch(): number {
   // useSyncExternalStore suppressed the rerender and a bar stayed drawn against
   // aggregate multi-GPU VRAM after the launch had been pinned to one card.
   const pin = useChatRuntimeStore.getState();
-  const pinSignature = `${(pin.selectedGpuIds ?? []).join(",")} ${pin.selectedGpuIndexKind ?? ""}`;
+  // The session speculative mode belongs here for the same reason: it is read
+  // above and never written to a config, so nothing else would move the epoch.
+  const pinSignature = `${(pin.selectedGpuIds ?? []).join(",")} ${pin.selectedGpuIndexKind ?? ""} ${pin.speculativeType ?? ""}`;
   const prefSignature = `${readPersistedGpuMemoryMode()} ${readPersistedSpeculativeType()} ${pinSignature}`;
   if (prefSignature !== lastPrefSignature) {
     lastPrefSignature = prefSignature;
@@ -317,7 +322,16 @@ function budgetIsMeaningful(config: PerModelConfig | undefined): boolean {
 function effectiveSpeculativeType(
   config: PerModelConfig | undefined,
 ): string | undefined {
-  return config?.speculativeType ?? readPersistedSpeculativeType();
+  // The live runtime value before the persisted one. Forced modes (mtp,
+  // mtp+ngram, dspark, dflash) are deliberately session-only and are never
+  // returned by readPersistedSpeculativeType, so a model loaded with one of them
+  // but not remembered was priced as auto -- and auto drops MTP on an MLA target
+  // while the forced load engages it and opens another full cache.
+  return (
+    config?.speculativeType ??
+    useChatRuntimeStore.getState().speculativeType ??
+    readPersistedSpeculativeType()
+  );
 }
 
 async function fetchEstimate(
@@ -351,6 +365,7 @@ async function fetchEstimate(
         kvCheckpointBytes: r.kv_checkpoint_bytes ?? null,
         specFixedBytes: r.spec_fixed_bytes ?? null,
         computeBytes: r.compute_bytes ?? null,
+        contextIsPinned: r.context_is_pinned ?? null,
         gpuTotalBytes: r.gpu_bytes ?? null,
         gpuFloorBytes: r.gpu_floor_bytes ?? null,
         specUnpriced: r.spec_unpriced === true,
@@ -419,7 +434,13 @@ export function useModelMemory(
   // as shared, which needs a unified-memory signal in hardware.py to fix.
   const inferenceGpu = useInferenceGpuInfo();
   const budgetIsDedicatedVram =
-    !inferenceGpu.sharedMemory && inferenceGpu.backend !== "mlx";
+    !inferenceGpu.sharedMemory &&
+    // A ROCm APU reports the GTT/system pool, which moves with host usage and is
+    // not an independent ceiling. The backend classifies these positively; it is
+    // reported as its own field rather than through shared_memory, which the
+    // total and free aggregates already act on.
+    !inferenceGpu.unifiedMemory &&
+    inferenceGpu.backend !== "mlx";
 
   // The loader's own admission fraction, which the user can change. Cached and
   // shared, so a long list of rows costs one request.
@@ -565,7 +586,15 @@ export function useModelMemory(
       // largest context that fits. Warning OOM for a length it would never have
       // tried is the false positive this whole bar exists to avoid, so the
       // verdict softens and only the weights can still fail outright.
-      contextIsAutoFitted: plan.nCtx == null,
+      // The route's answer when it gave one: only a context nobody pinned gets
+      // auto-fitted, and load_model keeps a positive inherited LLAMA_ARG_CTX_SIZE
+      // rather than fitting it. Reading plan.nCtx alone said "auto-fitted" for
+      // that launch, which suppressed the overage AND drew only the irreducible
+      // floor, so an inherited window over budget reported a comfortable fit.
+      contextIsAutoFitted:
+        estimate?.contextIsPinned == null
+          ? plan.nCtx == null
+          : !estimate.contextIsPinned,
     });
   }, [plan, entry, source?.sizeBytes, budgetGb, budgetFraction]);
 }

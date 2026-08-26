@@ -81,6 +81,11 @@ interface LocalOnDeviceCardProps {
   sourceLabel: string;
   source: LocalModelInfo["source"];
   path: string;
+  /** False for a local diffusion / audio / video GGUF: it runs through the media
+   *  planner rather than llama.cpp, so the KV estimator describes the wrong
+   *  runtime -- and it still falls back to the file size, so it draws a
+   *  confident weights-only verdict rather than nothing. */
+  showMemoryBar?: boolean;
   isGguf: boolean;
   requiresVariant?: boolean;
   modelFormat: ModelInventoryFormat | null;
@@ -213,6 +218,7 @@ export function LocalOnDeviceCard({
   sourceLabel,
   source,
   path,
+  showMemoryBar = true,
   isGguf,
   requiresVariant = false,
   modelFormat,
@@ -716,7 +722,8 @@ export function LocalOnDeviceCard({
             is null for exactly the local files this is meant to cover. The path
             names the weights on its own there, and the backend resolves a
             direct file without needing a quant to match. */}
-        {(repoId || localGgufPath) &&
+        {showMemoryBar &&
+        (repoId || localGgufPath) &&
         (selectedQuant || localGgufPath.toLowerCase().endsWith(".gguf")) ? (
           <ModelMemoryBarFor
             // The card's own path is what Run opens, so it is the identity the

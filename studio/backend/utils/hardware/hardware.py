@@ -1610,6 +1610,17 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
                     "name": props.name,
                     "total_gb": round(total_bytes / (1024**3), 2),
                     "used_gb": None,
+                    # A ROCm APU's total is the GTT/system pool, not an
+                    # independent VRAM ceiling: it moves with host usage, so a
+                    # "will it fit" verdict measured against it is answering a
+                    # different question. Reported as its own field rather than
+                    # folded into shared_memory, which the free-VRAM and total
+                    # aggregates already act on -- reusing it here would change
+                    # what those return on this hardware, which is a wider
+                    # decision than naming the property. Only ever True where the
+                    # classifier is POSITIVE, so an old HIP or an unreadable flag
+                    # leaves it False and nothing changes.
+                    "unified_memory": bool(_rocm_props_are_positively_unified(props)),
                 }
             )
         except Exception as e:
@@ -4502,6 +4513,9 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                     "visible_ordinal": td["visible_ordinal"],
                     "name": td["name"],
                     "memory_total_gb": td["total_gb"],
+                    # Carried through so a caller can tell a real VRAM ceiling
+                    # from a share of host RAM. See _torch_get_device_inventory.
+                    "unified_memory": bool(td.get("unified_memory")),
                 }
                 for td in torch_devices
             ]

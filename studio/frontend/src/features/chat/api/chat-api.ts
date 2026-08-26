@@ -1321,6 +1321,9 @@ export interface KvCacheEstimate {
   /** What still lands on the card at the shortest context: the share no context
    *  reduction can recover. */
   gpu_floor_bytes: number | null;
+  /** False only when the loader is free to shrink the context to fit. An
+   *  inherited LLAMA_ARG_CTX_SIZE is kept, not fitted. */
+  context_is_pinned: boolean | null;
 }
 
 export interface KvCacheEstimateOptions {

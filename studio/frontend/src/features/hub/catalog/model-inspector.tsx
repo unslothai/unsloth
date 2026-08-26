@@ -709,6 +709,7 @@ export const ModelInspector = memo(function ModelInspector({
         <InspectorDownloadSlot>
           {model.isLocal && !hasActiveHubDownload ? (
             <LocalOnDeviceCard
+              showMemoryBar={!runsOnMediaRuntime}
               modelId={model.id}
               repoId={model.hubRepoId}
               sourceLabel={model.sourceLabel}

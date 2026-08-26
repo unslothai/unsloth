@@ -778,3 +778,52 @@ class TestTheInheritedEnvironmentIsPriced:
             "an inherited q8_0 cache was priced as f16, so the KV segment was "
             "about twice the size the launch reserves"
         )
+
+    def test_an_inherited_context_is_reported_as_pinned(self, monkeypatch, tmp_path):
+        # The loader keeps a positive inherited context rather than fitting it,
+        # so a caller must not soften its verdict for that launch. Saying
+        # "auto-fitted" there suppressed the overage AND drew only the
+        # irreducible floor, which is a comfortable fit for a load that OOMs.
+        gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
+        monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "4096")
+        assert (
+            _call_route(
+                monkeypatch,
+                path = gguf,
+                weights_bytes = 4096,
+                repo_id = "org/repo",
+                speculative_type = None,
+                n_ctx = None,
+            )["context_is_pinned"]
+            is True
+        )
+
+    def test_an_omitted_context_with_no_inheritance_is_not_pinned(self, monkeypatch, tmp_path):
+        gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
+        monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
+        assert (
+            _call_route(
+                monkeypatch,
+                path = gguf,
+                weights_bytes = 4096,
+                repo_id = "org/repo",
+                speculative_type = None,
+                n_ctx = None,
+            )["context_is_pinned"]
+            is False
+        )
+
+    def test_an_explicit_context_is_pinned(self, monkeypatch, tmp_path):
+        gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
+        monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
+        assert (
+            _call_route(
+                monkeypatch,
+                path = gguf,
+                weights_bytes = 4096,
+                repo_id = "org/repo",
+                speculative_type = None,
+                n_ctx = 8192,
+            )["context_is_pinned"]
+            is True
+        )

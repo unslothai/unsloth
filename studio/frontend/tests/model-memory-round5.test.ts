@@ -194,3 +194,20 @@ test("a pinned row still reports the pressure it really has", () => {
   assert.ok(segments.fillPct > 100);
   assert.equal(segments.pressure, "critical");
 });
+
+test("a pinned context still warns even when nothing was pinned in the UI", () => {
+  // An inherited LLAMA_ARG_CTX_SIZE is kept by the loader, not fitted, so the
+  // route reports it as pinned. Before that flag existed the frontend read
+  // "auto-fitted" from the absence of a saved context, which both suppressed the
+  // overage and drew only the floor: a comfortable fit for a launch that OOMs.
+  const inherited = computeModelMemory({
+    weightsBytes: 8 * GB,
+    kvBytes: 40 * GB,
+    gpuFloorBytes: 9 * GB,
+    gpuGb: 24,
+    budgetFraction: 0.9,
+    contextIsAutoFitted: false,
+  });
+  assert.equal(inherited.status, "context-exceeds");
+  assert.ok(inherited.fillPct > 100);
+});

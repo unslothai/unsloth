@@ -3772,6 +3772,7 @@ async def get_kv_cache_estimate(
             "compute_bytes": None,
             "total_bytes": None,
             "gpu_floor_bytes": None,
+            "context_is_pinned": None,
         }
         try:
             from utils.models.model_config import is_local_path
@@ -3836,12 +3837,21 @@ async def get_kv_cache_estimate(
             # the environment's -- and an inherited context LARGER than native is
             # then underpriced while still reading as auto-fitted.
             _ctx_was_omitted = not n_ctx
+            # Whether the launch will auto-fit at all. Only a context nobody
+            # pinned gets reduced to fit: load_model keeps a positive inherited
+            # LLAMA_ARG_CTX_SIZE rather than fitting it, so an inherited window
+            # over budget is a real overage the caller must be allowed to warn
+            # about. Resolved below once the inherited value is known.
+            _context_is_pinned = not _ctx_was_omitted
             # Same precedence the launch uses: an inherited positive context beats
             # the header, since load_model drops it only when it is zero.
             if _ctx_was_omitted:
                 try:
                     from routes.inference import _inherited_ctx_size
-                    n_ctx = _inherited_ctx_size() or be._context_length
+
+                    _inherited = _inherited_ctx_size()
+                    _context_is_pinned = bool(_inherited)
+                    n_ctx = _inherited or be._context_length
                 except Exception as e:
                     logger.debug(f"inherited context unavailable: {e}")
                     n_ctx = be._context_length
@@ -4248,6 +4258,11 @@ async def get_kv_cache_estimate(
                 # What remains on the card at the shortest context, so a caller
                 # can tell a context-driven overage from one no context fixes.
                 "gpu_floor_bytes": planner_floor,
+                # False only when the loader is free to shrink the context. A
+                # caller that softens its verdict for an auto-fitted row has to
+                # stop softening here, or an inherited window over budget reads
+                # as a fit for a launch that will OOM.
+                "context_is_pinned": _context_is_pinned,
                 # The planner saw a drafter whose cache it could not size, so its
                 # own total is a floor.
                 "spec_unpriced": spec_unpriced or planner_unsized,

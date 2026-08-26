@@ -35,6 +35,9 @@ export interface GpuInfo {
   /** A Vulkan iGPU: memoryTotalGb is a capped view of system RAM, not a pool
    *  beside it, so callers must not add systemRamTotalGb on top of it. */
   sharedMemory: boolean;
+  /** True when any device's budget is a unified host pool (a ROCm APU), which is
+   *  not a VRAM ceiling a fit verdict can be measured against. */
+  unifiedMemory: boolean;
   /** The backend torch resolved: cuda, rocm, xpu, mlx, cpu. Carried on every path, including the
    * GPU-less one, because "which runtimes can this host place" is exactly the question a host
    * with no usable GPU has to answer. Empty until system info arrives. */
@@ -70,6 +73,7 @@ const DEFAULT_GPU: GpuInfo = {
   available: false,
   budgetKnown: false,
   sharedMemory: false,
+  unifiedMemory: false,
   backend: "",
   name: "Unknown",
   memoryTotalGb: 0,
@@ -125,6 +129,9 @@ function toGpuInfo(
     // nothing probed has no pool to be single.
     sharedMemory:
       devices.length > 0 && devices.every((device) => device.shared_memory),
+    // some(), not every(): one unified part in the inventory makes the aggregate
+    // total partly host RAM, and that is enough to stop it being a VRAM ceiling.
+    unifiedMemory: devices.some((device) => device.unified_memory === true),
     available: true,
     budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",
