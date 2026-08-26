@@ -36,6 +36,9 @@ const MAIN_TSX = read("../src/main.tsx");
 const MATH_BLOCK_MODE = read(
   "../src/components/assistant-ui/math-block-mode.ts",
 );
+const CONTAINMENT = read(
+  "../src/components/assistant-ui/math-block-containment.ts",
+);
 
 test("the marker is composed onto the maths plugin", () => {
   assert.ok(
@@ -197,6 +200,56 @@ test("no comment anywhere claims this feature ships off", () => {
   assert.ok(
     /SHIP_DEFAULT[^\n]*=[^\n]*"contain"/.test(MATH_BLOCK_MODE),
     "PRECONDITION: the shipped default really is `contain`, or this test is defending the wrong claim",
+  );
+});
+
+test("every override name a comment advertises is one the code actually reads", () => {
+  // Same failure family as the test above, and it cost a review round of its own: `index.css`
+  // documented the rollback switches as `VITE_UNSLOTH_MATH_BLOCK` and `__UNSLOTH_MATH_BLOCK__`,
+  // but the resolver reads the `_CONTAINMENT`-suffixed names. Vite substitutes the LITERAL
+  // property name at build time (vite.dev/guide/env-and-mode), so the shorter build flag is never
+  // consulted, and the shorter global is never read either. An operator rolling the feature back
+  // by the documented names would set them, see containment stay on, and have no signal why.
+  //
+  // So: gather every override-looking token out of the prose and require each to be the real one.
+  // A truncated or renamed variant fails by name.
+  const BUILD = "VITE_UNSLOTH_MATH_BLOCK_CONTAINMENT";
+  const RUNTIME = "__UNSLOTH_MATH_BLOCK_CONTAINMENT__";
+  assert.ok(
+    CONTAINMENT.includes(`import.meta.env.${BUILD}`),
+    "PRECONDITION: the build flag really is read under this name",
+  );
+  assert.ok(
+    CONTAINMENT.includes(RUNTIME),
+    "PRECONDITION: the runtime flag really is read under this name",
+  );
+
+  for (const [name, text] of [
+    ["index.css", INDEX_CSS],
+    ["main.tsx", MAIN_TSX],
+    ["math-block-mode.ts", MATH_BLOCK_MODE],
+  ] as const) {
+    for (const token of text.match(/\bVITE_UNSLOTH_MATH_BLOCK\w*/g) ?? []) {
+      assert.equal(
+        token,
+        BUILD,
+        `${name} advertises a build flag the code never reads`,
+      );
+    }
+    for (const token of text.match(/\b__UNSLOTH_MATH_BLOCK\w*?__/g) ?? []) {
+      assert.equal(
+        token,
+        RUNTIME,
+        `${name} advertises a runtime flag the code never reads`,
+      );
+    }
+  }
+
+  // ANTI-VACUITY. The loops above pass trivially if nothing matched, which is also what a bad
+  // path or a wholesale rename looks like.
+  assert.ok(
+    INDEX_CSS.includes(BUILD) && INDEX_CSS.includes(RUNTIME),
+    "PRECONDITION: the stylesheet still documents both overrides",
   );
 });
 

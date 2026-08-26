@@ -2574,9 +2574,11 @@ html[data-chat-font] .aui-root {
 	 * rule -- but only where `engineFindsSkippedContent()` passes, which feature
 	 * detects `anchor-name` as a proxy for the WebKit release carrying the
 	 * find-in-page fix (webkit.org/b/283846). On an engine below that bar the
-	 * gate returns "off" and these rules never apply. `VITE_UNSLOTH_MATH_BLOCK`
-	 * and `__UNSLOTH_MATH_BLOCK__` override both ways at build and at runtime, so
-	 * it is still revertible by configuration rather than by a revert.
+	 * gate returns "off" and these rules never apply.
+	 * `VITE_UNSLOTH_MATH_BLOCK_CONTAINMENT` and
+	 * `__UNSLOTH_MATH_BLOCK_CONTAINMENT__` override both ways at build and at
+	 * runtime, so it is still revertible by configuration rather than by a
+	 * revert.
 	 *
 	 * THE MECHANISM. On WebKitGTK, which is what Studio and Desktop render
 	 * through on Linux, `RenderLayerScrollableArea::scrollTo` reaches
