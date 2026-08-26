@@ -994,6 +994,26 @@ function getToolReplayProvenance(
   return provenance as ToolReplayProvenance;
 }
 
+export function hasOnlyStudioOwnedToolHistory(messages: RunMessages): boolean {
+  let sawToolCall = false;
+  for (const message of messages) {
+    for (const part of message.content ?? []) {
+      if (part.type !== "tool-call") continue;
+      const toolPart = part as ToolCallMessagePart;
+      if (!serializeAssistantToolCallPart(toolPart)) continue;
+      const hasReplay =
+        serializeToolResultPart(toolPart) !== null ||
+        canReplayToolCallWithoutRoleTool(toolPart);
+      if (!hasReplay) continue;
+      sawToolCall = true;
+      if (getToolReplayProvenance(toolPart)?.source !== "local") {
+        return false;
+      }
+    }
+  }
+  return sawToolCall;
+}
+
 function hasToolReplayResult(part: ToolCallMessagePart): boolean {
   const result = (part as { result?: unknown }).result;
   return result !== undefined && result !== null;
@@ -4623,6 +4643,8 @@ export function createOpenAIStreamAdapter(
         messages,
         !isExternalRequest,
       );
+      const studioOwnedToolHistory =
+        hasOnlyStudioOwnedToolHistory(survivingMessages);
 
       // toOpenAIMessages emits assistant tool_calls + role="tool"
       // follow-ups; the backend Gemini translator rebuilds the
@@ -5748,6 +5770,7 @@ export function createOpenAIStreamAdapter(
             messages: outboundMessages,
             stream: true,
             ...(continuation ? { continue_final_message: true } : {}),
+            ...(studioOwnedToolHistory ? { studio_tool_history: true } : {}),
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
             stream_options: { include_usage: true },

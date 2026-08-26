@@ -1814,6 +1814,13 @@ class ChatCompletionRequest(BaseModel):
             "for checkpoint compaction. Unset keeps the process default."
         ),
     )
+    studio_tool_history: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] The replayed tool calls were produced by Studio's local "
+            "tool loop rather than by an OpenAI-compatible client tool contract."
+        ),
+    )
     max_tool_calls_per_message: Optional[int] = Field(
         25,
         ge = 0,
