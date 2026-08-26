@@ -1268,7 +1268,10 @@ mod tests {
                 COMPOSITING_FORCED_REASON
             )
         );
-        let off: &[(&str, &str)] = &[(WAYLAND_DISPLAY, "wayland-0"), (DISABLE_COMPOSITING_SETTING, "0")];
+        let off: &[(&str, &str)] = &[
+            (WAYLAND_DISPLAY, "wayland-0"),
+            (DISABLE_COMPOSITING_SETTING, "0"),
+        ];
         assert_eq!(
             plan_on_graphics(off, true, true, true),
             RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
@@ -1314,14 +1317,19 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let open = dir.join("open");
         let proprietary = dir.join("proprietary");
-        std::fs::write(&open, "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  580.173.02\n")
-            .unwrap();
-        std::fs::write(&proprietary, "NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.173.02\n")
-            .unwrap();
+        std::fs::write(
+            &open,
+            "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  580.173.02\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &proprietary,
+            "NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.173.02\n",
+        )
+        .unwrap();
         assert!(open_kernel_module_at(&open.to_string_lossy()));
         assert!(!open_kernel_module_at(&proprietary.to_string_lossy()));
         assert!(!open_kernel_module_at("/nonexistent/nvidia/version"));
         let _ = std::fs::remove_dir_all(&dir);
     }
-
 }
