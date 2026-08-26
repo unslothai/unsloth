@@ -1023,7 +1023,7 @@ export function useChatModelRuntime() {
         previousModel?.isLora ?? (previousLora?.exportType === "lora");
       const isLocal = isLocalModelPath(modelId);
       const isCachedLora = isLora && isLocal;
-      const loadingDescription = [
+      let loadingDescription = [
         currentCheckpoint ? "Switching models." : null,
         extraLoadingDescription ?? null,
         isDownloaded ? "Loading cached model into memory." : null,
@@ -1053,6 +1053,8 @@ export function useChatModelRuntime() {
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
       const postLoadRefresh = { needed: false };
+      let progressModelId = modelId;
+      let downloadComplete = isDownloaded || isCachedLora;
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
       try {
@@ -1323,8 +1325,38 @@ export function useChatModelRuntime() {
             // The loader swaps the repo silently, and the download that follows is the
             // base model's, not the one the user picked. Say so before it starts.
             if (validation.mlx_loads_base_model) {
+              const mlxBaseDescription = isLora
+                ? `Loading the adapter with ${validation.mlx_loads_base_model} in place of its bitsandbytes base, downloading it first if needed.`
+                : `Loading ${validation.mlx_loads_base_model} instead, downloading it first if needed.`;
+              progressModelId = validation.mlx_loads_base_model;
+              downloadComplete = false;
+              loadingDescription = [
+                currentCheckpoint ? "Switching models." : null,
+                extraLoadingDescription ?? null,
+                mlxBaseDescription,
+              ]
+                .filter(Boolean)
+                .join(" ");
+              setLoadProgress({
+                percent: 0,
+                label: "Preparing download",
+                phase: "downloading",
+              });
+              if (!loadToastDismissedRef.current) {
+                toast(null, {
+                  id: toastId,
+                  ...modelLoadToastOptions(
+                    renderLoadDescription(
+                      "Downloading model…",
+                      loadingDescription,
+                      0,
+                      "Preparing download",
+                    ),
+                  ),
+                });
+              }
               toast.info("MLX cannot use 4-bit bitsandbytes weights", {
-                description: `Loading ${validation.mlx_loads_base_model} instead, downloading it first if needed.`,
+                description: mlxBaseDescription,
               });
             }
             // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
@@ -2042,8 +2074,6 @@ export function useChatModelRuntime() {
             : `${base} • ${rateStr}`;
         }
 
-        let downloadComplete = isDownloaded || isCachedLora;
-
         const pollDownload = async () => {
           if (abortCtrl.signal.aborted || !loadingModelRef.current) {
             if (progressInterval) clearInterval(progressInterval);
@@ -2053,7 +2083,7 @@ export function useChatModelRuntime() {
             const prog =
               ggufVariant && expectedBytes > 0
                 ? await getGgufDownloadProgress(modelId, ggufVariant, expectedBytes)
-                : await getDownloadProgress(modelId);
+                : await getDownloadProgress(progressModelId);
             if (!loadingModelRef.current) return;
 
             if (prog.progress > 0 && prog.progress < 1) {
@@ -2110,7 +2140,10 @@ export function useChatModelRuntime() {
                   phase: "downloading",
                 });
               }
-            } else if (prog.progress >= 1 && hasShownProgress) {
+            } else if (
+              prog.progress >= 1 &&
+              (hasShownProgress || progressModelId !== modelId)
+            ) {
               downloadComplete = true;
               if (loadToastDismissedRef.current) {
                 setLoadProgress({
@@ -2124,19 +2157,23 @@ export function useChatModelRuntime() {
                   ...modelLoadToastOptions(
                     renderLoadDescription(
                       "Starting model…",
-                      "Download complete. Loading the model into memory.",
-                      100,
-                      "Download complete",
+                      hasShownProgress
+                        ? "Download complete. Loading the model into memory."
+                        : loadingDescription,
+                      hasShownProgress ? 100 : null,
+                      hasShownProgress ? "Download complete" : null,
                     ),
                   ),
                 });
               }
-              notifyNative({
-                key: `model-downloaded:${notificationModelKey}`,
-                title: "Model downloaded",
-                body: `${safeModelName} finished downloading and is loading into memory.`,
-                requestPermission: false,
-              }).catch(() => undefined);
+              if (hasShownProgress) {
+                notifyNative({
+                  key: `model-downloaded:${notificationModelKey}`,
+                  title: "Model downloaded",
+                  body: `${safeModelName} finished downloading and is loading into memory.`,
+                  requestPermission: false,
+                }).catch(() => undefined);
+              }
               // Keep polling: the mmap branch below takes over from here.
             }
           } catch {
