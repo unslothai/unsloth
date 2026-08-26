@@ -397,6 +397,9 @@ export function ChatTab() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="inherit">
+                {t("settings.chat.compactionStyleInherit")}
+              </SelectItem>
               <SelectItem value="checkpoint">
                 {t("settings.chat.compactionStyleCheckpoint")}
               </SelectItem>

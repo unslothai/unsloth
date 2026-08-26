@@ -1336,8 +1336,9 @@ export const en = {
         "When a local GGUF chat fills the context length you set, drop older turns instead of returning an error. This is not based on free VRAM.",
       compactionStyle: "When context fills",
       compactionStyleDescription:
-        "Reset conversation keeps the latest turn and standing instructions (default). A sliding window drops oldest turns and can keep more recent history.",
-      compactionStyleCheckpoint: "Reset conversation (default)",
+        "Use server default keeps UNSLOTH_CONTEXT_POLICY. Reset conversation keeps the latest turn and standing instructions. A sliding window drops oldest turns and can keep more recent history.",
+      compactionStyleInherit: "Use server default",
+      compactionStyleCheckpoint: "Reset conversation",
       compactionStyleRollingDefault: "Drop oldest turns (~25% extra room)",
       compactionStyleRolling10: "Drop oldest turns (~10% extra room)",
       compactionStyleRolling5: "Drop oldest turns (~5% extra room)",
