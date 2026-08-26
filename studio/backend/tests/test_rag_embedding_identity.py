@@ -397,7 +397,9 @@ def test_a_swap_between_batches_re_embeds_the_document(
                 calls["n"] += 1
                 out = real_encode(batch, **kwargs)
                 if calls["n"] == 1:
-                    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
+                    monkeypatch.setattr(
+                        embeddings, "active_backend_is_llama", lambda *_a, **_k: True
+                    )
                 return out
 
             monkeypatch.setattr(embeddings, "encode_with_identity", swap_after_one_batch)

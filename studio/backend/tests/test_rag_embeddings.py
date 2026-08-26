@@ -843,7 +843,11 @@ def test_the_token_counter_follows_an_unloaded_sentence_transformer(monkeypatch)
         def __init__(self, n):
             self.n = n
 
-        def encode(self, text, add_special_tokens = False):
+        def encode(
+            self,
+            text,
+            add_special_tokens = False,
+        ):
             return list(range(self.n))
 
     class _Model:

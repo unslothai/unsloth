@@ -2042,7 +2042,6 @@ def _gguf_files_for_pick(names: list[str], picked: str) -> Optional[list[str]]:
     loader so the plan offered here and the transfer it performs name one set.
     """
     from core.rag.embed_llama_server import LlamaServerBackend
-
     return LlamaServerBackend._split_family(names, picked)
 
 
