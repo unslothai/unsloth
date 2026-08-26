@@ -53,14 +53,16 @@ def test_the_wrapper_kills_oxlint_against_the_remaining_caller_budget():
     source = validators._OXC_RUNNER_PATH.read_text(encoding = "utf-8")
 
     assert re.search(
-        r"PROCESS_START_MS\s*\+\s*mapBudgetMs\(payload\?\.timeout_ms\)", source
-    ), "the oxlint deadline must be derived from the timeout_ms the caller sends"
+        r"mapBudgetMs\(payload\?\.timeout_ms\)", source
+    ), "the oxlint budget must come from the timeout_ms the caller sends"
 
-    # timeOrigin is the process start; Date.now() here would start the clock after node
-    # boot and the native oxc-parser import, which this process is not charged for.
-    assert (
-        "const PROCESS_START_MS = Math.floor(performance.timeOrigin);" in source
-    ), "the deadline must be anchored on the process start, not on module evaluation"
+    # performance.now() is monotonic ms since the process started, the same basis as the
+    # caller's timeout, and it already counts node boot and the oxc-parser import.
+    # Date.now() would drift from the caller on any wall-clock step.
+    remaining = re.search(r"const timeoutMs = ([^;]+);", source)
+    assert remaining, "runLintBatch must compute what is left of the caller's budget"
+    assert "performance.now()" in remaining.group(1)
+    assert "Date.now()" not in remaining.group(1)
 
     fallback_budget = re.search(r"const OXLINT_DEFAULT_BUDGET_MS = ([\d_]+);", source)
     assert fallback_budget, "validate.mjs must declare OXLINT_DEFAULT_BUDGET_MS"
