@@ -95,6 +95,7 @@ test("audio VLM mapping selects audio, instruction, and text together", () => {
     is_audio: true,
     columns: ["audio", "instruction", "text"],
     detected_audio_column: "audio",
+    detected_instruction_column: "instruction",
     detected_text_column: "text",
     preview_samples: [
       {
@@ -115,6 +116,93 @@ test("audio VLM mapping selects audio, instruction, and text together", () => {
     "audio",
     "user",
     "text",
+    "speaker_id",
   ]);
   assert.equal(isMappingComplete(mapping, false, undefined, true), true);
+});
+
+test("Whisper ASR maps only audio and text", () => {
+  const mapping = deriveDefaultMapping(
+    {
+      ...base,
+      is_audio: true,
+      columns: ["audio", "instruction", "text"],
+      detected_audio_column: "audio",
+      detected_instruction_column: "instruction",
+      detected_text_column: "text",
+    },
+    false,
+    undefined,
+    true,
+    false,
+  );
+
+  assert.deepEqual(mapping, { audio: "audio", text: "text" });
+  assert.deepEqual(getAvailableRoles(false, undefined, true, false), [
+    "audio",
+    "text",
+    "speaker_id",
+  ]);
+});
+
+test("Gemma audio VLM maps the instruction column to user", () => {
+  const data = {
+    ...base,
+    is_audio: true,
+    columns: ["audio", "instruction", "text"],
+    detected_audio_column: "audio",
+    detected_instruction_column: "instruction",
+    detected_text_column: "text",
+  };
+
+  assert.deepEqual(deriveDefaultMapping(data, false, undefined, true, true), {
+    audio: "audio",
+    instruction: "user",
+    text: "text",
+  });
+  assert.deepEqual(getViewerColumnSelections(data, false, {}, true, true), [
+    { column: "audio", label: "Audio", source: "auto" },
+    { column: "instruction", label: "User instruction", source: "auto" },
+    { column: "text", label: "Assistant response", source: "auto" },
+  ]);
+});
+
+test("blank audio VLM instructions retain the mapping for transcription fallback", () => {
+  const data = {
+    ...base,
+    is_audio: true,
+    columns: ["audio", "instruction", "text"],
+    detected_audio_column: "audio",
+    detected_instruction_column: "instruction",
+    detected_text_column: "text",
+    preview_samples: [
+      { audio: "sample.wav", instruction: "   ", text: "Hello" },
+    ],
+  };
+
+  const mapping = deriveDefaultMapping(data, false, undefined, true, true);
+  assert.deepEqual(mapping, {
+    audio: "audio",
+    instruction: "user",
+    text: "text",
+  });
+  assert.equal(isMappingComplete(mapping, false, undefined, true), true);
+});
+
+test("audio VLM preview does not warn about an auto-selected instruction", () => {
+  const data = {
+    ...base,
+    is_audio: true,
+    columns: ["audio", "instruction", "text"],
+    detected_audio_column: "audio",
+    detected_instruction_column: "instruction",
+    detected_text_column: "text",
+    preview_samples: [
+      { audio: "sample.wav", instruction: "", text: "Hello" },
+      { audio: "other.wav", instruction: "Translate this audio.", text: "Hi" },
+    ],
+  };
+  const selections = getViewerColumnSelections(data, false, {}, true, true);
+
+  assert.deepEqual(getUnselectedInstructionColumns(data, selections, true), []);
 });

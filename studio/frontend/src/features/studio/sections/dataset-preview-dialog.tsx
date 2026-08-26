@@ -411,7 +411,15 @@ export function DatasetPreviewDialog({
   // Pre-fill mapping from suggested_mapping when data arrives (never overwriting existing entries).
   useEffect(() => {
     if (!open || !datasetName) return;
-    if (!data?.requires_manual_mapping && !data?.suggested_mapping) return;
+    const shouldPreserveAudioVlmInstruction =
+      isAudioVlm && !!data?.detected_instruction_column;
+    if (
+      !data?.requires_manual_mapping &&
+      !data?.suggested_mapping &&
+      !shouldPreserveAudioVlmInstruction
+    ) {
+      return;
+    }
     if (Object.keys(manualMapping).length > 0) return;
     const derived = deriveDefaultMapping(
       data,
@@ -439,9 +447,15 @@ export function DatasetPreviewDialog({
   const viewerSelections = useMemo(
     () =>
       data
-        ? getViewerColumnSelections(data, effectiveIsVlm, manualMapping)
+        ? getViewerColumnSelections(
+            data,
+            effectiveIsVlm,
+            manualMapping,
+            effectiveIsAudio,
+            isAudioVlm,
+          )
         : [],
-    [data, effectiveIsVlm, manualMapping],
+    [data, effectiveIsVlm, effectiveIsAudio, isAudioVlm, manualMapping],
   );
   const unselectedInstructionColumns = useMemo(
     () =>

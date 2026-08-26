@@ -8,7 +8,7 @@ const ALPACA_ROLES = ["instruction", "input", "output"] as const;
 const SHAREGPT_ROLES = ["system", "human", "gpt"] as const;
 const VLM_ROLES = ["image", "text", "user"] as const;
 const AUDIO_ROLES = ["audio", "text", "speaker_id"] as const;
-const AUDIO_VLM_ROLES = ["audio", "user", "text"] as const;
+const AUDIO_VLM_ROLES = ["audio", "user", "text", "speaker_id"] as const;
 
 const TO_CANONICAL: Record<string, string> = {
   user: "user",
@@ -94,18 +94,24 @@ export function deriveDefaultMapping(
   isAudioVlm?: boolean,
 ): Record<string, string> {
   if (data.suggested_mapping) {
-    return remapRolesForFormat({ ...data.suggested_mapping }, format);
+    const mapping = remapRolesForFormat({ ...data.suggested_mapping }, format);
+    if (isAudio && !isAudioVlm) {
+      return Object.fromEntries(
+        Object.entries(mapping).filter(([, role]) => role !== "user"),
+      );
+    }
+    return mapping;
   }
   if (isAudio) {
     const result: Record<string, string> = {};
     if (data.detected_audio_column) {
       result[data.detected_audio_column] = "audio";
     }
-    if (data.detected_text_column) {
-      result[data.detected_text_column] = "text";
-    }
     if (isAudioVlm && data.detected_instruction_column) {
       result[data.detected_instruction_column] = "user";
+    }
+    if (data.detected_text_column) {
+      result[data.detected_text_column] = "text";
     }
     if (data.detected_speaker_column) {
       result[data.detected_speaker_column] = "speaker_id";
@@ -140,9 +146,11 @@ export type UnselectedInstructionColumn = {
 };
 
 const VIEWER_ROLE_LABELS: Record<string, string> = {
+  audio: "Audio",
   image: "Image",
   text: "Assistant response",
   user: "User instruction",
+  speaker_id: "Speaker ID",
   messages: "Conversation",
 };
 
@@ -150,8 +158,16 @@ export function deriveViewerMapping(
   data: CheckFormatResponse,
   isVlm: boolean,
   manualMapping: Record<string, string>,
+  isAudio?: boolean,
+  isAudioVlm?: boolean,
 ): Record<string, string> {
-  const detected = deriveDefaultMapping(data, isVlm);
+  const detected = deriveDefaultMapping(
+    data,
+    isVlm,
+    undefined,
+    isAudio,
+    isAudioVlm,
+  );
   if (data.chat_column) {
     detected[data.chat_column] = "messages";
   }
@@ -171,9 +187,17 @@ export function getViewerColumnSelections(
   data: CheckFormatResponse,
   isVlm: boolean,
   manualMapping: Record<string, string>,
+  isAudio?: boolean,
+  isAudioVlm?: boolean,
 ): ViewerColumnSelection[] {
-  const detected = deriveViewerMapping(data, isVlm, {});
-  const current = deriveViewerMapping(data, isVlm, manualMapping);
+  const detected = deriveViewerMapping(data, isVlm, {}, isAudio, isAudioVlm);
+  const current = deriveViewerMapping(
+    data,
+    isVlm,
+    manualMapping,
+    isAudio,
+    isAudioVlm,
+  );
   return Object.entries(current)
     .filter(([, role]) => role in VIEWER_ROLE_LABELS)
     .map(([column, role]) => ({
