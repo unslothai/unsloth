@@ -790,26 +790,21 @@ _SMART_OFFLOAD_ON = ("1", "true", "yes", "on", "enabled")
 def smart_offload_enabled(env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether the launch path may plan a spill. ON unless explicitly disabled.
 
-    It shipped opt-in, on the stated condition that it stay that way "until it
-    has run on more than one machine". It has: 118 paired runs across T4, L4,
-    RTX PRO 6000 and A100 with the VRAM budget forced from 4 GiB to the card's
-    own size, plus a B200 and a real gfx1151 APU. The planner was faster on
+    It shipped opt-in "until it has run on more than one machine". It has: 118
+    paired runs across T4, L4, RTX PRO 6000 and A100 at VRAM budgets forced from
+    4 GiB to each card's own size, plus a B200 and a real gfx1151 APU. Faster on
     generation in 111 of 118, and in all 83 runs where the layer-count arm split
     the KV cache to host RAM it kept 100% of the cache on the GPU.
 
-    Being the default does NOT mean it places every load. It abstains often --
-    multi-GPU, unified memory, sliding-window caches it cannot locate, any
-    pass-through that owns placement -- and every abstain falls through to
-    ``--fit on``, which is llama.cpp's own fitter and was this arm's behaviour
-    before the planner existed. That fallback is not the disabled path; it is
-    the planner declining, and it has to stay, because emitting a plan where the
-    planner declined is exactly the defect that put ``-ngl -1 --fit off`` on
-    loads it had just said do not fit.
+    Default does not mean it places every load: it abstains often, and every
+    abstain falls through to ``--fit on``. That fallback is the planner
+    declining, not the disabled path, and it stays -- emitting a plan where the
+    planner declined is the defect that once put ``-ngl -1 --fit off`` on loads
+    it had just said do not fit.
 
-    An UNRECOGNISED value disables rather than enables. For an opt-OUT flag the
-    two typos are not symmetric: someone who writes ``flase`` meaning off would
-    otherwise get the very thing they were trying to switch off, while someone
-    who fumbles an on-spelling merely keeps the previous behaviour.
+    An UNRECOGNISED value disables. For an opt-OUT flag the typos are not
+    symmetric: ``flase`` meaning off must not hand back the thing it was trying
+    to switch off, while fumbling an on-spelling only keeps the old behaviour.
     """
     raw = (os.environ if env is None else env).get("UNSLOTH_SMART_OFFLOAD")
     if raw is None:
