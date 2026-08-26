@@ -44,7 +44,7 @@ test("a shared pool counts once even when several devices report it", () => {
       memory_total_gb: 12.15,
       shared_memory: true,
       shared_memory_host_backed_gb: 10.15,
-    }, // same GTT pool, two views
+    }, // same host pool, separate reserved heaps
   ];
   assert.deepEqual(gpuMemoryTotalsGb(devices), {
     dedicated: 12,
