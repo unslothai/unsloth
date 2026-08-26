@@ -69,6 +69,7 @@ import {
   canMergeConversationExport,
   conversationJsonlBody,
   exportFormatIncludesSiblings,
+  ndjsonBody,
   type ConversationJsonlLayout,
 } from "../utils/ndjson";
 import { orderByParentChain } from "../utils/message-order";
@@ -108,7 +109,7 @@ function csvEscape(val: string): string {
 
 function exportPromptJsonl(entry: PromptEntry): Promise<void> {
   return downloadBlob(
-    JSON.stringify({ name: entry.name, text: entry.text }),
+    ndjsonBody([JSON.stringify({ name: entry.name, text: entry.text })]),
     `${sanitizeFilename(entry.name)}.jsonl`,
     "application/x-ndjson",
   );
@@ -123,8 +124,8 @@ function exportPromptCsv(entry: PromptEntry): Promise<void> {
 }
 
 function exportAllPromptsJsonl(entries: PromptEntry[]): Promise<void> {
-  const lines = entries.map((e) => JSON.stringify({ name: e.name, text: e.text })).join("\n");
-  return downloadBlob(lines, "prompts.jsonl", "application/x-ndjson");
+  const lines = entries.map((e) => JSON.stringify({ name: e.name, text: e.text }));
+  return downloadBlob(ndjsonBody(lines), "prompts.jsonl", "application/x-ndjson");
 }
 
 function exportAllPromptsCsv(entries: PromptEntry[]): Promise<void> {
@@ -134,15 +135,15 @@ function exportAllPromptsCsv(entries: PromptEntry[]): Promise<void> {
 
 function exportListJsonl(entry: PromptListEntry): Promise<void> {
   return downloadBlob(
-    JSON.stringify({ name: entry.name, items: entry.items }),
+    ndjsonBody([JSON.stringify({ name: entry.name, items: entry.items })]),
     `${sanitizeFilename(entry.name)}.jsonl`,
     "application/x-ndjson",
   );
 }
 
 function exportAllListsJsonl(entries: PromptListEntry[]): Promise<void> {
-  const lines = entries.map((e) => JSON.stringify({ name: e.name, items: e.items })).join("\n");
-  return downloadBlob(lines, "prompt-lists.jsonl", "application/x-ndjson");
+  const lines = entries.map((e) => JSON.stringify({ name: e.name, items: e.items }));
+  return downloadBlob(ndjsonBody(lines), "prompt-lists.jsonl", "application/x-ndjson");
 }
 
 function exportListCsv(entry: PromptListEntry): Promise<void> {
@@ -388,7 +389,7 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
 
   if (conversations.length === 0) { toast.info("No exportable content."); return; }
   await downloadBlob(
-    JSON.stringify({ conversations }),
+    ndjsonBody([JSON.stringify({ conversations })]),
     "conversation-" + exportTs() + ".jsonl",
     "application/x-ndjson",
   );
@@ -418,7 +419,7 @@ async function exportConversationJsonl(
   const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
   if (oaiMsgs.length === 0) { toast.info("No exportable content."); return; }
   await downloadBlob(
-    conversationJsonlBody(oaiMsgs, layout),
+    ndjsonBody([conversationJsonlBody(oaiMsgs, layout)]),
     `conversation${layout === "messages" ? "-messages" : ""}-${exportTs()}.jsonl`,
     "application/x-ndjson",
   );
@@ -626,7 +627,7 @@ export async function exportBulkConversationsMerged(
 
   const body = header
     ? header + "\n" + parts.join("\n")
-    : parts.join("\n");
+    : ndjsonBody(parts);
 
   await downloadBlob(
     body,
@@ -650,7 +651,7 @@ export async function exportBulkConversationsSeparate(
   for (const id of threadIds) {
     const content = await buildThreadContent(id, format);
     if (!content) continue;
-    const body = header ? header + "\n" + content : content;
+    const body = header ? header + "\n" + content : ndjsonBody([content]);
     files[`${id}.${ext}`] = strToU8(body);
   }
 
@@ -906,7 +907,7 @@ export async function exportFineTuneJsonl(
   }
   const suffix = format === "openai" ? "" : `-${format}`;
   await downloadBlob(
-    lines.join("\n"),
+    ndjsonBody(lines),
     `chat-finetune${suffix}-${exportTs()}.jsonl`,
     "application/x-ndjson",
   );
@@ -928,7 +929,7 @@ function exportPromptTrainingJsonl(entry: PromptEntry): Promise<void> {
     ],
   };
   return downloadBlob(
-    JSON.stringify(record),
+    ndjsonBody([JSON.stringify(record)]),
     `${sanitizeFilename(entry.name)}-training.jsonl`,
     "application/x-ndjson",
   );
@@ -943,9 +944,8 @@ function exportPromptsTrainingJsonl(entries: PromptEntry[]): Promise<void> {
           { from: "gpt", value: "" },
         ],
       }),
-    )
-    .join("\n");
-  return downloadBlob(lines, "prompts-training.jsonl", "application/x-ndjson");
+    );
+  return downloadBlob(ndjsonBody(lines), "prompts-training.jsonl", "application/x-ndjson");
 }
 
 function exportListTrainingJsonl(entry: PromptListEntry): Promise<void> {
@@ -954,7 +954,7 @@ function exportListTrainingJsonl(entry: PromptListEntry): Promise<void> {
     { from: "gpt", value: "" },
   ]);
   return downloadBlob(
-    JSON.stringify({ conversations }),
+    ndjsonBody([JSON.stringify({ conversations })]),
     `${sanitizeFilename(entry.name)}-training.jsonl`,
     "application/x-ndjson",
   );
@@ -968,9 +968,8 @@ function exportListsTrainingJsonl(entries: PromptListEntry[]): Promise<void> {
         { from: "gpt", value: "" },
       ]);
       return JSON.stringify({ conversations });
-    })
-    .join("\n");
-  return downloadBlob(lines, "prompt-lists-training.jsonl", "application/x-ndjson");
+    });
+  return downloadBlob(ndjsonBody(lines), "prompt-lists-training.jsonl", "application/x-ndjson");
 }
 
 async function importPromptsFromText(text: string, isCsv: boolean): Promise<{ count: number; skipped: number }> {
