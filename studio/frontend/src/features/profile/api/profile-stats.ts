@@ -42,6 +42,12 @@ export type ProfileStats = {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    chatPromptTokens: number;
+    chatCompletionTokens: number;
+    chatTokens: number;
+    apiPromptTokens: number;
+    apiCompletionTokens: number;
+    apiTokens: number;
     cachedTokens: number;
     toolCalls: number;
     attachments: number;
