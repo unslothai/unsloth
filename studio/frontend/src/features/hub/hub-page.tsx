@@ -450,6 +450,7 @@ export function ModelsPage() {
             checkpointId: isSpeechOnlyStatus(status)
               ? null
               : resolveInferenceCheckpointId(status),
+            speechOnly: isSpeechOnlyStatus(status),
             ggufVariant: status.gguf_variant ?? null,
           },
           {

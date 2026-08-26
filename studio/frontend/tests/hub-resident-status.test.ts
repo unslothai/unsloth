@@ -173,6 +173,42 @@ test("an empty status leaves the checkpoint pinned while idle unload is armed", 
   assert.equal(adopted, false);
 });
 
+test("a speech model in the slot clears the pick even while idle unload is armed", () => {
+  // Not the idle eviction the rule above is about: an Audio load took the single slot, the
+  // chat model is gone for good, and there is no stash to reload it. Holding the pick there
+  // left the Hub calling an evicted model Loaded and the next prompt returning a bare 400.
+  const cleared: string[] = [];
+  const adopted = adoptResidentModelStatus(
+    { checkpointId: null, ggufVariant: null, speechOnly: true },
+    emptyStore({
+      checkpoint: "/models/llama.gguf",
+      activeGgufVariant: "Q4_K_M",
+      idleUnloadArmed: true,
+    }),
+    {
+      ...refusing({
+        setCheckpoint: "a speech model is not something chat may be pinned to",
+        applyStatus: "its status describes a model chat is not talking to",
+      }),
+      clearCheckpoint: () => {
+        cleared.push("cleared");
+      },
+    },
+  );
+  assert.equal(adopted, true);
+  assert.deepEqual(cleared, ["cleared"]);
+});
+
+test("a speech model does not fight a load this tab started", () => {
+  // The load owns the store until it settles, speech or not.
+  const adopted = adoptResidentModelStatus(
+    { checkpointId: null, ggufVariant: null, speechOnly: true },
+    emptyStore({ checkpoint: "/models/llama.gguf", modelLoading: true }),
+    refusing({ clearCheckpoint: "the load owns the store until it settles" }),
+  );
+  assert.equal(adopted, false);
+});
+
 test("an empty status leaves an external pick alone", () => {
   const adopted = adoptResidentModelStatus(
     { checkpointId: null, ggufVariant: null },

@@ -127,6 +127,10 @@ test("the Hub does not pin a speech model as the chat checkpoint", () => {
   // null, not an early return: the empty-slot branch is what clears the pick the
   // Audio load evicted, and skipping the call would leave it pointing at a 400.
   assert.doesNotMatch(adopt, /if \(isSpeechOnlyStatus\(status\)\) return/);
+  // And say WHY it is null. A null checkpoint alone reads as the idle loop having
+  // freed the model, which the helper deliberately does not clear -- a stash reloads
+  // that one. An Audio load is not that, and hub-resident-status pins the branch.
+  assert.match(adopt, /speechOnly: isSpeechOnlyStatus\(status\),/);
 });
 
 test("a queued local thread does not adopt a speech model either", () => {
