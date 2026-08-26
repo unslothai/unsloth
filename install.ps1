@@ -1668,7 +1668,12 @@ public static class UnslothStudioFinalPathV2
             $savedUvIndex = @{}
             $scrub = @('UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL', 'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'UV_CONFIG_FILE', 'UV_NO_CONFIG')
             if ($respectPolicy) {
-                $scrub = @($scrub | Where-Object { @('UV_CONFIG_FILE', 'UV_NO_CONFIG') -notcontains $_ })
+                # UV_FIND_LINKS rides along: a uv.toml `[pip] no-index = true` makes it
+                # the only source uv is allowed, `--no-index` has no environment spelling
+                # to detect, and uv prints no resolved configuration to ask.
+                $scrub = @($scrub | Where-Object {
+                    @('UV_CONFIG_FILE', 'UV_NO_CONFIG', 'UV_FIND_LINKS') -notcontains $_
+                })
             }
             foreach ($n in $scrub) {
                 $savedUvIndex[$n] = [Environment]::GetEnvironmentVariable($n)

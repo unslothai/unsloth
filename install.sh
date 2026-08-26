@@ -270,7 +270,12 @@ run_install_cmd() {
                 # cannot cover it. Keep UV_CONFIG_FILE and uv's config discovery: the
                 # operator asked for their uv.toml to bind this install too. The ADDITIVE
                 # index variables still go, since the pin is itself a provenance control.
-                set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS "$@"
+                # UV_FIND_LINKS is the exception: a uv.toml `[pip] no-index = true` makes
+                # it the only source uv is allowed, `--no-index` has no environment
+                # spelling to detect, and uv prints no resolved configuration to ask, so
+                # dropping it fails every offline install with "index lookups were
+                # disabled and no additional package locations were provided".
+                set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND "$@"
             else
                 set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS -u UV_CONFIG_FILE UV_NO_CONFIG=1 "$@"
             fi

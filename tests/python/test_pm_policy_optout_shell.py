@@ -138,3 +138,26 @@ def test_the_pinned_branch_is_gated_on_the_opt_out():
     assert (
         "-u UV_CONFIG_FILE" in default and "UV_NO_CONFIG=1" in default
     ), "the default path must not move: it is what fixes #6898 and #8530"
+
+
+def test_the_opt_out_arm_keeps_the_uv_wheelhouse():
+    """uv's no-index lives only in uv.toml, so UV_FIND_LINKS cannot be dropped.
+
+    Measured on the pinned uv 0.12.1, a uv.toml `[pip] no-index = true` plus
+    UV_FIND_LINKS installs from the wheelhouse and the same command without it fails
+    with "index lookups were disabled and no additional package locations were
+    provided". install.sh runs its pinned torch install before the Python installer,
+    so the opt-out has to keep it here too.
+    """
+    text = INSTALL_SH.read_text(encoding = "utf-8")
+    match = re.search(
+        r'\*" --default-index "\*\)(.*?)^\s*esac',
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match, "install.sh no longer scrubs the env for --default-index"
+    opt_out, _, default = match.group(1).partition("else")
+    assert (
+        "-u UV_FIND_LINKS" not in opt_out
+    ), "the opt-out arm must leave the operator's wheelhouse in place"
+    assert "-u UV_FIND_LINKS" in default, "the default path must not move: it is what fixes #6898"

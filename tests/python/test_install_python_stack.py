@@ -3075,3 +3075,41 @@ class TestAFailedPipProbeIsNotMemoisedForTheRun:
             assert ips._pip_no_index_in_force() is True
         finally:
             ips._detected_policy.cache_clear()
+
+
+class TestUvFindLinksSurvivesTheOptOut:
+    """uv's no-index is undetectable, so its wheelhouse cannot be treated as additive.
+
+    Measured on the pinned uv 0.12.1: a uv.toml `[pip] no-index = true` plus
+    UV_FIND_LINKS installs from the wheelhouse, and the same pinned command without it
+    fails with "index lookups were disabled and no additional package locations were
+    provided". `--no-index` has no environment spelling and uv prints no resolved
+    configuration, so unlike pip there is nothing to ask; guessing wrong in that
+    direction breaks every offline uv install.
+    """
+
+    PINNED = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+
+    def test_the_wheelhouse_reaches_uv_under_the_opt_out(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        monkeypatch.setenv("UV_FIND_LINKS", "/op/wheels")
+        env = ips._install_env_for_cmd(list(self.PINNED))
+        assert env is not None
+        assert env.get("UV_FIND_LINKS") == "/op/wheels"
+
+    def test_the_additive_mirrors_are_still_scrubbed_alongside_it(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        monkeypatch.setenv("UV_FIND_LINKS", "/op/wheels")
+        for name in ("UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX"):
+            monkeypatch.setenv(name, "https://mirror.corp")
+        env = ips._install_env_for_cmd(list(self.PINNED))
+        assert env is not None
+        for name in ("UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX"):
+            assert name not in env, name
+
+    def test_the_default_path_still_scrubs_it(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+        monkeypatch.setenv("UV_FIND_LINKS", "/op/wheels")
+        env = ips._install_env_for_cmd(list(self.PINNED))
+        assert env is not None
+        assert "UV_FIND_LINKS" not in env

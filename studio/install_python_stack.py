@@ -5358,7 +5358,19 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
         # by it carrying `[pip] require-hashes = true` fails a pinned install, and
         # dropping it lets the same install through. Under the opt-out it is the
         # operator's policy file, so it stays.
-        if respect and name in ("UV_CONFIG_FILE", "PIP_NO_INDEX"):
+        # UV_FIND_LINKS is kept unconditionally under the opt-out, where PIP_FIND_LINKS
+        # is kept only while no-index is in force. The asymmetry follows from what each
+        # manager can be ASKED. pip prints its resolved configuration, so the effective
+        # no-index is knowable; uv has no such command, `--no-index` has no environment
+        # spelling at all, and the setting therefore lives only in a uv.toml this module
+        # deliberately does not parse. Measured on the pinned uv 0.12.1, a uv.toml
+        # `[pip] no-index = true` plus UV_FIND_LINKS installs from the wheelhouse, and
+        # the same command without it fails with "index lookups were disabled and no
+        # additional package locations were provided". Guessing wrong in that direction
+        # breaks every offline uv install; the opt-out already accepts that sources
+        # reachable through the retained uv.toml survive, so keeping the operator's own
+        # wheelhouse is the same cost they already agreed to.
+        if respect and name in ("UV_CONFIG_FILE", "PIP_NO_INDEX", "UV_FIND_LINKS"):
             continue
         # PIP_FIND_LINKS genuinely IS additive, so it survives only while no-index is in
         # force and it is the sole remaining source. With no-index off it would add a

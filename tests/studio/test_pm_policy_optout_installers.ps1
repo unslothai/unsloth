@@ -58,7 +58,7 @@ function Get-Command { param($Name) [pscustomobject]@{ Source = "python" } }
 function uv {
     $global:Recorded = @{}
     foreach ($k in 'UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE', 'PIP_NO_INDEX',
-                   'PIP_FIND_LINKS', 'UV_INDEX_URL', 'PIP_EXTRA_INDEX_URL') {
+                   'PIP_FIND_LINKS', 'UV_INDEX_URL', 'PIP_EXTRA_INDEX_URL', 'UV_FIND_LINKS') {
         $global:Recorded[$k] = [Environment]::GetEnvironmentVariable($k)
     }
     $global:LASTEXITCODE = 0
@@ -91,6 +91,7 @@ Reset-Env
 $env:UNSLOTH_RESPECT_PM_POLICY = "1"
 $env:UV_CONFIG_FILE = "C:\op\uv.toml"
 $env:UV_INDEX_URL = "https://mirror.corp"
+$env:UV_FIND_LINKS = "C:\op\wheels"
 $env:PIP_CONFIG_FILE = "C:\op\pip.conf"
 $env:PIP_EXTRA_INDEX_URL = "https://mirror.corp"
 Fast-Install --index-url https://download.pytorch.org/whl/cu124 torch | Out-Null
@@ -98,6 +99,10 @@ Check "the uv.toml reaches uv"                    ($Recorded['UV_CONFIG_FILE'] -
 Check "UV_NO_CONFIG is not forced on"             ($null -eq $Recorded['UV_NO_CONFIG'])
 Check "pip.conf is not redirected to nul"         ($Recorded['PIP_CONFIG_FILE'] -eq "C:\op\pip.conf")
 Check "the additive uv mirror is still scrubbed"  ($null -eq $Recorded['UV_INDEX_URL'])
+# uv's `--no-index` has no environment spelling and uv prints no resolved configuration,
+# so a uv.toml that makes the wheelhouse the only permitted source is undetectable here.
+# Dropping it failed every offline uv install, so it is kept unconditionally.
+Check "the uv wheelhouse is kept"                 ($Recorded['UV_FIND_LINKS'] -eq "C:\op\wheels")
 Check "the additive pip mirror is still scrubbed" ($null -eq $Recorded['PIP_EXTRA_INDEX_URL'])
 # The finally block clears what the function SET. Under the opt-out it set neither, and
 # neither was saved, so clearing them here would destroy the operator's own values.

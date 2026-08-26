@@ -4744,7 +4744,12 @@ function Fast-Install {
             # dropping it while leaving pip.conf readable reimposed a restriction they
             # had lifted. PIP_FIND_LINKS genuinely IS additive, so it survives only while
             # no-index is in force and it is the sole remaining source.
-            $keep = @('UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE', 'PIP_NO_INDEX')
+            # UV_FIND_LINKS is kept unconditionally where PIP_FIND_LINKS is conditional:
+            # pip can be asked for its resolved configuration, uv cannot, and uv's
+            # `--no-index` has no environment spelling, so a uv.toml that makes the
+            # wheelhouse the only permitted source is undetectable here.
+            $keep = @('UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE', 'PIP_NO_INDEX',
+                      'UV_FIND_LINKS')
             if (Test-PipNoIndexOn -Command 'install') { $keep += @('PIP_FIND_LINKS') }
             $scrub = @($scrub | Where-Object { $keep -notcontains $_ })
         }
