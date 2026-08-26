@@ -146,7 +146,7 @@ def torch_compile_runtime_available() -> bool:
     """Whether THIS process can actually run an inductor compile.
 
     Inductor needs Triton, and Windows is the one supported platform whose normal install has no
-    Triton wheel. The three Studio workers (inference / training / export) already gate on this
+    Triton wheel. The three Unsloth workers (inference / training / export) already gate on this
     import and set ``TORCHDYNAMO_DISABLE=1`` when it fails, but the diffusion and video backends
     run in the SERVER process, which those gates never reach, so ask it once here.
 

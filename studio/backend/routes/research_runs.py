@@ -232,7 +232,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         ):
             raise HTTPException(
                 status_code = 400,
-                detail = "Durable research requires a saved connection whose provider supports Studio tools",
+                detail = "Durable research requires a saved connection whose provider supports Unsloth tools",
             )
         provider = providers_db.get_provider(provider_id)
         if provider is None:
@@ -242,14 +242,14 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         # connection is stored under the backend "openai" type but surfaced to
         # the UI as "custom" / "vllm" / "ollama" / "llama_cpp", and the composer
         # offers research for those aliases because their registry entries
-        # declare Studio tools. Comparing the two for equality therefore 400s
+        # declare Unsloth tools. Comparing the two for equality therefore 400s
         # exactly the connections this path exists to serve, while the ordinary
         # inference route already overrides the type from the row.
         saved_provider_type = provider["provider_type"]
         if not provider_runs_local_tools(saved_provider_type) or not provider["is_enabled"]:
             raise HTTPException(
                 status_code = 400,
-                detail = "Durable research requires an enabled connection whose provider supports Studio tools",
+                detail = "Durable research requires an enabled connection whose provider supports Unsloth tools",
             )
         request["providerType"] = saved_provider_type
 

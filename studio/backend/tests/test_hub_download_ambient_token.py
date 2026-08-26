@@ -3,7 +3,7 @@
 
 """The backend's own HF_TOKEN is the operator's credential, not a shared service credential.
 
-The Studio UI sends the user's saved token in ``X-Unsloth-HF-Token`` on every hub download, so
+The Unsloth UI sends the user's saved token in ``X-Unsloth-HF-Token`` on every hub download, so
 only a caller that has none reaches the ambient fallback. A UI session is the installation's
 owner and keeps it (Settings hands that session the saved token anyway). An sk-unsloth API key
 is the lesser credential -- Settings refuses it the saved token -- so it must not reach private

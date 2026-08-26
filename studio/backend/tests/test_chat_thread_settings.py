@@ -202,7 +202,7 @@ def test_settings_column_is_added_to_an_existing_database(tmp_path, monkeypatch)
     assert studio_db.get_chat_thread("thread-1")["settings"] == SETTINGS
 
 
-# A snapshot on disk outlives the build that wrote it. A newer Studio adding a
+# A snapshot on disk outlives the build that wrote it. A newer Unsloth adding a
 # setting, widening an enum or raising a bound writes a blob this build has never
 # seen, and it reaches the response model rather than the request one, so refusing
 # it 500s the chat on open and takes the whole history export with it. The wire

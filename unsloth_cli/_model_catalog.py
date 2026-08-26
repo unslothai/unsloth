@@ -229,7 +229,7 @@ def _quant_labels(
     repo_path: str,
     load_id: Optional[str] = None,
 ) -> str:
-    """The quants this cached GGUF repo offers, spelled the way Studio spells them.
+    """The quants this cached GGUF repo offers, spelled the way Unsloth spells them.
 
     Through ``list_local_gguf_variants``, which is what ``_preferred_complete_gguf`` picks the
     load target with, so the label and the target cannot disagree. Globbing

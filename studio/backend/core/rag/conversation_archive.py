@@ -710,7 +710,7 @@ def _branch_seed(messages: list[dict], by_id: dict, parent_of: dict, branch) -> 
     # A LIST, in order, not a set: sets lose repetition and ordering, so an abandoned
     # sibling with the same distinct texts tied with the request's own branch and, being
     # newer, won. A multiset fixes the repeat case but not the reordered one, so this
-    # scores an in-order run. System and developer messages are excluded: Studio's
+    # scores an in-order run. System and developer messages are excluded: Unsloth's
     # prepended chat and project instructions are not part of the stored chain.
     wanted = [
         text

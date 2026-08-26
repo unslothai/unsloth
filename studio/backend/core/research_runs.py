@@ -14,6 +14,7 @@ import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, AsyncIterator, Callable
 
 import httpx
@@ -122,6 +123,12 @@ _ADMISSION_HEARTBEAT_MISSES = 3
 # the poll loop stays bounded however long generation itself may run.
 _DEFAULT_MODEL_TIMEOUT_SECONDS = 900.0
 _MAX_MODEL_WAIT_BUDGET_SECONDS = 3600.0
+# Bounds a provider's Retry-After when the run has no wall clock of its own: past the hourly
+# windows providers reset on, short of parking a run and its lease on one mistaken header.
+_MAX_RATE_LIMIT_WAIT_SECONDS = 3600.0
+# Lifetime of the internal key one model call authenticates with. Retry waits are bounded by
+# what is left of it: a key that expires mid-backoff fails auth without reaching the provider.
+_MODEL_CALL_KEY_LIFETIME_SECONDS = 2 * 60 * 60
 # Headroom so the named stall guards expire before HTTPX's own read timeout does.
 _STREAM_READ_TIMEOUT_MARGIN_SECONDS = 30.0
 
@@ -454,16 +461,95 @@ async def _model_unloaded(response: httpx.Response) -> str | None:
     return "named" if _MODEL_NOT_FOUND_CODE in text else None
 
 
-def _retry_after_seconds(response: httpx.Response) -> float | None:
-    """The response's Retry-After delay in seconds, or None when it is absent or a HTTP date."""
-    header = response.headers.get("Retry-After")
-    if not header:
+def _retry_after_delay(raw: object) -> float | None:
+    """A Retry-After value as a delay in seconds, or None when it names none or has passed.
+
+    RFC 9110 defines the field as ``HTTP-date / delay-seconds``, and providers behind a CDN do
+    send dates. Reading only the number backs off a second inside a cooldown with minutes left."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
         return None
     try:
-        delay = float(header.strip())
+        delay = float(text)
     except ValueError:
-        return None
+        try:
+            at = parsedate_to_datetime(text)
+        except (IndexError, TypeError, ValueError):
+            return None
+        if at is None:
+            return None
+        if at.tzinfo is None:
+            # RFC 9110 dates are GMT; a form that omits the zone is not a local time.
+            at = at.replace(tzinfo = timezone.utc)
+        delay = (at - datetime.now(timezone.utc)).total_seconds()
     return delay if delay > 0 else None
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """The response's Retry-After delay in seconds, or None when it is absent or already past."""
+    return _retry_after_delay(response.headers.get("Retry-After"))
+
+
+async def _peek_stream_head(lines: AsyncIterator[str]) -> str | None:
+    """The stream's first line, or None when it ends without one.
+
+    One line only: a queue notice belongs to the loop that refreshes the admission bound, and the
+    refusal below is always a stream's first line."""
+    async for line in lines:
+        return line
+    return None
+
+
+def _stream_rate_limit_delay(head: str | None) -> float | None:
+    """The delay a proxied provider rate-limit refusal asks for: None when the stream does not
+    open with one, 0.0 when it names no delay.
+
+    core.inference.external_provider turns an upstream non-200 into a 200 stream carrying one
+    OpenAI-shaped error line, so a 429 survives only there: as ``code`` (``type`` for the ChatGPT
+    connection) plus the forwarded Retry-After."""
+    if head is None or not head.startswith("data:"):
+        return None
+    try:
+        chunk = json.loads(head[5:].strip())
+    except (TypeError, ValueError):
+        return None
+    error = chunk.get("error") if isinstance(chunk, dict) else None
+    if not isinstance(error, dict):
+        return None
+    if str(error.get("code")) != "429" and error.get("type") != "rate_limit_error":
+        return None
+    metadata = error.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("terminal"):
+        # Quota exhausted rather than throttled: no wait clears it, so surface it now.
+        return None
+    requested = error.get("retry_after")
+    if requested is None and isinstance(metadata, dict):
+        requested = metadata.get("retry_after")
+    return _retry_after_delay(requested) or 0.0
+
+
+async def _with_head(head: str | None, rest: AsyncIterator[str]) -> AsyncIterator[str]:
+    """``rest`` with the line already read off it put back in front.
+
+    Explicitly against None, not truthiness: a blank SSE separator line is a line."""
+    if head is not None:
+        yield head
+    async for line in rest:
+        yield line
+
+
+def _rate_limit_wait(requested: float, remaining: float, headroom: float) -> float:
+    """How much of a provider's requested retry delay this call can afford.
+
+    The delay is the provider's, not a share of the model-load budget, so it is bounded by what is
+    left of the call minus the room the re-send needs; coming back early only spends an attempt on
+    the same refusal. The standing ceiling covers a run with no wall clock at all."""
+    # Never reserve all of what is left: a call whose wall clock is no larger than its
+    # first-output budget reserves the whole of it, and every wait collapses to zero.
+    headroom = min(headroom, remaining / 2)
+    return max(0.0, min(requested, _MAX_RATE_LIMIT_WAIT_SECONDS, remaining - headroom))
 
 
 def _local_model_ready() -> bool:
@@ -926,7 +1012,7 @@ class ResearchSupervisor:
             )
         if not pages:
             return "", []
-        # Reuse Studio's knowledge-base RAG pipeline (ingest -> hybrid retrieve -> <chunk>
+        # Reuse Unsloth's knowledge-base RAG pipeline (ingest -> hybrid retrieve -> <chunk>
         # render) over an ephemeral scope; runs off the event loop since embedding and the
         # sqlite/vec index work are CPU/GPU bound.
         from core.rag import web_rank
@@ -1014,7 +1100,7 @@ class ResearchSupervisor:
     def _endpoint(self) -> str:
         port = self._server_port()
         if port is None:
-            raise RuntimeError("Research is waiting for the Studio server port")
+            raise RuntimeError("Research is waiting for the Unsloth server port")
         return f"http://127.0.0.1:{port}/v1/chat/completions"
 
     async def _wait_for_local_model(
@@ -1024,7 +1110,7 @@ class ResearchSupervisor:
     ) -> bool:
         """Wait, up to the run's model timeout, for a model to be loaded again; True if one was.
 
-        A durable run resumes after a Studio restart and is approved long after it was created,
+        A durable run resumes after an Unsloth restart and is approved long after it was created,
         so the model it was started with can be gone. Waiting keeps the run alive instead of
         ending it on a non-retryable 400 that discards every step and source it gathered.
 
@@ -1065,6 +1151,24 @@ class ResearchSupervisor:
             await asyncio.sleep(min(_MODEL_WAIT_POLL_SECONDS, remaining))
             remaining -= _MODEL_WAIT_POLL_SECONDS
         await self._check_active(run_id)
+
+    async def _wait_out_rate_limit(
+        self, run: dict, requested: float, deadline: float, headroom: float
+    ) -> None:
+        """Wait out a provider's retry delay, whatever carried it, against the same budget."""
+        remaining = deadline - asyncio.get_running_loop().time()
+        await self._wait_out_retry_after(
+            run["id"], _rate_limit_wait(requested, remaining, headroom)
+        )
+
+    async def _wait_out_retry_after(self, run_id: str, delay: float) -> None:
+        """Wait out a provider-set retry delay in the same poll-sized slices as the model waits
+        above, so a cancel or a lost lease ends the run during the wait rather than after it."""
+        remaining = delay
+        while remaining > 0:
+            await self._check_active(run_id)
+            await asyncio.sleep(min(_MODEL_WAIT_POLL_SECONDS, remaining))
+            remaining -= _MODEL_WAIT_POLL_SECONDS
 
     @staticmethod
     def _absorb_late_task(run_id: str, what: str, task: asyncio.Task) -> None:
@@ -1173,7 +1277,10 @@ class ResearchSupervisor:
         preview_labels: bool = False,
     ) -> tuple[str, str, str | None, dict[str, int] | None]:
         call_id = uuid.uuid4().hex
-        expires = (datetime.now(timezone.utc) + timedelta(hours = 2)).isoformat()
+        expires = (
+            datetime.now(timezone.utc) + timedelta(seconds = _MODEL_CALL_KEY_LIFETIME_SECONDS)
+        ).isoformat()
+        key_minted = asyncio.get_running_loop().time()
         token, key = await asyncio.to_thread(
             auth_storage.create_api_key,
             username = run["ownerSubject"],
@@ -1337,6 +1444,12 @@ class ResearchSupervisor:
                     ModelOutputIdleTimeout,
                 )
 
+            call_started = loop.time()
+            # No backoff below may outlast this call's wall clock or the key the re-send
+            # authenticates with, so all of them measure against whichever ends first.
+            retry_deadline = key_minted + _MODEL_CALL_KEY_LIFETIME_SECONDS
+            if model_timeout:
+                retry_deadline = min(retry_deadline, call_started + model_timeout)
             async with (
                 _wall_clock_timeout(model_timeout or None),
                 httpx.AsyncClient(timeout = timeout, trust_env = False) as client,
@@ -1373,7 +1486,6 @@ class ResearchSupervisor:
                             response = await send_task
                             response.raise_for_status()
                             first_output_deadline = loop.time() + first_output_budget
-                            break
                         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                             # Only reachable before a body byte is touched (the stream is consumed
                             # after this loop), so a re-send cannot duplicate report text.
@@ -1382,9 +1494,14 @@ class ResearchSupervisor:
                                 if isinstance(exc, httpx.HTTPStatusError)
                                 else None
                             )
+                            rate_limited = (
+                                isinstance(exc, httpx.HTTPStatusError)
+                                and exc.response.status_code == 429
+                            )
                             retryable = (
                                 not isinstance(exc, httpx.HTTPStatusError)
                                 or exc.response.status_code >= 500
+                                or rate_limited
                             )
                             if unloaded:
                                 model_waits += 1
@@ -1407,13 +1524,40 @@ class ResearchSupervisor:
                                 ):
                                     raise
                             else:
-                                # re-check the lease and cancellation before re-sending.
-                                await asyncio.sleep(2**attempt)
+                                delay = 2**attempt
+                                if rate_limited:
+                                    # This runs to minutes, so re-read the run while it
+                                    # waits; the backoff below never outlasts one poll.
+                                    await self._wait_out_rate_limit(
+                                        run,
+                                        _retry_after_seconds(exc.response) or delay,
+                                        retry_deadline,
+                                        first_output_budget,
+                                    )
+                                else:
+                                    await asyncio.sleep(delay)
                                 attempt += 1
+                                # re-check the lease and cancellation before re-sending.
                                 await self._check_active(run["id"])
-                    async for line in self._iter_stream_lines(
-                        run["id"], response, semantic_deadline
-                    ):
+                            continue
+                        # A proxied provider 429 arrives as a 200 whose first line is the
+                        # refusal, so the status cannot see it. No body byte is used yet, so a
+                        # re-send cannot duplicate report text.
+                        stream = self._iter_stream_lines(run["id"], response, semantic_deadline)
+                        head = await _peek_stream_head(stream)
+                        throttled = _stream_rate_limit_delay(head)
+                        if throttled is None or attempt == 2:
+                            # Out of attempts: let the stream raise the provider's own error.
+                            break
+                        await stream.aclose()
+                        await response.aclose()
+                        response = None
+                        await self._wait_out_rate_limit(
+                            run, throttled or 2**attempt, retry_deadline, first_output_budget
+                        )
+                        attempt += 1
+                        await self._check_active(run["id"])
+                    async for line in _with_head(head, stream):
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
                         if not line.startswith("data:"):
