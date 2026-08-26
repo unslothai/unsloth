@@ -19,18 +19,9 @@ def test_audio_container_sniffer_distinguishes_mpeg_layers_and_adts():
 
 
 def test_audio_container_sniffer_checks_the_frame_after_id3():
-    assert (
-        inference_route._sniff_audio_container(_id3_prefix() + b"\xff\xfb\x90\x64")
-        == "mp3"
-    )
-    assert (
-        inference_route._sniff_audio_container(_id3_prefix() + b"\xff\xfd\x90\x64")
-        is None
-    )
-    assert (
-        inference_route._sniff_audio_container(_id3_prefix() + b"\xff\xf1\x50\x80")
-        is None
-    )
+    assert inference_route._sniff_audio_container(_id3_prefix() + b"\xff\xfb\x90\x64") == "mp3"
+    assert inference_route._sniff_audio_container(_id3_prefix() + b"\xff\xfd\x90\x64") is None
+    assert inference_route._sniff_audio_container(_id3_prefix() + b"\xff\xf1\x50\x80") is None
 
 
 def test_aac_and_mp2_are_transcoded_instead_of_forwarded_as_mp3(monkeypatch):

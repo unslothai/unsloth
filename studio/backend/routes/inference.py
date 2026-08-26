@@ -17406,11 +17406,7 @@ def _sniff_audio_container(raw: bytes) -> Optional[str]:
     # skip it before deciding whether the first frame is actually Layer III.
     # The four size bytes are synchsafe: their top bit must be clear.
     frame_offset = 0
-    if (
-        len(raw) >= 10
-        and raw[:3] == b"ID3"
-        and not any(byte & 0x80 for byte in raw[6:10])
-    ):
+    if len(raw) >= 10 and raw[:3] == b"ID3" and not any(byte & 0x80 for byte in raw[6:10]):
         tag_size = 0
         for byte in raw[6:10]:
             tag_size = (tag_size << 7) | byte
