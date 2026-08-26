@@ -18,14 +18,27 @@ const TAB = readFileSync(
   "utf-8",
 );
 
-test("the default model relies on automatic recommended settings", () => {
+test("the default model demonstrates reasoning effort without sampling flags", () => {
   assert.ok(
     TAB.includes('const EXAMPLE_MODEL_REPO = "unsloth/Qwen3.8-27B-GGUF";'),
   );
   assert.ok(TAB.includes('const EXAMPLE_MODEL_VARIANT = "UD-Q4_K_XL";'));
-  assert.ok(!TAB.includes("EXAMPLE_MODEL_OPTIONS"));
+  const start = TAB.indexOf("const EXAMPLE_MODEL_FLAGS");
+  const flags = TAB.slice(start, TAB.indexOf(";", start));
+  assert.ok(flags.includes("--reasoning-effort medium"));
+  for (const samplingFlag of [
+    "--temperature",
+    "--top-p",
+    "--top-k",
+    "--min-p",
+    "--presence-penalty",
+  ]) {
+    assert.ok(!flags.includes(samplingFlag));
+  }
   assert.ok(
-    TAB.includes('const modelArgs = attachOnly ? "" : selectedModelArgs;'),
+    TAB.includes(
+      "modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO)",
+    ),
   );
   assert.equal(
     en.settings.agents.automaticSettingsNote,

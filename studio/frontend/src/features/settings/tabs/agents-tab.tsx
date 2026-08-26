@@ -71,6 +71,7 @@ const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
 const FLAGS_DOCS_URL = `${DOCS_URL}#flags--options`;
 const EXAMPLE_MODEL_REPO = "unsloth/Qwen3.8-27B-GGUF";
 const EXAMPLE_MODEL_VARIANT = "UD-Q4_K_XL";
+const EXAMPLE_MODEL_FLAGS = "--reasoning-effort medium";
 const MODEL_RESULT_LIMIT = 7;
 const STATUS_POLL_MS = 5000;
 const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
@@ -847,7 +848,13 @@ export function AgentsTab() {
     selectedVariant && !suffixVariant
       ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsShell)}`
       : `--model ${commandModelArg}`;
-  const modelArgs = attachOnly ? "" : selectedModelArgs;
+  const selectedModelFlags =
+    modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO)
+      ? EXAMPLE_MODEL_FLAGS
+      : "";
+  const modelArgs = attachOnly
+    ? ""
+    : [selectedModelArgs, selectedModelFlags].filter(Boolean).join(" ");
   // No key is passed: the CLI caches an explicit one per base, overwriting a working
   // saved key. Omitting it replays the saved key; the remote section covers first setup.
   const commandOs = isWindowsShell ? "windows" : "unix";
