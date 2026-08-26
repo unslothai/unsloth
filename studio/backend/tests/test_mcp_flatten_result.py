@@ -376,9 +376,12 @@ def test_data_uri_still_resolves_its_own_type():
     )
     payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
     assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
-    assert _flatten_result(
-        _result(_blob_resource(mime = None, uri = "data:application/pdf;base64,JVBERi0="))
-    ) == ""
+    assert (
+        _flatten_result(
+            _result(_blob_resource(mime = None, uri = "data:application/pdf;base64,JVBERi0="))
+        )
+        == ""
+    )
 
 
 def test_a_bare_host_is_not_a_file_name():
@@ -390,8 +393,14 @@ def test_a_bare_host_is_not_a_file_name():
 
 def test_malformed_image_types_never_reach_the_data_url():
     # anything that survives is interpolated into data:<type>;base64, by the frontend
-    for mime in ("image/", "image//png", "image/*", "image/<script>", 'image/png"',
-                 "image/png\nX-Injected: 1"):
+    for mime in (
+        "image/",
+        "image//png",
+        "image/*",
+        "image/<script>",
+        'image/png"',
+        "image/png\nX-Injected: 1",
+    ):
         assert _flatten_result(_result(_blob_resource(mime = mime))) == "", mime
 
 
