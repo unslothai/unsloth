@@ -8,7 +8,7 @@ import test from "node:test";
 
 import { SIDEBAR_WIDTH_DEFAULT } from "../src/hooks/use-sidebar-width.ts";
 
-// widest window that must still show both columns with the sidebar expanded; the 64rem tier shipped in #7633 needed 1376px
+// widest window that must still show both columns with the sidebar expanded; the previous 64rem tier needed 1376px
 const WINDOW_BUDGET_PX = 1280;
 
 // container queries resolve rem against the root font size, which studio leaves at the browser default
@@ -85,7 +85,7 @@ function baseStep(className: string, utility: string): number {
   return Number(match[1]);
 }
 
-/** narrowest @*\/train-section tier the wizard actually uses, in px */
+/** narrowest @*\/train-section tier in top-level wizard and section files, in px */
 async function smallestTrainSectionTier(
   containers: Map<string, number>,
 ): Promise<number> {
