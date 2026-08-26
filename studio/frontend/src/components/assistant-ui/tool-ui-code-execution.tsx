@@ -14,6 +14,7 @@ import { CopyIcon, FileTextIcon, TerminalIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
+import { toolArgText } from "./tool-arg-text";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ToolFallbackContent,
@@ -38,8 +39,9 @@ import {
  */
 interface CodeExecutionArgs {
   kind?: "bash" | "text_editor";
-  command?: string;
-  path?: string;
+  // Straight off the wire: the model, not the schema, decides the JSON type.
+  command?: unknown;
+  path?: unknown;
 }
 
 const MAX_COMMAND_LABEL = 80;
@@ -134,8 +136,8 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
 }) => {
   const parsedArgs = (args as CodeExecutionArgs) ?? {};
   const kind = parsedArgs.kind ?? "bash";
-  const command = parsedArgs.command ?? "";
-  const path = parsedArgs.path ?? "";
+  const command = toolArgText(parsedArgs.command);
+  const path = toolArgText(parsedArgs.path);
   const isRunning = status?.type === "running";
 
   const commandLabel = command ? truncateCommandLabel(command) : "";

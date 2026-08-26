@@ -452,8 +452,14 @@ def _imatrix_model(accepts_token: bool, calls: dict):
             quantization_method = None,
             token = None,
             imatrix_file = None,
+            private = False,
         ):
-            calls["push"] = {"repo_id": repo_id, "token": token, "imatrix_file": imatrix_file}
+            calls["push"] = {
+                "repo_id": repo_id,
+                "token": token,
+                "imatrix_file": imatrix_file,
+                "private": private,
+            }
 
     class _WithoutToken:
         def save_pretrained_gguf(
@@ -496,7 +502,33 @@ def test_hub_push_with_an_imatrix_passes_the_token_exactly_once(monkeypatch, tmp
     )
 
     assert success is True, message
-    assert calls["push"] == {"repo_id": "org/model", "token": "hf_secret", "imatrix_file": True}
+    assert calls["push"] == {
+        "repo_id": "org/model",
+        "token": "hf_secret",
+        "imatrix_file": True,
+        "private": False,
+    }
+
+
+@pytest.mark.parametrize("imatrix_file", [None, False, True])
+@pytest.mark.parametrize("private", [True, False])
+def test_hub_push_gguf_forwards_private_flag(monkeypatch, tmp_path, imatrix_file, private):
+    """push_to_hub_gguf receives the requested private flag for both standard and imatrix exports."""
+    calls: dict = {}
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _imatrix_model(True, calls))
+
+    success, message, _p = backend.export_gguf(
+        str(save_dir),
+        "q4_k_m" if not imatrix_file else "iq2_xxs",
+        push_to_hub = True,
+        repo_id = "org/model",
+        hf_token = "hf_secret",
+        imatrix_file = imatrix_file,
+        private = private,
+    )
+
+    assert success is True, message
+    assert calls["push"]["private"] is private
 
 
 def test_gguf_export_without_an_imatrix_does_not_forward_the_token(monkeypatch, tmp_path):

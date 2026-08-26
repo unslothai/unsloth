@@ -80,7 +80,7 @@ def test_terminal_update_holds_the_gate_through_environment_mutation():
     # The launcher transaction wraps the mutation; it replaced the self-exe lock release.
     launcher = body.index("_WindowsLauncherUpdateTransaction()", idle_scan)
     setup = body.index("_run_setup_script(", launcher)
-    verify = body.index("_fail_if_install_damaged()", setup)
+    verify = body.index("_fail_if_install_damaged(", setup)
     assert consume < guard < idle_scan < launcher < setup < verify
 
 
@@ -90,8 +90,9 @@ def test_terminal_setup_holds_the_gate_through_environment_mutation():
     consume = body.index("_studio_runtime_gate.consume_runtime_gate_handoff()")
     guard = body.index("with _studio_runtime_launch_guard(", consume)
     idle_scan = body.index("_studio_runtime_gate.ensure_managed_environment_is_idle", guard)
-    setup = body.index("_run_setup_script(", idle_scan)
-    assert consume < guard < idle_scan < setup
+    launcher = body.index("_WindowsLauncherUpdateTransaction()", idle_scan)
+    setup = body.index("_run_setup_script(", launcher)
+    assert consume < guard < idle_scan < launcher < setup
 
 
 def test_interrupted_windows_setup_kills_tree_before_return(monkeypatch):

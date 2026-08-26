@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from auth.authentication import (
     authenticated_via_api_key,
     get_current_subject,
+    request_admitted_without_credential,
     require_ui_session_for_local_commands,
 )
 from core.inference.mcp_client import (
@@ -27,6 +28,8 @@ from core.inference.mcp_client import (
     parse_stdio_command,
     probe_timeout,
     record_probe_failure,
+    serialize_mcp_server_mutation,
+    stdio_mcp_disabled_reason,
     stdio_mcp_enabled,
 )
 from core.inference.mcp_config_import import parse_mcp_config
@@ -50,6 +53,7 @@ router = APIRouter()
 # Annotated, not a Depends default: these routes are also called directly by the
 # tests, where a Depends object is truthy and would read as "API key".
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
+WithoutCredential = Annotated[bool, Depends(request_admitted_without_credential)]
 
 
 def _looks_like_command(value: str) -> bool:
@@ -90,11 +94,7 @@ def _validate_url(url: str) -> str:
     parsed = urlparse(trimmed)
     if parsed.scheme not in ("http", "https"):
         if _looks_like_command(trimmed):
-            detail = (
-                "Local commands aren't enabled on this server. To allow them, "
-                "set UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 and restart Unsloth, or use "
-                "an http:// or https:// URL instead."
-            )
+            detail = stdio_mcp_disabled_reason()
         else:
             detail = (
                 "MCP server address must start with http:// or https:// "
@@ -118,12 +118,12 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     return out or None
 
 
-def _row_to_response(row: dict) -> McpServerResponse:
+def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerResponse:
     return McpServerResponse(
         id = row["id"],
         display_name = row["display_name"],
         url = row["url"],
-        headers = parse_server_headers(row) or {},
+        headers = (parse_server_headers(row) or {}) if include_headers else {},
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
         created_at = row["created_at"],
@@ -131,17 +131,20 @@ def _row_to_response(row: dict) -> McpServerResponse:
     )
 
 
+# FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
 @router.get("/", response_model = list[McpServerResponse])
-async def list_mcp_servers(
-    current_subject: str = Depends(get_current_subject), via_api_key: ViaApiKey = False
+def list_mcp_servers(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
 ):
     rows = mcp_servers_db.list_servers()
-    if via_api_key:
+    if via_api_key or no_credential:
         # Drop the row, not just its fields: `url` is the argv (carries
         # credentials), `headers` is the subprocess env, and a blanked url would
         # round-trip into update as a bogus command.
         rows = [row for row in rows if not is_stdio(row["url"])]
-    return [_row_to_response(row) for row in rows]
+    return [_row_to_response(row, include_headers = not no_credential) for row in rows]
 
 
 @router.post("/", response_model = McpServerResponse, status_code = 201)
@@ -202,11 +205,13 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
 
 
 @router.put("/{server_id}", response_model = McpServerResponse)
+@serialize_mcp_server_mutation
 async def update_mcp_server(
     server_id: str,
     payload: McpServerUpdate,
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
 ):
     old = mcp_servers_db.get_server(server_id)
     if not old:
@@ -243,20 +248,25 @@ async def update_mcp_server(
             is_stdio(current["url"]) or is_stdio(changes.get("url", current["url"]))
         ):
             require_ui_session_for_local_commands(via_api_key)
-    mcp_servers_db.update_server(server_id, changes)
     # A new endpoint/auth makes cached tools wrong and disabling makes them unreachable, so drop
     # them and let the next send re-probe; a rename leaves them valid. Live stdio sessions for the
     # old endpoint close too. Gate on a real value change, not mere presence: the edit dialog
     # resends url/headers/oauth unchanged on a rename, which must not drop the session.
-    if any(changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS):
+    invalidates_tools = any(
+        changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS
+    )
+    mcp_servers_db.update_server(server_id, changes)
+    if invalidates_tools:
         invalidate_tool_cache(server_id)
+    if invalidates_tools:
         # Narrow to this row's env: another server row sharing the command but
         # with a different env keeps its live sessions.
         await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
-    return _row_to_response(mcp_servers_db.get_server(server_id))
+    return _row_to_response(mcp_servers_db.get_server(server_id), include_headers = not no_credential)
 
 
 @router.delete("/{server_id}", status_code = 204)
+@serialize_mcp_server_mutation
 async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_current_subject)):
     old = mcp_servers_db.get_server(server_id)
     if not old:
@@ -282,9 +292,7 @@ async def refresh_mcp_server_tools(
     if is_stdio(server["url"]):
         require_ui_session_for_local_commands(via_api_key)
         if not stdio_mcp_enabled():
-            raise HTTPException(
-                status_code = 400, detail = "stdio MCP servers are disabled on this host"
-            )
+            raise HTTPException(status_code = 400, detail = stdio_mcp_disabled_reason())
 
     use_oauth = bool(server.get("use_oauth"))
     try:

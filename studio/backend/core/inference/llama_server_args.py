@@ -13,9 +13,12 @@ Ref: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from typing import Iterable, Mapping, Optional
+
+logger = logging.getLogger(__name__)
 
 # Valid llama-server --parallel range, shared with LoadRequest.n_parallel.
 # Mirrored by callers that cannot import this: run.py and unsloth_cli/commands/
@@ -27,6 +30,12 @@ PARALLEL_MAX = 64
 # --batch-size / --ubatch-size range, mirrored by N_BATCH_MIN/MAX in per-model-config.ts
 BATCH_MIN = 1
 BATCH_MAX = 65536
+
+# Sanity bounds, not upstream ones: a stray keystroke fails here rather than in the
+# child. --cache-ram floors at -1 ("no limit"); 0 disables the cache. Mirrored by
+# CTX_CHECKPOINTS_MAX / CACHE_RAM_MAX in per-model-config.ts.
+CTX_CHECKPOINTS_MAX = 256
+CACHE_RAM_MAX_MIB = 1024 * 1024
 
 # Each group = every alias (short + long) of one hard-denied flag.
 # Extend the matching group when llama.cpp adds a new alias.
@@ -271,10 +280,15 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
             raise ValueError("extra llama-server args cannot contain control characters")
         flag = _flag_name(token)
         if flag is not None and flag in _DENYLIST:
-            raise ValueError(
+            message = (
                 f"llama-server flag '{flag}' is managed by Unsloth Studio "
                 f"and cannot be passed as an extra arg"
             )
+            # Why (#9510): users reaching for `--parallel 1` to cap concurrent predictions on a
+            # local model hit this refusal with no pointer to the supported knob; name it.
+            if flag in {"-np", "--parallel", "--n-parallel"}:
+                message += "; set n_parallel on the load request (parallel decode slots) instead"
+            raise ValueError(message)
         if flag is None:
             # A token belonging to no flag. Today's llama-server answers "invalid
             # argument" and refuses to start, which is a failed load rather than a
@@ -523,11 +537,12 @@ _SPEC_FLAGS: frozenset[str] = frozenset(
         # and HF --spec-draft-hf aliases) are Unsloth-managed since the separate-
         # drafter support (Gemma 4): an inherited copy must not last-wins-override
         # the auto-detected drafter. Explicit extras for the current load are never
-        # stripped. The per-drafter tuning knobs (--spec-draft-type-*, -ngld,
-        # --spec-draft-device) are deliberately NOT stripped: the VRAM budget reads
-        # them via the same parsers the child honors, so they stay consistent on
-        # inherit, and stripping them would silently move a CPU-offloaded drafter
-        # back onto the GPU.
+        # stripped. The per-drafter tuning knobs (-ngld, --spec-draft-device) are
+        # deliberately NOT stripped: the VRAM budget reads them via the same parsers
+        # the child honors, so they stay consistent on inherit, and stripping them
+        # would silently move a CPU-offloaded drafter back onto the GPU. The draft
+        # cache dtype is in that group too, and has its own toggle used only when
+        # spec_draft_cache_type is set, the same rule the batch pair follows.
         "--model-draft",
         "-md",
         "--spec-draft-model",
@@ -577,7 +592,25 @@ _GPU_LAYER_FLAGS: frozenset[str] = frozenset({"-ngl", "--gpu-layers", "--n-gpu-l
 # inherited copies of these shadow n_batch / n_ubatch, stripped only when the field is set
 _BATCH_FLAGS: frozenset[str] = frozenset({"-b", "--batch-size"})
 _UBATCH_FLAGS: frozenset[str] = frozenset({"-ub", "--ubatch-size"})
+# Same rule for the tuning group: stripped only when its field is supplied.
+# --swa-checkpoints is upstream's older spelling of --ctx-checkpoints.
+_CTX_CHECKPOINTS_FLAGS: frozenset[str] = frozenset(
+    {"-ctxcp", "--ctx-checkpoints", "--swa-checkpoints"}
+)
+_CACHE_RAM_FLAGS: frozenset[str] = frozenset({"-cram", "--cache-ram"})
+# One group: the control sets a single dtype, so an inherited pair that split K
+# from V has to go whole.
+_SPEC_DRAFT_CACHE_K_FLAGS: frozenset[str] = frozenset(
+    {"-ctkd", "--cache-type-k-draft", "--spec-draft-type-k"}
+)
+_SPEC_DRAFT_CACHE_V_FLAGS: frozenset[str] = frozenset(
+    {"-ctvd", "--cache-type-v-draft", "--spec-draft-type-v"}
+)
+_SPEC_DRAFT_CACHE_FLAGS: frozenset[str] = _SPEC_DRAFT_CACHE_K_FLAGS | _SPEC_DRAFT_CACHE_V_FLAGS
 _FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
+# The fitter's per-device margin. Never stripped (llama.cpp is last-wins), so a
+# pass-through value is what the child really keeps free; see fit_target_margin_in.
+_FIT_TARGET_FLAGS: frozenset[str] = frozenset({"-fitt", "--fit-target"})
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
@@ -675,6 +708,31 @@ def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
         override = value
 
     return override
+
+
+def parse_ctx_checkpoints_override(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Return the last user-supplied ``--ctx-checkpoints`` value, or None.
+
+    The control emits its flag before the extras, so a copy typed for this load
+    last-wins at launch. Sizing has to price that value, not the field, or a
+    ``--ctx-checkpoints 256`` in the extras allocates 256 per-slot snapshots
+    against a fit that budgeted the field's count.
+    """
+    value = _last_flag_value(args, _CTX_CHECKPOINTS_FLAGS)
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        # Malformed extras are refused at the boundary; sizing must not raise here.
+        return None
+    return max(0, parsed)
+
+
+def resolve_ctx_checkpoints(args: Optional[Iterable[str]], requested: Optional[int]) -> int:
+    """The checkpoint count the launch will actually run: extras beat the field."""
+    override = parse_ctx_checkpoints_override(args)
+    return int(override if override is not None else (requested or 0))
 
 
 def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:
@@ -809,6 +867,93 @@ def fit_is_effectively_on(
     if raw_value is None:
         return True
     return str(raw_value).strip().lower() not in _ENV_FALSE_VALUES
+
+
+def fit_target_margin_in(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[float]:
+    """The per-device margin an effective ``--fit-target`` asks the fitter to keep.
+
+    ``-fitt/--fit-target`` takes a list of MiB values, one per device, and a
+    single value is broadcast across all of them (common/arg.cpp; default 1024,
+    ``fit_params_target`` in common/common.h). The fitter refuses
+    to allocate into that margin and spills the rest to host RAM instead
+    (``targets.push_back(dmds_full[id].free - margins[id])``, common/fit.cpp), so
+    a load-mode fit that credits VRAM has to price it.
+
+    Returns the LARGEST value in the list, because the fit charges one margin to
+    every device it credits and understating would claim a fit that is not there.
+    ``None`` when nothing readable is set, which leaves the caller on llama.cpp's
+    own default rather than on a guess. Last-wins over argv, and the env twin only
+    when argv sets nothing, the same precedence ``fit_is_effectively_on`` uses.
+    """
+    raw_value = _last_flag_value(args, _FIT_TARGET_FLAGS)
+    if raw_value is None and env:
+        raw_value = env.get("LLAMA_ARG_FIT_TARGET")
+    if raw_value is None:
+        return None
+    values: list[float] = []
+    # Upstream splits on both "," and "/" (common/arg.cpp), so "4096/4096" is a
+    # well-formed two-device margin; reading it as one token would wrongly abstain.
+    for part in str(raw_value).replace("/", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            values.append(float(part))
+        except ValueError:
+            # Upstream rejects the whole list, so abstain rather than price part of it.
+            return None
+    return max(values) if values else None
+
+
+def split_policy_starves_devices(
+    args: Optional[Iterable[str]],
+    n_credited: int,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """True when the effective split leaves fewer devices holding weights than ``n_credited``.
+
+    ``--split-mode`` and ``--tensor-split`` are pass-through under auto-select
+    (``_SPLIT_SHADOWING_FLAGS`` is stripped only when the Tensor Parallelism toggle
+    owns the split), so both reach the child appended after Studio's own placement
+    flags. Either can quietly shrink the pool a pooled VRAM credit was priced for:
+
+    * ``--split-mode none`` is ``LLAMA_SPLIT_MODE_NONE`` (common/arg.cpp), which
+      puts the whole model on ``--main-gpu`` alone. ``row``/``layer``/``tensor``
+      all keep every device, so only ``none`` starves.
+    * ``--tensor-split`` is a per-device proportion list, and upstream zero-fills
+      every device past the end of the list (common/arg.cpp), so a short list
+      starves the tail just as an explicit ``0`` starves its own device.
+
+    Value-aware on purpose: a restatement that keeps all devices is not an
+    override, and voiding on it would abstain from a fit that is really there.
+    """
+    if n_credited <= 1:
+        return False
+    mode = _last_flag_value(args, _SPLIT_MODE_FLAGS)
+    if mode is None and env:
+        mode = env.get("LLAMA_ARG_SPLIT_MODE")
+    if str(mode or "").strip().lower() == "none":
+        return True
+    raw_split = _last_flag_value(args, _TENSOR_SPLIT_FLAGS)
+    if raw_split is None and env:
+        raw_split = env.get("LLAMA_ARG_TENSOR_SPLIT")
+    if raw_split is None:
+        return False
+    holding = 0
+    # Upstream splits on both "," and "/" (common/arg.cpp).
+    for part in str(raw_split).replace("/", ",").split(",")[:n_credited]:
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            if float(part) > 0.0:
+                holding += 1
+        except ValueError:
+            # Upstream throws on this and the child never starts: nothing to misprice.
+            return False
+    return holding < n_credited
 
 
 def parse_cache_override_per_axis(
@@ -953,6 +1098,9 @@ def strip_shadowing_flags(
     strip_load_mode: bool = False,
     strip_batch: bool = False,
     strip_ubatch: bool = False,
+    strip_ctx_checkpoints: bool = False,
+    strip_cache_ram: bool = False,
+    strip_spec_draft_cache: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
 
@@ -1003,6 +1151,12 @@ def strip_shadowing_flags(
         shadowing |= _BATCH_FLAGS
     if strip_ubatch:
         shadowing |= _UBATCH_FLAGS
+    if strip_ctx_checkpoints:
+        shadowing |= _CTX_CHECKPOINTS_FLAGS
+    if strip_cache_ram:
+        shadowing |= _CACHE_RAM_FLAGS
+    if strip_spec_draft_cache:
+        shadowing |= _SPEC_DRAFT_CACHE_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []
@@ -1083,6 +1237,9 @@ def apply_model_memory_policy(
     "Don't reserve system RAM" drops ``--mlock`` / ``--no-mmap``, leaving the
     default mmap path. With both off nothing is stripped, so a hand-typed flag
     still applies.
+
+    The per-model Mmap/Mlock control is resolved separately, by
+    ``apply_load_mode_policy``, which runs after this and defers to it.
     """
     try:
         from utils.model_memory_settings import get_model_memory_settings
@@ -1125,6 +1282,77 @@ def apply_model_memory_policy(
             strip_load_mode = True,
         )
     return managed, tokens
+
+
+def apply_load_mode_policy(
+    extra_args: Optional[Iterable[str]],
+    *,
+    supports_load_mode: bool = False,
+    weights_in_host_memory: bool = True,
+    requested_load_mode: Optional[str] = None,
+) -> tuple[list[str], list[str]]:
+    """Resolve the per-model Mmap/Mlock control into llama-server flags.
+
+    Returns ``(managed_flags, extras)``, like ``apply_model_memory_policy``, and
+    is meant to run straight after it on the extras that call returned.
+
+    The Model Memory settings win, which is what the Run settings panel tells the
+    user, so changing the order without changing ``loadModeOverrideNotice`` makes
+    that note wrong. "Keep model in GPU memory" owns the mode outright while it
+    applies; "Don't reserve system RAM" vetoes the values holding a full host copy
+    (``none``, ``mlock``, ``mmap+mlock``) and leaves ``mmap`` and ``dio`` alone.
+
+    ``auto`` emits nothing: it IS llama.cpp's default, so pinning it would freeze
+    what a later build may redefine. An unknown value is dropped rather than passed
+    through, since llama-server exits on one.
+    """
+    tokens = list(extra_args or [])
+    mode = _normalize_load_mode_value(requested_load_mode)
+    if not mode:
+        return [], tokens
+    try:
+        from utils.model_memory_settings import get_model_memory_settings
+        keep_resident, no_ram_reserve = get_model_memory_settings()
+    except Exception:
+        # Settings unavailable (bare unit-test import): nothing to defer to.
+        keep_resident, no_ram_reserve = False, False
+    if keep_resident and not no_ram_reserve and weights_in_host_memory:
+        logger.info(
+            "Model Memory: 'Keep model in GPU memory' owns the load mode; "
+            "ignoring the requested %r.",
+            mode,
+        )
+        return [], tokens
+    if no_ram_reserve and mode in _LOAD_MODE_MLOCK_VALUES | _LOAD_MODE_RESERVING_VALUES:
+        logger.info(
+            "Model Memory: 'Don't reserve system RAM' drops the requested load mode %r.",
+            mode,
+        )
+        return [], tokens
+    if not supports_load_mode:
+        # A build predating the enum understands the spellings it replaced, and
+        # only for the values that had one.
+        legacy = _LEGACY_LOAD_MODE_FLAGS.get(mode)
+        if not legacy:
+            logger.info("llama-server has no --load-mode; skipping the requested %r mode.", mode)
+            return [], tokens
+        return list(legacy), tokens
+    # Emitted BEFORE the extras and stripping nothing, like every other control
+    # here: a flag typed for THIS load is appended after and last-wins, which is
+    # what the panel's diagnostics promise. An INHERITED copy is a different
+    # thing, and the route drops that one before it ever reaches here.
+    return ["--load-mode", mode], tokens
+
+
+def _normalize_load_mode_value(value: Optional[str]) -> str:
+    """Canonical --load-mode, or "" for "no opinion" (unset, auto, unknown)."""
+    mode = (value or "").strip().lower()
+    if mode in {"", "auto"}:
+        return ""
+    if mode not in _LOAD_MODE_VALUES:
+        logger.warning("Ignoring unknown load mode %r", value)
+        return ""
+    return mode
 
 
 def _strip_reserving_load_modes(tokens: list[str]) -> list[str]:
@@ -1297,6 +1525,58 @@ def scrub_denied_env(env: dict) -> list[str]:
     return removed
 
 
+def extra_args_select_load_mode(extra_args: Optional[Iterable[str]]) -> bool:
+    """Whether the pass-through block already picks a loader mode itself.
+
+    The argv twin of ``memory_env_selects_load_mode``, and it answers for both
+    spellings: the ``--load-mode`` enum, and the flags it replaced
+    (``--no-mmap`` / ``--mmap`` / the direct-IO pair), which are what this launch
+    emits on a build predating the enum (``_LEGACY_LOAD_MODE_FLAGS``) and so are
+    what a user's own flag would collide with there.
+
+    Presence, not value: a fit-derived mode stands aside for any pick the user made
+    rather than trying to rank the two. Their tokens are appended after the managed
+    block and llama.cpp is last-wins, so theirs governs either way.
+    """
+    for raw in extra_args or ():
+        if _flag_name(str(raw)) in _LOAD_MODE_FLAGS | _LOAD_MODE_ALIAS_FLAGS:
+            return True
+    return False
+
+
+def memory_env_selects_load_mode(env: Optional[Mapping[str, str]]) -> bool:
+    """Whether the inherited environment already picks a loader mode.
+
+    llama.cpp applies the ``LLAMA_ARG_*`` twins BEFORE argv (common/arg.cpp runs
+    its environment loop and only then "handle command line arguments"), and both
+    assign the same ``params.load_mode``, so a managed ``--load-mode`` emitted here
+    beats an inherited choice without the user typing anything. A mode DERIVED from
+    a fit has to stand aside for that choice, the same way it stands aside for the
+    per-model pick; a hand-typed flag is argv and still wins by last-arg.
+
+    Per variable, matching what upstream really does with each value: a no-value
+    option (``--mlock``) runs its handler only for a truthy one (``opt.handler_void
+    && is_truthy(value)``), a negative alias (``LLAMA_ARG_NO_MMAP`` /
+    ``LLAMA_ARG_NO_DIO``) counts by PRESENCE whatever it says (``get_value_from_env``
+    forces "0" when it exists), and the rest assign a mode for any value they parse.
+    """
+    if not env:
+        return False
+    for name in MEMORY_ENV_VARS:
+        if name not in env:
+            continue
+        value = str(env.get(name) or "").strip()
+        if name == "LLAMA_ARG_MLOCK":
+            if value.lower() in _ENV_TRUE_VALUES:
+                return True
+            continue
+        if name in {"LLAMA_ARG_NO_MMAP", "LLAMA_ARG_NO_DIO"}:
+            return True
+        if value:
+            return True
+    return False
+
+
 def scrub_memory_env(env: dict) -> list[str]:
     """Drop inherited memory placement the settings override.
 
@@ -1322,6 +1602,18 @@ def scrub_memory_env(env: dict) -> list[str]:
 _ENV_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
 _ENV_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
 
+# Every --load-mode value llama-server documents, so an unknown one is dropped
+# here rather than exiting the child. Mirrored by LOAD_MODES in per-model-config.ts.
+_LOAD_MODE_VALUES = frozenset({"auto", "none", "mmap", "mlock", "mmap+mlock", "dio"})
+# What each mode meant before the enum existed, for a build that predates it.
+# "auto" is the default and needs no flag; "mmap+mlock" is what a bare --mlock
+# asked for alongside the default mmap. There is no pre-enum spelling for plain
+# "mmap" or for "dio", so those are skipped rather than approximated.
+_LEGACY_LOAD_MODE_FLAGS: dict[str, list[str]] = {
+    "none": ["--no-mmap"],
+    "mlock": ["--no-mmap", "--mlock"],
+    "mmap+mlock": ["--mlock"],
+}
 _LOAD_MODE_MLOCK_VALUES = frozenset({"mlock", "mmap+mlock"})
 # Modes that read the weights into a full host buffer. "dio" streams via
 # DirectIO and "mmap" maps, so neither reserves RAM for the whole model.

@@ -15,6 +15,7 @@ No GPU/network: only file names and sizes are inspected.
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -38,6 +39,25 @@ def _touch(path: Path) -> Path:
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(b"\0")
     return path
+
+
+def test_local_adapter_chat_capability_uses_its_local_base(tmp_path):
+    from hub.services.models.common import _classify_local_path
+
+    base = tmp_path / "whisper-base"
+    _touch(base / "model.safetensors")
+    (base / "config.json").write_text(
+        '{"model_type":"whisper","architectures":["WhisperForConditionalGeneration"]}'
+    )
+    adapter = tmp_path / "whisper-adapter"
+    _touch(adapter / "adapter_model.safetensors")
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
+
+    rows = _classify_local_path(adapter, "custom")
+
+    assert len(rows) == 1
+    assert rows[0].base_model == str(base)
+    assert models_route._local_model_can_chat(rows[0]) is False
 
 
 def test_dir_model_format_gguf_only(tmp_path):
@@ -356,6 +376,10 @@ def test_a_modular_pipeline_root_counts_as_a_pipeline_index(tmp_path):
     (modular / "transformer").mkdir(parents = True)
     (modular / "modular_model_index.json").write_text("{}")
     assert _local_pipeline_index(modular) is True
+    assert (
+        models_route._local_is_diffusers(_local(modular, display_name = "opaque", id = str(modular)))
+        is True
+    )
 
     conventional = tmp_path / "conventional"
     conventional.mkdir()
@@ -365,3 +389,57 @@ def test_a_modular_pipeline_root_counts_as_a_pipeline_index(tmp_path):
     neither = tmp_path / "neither"
     neither.mkdir()
     assert _local_pipeline_index(neither) is False
+
+
+def test_a_single_file_video_repo_is_flagged_diffusers(monkeypatch):
+    """_local_is_diffusers asks detect_video_family; _repo_is_diffusers must ask it too.
+
+    A cached single-file video checkpoint with no pipeline index gets no task from
+    _cached_repo_task (it returns None for an untrusted or unbuildable video family), so if
+    the diffusers flag is also missing, an inconclusive transformer config leaves can_chat
+    set -- and that is every gate the chat picker has. The video weights would be offered to
+    the text loader.
+    """
+    from types import SimpleNamespace
+
+    from core.inference.video_families import detect_video_family
+    from hub.services.models import catalog_classification as classification
+
+    repo_id = "Lightricks/LTX-Video"
+    assert detect_video_family(repo_id) is not None, "fixture assumes a known video family"
+
+    info = SimpleNamespace(repo_id = repo_id, repo_path = "/nonexistent")
+    assert classification._repo_is_diffusers(info) is True
+    # A plain chat repo must not be swept up by the same rule.
+    chat = SimpleNamespace(repo_id = "unsloth/Qwen3-0.6B", repo_path = "/nonexistent")
+    assert classification._repo_is_diffusers(chat) is False
+
+
+def test_adapter_base_is_found_in_the_cache_root_holding_the_adapter(tmp_path):
+    """An adapter listed from a legacy or previously configured root has its base cached in
+    that SAME root. Probing only the active root answered None, and None is inconclusive,
+    which leaves the adapter chat-capable -- so a Whisper LoRA reached the chat picker.
+    """
+    import json
+
+    from hub.services.models.common import _base_transformers_can_chat, _hub_cache_root_of
+
+    root = tmp_path / "legacy_hub"
+    base_snapshot = root / "models--Org--WhisperBase" / "snapshots" / ("b" * 40)
+    base_snapshot.mkdir(parents = True)
+    (base_snapshot / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "whisper",
+                "architectures": ["WhisperForConditionalGeneration"],
+            }
+        )
+    )
+    (root / "models--Org--WhisperBase" / "refs").mkdir(parents = True)
+    (root / "models--Org--WhisperBase" / "refs" / "main").write_text("b" * 40)
+
+    adapter_snapshot = root / "models--Org--SpeechLora" / "snapshots" / ("a" * 40)
+    adapter_snapshot.mkdir(parents = True)
+
+    assert _hub_cache_root_of(adapter_snapshot) == root
+    assert _base_transformers_can_chat("Org/WhisperBase", None, adapter_snapshot) is False

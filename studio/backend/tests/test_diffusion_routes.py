@@ -1691,6 +1691,41 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
     assert len(seen["loras"] or []) == 1
 
 
+def test_download_plan_suppresses_only_the_verdict_while_training_runs(client, monkeypatch):
+    # The panel stages exactly what this endpoint reports, so the plan has to keep counting the
+    # files the load will fetch even while a trainer holds the card. Only the oversized-memory
+    # refusal is suppressed: it needs a device reading nobody should take mid-training, and the
+    # load-time check still runs. Turning the whole probe off instead would silently drop the
+    # hosted DiT prequant and the pre-cast encoder from the plan.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+    from routes import inference as routes_inference
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+    seen: dict = {}
+
+    def _plan(model_path, **kwargs):
+        seen.clear()
+        seen.update(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+    body = {
+        "model_path": "unsloth/FLUX.1-dev-GGUF",
+        "gguf_filename": "flux1-dev-Q4_K_M.gguf",
+        "model_kind": "gguf",
+        "transformer_quant": "fp8",
+    }
+
+    for training, expected in ((True, False), (False, True)):
+        monkeypatch.setattr(routes_inference, "_training_is_active", lambda: training)
+        assert client.post("/api/inference/images/download-plan", json = body).status_code == 200
+        assert seen["memory_verdict"] is expected, training
+        # The file scope is never the thing that changes with training state.
+        assert "allow_device_probe" not in seen, training
+
+
 def test_download_plan_response_keeps_the_planners_checkpoint_marker(client, monkeypatch):
     # Through the ROUTE, not the planner: the response model is what the picker actually reads, and
     # a field the planner sets but the model does not declare is dropped silently on serialization.

@@ -255,6 +255,21 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_folder_id TEXT")
     if "linked_relative_path" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_relative_path TEXT")
+    # How many messages an archived turn was rendered from. NULL for everything else and
+    # for older archives, which fall back to counting role labels in the rendered text.
+    if "archive_messages" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN archive_messages INTEGER")
+    # An archived turn group's position in its conversation. NULL elsewhere and for older
+    # archives, which fall back to created_at ordering. Not backfilled: created_at cannot
+    # recover the order within a compaction epoch.
+    if "archive_ordinal" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN archive_ordinal INTEGER")
+    # Partial, so it is empty until a chat is compacted and the MAX() that allocates the
+    # next ordinal is an index probe rather than a scan.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_documents_archive_ordinal "
+        "ON documents(scope, archive_ordinal) WHERE archive_ordinal IS NOT NULL"
+    )
     # After the ALTER that adds the column on an older database. Partial, so it holds only
     # folder-owned rows and is empty with nothing linked, which keeps the lexical fast-path
     # gate an index probe rather than a scan of documents.
