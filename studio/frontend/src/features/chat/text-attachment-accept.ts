@@ -4,7 +4,8 @@
 /**
  * Extensions `TextAttachmentAdapter` reads inline; shared with the drop path.
  *
- * Read as UTF-8 and sent as text, so anything an editor opens belongs here.
+ * Read as UTF-8 (or BOM-marked UTF-16) and sent as text, so anything an editor
+ * opens belongs here.
  * Extensions another adapter claims stay off: the composite adapter takes the
  * first match, so .html, .pdf, .ods/.odt and the media containers are theirs.
  * .ts and .mts are TypeScript here, so video cannot take them for MPEG-TS.
@@ -315,7 +316,7 @@ export const TEXT_ATTACHMENT_EXTENSIONS = [
   ".patch",
 ];
 
-/** Conventional extensionless names represented by dotted picker tokens. */
+/** Conventional extensionless names matched through their dotted adapter tokens. */
 export const TEXT_ATTACHMENT_BASENAMES = ["containerfile"] as const;
 const PATH_SEPARATOR_RE = /[\\/]/;
 
@@ -330,6 +331,21 @@ export function isTextAttachmentName(path: string): boolean {
   return dot > 0 && TEXT_ATTACHMENT_EXTENSIONS.includes(name.slice(dot));
 }
 
+/**
+ * HTML's `accept` attribute can express MIME types and extensions, not an exact
+ * extensionless filename. Omit that picker hint when this adapter is present;
+ * the attachment adapters still validate every selected file.
+ */
+export function pickerAcceptForTextBasenames(accept: string): string {
+  if (accept === "*") {
+    return accept;
+  }
+  const tokens = accept.split(",").map((token) => token.trim().toLowerCase());
+  return TEXT_ATTACHMENT_BASENAMES.some((name) => tokens.includes(`.${name}`))
+    ? "*"
+    : accept;
+}
+
 /** Binary Apple property lists are not UTF-8 despite sharing `.plist`. */
 export async function isBinaryPropertyList(file: File): Promise<boolean> {
   if (!file.name.toLowerCase().endsWith(".plist")) {
@@ -337,6 +353,18 @@ export async function isBinaryPropertyList(file: File): Promise<boolean> {
   }
   const header = new Uint8Array(await file.slice(0, 8).arrayBuffer());
   return header.length === 8 && String.fromCharCode(...header) === "bplist00";
+}
+
+/** Decode editor text, including the BOM emitted by Windows Registry Editor. */
+export async function readTextAttachment(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return new TextDecoder("utf-16le").decode(bytes.subarray(2));
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return new TextDecoder("utf-16be").decode(bytes.subarray(2));
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 // MIME is unreliable for source files, so match by extension too.

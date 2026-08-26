@@ -14,6 +14,8 @@ import {
   TEXT_ATTACHMENT_BASENAMES,
   TEXT_ATTACHMENT_EXTENSIONS,
   isBinaryPropertyList,
+  pickerAcceptForTextBasenames,
+  readTextAttachment,
 } from "../src/features/chat/text-attachment-accept.ts";
 import {
   dequeueNativeAttachments,
@@ -55,6 +57,7 @@ const RUST_TEXT_ATTACHMENT_EXTS_RE =
   /TEXT_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_TEXT_ATTACHMENT_NAMES_RE =
   /TEXT_ATTACHMENT_NAMES[^=]*=\s*&\[([^\]]+)\]/s;
+const PICKER_BASENAME_CALL_RE = /pickerAcceptForTextBasenames\(enabledAccept\)/;
 const RUST_VIDEO_MIME_RE = /Some\("(video\/[^"]+)"\)/g;
 const DOTTED_EXTENSION_RE = /"(\.[^"]+)"/g;
 const RUST_EXTENSION_RE = /"([^"]+)"/g;
@@ -689,6 +692,20 @@ test("the conventional extensionless Containerfile attaches as text", () => {
   }
 });
 
+test("the picker remains able to show extensionless text basenames", () => {
+  assert.equal(pickerAcceptForTextBasenames(TEXT_ATTACHMENT_ACCEPT), "*");
+  assert.equal(
+    pickerAcceptForTextBasenames(".txt,text/plain"),
+    ".txt,text/plain",
+  );
+
+  const threadSource = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(threadSource, PICKER_BASENAME_CALL_RE);
+});
+
 test("frontend and Rust accept the same extensionless text names", () => {
   const rustSource = readFileSync(
     new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
@@ -718,6 +735,27 @@ test("binary plists are distinguished from XML plists", async () => {
   assert.equal(
     await isBinaryPropertyList(new File(["bplist00payload"], "settings.txt")),
     false,
+  );
+});
+
+test("UTF-16 registry exports are decoded before attachment", async () => {
+  const text =
+    "Windows Registry Editor Version 5.00\r\n\r\n[HKEY_CURRENT_USER\\Software\\Test]";
+  const utf16le = new Uint8Array(2 + text.length * 2);
+  utf16le.set([0xff, 0xfe]);
+  for (let index = 0; index < text.length; index += 1) {
+    const codeUnit = text.charCodeAt(index);
+    utf16le[2 + index * 2] = codeUnit & 0xff;
+    utf16le[3 + index * 2] = codeUnit >>> 8;
+  }
+
+  assert.equal(
+    await readTextAttachment(new File([utf16le], "export.reg")),
+    text,
+  );
+  assert.equal(
+    await readTextAttachment(new File(["plain UTF-8"], "notes.txt")),
+    "plain UTF-8",
   );
 });
 

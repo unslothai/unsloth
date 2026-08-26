@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Containers the backend can reach wav/mp3 from: wav and mp3 pass through, the
-// rest decode via libsndfile, or librosa (ffmpeg) when libsndfile cannot.
+// rest decode via libsndfile, PyAV's bundled FFmpeg, or finally librosa.
 export const AUDIO_ACCEPT =
   "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/opus,audio/flac,audio/mp4,audio/aac,audio/aiff,audio/x-aiff,audio/x-caf,audio/x-ms-wma,audio/amr,audio/3gpp";
 // Keep in sync with STT_AUDIO_RAW_MAX_BYTES in the backend upload limits.

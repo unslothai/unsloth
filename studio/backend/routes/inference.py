@@ -17495,14 +17495,46 @@ def _fit_transcoded_audio_to_wav_cap(
     return fitted, target_rate
 
 
+def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
+    """Decode an audio container with PyAV's bundled FFmpeg libraries."""
+    import io
+
+    import av
+    import numpy as np
+
+    chunks = []
+    sample_rate = 0
+    resampler = None
+    with av.open(io.BytesIO(raw), mode = "r", metadata_errors = "ignore") as container:
+        if not container.streams.audio:
+            raise ValueError("audio container has no audio stream")
+        for frame in container.decode(audio = 0):
+            if resampler is None:
+                sample_rate = int(frame.sample_rate or 0)
+                if sample_rate <= 0:
+                    raise ValueError("decoded audio has an invalid sample rate")
+                resampler = av.AudioResampler(
+                    format = "flt",
+                    layout = "mono",
+                    rate = sample_rate,
+                )
+            for resampled in resampler.resample(frame):
+                chunks.append(resampled.to_ndarray().reshape(-1))
+        if resampler is not None:
+            for resampled in resampler.resample(None):
+                chunks.append(resampled.to_ndarray().reshape(-1))
+    if not chunks:
+        raise ValueError("audio container decoded to no samples")
+    return np.concatenate(chunks).astype(np.float32, copy = False), sample_rate
+
+
 def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
     """Decode audio bytes to (mono float32 array, native sample_rate).
 
-    soundfile (libsndfile) reads wav/mp3/ogg/flac straight from memory. librosa
-    (ffmpeg-backed) additionally covers m4a/webm but needs a real path and is
-    absent on no-torch GGUF-only installs. Both imports are inside the fallback
-    so a missing decoder degrades to the next one (and finally a clear error)
-    rather than crashing.
+    soundfile (libsndfile) reads wav/mp3/ogg/flac straight from memory. PyAV is
+    installed in every Studio environment and uses its bundled FFmpeg libraries
+    for containers including m4a/webm/WMA/AMR. librosa remains the final fallback
+    in full ML environments, but is absent from no-torch GGUF-only installs.
     """
     import io
 
@@ -17511,27 +17543,30 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
         arr, sr = sf.read(io.BytesIO(raw), dtype = "float32")
     except Exception:
         try:
-            import librosa
-        except ModuleNotFoundError as e:
-            raise RuntimeError(
-                "this audio format needs librosa, which is not installed in "
-                "GGUF-only environments; use wav, mp3, ogg or flac"
-            ) from e
-        import os
-        import tempfile
-        from utils.paths import ensure_dir, tmp_root
+            arr, sr = _decode_audio_mono_with_av(raw)
+        except Exception as av_error:
+            try:
+                import librosa
+            except ModuleNotFoundError:
+                raise RuntimeError(
+                    "this audio format could not be decoded; run `unsloth studio update` "
+                    "to install PyAV or convert it to wav, mp3, ogg or flac"
+                ) from av_error
+            import os
+            import tempfile
+            from utils.paths import ensure_dir, tmp_root
 
-        with tempfile.NamedTemporaryFile(
-            suffix = ".audio",
-            delete = False,
-            dir = str(ensure_dir(tmp_root())),
-        ) as tmp:
-            tmp.write(raw)
-            tmp_path = tmp.name
-        try:
-            arr, sr = librosa.load(tmp_path, sr = None, mono = True)
-        finally:
-            os.unlink(tmp_path)
+            with tempfile.NamedTemporaryFile(
+                suffix = ".audio",
+                delete = False,
+                dir = str(ensure_dir(tmp_root())),
+            ) as tmp:
+                tmp.write(raw)
+                tmp_path = tmp.name
+            try:
+                arr, sr = librosa.load(tmp_path, sr = None, mono = True)
+            finally:
+                os.unlink(tmp_path)
     if arr.ndim > 1:
         arr = arr.mean(axis = 1)
     if sr > 0 and len(arr) > sr * _MAX_AUDIO_SECONDS:

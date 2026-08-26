@@ -57,7 +57,10 @@ import {
   getDocxAttachmentError,
 } from "./attachment-content";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
-import { isBinaryPropertyList } from "./text-attachment-accept";
+import {
+  isBinaryPropertyList,
+  readTextAttachment,
+} from "./text-attachment-accept";
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
@@ -380,7 +383,7 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const text = await attachment.file.text();
+    const text = await readTextAttachment(attachment.file);
     return {
       id: attachment.id,
       type: "document",
