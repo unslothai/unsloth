@@ -822,11 +822,12 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 else model
             )
             is_hybrid = _is_hybrid_linear_attention_model(hybrid_target)
-            # Hybrid models corrupt packed batches unless the gated-delta conv + scan
-            # reset at sequence boundaries. Enable the experimental varlen shim (flag +
-            # kernels) so packing stays correct, else keep them blocked. A string model
-            # (patched only after init) and TRL's chunked-loss forward bypass both leave
-            # the shim off, so hybrid packing falls back to the padded path.
+            # Hybrid models corrupt packed batches unless recurrent + conv ops
+            # reset at sequence boundaries (gated-delta or Mamba2). Enable the
+            # experimental varlen shim (flag + kernels) so packing stays correct,
+            # else keep them blocked. A string model (patched only after init)
+            # and TRL's chunked-loss forward bypass both leave the shim off, so
+            # hybrid packing falls back to the padded path.
             if (
                 is_hybrid
                 and not isinstance(model, str)

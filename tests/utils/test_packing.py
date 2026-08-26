@@ -473,6 +473,110 @@ def test_patch_hybrid_varlen_partial_dispatch_aborts(monkeypatch):
         )
 
 
+def _make_fake_mamba2_fused():
+    def mamba2_split_conv1d_scan_combined(*args, seq_idx = None, **kwargs):
+        mamba2_split_conv1d_scan_combined.calls.append(seq_idx)
+        return args[0] if args else None
+
+    mamba2_split_conv1d_scan_combined.calls = []
+    return mamba2_split_conv1d_scan_combined
+
+
+class _FakeNemotronHMamba2Mixer(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1d = torch.nn.Conv1d(4, 4, 3, groups = 4)
+        self.A_log = torch.nn.Parameter(torch.zeros(4))
+        self.mamba2_split_conv1d_scan_combined = _make_fake_mamba2_fused()
+
+    def forward(self, hidden_states, **kwargs):
+        fused_kwargs = dict(kwargs)
+        return self.mamba2_split_conv1d_scan_combined(hidden_states, **fused_kwargs)
+
+
+class _FakeMamba2Model(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.config = SimpleNamespace()  # no markers -> module-level detection
+        self.mixer = _FakeNemotronHMamba2Mixer()
+
+    def forward(
+        self,
+        input_ids = None,
+        packed_seq_lengths = None,
+        use_cache = None,
+        **kwargs,
+    ):
+        return self.mixer(input_ids.float(), **kwargs)
+
+
+def test_is_hybrid_linear_attention_detects_mamba2_mixer():
+    is_hybrid = trainer_module._is_hybrid_linear_attention_model
+    assert is_hybrid(_FakeMamba2Model()) is True
+
+
+def test_patch_mamba2_varlen_injects_seq_idx(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    model = _FakeMamba2Model()
+    fused_orig = model.mixer.mamba2_split_conv1d_scan_combined
+
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    assert patch_hybrid_linear_attention_varlen(model) is True  # idempotent
+
+    fused_orig.calls.clear()
+    packing_module._HYBRID_WARNED.clear()
+    model(
+        input_ids = torch.zeros(1, 6, dtype = torch.long),
+        packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+        use_cache = False,
+    )
+    seq_idx = fused_orig.calls[-1]
+    assert seq_idx is not None
+    assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
+    assert not packing_module._HYBRID_WARNED
+
+    fused_orig.calls.clear()
+    model(
+        input_ids = torch.zeros(1, 6, dtype = torch.long),
+        packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+        use_cache = True,
+    )
+    assert fused_orig.calls[-1] is None
+
+
+def test_patch_mamba2_varlen_kwargs_only_stub_fail_closed(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    model = _FakeMamba2Model()
+
+    def stub(*args, **kwargs):
+        return None
+
+    model.mixer.mamba2_split_conv1d_scan_combined = stub
+    assert patch_hybrid_linear_attention_varlen(model) is False
+
+
+def test_patch_mamba2_varlen_no_fused_dispatch_aborts(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+
+    class _SilentNemotronHMamba2Mixer(_FakeNemotronHMamba2Mixer):
+        def forward(self, hidden_states, **kwargs):
+            return hidden_states
+
+    class _SilentModel(_FakeMamba2Model):
+        def __init__(self):
+            super().__init__()
+            self.mixer = _SilentNemotronHMamba2Mixer()
+
+    model = _SilentModel()
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    with pytest.raises(RuntimeError, match = "not both invoked"):
+        model(
+            input_ids = torch.zeros(1, 6),
+            packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+            use_cache = False,
+        )
+
+
 def test_varlen_from_position_ids_mrope_3d():
     pos = (
         torch.tensor([[0, 1, 0, 0, 1, 2]]).unsqueeze(0).expand(3, 1, 6).clone()
