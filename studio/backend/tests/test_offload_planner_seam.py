@@ -39,7 +39,6 @@ def _discrete_host(monkeypatch):
     asserted deliberately, below.
     """
     import utils.hardware
-
     monkeypatch.setattr(utils.hardware, "is_apple_silicon", lambda: False)
 
 
