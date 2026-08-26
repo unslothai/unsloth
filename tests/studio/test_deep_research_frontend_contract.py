@@ -418,9 +418,9 @@ def test_the_toolless_fallback_never_steals_a_continuation_or_attachment_only_tu
     assert "(text) => text.trim().length > 0" in fallback
     assert "isContinuation: continuation !== null" in fallback
     assert "hasResearchableText," in fallback
-    assert adapter.index("const continuation = readContinuationRequest(runConfig);") < adapter.index(
-        "shouldStartDirectDeepResearch({"
-    )
+    assert adapter.index(
+        "const continuation = readContinuationRequest(runConfig);"
+    ) < adapter.index("shouldStartDirectDeepResearch({")
 
 
 def test_a_tool_that_ran_starts_its_run_even_if_the_reply_never_finished() -> None:
