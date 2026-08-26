@@ -129,6 +129,7 @@ export interface ResearchRun {
     budgets?: ResearchBudgets;
     websitePolicy?: ResearchWebsitePolicy;
     instructions?: string;
+    projectContextSnapshotId?: string;
   };
   cancelRequested?: boolean;
   retryCount?: number;

@@ -497,6 +497,8 @@ def resolve_project_context_snapshot(
     snapshot_id: Optional[str],
     *,
     query: str = "",
+    durable_research_run_id: Optional[str] = None,
+    durable_owner_subject: Optional[str] = None,
 ) -> Optional[ResolvedProjectContext]:
     """Resolve a server snapshot only for the persisted project that minted it."""
     if snapshot_id is None:
@@ -510,12 +512,41 @@ def resolve_project_context_snapshot(
     with _PROJECT_CONTEXT_SNAPSHOT_LOCK:
         _prune_project_context_snapshots(now)
         snapshot = _PROJECT_CONTEXT_SNAPSHOTS.get(snapshot_id)
-        if snapshot is None or snapshot.project_id != project_id:
-            raise ProjectContextSnapshotInvalid(
-                "The project context snapshot is invalid or expired."
-            )
-        _PROJECT_CONTEXT_SNAPSHOTS.move_to_end(snapshot_id)
-        return snapshot.context
+        if snapshot is not None:
+            if snapshot.project_id != project_id:
+                raise ProjectContextSnapshotInvalid(
+                    "The project context snapshot is invalid or expired."
+                )
+            _PROJECT_CONTEXT_SNAPSHOTS.move_to_end(snapshot_id)
+            return snapshot.context
+
+    # Durable research can cross a Studio restart. Unlike renderer-created compare snapshots,
+    # it can be hydrated only by the authenticated workflow and exact run binding supplied by
+    # the inference route. A normal UI or API request must not replay it as stale context.
+    if not durable_research_run_id or not durable_owner_subject:
+        raise ProjectContextSnapshotInvalid(
+            "The project context snapshot is invalid or expired."
+        )
+    from storage import research_runs_db
+
+    durable = research_runs_db.get_project_context_snapshot(
+        snapshot_id,
+        run_id = durable_research_run_id,
+        project_id = project_id,
+        owner_subject = durable_owner_subject,
+    )
+    context = durable.get("context") if durable is not None else None
+    if isinstance(context, dict) and isinstance(context.get("addition"), str):
+        return ResolvedProjectContext(
+            project_id = project_id,
+            addition = context["addition"],
+            project_context = str(context.get("projectContext") or ""),
+            repository_instructions = str(context.get("repositoryInstructions") or ""),
+            repository_selection = str(context.get("repositorySelection") or ""),
+        )
+    raise ProjectContextSnapshotInvalid(
+        "The project context snapshot is invalid or expired."
+    )
 
 
 def project_context_snapshot_response(snapshot: ProjectContextSnapshot) -> dict:

@@ -141,6 +141,27 @@ def _model_wait_budget(run: dict) -> float:
     return capped / (_MAX_MODEL_WAITS + 1)
 
 
+def _project_context_transport(run: dict[str, Any]) -> dict[str, str]:
+    """Resolve the server-bound project transport for one durable research run."""
+    config = run.get("config")
+    if not isinstance(config, dict):
+        return {}
+    snapshot_id = str(config.get("projectContextSnapshotId") or "").strip()
+    if not snapshot_id:
+        return {}
+    snapshot = db.get_project_context_snapshot(
+        snapshot_id,
+        run_id = str(run.get("id") or ""),
+        owner_subject = str(run.get("ownerSubject") or ""),
+    )
+    if snapshot is None:
+        raise RuntimeError("Research project context snapshot is unavailable")
+    return {
+        "session_id": str(snapshot["sessionId"]),
+        "project_context_snapshot_id": snapshot_id,
+    }
+
+
 def _select_synthesis_report(content: str, reasoning: str) -> str:
     content_report = _report_after_boundary(content, _REPORT_BOUNDARY_MARKER)
     if content_report:
@@ -1340,6 +1361,7 @@ class ResearchSupervisor:
             "enabled_tools": [],
             "temperature": inference.get("temperature", 0.2),
         }
+        payload.update(_project_context_transport(run))
 
         # Route the hop to whichever saved connection the run was created with.
         # The route's _sanitize_config already refused anything but an enabled

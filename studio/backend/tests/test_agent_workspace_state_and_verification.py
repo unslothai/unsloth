@@ -4,6 +4,7 @@
 import json
 import os
 import shlex
+import sqlite3
 import sys
 import threading
 import time
@@ -44,6 +45,7 @@ from core.agent_workspace.verification import (
 )
 from routes import chat_history
 from storage import studio_db
+from storage.api_usage_db import ApiUsageReceipt, record_api_usage
 
 
 def _folder_project(root: Path, project_id: str = "project") -> dict:
@@ -145,6 +147,161 @@ def test_verification_persists_bounded_evidence_and_detects_staleness(tmp_path):
 
     (tmp_path / "source.txt").write_text("two", encoding = "utf-8")
     assert verification_run_with_freshness(run["id"])["stale"] is True
+
+
+def test_pre_agent_studio_database_migrates_with_api_usage_and_agent_state(
+    tmp_path, monkeypatch
+):
+    studio_home = tmp_path / "studio"
+    projects_home = tmp_path / "projects"
+    studio_home.mkdir()
+    projects_home.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(projects_home))
+    db_path = studio_db.studio_db_path()
+    db_path.parent.mkdir(parents = True, exist_ok = True)
+
+    legacy = sqlite3.connect(db_path)
+    try:
+        legacy.executescript(
+            """
+            CREATE TABLE chat_projects (
+                id TEXT NOT NULL PRIMARY KEY,
+                name TEXT NOT NULL,
+                instructions TEXT,
+                root_path TEXT,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            INSERT INTO chat_projects VALUES (
+                'legacy', 'Legacy', 'keep', NULL, 0, 1, 1
+            );
+            CREATE TABLE api_usage_events (
+                id TEXT NOT NULL PRIMARY KEY,
+                subject TEXT NOT NULL,
+                endpoint TEXT NOT NULL,
+                model TEXT NOT NULL,
+                status TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL,
+                completion_tokens INTEGER NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            ) WITHOUT ROWID;
+            INSERT INTO api_usage_events VALUES (
+                'old-usage', 'subject', '/v1/chat/completions', 'old-model',
+                'completed', 2, 3, 5, 1
+            );
+            """
+        )
+        legacy.commit()
+    finally:
+        legacy.close()
+
+    studio_db._schema_ready = False
+    state._READY_DATABASES.discard(str(db_path))
+    conn = studio_db.get_connection()
+    try:
+        project_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(chat_projects)")
+        }
+        assert {
+            "workspace_kind",
+            "workspace_device_id",
+            "workspace_file_id",
+            "managed_root_device_id",
+            "managed_root_file_id",
+            "goal",
+            "goal_status",
+            "goal_updated_at",
+            "goal_revision",
+        } <= project_columns
+        assert conn.execute(
+            "SELECT total_tokens FROM api_usage_events WHERE id = 'old-usage'"
+        ).fetchone()[0] == 5
+        indexes = {
+            row[1]
+            for row in conn.execute("PRAGMA index_list(api_usage_events)").fetchall()
+        }
+        assert "idx_api_usage_events_subject_created_at" in indexes
+    finally:
+        conn.close()
+
+    project = studio_db.ensure_chat_project_workspace("legacy")
+    assert project is not None
+    assert project["workspaceKind"] == "managed"
+    assert project["goalRevision"] == 0
+    assert project["managedRootDeviceId"] is not None
+    assert project["managedRootFileId"] is not None
+    assert project["workspaceDeviceId"] is not None
+    assert project["workspaceFileId"] is not None
+    root = Path(project["rootPath"])
+    assert root.is_dir()
+    assert (root / "sandbox").is_dir()
+
+    verification = set_verification_config(
+        "legacy", [], require_for_goal_completion = False
+    )
+    plan = create_plan(
+        "legacy",
+        "Migration plan",
+        None,
+        [{"title": "Verify migration"}],
+    )
+    task = create_background_task("legacy", "verification", {})
+    assert verification["revision"] == 1
+    assert plan["tasks"][0]["title"] == "Verify migration"
+    assert task["status"] == "queued"
+
+    assert record_api_usage(
+        ApiUsageReceipt(
+            id = "new-usage",
+            subject = "subject",
+            endpoint = "/v1/responses",
+            model = "new-model",
+            status = "completed",
+            prompt_tokens = 7,
+            completion_tokens = 11,
+            total_tokens = 18,
+            created_at = 2,
+        )
+    )
+
+    deleted = studio_db.delete_chat_project("legacy", delete_files = False)
+    assert deleted is not None
+    assert deleted["id"] == "legacy"
+    assert root.is_dir()
+
+    conn = state.connection()
+    try:
+        expected_agent_tables = {
+            "agent_verification_configs",
+            "agent_verification_runs",
+            "agent_plans",
+            "agent_plan_tasks",
+            "agent_background_tasks",
+            "agent_git_checkpoints",
+            "agent_worktrees",
+        }
+        agent_tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name LIKE 'agent_%'"
+            ).fetchall()
+        }
+        assert expected_agent_tables <= agent_tables
+        for table in (
+            "agent_verification_configs",
+            "agent_plans",
+            "agent_plan_tasks",
+            "agent_background_tasks",
+        ):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM api_usage_events").fetchone()[0] == 2
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        conn.close()
 
 
 def test_verification_state_schema_migrates_policy_and_run_revisions(tmp_path):

@@ -309,6 +309,7 @@ def test_the_handed_off_question_is_what_actually_gets_researched(research_home,
         thread_id = "thread-1",
         user_message_id = "user-1",
         assistant_message_id = None,
+        expected_project_id = None,
         config = {
             "model": "local-model",
             "inferenceRequest": {"model": "local-model"},
@@ -348,6 +349,7 @@ def test_planning_no_longer_stops_to_ask_for_approval(research_home, monkeypatch
         thread_id = "thread-1",
         user_message_id = "user-1",
         assistant_message_id = None,
+        expected_project_id = None,
         config = {
             "model": "local-model",
             "inferenceRequest": {"model": "local-model"},
@@ -387,6 +389,7 @@ def test_a_run_from_an_old_install_researches_its_user_message(research_home, mo
         thread_id = "thread-1",
         user_message_id = "user-1",
         assistant_message_id = None,
+        expected_project_id = None,
         config = {
             "model": "local-model",
             "inferenceRequest": {"model": "local-model"},
@@ -423,6 +426,7 @@ def test_a_run_left_awaiting_approval_by_an_old_install_still_runs(research_home
         thread_id = "thread-1",
         user_message_id = "user-1",
         assistant_message_id = None,
+        expected_project_id = None,
         config = {
             "model": "local-model",
             "inferenceRequest": {"model": "local-model"},

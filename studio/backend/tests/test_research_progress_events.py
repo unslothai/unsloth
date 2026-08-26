@@ -44,6 +44,7 @@ def _create():
         thread_id = "thread-1",
         user_message_id = "user-1",
         assistant_message_id = None,
+        expected_project_id = None,
         config = {
             "model": "m",
             "inferenceRequest": {"model": "m"},

@@ -56,6 +56,7 @@ def _create(
     rag_scope = None,
     instructions = "",
     budgets = None,
+    expected_project_id = None,
 ):
     return research_db.create_run(
         run_id = run_id,
@@ -63,6 +64,7 @@ def _create(
         thread_id = thread_id,
         user_message_id = user_message_id,
         assistant_message_id = assistant_message_id,
+        expected_project_id = expected_project_id,
         config = {
             "model": "local-model",
             "inferenceRequest": {"model": "local-model"},
@@ -99,6 +101,7 @@ def test_source_persistence_rejects_url_outside_run_allowlist(research_home):
         thread_id = "thread-1",
         user_message_id = "user-1",
         assistant_message_id = None,
+        expected_project_id = None,
         config = config,
     )
     with pytest.raises(ValueError, match = "website access policy"):
@@ -485,6 +488,7 @@ def test_schema_and_state_transitions(research_home):
         conn.close()
     assert tables == {
         "research_runs",
+        "research_project_context_snapshots",
         "research_thread_claims",
         "research_plan_steps",
         "research_sources",
@@ -841,7 +845,7 @@ def test_project_delete_cancels_runs_captured_by_delete_transaction(research_hom
         }
     )
     studio_db.update_chat_thread("thread-1", {"projectId": "project-1"})
-    _create()
+    _create(expected_project_id = research_db._EXPECTED_PROJECT_ID_UNSET)
     plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
     research_db.approve("run-1", 1, plan["planHash"])
     research_db.claim_next("worker-1")
@@ -2758,6 +2762,7 @@ def test_research_claim_is_global_across_authenticated_subjects(research_home):
             thread_id = "thread-1",
             user_message_id = "user-1",
             assistant_message_id = None,
+            expected_project_id = None,
             config = first["config"],
         )
 
@@ -3793,6 +3798,7 @@ def _rebind(
         thread_id = thread_id,
         user_message_id = user_message_id,
         assistant_message_id = assistant_message_id,
+        expected_project_id = None,
         config = {
             "model": "local-model",
             "inferenceRequest": {"model": "local-model"},
@@ -4155,6 +4161,7 @@ def test_a_stopped_worker_does_not_stamp_cancelled_on_the_next_question(research
                 thread_id = "thread-1",
                 user_message_id = _new_user_message(),
                 assistant_message_id = "assistant-2",
+                expected_project_id = None,
                 config = dict(real_get_run("run-1")["config"]),
             )
         return real_get_run(run_id, *args, **kwargs)

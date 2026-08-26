@@ -683,7 +683,7 @@ def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
             _msg("m1", None, 1),
             _msg("m2", "m1", 2),
             _msg("m3", "m2", 3),
-            _msg("m4", "m2", 4),  # sibling — must be excluded
+            _msg("m4", "m2", 4),  # sibling, must be excluded
         ],
     )
 
@@ -947,6 +947,7 @@ def _research_thread(
         thread_id = "src",
         user_message_id = "prompt",
         assistant_message_id = "report",
+        expected_project_id = None,
         config = {},
         created_at = 1,
     )

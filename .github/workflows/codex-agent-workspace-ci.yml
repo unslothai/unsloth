@@ -15,6 +15,7 @@ on:
   pull_request:
     paths:
       - 'studio/backend/core/agent_workspace/**'
+      - 'studio/backend/core/research_runs.py'
       - 'studio/backend/core/inference/runtime_registry.py'
       - 'studio/backend/core/inference/tools.py'
       - 'studio/backend/core/inference/mcp_client.py'
@@ -25,8 +26,10 @@ on:
       - 'studio/backend/routes/chat_history.py'
       - 'studio/backend/routes/inference.py'
       - 'studio/backend/routes/mcp_servers.py'
+      - 'studio/backend/routes/research_runs.py'
       - 'studio/backend/requirements/studio.txt'
       - 'studio/backend/storage/credential_secrets.py'
+      - 'studio/backend/storage/research_runs_db.py'
       - 'studio/backend/storage/studio_db.py'
       - 'studio/backend/utils/native_path_leases.py'
       - 'studio/backend/loggers/handlers.py'
@@ -44,6 +47,8 @@ on:
       - 'studio/backend/tests/test_project_context_transport.py'
       - 'studio/backend/tests/test_project_folder_workspace.py'
       - 'studio/backend/tests/test_project_workspace_location.py'
+      - 'studio/backend/tests/test_research_project_context.py'
+      - 'studio/backend/tests/test_research_runs_storage.py'
       - 'studio/frontend/src/components/assistant-ui/sandbox-files.ts'
       - 'studio/frontend/src/components/assistant-ui/thread.tsx'
       - 'studio/frontend/src/components/app-sidebar.tsx'
@@ -57,6 +62,7 @@ on:
       - 'studio/frontend/tests/project-folder-workspace.test.ts'
       - 'studio/frontend/tests/project-slash-commands.test.ts'
       - 'studio/frontend/tests/project-workspace-ux.test.ts'
+      - 'studio/frontend/tests/project-research-request-types.test.ts'
       - 'studio/frontend/package.json'
       - 'studio/frontend/package-lock.json'
       - 'studio/frontend/tsconfig*.json'
@@ -69,6 +75,7 @@ on:
     branches: [main]
     paths:
       - 'studio/backend/core/agent_workspace/**'
+      - 'studio/backend/core/research_runs.py'
       - 'studio/backend/core/inference/runtime_registry.py'
       - 'studio/backend/core/inference/tools.py'
       - 'studio/backend/core/inference/mcp_client.py'
@@ -79,8 +86,10 @@ on:
       - 'studio/backend/routes/chat_history.py'
       - 'studio/backend/routes/inference.py'
       - 'studio/backend/routes/mcp_servers.py'
+      - 'studio/backend/routes/research_runs.py'
       - 'studio/backend/requirements/studio.txt'
       - 'studio/backend/storage/credential_secrets.py'
+      - 'studio/backend/storage/research_runs_db.py'
       - 'studio/backend/storage/studio_db.py'
       - 'studio/backend/utils/native_path_leases.py'
       - 'studio/backend/loggers/handlers.py'
@@ -98,6 +107,8 @@ on:
       - 'studio/backend/tests/test_project_context_transport.py'
       - 'studio/backend/tests/test_project_folder_workspace.py'
       - 'studio/backend/tests/test_project_workspace_location.py'
+      - 'studio/backend/tests/test_research_project_context.py'
+      - 'studio/backend/tests/test_research_runs_storage.py'
       - 'studio/frontend/src/components/assistant-ui/sandbox-files.ts'
       - 'studio/frontend/src/components/assistant-ui/thread.tsx'
       - 'studio/frontend/src/components/app-sidebar.tsx'
@@ -111,6 +122,7 @@ on:
       - 'studio/frontend/tests/project-folder-workspace.test.ts'
       - 'studio/frontend/tests/project-slash-commands.test.ts'
       - 'studio/frontend/tests/project-workspace-ux.test.ts'
+      - 'studio/frontend/tests/project-research-request-types.test.ts'
       - 'studio/frontend/package.json'
       - 'studio/frontend/package-lock.json'
       - 'studio/frontend/tsconfig*.json'
@@ -218,6 +230,7 @@ jobs:
           python -m pytest -q
           studio/backend/tests/test_chat_history_storage.py
           studio/backend/tests/test_project_workspace_location.py
+          studio/backend/tests/test_research_project_context.py
 
       - name: Run credential and connector boundary contracts
         shell: bash
@@ -262,6 +275,7 @@ jobs:
           tests/project-folder-workspace.test.ts
           tests/project-slash-commands.test.ts
           tests/project-workspace-ux.test.ts
+          tests/project-research-request-types.test.ts
 
       - name: Typecheck frontend workspace integration
         working-directory: studio/frontend
@@ -291,6 +305,7 @@ jobs:
           tests/project-folder-workspace.test.ts
           tests/project-slash-commands.test.ts
           tests/project-workspace-ux.test.ts
+          tests/project-research-request-types.test.ts
 
       - name: Biome frontend workspace integration
         working-directory: studio/frontend
@@ -315,6 +330,7 @@ jobs:
           tests/project-folder-workspace.test.ts
           tests/project-slash-commands.test.ts
           tests/project-workspace-ux.test.ts
+          tests/project-research-request-types.test.ts
 
   native-contracts:
     name: Native grants (${{ matrix.os }})

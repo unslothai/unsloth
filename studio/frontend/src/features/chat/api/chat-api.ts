@@ -298,6 +298,8 @@ export async function countChatInputTokens(payload: {
   model: string;
   messages: OpenAIChatCompletionsRequest["messages"];
   session_id?: string;
+  project_context_snapshot_id?: string;
+  deep_research_armed?: boolean;
   enable_thinking?: boolean;
   reasoning_effort?: OpenAIChatCompletionsRequest["reasoning_effort"];
   preserve_thinking?: boolean;

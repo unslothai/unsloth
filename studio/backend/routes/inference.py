@@ -2664,6 +2664,19 @@ def _request_is_saved_credential_workflow(request: Any) -> bool:
     return name == auth_storage.DEEP_RESEARCH_WORKFLOW_KEY_NAME
 
 
+def _durable_research_snapshot_run_id(request: Any, thread_id: Any) -> Optional[str]:
+    """Return the run bound to an authenticated Deep Research model hop."""
+    if not _request_is_saved_credential_workflow(request) or not isinstance(thread_id, str):
+        return None
+    prefix = "research:"
+    if not thread_id.startswith(prefix):
+        return None
+    run_id = thread_id[len(prefix) :]
+    if not 1 <= len(run_id) <= 128 or _re.fullmatch(r"[A-Za-z0-9_-]+", run_id) is None:
+        return None
+    return run_id
+
+
 def _request_used_api_key(request: Any) -> bool:
     """True when this request authenticated with a third party's sk-unsloth key.
 
@@ -15994,10 +16007,13 @@ async def openai_chat_completions(
     for _m in payload.messages:
         if _m.role == "developer":
             _m.role = "system"
+    durable_research_run_id = _durable_research_snapshot_run_id(request, payload.thread_id)
     payload.messages = _with_project_context_messages(
         payload.messages,
         payload.session_id,
         payload.project_context_snapshot_id,
+        durable_research_run_id = durable_research_run_id,
+        durable_owner_subject = current_subject if durable_research_run_id else None,
     )
 
     if payload.logprobs:
@@ -23053,6 +23069,9 @@ def _with_project_context_messages(
     messages: list[Any],
     session_id: Optional[str],
     project_context_snapshot_id: Optional[str] = None,
+    *,
+    durable_research_run_id: Optional[str] = None,
+    durable_owner_subject: Optional[str] = None,
 ) -> list[Any]:
     """Place server-owned context after all caller instructions, exactly once."""
     try:
@@ -23060,6 +23079,8 @@ def _with_project_context_messages(
             session_id,
             project_context_snapshot_id,
             query = project_query_from_messages(messages),
+            durable_research_run_id = durable_research_run_id,
+            durable_owner_subject = durable_owner_subject,
         )
     except ProjectContextUnavailable as exc:
         raise _project_context_http_exception(exc) from exc

@@ -1264,6 +1264,17 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE research_runs ADD COLUMN report_text TEXT")
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS research_project_context_snapshots (
+            id TEXT NOT NULL PRIMARY KEY,
+            run_id TEXT NOT NULL UNIQUE REFERENCES research_runs(id) ON DELETE CASCADE,
+            project_id TEXT NOT NULL,
+            context_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS research_thread_claims (
             owner_subject TEXT NOT NULL,
             thread_id TEXT NOT NULL PRIMARY KEY REFERENCES chat_threads(id) ON DELETE CASCADE,
