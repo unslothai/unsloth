@@ -459,6 +459,7 @@ def _get(model_name: str | None = None):
                 model_kwargs = dtype_kwargs("float32" if device == "cpu" else "float16"),
             )
             load_target = name
+            from utils.paths import is_local_path
             from utils.utils import cached_st_source, hf_cache_snapshot_dir
 
             # The repo AND the directory that supplied the weights, together: a
@@ -466,7 +467,13 @@ def _get(model_name: str | None = None):
             # literal cache entry is what a second lookup would return, and ST
             # weights alone are satisfied by the first finalized shard of a
             # transfer still in flight.
-            st_source = cached_st_source(name)
+            #
+            # Asked only of repo ids. A local path IS the artifact the resolver
+            # accepted, and the picker takes a slashless relative directory, so a
+            # folder named all-MiniLM-L6-v2 beside a cached sentence-transformers/
+            # copy of that name would otherwise be answered with the Hub's weights
+            # while the vectors kept the local path's identity.
+            st_source = None if is_local_path(name) else cached_st_source(name)
             if not local_only and st_source is not None:
                 # Settings reported this model on-device off the same predicate, so
                 # handing SentenceTransformer the repo id here is what lets it reach

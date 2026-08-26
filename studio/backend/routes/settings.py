@@ -2263,6 +2263,19 @@ def _cached_snapshot_has_st_weights(model: str) -> bool:
         return False
 
 
+def _cached_st_source(model: str):
+    """``(repo id, snapshot dir)`` the cached ST weights for ``model`` came from.
+
+    The same predicate as ``_cached_snapshot_has_st_weights``, keeping the repo it
+    matched under rather than reducing it to a yes: for a slashless alias that repo
+    is the ``sentence-transformers/`` one, and the PUT verifies and scans it."""
+    try:
+        from utils.utils import cached_st_source
+        return cached_st_source(model)
+    except Exception:  # noqa: BLE001 - an unreadable cache is not a proof of weights
+        return None
+
+
 def _cached_st_weight_names(model: str) -> list[str]:
     """Snapshot-relative names of the ST weights already on disk for ``model``."""
     try:
@@ -2398,7 +2411,13 @@ def _resolve_embedding_model_plan(
         # the loadable check PER CANDIDATE. Conjoining the generic one asked it
         # about whichever cache directory matched first, so a stale literal entry
         # beside a complete sentence-transformers/ snapshot reported uncached.
-        cached = _cached_snapshot_has_st_weights(resolved)
+        # The repo the cache hit came from, not just whether there was one: for a
+        # slashless alias that is the sentence-transformers/ candidate, and the PUT
+        # verifies and scans whatever this names. Reporting the literal alias sent
+        # both at a top-level repo that usually does not exist, rejecting a cached
+        # model with a 409 that the loader would have opened.
+        cached_source = _cached_st_source(resolved)
+        cached = cached_source is not None
         source = None if cached else _st_weight_source(resolved, token)
         if not cached and source is None:
             # is_embedding_model gates on tags, so a feature-extraction repo
@@ -2414,8 +2433,14 @@ def _resolve_embedding_model_plan(
                 ),
             )
         # The repo that actually publishes the weights, which for a slashless
-        # alias is the sentence-transformers/ one, not the literal name.
-        download_repo = resolved if (cached or source is None) else source[0]
+        # alias is the sentence-transformers/ one, not the literal name. Same
+        # question whether the answer came from the cache or from the Hub.
+        if cached:
+            download_repo = cached_source[0]
+        elif source is None:
+            download_repo = resolved
+        else:
+            download_repo = source[0]
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
             backend = backend,

@@ -474,7 +474,7 @@ class LlamaServerBackend:
                 # Reaching here means the configured variant is NOT cached (the
                 # strict pass above already returned if it were). Two ways that
                 # happens, and they need opposite answers.
-                if self._is_planned_family(model, cached):
+                if self._is_planned_family(model, desired, cached):
                     # The repo publishes no such variant, so the picker advertised
                     # and fetched this quant instead. The advertised transfer is
                     # complete: retire the marker, or the model stays cache-only
@@ -497,13 +497,17 @@ class LlamaServerBackend:
         return self._resolve_uncached_model_path(desired, candidates)
 
     @staticmethod
-    def _is_planned_family(model: str, path: str) -> bool:
+    def _is_planned_family(model: str, repo_id: str, path: str) -> bool:
         """Whether ``path`` is one of the files the picker planned for ``model``.
 
-        Compared by base name: the record holds repo-relative names and the cache
-        lays the same files out under a snapshot directory. False when no family
-        was recorded, which is every resolution written before it was stored, so
-        the caller keeps its conservative answer on those."""
+        Compared by the path relative to the snapshot, which is the layout the
+        record's repo-relative names already describe. Base names are not enough:
+        a repo that files each quant in its own directory publishes
+        ``Q8_0/model.gguf`` beside ``Q4_K_M/model.gguf``, and matching on the name
+        alone would let a stale quant pass for the planned one.
+
+        False when no family was recorded, which is every resolution written before
+        it was stored, so the caller keeps its conservative answer on those."""
         try:
             from pathlib import PurePosixPath
             from utils.embedding_model_settings import get_stored_gguf_files
@@ -511,9 +515,13 @@ class LlamaServerBackend:
             planned = get_stored_gguf_files(model)
             if not planned:
                 return False
-            names = {PurePosixPath(name).name.casefold() for name in planned}
-            return Path(path).name.casefold() in names
-        except Exception:  # noqa: BLE001 - an unreadable record answers nothing
+            snapshot = LlamaServerBackend._cached_snapshot_dir(repo_id)
+            if snapshot is None:
+                return False
+            relative = Path(path).relative_to(snapshot)
+            names = {PurePosixPath(name).as_posix().casefold() for name in planned}
+            return PurePosixPath(relative.as_posix()).as_posix().casefold() in names
+        except Exception:  # noqa: BLE001 - an unreadable record or an outside path answers nothing
             return False
 
     def _adopt_model_path(self, path: str, desired: str) -> str:
@@ -1035,9 +1043,13 @@ class LlamaServerBackend:
             return width
 
     def warm(self, *, model_name = None) -> None:
-        """Start the server and probe dim off the request path."""
+        """Start the server and probe dim off the request path.
+
+        Readiness is left to ``dim``, which takes ``_serve_lock`` for it. Calling it
+        here as well put a kill-and-respawn outside that lock, so warming B could
+        move the port out from under an encode pinned to A that had already passed
+        its own readiness check, and store B's vectors under A's identity."""
         with self._operation():
-            self._ensure_ready(model_name)
             self.dim(model_name = model_name)
 
     def token_counter(self, *, model_name = None):

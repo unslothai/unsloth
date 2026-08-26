@@ -1426,3 +1426,49 @@ def test_a_failed_st_constructor_keeps_the_pending_marker(monkeypatch, tmp_path)
         embeddings._model = None
         embeddings._name = None
     assert cleared == ["org/unloadable"]
+
+
+def test_a_local_path_is_not_replaced_by_a_hub_cache_of_the_same_name(monkeypatch, tmp_path):
+    """The picker takes a slashless relative directory, so a local folder can share
+    its name with a cached Hub model. Resolving the cache for it handed
+    SentenceTransformer the Hub's weights while the vectors kept the local path's
+    identity: a silent swap of the artifact the user selected."""
+    from core.rag import embeddings
+    import utils.utils as utils
+
+    local = tmp_path / "all-MiniLM-L6-v2"
+    local.mkdir()
+    (local / "config.json").write_text("{}")
+    (local / "model.safetensors").write_bytes(b"LOCAL")
+    hub = tmp_path / "hub-snapshot"
+    hub.mkdir()
+    (hub / "config.json").write_text("{}")
+    (hub / "model.safetensors").write_bytes(b"HUB")
+
+    # The same name is cached under the namespace, which is what shadowed it.
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda repo: hub)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
+
+    loaded = {}
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    monkeypatch.setattr(embeddings, "_st_accepts_local_files_only", lambda _c: False)
+    st_mod = types.ModuleType("sentence_transformers")
+
+    def _st(target, **_kwargs):
+        loaded["target"] = target
+        return SimpleNamespace(tokenizer = None)
+
+    st_mod.SentenceTransformer = _st
+    monkeypatch.setitem(sys.modules, "sentence_transformers", st_mod)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    embeddings._model = None
+    embeddings._name = None
+    try:
+        embeddings._get(str(local))
+    finally:
+        embeddings._model = None
+        embeddings._name = None
+
+    assert loaded["target"] == str(local)

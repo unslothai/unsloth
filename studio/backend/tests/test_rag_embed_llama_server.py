@@ -1574,3 +1574,81 @@ def test_the_runtime_probe_does_not_wait_on_a_model_load(monkeypatch):
         worker = threading.Thread(target = _probe, daemon = True)
         worker.start()
         assert finished.wait(timeout = 60), "the resolve preflight waited on the model-load lock"
+
+
+def test_a_stale_quant_in_another_directory_is_not_the_planned_family(monkeypatch, tmp_path):
+    """A repo that files each quant in its own directory publishes Q8_0/model.gguf
+    beside Q4_K_M/model.gguf. Matching the plan on base names alone let the stale
+    one pass for the planned one, retiring the marker and pinning the wrong quant."""
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    cleared = []
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    # The plan named the Q8_0 copy; only the Q4_K_M one is on disk.
+    monkeypatch.setattr(ems, "get_stored_gguf_files", lambda model: ["Q8_0/model.gguf"])
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda model: cleared.append(model))
+    _seed_cache(tmp_path / "hub", repo, ["Q4_K_M/model.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+
+    assert backend._resolve_model_path().endswith("model.gguf")
+    assert cleared == [], "a quant from another directory is not the planned family"
+
+
+def test_the_planned_family_matches_by_its_directory_too(monkeypatch, tmp_path):
+    """The other half: the planned copy in its own directory still retires it."""
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    cleared = []
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    monkeypatch.setattr(ems, "get_stored_gguf_files", lambda model: ["Q8_0/model.gguf"])
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda model: cleared.append(model))
+    _seed_cache(tmp_path / "hub", repo, ["Q8_0/model.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+
+    assert backend._resolve_model_path().endswith("model.gguf")
+    assert cleared == ["org/pending"]
+
+
+def test_warming_one_model_cannot_respawn_under_another_models_request(monkeypatch):
+    """warm() readied the server itself, outside the serving lock, so warming B
+    could kill and respawn between an encode pinned to A passing its own readiness
+    check and its POST, landing A's request on B's server under A's identity.
+    Readiness belongs to dim(), which holds the lock across it."""
+    b = LlamaServerBackend()
+    unlocked = []
+
+    def _lock_is_free() -> bool:
+        # Ownership is per thread for an RLock, so ask from another one.
+        seen = []
+        probe = threading.Thread(
+            target = lambda: seen.append(b._serve_lock.acquire(timeout = 0.5))
+        )
+        probe.start()
+        probe.join()
+        if seen[0]:
+            b._serve_lock.release()
+        return seen[0]
+
+    def _recording_ensure_ready(model_name = None):
+        if _lock_is_free():
+            unlocked.append(model_name)
+
+    monkeypatch.setattr(b, "_ensure_ready", _recording_ensure_ready)
+    monkeypatch.setattr(
+        b,
+        "encode",
+        lambda texts, normalize = False, model_name = None: np.zeros((1, 384), dtype = np.float32),
+    )
+    b.warm(model_name = "org/model-b")
+
+    assert unlocked == [], "a respawn during warm-up could land outside the serving lock"

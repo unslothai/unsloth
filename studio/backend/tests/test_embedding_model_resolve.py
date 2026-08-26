@@ -50,8 +50,11 @@ def test_sentence_transformers_backend_points_at_the_model_repo(client, monkeypa
     import utils.utils as utils
 
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
-    # Cached now also means "holds a checkpoint ST can open", not just "loadable".
-    monkeypatch.setattr(settings, "_cached_snapshot_has_st_weights", lambda m: True)
+    # Cached now also means "holds a checkpoint ST can open", not just "loadable",
+    # and names the repo it was filed under: for an exact id, that id.
+    monkeypatch.setattr(
+        settings, "_cached_st_source", lambda m: ("unsloth/bge-small-en-v1.5", Path("/snap"))
+    )
 
     body = _resolve(client).json()
     assert body["backend"] == "sentence-transformers"
@@ -975,3 +978,21 @@ def test_a_safetensors_model_still_falls_back_when_llama_server_is_missing(clien
     body = _resolve(client, "org/st-only").json()
     assert body["error"] is None
     assert body["backend"] == "sentence-transformers"
+
+
+def test_a_cached_alias_is_verified_under_the_namespace_it_is_filed_under(client, monkeypatch):
+    """A slashless model cached only as sentence-transformers/<name> is on disk and
+    loadable, but reporting the literal alias as the download repo sent the PUT's
+    verification and security scan at a top-level repo that usually does not exist,
+    rejecting a valid cached model with a 409 the loader would have ignored."""
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
+    monkeypatch.setattr(
+        settings,
+        "_cached_st_source",
+        lambda m: ("sentence-transformers/all-MiniLM-L6-v2", Path("/snap")),
+    )
+
+    body = _resolve(client, "all-MiniLM-L6-v2").json()
+    assert body["cached"] is True
+    assert body["download_repo"] == "sentence-transformers/all-MiniLM-L6-v2"
+    assert body["error"] is None
