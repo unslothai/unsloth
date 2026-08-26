@@ -44,3 +44,13 @@ test("a transcript never outlives the selection that produced it", () => {
     /if \(selectedSttRepoRef\.current !== id\) clearTranscript\(\);/,
   );
 });
+
+test("a status resync that drops or swaps the sidecar model clears it too", () => {
+  // The sidecar is shared with chat dictation, so reconcileSttSelection can drop the
+  // pick or adopt another surface's model with none of the explicit clear paths run.
+  // Copy and Download .txt stayed live over a transcript whose model was already gone.
+  assert.match(
+    source,
+    /const reconciled = reconcileSttSelection\(\{[\s\S]*?\}\);[\s\S]*?if \(reconciled !== selectedSttRepoRef\.current\) clearTranscript\(\);\s*selectedSttRepoRef\.current = reconciled;/,
+  );
+});

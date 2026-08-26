@@ -437,6 +437,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
+  /** A transcript belongs to the pick that produced it, and never outlives it. */
+  const clearTranscript = useCallback(() => {
+    setTranscript("");
+    setTranscribedName(null);
+    setTranscriptError(null);
+  }, []);
+
   const refreshSttStatus = useCallback(async () => {
     const generation = ++sttStatusRefreshGeneration.current;
     try {
@@ -493,6 +500,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         repoIdForSidecarKey: sttRepoIdForSidecarKey,
         engineForRepo: sttEngineForRepoId,
       });
+      // The sidecar is shared, so this resync can drop the pick or adopt another
+      // surface's model. Either way the model that produced the transcript is gone,
+      // and leaving it up hands Copy and Download .txt a result nothing here made.
+      if (reconciled !== selectedSttRepoRef.current) clearTranscript();
       selectedSttRepoRef.current = reconciled;
       setSelectedSttRepo(reconciled);
     } catch {
@@ -500,7 +511,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       setSttLoadedModel(null);
       setSttLoadedEngine(null);
     }
-  }, []);
+  }, [clearTranscript]);
 
   const sttSelected = selectedSttRepo !== null;
   const sttReady = sttSelectionReady(
@@ -510,13 +521,6 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     selectedSttRepo ? sttEngineForRepoId(selectedSttRepo) : null,
     sttLoadedEngine,
   );
-
-  /** A transcript belongs to the pick that produced it, and never outlives it. */
-  const clearTranscript = useCallback(() => {
-    setTranscript("");
-    setTranscribedName(null);
-    setTranscriptError(null);
-  }, []);
 
   /** Forget the Transcribe pick, releasing its sidecar when this page owns it. */
   const releaseTranscribeSelection = useCallback(async () => {
@@ -2215,7 +2219,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                   </p>
                 </>
               ) : transcriptError ? (
-                <div className="flex flex-col gap-1">
+                <div className="flex flex-col gap-1" role="alert">
                   <p className="text-ui-13 font-medium text-destructive">
                     Could not transcribe {transcribedName ?? "that audio"}.
                   </p>
