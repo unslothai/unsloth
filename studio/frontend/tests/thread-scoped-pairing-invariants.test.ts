@@ -58,13 +58,8 @@ function syncCode(): string {
 }
 
 test("both waits sit inside the attempt's deadline, not in front of it", () => {
-  // Neither wait is bounded on its own: the settings chain is a PATCH, and
-  // awaitStoredChatThreadWrites settles the row write through settleCurrent, a
-  // Promise.allSettled over work opening with getStoredChatThread -- a GET given no
-  // timeoutMs, so timeout = null. In front of the deadline their time goes uncounted,
-  // THREAD_PAIRING_WAIT_MS stops bounding the chain it was sized against, and the gate stays
-  // shut until awaitThreadScopedPairing gives up and chat-adapter refuses the user's send.
-  // Inside it, the same stall is one failed attempt, which retryThreadRead handles.
+  // Neither wait is bounded on its own, so in front of the deadline their time goes
+  // uncounted and a stalled write ends in a refused send. The reasoning is at the call site.
   const sync = syncCode();
   const race = sync.indexOf("Promise.race");
   assert.ok(race !== -1, "the per-attempt deadline is gone");

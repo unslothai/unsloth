@@ -135,10 +135,9 @@ test("the read hangs off the prerequisites rather than running beside them", () 
 });
 
 test("the whole attempt, waits included, sits inside one deadline", () => {
-  // Neither wait is bounded on its own, so outside the deadline their time is uncounted,
-  // THREAD_PAIRING_WAIT_MS stops bounding the chain it was sized against, and a stalled write
-  // becomes "the message was not sent". The structural form of the sibling file's index
-  // check: the deadline must CONTAIN the prerequisites, not just precede them in the text.
+  // The structural form of the sibling file's index check: the deadline must CONTAIN the
+  // prerequisites, not just precede them in the text. Neither wait is bounded on its own, so
+  // outside it a stalled write ends in a refused send.
   const gate = prerequisites();
   const races = collect(syncBody(), (node) => isCombinator(node, "race"));
   assert.ok(races.length >= 1, "the per-attempt deadline is gone");
