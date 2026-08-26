@@ -742,17 +742,12 @@ def _resolve_auto_for_model(model_name: str | None = None) -> str:
     records that choice; the hardware default would send it to llama-server,
     which has nothing to open."""
     model = model_name or config.effective_embedding_model()
-    # A GGUF is not a sentence-transformers artifact under any hardware, and
-    # _resolve_auto answers "sentence-transformers" whenever a GPU is present.
-    # Only ``auto`` consults this, so an explicit RAG_EMBED_BACKEND still wins.
-    #
-    # The remote form matters as much as the local one: a typed or API-selected
-    # `owner/model-GGUF` resolved as ST is searched for safetensors, found to
-    # publish none, and can then only be saved over that error -- which sets the
-    # pending marker, and _get() answers a pending ST model with "not downloaded"
-    # before the runtime fallback to llama-server can run. The repo would never
-    # load on such a host even with llama-server installed and the GGUF cached.
-    if _model_is_local_gguf(model) or _model_names_gguf_repo(model):
+    # Ahead of the stored record, because the filesystem was asked rather than
+    # guessed at: a local .gguf is not a sentence-transformers artifact under any
+    # hardware, and a stored ST record for one can only come from a force-save
+    # that then failed. Only ``auto`` consults this, so an explicit
+    # RAG_EMBED_BACKEND still wins.
+    if _model_is_local_gguf(model):
         return "llama-server"
     try:
         from utils.embedding_model_settings import get_stored_backend
@@ -763,6 +758,22 @@ def _resolve_auto_for_model(model_name: str | None = None) -> str:
         key = stored.strip().lower()
         if key in _ST_ALIASES or key in _LLAMA_ALIASES:
             return key
+    # Nothing validated for this model, so fall back to reading the name. A repo
+    # id ending in -GGUF publishes weights only llama-server can open, and
+    # _resolve_auto answers "sentence-transformers" whenever a GPU is present: a
+    # typed or API-selected `owner/model-GGUF` resolved as ST is searched for
+    # safetensors, found to publish none, and can then only be saved over that
+    # error -- which records no backend and sets the pending marker, and _get()
+    # answers a pending ST model with "not downloaded" before the runtime
+    # fallback to llama-server can run. The repo would never load on such a host
+    # even with llama-server installed and the GGUF cached.
+    #
+    # Below the stored record and not beside the local check, because this one is
+    # only a guess about a name. The same repo may publish a torn GGUF family and
+    # usable safetensors, in which case the resolver validated the ST plan and
+    # persisted it, and overruling that fails the first index as "not downloaded".
+    if _model_names_gguf_repo(model):
+        return "llama-server"
     return _resolve_auto()
 
 

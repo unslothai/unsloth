@@ -996,3 +996,27 @@ def test_a_cached_alias_is_verified_under_the_namespace_it_is_filed_under(client
     assert body["cached"] is True
     assert body["download_repo"] == "sentence-transformers/all-MiniLM-L6-v2"
     assert body["error"] is None
+
+
+def test_a_validated_backend_outranks_the_gguf_name_heuristic(monkeypatch):
+    """A repo called <name>-GGUF whose published family is torn or absent falls
+    back to its own safetensors, and the resolver persists that plan. Reading the
+    name as llama-server anyway sent the first index down the GGUF pending path,
+    to fail as "not downloaded" on a model whose weights were validated."""
+    from core.rag import embeddings as rag_embeddings
+    import utils.embedding_model_settings as ems
+
+    ems._resolved_gguf_memo.clear()
+    ems._invalidate_cache()
+    monkeypatch.setattr(rag_embeddings, "_resolve_auto", lambda: "llama-server")
+    monkeypatch.setattr(ems, "get_stored_backend", lambda model: "sentence-transformers")
+    # The name is a guess; a local .gguf is not, and keeps its precedence (see
+    # test_a_local_gguf_beats_a_stored_sentence_transformers_record).
+
+    assert (
+        rag_embeddings._resolve_auto_for_model("org/torn-GGUF") == "sentence-transformers"
+    )
+    # With nothing validated, the name still decides, which is what stops a forced
+    # save over a failed plan from stranding the model on the wrong backend.
+    monkeypatch.setattr(ems, "get_stored_backend", lambda model: None)
+    assert rag_embeddings._resolve_auto_for_model("org/torn-GGUF") == "llama-server"
