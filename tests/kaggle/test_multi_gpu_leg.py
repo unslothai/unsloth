@@ -226,7 +226,8 @@ def test_the_leg_is_small_enough_to_co_tenant():
     # since running on both cards while excluding everything from both is the
     # opposite of free.
     others = [
-        other.vram_gb for name, other in legs.LEGS.items()
+        other.vram_gb
+        for name, other in legs.LEGS.items()
         if name != "multi_gpu" and other.vram_gb < budget / 2
     ]
     assert others
@@ -249,12 +250,11 @@ def test_the_declaration_is_measured_and_not_copied_from_a_sibling():
     by."""
     import json
 
-    measured = json.loads(
-        (SMOKE_DIR / "measured_vram.json").read_text(encoding = "utf-8")
-    )["peak_reserved_gb"]
+    measured = json.loads((SMOKE_DIR / "measured_vram.json").read_text(encoding = "utf-8"))[
+        "peak_reserved_gb"
+    ]
     assert "multi_gpu" in measured, (
-        "the leg is not in the measured file, so the declaration check passes "
-        "on it vacuously"
+        "the leg is not in the measured file, so the declaration check passes on it vacuously"
     )
     assert legs.LEGS["multi_gpu"].vram_gb >= measured["multi_gpu"]
 
