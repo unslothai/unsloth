@@ -166,6 +166,10 @@ def test_research_presentation_is_integrated() -> None:
     assert "if (researchRunId) return null" in thread
     assert "!researchRunId &&" in thread
     assert "if (researchRunId || ownsResearchMessage)" in thread
+    assert "ResearchMessageRunIdContext = createContext<string | null>(null)" in thread
+    assert "researchReplyOwnsRun(boundResearchAssistantMessageId, messageId)" in thread
+    assert "<ResearchMessageRunIdContext.Provider value={researchRunId}>" in thread
+    assert "useContext(ResearchMessageRunIdContext)" in thread
     # A prompt whose reply is a research message loses its edit and delete controls. Ownership is
     # a question about the whole repository, not the visible message list: a reply can sit on a
     # branch the view is not showing. It used to be one export per user message (quadratic in

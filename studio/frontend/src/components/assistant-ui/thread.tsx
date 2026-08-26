@@ -127,6 +127,7 @@ import {
   ingestResearchUpdate,
   useResearchRunStore,
 } from "@/features/chat/stores/research-run-store";
+import { researchReplyOwnsRun } from "@/features/chat/utils/research-run-binding";
 import {
   parseExternalModelId,
   providerModelSupportsStudioTools,
@@ -7249,6 +7250,8 @@ function useActionBarFocusReveal() {
   return { ref: rootRef, onFocus: handleFocus, onBlur: handleBlur };
 }
 
+const ResearchMessageRunIdContext = createContext<string | null>(null);
+
 /**
  * AssistantMessage handles the display and inline-editing of AI responses.
  *
@@ -7261,16 +7264,19 @@ const AssistantMessage: FC = () => {
   const focusReveal = useActionBarFocusReveal();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
-  const researchRunId = useAuiState(({ message }) => {
-    const custom = (
-      message.metadata as
-        | { custom?: { researchRunId?: unknown } }
-        | undefined
-    )?.custom;
-    return typeof custom?.researchRunId === "string"
-      ? custom.researchRunId
+  const metadataResearchRunId = useAuiState(({ message }) =>
+    getResearchRunId(message.metadata),
+  );
+  const boundResearchAssistantMessageId = useResearchRunStore((state) =>
+    metadataResearchRunId
+      ? state.sessions[metadataResearchRunId]?.run?.assistantMessageId
+      : undefined,
+  );
+  const researchRunId =
+    metadataResearchRunId &&
+    researchReplyOwnsRun(boundResearchAssistantMessageId, messageId)
+      ? metadataResearchRunId
       : null;
-  });
   // Persisted on the assistant turn that compacted, so the notice survives a reload.
   const contextTruncation = useAuiState(({ message }) => {
     const custom = (
@@ -7362,7 +7368,8 @@ const AssistantMessage: FC = () => {
   };
 
   return (
-    <MessagePrimitive.Root
+    <ResearchMessageRunIdContext.Provider value={researchRunId}>
+      <MessagePrimitive.Root
       className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
       // The message itself is the tab stop that lets the reveal below fire. Without it, a reply
@@ -7476,7 +7483,8 @@ const AssistantMessage: FC = () => {
         tabIndex={0}
         aria-label="Message actions"
       />
-    </MessagePrimitive.Root>
+      </MessagePrimitive.Root>
+    </ResearchMessageRunIdContext.Provider>
   );
 };
 
@@ -7673,7 +7681,7 @@ const getResearchRunId = (metadata: unknown): string | null => {
 };
 
 const useResearchMessageRunId = () => {
-  return useAuiState(({ message }) => getResearchRunId(message.metadata));
+  return useContext(ResearchMessageRunIdContext);
 };
 
 // Boolean(), not `!== null`: getResearchRunId returns whatever string it found, and an empty one
