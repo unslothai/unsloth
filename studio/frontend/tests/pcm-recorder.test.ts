@@ -353,6 +353,7 @@ test("secondsWithin keeps a WAV inside the upload cap", () => {
 test("the recording call sites go through createAudioRecorder", () => {
   for (const path of [
     "../src/features/chat/adapters/studio-model-dictation-adapter.ts",
+    "../src/features/chat/shared-composer.tsx",
     "../src/features/audio/audio-page.tsx",
   ]) {
     const source = readFileSync(new URL(path, import.meta.url), "utf8");
