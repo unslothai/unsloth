@@ -219,9 +219,9 @@ def test_full_scope_denials_survive_without_the_tunnel_flag():
     assert keyless_request_allowed(request_for()) is True  # control: loopback works
 
     for bind in ("0.0.0.0", "::"):
-        assert keyless_request_allowed(request_for(state = app_state(bind_host = bind))) is False, (
-            f"wildcard bind {bind} admitted under full scope"
-        )
+        assert (
+            keyless_request_allowed(request_for(state = app_state(bind_host = bind))) is False
+        ), f"wildcard bind {bind} admitted under full scope"
 
     assert (
         keyless_request_allowed(
@@ -246,9 +246,9 @@ def test_every_hosted_mode_flag_closes_full_and_inference():
             "secure",
             "lan_access_secure_launch",
         ):
-            assert keyless_request_allowed(request_for(state = app_state(**{flag: True}))) is False, (
-                f"{flag} did not close scope={scope}"
-            )
+            assert (
+                keyless_request_allowed(request_for(state = app_state(**{flag: True}))) is False
+            ), f"{flag} did not close scope={scope}"
         assert (
             keyless_request_allowed(
                 request_for(state = app_state(cloudflare_url = "https://x.trycloudflare.com"))
