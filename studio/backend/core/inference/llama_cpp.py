@@ -224,6 +224,7 @@ def _request_uses_checkpoint(requested_policy: Optional[str] = None) -> bool:
     if requested_policy == "rolling":
         return False
     from core.inference import checkpoint
+
     return checkpoint.enabled()
 
 
