@@ -1589,10 +1589,9 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
             # torch ordinals are 0-based relative to CUDA_VISIBLE_DEVICES.
             props = mod.get_device_properties(ordinal)
             total_bytes = props.total_memory
-            known_unified = (
-                _rocm_props_are_positively_unified(props)
-                or _rocm_props_are_an_unnamed_apu(props)
-            )
+            known_unified = _rocm_props_are_positively_unified(
+                props
+            ) or _rocm_props_are_an_unnamed_apu(props)
             shared_memory = False
             try:
                 if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
@@ -1603,7 +1602,10 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
                     driver_total_bytes = int(mod.mem_get_info(ordinal)[1])
                     shared_memory = known_unified and (
                         driver_total_bytes > int(total_bytes)
-                        or (platform.system() == "Windows" and driver_total_bytes == int(total_bytes))
+                        or (
+                            platform.system() == "Windows"
+                            and driver_total_bytes == int(total_bytes)
+                        )
                     )
                     total_bytes = max(driver_total_bytes, int(total_bytes))
             except Exception as e:
