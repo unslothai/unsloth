@@ -209,7 +209,9 @@ test("the panel and the request body gate on the same argument", () => {
 
 test("an over-long entry clamps rather than becoming another number", () => {
   const sheet = read("../src/features/chat/chat-settings-sheet.tsx");
-  const handler = slice(sheet, "onBlur={() => {", "onKeyDown={(e) => {");
+  // The clamp lives in committedSeed now, so a click on Save reads the same value blur
+  // would have written rather than the one from before the entry.
+  const handler = slice(sheet, "const committedSeed = useMemo", "const paramsWithCommittedSeed");
   // Truncating to 10 digits before clamping turned 12345678901234 into 1234567890.
   assert.doesNotMatch(handler, /\.slice\(0, ?10\)/);
   assert.match(handler, /digits\.length > 10\s*\?\s*MAX_SAMPLING_SEED/);
@@ -301,4 +303,35 @@ test("a cleared seed is not read as a missing key", () => {
   // `??` would fall through a cleared seed's null to the installation default, putting
   // the pin back on the one chat that dropped it. Only undefined means "not set".
   assert.match(helper, /values\.find\(\(value\) => value !== undefined\)/);
+});
+
+test("a model with no catalog row still learns it is served by MLX", () => {
+  // A locally scanned model is in neither /api/models/list nor the external ids, so its
+  // models[] summary is minted from the load or status response. Both hops that mint one
+  // have to carry is_mlx or the gate hides the field for a backend that reads the seed.
+  const runtime = read("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  const synced = slice(runtime, "  const synced = {", "  const idx =");
+  assert.match(synced, /isMlx: Boolean\(resp\.is_mlx\)/);
+  const adoption = read(
+    "../src/features/chat/lib/apply-inference-status-to-store.ts",
+  );
+  const caps = slice(
+    adoption,
+    "function ensureActiveModelInStoreList",
+    "const existing = store.models.find",
+  );
+  assert.match(caps, /isMlx: status\.is_mlx \?\? false/);
+});
+
+test("saving a preset takes the seed being typed, not the one before it", () => {
+  const panel = read("../src/features/chat/chat-settings-sheet.tsx");
+  // Clicking Save blurs the box during mousedown, but React has not re-rendered by the
+  // time onClick runs, so a save reading `params` writes the pre-entry seed and, over an
+  // otherwise-unmodified preset, the button is still disabled and the click does nothing.
+  assert.match(panel, /params: toPresetParams\(paramsWithCommittedSeed\)/);
+  const unsaved = slice(panel, "const hasUnsavedPresetChanges", "const presetSaveState");
+  assert.match(unsaved, /isSamePresetConfig\(\s*activePresetDefinition\.params,\s*paramsWithCommittedSeed,/);
+  assert.match(unsaved, /committedSeed !== \(params\.seed \?\? null\)/);
+  // and blur commits the same value, so the two cannot answer differently
+  assert.match(panel, /setSeedDraft\(null\);\s*setSeed\(committedSeed\);/);
 });

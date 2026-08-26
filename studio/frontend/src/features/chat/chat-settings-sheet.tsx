@@ -633,6 +633,27 @@ export function ChatSettingsPanel({
   // Clamping straight into params would rewrite the box mid-entry, so the commit
   // waits for blur the way NumericValueInput's does.
   const [seedDraft, setSeedDraft] = useState<string | null>(null);
+  // What blur would commit, available before it runs. Clicking Save blurs the box during
+  // mousedown, but React has not re-rendered by the time that button's onClick fires, so
+  // a handler reading `params` there still sees the seed from before the entry.
+  // NumericValueInput bridges the same gap with its imperative commit().
+  const committedSeed = useMemo<number | null>(() => {
+    if (seedDraft === null) return params.seed ?? null;
+    // Measured after the padding: a zero-padded seed is short enough to keep, and
+    // truncating instead of clamping would rewrite it.
+    const digits = seedDraft.replace(/^0+(?=\d)/, "");
+    if (digits === "") return null;
+    return digits.length > 10
+      ? MAX_SAMPLING_SEED
+      : Math.min(Number(digits), MAX_SAMPLING_SEED);
+  }, [params.seed, seedDraft]);
+  const paramsWithCommittedSeed = useMemo(
+    () =>
+      committedSeed === (params.seed ?? null)
+        ? params
+        : { ...params, seed: committedSeed },
+    [committedSeed, params],
+  );
   // When the prompt overflows the inline box, clicking opens the popup editor.
   const systemPromptBoxRef = useRef<HTMLTextAreaElement>(null);
   const [systemPromptOverflows, setSystemPromptOverflows] = useState(false);
@@ -676,8 +697,12 @@ export function ChatSettingsPanel({
       }
       const samplingChanged =
         activePresetDefinition.name === "Default"
-          ? activePresetSource === "modified"
-          : !isSamePresetConfig(activePresetDefinition.params, params);
+          ? activePresetSource === "modified" ||
+            committedSeed !== (params.seed ?? null)
+          : !isSamePresetConfig(
+              activePresetDefinition.params,
+              paramsWithCommittedSeed,
+            );
       const currentLoadConfig = capturePresetLoadConfig();
       const loadChanged = !isSamePresetLoadConfig(
         activePresetDefinition.loadConfig,
@@ -688,6 +713,8 @@ export function ChatSettingsPanel({
     activePresetDefinition,
     activePresetSource,
     params,
+    committedSeed,
+    paramsWithCommittedSeed,
     customContextLength,
     ggufContextLength,
     kvCacheDtype,
@@ -883,7 +910,7 @@ export function ChatSettingsPanel({
       ...next,
       {
         name: saveName,
-        params: toPresetParams(params),
+        params: toPresetParams(paramsWithCommittedSeed),
         ...(loadConfig ? { loadConfig } : {}),
       },
     ];
@@ -1542,17 +1569,8 @@ export function ChatSettingsPanel({
                     }
                     onBlur={() => {
                       if (seedDraft === null) return;
-                      // Measured after the padding: a zero-padded seed is short enough
-                      // to keep, and truncating instead of clamping would rewrite it.
-                      const digits = seedDraft.replace(/^0+(?=\d)/, "");
                       setSeedDraft(null);
-                      setSeed(
-                        digits === ""
-                          ? null
-                          : digits.length > 10
-                            ? MAX_SAMPLING_SEED
-                            : Math.min(Number(digits), MAX_SAMPLING_SEED),
-                      );
+                      setSeed(committedSeed);
                     }}
                     onKeyDown={(e) => {
                       // Blur is the only commit, so Enter has to reach it.

@@ -288,6 +288,7 @@ export function syncModelCapabilities(
     is_vision?: boolean;
     is_lora?: boolean;
     is_gguf?: boolean;
+    is_mlx?: boolean;
     is_audio?: boolean;
     audio_type?: string | null;
     has_audio_input?: boolean;
@@ -299,6 +300,9 @@ export function syncModelCapabilities(
   const synced = {
     isVision: Boolean(resp.is_vision),
     isGguf: Boolean(resp.is_gguf),
+    // A locally scanned model is in no /api/models/list row, so this is the only place
+    // its summary learns it is served by MLX, and the seed gate reads that.
+    isMlx: Boolean(resp.is_mlx),
     isAudio: Boolean(resp.is_audio),
     audioType: resp.audio_type ?? null,
     hasAudioInput: Boolean(resp.has_audio_input),
