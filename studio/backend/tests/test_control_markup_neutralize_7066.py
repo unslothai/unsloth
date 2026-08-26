@@ -3074,6 +3074,16 @@ _INFERENCE_DIR = _REPO_ROOT / "studio" / "backend" / "core" / "inference"
 # has to hand it a catalog that traces back to the sweep.
 _CONTROLLER_MODULES = ("llama_cpp.py", "safetensors_agentic.py")
 
+# The third loop, named rather than forgotten. `studio_tool_loop.py` drives an EXTERNAL
+# provider and builds its controller from `policy.tools`, the request catalog as selected.
+# `external_provider.py` sweeps the catalog it SENDS, but only for the self-hosted providers
+# whose prompt this repo templates, and it keeps that result local: it never reaches
+# `policy.tools`. Sweeping unconditionally here would narrow a hosted API's controller below
+# the catalog its own prompt advertised, which is a different bug, so closing it needs the
+# transport to say whether it templated the prompt. That is a product change and belongs in
+# its own PR; this entry keeps the gap visible and makes a FOURTH loop fail below.
+_CONTROLLER_MODULES_OUT_OF_SCOPE = ("studio_tool_loop.py",)
+
 # Producers whose return value IS a sanitized catalog: the sweep, plus the two catalog
 # builders that wrap it. The builders are held to that below.
 _SWEEP = "neutralize_tool_descriptions"
@@ -3129,12 +3139,18 @@ def _ctrl_target_names(target):
     return []  # attribute / subscript targets are not local names
 
 
+#: Scopes a name can be looked up in, innermost first. Lambda is here because it is in
+#: `_NESTED_SCOPES`: skipping it while its bindings are skipped too would resolve a lambda
+#: parameter against the outer name it shadows.
+_CTRL_LOOKUP_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module)
+
+
 def _ctrl_scopes(node):
-    """The function and module scopes enclosing *node*, innermost first."""
+    """The scopes enclosing *node*, innermost first."""
     chain = []
     current = getattr(node, "_ctrl_parent", None)
     while current is not None:
-        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+        if isinstance(current, _CTRL_LOOKUP_SCOPES):
             chain.append(current)
         current = getattr(current, "_ctrl_parent", None)
     return chain
@@ -3213,7 +3229,7 @@ def _ctrl_mutated(scope):
 
 
 def _ctrl_params(scope):
-    if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
         return set()
     args = scope.args
     names = {arg.arg for arg in args.posonlyargs + args.args + args.kwonlyargs}
@@ -3234,6 +3250,64 @@ def _ctrl_sweep_carries_profile(call):
     if profile is None:
         return False
     return not (isinstance(profile, ast.Constant) and profile.value is None)
+
+
+def _ctrl_sweep_roots(
+    expr,
+    scopes,
+    aliases,
+    seen = frozenset(),
+):
+    """The names handed to a sweep or a catalog builder anywhere inside *expr*.
+
+    The catalog a branch narrows, named. Used to check that a `None` branch is guarded by the
+    emptiness of that same catalog rather than of some unrelated flag.
+    """
+    roots = set()
+    if isinstance(expr, ast.Call):
+        if _ctrl_called_name(expr, aliases) in _CATALOG_PRODUCERS and expr.args:
+            if isinstance(expr.args[0], ast.Name):
+                roots.add(expr.args[0].id)
+        for argument in expr.args:
+            roots |= _ctrl_sweep_roots(argument, scopes, aliases, seen)
+        return roots
+    if isinstance(expr, (ast.IfExp, ast.BoolOp)):
+        parts = (expr.body, expr.orelse) if isinstance(expr, ast.IfExp) else expr.values
+        for part in parts:
+            roots |= _ctrl_sweep_roots(part, scopes, aliases, seen)
+        return roots
+    if isinstance(expr, ast.Name) and expr.id not in seen:
+        for scope in scopes:
+            bindings = _ctrl_bindings(scope)
+            if expr.id in bindings:
+                for value in bindings[expr.id]:
+                    roots |= _ctrl_sweep_roots(value, scopes, aliases, seen | {expr.id})
+                break
+    return roots
+
+
+def _ctrl_guard_proves_empty(test, taken_when_true, roots, scopes):
+    """Is *test* the emptiness of a catalog that the sibling branch narrows?
+
+    `None` disables the controller's allowlist entirely, so it is only ever safe on the path
+    where there is nothing to authorize. Both loops say so with the truthiness of the catalog
+    itself -- `unrestricted_tools = not tools` -- and this follows that binding rather than the
+    name, so a rename still resolves while inverting the predicate does not.
+    """
+    seen = set()
+    while isinstance(test, ast.Name) and test.id not in seen:
+        seen.add(test.id)
+        values = [v for scope in scopes for v in _ctrl_bindings(scope).get(test.id, [])]
+        if len(values) != 1:
+            break
+        test = values[0]
+    negated = isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not)
+    if negated:
+        test = test.operand
+    # The non-gating branch has to be the one taken when the catalog is FALSY.
+    if negated != taken_when_true:
+        return False
+    return isinstance(test, ast.Name) and test.id in roots
 
 
 def _ctrl_resolve(expr, scopes, aliases, module, seen):
@@ -3265,6 +3339,22 @@ def _ctrl_resolve(expr, scopes, aliases, module, seen):
             if not ok:
                 return False, why, False
             gates = gates or branch_gates
+        if gates and isinstance(expr, ast.IfExp):
+            # WHICH branch gates is not enough on its own. `None if tools else <swept>` gates on
+            # the swept side while selecting `None` exactly when there IS a catalog, so the
+            # predicate that reaches the non-gating branch has to prove there is not one.
+            roots = _ctrl_sweep_roots(expr, scopes, aliases)
+            for branch, taken_when_true in ((expr.body, True), (expr.orelse, False)):
+                _ok, _why, branch_gates = _ctrl_resolve(branch, scopes, aliases, module, seen)
+                if branch_gates:
+                    continue
+                if not _ctrl_guard_proves_empty(expr.test, taken_when_true, roots, scopes):
+                    return (
+                        True,
+                        f"line {expr.lineno}: the branch with no catalog is not guarded by the "
+                        "emptiness of the catalog the other branch narrows",
+                        False,
+                    )
         return True, "every branch is sanitized", gates
     if isinstance(expr, ast.Call):
         name = _ctrl_called_name(expr, aliases)
@@ -3288,6 +3378,24 @@ def _ctrl_resolve(expr, scopes, aliases, module, seen):
                     return (
                         False,
                         f"{expr.id} is filled in place, so its contents are unknown",
+                        False,
+                    )
+            if known and expr.id in _ctrl_params(scope):
+                # A PARAMETER THAT IS ALSO REBOUND still arrives with the caller's value, and
+                # this resolver is flow-insensitive: `if x: tools = sweep(tools, ...)` records
+                # only the swept binding, so the raw parameter on the other path would be
+                # invisible. It has to clear its contract as well as its bindings. This also
+                # closes `catalog = catalog`, where the self-cycle vouched for itself.
+                allowed = _SANITIZED_BY_CONTRACT.get(
+                    (module, getattr(scope, "name", "")), frozenset()
+                )
+                if expr.id not in allowed:
+                    return (
+                        False,
+                        (
+                            f"{expr.id} is a rebound parameter of {getattr(scope, 'name', '?')} "
+                            "with no sanitizing contract, so its incoming value is unchecked"
+                        ),
                         False,
                     )
             if known:
@@ -3411,6 +3519,63 @@ def test_the_resolver_holds_the_shapes_that_defeat_a_source_scan():
         f"c = {swept}\nc.append(tools[0])\nToolLoopController(tools = c)\n"
     )
     assert not ok and "filled in place" in why
+
+
+def test_the_resolver_holds_the_shapes_that_look_sanitized_on_one_path():
+    """Three ways a value reaches the controller raw on a path the resolver was not reading."""
+    swept = "neutralize_tool_descriptions(tools, None, markup)"
+    # THE PREDICATE, not just the branches. This gates on the swept side and still hands the
+    # controller None exactly when there IS a catalog, so `or`-ing the branches is not enough.
+    ok, _why, gates = _ctrl_resolve_source(
+        f"c = {swept}\nToolLoopController(tools = None if tools else c)\n"
+    )
+    assert ok and not gates
+    # Guarded the right way round, following the binding rather than the name.
+    ok, _why, gates = _ctrl_resolve_source(
+        f"empty = not tools\nc = {swept}\nToolLoopController(tools = None if empty else c)\n"
+    )
+    assert ok and gates
+    # A REBOUND PARAMETER still arrives with the caller's value, and this resolver is
+    # flow-insensitive, so a sweep on one path must not vouch for the other.
+    ok, why, _gates = _ctrl_resolve_source(
+        f"def loop(tools, sanitize, markup):\n"
+        f"    if sanitize:\n        tools = {swept}\n"
+        f"    ToolLoopController(tools = tools)\n"
+    )
+    assert not ok and "rebound parameter" in why
+    # Including the degenerate self-cycle, which used to vouch for itself.
+    ok, why, _gates = _ctrl_resolve_source(
+        "def loop(catalog):\n    catalog = catalog\n    ToolLoopController(tools = catalog)\n"
+    )
+    assert not ok
+    # A LAMBDA PARAMETER shadows the outer proof at runtime, so it must shadow it here.
+    ok, why, _gates = _ctrl_resolve_source(
+        f"safe = {swept}\nfactory = lambda safe: ToolLoopController(tools = safe)\n"
+    )
+    assert not ok and "safe" in why
+
+
+def test_every_tool_loop_controller_is_classified():
+    """A controller nobody listed is a controller nobody checked, so a new loop fails here.
+
+    The guard above covers the two local loops; `_CONTROLLER_MODULES_OUT_OF_SCOPE` names the
+    external one and says why. A fourth construction site belongs in one list or the other,
+    and this is what forces the choice (#7066).
+    """
+    known = set(_CONTROLLER_MODULES) | set(_CONTROLLER_MODULES_OUT_OF_SCOPE)
+    found = set()
+    for path in sorted((_REPO_ROOT / "studio" / "backend").rglob("*.py")):
+        if "tests" in path.parts:
+            continue
+        tree = _ctrl_parse(path)
+        if _ctrl_controller_sites(tree, _ctrl_aliases(tree)):
+            found.add(path.name)
+    assert found, "nothing builds a ToolLoopController any more"
+    assert found - known == set(), (
+        f"unclassified ToolLoopController site(s): {sorted(found - known)}. Add each to "
+        "_CONTROLLER_MODULES, or to _CONTROLLER_MODULES_OUT_OF_SCOPE with a reason."
+    )
+    assert set(_CONTROLLER_MODULES) <= found, "a checked module no longer builds a controller"
 
 
 def test_the_sanitized_by_contract_catalog_is_sanitized_at_every_caller():
