@@ -926,7 +926,7 @@ class ResearchSupervisor:
             )
         if not pages:
             return "", []
-        # Reuse Studio's knowledge-base RAG pipeline (ingest -> hybrid retrieve -> <chunk>
+        # Reuse Unsloth's knowledge-base RAG pipeline (ingest -> hybrid retrieve -> <chunk>
         # render) over an ephemeral scope; runs off the event loop since embedding and the
         # sqlite/vec index work are CPU/GPU bound.
         from core.rag import web_rank
@@ -1014,7 +1014,7 @@ class ResearchSupervisor:
     def _endpoint(self) -> str:
         port = self._server_port()
         if port is None:
-            raise RuntimeError("Research is waiting for the Studio server port")
+            raise RuntimeError("Research is waiting for the Unsloth server port")
         return f"http://127.0.0.1:{port}/v1/chat/completions"
 
     async def _wait_for_local_model(
@@ -1024,7 +1024,7 @@ class ResearchSupervisor:
     ) -> bool:
         """Wait, up to the run's model timeout, for a model to be loaded again; True if one was.
 
-        A durable run resumes after a Studio restart and is approved long after it was created,
+        A durable run resumes after an Unsloth restart and is approved long after it was created,
         so the model it was started with can be gone. Waiting keeps the run alive instead of
         ending it on a non-retryable 400 that discards every step and source it gathered.
 

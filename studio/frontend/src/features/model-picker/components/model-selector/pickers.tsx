@@ -3051,7 +3051,7 @@ export function HubModelPicker({
     (id: string) => {
       if (!catalog) return true;
       // Downloaded weights keep their row. They may have been pulled on a machine that could run
-      // them, and hiding what is already on disk reads as Studio having lost the model.
+      // them, and hiding what is already on disk reads as Unsloth having lost the model.
       if (downloadedSet.has(id.toLowerCase())) return true;
       const hit = artifactForRepoId(id, catalog);
       return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass) : true;
@@ -3545,7 +3545,7 @@ export function HubModelPicker({
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
-            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
@@ -3591,7 +3591,7 @@ export function HubModelPicker({
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
-            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
@@ -3640,7 +3640,7 @@ export function HubModelPicker({
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
-            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,

@@ -103,7 +103,7 @@ ALLOWED_IN_FLIGHT_FOREIGN_KERNELS = 0
 # account is shared with human use, so a run held every seat there was. And
 # kaggle-t4-studio-gpu-ci.yml is on the same account: with no slot left it could
 # not push at all, and the shared concurrency group meant it did not even try
-# until the notebook job had finished (measured: Studio's run 32607617804 queued
+# until the notebook job had finished (measured: Unsloth's run 32607617804 queued
 # about 40 minutes behind notebook run 32607621452).
 #
 # The legs did not have to be split to fit. They now queue INSIDE one kernel --

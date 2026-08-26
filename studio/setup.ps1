@@ -135,7 +135,7 @@ function Write-StudioLine {
 #
 # UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "cuda", "vulkan",
 # "hip", or "rocm". Concrete values select and persist a backend across updates;
-# "auto" restores detection. Overrides Studio's Settings > System selection.
+# "auto" restores detection. Overrides Unsloth's Settings > System selection.
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
@@ -528,7 +528,7 @@ function Test-UnslothCmdShimFile {
     return ($text -like "*unsloth-studio-managed-launcher*" -and $text -like "*from unsloth_cli import app*")
 }
 
-# Shared default cache, or the custom Studio home's llama.cpp tree.
+# Shared default cache, or the custom Unsloth home's llama.cpp tree.
 function Get-ManagedLlamaCppDir {
     if (-not (Test-StudioHomeIsCustom)) {
         return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
@@ -5414,7 +5414,7 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                     Fast-Uninstall "triton-windows" | Out-Null
                     $_uninstallExit = $LASTEXITCODE
                 }
-                # A triton-windows that would not uninstall (Studio running and holding
+                # A triton-windows that would not uninstall (Unsloth running and holding
                 # _C/libtriton.pyd open) still shadows the XPU triton, so installing over it
                 # achieves nothing and would restore the manifest onto an unchanged venv.
                 if (-not $_manifestBlocked -and $_uninstallExit -ne 0) {

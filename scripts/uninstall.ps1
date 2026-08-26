@@ -219,8 +219,8 @@ Environment:
                 if ($entry.Name -notmatch '^ust-[0-9]+-[0-9a-f]{8}$') { continue }
                 if (-not ($entry.PSIsContainer)) { continue }
                 # A LIVE owner keeps its directory, exactly as install.ps1's own
-                # sweep does. An uninstall stops the Studios under the roots it
-                # knows about; a Studio from another install root, or another
+                # sweep does. An uninstall stops the Unsloth instances under the roots it
+                # knows about; an Unsloth from another install root, or another
                 # user, is not among them and is still using this as its %TEMP%.
                 $ownerPid = 0
                 try {
@@ -243,7 +243,7 @@ Environment:
                     # No recorded owner, and this is not the profile being uninstalled.
                     # install.ps1 reads that state as UNKNOWN rather than abandoned,
                     # because an installer killed before writing owner.pid leaves a live
-                    # Studio holding the directory; deleting another user's live %TEMP%
+                    # Unsloth holding the directory; deleting another user's live %TEMP%
                     # is not this uninstall's business. Under our own profile the shape
                     # is enough, since that is what is being removed.
                     _Substep "no recorded owner in another profile, left alone: $($entry.FullName)" "Yellow"
@@ -318,7 +318,7 @@ Environment:
             # WSL-shortcut search dirs; default Start Menu + Desktop, overridable for tests.
             [string[]]$ShortcutDirs = $null,
             # Paths under the data dir that a previous pass decided to keep, typically
-            # a private temp directory a live Studio is still using as its %TEMP%.
+            # a private temp directory a live Unsloth is still using as its %TEMP%.
             [string[]]$Preserve = @()
         )
         if ([string]::IsNullOrWhiteSpace($DataDir)) { return }
@@ -591,10 +591,10 @@ Environment:
         } catch { }
     }
 
-    # The Studio-managed subtrees underneath the reparse-point TARGET of each Studio home, for the
+    # The Unsloth-managed subtrees underneath the reparse-point TARGET of each Unsloth home, for the
     # stop scan only.
     #
-    # A junction or directory symlink Studio home runs its native binaries out of the PHYSICAL
+    # A junction or directory symlink Unsloth home runs its native binaries out of the PHYSICAL
     # path: the backend resolves the home (Path.resolve) before deriving <home>\stable-diffusion.cpp
     # and launching sd-server there, while _CustomStudioRoots only normalizes the string --
     # System.IO.Path.GetFullPath is lexical and never touches the filesystem, so it leaves a
@@ -614,7 +614,7 @@ Environment:
     # deny list exists to prevent. Ending our own process under the target is not destructive.
     function _ManagedPathsUnderReparseTargets {
         param([string[]]$Roots)
-        # Everything setup.ps1 / the prebuilt installers place inside a Studio home.
+        # Everything setup.ps1 / the prebuilt installers place inside an Unsloth home.
         $managed = @(
             "unsloth_studio", "share", "bin", "llama.cpp", "whisper.cpp", "node",
             "stable-diffusion.cpp", ".cache", ".venv_t5_510", ".venv_t5_530", ".venv_t5_550"
@@ -749,7 +749,7 @@ Environment:
     $webviewProfile = if ($localAppRoot) { Join-Path $localAppRoot "ai.unsloth.studio" } else { $null }
     # Account-scoped, like every other kill here. installMode is currentUser, so the profile is
     # this account's and shared by all its sessions: a second console or RDS session must die
-    # too or it re-creates the profile mid-delete, while another user's Studio must not be
+    # too or it re-creates the profile mid-delete, while another user's Unsloth must not be
     # touched. SIDs, so domain and locale do not matter; an unreadable owner is skipped.
     $meSid = try { [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value } catch { $null }
     $studioPids = @()
@@ -844,7 +844,7 @@ Environment:
         # <root>\stable-diffusion.cpp, so the removal above already took it. Older builds put it
         # BESIDE the root at <parent>\stable-diffusion.cpp (find_sd_cpp_binary derived it from
         # UNSLOTH_STUDIO_HOME.parent), and removing only the root would leave that build behind.
-        # Only remove a sibling Studio installed: <parent> is a user-chosen dir and
+        # Only remove a sibling Unsloth installed: <parent> is a user-chosen dir and
         # "stable-diffusion.cpp" is exactly what a git clone of the upstream project produces, so
         # require our owner marker (written by install_sd_cpp_prebuilt) before rm, and keep any
         # unowned checkout. Guard the derived parent path the same way.
@@ -852,7 +852,7 @@ Environment:
         if (_IsUnsafeRoot $customSdCpp) {
             _Substep "refusing to remove unsafe path: $customSdCpp" "Yellow"
         } elseif ((Test-Path -LiteralPath $customSdCpp) -and -not (Test-Path -LiteralPath (Join-Path $customSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
-            _Substep "keeping sd.cpp without Studio owner marker: $customSdCpp" "Yellow"
+            _Substep "keeping sd.cpp without Unsloth owner marker: $customSdCpp" "Yellow"
         } else {
             _RemovePath $customSdCpp
         }
@@ -861,7 +861,7 @@ Environment:
     if ($defaultStudioHome) { _RemoveRootRecordingDb $defaultStudioHome }
     # Default data dir. The private temp sweep goes FIRST and hands back what it
     # kept: the primary temp directory lives under this data dir, so a wholesale
-    # removal here would erase a live Studio's %TEMP% before the sweep ever looked
+    # removal here would erase a live Unsloth's %TEMP% before the sweep ever looked
     # at its owner.pid.
     $preservedTemp = @(_RemoveStudioPrivateTempTrees -Paths $privateTempDirs -PrimaryPath $primaryPrivateTemp)
     if ($defaultDataDir) { _RemoveDataDirKeepingWslIcon $defaultDataDir -Preserve $preservedTemp }
@@ -871,9 +871,9 @@ Environment:
     # "stable-diffusion.cpp" is exactly what a git clone of leejet/stable-diffusion.cpp produces,
     # so a user may keep their own checkout (or point UNSLOTH_SD_CPP_PATH) at this default path;
     # require our owner marker (written by install_sd_cpp_prebuilt) before rm, mirroring the
-    # custom-root guard above, so a user's own checkout or a pre-marker Studio build is kept.
+    # custom-root guard above, so a user's own checkout or a pre-marker Unsloth build is kept.
     if ($defaultSdCpp -and (Test-Path -LiteralPath $defaultSdCpp) -and -not (Test-Path -LiteralPath (Join-Path $defaultSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
-        _Substep "keeping sd.cpp without Studio owner marker: $defaultSdCpp" "Yellow"
+        _Substep "keeping sd.cpp without Unsloth owner marker: $defaultSdCpp" "Yellow"
     } elseif ($defaultSdCpp) {
         _RemovePath $defaultSdCpp
     }
@@ -1036,7 +1036,7 @@ Environment:
         Write-Host "      did not see is still on disk."
     }
     Write-Host "Note: provider API keys are kept in the browser's localStorage, not in studio.db."
-    Write-Host "      Unless you ran Studio as the desktop app, clear site data for the"
+    Write-Host "      Unless you ran Unsloth as the desktop app, clear site data for the"
     Write-Host "      http://localhost:<port> origin you used to remove them."
     Write-Host "Note: Hugging Face model cache at %USERPROFILE%\.cache\huggingface was left in place."
     Write-Host "Remove it manually with 'Remove-Item -Recurse -Force `"$env:USERPROFILE\.cache\huggingface\hub`"' if desired."

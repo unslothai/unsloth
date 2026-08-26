@@ -262,7 +262,7 @@ def _layout_from_reader(reader) -> ModelLayout:
     # unless a draft is engaged, so an -ot naming them moves nothing: measured,
     # spilling only blk.<nextn> leaves the host buffer at exactly token_embd and the
     # device buffer unchanged. Counting them spillable would credit bytes that can
-    # never be freed. Studio prices the drafter separately anyway.
+    # never be freed. Unsloth prices the drafter separately anyway.
     all_block_indices = set(spill) | set(resident)
     block_indices = sorted(i for i in all_block_indices if i < n_layers)
     has_excluded = any(i >= n_layers for i in all_block_indices)

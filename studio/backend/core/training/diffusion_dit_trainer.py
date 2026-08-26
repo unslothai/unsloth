@@ -1502,7 +1502,7 @@ def _assert_gated_access(base_model: str, hf_token: Optional[str]) -> None:
     if name in _GATED_TRAIN_REPOS and not (hf_token and str(hf_token).strip()):
         raise ValueError(
             f"'{base_model}' is a gated Hugging Face repo. Accept its license on the Hub "
-            f"and add your HF token in Studio settings before training from it."
+            f"and add your HF token in Unsloth settings before training from it."
         )
 
 

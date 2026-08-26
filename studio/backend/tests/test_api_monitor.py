@@ -3,6 +3,8 @@
 
 import itertools
 import json
+import logging
+from dataclasses import FrozenInstanceError
 
 import pytest
 from fastapi import FastAPI
@@ -11,6 +13,192 @@ from fastapi.testclient import TestClient
 from auth.authentication import get_current_subject
 from core.inference.api_monitor import ApiMonitor, _trim
 import routes.inference as inference_route
+
+
+def test_terminal_api_usage_receipt_is_immutable_and_emitted_once():
+    receipts = []
+    monitor = ApiMonitor(terminal_callback = receipts.append)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "org/model",
+        prompt = "do not persist this",
+        subject = "alice",
+        via_api_key = True,
+    )
+    monitor.set_usage(entry_id, prompt_tokens = 40, completion_tokens = 10, total_tokens = 50)
+    monitor.finish(entry_id)
+    monitor.finish(entry_id)
+    monitor.fail(entry_id, "late error")
+    monitor.set_usage(entry_id, total_tokens = 999)
+
+    assert len(receipts) == 1
+    receipt = receipts[0]
+    assert (receipt.prompt_tokens, receipt.completion_tokens, receipt.total_tokens) == (40, 10, 50)
+    assert receipt.status == "completed"
+    assert not hasattr(receipt, "prompt")
+    assert not hasattr(receipt, "reply")
+    with pytest.raises(FrozenInstanceError):
+        receipt.total_tokens = 999
+
+
+@pytest.mark.parametrize(
+    "terminal,status",
+    [
+        (lambda monitor, entry_id: monitor.finish(entry_id, "cancelled"), "cancelled"),
+        (lambda monitor, entry_id: monitor.fail(entry_id, "boom"), "error"),
+        (lambda monitor, entry_id: monitor.fail_open(entry_id, "boom"), "error"),
+    ],
+)
+def test_partial_terminal_api_usage_is_emitted_once(terminal, status):
+    receipts = []
+    monitor = ApiMonitor(terminal_callback = receipts.append)
+    entry_id = monitor.start(
+        endpoint = "/v1/responses",
+        method = "POST",
+        model = "m",
+        prompt = "private",
+        subject = "alice",
+        via_api_key = True,
+    )
+    monitor.set_usage(entry_id, completion_tokens = 7)
+    terminal(monitor, entry_id)
+    terminal(monitor, entry_id)
+    assert len(receipts) == 1
+    assert receipts[0].status == status
+    assert receipts[0].total_tokens == 7
+
+
+def test_terminal_callback_runs_outside_monitor_lock():
+    lock_was_free = []
+    monitor = ApiMonitor()
+
+    def callback(_receipt):
+        acquired = monitor._lock.acquire(blocking = False)
+        lock_was_free.append(acquired)
+        if acquired:
+            monitor._lock.release()
+        assert monitor.snapshot()
+
+    monitor.set_terminal_callback(callback)
+    entry_id = monitor.start(
+        endpoint = "/v1/messages",
+        method = "POST",
+        model = "m",
+        prompt = "private",
+        subject = "alice",
+        via_api_key = True,
+    )
+    monitor.set_usage(entry_id, total_tokens = 1)
+    monitor.finish(entry_id)
+    assert lock_was_free == [True]
+
+
+def test_terminal_callback_failure_is_logged_and_swallowed(caplog):
+    def broken(_receipt):
+        raise RuntimeError("storage unavailable")
+
+    monitor = ApiMonitor(terminal_callback = broken)
+    entry_id = monitor.start(
+        endpoint = "/v1/completions",
+        method = "POST",
+        model = "m",
+        prompt = "private",
+        subject = "alice",
+        via_api_key = True,
+    )
+    monitor.set_usage(entry_id, total_tokens = 1)
+    with caplog.at_level(logging.WARNING):
+        monitor.finish(entry_id)
+    assert monitor.get(entry_id)["status"] == "completed"
+    assert "api_monitor.terminal_callback_failed" in caplog.text
+
+
+def test_overlapping_callback_leases_do_not_disable_the_live_owner():
+    monitor = ApiMonitor()
+    older_receipts = []
+    newer_receipts = []
+    older = monitor.acquire_terminal_callback(older_receipts.append)
+    newer = monitor.acquire_terminal_callback(newer_receipts.append)
+
+    # Lifespan A exits while the later lifespan B remains live.
+    monitor.release_terminal_callback(older)
+    entry_id = monitor.start(
+        endpoint = "/v1/responses",
+        method = "POST",
+        model = "m",
+        prompt = "private",
+        subject = "alice",
+        via_api_key = True,
+    )
+    monitor.set_usage(entry_id, total_tokens = 1)
+    monitor.finish(entry_id)
+
+    assert older_receipts == []
+    assert len(newer_receipts) == 1
+    monitor.release_terminal_callback(newer)
+
+
+def test_request_ids_keep_the_full_uuid(monkeypatch):
+    full_hex = "0123456789ab" + "cdef" * 5
+    monkeypatch.setattr(
+        "core.inference.api_monitor.uuid.uuid4",
+        lambda: type("FakeUuid", (), {"hex": full_hex})(),
+    )
+    monitor = ApiMonitor()
+
+    entry_id = monitor.start(endpoint = "/v1", method = "POST", model = "m", prompt = "")
+    lifecycle_id = monitor.record_lifecycle(event = "unload", model = "m")
+
+    assert entry_id == f"apireq_{full_hex}"
+    assert lifecycle_id == f"apievt_{full_hex[:12]}"
+
+
+def test_non_external_and_non_request_rows_never_emit_usage_receipts():
+    receipts = []
+    monitor = ApiMonitor(terminal_callback = receipts.append)
+
+    studio = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "studio",
+        subject = "alice",
+        via_api_key = False,
+    )
+    monitor.set_usage(studio, total_tokens = 10)
+    monitor.finish(studio)
+
+    anonymous = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "anonymous",
+        via_api_key = True,
+    )
+    monitor.set_usage(anonymous, total_tokens = 10)
+    monitor.finish(anonymous)
+
+    lifecycle = monitor.record_lifecycle(
+        event = "load", model = "m", running = True, subject = "alice", via_api_key = True
+    )
+    monitor.finish(lifecycle)
+    monitor.record_lifecycle(event = "unload", model = "m", subject = "alice", via_api_key = True)
+
+    discarded = monitor.start(
+        endpoint = "/v1/responses",
+        method = "POST",
+        model = "m",
+        prompt = "private",
+        subject = "alice",
+        via_api_key = True,
+    )
+    monitor.discard(discarded)
+    monitor.finish(discarded)
+
+    disabled = ApiMonitor(enabled = False, terminal_callback = receipts.append)
+    assert disabled.start(endpoint = "/v1", method = "POST", model = "m", prompt = "") == ""
+    assert receipts == []
 
 
 def _get_monitor(monkeypatch, *, enabled: bool):
@@ -348,7 +536,7 @@ def test_api_monitor_clear_is_scoped_to_one_subject():
 
 
 def test_api_monitor_records_whether_the_caller_used_an_api_key():
-    # Studio's chat hits these endpoints on a JWT, and the panel auto-opens off this flag.
+    # Unsloth's chat hits these endpoints on a JWT, and the panel auto-opens off this flag.
     monitor = ApiMonitor(max_entries = 4)
     ui = monitor.start(
         endpoint = "/api/inference/chat",
