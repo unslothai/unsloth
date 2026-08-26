@@ -31,9 +31,7 @@ test("the default model uses its recommended thinking settings", () => {
     assert.ok(options.includes(option), `${option} is in the default command`);
   }
   assert.ok(
-    TAB.includes(
-      "modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO)",
-    ),
+    TAB.includes("modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO)"),
   );
   assert.ok(!options.includes("--presence-penalty"));
 });
@@ -46,10 +44,17 @@ test("the model dropdown loads live trending GGUFs", () => {
   assert.ok(request.includes('sortBy: "trendingScore"'));
   assert.ok(request.includes('sortDirection: "desc"'));
   assert.ok(request.includes("keepUnsupportedTags: false"));
+  assert.ok(TAB.includes("!isEmbeddingHubModel(model)"));
+  assert.ok(TAB.includes("EMBEDDING_TAGS.has(tag.toLowerCase())"));
   assert.ok(TAB.includes("mergeModelOrder(trendingModels, models)"));
   assert.ok(TAB.includes("[...primary, ...fallback]"));
 });
 
 test("restored Hub selections remain valid while uncached", () => {
   assert.ok(TAB.includes("isHuggingFaceRepo(restored)"));
+});
+
+test("model selection matching ignores Hub repository casing", () => {
+  assert.ok(TAB.includes("modelKey(model) === selectedKey"));
+  assert.ok(TAB.includes("modelKey(model) === modelKey(selectedModel)"));
 });

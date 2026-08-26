@@ -34,6 +34,8 @@ import {
   listModels,
 } from "@/features/chat";
 import {
+  EMBEDDING_TAGS,
+  type HfModelResult,
   ggufVariantDisplayLabel,
   hfApiToken,
   useHfTokenStore,
@@ -250,6 +252,14 @@ function mergeModelOrder(primary: string[], fallback: string[]): string[] {
 
 function isHuggingFaceRepo(model: string): boolean {
   return HUGGING_FACE_REPO_PATTERN.test(model);
+}
+
+function isEmbeddingHubModel(
+  model: Pick<HfModelResult, "pipelineTag" | "tags">,
+): boolean {
+  return [model.pipelineTag, ...(model.tags ?? [])].some(
+    (tag) => tag != null && EMBEDDING_TAGS.has(tag.toLowerCase()),
+  );
 }
 
 function formatBytes(bytes: number): string {
@@ -765,7 +775,7 @@ export function AgentsTab() {
   const trendingModels = useMemo(
     () =>
       trendingGgufs
-        .filter((model) => model.isGguf)
+        .filter((model) => model.isGguf && !isEmbeddingHubModel(model))
         .map((model) => model.id),
     [trendingGgufs],
   );
@@ -789,11 +799,17 @@ export function AgentsTab() {
             return tokens.every((token) => haystack.includes(token));
           });
 
-    if (tokens.length === 0 && matches.includes(selectedModel)) {
-      return [
-        selectedModel,
-        ...matches.filter((model) => model !== selectedModel),
-      ];
+    if (tokens.length === 0) {
+      const selectedKey = modelKey(selectedModel);
+      const selectedIndex = matches.findIndex(
+        (model) => modelKey(model) === selectedKey,
+      );
+      if (selectedIndex > 0) {
+        return [
+          matches[selectedIndex],
+          ...matches.filter((_, index) => index !== selectedIndex),
+        ];
+      }
     }
     return matches;
   }, [modelLabels, modelSearch, orderedModels, selectedModel]);
@@ -1459,7 +1475,9 @@ export function AgentsTab() {
                         <CommandItem
                           key={model}
                           value={model}
-                          data-checked={model === selectedModel}
+                          data-checked={
+                            modelKey(model) === modelKey(selectedModel)
+                          }
                           onSelect={() => {
                             modelSelectionChanged.current = true;
                             restoredModel.current = null;
