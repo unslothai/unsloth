@@ -3384,6 +3384,24 @@ def scan_exported_models(
         return []
 
 
+def _base_model_from_dir_name(dir_name: str) -> Optional[str]:
+    """``unsloth_<model>_<timestamp>`` -> ``unsloth/<model>``, else None.
+
+    Last resort when no config names the base model. Needs a model segment BETWEEN the
+    prefix and the timestamp: a two-segment ``unsloth_<model>`` -- what a renamed run or
+    an unzipped export leaves behind -- slices to nothing, and joining that empty slice
+    used to return the bogus repo id ``unsloth/``, logged as a successful detection and
+    then handed to the Hub by the export and ``/models/lora/base`` callers.
+    """
+    if not dir_name.startswith("unsloth_"):
+        return None
+    # strip("_"): a doubled separator would otherwise leak a leading underscore into the name.
+    model_name = "_".join(dir_name.split("_")[1:-1]).strip("_")
+    if not model_name:
+        return None
+    return "unsloth/" + model_name
+
+
 def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
     """Read the base model name from a local training or checkpoint directory."""
     try:
@@ -3415,14 +3433,10 @@ def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
         # TODO: reading base_model from training_args.bin is disabled -- torch.load defaults to
         # weights_only=True (torch >= 2.6), which rejects pickled TrainingArguments.
 
-        dir_name = checkpoint_path_obj.name
-        if dir_name.startswith("unsloth_"):
-            parts = dir_name.split("_")
-            if len(parts) >= 2:
-                model_parts = parts[1:-1]
-                base_model = "unsloth/" + "_".join(model_parts)
-                logger.info("Detected base model from directory name: %s", base_model)
-                return base_model
+        base_model = _base_model_from_dir_name(checkpoint_path_obj.name)
+        if base_model:
+            logger.info("Detected base model from directory name: %s", base_model)
+            return base_model
 
         logger.warning(f"Could not detect base model for checkpoint: {checkpoint_path}")
         return None
@@ -3454,14 +3468,10 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
         # weights_only=True and is a remote-code sink for third-party LoRAs; needs a trust check.
 
         # Last resort: parse from dir name (unsloth_<model>_<timestamp>)
-        dir_name = lora_path_obj.name
-        if dir_name.startswith("unsloth_"):
-            parts = dir_name.split("_")
-            if len(parts) >= 2:
-                model_parts = parts[1:-1]  # Skip "unsloth" and timestamp
-                base_model = "unsloth/" + "_".join(model_parts)
-                logger.info(f"Detected base model from directory name: {base_model}")
-                return base_model
+        base_model = _base_model_from_dir_name(lora_path_obj.name)
+        if base_model:
+            logger.info(f"Detected base model from directory name: {base_model}")
+            return base_model
 
         logger.warning(f"Could not detect base model for LoRA: {lora_path}")
         return None
