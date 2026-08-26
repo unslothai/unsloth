@@ -153,7 +153,6 @@ def _child_python(tmp_path):
     root = tmp_path / "venv"
     try:
         import venv as _venv
-
         _venv.EnvBuilder(system_site_packages = True, with_pip = False).create(root)
     except Exception as exc:  # pragma: no cover - platform dependent
         pytest.skip(f"cannot build a venv to host the child interpreter: {exc}")
@@ -163,9 +162,14 @@ def _child_python(tmp_path):
     pytest.skip("the venv produced no interpreter on this platform")
 
 
-def _run_on_hostile_tree(tmp_path, *, apply, extra_env = None):
+def _run_on_hostile_tree(
+    tmp_path,
+    *,
+    apply,
+    extra_env = None,
+):
     """Build the tree OUTSIDE any sys prefix and run the driver against it."""
-    overlay = tmp_path / "overlay_leg"       # deliberately not "site-packages"
+    overlay = tmp_path / "overlay_leg"  # deliberately not "site-packages"
     overlay.mkdir()
     for name, body in _HOSTILE_TREE.items():
         (overlay / name).write_text(body, encoding = "utf-8")
@@ -188,7 +192,10 @@ def _run_on_hostile_tree(tmp_path, *, apply, extra_env = None):
     env.update(extra_env or {})
     proc = subprocess.run(
         [_child_python(tmp_path), str(driver)],
-        capture_output = True, text = True, env = env, timeout = 300,
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 300,
         cwd = str(tmp_path),
     )
     line = [ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT ")]
@@ -204,8 +211,7 @@ def test_an_off_prefix_install_breaks_dill_without_the_fix(tmp_path):
     """
     got = _run_on_hostile_tree(tmp_path, apply = False)
     assert got["affected"] is True, (
-        "the gate does not recognise this layout, so the fix would never "
-        "install itself here"
+        "the gate does not recognise this layout, so the fix would never install itself here"
     )
     assert got["dumps"].startswith("PicklingError"), (
         "dill pickled the off-prefix module by reference unaided; the bug this "
@@ -230,9 +236,7 @@ def test_it_is_idempotent(tmp_path):
 def test_the_env_switch_turns_it_off(tmp_path):
     """A user whose environment this misjudges needs a way out that does not
     involve editing site-packages."""
-    got = _run_on_hostile_tree(
-        tmp_path, apply = True, extra_env = {"UNSLOTH_DISABLE_DILL_FIX": "1"}
-    )
+    got = _run_on_hostile_tree(tmp_path, apply = True, extra_env = {"UNSLOTH_DISABLE_DILL_FIX": "1"})
     assert got["applied"] is False
     assert got["dumps"].startswith("PicklingError")
 
@@ -241,15 +245,14 @@ def test_the_env_switch_turns_it_off(tmp_path):
 # The gate: an ordinary install must be untouched
 # --------------------------------------------------------------------------
 
+
 def test_an_ordinary_site_packages_install_is_a_no_op():
     """dill's behaviour, fingerprints included, has to be identical where it
     already works. The gate is what guarantees that, so it is asserted against
     the environment this test suite itself runs in."""
     from unsloth.import_fixes import _dill_path_pickles_by_value
 
-    assert not _dill_path_pickles_by_value(
-        "/usr/lib/python3.12/site-packages/pyarrow/__init__.py"
-    )
+    assert not _dill_path_pickles_by_value("/usr/lib/python3.12/site-packages/pyarrow/__init__.py")
     assert not _dill_path_pickles_by_value(os.path.join(sys.prefix, "x", "y.py"))
     assert not _dill_path_pickles_by_value(None)
     assert _dill_path_pickles_by_value("/opt/layer/python/pyarrow/__init__.py")
@@ -286,9 +289,7 @@ def test_the_widening_only_covers_modules_that_import_back():
     # matters.
     for hostile in ("__main__", "__mp_main__"):
         fake = types.ModuleType(hostile)
-        fake.__spec__ = types.SimpleNamespace(
-            name = hostile, origin = f"/somewhere/pkg/{hostile}.py"
-        )
+        fake.__spec__ = types.SimpleNamespace(name = hostile, origin = f"/somewhere/pkg/{hostile}.py")
         previous = sys.modules.get(hostile)
         sys.modules[hostile] = fake
         try:
@@ -306,9 +307,9 @@ def test_the_widening_only_covers_modules_that_import_back():
     namespace_like.__spec__ = types.SimpleNamespace(name = "namespace_like", origin = None)
     sys.modules["namespace_like"] = namespace_like
     try:
-        assert not _dill_module_is_importable_by_name(namespace_like), (
-            "a module with no file backing it is not safely importable by name"
-        )
+        assert not _dill_module_is_importable_by_name(
+            namespace_like
+        ), "a module with no file backing it is not safely importable by name"
     finally:
         del sys.modules["namespace_like"]
 
@@ -337,7 +338,8 @@ def test_the_fix_is_called_on_every_import_path():
         "paths runs without it"
     )
     called = [
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "_fix_dill"
