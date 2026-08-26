@@ -816,3 +816,85 @@ def test_a_pass_through_parallel_that_grows_the_cache_declines_the_plan():
     # Last wins, exactly as llama.cpp parses it.
     assert _plan(stub, n_parallel = 4, extra_args = ["--parallel", "8", "-np", "2"]) is not None
     assert _plan(stub, n_parallel = 1) is not None
+
+
+# --------------------------------------- newly reachable now the gate is default-on
+
+
+@pytest.mark.parametrize(
+    "extra_args,env",
+    [
+        (["--rpc", "10.0.0.2:50052"], None),
+        (["--rpc=10.0.0.2:50052"], None),
+        (None, {"LLAMA_ARG_RPC": "10.0.0.2:50052"}),
+    ],
+)
+def test_an_rpc_device_declines_the_plan(extra_args, env):
+    """--rpc registers REMOTE devices and llama.cpp puts them at the FRONT of the
+    device list -- `model->devices.insert(model->devices.begin(), rpc_servers...)`
+    (llama.cpp:275), fed by add_rpc_devices (common/arg.cpp:1163-1180, 2649-2655).
+    The free-memory row split then hands the first slice of layers to a card this
+    planner never saw: every number it has comes from Studio's LOCAL gpus
+    snapshot. Crediting local VRAM for layers that went to another host and then
+    pinning it with --fit off is a per-device shortfall with nothing left to catch
+    it. _launch_host_shortfall_message already abstains for exactly this."""
+    assert _plan(_Stub(), extra_args = extra_args, env = env) is None
+    assert _plan(_Stub()) is not None, "not vacuous: the same load plans without it"
+
+
+@pytest.mark.parametrize(
+    "extra_args,env",
+    [
+        (["--fit-target", "4096"], None),
+        (["-fitt", "4096"], None),
+        (["--fit-target=4096,4096"], None),
+        (None, {"LLAMA_ARG_FIT_TARGET": "4096"}),
+    ],
+)
+def test_an_explicit_fit_target_declines_the_plan(extra_args, env):
+    """--fit-target is VRAM the user told the fitter it may not spend: it fills
+    fit_params_target (common/arg.cpp:2869-2892), which becomes `margins` and then
+    `targets.push_back(dmds_full[id].free - margins[id])` (common/fit.cpp:282-288,
+    649). This planner credits that same VRAM and emits --fit off, so
+    common_params_fit_impl never runs and the reservation is silently dropped.
+    Studio's own load-mode fit already honours it through fit_target_margin_in, so
+    spending it here is the two arms disagreeing -- and this is the arm holding the
+    --fit off pin."""
+    assert _plan(_Stub(), extra_args = extra_args, env = env) is None
+    assert _plan(_Stub()) is not None, "not vacuous"
+
+
+def test_a_pass_through_adapter_is_charged_as_resident_vram(tmp_path):
+    """LoRA and control-vector sidecars are GPU-resident and in NO other term
+    here. llama.cpp creates LoRA tensors on the BASE tensor's buffer type
+    (llama-adapter.cpp:335) and a control vector on model.select_buft(il)
+    (llama-adapter.cpp:67), so they land on the card holding the layer this plan
+    just placed; neither mmaps (ggml_backend_tensor_set, llama-adapter.cpp:407).
+    `model_size` is the base GGUF alone, so an unpriced adapter is a plan claiming
+    a fit that is not there, pinned with --fit off."""
+    adapter = tmp_path / "adapter.gguf"
+    adapter.write_bytes(b"\0" * (3 * GIB))
+
+    # Sized so the base load fits with room to spare and the adapter is what
+    # tips it over: the term has to be load-bearing, not merely present.
+    stub = _Stub()
+    free = 17 * 1024
+    bare = _plan(stub, free_mib = free)
+    with_lora = _plan(stub, free_mib = free, extra_args = ["--lora", str(adapter)])
+    assert bare is not None and with_lora is not None
+    assert not bare.spills_anything, "the base load fits on its own"
+    assert with_lora.spills_anything, "3 GiB of resident adapter comes out of the same VRAM"
+
+    # Every spelling the child accumulates, including the colon-scaled form.
+    scaled = _plan(stub, free_mib = free, extra_args = ["--lora-scaled", f"{adapter}:0.5"])
+    assert scaled.spilled_blocks == with_lora.spilled_blocks
+    ctrl = _plan(stub, free_mib = free, extra_args = ["--control-vector", str(adapter)])
+    assert ctrl.spilled_blocks == with_lora.spilled_blocks
+
+
+def test_an_unreadable_adapter_abstains():
+    """The "engaged but unsized" case: os.stat fails, so the bytes cannot be
+    priced. Abstain rather than plan a footprint that is short by an unknown
+    amount -- the same answer _fits_without_paging gives."""
+    assert _plan(_Stub(), extra_args = ["--lora", "/no/such/adapter.gguf"]) is None
+    assert _plan(_Stub()) is not None, "not vacuous"

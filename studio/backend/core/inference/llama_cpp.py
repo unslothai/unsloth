@@ -23624,6 +23624,27 @@ class LlamaCppBackend:
                 for a in (extra_args or ())
             )
             or str(source_env.get("LLAMA_ARG_FIT", "")).strip()
+            # --rpc adds REMOTE devices, and at the FRONT of the list: llama.cpp
+            # does `model->devices.insert(model->devices.begin(), rpc_servers...)`
+            # (llama.cpp:275) after add_rpc_devices registers them
+            # (common/arg.cpp:1163-1180, 2649-2655), so the free-memory row split
+            # hands the FIRST slice of layers to a card Studio never detected and
+            # never sized. Every number here comes from the local `gpus` snapshot,
+            # so the plan would credit local VRAM for layers that went elsewhere
+            # and then pin it with --fit off. _launch_host_shortfall_message
+            # already abstains for exactly this reason.
+            or (_extra_args_device(extra_args, {"--rpc"}) or "").strip()
+            or str(source_env.get("LLAMA_ARG_RPC", "")).strip()
+            # --fit-target is VRAM the user told the fitter it may not spend
+            # (common/arg.cpp:2869-2892 fills fit_params_target, which becomes
+            # `margins` and then `targets.push_back(dmds_full[id].free - margins[id])`
+            # in common/fit.cpp:282-288, 649). This planner credits that same VRAM
+            # and then emits --fit off, so common_params_fit_impl never runs and
+            # the margin is silently dropped. Studio's own load-mode fit already
+            # honours it via fit_target_margin_in, so spending it here is the two
+            # arms disagreeing about the same reservation, with this one holding
+            # the --fit off pin. Decline, like any other explicit --fit.
+            or fit_target_margin_in(extra_args, source_env) is not None
             # KV placement is placement too. -nkvo (or a false LLAMA_ARG_KV_OFFLOAD)
             # sends the WHOLE cache to host RAM whatever -ngl says: offload is one
             # scalar and the buft falls back to ggml_backend_cpu_buffer_type() for
@@ -23721,6 +23742,23 @@ class LlamaCppBackend:
         # ctx_compute is per device, compute_buffer_flat is one lump charged once
         # against the pool and booked onto device 0, where it lives.
         extra_gpu_bytes += int(inputs.get("compute_buffer_flat") or 0)
+
+        # Pass-through --lora / --lora-scaled / --control-vector weights. GPU
+        # resident and invisible to every other term here: LoRA tensors are created
+        # on the BASE tensor's buffer type (llama-adapter.cpp:335,
+        # `ggml_backend_buffer_get_type(model_tensor->buffer)`) and a control vector
+        # on model.select_buft(il) (llama-adapter.cpp:67), so they land on whichever
+        # card holds the layer this plan just placed. Neither path mmaps -- the file
+        # is staged and pushed with ggml_backend_tensor_set (llama-adapter.cpp:407)
+        # -- so the bytes are resident whatever --load-mode says, and `model_size`
+        # is the base GGUF alone, so nothing upstream of here has charged them.
+        # Same treatment _fits_without_paging gives them: a TERM, and an unreadable
+        # file abstains rather than being guessed at.
+        sidecar_bytes = _sidecar_adapter_bytes(extra_args)
+        if sidecar_bytes is None:
+            logger.debug("Tensor spill: declined, a pass-through adapter could not be sized")
+            return None
+        extra_gpu_bytes += sidecar_bytes
 
         return plan_placement(
             layout,
