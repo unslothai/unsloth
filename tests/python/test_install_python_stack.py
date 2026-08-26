@@ -630,9 +630,7 @@ class TestDestructiveRepairsDoNotStartUnderTheOptOut:
     """
 
     def test_the_metadata_repair_declines_before_staging(self, capsys):
-        with mock.patch.dict(
-            os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True
-        ):
+        with mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True):
             assert ips._stage_replacement("unsloth-zoo") is None
         out = capsys.readouterr().err
         assert "UNSLOTH_RESPECT_PM_POLICY" in out and "leaving the install alone" in out

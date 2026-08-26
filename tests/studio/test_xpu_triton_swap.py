@@ -34,8 +34,6 @@ REPO = Path(__file__).resolve().parents[2]
 STACK = REPO / "studio/install_python_stack.py"
 
 
-
-
 @pytest.fixture(autouse = True)
 def _neutral_policy_environment(monkeypatch):
     """Run as an ordinary machine unless a test says otherwise.
@@ -46,6 +44,7 @@ def _neutral_policy_environment(monkeypatch):
     fail. Tests that want the opt-out set it themselves.
     """
     monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+
 
 def _load_real_index_env_scrub():
     """The module's OWN _install_env_for_cmd, so the scrub is executed, not re-implemented.
