@@ -768,6 +768,144 @@ def test_patch_mamba2_varlen_overwrites_stale_compiled_import(monkeypatch):
         sys.modules.pop(compiled.__name__, None)
 
 
+def test_patch_mamba2_varlen_clears_padded_mask_for_fused_path(monkeypatch):
+    # transformers 5.5 only calls mamba_split_conv1d_scan_combined when
+    # attention_mask is all-ones. Packed batches still have pad zeros, so the
+    # mixer takes mamba_chunk_scan_combined and the fused wrapper never runs.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+
+    def mamba_chunk_scan_combined(*args, seq_idx = None, **kwargs):
+        mamba_chunk_scan_combined.calls.append(seq_idx)
+        return args[0] if args else None
+
+    mamba_chunk_scan_combined.calls = []
+
+    class _MaskedNemotronHMamba2Mixer(_FakeNemotronHMamba2Mixer):
+        def cuda_kernels_forward(
+            self,
+            hidden_states,
+            cache_params = None,
+            attention_mask = None,
+        ):
+            input_not_masked = attention_mask is None or bool(
+                torch.all(attention_mask == 1)
+            )
+            if self.training and cache_params is None and input_not_masked:
+                return self.mamba2_split_conv1d_scan_combined(hidden_states, seq_idx = None)
+            return mamba_chunk_scan_combined(hidden_states, seq_idx = None)
+
+        def forward(
+            self,
+            hidden_states,
+            cache_params = None,
+            attention_mask = None,
+            **kwargs,
+        ):
+            return self.cuda_kernels_forward(hidden_states, cache_params, attention_mask)
+
+    class _MaskedModel(_FakeMamba2Model):
+        def __init__(self):
+            super().__init__()
+            self.mixer = _MaskedNemotronHMamba2Mixer()
+
+    model = _MaskedModel()
+    fused_orig = model.mixer.mamba2_split_conv1d_scan_combined
+    model.train()
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    fused_orig.calls.clear()
+    mamba_chunk_scan_combined.calls.clear()
+    model(
+        input_ids = torch.zeros(1, 6, dtype = torch.long),
+        packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+        attention_mask = torch.tensor([[1, 1, 1, 1, 1, 0]]),
+        use_cache = False,
+    )
+    assert mamba_chunk_scan_combined.calls == []
+    assert fused_orig.calls[-1] is not None
+    assert fused_orig.calls[-1].tolist() == [[0, 0, 1, 2, 2, 2]]
+
+
+def test_patch_mamba2_varlen_clears_mask_on_compiled_mixer_forward(monkeypatch):
+    # H200: compiled NemotronHMamba2Mixer_forward passes the padded mask through
+    # to cuda_kernels_forward, which then skips the fused kernel.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
+    import types
+
+    compiled = types.ModuleType("unsloth_compiled_module_nemotron_h")
+    ns = compiled.__dict__
+    ns["__name__"] = compiled.__name__
+    ns["torch"] = torch
+    exec(
+        """
+def mamba_split_conv1d_scan_combined(*args, seq_idx=None, **kwargs):
+    mamba_split_conv1d_scan_combined.calls.append(seq_idx)
+    return args[0]
+mamba_split_conv1d_scan_combined.calls = []
+def mamba_chunk_scan_combined(*args, seq_idx=None, **kwargs):
+    mamba_chunk_scan_combined.calls.append(seq_idx)
+    return args[0]
+mamba_chunk_scan_combined.calls = []
+def cuda_kernels_forward(self, hidden_states, cache_params=None, attention_mask=None):
+    input_not_masked = attention_mask is None or bool(torch.all(attention_mask == 1))
+    if self.training and cache_params is None and input_not_masked:
+        return mamba_split_conv1d_scan_combined(hidden_states, seq_idx=None)
+    return mamba_chunk_scan_combined(hidden_states, seq_idx=None)
+def NemotronHMamba2Mixer_forward(self, hidden_states, cache_params=None, attention_mask=None, **kwargs):
+    return self.cuda_kernels_forward(hidden_states, cache_params, attention_mask)
+""",
+        ns,
+    )
+    sys.modules[compiled.__name__] = compiled
+
+    class _CompiledNemotronHMamba2Mixer(_FakeNemotronHMamba2Mixer):
+        def __init__(self):
+            super().__init__()
+            del self.mamba2_split_conv1d_scan_combined
+            self.cuda_kernels_forward = types.MethodType(ns["cuda_kernels_forward"], self)
+
+        def forward(
+            self,
+            hidden_states,
+            cache_params = None,
+            attention_mask = None,
+            **kwargs,
+        ):
+            return ns["NemotronHMamba2Mixer_forward"](
+                self,
+                hidden_states = hidden_states,
+                cache_params = cache_params,
+                attention_mask = attention_mask,
+                **kwargs,
+            )
+
+    _CompiledNemotronHMamba2Mixer.__module__ = compiled.__name__
+
+    class _CompiledModel(_FakeMamba2Model):
+        def __init__(self):
+            super().__init__()
+            self.mixer = _CompiledNemotronHMamba2Mixer()
+
+    try:
+        model = _CompiledModel()
+        model.train()
+        assert patch_hybrid_linear_attention_varlen(model) is True
+        ns["mamba_split_conv1d_scan_combined"].calls.clear()
+        ns["mamba_chunk_scan_combined"].calls.clear()
+        model(
+            input_ids = torch.zeros(1, 6, dtype = torch.long),
+            packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+            attention_mask = torch.tensor([[1, 1, 1, 1, 1, 0]]),
+            use_cache = False,
+        )
+        assert ns["mamba_chunk_scan_combined"].calls == []
+        seq_idx = ns["mamba_split_conv1d_scan_combined"].calls[-1]
+        assert seq_idx is not None
+        assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
+    finally:
+        sys.modules.pop(compiled.__name__, None)
+
+
 def test_patch_mamba2_varlen_no_fused_dispatch_aborts(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
 

@@ -294,9 +294,11 @@ def enable_padding_free_metadata(model, trainer):
 # behind an env flag.
 #
 # Gated-delta: override per-module prefill kernels (causal_conv1d_fn /
-# chunk_gated_delta_rule). Mamba2: inject seq_idx into mixer.forward kwargs and
-# wrap mamba2_split_conv1d_scan_combined (transformers training path). Decode /
-# cached forwards stay untouched. Recompute-safe under gradient checkpointing.
+# chunk_gated_delta_rule). Mamba2: inject seq_idx into mixer.forward kwargs,
+# drop packed attention_mask so transformers takes the fused mem-eff path
+# (it otherwise calls mamba_chunk_scan_combined when the mask has pad zeros),
+# and wrap mamba2_split_conv1d_scan_combined. Decode / cached forwards stay
+# untouched. Recompute-safe under gradient checkpointing.
 # Feature-detect (never version-detect), fail closed, idempotent, one deduped
 # diagnostic when it declines to activate.
 _MAMBA2_FUSED_NAMES = (
@@ -485,6 +487,13 @@ def _mamba2_handshake_debug(modules) -> str:
     for module in modules[:1]:
         cls = type(module)
         lines.append(f"cls={cls.__name__} module={getattr(cls, '__module__', None)}")
+        modeling = inspect.getmodule(cls)
+        globs = getattr(modeling, "__dict__", {}) if modeling is not None else {}
+        lines.append(f"is_fast_path_available={globs.get('is_fast_path_available', '<missing>')}")
+        compiled_fwd = globs.get(f"{cls.__name__}_forward") if isinstance(globs, dict) else None
+        if callable(compiled_fwd):
+            code = getattr(compiled_fwd, "__code__", None)
+            lines.append(f"{cls.__name__}_forward co_names={getattr(code, 'co_names', None)}")
         for attr in _MAMBA2_MIXER_KERNEL_ATTRS:
             fn = getattr(module, attr, None)
             if not callable(fn):
@@ -494,10 +503,10 @@ def _mamba2_handshake_debug(modules) -> str:
             except Exception:
                 raw = fn
             code = getattr(raw, "__code__", None)
-            globs = getattr(raw, "__globals__", {})
+            fn_globs = getattr(raw, "__globals__", {})
             keys = sorted(
                 k
-                for k in (globs or {})
+                for k in (fn_globs or {})
                 if "mamba" in k.lower() or "split" in k.lower() or "fast_path" in k.lower()
             )
             lines.append(f"{attr} co_names={getattr(code, 'co_names', None)}")
@@ -507,6 +516,67 @@ def _mamba2_handshake_debug(modules) -> str:
             except Exception as exc:
                 lines.append(f"{attr} source={exc}")
     return "\n".join(lines)
+
+
+def _call_without_attention_mask(fn, args, kwargs):
+    """Invoke ``fn`` with ``attention_mask=None`` so packed pad zeros cannot
+    divert transformers' Mamba2 mixer off ``mamba_split_conv1d_scan_combined``.
+    """
+    kwargs = dict(kwargs)
+    try:
+        sig = inspect.signature(fn)
+        has_mask = "attention_mask" in sig.parameters
+        has_var_kw = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        )
+        if not has_mask and not has_var_kw:
+            return fn(*args, **kwargs)
+        bound = sig.bind_partial(*args, **kwargs)
+        bound.arguments["attention_mask"] = None
+        return fn(*bound.args, **bound.kwargs)
+    except (TypeError, ValueError):
+        kwargs["attention_mask"] = None
+        return fn(*args, **kwargs)
+
+
+_MAMBA2_MASK_CLEAR_NAMES = ("cuda_kernels_forward",)
+
+
+def _is_mamba2_mask_clear_name(name: str) -> bool:
+    if name in _MAMBA2_MASK_CLEAR_NAMES:
+        return True
+    if name.endswith("Mamba2Mixer_cuda_kernels_forward"):
+        return True
+    if name.endswith("Mamba2Mixer_forward") and not name.endswith("torch_forward"):
+        return True
+    return False
+
+
+def _wrap_clear_attention_mask(fn, varlen_getter):
+    if fn is None or not callable(fn) or getattr(fn, "_unsloth_varlen_mask_cleared", False):
+        return fn
+
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        if varlen_getter() is not None:
+            return _call_without_attention_mask(fn, args, kwargs)
+        return fn(*args, **kwargs)
+
+    wrapped._unsloth_varlen_mask_cleared = True
+    return wrapped
+
+
+def _install_mamba2_mask_clear(namespace, varlen_getter) -> None:
+    """Packed pad tokens keep 0s in ``attention_mask``. transformers 5.5 only
+    calls ``mamba_split_conv1d_scan_combined`` when that mask is all-ones,
+    otherwise ``mamba_chunk_scan_combined`` (no fused wrapper, handshake abort).
+    """
+    if not isinstance(namespace, dict):
+        return
+    for name, value in list(namespace.items()):
+        if not _is_mamba2_mask_clear_name(name) or not callable(value):
+            continue
+        namespace[name] = _wrap_clear_attention_mask(value, varlen_getter)
 
 
 def _rebind_dict_referrers(orig, wrapped) -> None:
@@ -738,19 +808,37 @@ def _rebind_mamba2_fused_aliases(orig, wrapped) -> None:
                 _rewrite_callable_refs(getattr(value, "__func__", None), orig, wrapped, _seen = seen)
 
 
-def _wrap_mamba2_mixer_forward(module):
+def _wrap_mamba2_mixer_forward(module, varlen_getter = None):
     if getattr(module, "_unsloth_mamba2_forward_wrapped", False):
         return
     forward_orig = module.forward
+    cuda_orig = getattr(module, "cuda_kernels_forward", None)
+
+    def _packed():
+        if varlen_getter is not None:
+            return varlen_getter()
+        return getattr(module, "_unsloth_varlen", None)
 
     @wraps(forward_orig)
     def mixer_forward(*args, **kwargs):
-        varlen = getattr(module, "_unsloth_varlen", None)
-        if varlen is not None and kwargs.get("seq_idx") is None:
-            kwargs["seq_idx"] = varlen[1]
+        varlen = _packed()
+        if varlen is not None:
+            if kwargs.get("seq_idx") is None:
+                kwargs["seq_idx"] = varlen[1]
+            return _call_without_attention_mask(forward_orig, args, kwargs)
         return forward_orig(*args, **kwargs)
 
     module.forward = mixer_forward
+    if callable(cuda_orig) and not getattr(cuda_orig, "_unsloth_varlen_mask_cleared", False):
+
+        @wraps(cuda_orig)
+        def cuda_kernels_forward(*args, **kwargs):
+            if _packed() is not None:
+                return _call_without_attention_mask(cuda_orig, args, kwargs)
+            return cuda_orig(*args, **kwargs)
+
+        cuda_kernels_forward._unsloth_varlen_mask_cleared = True
+        module.cuda_kernels_forward = cuda_kernels_forward
     module._unsloth_mamba2_forward_wrapped = True
 
 
@@ -958,7 +1046,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         if fn is not None and wrapped is not None:
             _rewrite_callable_refs(getattr(type(module), "forward", None), fn, wrapped)
             _rewrite_callable_refs(module.forward, fn, wrapped)
-        _wrap_mamba2_mixer_forward(module)
+        _wrap_mamba2_mixer_forward(module, varlen_getter = lambda: varlen_slot[0])
         module._unsloth_varlen = None
         module._unsloth_varlen_wrapped = True
     if mamba2_modules:
@@ -971,8 +1059,13 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         wrapped_real = _ensure_mamba2_fused_wrapped(_ssm_fused)
         if wrapped_real is None:
             wrapped_real = wrapped
+
+        def packed():
+            return varlen_slot[0]
+
         for ns in _iter_mamba2_install_namespaces(mamba2_modules):
             _force_install_mamba2_fused(ns, wrapped_real)
+            _install_mamba2_mask_clear(ns, packed)
 
     # Refresh the boundary stash on the outermost forward (once per step, outside
     # gradient-checkpoint recompute, so it stays valid for recomputed inner
