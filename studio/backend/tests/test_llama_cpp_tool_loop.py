@@ -327,7 +327,7 @@ def test_forced_tool_choice_must_exist_in_the_catalog(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [], payloads)
 
-    with pytest.raises(ValueError, match="Forced tool 'python' is not enabled"):
+    with pytest.raises(ValueError, match = "Forced tool 'python' is not enabled"):
         list(
             backend.generate_chat_completion_with_tools(
                 messages = [{"role": "user", "content": "run python"}],
@@ -375,9 +375,9 @@ def test_forced_tool_choice_retries_after_other_structured_calls(monkeypatch):
     assert [tool["function"]["name"] for tool in payloads[1]["tools"]] == ["web_search"]
     assert payloads[2]["tool_choice"] == "auto"
     assert calls == [("web_search", {"query": "kernel version"})]
-    assert [
-        event.get("tool_name") for event in events if event.get("type") == "tool_start"
-    ] == ["web_search"]
+    assert [event.get("tool_name") for event in events if event.get("type") == "tool_start"] == [
+        "web_search"
+    ]
 
 
 def test_none_tool_choice_never_executes_model_tool_calls(monkeypatch):
@@ -3453,9 +3453,7 @@ def test_rag_autoinject_only_resolves_matching_forced_choices(monkeypatch):
         )
         return payloads[0]
 
-    matching = first_payload(
-        {"type": "function", "function": {"name": "search_knowledge_base"}}
-    )
+    matching = first_payload({"type": "function", "function": {"name": "search_knowledge_base"}})
     required = first_payload("required")
     unrelated = first_payload({"type": "function", "function": {"name": "web_search"}})
 
