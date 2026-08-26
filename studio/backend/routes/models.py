@@ -876,8 +876,18 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
                     e,
                 )
                 continue
+            # Parsed, but the shape is still whatever was on disk. rglob("*") hands us every
+            # file under manifests/, so a pruned pull, an editor backup, or any stray JSON can
+            # be a list or a string; .get() on one raises AttributeError, which neither this
+            # loop's `except OSError` nor the caller's catches, and one such file would 500
+            # the whole picker. Mirrors hub/services/models/ollama.py, which already validates
+            # each level of the same document.
+            if not isinstance(manifest, dict):
+                logger.debug("Skipping Ollama manifest %s: top level is not an object", tag_file)
+                continue
 
-            config_digest = manifest.get("config", {}).get("digest", "")
+            config = manifest.get("config")
+            config_digest = config.get("digest", "") if isinstance(config, dict) else ""
             model_type = ""
             file_type = ""
             if config_digest and blobs_dir.is_dir():
@@ -885,24 +895,32 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
                 if config_blob.is_file():
                     try:
                         cfg = json.loads(config_blob.read_text(encoding = "utf-8-sig"))
-                        model_type = cfg.get("model_type", "")
-                        file_type = cfg.get("file_type", "")
                     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
                         logger.debug(
                             "Could not parse Ollama config blob %s: %s",
                             config_blob,
                             e,
                         )
+                        cfg = None
+                    if isinstance(cfg, dict):
+                        model_type = cfg.get("model_type", "")
+                        file_type = cfg.get("file_type", "")
 
             model_link_dir = links_root / stem_hash
 
             gguf_link_path: Optional[str] = None
             quant = f"-{file_type}" if file_type else ""
             safe_name = repo_name.replace("/", "-")
-            for layer in manifest.get("layers") or []:
+            layers = manifest.get("layers") or []
+            if not isinstance(layers, list):
+                logger.debug("Skipping Ollama manifest %s: layers is not a list", tag_file)
+                continue
+            for layer in layers:
+                if not isinstance(layer, dict):
+                    continue
                 media = layer.get("mediaType", "")
                 digest = layer.get("digest", "")
-                if not digest:
+                if not isinstance(digest, str) or not digest:
                     continue
 
                 if media == "application/vnd.ollama.image.model":
@@ -1369,11 +1387,25 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                     manifest = json.loads(m.read_text(encoding = "utf-8-sig"))
                 except (json.JSONDecodeError, OSError, ValueError):
                     continue
-                for layer in manifest.get("layers") or []:
+                # Same shape check as _scan_ollama_dir: a valid-JSON non-object under
+                # manifests/ must be skipped, not walked, or the chip probe raises
+                # AttributeError past the `except OSError` below.
+                if not isinstance(manifest, dict):
+                    continue
+                layers = manifest.get("layers") or []
+                if not isinstance(layers, list):
+                    continue
+                for layer in layers:
+                    if not isinstance(layer, dict):
+                        continue
                     if layer.get("mediaType") != "application/vnd.ollama.image.model":
                         continue
                     digest = layer.get("digest", "")
-                    if digest and (blobs / digest.replace(":", "-")).is_file():
+                    if (
+                        isinstance(digest, str)
+                        and digest
+                        and (blobs / digest.replace(":", "-")).is_file()
+                    ):
                         return True
     except OSError:
         pass
