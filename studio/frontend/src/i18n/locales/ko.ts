@@ -1359,7 +1359,7 @@ export const ko = {
       exportingAction: "내보내는 중...",
       exportConversations: "최근 항목 및 프로젝트 내보내기",
       exportConversationsDescription:
-        "최근 항목 또는 최근 항목과 프로젝트 채팅을 Raw JSONL, CSV 또는 ShareGPT JSONL로, 통합하거나 채팅별로 다운로드합니다.",
+        "최근 항목 또는 최근 항목과 프로젝트 채팅을 Training JSONL, CSV 또는 ShareGPT JSONL로, 통합하거나 채팅별로 다운로드합니다. Message JSONL은 채팅별로만 사용할 수 있습니다.",
       exportConversationsAction: "내보내기",
       exportScopeRecents: "최근 항목",
       exportScopeAll: "최근 항목 + 프로젝트",

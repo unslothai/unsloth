@@ -1347,7 +1347,7 @@ export const ja = {
       exportingAction: "エクスポート中...",
       exportConversations: "履歴とプロジェクトをエクスポート",
       exportConversationsDescription:
-        "履歴、または履歴とプロジェクトのチャットを、Raw JSONL、CSV、ShareGPT JSONL のいずれかで、一括またはチャットごとにダウンロードします。",
+        "履歴、または履歴とプロジェクトのチャットを、Training JSONL、CSV、ShareGPT JSONL のいずれかで、一括またはチャットごとにダウンロードします。Message JSONL はチャットごとのみ利用できます。",
       exportConversationsAction: "エクスポート",
       exportScopeRecents: "履歴",
       exportScopeAll: "履歴 + プロジェクト",
