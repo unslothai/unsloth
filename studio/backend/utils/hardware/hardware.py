@@ -1498,12 +1498,9 @@ def _rocm_props_are_positively_unified(props: Any) -> bool:
 def _rocm_props_are_an_unnamed_apu(props: Any) -> bool:
     """True for an APU arch the shared classifier's positive set omits.
 
-    Only ever asked of a LONE visible device, and only to settle the numerator.
-    Beside a discrete card the same chip's props.total_memory is the one number
-    this module cannot scope -- #9198 keeps a hybrid iGPU on its carve-out for
-    exactly that reason, and the Dedicated+Shared sum needs a single adapter
-    above the noise floor to be attributable in the first place, so upgrading
-    there could only take a reading away. On a lone APU neither applies.
+    The exact arch list only names parts that never shipped as discrete GPUs.
+    Callers that combine unkeyed Windows usage counters still need a lone visible
+    device before attributing a shared-memory numerator.
 
     Indexed rather than unpacked so a classifier that grows its tuple (#9198)
     keeps working.
@@ -1592,14 +1589,20 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
             # torch ordinals are 0-based relative to CUDA_VISIBLE_DEVICES.
             props = mod.get_device_properties(ordinal)
             total_bytes = props.total_memory
-            shared_memory = _rocm_props_are_positively_unified(props)
+            known_unified = (
+                _rocm_props_are_positively_unified(props)
+                or _rocm_props_are_an_unnamed_apu(props)
+            )
+            shared_memory = False
             try:
                 if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
                     # Only a WIDER total, same as _rocm_windows_per_device_vram.
                     # The classifier fails open, so a discrete card reaches here
                     # too, and a total below props.total_memory would hide models
                     # this device can hold.
-                    total_bytes = max(int(mod.mem_get_info(ordinal)[1]), int(total_bytes))
+                    driver_total_bytes = int(mod.mem_get_info(ordinal)[1])
+                    shared_memory = known_unified and driver_total_bytes >= int(total_bytes)
+                    total_bytes = max(driver_total_bytes, int(total_bytes))
             except Exception as e:
                 # Keep the carve-out rather than dropping the device: an
                 # understated total still beats no device at all.

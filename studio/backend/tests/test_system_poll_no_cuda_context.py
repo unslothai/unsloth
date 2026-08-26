@@ -1024,7 +1024,18 @@ def test_rocm_apu_keeps_the_carve_out_when_the_driver_total_fails(monkeypatch):
     mod.mem_get_info = _fail
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
-    assert [d["total_gb"] for d in hw._torch_get_device_inventory([0])] == [8.0]
+    inventory = hw._torch_get_device_inventory([0])[0]
+    assert inventory["total_gb"] == 8.0
+    assert inventory["shared_memory"] is False
+
+
+def test_rocm_apu_equal_driver_total_is_shared(monkeypatch):
+    mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    inventory = hw._torch_get_device_inventory([0])[0]
+    assert inventory["total_gb"] == 100.0
+    assert inventory["shared_memory"] is True
 
 
 def test_rocm_apu_sysfs_overlay_still_declines_against_the_gtt_total(monkeypatch):
@@ -1077,7 +1088,7 @@ def test_rocm_unclassified_apu_keeps_the_driver_total_on_an_older_runtime(monkey
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
     inventory = hw._torch_get_device_inventory([0])[0]
     assert inventory["total_gb"] == 100.0
-    assert inventory["shared_memory"] is False
+    assert inventory["shared_memory"] is True
 
 
 def test_rocm_unclassified_apu_keeps_the_driver_total_without_the_flag(monkeypatch):
@@ -1089,7 +1100,7 @@ def test_rocm_unclassified_apu_keeps_the_driver_total_without_the_flag(monkeypat
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
     inventory = hw._torch_get_device_inventory([0])[0]
     assert inventory["total_gb"] == 100.0
-    assert inventory["shared_memory"] is False
+    assert inventory["shared_memory"] is True
 
 
 def test_rocm_props_that_cannot_be_classified_keep_the_driver_total(monkeypatch):
