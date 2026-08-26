@@ -464,3 +464,29 @@ test("token coalescing was measured at zero and is not carried as code", () => {
     "the cited reproducer must exist in this repository",
   );
 });
+
+test("the idle pre-warm drives the tokenizer over real text, not an empty string", () => {
+  /*
+   * This warmed on `""` until it was measured. Loading a grammar is cheap; running it over text
+   * for the first time is not, and highlighting an empty string never does the second thing. With
+   * deferral on, the whole one-off cost therefore landed on the first fence the reader scrolled
+   * to, in a single frame: 1081 and 1072 ms at the 100K rung on WebKitGTK, against 182 and 190 ms
+   * once the warm uses real text.
+   *
+   * Asserted at the source because the invariant is structural and the alternative is a benchmark
+   * noticing it two days later, which is exactly how it was found.
+   */
+  const warm = SOURCE.slice(SOURCE.indexOf("const warmGrammars"));
+  const body = warm.slice(0, warm.indexOf("\n};"));
+  assert.ok(
+    body.includes("gate.warm(true)"),
+    "warming on an empty string leaves the first real tokenization to happen during a scroll",
+  );
+  assert.ok(
+    !body.includes("gate.warm(false)"),
+    "a false warm here is the regression this test exists to catch",
+  );
+  // Anti-vacuity: if the function is ever renamed or restructured, the two checks above would pass
+  // against an empty slice and prove nothing.
+  assert.ok(body.length > 60 && body.includes("grammarsWarmed"), "found the real warmGrammars body");
+});

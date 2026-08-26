@@ -330,14 +330,34 @@ const upgradeEverythingForPrint = (): void => {
 };
 
 /*
- * GRAMMARS, WARMED AT IDLE. NOT TOKENS.
+ * GRAMMARS, WARMED AT IDLE, ON REAL TEXT.
  *
- * `warm(false)` highlights an EMPTY string in the fence's language: the grammar loads, nothing is
- * tokenized, no span is mounted, the document stays the size deferral made it. It buys that
- * `latchNow`'s synchronous path cannot be defeated by a still-loading grammar -- on a jump into a
- * language the reader has not met, and on a print, where there is no later frame to correct in.
- * Deduplicated by language and scheduled at idle: one load per language, nothing when nothing is
- * deferred.
+ * This warms one fence per language so that `latchNow`'s synchronous path cannot be defeated by a
+ * still-loading grammar -- on a jump into a language the reader has not met, and on a print, where
+ * there is no later frame to correct in. Deduplicated by language and scheduled at idle: one warm
+ * per language, nothing when nothing is deferred.
+ *
+ * IT USED TO WARM ON AN EMPTY STRING, and that made the pre-warm miss most of what it exists to
+ * prevent. Loading a grammar is not the expensive part; running it over text for the first time is.
+ * Highlighting `""` resolves the language and mounts no span, but it never gives the tokenizer any
+ * text, so the first REAL tokenization still pays the whole one-off cost -- and with deferral on,
+ * that lands during a scroll, in one frame, on the fence the reader has just reached.
+ *
+ * Measured at the 100K rung on WebKitGTK 2.50.4, two reps per arm, production build:
+ *
+ *                     worst scroll frame   the same fence's tokenize call
+ *   warm on ""              1081, 1072 ms        1065 ms, at t=32.8 s, DURING the scroll
+ *   warm on real text        182,  190 ms        1034 ms, at t=2.9 s, BEFORE it, and 170 ms during
+ *
+ * The work is not skipped, it is moved, and the totals say so: instrumenting the innermost
+ * tokenizer, total tokenize time RISES from 1609 to 1880 ms, because a warmed fence is tokenized
+ * once here and then read from cache. What changes is where it lands. Mount is unaffected (2689 vs
+ * 2614 ms, and 1089 vs 1058 in the second rep) because this runs on an idle callback after mount,
+ * idle is unaffected (62.5 fps, 7.2% busy on both arms), and the rendered document is identical:
+ * 7,259 highlight spans, 27,046 elements, 56 code blocks on both.
+ *
+ * `MAX_HIGHLIGHT_CHARS` still bounds this: a fence past the cap is never highlighted at all, so no
+ * warm can be large in a way the latch would not already have been.
  */
 const grammarsWarmed = new Set<string>();
 let warmScheduled = false;
@@ -348,7 +368,9 @@ const warmGrammars = (): void => {
     const language = gate.language ?? "text";
     if (grammarsWarmed.has(language)) continue;
     grammarsWarmed.add(language);
-    gate.warm(false);
+    // TRUE, not false: see above. Warming on real text is what actually takes the one-off
+    // tokenizer cost off the scroll.
+    gate.warm(true);
   }
 };
 
