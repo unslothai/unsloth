@@ -550,12 +550,53 @@ def test_split_mode_none_plans_against_one_card(extra_args, env):
     assert len(got.spilled_blocks) == len(one_card.spilled_blocks)
 
 
+@pytest.mark.parametrize(
+    "extra_args,env",
+    [
+        (["--split-mode", "tensor"], None),
+        (["-sm", "tensor"], None),
+        (["-sm=tensor"], None),
+        (None, {"LLAMA_ARG_SPLIT_MODE": "tensor"}),
+    ],
+)
+def test_tensor_parallel_split_mode_tensor_declines(extra_args, env):
+    """`tensor` is a real accepted -sm value (common/arg.cpp:2762-2776), and it
+    goes further than `row`: llama.cpp replaces the device list with a SINGLE
+    meta device built from every card (llama.cpp:157-215), so a per-device budget
+    describes nothing, and llama.cpp's own fitter refuses the mode outright
+    (common/fit.cpp:182-183). Declining only "row" applied the row model to a
+    placement it does not describe."""
+    two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
+    assert _plan(_Stub(), gpus = two_cards, extra_args = extra_args, env = env) is None
+    assert _plan(_Stub(), gpus = two_cards) is not None, "not vacuous"
+
+
 def test_split_mode_none_with_an_explicit_main_gpu_still_declines():
     """--main-gpu is a device flag and keeps declining, so -sm none is supported
     only at llama.cpp's default main GPU of 0. Supporting a named one means
-    letting -mg through the placement guard, which is a separate decision."""
+    letting -mg through the placement guard, which is a separate decision.
+
+    The env twin has to decline for the same reason: it is not an argv flag, so
+    _DEVICE_FLAGS never sees it, yet llama.cpp keeps devices[main_gpu] under
+    -sm none all the same (llama.cpp:288-299, LLAMA_ARG_MAIN_GPU at
+    common/arg.cpp:2812-2821). Budgeting the first retained card then approves a
+    footprint for a GPU the child never loads onto."""
     two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
     assert _plan(_Stub(), gpus = two_cards, extra_args = ["-sm", "none", "-mg", "1"]) is None
+    assert (
+        _plan(
+            _Stub(),
+            gpus = two_cards,
+            extra_args = ["-sm", "none"],
+            env = {"LLAMA_ARG_MAIN_GPU": "1"},
+        )
+        is None
+    )
+    # Not vacuous, and not a blanket refusal of the env var's absence.
+    assert _plan(_Stub(), gpus = two_cards, extra_args = ["-sm", "none"]) is not None
+    assert (
+        _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_MAIN_GPU": "0"}) is None
+    ), "0 is still a pin the guard cannot verify against its own device order"
 
 
 @pytest.mark.parametrize(
@@ -575,12 +616,50 @@ def test_tensor_split_becomes_the_row_weights(extra_args, env):
     assert _plan(_Stub(), gpus = two_cards, extra_args = extra_args, env = env) is not None
 
 
+@pytest.mark.parametrize(
+    "extra_args,env",
+    [
+        (["--tensor-split", "3/1"], None),
+        (["-ts", "3/1"], None),
+        (None, {"LLAMA_ARG_TENSOR_SPLIT": "3/1"}),
+    ],
+)
+def test_a_slash_delimited_tensor_split_is_the_same_override(extra_args, env):
+    """llama.cpp splits -ts on the regex ``[,/]+`` (common/arg.cpp:2791-2804), so
+    ``3/1`` IS ``3,1`` to the child. Failing to parse it returned None, which the
+    caller cannot tell apart from "no override" -- it planned on free-VRAM
+    proportions (1:1 on equal cards) while the child ran 3:1, which is a
+    per-device shortfall pinned by --fit off."""
+    from core.inference.llama_cpp import _extra_args_tensor_split
+
+    assert _extra_args_tensor_split(extra_args, env or {}) == [3.0, 1.0]
+
+    # And it reaches the planner as the row weights, not as silence: the plan it
+    # produces is the 3:1 one, not the free-VRAM one.
+    two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
+    skewed = _plan(_Stub(), gpus = two_cards, extra_args = extra_args, env = env)
+    comma = _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "3,1"])
+    assert skewed is not None and comma is not None
+    assert skewed.spilled_blocks == comma.spilled_blocks
+
+
 def test_a_malformed_or_short_tensor_split_declines():
     """Unparseable or fewer shares than cards leaves the row model undefined, and
-    a guess there is a per-device shortfall waiting to happen."""
+    a guess there is a per-device shortfall waiting to happen.
+
+    Unparseable must DECLINE, not fall through: the parser returns None for both
+    "no -ts" and "a -ts I could not read", and only the caller knows which. The
+    child still gets the flag either way. ``;`` is in here because it is not one
+    of llama.cpp's delimiters -- std::stof stops at it, so ``3;1`` is [3, 0] to
+    the child (one card takes everything), never [3, 1]."""
     two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
     assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "3"]) is None
-    assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "abc"]) is not None
+    assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "abc"]) is None
+    assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "3;1"]) is None
+    assert _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_TENSOR_SPLIT": "abc"}) is None
+    # Not vacuous: the same load plans with no -ts and with a readable one.
+    assert _plan(_Stub(), gpus = two_cards) is not None
+    assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "3,1"]) is not None
 
 
 def test_the_planner_gets_the_budget_the_fit_tested_not_raw_free():
@@ -854,11 +933,14 @@ def test_the_seam_computes_a_per_layer_kv_vector():
     b._sliding_window = 1024
     b._sliding_window_pattern = [False, True, True, True, True, True]
     b._n_kv_heads_by_layer = None
+    b._shared_kv_layers = None
 
     weights = b._kv_layer_weights(131072)
     assert len(weights) == 6
     assert weights[0] == max(weights), "the full-attention layer is the big one"
-    assert weights[0] // weights[1] == 128, "context 131072 over a 1024 window"
+    # The compact SWA allowance is the window plus one micro-batch, padded to 256
+    # cells, exactly as _estimate_kv_cache_bytes sizes the total it is scaled to.
+    assert weights[0] // weights[1] == 131072 // (1024 + 512)
 
     # No pattern, no window, or no dimensions: say nothing rather than guess.
     b._sliding_window_pattern = None
@@ -866,3 +948,75 @@ def test_the_seam_computes_a_per_layer_kv_vector():
     b._sliding_window_pattern = [False, True, True, True, True, True]
     b._sliding_window = 0
     assert b._kv_layer_weights(131072) == []
+
+
+def _swa_backend(n_layers = 6, shared = None):
+    b = LlamaCppBackend.__new__(LlamaCppBackend)
+    b._n_layers = n_layers
+    b._n_kv_heads = 8
+    b._n_heads = 8
+    b._kv_key_length = 128
+    b._kv_value_length = 128
+    b._kv_key_length_swa = None
+    b._kv_value_length_swa = None
+    b._sliding_window = 1024
+    b._sliding_window_pattern = [i % 2 == 1 for i in range(n_layers)]
+    b._n_kv_heads_by_layer = None
+    b._shared_kv_layers = shared
+    return b
+
+
+def test_shared_kv_layers_carry_no_weight():
+    """Gemma 3n / Gemma 4 reuse an earlier layer's cache for the trailing
+    ``attention.shared_kv_layers`` blocks: gemma4.cpp:10 sets
+    n_layer_kv_from_start = n_layer_all - shared_kv_layers and
+    llama_hparams::has_kv is false past it (llama-hparams.cpp:275-279), so those
+    layers allocate nothing at all. _estimate_kv_cache_bytes already stops there;
+    giving them weight spreads the same byte total over layers that hold no cache
+    and under-books whichever card draws the real ones."""
+    plain = _swa_backend(shared = None)
+    gemma = _swa_backend(shared = 2)
+
+    w = gemma._kv_layer_weights(131072)
+    assert len(w) == 6, "length must still match layout.n_layers or the vector is dropped"
+    assert w[4] == 0 and w[5] == 0, "the shared-KV tail allocates no cache"
+    assert w[:4] == plain._kv_layer_weights(131072)[:4], "the cached layers are unchanged"
+
+    # A GGUF claiming every layer is shared must not zero the vector out.
+    assert any(_swa_backend(shared = 99)._kv_layer_weights(131072))
+
+
+def test_swa_weights_follow_the_effective_cache_geometry():
+    """The vector places a total priced with the LAUNCH settings, so it has to
+    describe the same geometry. --swa-full makes an SWA layer hold the full
+    context (_estimate_kv_cache_bytes path 3 sets swa_cells_total = total_cells),
+    and the compact allowance is per-slot plus a micro-batch, not min(window,
+    n_ctx). Pricing a window-sized ratio against a full-context total moves cache
+    bytes onto the wrong card under the --fit off the plan pins."""
+    b = _swa_backend()
+
+    full = b._kv_layer_weights(131072, swa_full = True)
+    assert len(set(full)) == 1, "--swa-full: every layer holds the full context"
+
+    # Slots multiply the compact window allowance in unified mode.
+    one = b._kv_layer_weights(131072, n_parallel = 1)
+    four = b._kv_layer_weights(131072, n_parallel = 4)
+    assert four[1] > one[1], "4 slots hold 4 windows' worth of SWA cells"
+    assert four[0] == one[0], "the full-attention layer is unaffected in unified mode"
+
+    # A bigger micro-batch is real headroom on the SWA cache too.
+    assert b._kv_layer_weights(131072, n_ubatch = 4096)[1] > one[1]
+
+
+def test_the_seam_passes_the_launch_geometry_to_the_kv_vector():
+    """Reachability: the knobs must actually travel from the launch path, or the
+    two fixes above only hold in a unit test."""
+    import inspect
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    call = src[src.index('"kv_layer_weights"') :][:400]
+    compact = "".join(call.split())
+    assert "swa_full=swa_full" in compact
+    assert "n_parallel=n_parallel" in compact
+    assert "kv_unified=planned_kv_unified" in compact
+    assert "n_ubatch=_effective_ubatch" in compact
