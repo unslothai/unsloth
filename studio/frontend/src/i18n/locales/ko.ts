@@ -1215,6 +1215,11 @@ export const ko = {
       docs: "문서",
       agentDocs: "{agent} 설정 문서 열기",
       copyGeneratedCommand: "생성된 명령 복사",
+      automaticSettingsNote:
+        "옵션을 지정하지 않으면 Unsloth가 모델의 권장 설정을 자동으로 적용합니다.",
+      configurationNote: "모든 구성을 조정할 수도 있습니다. 아래 내용을 확인하거나",
+      configurationDocs: "문서",
+      configurationFlagsSuffix: "에서 옵션을 확인하세요.",
       modelNote:
         "Codex에는 llama-server가 제공하는 GGUF 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 쓰려면 --model을 빼세요.",
       subagent: {
@@ -1328,6 +1333,20 @@ export const ko = {
       rememberParamsPerModel: "모델별로 설정 기억",
       rememberParamsPerModelDescription:
         "모델을 전환하면 해당 모델에서 마지막으로 사용한 온도, 프롬프트 등의 설정이 복원됩니다. 끄면 모든 모델이 하나의 설정을 공유합니다.",
+      autoCompact: "긴 채팅 자동 압축",
+      autoCompactDescription:
+        "로컬 GGUF 채팅이 설정한 컨텍스트 길이에 도달하면 오류를 반환하는 대신 오래된 턴을 삭제합니다. 사용 가능한 VRAM을 기준으로 하지 않습니다.",
+      compactionStyle: "컨텍스트가 가득 찼을 때",
+      compactionStyleDescription:
+        "서버 기본값을 사용하면 UNSLOTH_CONTEXT_POLICY가 유지됩니다. 대화 재설정은 최신 턴과 지속 지침을 남깁니다. 슬라이딩 윈도우는 가장 오래된 턴을 삭제하고 최근 기록을 더 많이 유지할 수 있습니다.",
+      compactionStyleInherit: "서버 기본값 사용",
+      compactionStyleCheckpoint: "대화 재설정",
+      compactionStyleRollingDefault: "오래된 턴 삭제(약 25% 추가 여유)",
+      compactionStyleRolling10: "오래된 턴 삭제(약 10% 추가 여유)",
+      compactionStyleRolling5: "오래된 턴 삭제(약 5% 추가 여유)",
+      compactionStyleRollingNone: "오래된 턴 삭제(추가 잘라내기 없음)",
+      autoCompactKeywords:
+        "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:

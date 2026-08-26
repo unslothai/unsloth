@@ -1213,6 +1213,12 @@ export const it = {
       docs: "Documentazione",
       agentDocs: "Apri la documentazione di configurazione di {agent}",
       copyGeneratedCommand: "Copia il comando generato",
+      automaticSettingsNote:
+        "Se non hai impostato alcuna opzione, Unsloth applica automaticamente le impostazioni consigliate dal modello.",
+      configurationNote:
+        "Puoi anche modificare qualsiasi configurazione. Consulta i dettagli qui sotto o la",
+      configurationDocs: "documentazione",
+      configurationFlagsSuffix: "per le opzioni.",
       modelNote:
         "Codex richiede un modello GGUF servito da llama-server. Gli altri agenti possono usare anche modelli basati su transformer; rimuovi --model per usare il modello già caricato in Unsloth.",
       subagent: {
@@ -1331,6 +1337,24 @@ export const it = {
       rememberParamsPerModel: "Ricorda le impostazioni per modello",
       rememberParamsPerModelDescription:
         "Cambiando modello vengono ripristinati temperatura, prompt e le altre impostazioni usate l'ultima volta con quel modello. Disattivato, resta un unico set di impostazioni per tutti i modelli.",
+      autoCompact: "Compatta automaticamente le chat lunghe",
+      autoCompactDescription:
+        "Quando una chat GGUF locale raggiunge la lunghezza di contesto impostata, elimina i turni precedenti invece di restituire un errore. Questa impostazione non dipende dalla VRAM libera.",
+      compactionStyle: "Quando il contesto è pieno",
+      compactionStyleDescription:
+        "Il valore predefinito del server mantiene UNSLOTH_CONTEXT_POLICY. Reimpostare la conversazione conserva l'ultimo turno e le istruzioni permanenti. Una finestra scorrevole elimina i turni più vecchi e può conservare più cronologia recente.",
+      compactionStyleInherit: "Usa il valore del server",
+      compactionStyleCheckpoint: "Reimposta la conversazione",
+      compactionStyleRollingDefault:
+        "Elimina i turni precedenti (~25% di spazio aggiuntivo)",
+      compactionStyleRolling10:
+        "Elimina i turni precedenti (~10% di spazio aggiuntivo)",
+      compactionStyleRolling5:
+        "Elimina i turni precedenti (~5% di spazio aggiuntivo)",
+      compactionStyleRollingNone:
+        "Elimina i turni precedenti (nessun taglio aggiuntivo)",
+      autoCompactKeywords:
+        "compattazione automatica contesto finestra troncare scorrevole checkpoint margine compaction rolling headroom",
       thinking: {
         collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
         collapseByDefaultDescription:

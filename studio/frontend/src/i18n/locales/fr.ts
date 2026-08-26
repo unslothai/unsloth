@@ -1245,6 +1245,12 @@ export const fr = {
       docs: "Documentation",
       agentDocs: "Ouvrir la documentation de configuration de {agent}",
       copyGeneratedCommand: "Copier la commande générée",
+      automaticSettingsNote:
+        "Unsloth applique automatiquement les réglages recommandés par le modèle si vous n’avez défini aucune option.",
+      configurationNote:
+        "Vous pouvez aussi modifier n’importe quelle configuration. Consultez les détails ci-dessous ou la",
+      configurationDocs: "documentation",
+      configurationFlagsSuffix: "pour les options.",
       modelNote:
         "Codex nécessite un modèle GGUF servi par llama-server. Les autres agents peuvent aussi utiliser des modèles basés sur transformers ; retirez --model pour utiliser le modèle déjà chargé dans Unsloth.",
       subagent: {
@@ -1363,6 +1369,24 @@ export const fr = {
       rememberParamsPerModel: "Mémoriser les réglages par modèle",
       rememberParamsPerModelDescription:
         "Changer de modèle restaure la température, le prompt et les autres réglages utilisés en dernier avec ce modèle. Désactivé, un seul jeu de réglages s'applique à tous les modèles.",
+      autoCompact: "Compacter automatiquement les longues discussions",
+      autoCompactDescription:
+        "Lorsqu’une discussion GGUF locale atteint la longueur de contexte définie, supprimez les anciens tours au lieu de renvoyer une erreur. Ce réglage ne dépend pas de la VRAM libre.",
+      compactionStyle: "Lorsque le contexte est plein",
+      compactionStyleDescription:
+        "La valeur par défaut du serveur conserve UNSLOTH_CONTEXT_POLICY. Réinitialiser la discussion garde le dernier tour et les instructions permanentes. Une fenêtre glissante supprime les tours les plus anciens et peut conserver davantage d’historique récent.",
+      compactionStyleInherit: "Utiliser la valeur du serveur",
+      compactionStyleCheckpoint: "Réinitialiser la discussion",
+      compactionStyleRollingDefault:
+        "Supprimer les anciens tours (~25 % d’espace supplémentaire)",
+      compactionStyleRolling10:
+        "Supprimer les anciens tours (~10 % d’espace supplémentaire)",
+      compactionStyleRolling5:
+        "Supprimer les anciens tours (~5 % d’espace supplémentaire)",
+      compactionStyleRollingNone:
+        "Supprimer les anciens tours (sans réduction supplémentaire)",
+      autoCompactKeywords:
+        "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "Replier la réflexion par défaut",
         collapseByDefaultDescription:

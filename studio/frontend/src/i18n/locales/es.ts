@@ -1241,6 +1241,12 @@ export const es = {
       docs: "Documentación",
       agentDocs: "Abrir la documentación de configuración de {agent}",
       copyGeneratedCommand: "Copiar el comando generado",
+      automaticSettingsNote:
+        "Unsloth aplica automáticamente los ajustes recomendados del modelo si no has definido ninguna opción.",
+      configurationNote:
+        "También puedes ajustar cualquier configuración. Consulta más abajo o la",
+      configurationDocs: "documentación",
+      configurationFlagsSuffix: "para ver las opciones.",
       modelNote:
         "Codex requiere un modelo GGUF servido por llama-server. Otros agentes también pueden usar modelos basados en transformers; quita --model para usar el modelo ya cargado en Unsloth.",
       subagent: {
@@ -1357,6 +1363,24 @@ export const es = {
       rememberParamsPerModel: "Recordar los ajustes por modelo",
       rememberParamsPerModelDescription:
         "Al cambiar de modelo se restauran la temperatura, el prompt y los demás ajustes que usaste por última vez con ese modelo. Desactivado, se mantiene un único conjunto de ajustes para todos los modelos.",
+      autoCompact: "Compactar automáticamente chats largos",
+      autoCompactDescription:
+        "Cuando un chat GGUF local alcance la longitud de contexto configurada, descarta los turnos antiguos en vez de devolver un error. Esto no depende de la VRAM libre.",
+      compactionStyle: "Cuando se llena el contexto",
+      compactionStyleDescription:
+        "Usar el valor del servidor conserva UNSLOTH_CONTEXT_POLICY. Restablecer la conversación mantiene el último turno y las instrucciones permanentes. Una ventana deslizante descarta los turnos más antiguos y puede conservar más historial reciente.",
+      compactionStyleInherit: "Usar valor del servidor",
+      compactionStyleCheckpoint: "Restablecer conversación",
+      compactionStyleRollingDefault:
+        "Descartar turnos antiguos (~25% de espacio extra)",
+      compactionStyleRolling10:
+        "Descartar turnos antiguos (~10% de espacio extra)",
+      compactionStyleRolling5:
+        "Descartar turnos antiguos (~5% de espacio extra)",
+      compactionStyleRollingNone:
+        "Descartar turnos antiguos (sin recorte adicional)",
+      autoCompactKeywords:
+        "compactación compactar automáticamente contexto ventana truncar deslizante checkpoint margen compaction rolling headroom",
       thinking: {
         collapseByDefault: "Contraer el razonamiento de forma predeterminada",
         collapseByDefaultDescription:

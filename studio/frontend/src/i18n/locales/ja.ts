@@ -1201,6 +1201,11 @@ export const ja = {
       docs: "ドキュメント",
       agentDocs: "{agent} のセットアップドキュメントを開く",
       copyGeneratedCommand: "生成されたコマンドをコピー",
+      automaticSettingsNote:
+        "オプションを設定していない場合、Unsloth はモデルの推奨設定を自動的に適用します。",
+      configurationNote: "任意の設定を調整することもできます。下記または",
+      configurationDocs: "ドキュメント",
+      configurationFlagsSuffix: "でオプションを確認してください。",
       modelNote:
         "Codex には llama-server が提供する GGUF モデルが必要です。他のエージェントは transformers ベースのモデルも利用できます。Unsloth に読み込み済みのモデルを使うには --model を外してください。",
       subagent: {
@@ -1318,6 +1323,20 @@ export const ja = {
       rememberParamsPerModel: "モデルごとに設定を記憶",
       rememberParamsPerModelDescription:
         "モデルを切り替えると、そのモデルで最後に使った温度やプロンプトなどの設定が復元されます。オフの場合は、すべてのモデルで同じ設定を使います。",
+      autoCompact: "長いチャットを自動圧縮",
+      autoCompactDescription:
+        "ローカル GGUF チャットが設定したコンテキスト長に達したら、エラーを返す代わりに古いターンを削除します。空き VRAM には基づきません。",
+      compactionStyle: "コンテキストが満杯になったとき",
+      compactionStyleDescription:
+        "サーバー既定値を使うと UNSLOTH_CONTEXT_POLICY が維持されます。会話をリセットすると最新ターンと継続指示が残ります。スライディングウィンドウは古いターンを削除し、より多くの最近の履歴を残せます。",
+      compactionStyleInherit: "サーバー既定値を使用",
+      compactionStyleCheckpoint: "会話をリセット",
+      compactionStyleRollingDefault: "古いターンを削除（約 25% の追加余裕）",
+      compactionStyleRolling10: "古いターンを削除（約 10% の追加余裕）",
+      compactionStyleRolling5: "古いターンを削除（約 5% の追加余裕）",
+      compactionStyleRollingNone: "古いターンを削除（追加の切り詰めなし）",
+      autoCompactKeywords:
+        "圧縮 自動圧縮 コンテキスト ウィンドウ 切り詰め スライディング チェックポイント 余裕 compaction rolling headroom",
       thinking: {
         collapseByDefault: "思考をデフォルトで折りたたむ",
         collapseByDefaultDescription:
