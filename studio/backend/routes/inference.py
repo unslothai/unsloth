@@ -6081,6 +6081,7 @@ def _target_accepts_request_input(
     needs_audio: bool,
     gguf_variant: Optional[str] = None,
     need_image: bool = True,
+    needs_video: bool = False,
 ) -> bool:
     """Whether a switch target can accept this request's image or audio input.
 
@@ -6091,6 +6092,9 @@ def _target_accepts_request_input(
     """
     if is_gguf:
         return _target_is_vision(load_path, gguf_variant, need_image)
+    # input_video is llama.cpp's own part type, so a clip is refused right after the load.
+    if needs_video:
+        return False
     if needs_audio and not _target_accepts_audio_input(load_path):
         return False
     # need_image, not needs_vision: an audio request sets needs_vision so a GGUF is
@@ -6112,12 +6116,12 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
     the array handed back under ``decoded`` for the audio branch to reuse.
     """
     if target_is_gguf:
-        # the encoding alone, normalized as _prepare_audio_for_llama does so data: still passes.
+        # _prepare_audio_for_llama's own lenient decode: strict would refuse wrapped base64.
         raw = audio_preflight["b64"]
         if isinstance(raw, str) and raw.startswith("data:"):
             raw = raw.split(",", 1)[1] if "," in raw else ""
         try:
-            base64.b64decode(raw, validate = True)
+            base64.b64decode(raw)
         except Exception:
             raise HTTPException(
                 status_code = 400,
@@ -6847,6 +6851,7 @@ async def _maybe_auto_switch_model(
     modality_label: str = "image or audio",
     claim_resident: bool = True,
     require_audio_input: bool = False,
+    require_video: bool = False,
     gguf_only: bool = False,
     audio_preflight: Optional[dict] = None,
 ) -> None:
@@ -6867,7 +6872,8 @@ async def _maybe_auto_switch_model(
     can't strand a preview-owned model as Studio-owned. ``require_image`` makes that
     rejection modality-aware for a GGUF, whose one projector carries both, and
     ``require_audio_input`` covers a non-GGUF checkpoint, which declares the two
-    separately. ``modality_label`` names the inputs actually attached, so the
+    separately, and ``require_video`` rules a non-GGUF target out entirely, since
+    only llama.cpp takes a clip. ``modality_label`` names the inputs attached, so the
     rejection does not report a modality the request never carried. ``gguf_only``
     marks an endpoint that reads llama.cpp alone, where loading a non-GGUF model
     would unload the resident one and leave the handler with nothing to serve.
@@ -7144,6 +7150,7 @@ async def _maybe_auto_switch_model(
                 require_audio_input,
                 variant,
                 require_image,
+                require_video,
             )
         ):
             raise HTTPException(
@@ -15959,6 +15966,7 @@ async def openai_chat_completions(
     _needs_image = False
     _modality_label = "image or audio"
     _needs_audio_input = False
+    _needs_video = False
     _predecoded_audio = None
     if _should_validate_before_switch():
         _pre_parsed = _extract_content_parts(payload.messages)
@@ -16064,7 +16072,8 @@ async def openai_chat_completions(
         # Video rides that projector too. Its own /props gate can only run after
         # the load, so this at least keeps a text-only target from evicting a
         # working model to serve a clip it could never take.
-        _needs_vision = _needs_image or bool(payload.audio_base64) or bool(payload.video_base64)
+        _needs_video = bool(payload.video_base64)
+        _needs_vision = _needs_image or bool(payload.audio_base64) or _needs_video
         # Name what is actually attached, so the refusal does not report a
         # modality the request never carried.
         _modality_label = (
@@ -16108,6 +16117,7 @@ async def openai_chat_completions(
         modality_label = _modality_label,
         claim_resident = False,
         require_audio_input = _needs_audio_input,
+        require_video = _needs_video,
         audio_preflight = _audio_preflight,
     )
     if _audio_preflight is not None:

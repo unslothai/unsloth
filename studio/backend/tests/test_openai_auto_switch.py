@@ -3301,6 +3301,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         modality_label = "image or audio",
         claim_resident = True,
         require_audio_input = False,
+        require_video = False,
         gguf_only = False,
         audio_preflight = None,
     ):
@@ -8223,6 +8224,7 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         modality_label = "image or audio",
         claim_resident = True,
         require_audio_input = False,
+        require_video = False,
         audio_preflight = None,
     ):
         captured.update(
@@ -8230,6 +8232,7 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
             require_image = require_image,
             modality_label = modality_label,
             claim_resident = claim_resident,
+            require_video = require_video,
         )
         raise _Reached()
 
@@ -8244,7 +8247,61 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         "require_image": False,
         "modality_label": "video",
         "claim_resident": False,
+        "require_video": True,
     }
+
+
+def test_a_video_request_never_switches_to_a_non_gguf_target():
+    """A clip is served through llama.cpp's input_video part alone, so the chat handler
+    rejects one on any other backend. Without this the swap unloads the resident GGUF
+    and the request 400s straight after, which is what the guard exists to prevent."""
+    # need_image False is the combination that used to fall through to the accepting branch.
+    assert (
+        inference_route._target_accepts_request_input(
+            "/srv/models/VL-MLX",
+            False,
+            True,
+            False,
+            None,
+            False,
+            True,
+        )
+        is False
+    )
+    # an image alongside the clip must not talk it back into the swap either.
+    assert (
+        inference_route._target_accepts_request_input(
+            "/srv/models/VL-MLX",
+            False,
+            True,
+            False,
+            None,
+            True,
+            True,
+        )
+        is False
+    )
+    # the GGUF arm still decides on the companion mmproj, so needs_video does not short it.
+    seen = {}
+
+    def _probe(
+        path,
+        variant = None,
+        need_image = True,
+    ):
+        seen.update(path = path, need_image = need_image)
+        return True
+
+    import unittest.mock as _mock
+
+    with _mock.patch.object(inference_route, "_target_is_vision", _probe):
+        assert (
+            inference_route._target_accepts_request_input(
+                "/srv/models/A.gguf", True, True, False, None, False, True
+            )
+            is True
+        )
+    assert seen == {"path": "/srv/models/A.gguf", "need_image": False}
 
 
 # Preview ownership regressions.
@@ -8851,6 +8908,43 @@ def test_the_audio_preflight_only_binds_a_non_gguf_target(monkeypatch):
     assert exc.value.status_code == 400
     assert "continue_final_message" in exc.value.detail
     assert "audio input" in exc.value.detail
+
+
+def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
+    """The preflight must refuse exactly what _prepare_audio_for_llama refuses.
+
+    That helper decodes with the lenient default, which drops whitespace, so a
+    validate = True preflight 400'd MIME-wrapped and newline-padded uploads the same
+    server served before the preflight existed."""
+    import base64 as _b64
+
+    from fastapi import HTTPException
+
+    payload = b"RIFF" + b"\x00" * 64
+    plain = _b64.b64encode(payload).decode()
+    for name, encoded in (
+        ("plain", plain),
+        ("trailing newline", plain + "\n"),
+        ("surrounding spaces", f" {plain} "),
+        ("mime wrapped", _b64.encodebytes(payload).decode()),
+        ("data uri", f"data:audio/wav;base64,{plain}"),
+    ):
+        try:
+            asyncio.run(
+                inference_route._preflight_audio_for_switch(
+                    {"b64": encoded, "continue_final": False}, True
+                )
+            )
+        except HTTPException:
+            pytest.fail(f"the preflight refused {name} base64 that llama.cpp decodes")
+    # undecodable input is still a 400, so dropping validate = True did not open the gate.
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._preflight_audio_for_switch(
+                {"b64": "abc", "continue_final": False}, True
+            )
+        )
+    assert exc.value.status_code == 400
 
 
 def test_a_non_gguf_audio_target_is_refused_without_a_decoder(monkeypatch):
