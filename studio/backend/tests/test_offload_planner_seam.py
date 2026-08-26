@@ -124,6 +124,8 @@ def _inputs(
     n_parallel = 1,
     compute_flat = 0,
     ctx_compute = 0,
+    env_mmproj = 0,
+    env_mmproj_unsized = False,
 ):
     return {
         "model_size": model_size,
@@ -133,6 +135,8 @@ def _inputs(
         "compute_buffer_flat": compute_flat,
         "ctx_compute_per_device": ctx_compute,
         "extra_gpu_bytes": extra_gpu,
+        "env_mmproj_bytes": env_mmproj,
+        "env_mmproj_unsized": env_mmproj_unsized,
         "gpu_indices": indices,
         "soft_overhead": 0,
         "model_path": "/models/stub.gguf",
@@ -922,6 +926,102 @@ def test_an_unreadable_adapter_abstains():
     short by an unknown amount. Same answer _fits_without_paging gives."""
     assert _plan(_Stub(), extra_args = ["--lora", "/no/such/adapter.gguf"]) is None
     assert _plan(_Stub()) is not None, "not vacuous"
+
+
+def test_an_inherited_projector_is_charged_rather_than_ignored():
+    """A projector that arrives only through LLAMA_ARG_MMPROJ is still GPU
+    resident: arg.cpp applies the environment before argv (common/arg.cpp:780-802,
+    the handler loop that runs ahead of parse_cli_args), and `extra_gpu_bytes`
+    carries only the projector Studio itself resolved. Unbudgeted bytes here are a
+    plan pinned with --fit off over a footprint that does not fit."""
+    stub = _Stub()
+    free = 17 * 1024
+    bare = _plan(stub, free_mib = free)
+    inherited = _plan(stub, free_mib = free, env_mmproj = 3 * GIB)
+    assert bare is not None and inherited is not None
+    assert not bare.spills_anything, "the base load fits on its own"
+    assert inherited.spills_anything, "3 GiB of inherited projector comes out of the same VRAM"
+
+
+def test_an_unsized_inherited_projector_abstains():
+    """LLAMA_ARG_MMPROJ_URL names a download that has not happened yet (and it
+    outranks even the --mmproj this launch emits: the fetch rewrites
+    params.mmproj.path, common/arg.cpp:500-503, :632-634), and an unreadable path
+    cannot be stat'd. Unknown bytes, so abstain rather than plan short."""
+    assert _plan(_Stub(), free_mib = 14 * 1024, env_mmproj_unsized = True) is None
+    assert _plan(_Stub(), free_mib = 14 * 1024) is not None, "not vacuous"
+
+
+def test_the_seam_hands_the_planner_the_inherited_projector():
+    """The planner can only charge what the launch path snapshots for it, and the
+    load-mode fit already computes exactly these two values."""
+    import inspect
+
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    assert '_spill_inputs["env_mmproj_unsized"]=_fit_env_mmproj_unsized' in compact
+    assert '_spill_inputs["env_mmproj_bytes"]=' in compact
+
+
+class _FlatAttentionStub(_Stub):
+    """A layout _per_device_shortfall can actually check: every layer holds a
+    cache, no sliding window, no trailing blocks. The default stub abstains on the
+    per-device test, which hides what a multi-GPU plan does with a flat term."""
+
+    def _tensor_spill_layout(self, model_path):
+        n = 8
+        return ModelLayout(
+            arch = "qwen35",
+            n_layers = n,
+            n_attention_layers = n,
+            blocks = tuple(
+                BlockLayout(index = i, spillable_bytes = 2 * GIB, resident_bytes = GIB // 2)
+                for i in range(n)
+            ),
+            lm_head_bytes = 1 * GIB,
+            token_embd_bytes = 512 * MIB,
+            kv_bytes_per_token_f16 = 16384,
+            n_ctx_train = 262144,
+            complete = True,
+        )
+
+
+def test_a_multi_gpu_adapter_declines_rather_than_booking_it_all_on_device_0(tmp_path):
+    """Adapter bytes are not a device-0 lump on a layer split.
+
+    A LoRA tensor is allocated on its BASE tensor's buffer
+    (`ggml_backend_buffer_get_type(model_tensor->buffer)`, llama-adapter.cpp:335)
+    and a control-vector row on `model.select_buft(il)` (:67), so they follow the
+    contiguous layer ranges llama.cpp hands each card. `extra_resident_bytes`, on
+    the other hand, is charged entirely to device 0 by `_per_device_shortfall`, so
+    a tight second card passes the per-device check on bytes it will really be
+    asked to hold -- and the plan then emits --fit off, so common/fit.cpp never
+    runs to catch the overflow. The base GGUF's layout carries no adapter tensor
+    table, so the split cannot be derived; abstain instead.
+    """
+    adapter = tmp_path / "adapter.gguf"
+    adapter.write_bytes(b"\0" * (3 * GIB))
+
+    stub = _FlatAttentionStub()
+    # 10 + 3 GiB free with a 3 GiB adapter: the deficit needs EVERY block spilled,
+    # which is the only multi-GPU shape that reaches the per-device check at all
+    # (a partial spill already abstains above it). Before this abstain the same
+    # inputs produced a real plan -- all 8 blocks spilled, -ngl -1 --fit off
+    # emitted -- with the whole 3 GiB booked on device 0 and nothing on device 1,
+    # which is where the adapter rows for that card's layers actually go.
+    two_cards = dict(
+        model_size = 21 * GIB, kv = 2 * GIB, gpus = [(0, 10 * 1024), (1, 3 * 1024)]
+    )
+    for flag in ("--lora", "--control-vector"):
+        assert _plan(stub, extra_args = [flag, str(adapter)], **two_cards) is None
+
+    # Only the adapter is refused: the same two-card load still reaches the
+    # planner, so the abstain above is not the whole configuration being dropped.
+    assert _plan(stub, **two_cards) is not None
+
+    # Single card is unchanged: there the flat charge IS the right one, and the
+    # adapter is still priced rather than ignored.
+    one_card = _plan(_Stub(), free_mib = 17 * 1024, extra_args = ["--lora", str(adapter)])
+    assert one_card is not None and one_card.spills_anything
 
 
 def test_apple_silicon_declines_the_plan(monkeypatch):

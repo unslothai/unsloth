@@ -18971,6 +18971,22 @@ class LlamaCppBackend:
                         _fit_env_mmproj_bytes,
                         on_host = _fit_env_mmproj_on_host,
                     )
+                    # The same projector, handed to the spill planner. Its
+                    # extra_gpu_bytes carries the RESOLVED one only, so without this
+                    # an inherited LLAMA_ARG_MMPROJ is VRAM no term in the plan has
+                    # paid for -- and a plan is pinned with --fit off, so llama.cpp's
+                    # fitter never gets to absorb it. Weights plus the runtime
+                    # allowance, exactly what _fit_model_size and _fit_soft_overhead
+                    # just charged, and the same abstain when it cannot be sized.
+                    _spill_inputs["env_mmproj_unsized"] = _fit_env_mmproj_unsized
+                    _spill_inputs["env_mmproj_bytes"] = (
+                        0
+                        if _fit_env_mmproj_on_host
+                        else _fit_env_mmproj_bytes
+                        + self._inherited_mmproj_soft_overhead(
+                            _fit_env_mmproj_bytes, on_host = False
+                        )
+                    )
                     _fit_load_mode = self._fit_derived_load_mode(
                         model_size = _fit_model_size,
                         mmproj_pinned_bytes = _mmproj_pinned_bytes
@@ -19032,6 +19048,10 @@ class LlamaCppBackend:
                     _placement_verdict_partial = False
                     # Same reasoning: an unpriced load keeps llama.cpp's default.
                     _fit_load_mode = None
+                    # And a half-built snapshot is not a price either: the throw can
+                    # land after the dict exists but before the later terms are added
+                    # to it, which would plan against a footprint missing them.
+                    _spill_inputs = None
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
 
@@ -23734,6 +23754,20 @@ class LlamaCppBackend:
         # against the pool and booked onto device 0, where it lives.
         extra_gpu_bytes += int(inputs.get("compute_buffer_flat") or 0)
 
+        # A projector Studio never resolved but the child loads anyway. arg.cpp
+        # applies LLAMA_ARG_MMPROJ before argv (common/arg.cpp:780-802) and a
+        # LLAMA_ARG_MMPROJ_URL download overwrites even the --mmproj this launch
+        # emits (common/arg.cpp:500-503, :632-634), and the projector is GPU
+        # resident unless --no-mmproj-offload says otherwise. extra_gpu_bytes above
+        # carries only the RESOLVED projector, so those bytes sit in no term here
+        # and the plan pins the shortfall with --fit off. The seam hands over the
+        # same numbers the load-mode fit used, including its abstain for a URL or
+        # an unreadable path.
+        if inputs.get("env_mmproj_unsized"):
+            logger.debug("Tensor spill: declined, an inherited projector could not be sized")
+            return None
+        extra_gpu_bytes += int(inputs.get("env_mmproj_bytes") or 0)
+
         # Pass-through --lora / --lora-scaled / --control-vector weights, GPU
         # resident and in no other term here. Both land on the base layer's buffer
         # type (llama-adapter.cpp:335, :67) and neither mmaps: the file is staged
@@ -23743,6 +23777,22 @@ class LlamaCppBackend:
         sidecar_bytes = _sidecar_adapter_bytes(extra_args)
         if sidecar_bytes is None:
             logger.debug("Tensor spill: declined, a pass-through adapter could not be sized")
+            return None
+        # ...but a flat term is only right on ONE device. extra_resident_bytes is
+        # charged entirely to device 0 (_per_device_shortfall), while a LoRA tensor
+        # is allocated on its BASE tensor's buffer (llama-adapter.cpp:335) and a
+        # control-vector row on model.select_buft(il) (:67) -- so on a layer split
+        # they follow the layers onto every card. Booking them all on the main GPU
+        # under-books the others, and --fit off means common/fit.cpp never runs to
+        # catch the overflow. The layout is built from the base GGUF alone and holds
+        # no adapter tensor table, so the per-device share cannot be derived here.
+        # Decline, like every other placement this planner cannot price.
+        if sidecar_bytes and len(vram_per_device) > 1:
+            logger.debug(
+                "Tensor spill: declined, a pass-through adapter's bytes cannot be placed "
+                "across %d devices",
+                len(vram_per_device),
+            )
             return None
         extra_gpu_bytes += sidecar_bytes
 
