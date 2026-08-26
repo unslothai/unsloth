@@ -3648,7 +3648,13 @@ def _resolve_mtp_drafter(
             drafter = detect_mtp_file(main_gguf_path, search_root = search_root)
         if not drafter:
             return None, 0
-        return drafter, Path(drafter).stat().st_size
+        # The whole split family, not just the shard llama-server is handed:
+        # the load planner sizes the drafter with _get_gguf_size_bytes, and a
+        # split companion reserves every shard. Billing shard 1 alone reports a
+        # fit for a launch that allocates several times as much.
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        return drafter, LlamaCppBackend._get_gguf_size_bytes(drafter)
     except Exception:
         return None, 0
 
@@ -3676,7 +3682,28 @@ async def get_kv_cache_estimate(
     ),
     speculative_type: Optional[str] = Query(
         None,
-        description = "Speculative decoding mode (mtp, ngram, mtp+ngram, auto)",
+        description = "Speculative decoding mode (mtp, ngram, mtp+ngram, dspark, dflash, auto)",
+    ),
+    spec_draft_n_max: Optional[int] = Query(
+        None,
+        ge = 0,
+        description = (
+            "--spec-draft-n-max. A Hybrid Mamba target keeps one recurrent rollback "
+            "state per drafted token, so this is the dominant speculative cost there."
+        ),
+    ),
+    spec_draft_cache_type: Optional[str] = Query(
+        None,
+        description = "Draft KV cache dtype (--spec-draft-type-k/-v), independent of the main cache",
+    ),
+    ctx_checkpoints: Optional[int] = Query(
+        None,
+        ge = 0,
+        description = "--ctx-checkpoints; each one adds an SWA snapshot per slot",
+    ),
+    disable_vision: bool = Query(
+        False,
+        description = "Load a vision GGUF without its mmproj, freeing the projector's VRAM",
     ),
     request: Request = None,  # type: ignore[assignment]
     current_subject: str = Depends(get_current_subject),
@@ -3706,6 +3733,8 @@ async def get_kv_cache_estimate(
             "native_context": None,
             "spec_bytes": None,
             "n_ctx": None,
+            "projector_bytes": None,
+            "spec_unpriced": False,
         }
         try:
             from utils.models.model_config import is_local_path
@@ -3756,7 +3785,45 @@ async def get_kv_cache_estimate(
             if not n_ctx or n_ctx < 1:
                 return null
 
-            kv = be._estimate_kv_cache_bytes(n_ctx, cache_type_kv, n_parallel = n_parallel)
+            # ctx_checkpoints is not a rounding error: each saved checkpoint is an
+            # SWA snapshot per slot, so a 4-slot SWA model at 32k measures 5.82 GiB
+            # with none and 11.82 GiB at the llama.cpp default of 32.
+            kv = be._estimate_kv_cache_bytes(
+                n_ctx,
+                cache_type_kv,
+                n_parallel = n_parallel,
+                ctx_checkpoints = ctx_checkpoints or 0,
+            )
+
+            # DSpark and DFlash attach a separate draft GGUF with its own weights
+            # and KV context, and Auto promotes to either ahead of MTP. Pricing
+            # them means reproducing the loader's whole sidecar precedence, which
+            # is how an estimate ends up charging a drafter the launch never
+            # opens. A DSpark sidecar alone runs to about 11 GB, so reporting a
+            # comfortable fit that omits it is the worst of the options: say the
+            # reserve is unpriced and let the caller draw nothing instead.
+            spec_unpriced = (speculative_type or "").lower() in ("dspark", "dflash")
+
+            # A vision GGUF launches with its mmproj resident unless the user
+            # turned vision off, and the projector is charged at a worst-case
+            # multiple of its file size (_MMPROJ_VRAM_SAFETY), not at it. Left
+            # out, a vision row shows a comfortable fit for a launch that has to
+            # find another gigabyte or push the projector to the CPU.
+            projector = None
+            if not disable_vision:
+                try:
+                    from core.inference.llama_cpp import LlamaCppBackend as _Be
+                    from utils.models.model_config import detect_mmproj_file
+
+                    mmproj = detect_mmproj_file(
+                        path, search_root = repo_id if is_local else None
+                    )
+                    if mmproj:
+                        projector = int(
+                            _Be._get_gguf_size_bytes(mmproj) * _Be._MMPROJ_VRAM_SAFETY
+                        )
+                except Exception as e:
+                    logger.debug(f"mmproj estimate failed for '{repo_id}' {quant}: {e}")
 
             # Only the MTP modes reserve memory; ngram is free. "auto" may or may
             # not resolve to MTP, and the estimator returns None when it doesn't.
@@ -3831,9 +3898,17 @@ async def get_kv_cache_estimate(
                             # Draft K/V types are independent of the main cache and
                             # default to f16 at load; leaving them unset keeps this
                             # from underpricing a quantized-main-cache setup.
+                            draft_cache_type_k = spec_draft_cache_type,
+                            draft_cache_type_v = spec_draft_cache_type,
                             drafter_path = drafter_path,
                             draft_weights_bytes = drafter_bytes,
                             n_parallel = n_parallel,
+                            # A Hybrid Mamba target keeps one recurrent rollback
+                            # state per drafted token, which dominates everything
+                            # else here: on a 4-slot model at 32k the reserve is
+                            # 0.125 GiB at the zero default and 6.944 GiB at a
+                            # depth of 16, so omitting it is a 55x understatement.
+                            spec_draft_n_max = spec_draft_n_max or 0,
                         )
                 except Exception as e:
                     logger.debug(f"mtp overhead estimate failed for '{repo_id}' {quant}: {e}")
@@ -3844,6 +3919,11 @@ async def get_kv_cache_estimate(
                 "native_context": be._context_length,
                 "spec_bytes": int(spec) if spec else None,
                 "n_ctx": int(n_ctx),
+                "projector_bytes": projector or None,
+                # True when the configured mode attaches a drafter this route did
+                # not price. The caller draws nothing rather than a fit that is
+                # missing the launch's largest single allocation.
+                "spec_unpriced": spec_unpriced,
             }
         except Exception as e:
             logger.debug(f"kv-cache-estimate failed for '{repo_id}' {quant}: {e}")

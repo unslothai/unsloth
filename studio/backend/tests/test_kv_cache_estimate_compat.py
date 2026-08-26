@@ -73,6 +73,10 @@ def _call(monkeypatch, path: Path | None, **overrides):
         cache_type_kv = None,
         n_parallel = None,
         speculative_type = None,
+        spec_draft_n_max = None,
+        spec_draft_cache_type = None,
+        ctx_checkpoints = None,
+        disable_vision = False,
         request = None,
         current_subject = "test",
     )
@@ -125,8 +129,11 @@ def test_the_failure_answer_carries_every_key(monkeypatch):
     monkeypatch.setattr(models_routes, "_resolve_quant_gguf", lambda *_a, **_k: (None, 0))
     out = _call(monkeypatch, None)
     assert _LEGACY_KEYS <= set(out)
-    assert {"spec_bytes", "n_ctx"} <= set(out)
-    assert all(v is None for v in out.values())
+    assert {"spec_bytes", "n_ctx", "projector_bytes", "spec_unpriced"} <= set(out)
+    # Every byte figure is absent. spec_unpriced is a flag, not a measurement:
+    # False is its correct value here, since nothing was left unpriced.
+    assert all(v is None for k, v in out.items() if k != "spec_unpriced")
+    assert out["spec_unpriced"] is False
 
 
 def test_speculative_modes_that_cost_nothing_report_none(monkeypatch, tmp_path):
