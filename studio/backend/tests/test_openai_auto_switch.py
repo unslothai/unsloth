@@ -8907,6 +8907,43 @@ def test_a_text_seq2seq_checkpoint_is_not_switchable(tmp_path):
     assert resolver.local_servable_model(info) == (False, ())
 
 
+def test_a_whisper_checkpoint_is_switchable(tmp_path):
+    """Whisper wears ForConditionalGeneration and carries no multimodal sub-config, being
+    the audio model rather than wearing one, so requiring that key filtered it out with T5.
+    The orchestrator loads it through WhisperForConditionalGeneration and chat routes the
+    request to generate_whisper_response, so it is a target this server actually serves."""
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "whisper-large-v3")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        '{"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper"}'
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+    # the model_type is read from transformers' own audio tables, not a table restated here.
+    assert resolver._model_type_is_audio("whisper") is True
+    assert resolver._model_type_is_audio("t5") is False
+    assert resolver._model_type_is_audio(None) is False
+
+
+def test_an_empty_auto_map_is_not_remote_code(tmp_path):
+    """The consent gate reads auto_map for truthiness (_config_has_auto_map in
+    utils/security/consent.py), so an empty or null mapping names no implementation and
+    executes nothing. Rejecting on the key's presence alone hid a loadable checkpoint
+    while adding no approval boundary."""
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "EmptyAutoMap")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    base = '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "auto_map": %s}'
+    for empty in ("{}", "null"):
+        (path / "config.json").write_text(base % empty)
+        assert resolver.local_servable_model(info) == (False, ()), empty
+    # a mapping that does name an implementation is still refused without approval.
+    (path / "config.json").write_text(base % '{"AutoModel": "modeling.MyModel"}')
+    assert resolver.local_servable_model(info) is None
+
+
 def test_a_host_without_a_non_gguf_backend_advertises_none(tmp_path, monkeypatch):
     # Codex P2: with neither torch nor MLX the worker has nothing to load safetensors
     # with, and _load_model_impl unloads the resident GGUF before that fails.

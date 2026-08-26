@@ -248,11 +248,26 @@ def _is_generative_chat_config(config: dict) -> bool:
     # this whole path exists to remove.
     if any(name.endswith(("ForCausalLM", "LMHeadModel")) for name in names):
         return True
+    if not any(name.endswith("ForConditionalGeneration") for name in names):
+        return False
     # ForConditionalGeneration is overloaded: T5 and BART wear it too, and the serving
     # path has no AutoModelForSeq2SeqLM branch, so require a multimodal sub-config.
-    return any(name.endswith("ForConditionalGeneration") for name in names) and any(
-        key in config for key in _MULTIMODAL_CONFIG_KEYS
-    )
+    if any(key in config for key in _MULTIMODAL_CONFIG_KEYS):
+        return True
+    # whisper is the audio model rather than wearing one, so it carries no such sub-config.
+    return _model_type_is_audio(config.get("model_type"))
+
+
+def _model_type_is_audio(model_type) -> bool:
+    """Whether *model_type* names an audio architecture, per transformers' own tables."""
+    if not isinstance(model_type, str) or not model_type:
+        return False
+    try:
+        from utils.models.model_config import _detection_sets
+        return model_type in _detection_sets()[2]
+    except Exception as exc:
+        logger.debug("auto-switch: audio model_type lookup failed for %r: %s", model_type, exc)
+        return False
 
 
 def _weights_are_servable(load_dir) -> bool:
@@ -287,7 +302,8 @@ def _config_is_servable_here(load_dir, config: dict) -> bool:
     # trust_remote_code needs an approval fingerprint a switch has not got; read as data only.
     for name in REMOTE_CODE_CONFIG_FILES:
         candidate = config if name == "config.json" else _read_json(load_dir / name)
-        if isinstance(candidate, dict) and "auto_map" in candidate:
+        # truthiness like the consent gate's _config_has_auto_map: an empty map runs nothing.
+        if isinstance(candidate, dict) and candidate.get("auto_map"):
             return False
     return _is_generative_chat_config(config)
 
