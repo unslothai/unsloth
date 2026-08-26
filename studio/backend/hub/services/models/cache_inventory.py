@@ -616,11 +616,22 @@ def _scan_cached_gguf(
                     gguf = True,
                     selected = gguf_identity.load_snapshot or gguf_snapshot,
                 )
+                row_audio_type = None
+                if row_task == "text-to-speech":
+                    try:
+                        from hub.services.models import catalog_classification
+
+                        row_audio_type = catalog_classification._repo_gguf_audio_type(
+                            repo_info, gguf_identity.load_snapshot or gguf_snapshot
+                        )
+                    except Exception:
+                        pass
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": max(total_size, variant_state_size),
                     "cache_path": str(repo_info.repo_path),
                     "task": row_task,
+                    "audio_type": row_audio_type,
                     "partial": partial,
                     # A marker-only sibling moves neither size nor mtime.
                     "has_variant_state": has_variant_state,
@@ -1081,7 +1092,8 @@ def _scan_cached_models(
                     else _cached_model_local_metadata(repo_path, load_snapshot)
                 )
                 is_whisper_stt = local_metadata.pop("_hidden_stt", False)
-                is_tts = local_metadata.pop("_tts_audio_type", None) is not None
+                tts_audio_type = local_metadata.pop("_tts_audio_type", None)
+                is_tts = tts_audio_type is not None
                 # Scoped to the row's snapshot, so an incomplete newer revision cannot flip can_chat.
                 download_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
@@ -1131,6 +1143,7 @@ def _scan_cached_models(
                     "size_bytes": payload.size_bytes,
                     "cache_path": str(repo_info.repo_path),
                     "task": row_task,
+                    "audio_type": tts_audio_type,
                     "partial": snapshot_partial,
                     "partial_transport": (
                         hf_cache_scan.partial_transport_for(

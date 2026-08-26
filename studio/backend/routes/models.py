@@ -83,6 +83,7 @@ class CachedModelRepo(BaseModel):
     last_modified: Optional[float] = None
     # "text-to-image" for cached diffusers image repos; declared here or response_model drops it.
     task: Optional[str] = None
+    audio_type: Optional[str] = None
     # Snapshot incomplete (cancelled/partial download): the picker must not treat it as usable.
     partial: Optional[bool] = None
     # Diffusion-tagged repo with NO top-level model_index.json: needs from_single_file + a filename.
@@ -1204,7 +1205,20 @@ async def _shared_compat_local_inventory_scan(
         # Tag each model with its task so the Images picker can filter to diffusion.
         # Inside the shared flight so overlapping callers reuse one classified result
         # instead of each repeating the GGUF header reads.
-        return [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
+        classified = []
+        for model in models:
+            task = _local_model_task(model)
+            classified.append(
+                model.model_copy(
+                    update = {
+                        "task": task,
+                        "audio_type": _catalog_classification._local_model_audio_type(model)
+                        if task == "text-to-speech"
+                        else None,
+                    }
+                )
+            )
+        return classified
 
     async def collect(
         expected_epoch: int, custom_folders: List[dict], scan_sources: _CompatLocalInventorySources

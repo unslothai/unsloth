@@ -1710,7 +1710,7 @@ def test_task_inventory_exposes_cached_custom_whisper_as_non_chat_asr(tmp_path, 
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
-def test_task_inventory_preserves_cached_community_tts_pipeline(tmp_path, monkeypatch):
+def test_task_inventory_preserves_cached_community_tts_codec(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from hub.services.models import cache_inventory
@@ -1725,13 +1725,14 @@ def test_task_inventory_preserves_cached_community_tts_pipeline(tmp_path, monkey
             }
         },
         refs = {"main": SNAPSHOT},
-        name = "models--community--orpheus-tts",
+        name = "models--community--renamed-checkpoint",
     )
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = tmp_path),
     )
+    monkeypatch.setattr(cache_inventory, "detect_local_tts_audio_type", lambda _path: "snac")
     inventory_scan.invalidate_hf_cache_scans()
     try:
         rows = cache_inventory._scan_cached_models()
@@ -1741,6 +1742,7 @@ def test_task_inventory_preserves_cached_community_tts_pipeline(tmp_path, monkey
     assert len(rows) == 1
     assert rows[0]["task"] == "text-to-speech"
     assert rows[0]["pipeline_tag"] == "text-to-speech"
+    assert rows[0]["audio_type"] == "snac"
 
 
 def test_a_secondary_dangling_ref_still_judges_the_recovered_snapshot(tmp_path, monkeypatch):

@@ -100,6 +100,11 @@ test("the mount-time status sync treats a speech model as an empty slot", () => 
     hook,
     /\} else if \(!chatActiveModel && !isExternalSelectionActive\)/,
   );
+  assert.match(
+    hook,
+    /\(wasResident \|\| isSpeechOnlyStatus\(statusRes\)\)[\s\S]*selectedCheckpoint[\s\S]*!modelLoading/,
+    "the first speech-only status must clear a persisted Chat pick",
+  );
 });
 
 test("a TTS load announces its own runtime so chat re-reads the slot", () => {

@@ -164,6 +164,22 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     return "text-generation"
 
 
+def _arch_to_audio_type(
+    arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()
+) -> Optional[str]:
+    """Decoder provenance for a GGUF classified as speech."""
+    if arch is None:
+        return None
+    normalized = arch.strip().lower()
+    if normalized == "llama" and any(
+        _ORPHEUS_GGUF_HINT.search(str(hint)) for hint in name_hints if hint
+    ):
+        return "snac"
+    if is_speech_gguf_architecture(normalized):
+        return "csm"
+    return None
+
+
 def _is_trailing_split_shard(name: str) -> bool:
     try:
         from utils.models.model_config import _GGUF_SPLIT_FILE_RE
@@ -254,6 +270,36 @@ def _repo_gguf_task(repo_info, selected: Optional[Path] = None) -> Optional[str]
         return None
 
 
+def _gguf_path_audio_type(
+    path: str | Path, id_hints: tuple[Optional[str], ...] = ()
+) -> Optional[str]:
+    model_path = Path(path)
+    try:
+        paths = (
+            [model_path]
+            if model_path.suffix.lower() == ".gguf" and model_path.is_file()
+            else _iter_gguf_paths(model_path)
+        )
+        for gguf_path in paths:
+            audio_type = _arch_to_audio_type(
+                _gguf_architecture(str(gguf_path)),
+                name_hints = id_hints + (gguf_path.name,),
+            )
+            if audio_type is not None:
+                return audio_type
+    except Exception:
+        return None
+    return None
+
+
+def _repo_gguf_audio_type(repo_info, selected: Optional[Path] = None) -> Optional[str]:
+    repo_id = getattr(repo_info, "repo_id", None)
+    try:
+        return _gguf_path_audio_type(selected or Path(repo_info.repo_path), (repo_id,))
+    except Exception:
+        return None
+
+
 def _gguf_path_task(path: str | Path, id_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
     model_path = Path(path)
     try:
@@ -333,6 +379,18 @@ def _local_model_task(model) -> Optional[str]:
         return None
     except Exception:
         return "text-to-image"
+
+
+def _local_model_audio_type(model) -> Optional[str]:
+    path = model.path
+    if model.model_format == "gguf" or Path(path).suffix.lower() == ".gguf":
+        return _gguf_path_audio_type(path, (model.model_id, model.display_name, model.id))
+    try:
+        from utils.audio_tokens import detect_local_tts_audio_type
+
+        return detect_local_tts_audio_type(path)
+    except Exception:
+        return None
 
 
 def _local_is_diffusers(model) -> bool:

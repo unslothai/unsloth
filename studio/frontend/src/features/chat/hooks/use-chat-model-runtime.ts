@@ -491,16 +491,22 @@ async function syncInferenceStatusToStore(options?: {
         loadedVisionDisabledByUser: null,
         loadedIsDiffusion: false,
       });
-      // Known resident a moment ago, and nothing loading now. Both matter: a
-      // load in flight has no active model yet either, and clearing there would
-      // wipe the pick the user just made.
-      if (wasResident && selectedCheckpoint && !modelLoading) {
+      // A known prior resident or a definitive speech-only owner both prove the
+      // persisted Chat pick is stale. A load in flight has no active model yet
+      // either, so never clear while one is starting.
+      if (
+        (wasResident || isSpeechOnlyStatus(statusRes)) &&
+        selectedCheckpoint &&
+        !modelLoading
+      ) {
         // Already the clean id the header shows: resolveInferenceCheckpointId
         // put it there, not a load path.
-        toast.info(`${wasResident} is no longer loaded`, {
-          description:
-            "The server released it, which loading an image, video or audio model does. Pick it again to keep chatting.",
-        });
+        if (wasResident) {
+          toast.info(`${wasResident} is no longer loaded`, {
+            description:
+              "The server released it, which loading an image, video or audio model does. Pick it again to keep chatting.",
+          });
+        }
         // Drop the pick too, which is what a server-side unload already does.
         // Dimming the tick was not enough: the name alone reads as "this is my
         // model" whatever the tick does, and sending to it returns a bare 400.
