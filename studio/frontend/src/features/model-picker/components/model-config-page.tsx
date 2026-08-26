@@ -2821,21 +2821,20 @@ export function ModelConfigPage({
       unsubscribe();
     };
   }, []);
-  // What is free RIGHT NOW on the cards this load may use. _select_gpus admits on
-  // free-minus-reserve, not on the cards' totals, so a training run or another process
-  // holding VRAM changes what will actually happen to this load.
+  // What is free RIGHT NOW on the cards this load may use: _select_gpus admits on
+  // free-minus-reserve, not on totals, so another process holding VRAM changes what
+  // happens to this load.
   //
-  // Used to WARN, never to refuse. The bytes a pending load reclaims -- the resident
-  // chat model's own, which Studio unloads first -- cannot be attributed per device
-  // from here, so raw free memory would call a reload of the loaded model impossible.
-  // Capping the free-based verdict at "tight" is honest under both readings: either
-  // something else really is holding the card, or it is about to be given back.
-  // A fixed Manual placement is launched verbatim: load_model empties its probed GPU
-  // set (gpus = []) and emits --gpu-layers N --fit off, so the server-wide VRAM Budget
-  // never reaches the planner and cannot shrink this load. Discounting capacity by it
-  // there labelled placements that will load fine as exceeding -- a 16 GiB fixed
-  // placement on a 24 GiB card reads as over budget at 50%. Auto is still budgeted,
-  // because Auto is exactly the mode that hands the decision to the planner.
+  // WARNS, never refuses. The bytes a pending load reclaims are mostly the resident
+  // model's own, which Studio unloads first, and cannot be attributed per device from
+  // here, so raw free memory would call reloading the loaded model impossible. Capping
+  // the verdict at "tight" is honest either way.
+  //
+  // A fixed Manual placement is launched verbatim -- load_model empties its probed GPU
+  // set and emits --gpu-layers N --fit off -- so the server-wide VRAM Budget never
+  // reaches the planner. Discounting capacity by it called a 16 GiB fixed placement on
+  // a 24 GiB card over budget at 50%. Auto is still budgeted: Auto is the mode that
+  // hands the decision to the planner.
   const memoryBudgetGovernsLaunch =
     runtimeGpuMemoryMode !== "manual" ||
     (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0;
@@ -3107,14 +3106,13 @@ export function ModelConfigPage({
               usableSystemRamGb={Math.max(
                 0,
                 // _HOST_RAM_HEADROOM_MIB: the 2 GiB the loader keeps for the rest of
-                // the system before it will admit an offloaded load.
+                // the system before admitting an offloaded load.
                 //
-                // The HOST reading, not the sum-shaped one beside it. That one is
-                // zeroed whenever ANY device on the machine shares system RAM, which
-                // is every dGPU + iGPU box, so this figure was permanently 0 there
-                // and the host-pressure advisory could not fire even under a pin on
-                // the discrete card -- exactly the case where host RAM really is a
-                // separate pool.
+                // The HOST reading, not the sum-shaped one beside it, which is zeroed
+                // whenever ANY device shares system RAM -- every dGPU + iGPU box -- so
+                // this was permanently 0 there and the host-pressure advisory could not
+                // fire even under a pin on the discrete card, the one case where host
+                // RAM really is a separate pool.
                 (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
               )}
               isUnifiedMemory={isUnifiedMemory}

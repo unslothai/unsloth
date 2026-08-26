@@ -5,15 +5,11 @@
  * How the estimated footprint sits against the memory available to hold it, and the
  * single note the row prints about it.
  *
- * Split out of model-config-page.tsx for the reason the sibling estimate-context.ts
- * gives: kept with NO imports so `tests/` can load it under
- * `node --experimental-strip-types`, which does not resolve the `@/` alias. Living
- * inside a 3,400-line .tsx made this chain unreachable from the test runner, and a
- * ternary arm that could never be taken survived review there for exactly that
- * reason (see the pool note on the advisory below).
- *
- * Everything here is pure and typed structurally, so a MemoryEstimate satisfies the
- * inputs without importing it.
+ * Import-free, like the sibling estimate-context.ts, so `tests/` can load it under
+ * `node --experimental-strip-types`, which does not resolve the `@/` alias. Inside a
+ * 3,400-line .tsx this chain was unreachable from the test runner, and a ternary arm
+ * that could never be taken survived review for exactly that reason. Everything is
+ * pure and typed structurally, so a MemoryEstimate satisfies the inputs.
  */
 
 /** How an estimated footprint sits against the memory available to hold it. */
@@ -25,12 +21,10 @@ export const MEMORY_FIT_TIGHT_RATIO = 0.85;
 /**
  * Classify a footprint against a capacity.
  *
- * Every non-finite input is "unknown". `<= 0` alone does not cover it: NaN and
- * Infinity both fail every comparison, so `NaN <= 0` is false and the ratio test
- * below then falls all the way through to "fits" -- a confident green verdict
- * printed from a number that does not exist. A malformed or hostile response gets
- * there without trying, because JSON.parse turns `1e999` into Infinity and a
- * `?? 0` default never sees it.
+ * Every non-finite input is "unknown", and `<= 0` alone does not cover it: NaN and
+ * Infinity fail every comparison, so `NaN <= 0` is false and the ratio test falls
+ * through to "fits" -- a green verdict from a number that does not exist. JSON.parse
+ * turns `1e999` into Infinity and a `?? 0` default never sees it.
  */
 export function classifyMemoryFit(
   bytes: number,
@@ -70,11 +64,10 @@ export function worseMemoryFit(
 }
 
 /**
- * GB, to two decimals, matching how the rest of the panel talks about memory.
+ * GB, to two decimals, as the rest of the panel talks about memory.
  *
- * Clamped rather than trusted. Every figure here comes off the wire, and a negative
- * or non-finite one has no honest rendering: "-3.00 GB" and "NaN GB" both read as a
- * measurement rather than as the missing reading they are.
+ * Clamped, not trusted: these come off the wire, and "-3.00 GB" or "NaN GB" reads as
+ * a measurement rather than as the missing reading it is.
  */
 export function formatMemoryGb(bytes: number): string {
   const safe = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
@@ -148,11 +141,10 @@ export interface MemoryFitResult {
  * Every verdict the row shows, plus the one note it prints.
  *
  * `_host_offload_shortfall_message` refuses a load whose offloaded weights exceed
- * psutil's AVAILABLE memory less a reserve, not the machine's physical total, so a
- * 70 GB host share read as fitting a 128 GB box with 32 GB free. The free-memory
- * verdicts here WARN rather than refuse for one reason: the bytes a pending load
- * reclaims are mostly the resident model's own, which Studio unloads first, and
- * those cannot be attributed from here.
+ * psutil's AVAILABLE memory less a reserve, not the physical total, so a 70 GB host
+ * share read as fitting a 128 GB box with 32 GB free. The free-memory verdicts here
+ * WARN instead: the bytes a pending load reclaims are mostly the resident model's
+ * own, which Studio unloads first, and cannot be attributed from here.
  */
 export function resolveMemoryFit(
   estimate: MemoryFitEstimate,
@@ -160,20 +152,18 @@ export function resolveMemoryFit(
 ): MemoryFitResult {
   const { singleMemoryPool } = capacity;
   const rawGpuFit = classifyMemoryFit(estimate.gpuBytes, capacity.gpuCapacityGb);
-  // One pool means the WHOLE load draws on that memory, so the pressure question is
-  // asked of the total there rather than of a GPU share that is not a separate
-  // reservation. Same rule the host side already used; asking it of gpuBytes alone
-  // let a partly CPU-offloaded load on a Vulkan iGPU look comfortable against free
-  // memory that has to hold all of it.
+  // One pool means the WHOLE load draws on that memory, so the pressure question goes
+  // to the total rather than to a GPU share that is not a separate reservation. Asking
+  // it of gpuBytes alone let a partly CPU-offloaded load on a Vulkan iGPU look
+  // comfortable against free memory that has to hold all of it.
   const freeGpuFit = classifyMemoryFit(
     singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes,
     capacity.freeGpuCapacityGb,
   );
   const gpuPressured = freeGpuFit === "exceeds" || freeGpuFit === "tight";
-  // Guarded rather than subtracted blind: a non-finite figure off the wire makes the
-  // difference NaN, which `Math.max(0, ...)` propagates rather than clamps. 0 is the
-  // same verdict from classifyMemoryFit ("unknown") and is a number a caller can
-  // print, which NaN is not.
+  // Guarded, not subtracted blind: a non-finite figure makes the difference NaN, which
+  // `Math.max(0, ...)` propagates rather than clamps. 0 classifies the same ("unknown")
+  // and is printable, which NaN is not.
   const hostShareBytes =
     Number.isFinite(estimate.totalBytes) && Number.isFinite(estimate.gpuBytes)
       ? Math.max(0, estimate.totalBytes - estimate.gpuBytes)
@@ -185,11 +175,9 @@ export function resolveMemoryFit(
   );
   const hostPressured = usableHostFit === "exceeds" || usableHostFit === "tight";
   const gpuFit = rawGpuFit === "fits" && gpuPressured ? "tight" : rawGpuFit;
-  // The host share has to fit in host RAM on its own. Unused VRAM cannot hold bytes
-  // that placement has pinned outside the GPU, so weighing only the combined ceiling
-  // called a 70 GB CPU placement a fit on a 24 GB card plus 64 GB of RAM. Skipped
-  // where the two are one pool, which is the case the combined figure already
-  // describes exactly.
+  // The host share must fit host RAM on its own: unused VRAM cannot hold bytes pinned
+  // outside the GPU, so the combined ceiling alone called a 70 GB CPU placement a fit
+  // on a 24 GB card plus 64 GB of RAM. Skipped where the two are one pool.
   const hostShareFit: MemoryFitVerdict = singleMemoryPool
     ? "unknown"
     : classifyMemoryFit(hostShareBytes, capacity.systemRamCapacityGb);
@@ -197,11 +185,10 @@ export function resolveMemoryFit(
     classifyMemoryFit(estimate.totalBytes, capacity.totalCapacityGb),
     hostShareFit,
   );
-  // Lower bound, not an estimate. Two ways to get there, and both UNDER-count by a
-  // term that grows with context: no attention dims, so the target cache is missing,
-  // or a drafter that is a repository rather than a file on this disk, so its cache
-  // is missing while its weights are counted. The advisory below still tells them
-  // apart, because the two are not fixed the same way.
+  // Lower bound, not an estimate. Both routes here UNDER-count by a term that grows
+  // with context: no attention dims, so the target cache is missing, or a drafter that
+  // is a repository rather than a file on disk, so its cache is missing while its
+  // weights are counted. The advisory still tells them apart -- different fixes.
   const bounded =
     !estimate.kvEstimable || estimate.drafterKvUnsized || estimate.adaptersUnsized;
   return {
@@ -242,17 +229,15 @@ interface AdvisoryVerdicts {
  * At most one note, most actionable first.
  *
  * An unsizable cache outranks any verdict drawn from the figures, since it says they
- * are incomplete. It branches on `kvEstimable` rather than on `bounded`: both make
- * the figures a floor, but only this one is about the header, and the drafter case
- * below names its own cause.
+ * are incomplete. Branches on `kvEstimable`, not `bounded`: both make the figures a
+ * floor, but only this one is about the header.
  *
- * The pool split below used to gate the whole tail, which made the shared-pool
- * pressure copy dead code -- it sat inside the `singleMemoryPool === false` arm and
- * re-tested `singleMemoryPool`, so the string could never be chosen -- and left a
- * single-pool host with exactly one reachable note, "exceeds". An Apple machine or a
- * Vulkan iGPU therefore never warned that a load fitting the machine did not fit
- * what was free. The pool question now decides the WORDING and which figures are
- * compared, not whether the pressure branch exists at all.
+ * The pool split used to gate the whole tail, which made the shared-pool pressure copy
+ * dead code -- it sat inside the `singleMemoryPool === false` arm and re-tested
+ * `singleMemoryPool` -- leaving a single-pool host one reachable note, "exceeds". An
+ * Apple machine or a Vulkan iGPU never warned that a load fitting the machine did not
+ * fit what was free. The pool question now decides the WORDING and which figures are
+ * compared, not whether the branch exists.
  */
 export function resolveMemoryAdvisory(
   estimate: MemoryFitEstimate,
