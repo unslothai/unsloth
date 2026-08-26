@@ -4,10 +4,18 @@
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import {
+  hasFloatingMonitorGpuTelemetry,
+  resolveFloatingMonitorGpuTelemetry,
+} from "@/components/floating-monitor-telemetry";
+import {
   useMonitorFrameStore,
   useMonitorOverlayStore,
 } from "@/features/settings";
 import { resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
+import {
+  type GpuUtilization,
+  useGpuUtilization,
+} from "@/hooks/use-gpu-utilization";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import {
@@ -419,11 +427,13 @@ function formatGiB(value: number): string {
 interface FloatingMonitorPanelProps {
   onClose: () => void;
   systemInfo: ReturnType<typeof useSystemInfo>;
+  gpuUtilization: GpuUtilization;
 }
 
 function FloatingMonitorPanel({
   onClose,
   systemInfo,
+  gpuUtilization,
 }: FloatingMonitorPanelProps) {
   const t = useT();
   const [constraintsElement, setConstraintsElement] =
@@ -477,6 +487,12 @@ function FloatingMonitorPanel({
   const unknownLabel = t("settings.resources.environment.unknown");
 
   const hasGpu = (displayedGpu?.available ?? false) && devices.length > 0;
+  const telemetryDevices = resolveFloatingMonitorGpuTelemetry(
+    devices,
+    displayedGpu?.backend,
+    gpuUtilization,
+  );
+  const hasGpuTelemetry = hasFloatingMonitorGpuTelemetry(telemetryDevices);
 
   // The container sits on the floating panel layer, above the bottom-right
   // overlay stack. The stack is anchored to that same corner and does not move
@@ -605,6 +621,55 @@ function FloatingMonitorPanel({
                 />
               </div>
             )}
+            {hasGpuTelemetry && (
+              <div
+                data-testid="floating-monitor-gpu-telemetry"
+                className="space-y-2 border-t border-border/60 pt-2"
+              >
+                {telemetryDevices.map((device, index) => (
+                  <div
+                    key={`${device.index_kind ?? "gpu"}-${device.index ?? index}`}
+                    className="space-y-1"
+                  >
+                    {devices.length > 1 && (
+                      <div className="truncate text-ui-11 font-medium text-foreground">
+                        {t("settings.resources.gpu.deviceWithIndex", {
+                          index:
+                            device.visible_ordinal ?? device.index ?? index,
+                        })}
+                        , {device.name ?? unknownLabel}
+                      </div>
+                    )}
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1 text-ui-11 font-mono">
+                      <span className="text-muted-foreground">
+                        {t("studio.progress.temperature")}
+                      </span>
+                      <span
+                        data-testid={`floating-monitor-gpu-temperature-${index}`}
+                        className="tabular-nums text-foreground"
+                      >
+                        {device.temperature_c != null
+                          ? `${device.temperature_c}°C`
+                          : "--"}
+                      </span>
+                      <span className="text-muted-foreground">
+                        {t("studio.progress.power")}
+                      </span>
+                      <span
+                        data-testid={`floating-monitor-gpu-power-${index}`}
+                        className="tabular-nums text-foreground"
+                      >
+                        {device.power_draw_w != null
+                          ? device.power_limit_w != null
+                            ? `${device.power_draw_w} / ${device.power_limit_w} W`
+                            : `${device.power_draw_w} W`
+                          : "--"}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
             {separateInferenceGpu && (
               <div className="flex justify-between gap-2 text-ui-11 font-mono">
                 <span className="text-muted-foreground">
@@ -630,6 +695,7 @@ function FloatingMonitorPanel({
 export function FloatingMonitor() {
   const { isOpen, setIsOpen } = useMonitorOverlayStore();
   const systemInfo = useSystemInfo({ enabled: isOpen, pollMs: 5000 });
+  const gpuUtilization = useGpuUtilization(isOpen, 5000);
   const [panelKey, setPanelKey] = useState(0);
   const wasOpenRef = useRef(isOpen);
 
@@ -648,6 +714,7 @@ export function FloatingMonitor() {
         <FloatingMonitorPanel
           key={panelKey}
           systemInfo={systemInfo}
+          gpuUtilization={gpuUtilization}
           onClose={() => setIsOpen(false)}
         />
       )}
