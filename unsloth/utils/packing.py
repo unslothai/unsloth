@@ -612,15 +612,21 @@ def _install_mamba2_seq_idx_fallbacks(namespace, mixers, varlen_slot) -> None:
 
 
 def _rebind_dict_referrers(orig, wrapped) -> None:
-    """Replace ``orig`` with ``wrapped`` in every dict that still holds it."""
+    """Replace ``orig`` with ``wrapped`` in every dict that still holds it.
+
+    ``wrapped``'s own ``__dict__`` is skipped: ``functools.wraps`` stores
+    ``__wrapped__ = orig`` there, and rebinding it makes the wrapper recurse
+    into itself instead of calling the real kernel.
+    """
     if orig is None or wrapped is orig:
         return
     try:
         import gc
     except Exception:
         return
+    wrapper_dict = getattr(wrapped, "__dict__", None)
     for obj in gc.get_referrers(orig):
-        if type(obj) is not dict:
+        if type(obj) is not dict or obj is wrapper_dict:
             continue
         for key, value in list(obj.items()):
             if value is orig:
@@ -745,7 +751,15 @@ def _wrap_mamba2_seq_idx_call(
     varlen_slot = None,
     hit_attr = "_unsloth_varlen_fused_hit",
 ):
-    """Inject packed ``seq_idx`` into a Mamba2 conv/scan kernel and mark dispatch."""
+    """Inject packed ``seq_idx`` into a Mamba2 conv/scan kernel and mark dispatch.
+
+    Returns ``orig`` unchanged when it is already a wrapper: Nemotron-H has one
+    mixer per layer sharing a single kernel name, so re-wrapping per module
+    would nest ~one frame per layer and blow the recursion limit on the first
+    packed forward.
+    """
+    if getattr(orig, "_unsloth_varlen_seq_idx_wrapped", False):
+        return orig
 
     @wraps(orig)
     def wrapped(*args, **kwargs):
@@ -799,8 +813,14 @@ def _rewrite_callable_refs(
     *,
     _seen: set[int] | None = None,
 ) -> None:
-    """Replace ``orig`` with ``wrapped`` in a callable's globals and closure."""
+    """Replace ``orig`` with ``wrapped`` in a callable's globals and closure.
+
+    ``wrapped`` itself is skipped: its closure holds ``orig`` as the kernel to
+    call, so rewriting that cell turns the wrapper into infinite recursion.
+    """
     if fn is None or orig is None or wrapped is orig:
+        return
+    if fn is wrapped or getattr(fn, "__func__", None) is wrapped:
         return
     if _seen is None:
         _seen = set()
@@ -1064,6 +1084,8 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     def _ensure_mamba2_fused_wrapped(fn):
         if fn is None:
             return None
+        if getattr(fn, "_unsloth_varlen_seq_idx_wrapped", False):
+            return fn
         wrapped = wrapped_fused.get(id(fn))
         if wrapped is None:
             wrapped = _wrap_mamba2_fused_call(fn, mamba2_modules, varlen_slot = varlen_slot)

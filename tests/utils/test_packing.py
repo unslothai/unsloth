@@ -927,6 +927,45 @@ def NemotronHMamba2Mixer_forward(self, hidden_states, cache_params=None, attenti
         sys.modules.pop(compiled.__name__, None)
 
 
+def test_patch_mamba2_varlen_wraps_shared_kernel_once_per_model(monkeypatch):
+    # Nemotron-H has one mixer per layer sharing a single fused kernel name.
+    # Re-wrapping per mixer nested ~one frame per layer and hit the recursion
+    # limit on the first packed forward.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+
+    fused = _make_fake_mamba2_fused()
+
+    class _SharedNemotronHMamba2Mixer(_FakeNemotronHMamba2Mixer):
+        def __init__(self):
+            super().__init__()
+            self.mamba2_split_conv1d_scan_combined = fused
+
+    class _ManyLayerModel(_FakeMamba2Model):
+        def __init__(self):
+            super().__init__()
+            self.mixer = _SharedNemotronHMamba2Mixer()
+            self.layers = torch.nn.ModuleList(
+                [_SharedNemotronHMamba2Mixer() for _ in range(24)]
+            )
+
+    model = _ManyLayerModel()
+    assert patch_hybrid_linear_attention_varlen(model) is True
+
+    installed = model.mixer.mamba2_split_conv1d_scan_combined
+    assert installed is not fused
+    assert installed.__wrapped__ is fused  # exactly one wrapper deep
+    for layer in model.layers:
+        assert layer.mamba2_split_conv1d_scan_combined is installed
+
+    fused.calls.clear()
+    model(
+        input_ids = torch.zeros(1, 6, dtype = torch.long),
+        packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+        use_cache = False,
+    )
+    assert fused.calls[-1].tolist() == [[0, 0, 1, 2, 2, 2]]
+
+
 def test_patch_mamba2_varlen_no_fused_dispatch_aborts(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
 
