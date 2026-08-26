@@ -1046,16 +1046,25 @@ def test_rocm_apu_equal_driver_total_scope_is_platform_specific(
     ("torch_total", "sysfs_total", "expected_shared"),
     [(_APU_GTT_TOTAL, _APU_CARVE_OUT, True), (_APU_CARVE_OUT, _APU_CARVE_OUT, False)],
 )
+@pytest.mark.parametrize("hip_mask", [None, "0"])
 def test_linux_rocm_apu_uses_sysfs_to_confirm_equal_total_scope(
-    monkeypatch, torch_total, sysfs_total, expected_shared
+    monkeypatch, torch_total, sysfs_total, expected_shared, hip_mask
 ):
     mod = _apu_mod(gtt_total = torch_total, carve_out = torch_total)
+    for var in (
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
+        monkeypatch.delenv(var, raising = False)
+    if hip_mask is not None:
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", hip_mask)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
-    monkeypatch.setattr(hw, "_rocm_visibility_mask_active", lambda: False)
     monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
     monkeypatch.setattr(
         hw,
@@ -1067,6 +1076,20 @@ def test_linux_rocm_apu_uses_sysfs_to_confirm_equal_total_scope(
 
     assert result["devices"][0]["memory_total_gb"] == torch_total / (1024**3)
     assert result["devices"][0]["shared_memory"] is expected_shared
+
+
+@pytest.mark.parametrize("ambiguous_var", ["ROCR_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL"])
+def test_linux_rocm_shared_pool_declines_ambiguous_masks(monkeypatch, ambiguous_var):
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setenv(ambiguous_var, "0")
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    monkeypatch.setattr(
+        hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {"0000:03:00.0": (1.0, 8.0)}
+    )
+    devices = [{"index": 0, "total_gb": 100.0, "_rocm_known_unified": True}]
+
+    assert hw._rocm_linux_shared_pool_indices(devices) == set()
 
 
 def test_rocm_apu_sysfs_overlay_still_declines_against_the_gtt_total(monkeypatch):

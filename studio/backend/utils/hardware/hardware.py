@@ -3220,8 +3220,30 @@ def _rocm_visibility_mask_active() -> bool:
     return False
 
 
+def _rocm_single_numeric_mask_matches(devices: list[Dict[str, Any]]) -> bool:
+    if _rocm_device_ordinal_active():
+        return False
+    masks = []
+    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        value = os.environ.get(var)
+        if value and value.strip():
+            masks.append(value.strip())
+    if len(masks) != 1:
+        return False
+    tokens = [token.strip() for token in masks[0].split(",") if token.strip()]
+    try:
+        numeric_ids = [int(token) for token in tokens]
+    except ValueError:
+        return False
+    return len(set(numeric_ids)) == len(numeric_ids) and numeric_ids == [
+        dev.get("index") for dev in devices
+    ]
+
+
 def _rocm_linux_sysfs_vram_by_index(
     devices: list[Dict[str, Any]],
+    *,
+    allow_numeric_mask: bool = False,
 ) -> Dict[int, tuple[float, float]]:
     """Map safe physical ROCm indices to their raw Linux sysfs VRAM readings."""
     if not devices or platform.system() != "Linux":
@@ -3229,7 +3251,10 @@ def _rocm_linux_sysfs_vram_by_index(
     pci_by_ordinal = _rocm_kfd_gpu_pci_ids()
     if not pci_by_ordinal:
         return {}
-    if _rocm_visibility_mask_active() or len(devices) != len(pci_by_ordinal):
+    if _rocm_visibility_mask_active():
+        if not allow_numeric_mask or not _rocm_single_numeric_mask_matches(devices):
+            return {}
+    elif len(devices) != len(pci_by_ordinal):
         return {}
     vram_by_pci = _rocm_linux_sysfs_vram_by_pci_gb()
     resolved: Dict[int, tuple[float, float]] = {}
@@ -3278,7 +3303,7 @@ def _rocm_system_wide_vram_by_index(
 
 def _rocm_linux_shared_pool_indices(devices: list[Dict[str, Any]]) -> set[int]:
     """Return known APUs whose torch total exceeds the reserved sysfs heap."""
-    raw = _rocm_linux_sysfs_vram_by_index(devices)
+    raw = _rocm_linux_sysfs_vram_by_index(devices, allow_numeric_mask = True)
     shared: set[int] = set()
     for dev in devices:
         if not dev.get("_rocm_known_unified"):
