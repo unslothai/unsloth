@@ -1037,6 +1037,46 @@ class TestChatCompletionRequestToolFields:
         else:
             assert len(spoken) == 1
 
+    @pytest.mark.parametrize(
+        "legacy_is_newest,expected",
+        [(False, 400), (True, 200)],
+        ids = ["older_user_image_is_not_the_echo", "newest_user_image_is_the_echo"],
+    )
+    def test_only_the_newest_user_image_counts_as_the_echo(
+        self, legacy_is_newest, expected, monkeypatch
+    ):
+        """findLatestUserImageBase64 scans newest turn first and returns the first
+        image it meets, so that one value is the only thing the field could carry.
+        Accepting a match anywhere let a client resend an older image while the
+        newest turn supplied its own, and the extra one was dropped unmentioned."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        older = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_RED_PNG_B64}"}}
+        newest = {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{_BLUE_PNG_B64}"},
+        }
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "first"}, older]},
+                    {"role": "assistant", "content": "ok"},
+                    {"role": "user", "content": [{"type": "text", "text": "second"}, newest]},
+                ],
+                "image_base64": _BLUE_PNG_B64 if legacy_is_newest else _RED_PNG_B64,
+            },
+        )
+
+        assert resp.status_code == expected
+        assert monitor.active_count() == 0
+        if expected == 400:
+            assert "one image per message" in resp.text
+            assert backend.generated == []
+        else:
+            assert len(backend.generated) == 1
+
     def test_a_comma_in_a_remote_url_is_not_an_echo(self, monkeypatch):
         """Only a data: URL carries an inline payload, the way _extract_content_parts
         reads it. Splitting every URL on its first comma let a remote URL that merely

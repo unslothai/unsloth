@@ -14174,25 +14174,36 @@ def _legacy_image_is_distinct(payload) -> bool:
     exists, is what separates Studio's echo from a client attaching a new image to
     a thread that already carries one.
 
-    Mirror the echo exactly, in both directions, or the comparison hides a real
-    attachment. ``findLatestUserImageBase64`` reads only USER turns, so an image
-    from an assistant, system or tool turn is not something that field could have
-    been derived from. And only a ``data:`` URL carries an inline payload, the way
-    :func:`_extract_content_parts` reads it, so splitting every URL on its first
-    comma would let a remote URL that merely contains one pose as an echo.
+    Mirror the echo exactly, or the comparison hides a real attachment: compute
+    the one value the frontend could have sent and compare against that alone.
+    ``findLatestUserImageBase64`` scans newest turn first, considers only USER
+    turns, and returns the first image it meets, so any OTHER image in the thread
+    is not a value that field could carry. Accepting a match anywhere let a client
+    resend an older image, or an assistant's, while the newest turn supplied its
+    own, and the extra one was then dropped unmentioned.
     """
     if not payload.image_base64:
         return False
-    for msg in payload.messages:
+    return _latest_user_image_payload(payload.messages) != payload.image_base64
+
+
+def _latest_user_image_payload(messages: list) -> "Optional[str]":
+    """The value ``findLatestUserImageBase64`` would put in ``image_base64``.
+
+    Its scan order, kept in step with the frontend: newest turn first, user turns
+    only, first image part in the turn. ``extractImageBase64`` strips the prefix of
+    a ``data:`` URL and returns anything else unchanged, which is also how
+    :func:`_extract_content_parts` decides a part carries an inline payload.
+    """
+    for msg in reversed(messages):
         if msg.role != "user" or not isinstance(msg.content, list):
             continue
         for part in msg.content:
             if part.type != "image_url":
                 continue
             url = part.image_url.url
-            if url.startswith("data:") and url.partition(",")[2] == payload.image_base64:
-                return False
-    return True
+            return url.partition(",")[2] if url.startswith("data:") else url
+    return None
 
 
 # ── External provider proxy ──────────────────────────────────────
