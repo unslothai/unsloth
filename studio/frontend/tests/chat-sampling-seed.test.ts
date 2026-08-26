@@ -7,7 +7,7 @@
 // quietly drop a seed of 0 or a deliberate clear.
 
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { registerBundlerResolver } from "./helpers/kit.ts";
@@ -21,6 +21,7 @@ import {
   pickRememberedParams,
 } from "../src/features/chat/lib/per-model-params.ts";
 import {
+  type ChatModelRow,
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
   MAX_SAMPLING_SEED,
@@ -143,32 +144,40 @@ test("the pin covers llama.cpp's whole uint32 range bar the sentinel", () => {
   assert.equal(MAX_SAMPLING_SEED, 0xffffffff - 1);
 });
 
+function row(
+  overrides: Partial<Parameters<typeof modelReadsSamplingSeed>[0] & object>,
+) {
+  return {
+    isGguf: false,
+    isMlx: false,
+    isAudio: false,
+    hasAudioInput: false,
+    ...overrides,
+  };
+}
+
 test("a seed reaches only the backends that read one", () => {
   // llama-server reads the seed, and so does MLX: generate_chat_response takes it and
   // builds _make_seeded_mlx_sampler, and worker.py's _backend_declares lets it through.
-  assert.ok(modelReadsSamplingSeed({ isGguf: true }));
-  assert.ok(modelReadsSamplingSeed({ isMlx: true }));
+  assert.ok(modelReadsSamplingSeed(row({ isGguf: true })));
+  assert.ok(modelReadsSamplingSeed(row({ isMlx: true })));
   // The transformers backend declares no seed kwarg, so the same gate drops it there.
-  assert.ok(!modelReadsSamplingSeed({ isGguf: false, isMlx: false }));
+  assert.ok(!modelReadsSamplingSeed(row({})));
   // No summary at all is a model the panel knows nothing about, so it is offered nothing.
   assert.ok(!modelReadsSamplingSeed(null));
   assert.ok(!modelReadsSamplingSeed(undefined));
   // An audio-output model answers through generateAudio, whose request carries no seed, so
   // the control would promise a reproducibility it cannot deliver on that path.
   assert.ok(
-    !modelReadsSamplingSeed({
-      isGguf: true,
-      isAudio: true,
-      hasAudioInput: false,
-    }),
+    !modelReadsSamplingSeed(
+      row({ isGguf: true, isAudio: true, hasAudioInput: false }),
+    ),
   );
   // A model that takes audio IN still decodes through llama-server, so it keeps the field.
   assert.ok(
-    modelReadsSamplingSeed({
-      isGguf: true,
-      isAudio: true,
-      hasAudioInput: true,
-    }),
+    modelReadsSamplingSeed(
+      row({ isGguf: true, isAudio: true, hasAudioInput: true }),
+    ),
   );
 });
 
@@ -321,32 +330,31 @@ test("a cleared seed is not read as a missing key", () => {
 // status response, and the seed gate reads isMlx off that summary. Four separate places
 // mint or refresh one, and three of them were each missing the flag, so this is a rule
 // over the capability cluster rather than a spot check per place.
-test("every capability set that reaches a model summary carries isMlx", () => {
-  const SRC = new URL("../src/", import.meta.url);
-  const files: URL[] = [];
-  const walk = (dir: URL) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === "node_modules") continue;
-      if (entry.isDirectory()) walk(new URL(`${entry.name}/`, dir));
-      else if (/\.tsx?$/.test(entry.name)) files.push(new URL(entry.name, dir));
-    }
-  };
-  walk(SRC);
+// Compile-time, not runtime: a row omitting one of the four fails to build at the site
+// that mints it, including sites no test knows about. ChatModelSummary keeps them optional.
+type RequiredKeys<T> = {
+  [K in keyof T]-?: object extends Pick<T, K> ? never : K;
+}[keyof T];
+type Assert<T extends true> = T;
+type _EveryFlagTheSeedGateReadsIsRequired = Assert<
+  "isGguf" | "isMlx" | "isAudio" | "hasAudioInput" extends
+    RequiredKeys<ChatModelRow>
+    ? true
+    : false
+>;
 
-  const dropped: string[] = [];
-  for (const file of files) {
-    const source = readFileSync(file, "utf8");
-    // hasVideoInput is the last field of the cluster every summary-shaped literal writes,
-    // and `:` is the write; `.hasVideoInput` is a read.
-    for (const match of source.matchAll(/\bhasVideoInput\s*:/g)) {
-      const cluster = source.slice(Math.max(0, match.index - 400), match.index);
-      if (!/\bisMlx\s*:/.test(cluster)) {
-        const line = source.slice(0, match.index).split("\n").length;
-        dropped.push(`${file.pathname.split("/src/")[1]}:${line}`);
-      }
-    }
-  }
-  assert.deepEqual(dropped, []);
+test("a models[] row states every flag the seed gate reads", () => {
+  const row: ChatModelRow = {
+    id: "m",
+    name: "m",
+    isVision: false,
+    isLora: false,
+    isGguf: true,
+    isMlx: false,
+    isAudio: false,
+    hasAudioInput: false,
+  };
+  assert.ok(modelReadsSamplingSeed(row));
 });
 
 test("saving a preset takes the seed being typed, not the one before it", () => {

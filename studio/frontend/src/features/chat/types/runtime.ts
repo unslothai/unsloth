@@ -32,14 +32,19 @@ export interface InferenceParams {
  *  its "draw one" sentinel, so a pin can name every value below that and no other. */
 export const MAX_SAMPLING_SEED = 4_294_967_294;
 
+/** An absent flag reads as false, so a row that omits one makes the gate answer wrong. */
+export type SeedGateFlags = Required<
+  Pick<ChatModelSummary, "isGguf" | "isMlx" | "isAudio" | "hasAudioInput">
+>;
+
+/** What the store holds, so every place that mints a row has to state those flags. */
+export type ChatModelRow = ChatModelSummary & SeedGateFlags;
+
 /** Whether the loaded model's backend reads a sampling seed. Shared so the panel cannot
  *  offer the field where the request would drop it, and takes the same `models[]` summary
  *  the request body already reads `isGguf` from, so the two cannot answer differently. */
 export function modelReadsSamplingSeed(
-  activeModel:
-    | Pick<ChatModelSummary, "isGguf" | "isMlx" | "isAudio" | "hasAudioInput">
-    | null
-    | undefined,
+  activeModel: SeedGateFlags | null | undefined,
 ): boolean {
   // An audio-output model answers through generateAudio, whose request carries no seed.
   if (activeModel?.isAudio && !activeModel.hasAudioInput) {

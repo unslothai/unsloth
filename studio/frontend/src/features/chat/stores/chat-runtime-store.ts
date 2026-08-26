@@ -47,7 +47,7 @@ import {
 } from "../lib/per-model-params";
 import {
   type ChatLoraSummary,
-  type ChatModelSummary,
+  type ChatModelRow,
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
@@ -2457,7 +2457,7 @@ type ChatRuntimeStore = {
   customPresets: Preset[];
   activePreset: string;
   activePresetSource: ChatPresetSource;
-  models: ChatModelSummary[];
+  models: ChatModelRow[];
   loras: ChatLoraSummary[];
   runningByThreadId: Record<string, boolean>;
   /**
@@ -2833,7 +2833,7 @@ type ChatRuntimeStore = {
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
   setActivePresetSource: (source: ChatPresetSource) => void;
-  setModels: (models: ChatModelSummary[]) => void;
+  setModels: (models: ChatModelRow[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   /**
      * `local` defaults to true, so an unqualified caller still counts for the model-swap gate.

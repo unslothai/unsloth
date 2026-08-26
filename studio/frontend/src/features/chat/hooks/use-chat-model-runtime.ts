@@ -109,7 +109,7 @@ import {
 } from "@/features/model-picker/api/llama-flags";
 import type {
   ChatLoraSummary,
-  ChatModelSummary,
+  ChatModelRow,
 } from "../types/runtime";
 
 export type SelectedModelInput = {
@@ -249,7 +249,7 @@ function describeModel(model: {
   return tags.join(" · ");
 }
 
-function toChatModelSummary(model: {
+function toChatModelRow(model: {
   id: string;
   name?: string | null;
   is_lora?: boolean;
@@ -260,7 +260,7 @@ function toChatModelSummary(model: {
   audio_type?: string | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
-}): ChatModelSummary {
+}): ChatModelRow {
   return {
     id: model.id,
     name: model.name || model.id,
@@ -402,7 +402,7 @@ async function syncInferenceStatusToStore(options?: {
     // describes a moment that has passed.
     if (signal?.aborted || superseded()) return;
 
-    setModels(listRes.models.map(toChatModelSummary));
+    setModels(listRes.models.map(toChatModelRow));
     if (lorasRes) {
       setLoras(lorasRes.loras.map(toLoraSummary));
     }

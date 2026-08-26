@@ -166,7 +166,7 @@ import type {
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
 } from "../types/api";
-import { modelReadsSamplingSeed, type ChatModelSummary } from "../types/runtime";
+import { modelReadsSamplingSeed, type ChatModelRow } from "../types/runtime";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
 import {
   getStoredChatThread,
@@ -3673,12 +3673,15 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             maxTokensCap: loadResp.context_length ?? undefined,
           },
         );
-        const defaultModel: ChatModelSummary = {
+        const defaultModel: ChatModelRow = {
           id: DEFAULT_CHAT_MODEL_REPO,
           name: loadResp.display_name ?? DEFAULT_CHAT_MODEL_LABEL,
           isVision: loadResp.is_vision ?? false,
           isLora: false,
           isGguf: true,
+          isMlx: false,
+          isAudio: false,
+          hasAudioInput: false,
         };
         if (!store.models.some((m) => m.id === DEFAULT_CHAT_MODEL_REPO)) {
           store.setModels([...store.models, defaultModel]);

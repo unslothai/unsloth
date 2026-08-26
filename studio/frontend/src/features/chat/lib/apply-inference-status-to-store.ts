@@ -27,7 +27,7 @@ import {
   type InferenceStatusResponse,
   isMultimodalResponse,
 } from "../types/api";
-import type { ChatModelSummary } from "../types/runtime";
+import type { ChatModelRow } from "../types/runtime";
 import { resolveQwenThinkingParams } from "../utils/qwen-params";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
@@ -118,7 +118,7 @@ function ensureActiveModelInStoreList(
     }
     return;
   }
-  const summary: ChatModelSummary = {
+  const summary: ChatModelRow = {
     id: checkpointId,
     // active_model is already the clean public id; its leaf matches the catalog rows,
     // and the fallback keeps a snapshot path out of the trigger.
