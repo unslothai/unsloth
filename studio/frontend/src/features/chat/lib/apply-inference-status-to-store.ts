@@ -7,6 +7,7 @@ import { resolveResidentInitialConfig } from "@/features/model-picker";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
+import { isSpeechOnlyStatus } from "./speech-only-status";
 import {
   mergeBackendRecommendedInference,
   resolveManualAutoCtxPin,
@@ -705,7 +706,9 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
     // Status endpoint unavailable: fall back to the normal auto-load path.
     return false;
   }
-  if (!status.active_model) {
+  // A speech model in the slot is not something chat can adopt; let the sweep
+  // below pick a real chat model, which evicts it exactly as an image load would.
+  if (!status.active_model || isSpeechOnlyStatus(status)) {
     return false;
   }
 

@@ -2370,19 +2370,25 @@ function isChattableCachedRepo(repo: {
     // weights, so /load fetches the base from the Hub when it is not cached,
     // and can_chat is reported true for the format on file layout alone.
     repo.model_format !== "adapter" &&
-    // Cached diffusion repos report can_chat true on file format alone.
-    !IMAGE_OR_VIDEO_TASKS.has(repo.task ?? "")
+    // Cached diffusion and speech repos report can_chat true on file format alone.
+    !NON_CHAT_TASKS.has(repo.task ?? "")
   );
 }
 
 // Chat models are tagged "text-generation" or left null, so this is a list
 // rather than a "has a task" test. The picker routes these rows to the
-// Images/Video page on click; a background load has no routing step, so
-// without this the chat turn goes to a diffusion runtime.
-const IMAGE_OR_VIDEO_TASKS: ReadonlySet<string> = new Set([
+// Images/Video/Audio page on click; a background load has no routing step, so
+// without this the chat turn goes to a diffusion or a speech runtime -- for the
+// audio tasks the backend answers a chat completion with synthesized speech
+// rather than refusing it, so nothing downstream catches the mistake.
+const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
   "text-to-image",
   "text-to-video",
   "image-diffusion-unsupported",
+  "text-to-speech",
+  "text-to-audio",
+  "audio-to-audio",
+  "automatic-speech-recognition",
 ]);
 
 // Scan folders the picker exposes. hf_cache is already in the cached lists.
@@ -2422,7 +2428,7 @@ function isAutoLoadableLocalRow(
     // safetensors one, so this has to fail closed; GGUF is still recognised by
     // suffix, so an unclassified .gguf row keeps loading.
     (isGgufLocalRow(row) || row.model_format === "safetensors") &&
-    !IMAGE_OR_VIDEO_TASKS.has(row.task ?? "") &&
+    !NON_CHAT_TASKS.has(row.task ?? "") &&
     runsOnThisPlatform(row) &&
     !isHiddenModelId(row.model_id, row.id, row.path)
   );

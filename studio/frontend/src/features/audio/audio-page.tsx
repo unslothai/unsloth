@@ -808,6 +808,7 @@ export function AudioPage({
           },
           {
             signal: controller.signal,
+            runtime: "tts",
             onRequestStart: () => {
               pending.requestStarted = true;
               // Queued prompts would otherwise start on the model this load replaces.

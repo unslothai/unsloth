@@ -73,6 +73,7 @@ import {
   normalizeSpeculativeType,
   resolveInferenceCheckpointId,
 } from "../lib/apply-inference-status-to-store";
+import { isSpeechOnlyStatus } from "../lib/speech-only-status";
 import {
   residentRuntimeMatchesConfig,
   residentSpeculativeNeedsRepair,
@@ -409,7 +410,14 @@ async function syncInferenceStatusToStore(options?: {
 
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
-    if (statusRes.active_model && !isExternalSelectionActive) {
+    // A TTS model in the slot is not a chat model, and the local selection is
+    // re-derived from this status on every mount, so adopting one made it the
+    // chat model without the user ever picking it. Treat the slot as empty: the
+    // eviction branch below then clears the stale pick, exactly as it does when
+    // an image or video load takes the slot.
+    const chatActiveModel =
+      statusRes.active_model && !isSpeechOnlyStatus(statusRes);
+    if (chatActiveModel && !isExternalSelectionActive) {
       const checkpointId = resolveInferenceCheckpointId(statusRes);
       if (checkpointId) {
         const previousGgufVariant =
@@ -445,8 +453,8 @@ async function syncInferenceStatusToStore(options?: {
           void refreshContextUsage({ threadId: hydrated.activeThreadId });
         }
       }
-    } else if (!statusRes.active_model && !isExternalSelectionActive) {
-      // Loading an image or video model evicts the chat one (the GPU arbiter
+    } else if (!chatActiveModel && !isExternalSelectionActive) {
+      // Loading an image, video or audio model evicts the chat one (the GPU arbiter
       // allows a single owner), and nothing else here would say so: the picker
       // keeps the selection, so the header would go on claiming it is loaded
       // and the next prompt would come back a bare 400.
@@ -470,7 +478,7 @@ async function syncInferenceStatusToStore(options?: {
         // put it there, not a load path.
         toast.info(`${wasResident} is no longer loaded`, {
           description:
-            "The server released it, which loading an image or video model does. Pick it again to keep chatting.",
+            "The server released it, which loading an image, video or audio model does. Pick it again to keep chatting.",
         });
         // Drop the pick too, which is what a server-side unload already does.
         // Dimming the tick was not enough: the name alone reads as "this is my
@@ -613,7 +621,9 @@ export function useChatModelRuntime() {
     () =>
       subscribeModelLifecycle(({ runtime }) => {
         // Dictation is a sidecar and takes no GPU ownership, so it evicts
-        // nothing. Chat's own loads already reconcile themselves.
+        // nothing. Chat's own loads already reconcile themselves. A "tts" load
+        // does NOT: it is the Audio page taking this very slot, so it has to be
+        // read back like an image or video load.
         if (runtime === "chat" || runtime === "stt") return;
         // Both edges, not only the settle. The arbiter evicts chat inside the
         // image or video load POST, before the download starts, so waiting for

@@ -26,6 +26,7 @@ from hub.utils.gguf import (
     is_mtp_drafter_path as _is_mtp_drafter_path,
 )
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
+from utils.audio_tokens import detect_local_tts_audio_type
 from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
 ModelType = Literal["text", "vision", "audio", "embeddings"]
@@ -307,6 +308,13 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     """
     if not _safe_is_dir(path):
         return None
+
+    # Before every architecture test below: a TTS model is an ordinary causal LM
+    # wearing a codec vocabulary (Orpheus is LlamaForCausalLM), so the suffix rules
+    # answer True for one and chat auto-load then picks it -- they are small, and
+    # the backend answers a chat turn on one with synthesized speech.
+    if detect_local_tts_audio_type(path) is not None:
+        return False
 
     # SentenceTransformers exports carry this even when the config names a
     # broadly reusable encoder class.

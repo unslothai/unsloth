@@ -16,7 +16,10 @@ import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
-import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
+import {
+  type ModelRuntime,
+  withModelLoadNotice,
+} from "@/lib/model-lifecycle-events";
 import type {
   MessageRecord,
   ModelType,
@@ -261,6 +264,10 @@ export async function loadModel(
   options?: {
     signal?: AbortSignal;
     onRequestStart?: () => void;
+    /** What is taking the slot. The Audio page loads speech models through this
+     *  same endpoint, and chat ignores its own loads when reconciling, so one
+     *  announced as "chat" left chat naming a model the Audio page had evicted. */
+    runtime?: ModelRuntime;
   },
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
@@ -275,20 +282,24 @@ export async function loadModel(
   // Announced after the token prompt, so a cancelled load never shows a row.
   // The indicator otherwise had nothing to show until its next 5s poll, while
   // the toast reported the load immediately.
-  return withModelLoadNotice("chat", payload.model_path ?? null, async () => {
-    const response = await authFetch("/api/inference/load", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...payload,
-        hf_token: preparedToken.token,
-        native_path_lease: payload.nativePathLease ?? null,
-        nativePathLease: undefined,
-      }),
-      signal: options?.signal,
-    });
-    return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
-  });
+  return withModelLoadNotice(
+    options?.runtime ?? "chat",
+    payload.model_path ?? null,
+    async () => {
+      const response = await authFetch("/api/inference/load", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...payload,
+          hf_token: preparedToken.token,
+          native_path_lease: payload.nativePathLease ?? null,
+          nativePathLease: undefined,
+        }),
+        signal: options?.signal,
+      });
+      return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+    },
+  );
 }
 
 export async function countChatInputTokens(payload: {
