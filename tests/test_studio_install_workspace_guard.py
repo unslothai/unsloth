@@ -646,8 +646,7 @@ def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(t
     studio_home = tmp_path / "studio"
     (studio_home / "share").mkdir(parents = True)
     gen_script = (
-        _install_id_helpers()
-        + f'STUDIO_HOME="{studio_home}"\n'
+        _install_id_helpers() + f'STUDIO_HOME="{studio_home}"\n'
         '_css_id_dir="$STUDIO_HOME/share"\n'
         '_css_id_file="$_css_id_dir/studio_install_id"\n'
         # Replicate the generation block narrowly so it fails loud on contract drift.
@@ -686,9 +685,7 @@ def test_install_sh_publishes_the_id_without_clobbering():
     assert (
         'ln "$_css_id_tmp" "$_css_id_file"' in block
     ), "install.sh must publish the id with ln (EEXIST on a race), not a clobbering mv"
-    _guarded_mv = (
-        'if [ -z "$_css_studio_root_id" ] && mv "$_css_id_tmp" "$_css_id_file"; then'
-    )
+    _guarded_mv = 'if [ -z "$_css_studio_root_id" ] && mv "$_css_id_tmp" "$_css_id_file"; then'
     assert 'mv "$_css_id_tmp" "$_css_id_file"' not in block.replace(
         _guarded_mv, ""
     ), "the only remaining mv must be the no-hard-link fallback, guarded on the destination"
@@ -712,8 +709,7 @@ def test_install_sh_id_publish_adopts_the_winner_of_a_race(tmp_path):
     # Replicate the publish step with the guard removed, so only the publication
     # primitive decides the outcome: a clobbering mv would overwrite the incumbent.
     publish = (
-        _install_id_helpers()
-        + f'_css_id_file="{id_file}"\n'
+        _install_id_helpers() + f'_css_id_file="{id_file}"\n'
         '_css_id_tmp="$_css_id_file.$$.tmp"\n'
         '_css_new_id="' + "b" * 64 + '"\n'
         'printf "%s" "$_css_new_id" > "$_css_id_tmp"\n'
@@ -746,8 +742,7 @@ def test_install_sh_id_publish_replaces_a_blank_incumbent(tmp_path):
     fresh = "c" * 64
 
     publish = (
-        _install_id_helpers()
-        + f'_css_id_file="{id_file}"\n'
+        _install_id_helpers() + f'_css_id_file="{id_file}"\n'
         f'_css_new_id="{fresh}"\n'
         '_css_id_tmp="$_css_id_file.$$.$(printf "%.8s" "$_css_new_id").tmp"\n'
         'printf "%s" "$_css_new_id" > "$_css_id_tmp"\n'
@@ -781,14 +776,13 @@ def test_install_sh_never_bakes_a_planted_id_into_the_launcher(tmp_path):
 
     launcher = tmp_path / "launch-studio.sh"
     script = (
-        _install_id_helpers()
-        + f'_css_id_file="{id_file}"\n'
+        _install_id_helpers() + f'_css_id_file="{id_file}"\n'
         '_css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")\n'
         'if [ -z "$_css_studio_root_id" ]; then\n'
         '    _css_studio_root_id=$(od -An -N32 -tx1 /dev/urandom | tr -d " \\n")\n'
         "fi\n"
         # The real embedding step from install.sh.
-        f"printf \"%s\\n\" \"_EXPECTED_STUDIO_ROOT_ID='@@STUDIO_ROOT_ID@@'\" > {launcher}\n"
+        f'printf "%s\\n" "_EXPECTED_STUDIO_ROOT_ID=\'@@STUDIO_ROOT_ID@@\'" > {launcher}\n'
         f'sed -e "s|@@STUDIO_ROOT_ID@@|$_css_studio_root_id|g" {launcher} > {launcher}.tmp\n'
         f"mv {launcher}.tmp {launcher}\n"
     )
