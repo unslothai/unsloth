@@ -77,7 +77,7 @@ test("the keyless example is offered exactly where admission accepts the authori
 test("exposure alone cannot make a rejected base eligible", () => {
   // The regression that started this: `private_lan` is computed from the RESOLVED
   // address, so it must never widen a base the authority rule rejected.
-  for (const exposure of ["private_lan", "loopback", null] as const) {
+  for (const exposure of ["private_lan", "network", null] as const) {
     assert.equal(
       keylessBaseEligible("http://box.local:8888", "inference", exposure),
       false,
@@ -104,7 +104,7 @@ test("full scope never reaches a non-loopback authority", () => {
     false,
   );
   assert.equal(
-    keylessBaseEligible("http://127.0.0.1:8888", "full", "loopback"),
+    keylessBaseEligible("http://127.0.0.1:8888", "full", null),
     true,
   );
 });

@@ -12,14 +12,11 @@
  * by a unit test instead of by scraping the source.
  */
 
+import type {
+  KeylessApiAccessExposure,
+  KeylessApiAccessScope,
+} from "../api/keyless-api-access.ts";
 import { isLoopbackHost, normalizeHost } from "./agent-command.ts";
-
-export type KeylessScope = "off" | "inference" | "full";
-export type KeylessExposure =
-  | "loopback"
-  | "private_lan"
-  | "public_url"
-  | "colab";
 
 // Same networks as the backend's _PRIVATE_LAN_NETWORKS.
 export function isPrivateLanHost(hostname: string): boolean {
@@ -78,8 +75,8 @@ export function isKeylessAllowedAuthority(hostname: string): boolean {
 
 export function keylessBaseEligible(
   base: string,
-  scope: KeylessScope,
-  exposure: KeylessExposure | null,
+  scope: KeylessApiAccessScope,
+  exposure: KeylessApiAccessExposure | null,
 ): boolean {
   if (scope === "off" || exposure === "colab" || exposure === "public_url") {
     return false;
