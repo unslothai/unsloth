@@ -3070,20 +3070,19 @@ def test_vendor_extension_fields_are_swept_not_dropped():
 
 _INFERENCE_DIR = _REPO_ROOT / "studio" / "backend" / "core" / "inference"
 
-# The local tool loops. Each builds the controller prepare_call authorizes against, so
-# each has to hand it a catalog that traces back to the sweep.
+# The local tool loops. Each builds the controller prepare_call authorizes against, so each
+# has to hand it a catalog that traces back to the sweep.
 _CONTROLLER_MODULES = ("llama_cpp.py", "safetensors_agentic.py")
 
-# Producers whose return value IS a sanitized catalog. The sweep itself, plus the two
-# catalog builders that wrap it; the builders are held to that below.
+# Producers whose return value IS a sanitized catalog: the sweep, plus the two catalog
+# builders that wrap it. The builders are held to that below.
 _SWEEP = "neutralize_tool_descriptions"
 _CATALOG_PRODUCERS = frozenset(
     {_SWEEP, "renderable_tool_catalog", "renderable_tool_catalog_for_targets"}
 )
 
-# A parameter the CALLER is required to hand a sanitized catalog. Only the narrowed
-# catalog qualifies, and the contract is not taken on trust: every production call site
-# that supplies one is resolved with the same resolver by the test below.
+# A parameter the CALLER must hand a sanitized catalog. Not taken on trust: the test below
+# resolves every production call site that supplies one.
 _SANITIZED_BY_CONTRACT = {
     ("safetensors_agentic.py", "run_safetensors_tool_loop"): frozenset({"renderable_tools"}),
 }
@@ -3103,7 +3102,7 @@ def _ctrl_parse(path):
 def _ctrl_aliases(tree):
     """``as`` bindings, so ``neutralize_tool_descriptions as _neutralize_...`` still counts.
 
-    Whole-tree rather than module level: llama_cpp.py imports the sweep inside the loop.
+    Whole-tree, not module level: llama_cpp.py imports the sweep inside the loop.
     """
     aliases = {}
     for node in ast.walk(tree):
@@ -3144,9 +3143,9 @@ def _ctrl_scopes(node):
 def _ctrl_bindings(scope):
     """``name -> every expression bound to it`` DIRECTLY in *scope*.
 
-    Nested scopes are not descended into, so an inner helper's rebinding of the same name
-    is not mistaken for the outer one. Every binding has to resolve, not just one: a name
-    that is swept on one branch and raw on another is not a sanitized catalog.
+    Nested scopes are skipped, so an inner helper's rebind of the same name is not read as
+    this one. EVERY binding has to resolve: swept on one branch and raw on another is not
+    a sanitized catalog.
     """
     bindings = {}
 
@@ -3177,18 +3176,16 @@ def _ctrl_bindings(scope):
     return bindings
 
 
-#: Calls and assignments that refill a catalog WITHOUT rebinding its name, so `_ctrl_bindings`
-#: never sees the new contents. `controller_tools = []` followed by `controller_tools.extend(tools)`
-#: would otherwise resolve on the empty literal alone.
+#: Calls that refill a catalog WITHOUT rebinding its name, so `_ctrl_bindings` never sees the new
+#: contents: `controller_tools = []; controller_tools.extend(tools)` resolves on the literal alone.
 _CTRL_MUTATORS = frozenset({"append", "extend", "insert", "update", "add"})
 
 
 def _ctrl_mutated(scope):
     """Names filled in place DIRECTLY in *scope*, which no resolved catalog may be.
 
-    Rejected rather than modelled: what a mutation puts in the list is exactly the dataflow this
-    resolver would have to follow, and a catalog nothing rebinds is not one it can vouch for.
-    Scoped like `_ctrl_bindings` so an inner helper's same-named local is not read as this one.
+    Rejected rather than modelled: what a mutation puts in the list is the dataflow this resolver
+    would have to follow anyway. Scoped like `_ctrl_bindings`.
     """
     names = set()
 
@@ -3227,11 +3224,9 @@ def _ctrl_params(scope):
 
 
 def _ctrl_sweep_carries_profile(call):
-    """The sweep has to be given THIS turn's markup profile.
-
-    Sweeping under the default profile drops what the renderer keeps and keeps what it
-    drops, so the authorized catalog stops matching the prompt the model was shown.
-    """
+    """The sweep has to be given THIS turn's markup profile: under the default it drops what
+    the renderer keeps and keeps what it drops, so the authorized catalog stops matching the
+    prompt the model was shown."""
     profile = call.args[2] if len(call.args) >= 3 else None
     for keyword in call.keywords:
         if keyword.arg == "markup":
@@ -3244,14 +3239,13 @@ def _ctrl_sweep_carries_profile(call):
 def _ctrl_resolve(expr, scopes, aliases, module, seen):
     """Does *expr* provably evaluate to a sanitized tool catalog?
 
-    Returns ``(ok, why, gates)``. This walks the dataflow rather than the source text: hoisting
-    the sweep into a local, rewrapping the call or renaming the variable all still
-    resolve, while handing the controller the raw catalog does not.
+    Returns ``(ok, why, gates)``. Walks the dataflow rather than the source text: hoisting the
+    sweep into a local, rewrapping the call or renaming the variable all still resolve, while
+    handing the controller the raw catalog does not.
 
-    ``gates`` is separate from ``ok`` because ``None`` is not a catalog at all: it turns the
-    controller's name allowlist OFF (``_restrict_to_allowed = tools is not None``), which is
-    sanitization's opposite and not a weaker form of it. It is sanitized-vacuously, so ``ok``,
-    and it authorizes everything, so it never satisfies a site that has to gate.
+    ``gates`` is separate from ``ok`` because ``None`` is not a catalog at all. It turns the
+    name allowlist OFF (``_restrict_to_allowed = tools is not None``), which is sanitization's
+    opposite: vacuously ``ok``, and never enough for a site that has to gate.
     """
     if isinstance(expr, ast.Constant) and expr.value is None:
         return True, "no catalog, so the controller does not gate", False
@@ -3263,9 +3257,8 @@ def _ctrl_resolve(expr, scopes, aliases, module, seen):
         return _ctrl_resolve(expr.value, scopes, aliases, module, seen)
     if isinstance(expr, (ast.IfExp, ast.BoolOp)):
         branches = (expr.body, expr.orelse) if isinstance(expr, ast.IfExp) else expr.values
-        # EVERY branch has to resolve, and it is enough that ONE gates: the shape both loops use
-        # is `None if there are no tools else <swept>`, where the swept branch is the one that
-        # ever holds a catalog and the None branch has nothing to authorize.
+        # EVERY branch has to resolve, and it is enough that ONE gates: both loops use
+        # `None if there are no tools else <swept>`, where None has nothing to authorize.
         gates = False
         for branch in branches:
             ok, why, branch_gates = _ctrl_resolve(branch, scopes, aliases, module, seen)
@@ -3349,14 +3342,14 @@ def test_tool_loop_controllers_are_built_from_the_sanitized_catalog():
     structured delta.tool_calls path reaches it without passing _enabled_tool_names at
     all, so sanitizing only the gates left a dropped tool executable by name (#7066).
 
-    Asserted on the dataflow, not on source text near the construction site. The window
-    this used to scan was emptied by #9773 hoisting the very same sweep one statement up
-    into a local, and a formatter rewrapping the call would have done the same: a test a
-    reformat can break is not testing what it claims.
+    Asserted on the dataflow, not on source text near the construction site. The window this
+    used to scan was emptied by #9773 hoisting the very same sweep one statement up into a
+    local, and a formatter rewrapping the call would have done the same: a test a reformat can
+    break is not testing what it claims.
 
-    Sanitized AND gating. A bare ``tools = None`` is sanitized vacuously but sets
-    ``_restrict_to_allowed = False``, so prepare_call stops checking names at all and every tool
-    the sweep removed becomes executable again -- the #7066 failure, reached from the other side.
+    Sanitized AND gating. A bare ``tools = None`` is vacuously sanitized but sets
+    ``_restrict_to_allowed = False``, so prepare_call stops checking names and every tool the
+    sweep removed is executable again -- #7066 reached from the other side.
     """
     checked = 0
     for module in _CONTROLLER_MODULES:
@@ -3396,22 +3389,20 @@ def test_the_resolver_holds_the_shapes_that_defeat_a_source_scan():
     """The two ways past a dataflow guard that a text scan would have caught by accident.
 
     Both are regressions a refactor can land without meaning to, and neither hands the
-    controller anything a reader would call raw, which is why they are pinned here.
+    controller anything a reader would call raw.
     """
     swept = "neutralize_tool_descriptions(tools, None, markup)"
-    # An UNRESTRICTED controller. `tools = None` sets `_restrict_to_allowed = False`, so
-    # prepare_call stops checking names and every tool the sweep dropped is executable again.
-    # It resolves -- there is no catalog to sanitize -- and it must not satisfy the site.
+    # An UNRESTRICTED controller: `_restrict_to_allowed = False`, so every tool the sweep
+    # dropped is executable again. It resolves, and must not satisfy the site.
     ok, _why, gates = _ctrl_resolve_source(f"c = {swept}\nToolLoopController(tools = None)\n")
     assert ok and not gates
-    # The same shape the loops legitimately use still gates: None only when there is nothing
-    # to authorize, the swept catalog otherwise.
+    # The shape the loops legitimately use still gates.
     ok, _why, gates = _ctrl_resolve_source(
         f"c = {swept}\nToolLoopController(tools = None if not tools else c)\n"
     )
     assert ok and gates
-    # A catalog FILLED IN PLACE. The binding table records the empty literal and never sees
-    # the raw tools arrive, so the name has to be refused rather than resolved.
+    # FILLED IN PLACE: the binding table records the literal and never sees the raw tools
+    # arrive, so the name is refused rather than resolved.
     ok, why, _gates = _ctrl_resolve_source(
         "c = []\nc.extend(tools)\nToolLoopController(tools = c)\n"
     )
@@ -3438,8 +3429,8 @@ def test_the_sanitized_by_contract_catalog_is_sanitized_at_every_caller():
             for keyword in node.keywords:
                 if keyword.arg not in wanted:
                     continue
-                # No gating requirement here: ``renderable_tools = None`` is how a caller says it
-                # has no narrowed catalog to offer, and the loop then sweeps `tools` itself.
+                # No gating requirement: ``renderable_tools = None`` is how a caller says it
+                # has no narrowed catalog, and the loop then sweeps `tools` itself.
                 ok, why, _gates = _ctrl_resolve(
                     keyword.value, _ctrl_scopes(node), aliases, path.name, frozenset()
                 )
