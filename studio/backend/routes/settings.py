@@ -2256,7 +2256,16 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
     try:
         from pathlib import Path
         from utils.paths import is_local_path, normalize_path
-        return is_local_path(model) and Path(normalize_path(model)).expanduser().exists()
+        if not is_local_path(model):
+            return False
+        p = Path(normalize_path(model)).expanduser()
+        # A .gguf is never openable by ST. Existence alone used to be enough, so
+        # an explicit RAG_EMBED_BACKEND=sentence-transformers pointed at a local
+        # GGUF reported "cached, ready" and only failed at the first index. Falling
+        # through instead reaches the no-loadable-weights error, which says so.
+        if p.is_file() and p.suffix.lower() == ".gguf":
+            return False
+        return p.exists()
     except Exception:  # noqa: BLE001 - filesystem oddity is a cache miss
         return False
 

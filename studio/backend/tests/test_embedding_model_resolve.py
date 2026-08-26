@@ -624,3 +624,30 @@ def test_the_token_is_a_header_not_a_query_parameter(client, monkeypatch):
         headers = {"X-Unsloth-HF-Token": "hf_secret"},
     )
     assert seen["token"] == "hf_secret"
+
+
+def test_a_local_gguf_is_not_reported_as_a_ready_sentence_transformers_model(
+    client, monkeypatch, tmp_path
+):
+    """The presence probe accepted any existing local path, so with an explicit
+    RAG_EMBED_BACKEND=sentence-transformers a local .gguf came back cached and
+    ready and only failed at the first index. Under `auto` the backend resolver
+    now sends it to llama-server; this covers the explicit setting, where the
+    no-loadable-weights error is the honest answer."""
+    gguf = tmp_path / "embed.gguf"
+    gguf.write_bytes(b"GGUF")
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
+    monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
+    import utils.utils as utils
+
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: False)
+
+    assert settings._local_sentence_transformer_is_present(str(gguf)) is False
+    # A real ST folder on the same filesystem is still recognised.
+    folder = tmp_path / "st-model"
+    folder.mkdir()
+    assert settings._local_sentence_transformer_is_present(str(folder)) is True
+
+    body = _resolve(client, str(gguf)).json()
+    assert body["cached"] is False
+    assert "no checkpoint this backend can load" in body["error"]

@@ -81,8 +81,16 @@ export function EmbeddingModelPicker({
     if (selected && !rows.some((row) => row.id === selected)) {
       rows.push({ id: selected, sizeBytes: null });
     }
+    // The configured default the same way. The empty search is scoped to
+    // `unsloth`, so a RAG_EMBEDDING_MODEL naming a private repo, another owner's
+    // repo or a local path was absent from the list; with the old "Reset to
+    // default" button gone, getting back to it meant retyping it exactly.
+    const fallback = defaultModel?.trim();
+    if (fallback && !rows.some((row) => row.id === fallback)) {
+      rows.push({ id: fallback, sizeBytes: null });
+    }
     return rows;
-  }, [results, value]);
+  }, [results, value, defaultModel]);
 
   const pick = (model: string) => {
     setOpen(false);

@@ -657,6 +657,23 @@ def _resolve_auto() -> str:
     return "sentence-transformers"
 
 
+def _model_is_local_gguf(model: str | None) -> bool:
+    """Whether ``model`` names a local .gguf file, or a folder holding one.
+
+    Gated on ``is_local_path`` first so a plain repo id costs no filesystem walk
+    on the hot ``_get_backend`` path."""
+    if not model:
+        return False
+    try:
+        from utils.paths import is_local_path
+        if not is_local_path(model):
+            return False
+        from core.rag.embed_llama_server import LlamaServerBackend
+        return LlamaServerBackend._resolve_local_gguf(model) is not None
+    except Exception:  # noqa: BLE001 - filesystem oddity is not a llama signal
+        return False
+
+
 def _resolve_auto_for_model(model_name: str | None = None) -> str:
     """``auto``, but honouring the backend recorded for the saved model.
 
@@ -664,6 +681,14 @@ def _resolve_auto_for_model(model_name: str | None = None) -> str:
     records that choice rather than refusing the model; without this the hardware
     default would send it to llama-server, which has nothing to open."""
     model = model_name or config.effective_embedding_model()
+    # A local .gguf is not a sentence-transformers artifact under any hardware.
+    # _resolve_auto answers "sentence-transformers" whenever a GPU is present, so
+    # without this a GPU box pointed at /models/embed.gguf planned an ST load of a
+    # GGUF: the resolve endpoint called it cached and ready, and the load failed at
+    # the first index. Only ``auto`` consults this, so an explicit
+    # RAG_EMBED_BACKEND is still honoured verbatim.
+    if _model_is_local_gguf(model):
+        return "llama-server"
     try:
         from utils.embedding_model_settings import get_stored_backend
         stored = get_stored_backend(model)

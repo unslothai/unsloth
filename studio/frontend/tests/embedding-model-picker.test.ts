@@ -310,3 +310,16 @@ test("a force save re-resolves even though the model string did not change", () 
   );
   assert.match(SECTION, /\}, \[savedModel, hfToken, resolveNonce\]\);/);
 });
+
+test("the configured default stays reachable when the listing drops it", () => {
+  // The empty query is scoped to `unsloth`, so a RAG_EMBEDDING_MODEL naming a
+  // private repo, another owner's repo or a local path never appeared as a row.
+  // This PR also removed the "Reset to default" button, so getting back to it
+  // meant retyping the exact value into a field that no longer exists.
+  assert.match(PICKER, /rows\.push\(\{ id: fallback, sizeBytes: null \}\)/);
+  assert.match(PICKER, /const fallback = defaultModel\?\.trim\(\)/);
+  // A stale memo would pin the row to whatever the default was on first render.
+  assert.match(PICKER, /\}, \[results, value, defaultModel\]\)/);
+  // And the section still hands the default down for it to be found.
+  assert.match(SECTION, /defaultModel=\{embeddingModel\?\.defaultEmbeddingModel\}/);
+});

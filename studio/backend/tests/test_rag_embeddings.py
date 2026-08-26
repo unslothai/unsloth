@@ -867,3 +867,48 @@ def test_the_token_counter_follows_an_unloaded_sentence_transformer(monkeypatch)
     assert count("first") == 3
     assert count("second") == 7
     assert looked_up == ["org/embedder", "org/embedder"]
+
+
+def test_a_local_gguf_selects_llama_even_on_a_gpu_box(monkeypatch, tmp_path):
+    """_resolve_auto answers sentence-transformers whenever a GPU is present, so
+    a GPU box pointed at a local .gguf planned an ST load of a GGUF file: resolve
+    called it cached and ready, and the load failed at the first index."""
+    gguf = tmp_path / "embed.gguf"
+    gguf.write_bytes(b"GGUF")
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
+    # The hardware default that used to win.
+    monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
+
+    assert embeddings._resolve_auto_for_model(str(gguf)) == "llama-server"
+    assert embeddings.resolved_backend_for_model(str(gguf)) == "llama-server"
+    # A folder holding one counts the same way.
+    assert embeddings._resolve_auto_for_model(str(tmp_path)) == "llama-server"
+    # An ordinary repo id is untouched, and costs no filesystem walk.
+    assert embeddings._resolve_auto_for_model("unsloth/bge-small-en-v1.5") == (
+        "sentence-transformers"
+    )
+
+
+def test_a_local_gguf_beats_a_stored_sentence_transformers_record(monkeypatch, tmp_path):
+    """A stored ST record for a .gguf can only come from a force-save that then
+    failed; honouring it would reinstate the same broken load."""
+    gguf = tmp_path / "embed.gguf"
+    gguf.write_bytes(b"GGUF")
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
+    import utils.embedding_model_settings as ems
+    monkeypatch.setattr(ems, "get_stored_backend", lambda _m: "sentence-transformers")
+
+    assert embeddings._resolve_auto_for_model(str(gguf)) == "llama-server"
+
+
+def test_an_explicit_backend_is_not_overridden_by_a_local_gguf(monkeypatch, tmp_path):
+    """Only ``auto`` consults the probe; an explicit setting stays verbatim."""
+    gguf = tmp_path / "embed.gguf"
+    gguf.write_bytes(b"GGUF")
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "sentence-transformers")
+    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
+    monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: True)
+
+    assert embeddings.resolved_backend_for_model(str(gguf)) == "sentence-transformers"
