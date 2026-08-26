@@ -16473,7 +16473,6 @@ async def openai_chat_completions(
 
     def _reject_missing_forced_tool(tool_choice, selected_tools) -> None:
         from core.inference.chat_template_helpers import catalog_tool_names, forced_tool_name
-
         forced_name = forced_tool_name(tool_choice)
         if forced_name and forced_name not in catalog_tool_names(selected_tools):
             raise _reject(
@@ -23692,9 +23691,7 @@ async def anthropic_messages(
         server_tool_choice = openai_tool_choice
         if isinstance(server_tool_choice, dict):
             forced_function = server_tool_choice.get("function")
-            forced_name = (
-                forced_function.get("name") if isinstance(forced_function, dict) else None
-            )
+            forced_name = forced_function.get("name") if isinstance(forced_function, dict) else None
             canonical_name = _STUDIO_ANTHROPIC_TOOL_ALIASES.get(forced_name)
             if canonical_name:
                 server_tool_choice = {

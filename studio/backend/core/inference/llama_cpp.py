@@ -25599,8 +25599,7 @@ class LlamaCppBackend:
                 yield _ev
             conversation.extend(_auto["messages"])
         _auto_satisfies_forced_choice = bool(_auto) and (
-            tool_choice == "required"
-            or forced_tool_name(tool_choice) == "search_knowledge_base"
+            tool_choice == "required" or forced_tool_name(tool_choice) == "search_knowledge_base"
         )
 
         _accumulated_completion_tokens = 0
@@ -25816,9 +25815,7 @@ class LlamaCppBackend:
             requested_choice = "auto" if tool_choice is None else tool_choice
             if _forced_choice_resolved and requested_choice not in ("auto", "none"):
                 requested_choice = "auto"
-            requested_choice = (
-                reconciled_tool_choice(requested_choice, tools, safe_tools) or "auto"
-            )
+            requested_choice = reconciled_tool_choice(requested_choice, tools, safe_tools) or "auto"
             forced_name = forced_tool_name(requested_choice)
             if forced_name:
                 matching_tools = [
