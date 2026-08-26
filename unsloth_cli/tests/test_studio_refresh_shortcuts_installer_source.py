@@ -211,6 +211,40 @@ def test_the_managed_venv_leads_the_bundled_lookup(monkeypatch, tmp_path):
     assert all(root.name == "unsloth" and root.parent.name == "share" for root in roots)
 
 
+def test_the_bundled_lookup_covers_the_layouts_pip_can_produce(monkeypatch, tmp_path):
+    """<data> is not always sys.prefix.
+
+    `pip install --target DIR` collapses purelib and data onto DIR, so the installer sits
+    next to the packages and _PACKAGE_ROOT is the only root that finds it. Debian and Ubuntu
+    patch the default scheme to posix_local, so a system-python install lands under
+    /usr/local while sys.prefix stays /usr. `--user` lands under site.USER_BASE, which is
+    ~/.local on Linux but ~/Library/Python/X.Y on macOS.
+    """
+    studio = _studio()
+    target = tmp_path / "target"
+    monkeypatch.setattr(studio, "_PACKAGE_ROOT", target)
+    monkeypatch.setattr(studio.sysconfig, "get_path", lambda name, *a, **k: "/usr/local")
+    monkeypatch.setattr(studio.site, "USER_BASE", str(tmp_path / "userbase"))
+    roots = studio._bundled_installer_roots()
+
+    for expected in (
+        target / "share" / "unsloth",
+        Path(sys.prefix) / "share" / "unsloth",
+        Path("/usr/local") / "share" / "unsloth",
+        tmp_path / "userbase" / "share" / "unsloth",
+    ):
+        assert expected in roots, f"{expected} missing from {roots}"
+    assert len(roots) == len(set(roots)), roots
+
+
+def test_a_missing_user_base_does_not_break_the_lookup(monkeypatch):
+    """site.USER_BASE is None under an interpreter started with -s or embedded."""
+    studio = _studio()
+    monkeypatch.setattr(studio.site, "USER_BASE", None)
+    roots = studio._bundled_installer_roots()
+    assert roots and all(isinstance(root, Path) for root in roots)
+
+
 def test_neither_the_network_nor_a_bundled_copy_executes_nothing(monkeypatch, tmp_path, capsys):
     studio = _posix(monkeypatch, tmp_path)
     monkeypatch.setattr(studio, "_fetch_installer", lambda *a, **k: None)

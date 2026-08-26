@@ -3616,7 +3616,15 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
 # a Cloudflare 301 to this exact path, so the bytes always came from the repo, but the hop
 # put the unsloth.ai DNS and CDN control plane in the path of code execution on every
 # updating machine. Going to the origin removes a whole trust anchor without changing what
-# runs. The bundled copy below covers what the hop was worth: reachability.
+# runs.
+#
+# The hop was worth something, though, and it was reachability. raw.githubusercontent.com is
+# a materially worse-reachable host than a Cloudflare-fronted domain: it is absent from the
+# domain list GitHub documents for self-hosted runners and from the corporate-proxy
+# restriction list (which excludes *.githubusercontent.com outright), and it is a long
+# standing GFW target. That is what the bundled copy below is for. A network that cannot
+# reach the origin now falls back to a release-matched installer on disk instead of skipping
+# the refresh, which is what it used to do.
 _INSTALLER_URL_BASH = "https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh"
 _INSTALLER_URL_PWSH = "https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1"
 # The only host the fetch will talk to. Anywhere else, including unsloth.ai, and plain
@@ -3751,8 +3759,19 @@ def _bundled_installer_roots() -> List[Path]:
     would run that foreign CLI's older bundled installer instead. Running inside the managed
     venv it is sys.prefix again and the dedup below drops the repeat, so this only reorders
     the case it is for.
+
+    _PACKAGE_ROOT comes next because it is where the running code itself was installed, so
+    it is the most release-matched of the rest. For an ordinary venv it is site-packages and
+    holds nothing, but `pip install --target DIR` collapses purelib and data onto DIR, which
+    makes it DIR and the only root that finds that layout.
+
+    Then the interpreter's prefixes. Both sys.prefix and the sysconfig data path are listed
+    because they are not always the same: Debian and Ubuntu patch the default scheme to
+    posix_local, so a system-python install lands under /usr/local while sys.prefix is /usr.
+    site.USER_BASE last covers `pip install --user`, which is ~/.local on Linux but
+    ~/Library/Python/X.Y on macOS, so it is read from site rather than assumed.
     """
-    roots: List[Path] = [STUDIO_HOME / "unsloth_studio", Path(sys.prefix)]
+    roots: List[Path] = [STUDIO_HOME / "unsloth_studio", _PACKAGE_ROOT, Path(sys.prefix)]
     for path in (sysconfig.get_path("data"), getattr(site, "USER_BASE", None)):
         if path:
             roots.append(Path(path))
