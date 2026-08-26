@@ -581,7 +581,7 @@ def _detect_hardware_locked() -> DeviceType:
                 xpu_ok = False
             if xpu_ok:
                 # Forced XPU on a hybrid host: unsloth's device_type picks
-                # CUDA before XPU and ignores this Studio-only env var, so
+                # CUDA before XPU and ignores this Unsloth-only env var, so
                 # hide CUDA or spawned workers would silently train on CUDA.
                 if force_xpu and not cuda_hidden and not cuda_unavailable:
                     os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -4921,7 +4921,7 @@ def dataset_map_num_proc(
     Return a safe ``num_proc`` for ``Dataset.map()`` and ``Dataset.filter()``.
 
     Returns ``None`` on spawn platforms (Windows, macOS). ``None`` -- not ``1``
-    -- is the disable sentinel: ``datasets`` >= 4.1 (Studio pins 4.3.0) takes
+    -- is the disable sentinel: ``datasets`` >= 4.1 (Unsloth pins 4.3.0) takes
     the pool branch for any ``num_proc >= 1``, so ``1`` still builds a
     ``Pool(1)``.
 
@@ -5078,7 +5078,7 @@ def _num_proc_override_is_set() -> bool:
 def _bounded_by_the_shared_policy(
     desired: Optional[int], serial_as_none: bool = True
 ) -> Optional[int]:
-    """Apply the training-side num_proc policy to a Studio request.
+    """Apply the training-side num_proc policy to an Unsloth request.
 
     ``format_conversion.py`` and ``chat_templates.py`` hand this straight to
     ``Dataset.map``, so without it a container with 2GB and eight cores still got
@@ -5090,7 +5090,7 @@ def _bounded_by_the_shared_policy(
     auto path reads this process's CPU affinity and cgroup quota while
     ``safe_num_proc`` reads the host's ``os.cpu_count()``: a 2-core container on
     a 64-core box asked for 21 workers and got them bounded only by memory.
-    Studio's own caps are then applied to whatever the policy chose, since the
+    Unsloth's own caps are then applied to whatever the policy chose, since the
     multi-GPU fork-deadlock cap is knowledge the policy does not have -- except
     over the escape hatch, which is uncapped by contract.
     """

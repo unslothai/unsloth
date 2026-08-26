@@ -76,7 +76,7 @@ test("the gpt-5.6 family gets the gpt-5.5 reasoning ladder", () => {
   }
 });
 
-test("ChatGPT subscription models expose Studio-owned search and code tools", () => {
+test("ChatGPT subscription models expose Unsloth-owned search and code tools", () => {
 
   setProviderModelCapabilities("openai_codex", {
     "gpt-5.3-codex-spark": { vision: false, studio_tools: true },
@@ -154,7 +154,7 @@ test("generic Custom connections use only their explicit max-output override", (
     32768,
   );
 
-  // the override is provider-owned, so values above Studio's context-length convention
+  // the override is provider-owned, so values above Unsloth's context-length convention
   // stay valid as long as they round-trip safely through JSON
   assert.equal(getExternalMaxOutputTokens("custom", "model", 1048577), 1048577);
   assert.equal(

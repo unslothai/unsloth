@@ -8,7 +8,7 @@ Auto was moved to it: an explicit request was passed through verbatim, on the th
 "--fit on" is a backstop. It is one, but not a trustworthy one here. llama.cpp will reduce
 an explicit context (fit_params_min_ctx defaults to 4096; only "-c 0" disables it), but it
 decides from ggml-metal's free-memory report, off the device's recommendedMaxWorkingSetSize,
-which knows nothing of Studio's own resident gigabyte or two, other running apps, or the
+which knows nothing of Unsloth's own resident gigabyte or two, other running apps, or the
 iogpu wired limit actually being blown. When that estimate is optimistic the request stands
 and the launch over-commits wired memory, which Jetsam cannot reclaim, so the machine
 panics instead of the load failing. An M1 Max 32 GB hit exactly that on

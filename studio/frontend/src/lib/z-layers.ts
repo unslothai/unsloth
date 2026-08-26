@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * The stacking order of Studio's full-viewport surfaces, in one place.
+ * The stacking order of Unsloth's full-viewport surfaces, in one place.
  *
  * Everything here is a `position: fixed` surface that covers whatever is under
  * it, so the only thing deciding who wins is the number. Written down together

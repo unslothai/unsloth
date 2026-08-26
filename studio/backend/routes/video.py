@@ -151,7 +151,7 @@ async def video_download_plan(
         # unsupported host paid for tens of GB of weights to be told afterwards. Network-free.
         #
         # Skipped while a trainer holds the GPU: an uncached scheme takes this into a
-        # quantise-and-matmul smoke probe that initialises CUDA in the Studio process, and the
+        # quantise-and-matmul smoke probe that initialises CUDA in the Unsloth process, and the
         # plan runs before the load's training guard can refuse. Staging needs no GPU.
         # Ranking opens a CUDA context per candidate, which the training guard exists to prevent,
         # so the RANKING waits until training is known idle. Validating and translating the ids
@@ -563,7 +563,7 @@ async def get_gallery_video_file(
 ):
     from core.inference import video_gallery
 
-    # Ownership-gate the serve like delete/clear: resolve only a Studio-owned MP4, so a guessed stem cannot stream out a foreign clip.
+    # Ownership-gate the serve like delete/clear: resolve only an Unsloth-owned MP4, so a guessed stem cannot stream out a foreign clip.
     path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")

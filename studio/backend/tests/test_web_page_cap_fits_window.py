@@ -863,7 +863,7 @@ class TestTheProbeIsNotPaidForTwice:
     def test_a_pass_through_chat_template_is_not_answered_from_the_managed_one(self, monkeypatch):
         """The gap `_chat_template_override` cannot see.
 
-        User extra args are appended verbatim AFTER Studio's own flags and llama.cpp is
+        User extra args are appended verbatim AFTER Unsloth's own flags and llama.cpp is
         last-wins, so `--chat-template` / `--chat-template-file` in extra args changes what
         `/apply-template` renders while every managed field stays exactly as it was. Same
         GGUF, same window, same managed override: reuse the counts and a prefix gets a

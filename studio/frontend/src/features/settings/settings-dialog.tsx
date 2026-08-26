@@ -109,7 +109,7 @@ interface PanelBoundaryState {
 /**
  * A panel fetch can fail (offline, or an entry bundle naming chunks a `dist/` rewrite
  * replaced). Nothing above this root-mounted dialog catches, so unguarded that unmounts
- * all of Studio rather than one panel.
+ * all of Unsloth rather than one panel.
  *
  * Reload rather than retry: React and the browser's module map both cache the failed
  * import, so re-importing rethrows with no new request (whatwg/html#6768), while
@@ -372,7 +372,12 @@ export function SettingsDialog() {
   useEffect(() => {
     if (!open) return;
     const frame = window.requestAnimationFrame(() => {
-      tabButtonRefs.current[activeTab]?.focus({ preventScroll: true });
+      const button = tabButtonRefs.current[activeTab];
+      button?.focus({ preventScroll: true });
+      // The tab list scrolls once it outgrows the sidebar, so a deep-opened tab
+      // can start outside it. preventScroll above keeps focus from revealing it,
+      // and "nearest" moves only the list, never the panel beside it.
+      button?.scrollIntoView({ block: "nearest", inline: "nearest" });
     });
     return () => window.cancelAnimationFrame(frame);
   }, [open, activeTab]);
@@ -417,7 +422,7 @@ export function SettingsDialog() {
             {/* Match the app shell: tabs on the sidebar fill, content on the
                 page fill, so both track the active palette. */}
             <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
-              <div className="relative mx-1 mt-3 mb-2 max-sm:hidden">
+              <div className="relative mx-1 mt-3 mb-2 shrink-0 max-sm:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
@@ -489,7 +494,7 @@ export function SettingsDialog() {
               ) : null}
               <p
                 className={cn(
-                  "pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground max-sm:hidden",
+                  "shrink-0 pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground max-sm:hidden",
                   results !== null && "hidden",
                 )}
               >
@@ -497,7 +502,11 @@ export function SettingsDialog() {
               </p>
               <nav
                 className={cn(
-                  "flex flex-col gap-0.5 px-1 max-sm:flex-row max-sm:overflow-x-auto",
+                  // The tab list is the sidebar's flexible row: a short window
+                  // leaves it taller than the sidebar, and the dialog clips its
+                  // overflow, so scroll it rather than losing the last tabs.
+                  "hover-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 pb-1",
+                  "max-sm:flex-none max-sm:flex-row max-sm:overflow-x-auto max-sm:pb-0",
                   results !== null && "max-sm:flex hidden",
                 )}
               >
@@ -515,7 +524,9 @@ export function SettingsDialog() {
                       onClick={() => setActiveTab(tab.id)}
                       className={cn(
                         "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
-                        "max-sm:shrink-0",
+                        // Keep the row height when the list scrolls: a flex item
+                        // shrinks past h-[32px] down to its text otherwise.
+                        "shrink-0",
                         "focus-visible:outline-none",
                         // The active pill already marks the current tab, so
                         // only unselected items get a keyboard focus ring.

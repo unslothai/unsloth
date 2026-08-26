@@ -865,9 +865,9 @@ export const ko = {
           "아래 내용은 모두 본인의 기록을 바탕으로 계산됩니다. 아무것도 수집하거나 Unsloth로 전송하지 않습니다.",
         retry: "다시 시도",
         privacyNote:
-          "통계는 사용 중인 Unsloth에 저장된 채팅 및 학습 기록을 바탕으로 계산됩니다. 아무것도 수집하지 않으며, Unsloth나 제3자에게 전송하지 않습니다.",
+          "통계는 Unsloth 설치에 저장된 로컬 채팅, API 사용 및 학습 기록을 바탕으로 계산됩니다. 통계를 위해 API 프롬프트, 응답 또는 키를 저장하지 않습니다. Unsloth나 제3자에게 아무것도 전송하지 않습니다.",
         emptyChats:
-          "아직 채팅이 없습니다. 대화를 시작하면 여기에 통계가 채워집니다.",
+          "아직 채팅 또는 API 사용 기록이 없습니다. 대화를 시작하거나 인증된 로컬 API 요청을 보내세요.",
         lifetimeTokens: "누적 토큰",
         peakTokens: "최고 기록일",
         longestChat: "가장 긴 채팅",
@@ -889,6 +889,9 @@ export const ko = {
         totalMessages: "전체 메시지",
         tokensIn: "보낸 토큰",
         tokensOut: "생성된 토큰",
+        totalTokens: "전체 토큰",
+        studioChatTokens: "Unsloth Chat 토큰",
+        apiTokens: "API 토큰",
         cachedTokens: "캐시된 토큰",
         cachedValue: "{tokens}(입력의 {percent}%)",
         avgTokensPerChat: "채팅당 평균 토큰",
@@ -1357,7 +1360,7 @@ export const ko = {
       exportingAction: "내보내는 중...",
       exportConversations: "최근 항목 및 프로젝트 내보내기",
       exportConversationsDescription:
-        "최근 항목 또는 최근 항목과 프로젝트 채팅을 Raw JSONL, CSV 또는 ShareGPT JSONL로, 통합하거나 채팅별로 다운로드합니다.",
+        "최근 항목 또는 최근 항목과 프로젝트 채팅을 Training JSONL, CSV 또는 ShareGPT JSONL로, 통합하거나 채팅별로 다운로드합니다. Message JSONL은 채팅별로만 사용할 수 있습니다.",
       exportConversationsAction: "내보내기",
       exportScopeRecents: "최근 항목",
       exportScopeAll: "최근 항목 + 프로젝트",

@@ -51,12 +51,51 @@ const SINGLE_ASTERISK_CONTEXT = "*x*\n\n";
 const SINGLE_UNDERSCORE_CONTEXT = "_x_\n\n";
 const INLINE_CODE_ASTERISK_CONTEXT = "`a *b* c`\n\n";
 const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b_ c`\n\n";
+// The one context that is deliberately UNBALANCED, because the fact it carries
+// is an open region rather than a marker that exists somewhere behind the
+// boundary. remend has no other way to enter the state: `\(` is the only
+// transition into inline LaTeX, so standing in for a region the retained prefix
+// opened means writing an opener and nothing else. The blank line after it is
+// load bearing twice over. It keeps the opener off the tail's first line, which
+// every line-oriented repair (comparison operators, setext headings, the list
+// item scan) would otherwise read as part of that line, and it puts a newline
+// between the tail and the `(`, which is where remend's backwards scan for a
+// link destination stops. The region itself survives the blank line: remend's
+// math scan has no newline rule, so `\(` stays open until a `\)` closes it,
+// which is exactly the behaviour being reproduced.
+//
+// There is deliberately no `\[` twin. See `hasUncarriableMath`.
+const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 const LINK_DEFINITION_RE = /\[(?:\\.|[^\]\n\\]){1,200}\]:/;
 const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
+
+// Where remend believes the emphasis scan sits with respect to math.
+//
+// remend 1.3.0 kept two booleans here, one for `$...$` and one for `$$...$$`,
+// and knew nothing about the LaTeX bracket delimiters. That is the bug the
+// 1.3.1 bump fixes: on `where \( \delta_{r} = 1 \) holds.` the `_` of the
+// subscript was counted as an unmatched emphasis marker and "completed" with a
+// second `_` appended to a document that was already finished, so the reply
+// showed a stray underscore. 1.3.1 replaced the pair with the five state
+// machine below (`inlineLatex`, `blockLatex`, `inlineDollar`, `blockDollar`,
+// `none`), and every marker inside any of the four open states is skipped.
+//
+// The dollar half is unchanged between the two versions, so the two booleans
+// map onto `inlineDollar` and `blockDollar` exactly; only the LaTeX half is
+// new. Unsloth has to mirror it because `RepairParity` is a hand written copy of
+// remend's marker rules, and a copy that still counts the subscript would show
+// the stray `_` for as long as the reply is streaming and drop it the moment
+// the message settles and the whole body is repaired in one pass.
+type EmphasisMathState =
+  | "none"
+  | "inlineLatex"
+  | "blockLatex"
+  | "inlineDollar"
+  | "blockDollar";
 
 type RepairParity = {
   bold: boolean;
@@ -65,9 +104,13 @@ type RepairParity = {
   bracketDepth: number;
   linkDefinition: boolean;
   doubleUnderscore: boolean;
-  emphasisDisplayMath: boolean;
   emphasisInlineCode: boolean;
-  emphasisInlineMath: boolean;
+  emphasisMath: EmphasisMathState;
+  // Scan state, not a parity: whether the last asterisk that counted had a word
+  // character on both sides. See `countsAsSingleAsterisk`. It is cleared by any
+  // non word character outside a fence, and a block separator is two of them,
+  // so it is always false at a commit boundary and never needs carrying.
+  inWordAsteriskChain: boolean;
   firstBoldOrSingleUnderscore: "bold" | "singleUnderscore" | null;
   singleAsterisk: boolean;
   singleAsteriskCandidate: boolean;
@@ -84,16 +127,25 @@ type RepairParity = {
   inlineMath: boolean;
 };
 
-const createRepairParity = (): RepairParity => ({
+// The subset of the math states a retained prefix can end in. Three of the four
+// open states are excluded on purpose, because `hasNeutralRepairParity` refuses
+// to commit a block while any of them is open; see `hasUncarriableMath`.
+type RetainedLatexState = "none" | "inlineLatex";
+
+// `latex` is where the retained prefix left remend's math scan. Everything else
+// starts neutral because a boundary is only taken when it is neutral.
+const createRepairParity = (
+  latex: RetainedLatexState = "none",
+): RepairParity => ({
   bold: false,
   boldCandidate: false,
   boldFence: false,
   bracketDepth: 0,
   linkDefinition: false,
   doubleUnderscore: false,
-  emphasisDisplayMath: false,
   emphasisInlineCode: false,
-  emphasisInlineMath: false,
+  emphasisMath: latex,
+  inWordAsteriskChain: false,
   firstBoldOrSingleUnderscore: null,
   singleAsterisk: false,
   singleAsteriskCandidate: false,
@@ -174,59 +226,162 @@ function isWithinHtmlTag(text: string, index: number): boolean {
   return false;
 }
 
+// A `\` opens or closes a LaTeX region when the character after it is the
+// matching bracket, and does nothing otherwise. Both regions only open from
+// `none` and only close from their own state, so a `\]` in the middle of a
+// `\(...\)` span is inert and the opener stands until its own closer arrives.
+// Returns null when this backslash is not a delimiter, which is remend's signal
+// to leave the state alone and read the escaped character normally.
+function latexMathTransition(
+  state: EmphasisMathState,
+  next: string | undefined,
+): EmphasisMathState | null {
+  if (next === "[" && state === "none") {
+    return "blockLatex";
+  }
+  if (next === "]" && state === "blockLatex") {
+    return "none";
+  }
+  if (next === "(" && state === "none") {
+    return "inlineLatex";
+  }
+  if (next === ")" && state === "inlineLatex") {
+    return "none";
+  }
+  return null;
+}
+
+// `$$` toggles the block state from wherever it was, which is how an unclosed
+// `$...$` is swallowed by a following display block. A lone `$` cannot close a
+// block one and cannot open anything inside one, so `blockDollar` absorbs it.
+// This half is byte for byte the rule remend 1.3.0 already had, written as a
+// transition rather than as two booleans.
+function dollarMathTransition(
+  state: EmphasisMathState,
+  isDouble: boolean,
+): EmphasisMathState {
+  if (isDouble) {
+    return state === "blockDollar" ? "none" : "blockDollar";
+  }
+  if (state === "blockDollar") {
+    return state;
+  }
+  return state === "inlineDollar" ? "none" : "inlineDollar";
+}
+
+const isLatexMathState = (state: EmphasisMathState): boolean =>
+  state === "inlineLatex" || state === "blockLatex";
+
+// remend recomputes this from the start of the document for every marker it
+// looks at; this runs once, in step with the emphasis scan, and reaches the
+// same state at every offset. It deliberately runs before the fence handling
+// below, because remend's math scan is a separate pass that knows nothing about
+// fenced code: a `$` inside a fence moves the math state there too.
+//
+// Returns the index to resume from, which is one past a delimiter that spans
+// two characters so the second half is not read again.
 function updateEmphasisMathParity(
   parity: RepairParity,
   text: string,
   index: number,
 ): number {
-  if (text[index] === "\\" && text[index + 1] === "$") {
+  if (text[index] === "\\") {
+    // The escape is checked first and wins: `\$` is a literal dollar and never
+    // a delimiter, whatever state the scan is in.
+    if (text[index + 1] === "$") {
+      return index + 1;
+    }
+    const transitioned = latexMathTransition(
+      parity.emphasisMath,
+      text[index + 1],
+    );
+    if (transitioned === null) {
+      return index;
+    }
+    parity.emphasisMath = transitioned;
     return index + 1;
   }
-  if (text[index] !== "$") {
+  // Inside `\(...\)` or `\[...\]` a dollar is ordinary text, so it neither
+  // opens a dollar region nor consumes the character after it. remend 1.3.1
+  // added this guard along with the LaTeX states; 1.3.0 had no state for it to
+  // guard against.
+  if (text[index] !== "$" || isLatexMathState(parity.emphasisMath)) {
     return index;
   }
-  if (text[index + 1] === "$") {
-    parity.emphasisDisplayMath = !parity.emphasisDisplayMath;
-    parity.emphasisInlineMath = false;
-    return index + 1;
-  }
-  if (!parity.emphasisDisplayMath) {
-    parity.emphasisInlineMath = !parity.emphasisInlineMath;
-  }
-  return index;
+  const isDouble = text[index + 1] === "$";
+  parity.emphasisMath = dollarMathTransition(parity.emphasisMath, isDouble);
+  return isDouble ? index + 1 : index;
 }
 
-function countsAsSingleAsterisk(
+// Absent, or one of the three characters remend treats as a boundary next to a
+// marker. remend spells this as `!character || isWhitespace(character)`, where
+// an out of range read yields the empty string; here it yields undefined.
+const isBoundaryCharacter = (character: string | undefined): boolean =>
+  character === undefined ||
+  character === " " ||
+  character === "\t" ||
+  character === "\n";
+
+// remend's skip list for the single asterisk counter. 1.3.1 dropped ONE clause
+// from it, the one that skipped an asterisk with a word character on each side,
+// and moved that case into `countsAsSingleAsterisk` below, where it is now
+// counted under a condition rather than dropped outright. Everything else here
+// is byte for byte what 1.3.0 had.
+function shouldSkipAsterisk(
   parity: RepairParity,
   text: string,
   index: number,
 ): boolean {
   const previous = text[index - 1];
   const next = text[index + 1];
-  if (
-    previous === "\\" ||
-    parity.emphasisDisplayMath ||
-    parity.emphasisInlineMath
-  ) {
-    return false;
+  if (previous === "\\" || parity.emphasisMath !== "none") {
+    return true;
   }
   if (previous !== "*" && next === "*") {
-    return text[index + 2] === "*";
+    // An out of range third character reads as the empty string in remend,
+    // which is not an asterisk, so the marker is skipped either way.
+    return text[index + 2] !== "*";
   }
-  if (
-    previous === "*" ||
-    (isWordCharacter(previous) && isWordCharacter(next))
-  ) {
-    return false;
+  if (previous === "*") {
+    return true;
   }
-  const previousIsBoundary =
-    previous === undefined ||
-    previous === " " ||
-    previous === "\t" ||
-    previous === "\n";
-  const nextIsBoundary =
-    next === undefined || next === " " || next === "\t" || next === "\n";
-  return !(previousIsBoundary && nextIsBoundary);
+  return isBoundaryCharacter(previous) && isBoundaryCharacter(next);
+}
+
+// Does this asterisk move the single asterisk parity?
+//
+// This is remend 1.3.1's rule and it is NOT 1.3.0's. 1.3.0 dropped every
+// asterisk with a word character on both sides, so `*foo*bar` counted one
+// marker, came out odd, and the repair closed it. 1.3.1 counts the in-word one
+// as soon as the count is already odd or an in-word chain is running, so the
+// same text counts two, comes out even, and nothing is appended. Verified
+// against the two packages directly: `remend("*foo*bar\n\n~~s")` returns
+// `"*foo*bar\n\n~~s*~~"` under 1.3.0 and `"*foo*bar\n\n~~s~~"` under 1.3.1,
+// the inserted `*` being the pending marker the strikethrough repair flushes.
+//
+// `inWordAsteriskChain` is what lets a run like `*foo*bar*baz` keep counting
+// after the second marker has been taken: the chain is set by an in-word marker
+// that counted, and any non word character outside a fence clears it again.
+function countsAsSingleAsterisk(
+  parity: RepairParity,
+  text: string,
+  index: number,
+): { counts: boolean; inWordChain: boolean } {
+  const previous = text[index - 1];
+  const next = text[index + 1];
+  const inWord = isWordCharacter(previous) && isWordCharacter(next);
+  // "Text" here means present and not whitespace, which is remend's test for
+  // whether a marker has something on that side to attach to. It is weaker than
+  // "word character": punctuation counts.
+  const previousIsText = !isBoundaryCharacter(previous);
+  const nextIsText = !isBoundaryCharacter(next);
+  if (inWord && !parity.singleAsterisk && !parity.inWordAsteriskChain) {
+    return { counts: false, inWordChain: false };
+  }
+  if ((previousIsText && parity.singleAsterisk) || nextIsText) {
+    return { counts: true, inWordChain: inWord };
+  }
+  return { counts: false, inWordChain: false };
 }
 
 function isSingleAsteriskCandidate(
@@ -240,20 +395,17 @@ function isSingleAsteriskCandidate(
     previous === "\\" ||
     previous === "*" ||
     next === "*" ||
-    parity.emphasisDisplayMath ||
-    parity.emphasisInlineMath
+    parity.emphasisMath !== "none"
   ) {
     return false;
   }
-  const previousIsBoundary =
-    previous === undefined ||
-    previous === " " ||
-    previous === "\t" ||
-    previous === "\n";
-  const nextIsBoundary =
-    next === undefined || next === " " || next === "\t" || next === "\n";
+  // 1.3.1 added a third skip to remend's search for the first unmatched
+  // asterisk: a marker with nothing but whitespace or the end of the document
+  // after it cannot OPEN emphasis, so it is passed over whatever sits before
+  // it. That subsumes the old "boundary on both sides" clause, which is why
+  // only the next character is read here now.
   return !(
-    (previousIsBoundary && nextIsBoundary) ||
+    isBoundaryCharacter(next) ||
     (isWordCharacter(previous) && isWordCharacter(next))
   );
 }
@@ -267,8 +419,7 @@ function countsAsSingleUnderscore(
   const next = text[index + 1];
   return !(
     previous === "\\" ||
-    parity.emphasisDisplayMath ||
-    parity.emphasisInlineMath ||
+    parity.emphasisMath !== "none" ||
     isWithinLinkDestination(text, index) ||
     isWithinHtmlTag(text, index) ||
     previous === "_" ||
@@ -288,8 +439,7 @@ function isSingleUnderscoreCandidate(
     previous === "\\" ||
     previous === "_" ||
     next === "_" ||
-    parity.emphasisDisplayMath ||
-    parity.emphasisInlineMath ||
+    parity.emphasisMath !== "none" ||
     isWithinLinkDestination(text, index) ||
     (isWordCharacter(previous) && isWordCharacter(next))
   );
@@ -309,8 +459,12 @@ function updateAsteriskParity(
       ? "inlineCode"
       : "normal";
   }
-  if (countsAsSingleAsterisk(parity, text, index)) {
-    parity.singleAsterisk = !parity.singleAsterisk;
+  if (!shouldSkipAsterisk(parity, text, index)) {
+    const decision = countsAsSingleAsterisk(parity, text, index);
+    if (decision.counts) {
+      parity.singleAsterisk = !parity.singleAsterisk;
+      parity.inWordAsteriskChain = decision.inWordChain;
+    }
   }
   if (text[index + 1] === "*") {
     parity.boldCandidate = true;
@@ -386,8 +540,26 @@ function skipEscapeOrFence(
   return index;
 }
 
+// remend's asterisk counter clears the in-word chain on any character that is
+// neither an asterisk nor a word character, and only while it believes it is
+// outside a fence, where it stops reading characters at all.
+function clearInWordAsteriskChain(
+  parity: RepairParity,
+  character: string | undefined,
+): void {
+  if (!parity.boldFence && character !== "*" && !isWordCharacter(character)) {
+    parity.inWordAsteriskChain = false;
+  }
+}
+
 function updateEmphasisParity(parity: RepairParity, text: string): void {
   for (let index = 0; index < text.length; index += 1) {
+    // The chain is cleared at the top of the loop, before any of the multi
+    // character skips below, because every one of those skips starts on a
+    // backslash, a dollar or a backtick, and all three are non word characters
+    // that clear the chain in remend as well. Reading only the first character
+    // of a skipped pair therefore reaches the same state remend does.
+    clearInWordAsteriskChain(parity, text[index]);
     index = updateEmphasisMathParity(parity, text, index);
     const skipped = skipEscapeOrFence(parity, text, index);
     if (skipped !== index) {
@@ -508,6 +680,31 @@ function updateRepairParity(parity: RepairParity, text: string): void {
   updateInlineMathParity(parity, text);
 }
 
+// An open math region a boundary may NOT sit inside, because the tail repair
+// cannot be told about it. Only `inlineLatex` is missing from this list, and the
+// asymmetry is a property of the openers rather than of the regions:
+//
+//   `$` and `$$` are counted by the katex and inlineKatex repairs as well as by
+//   the emphasis scan, so a bare dollar in the context prefix would also make
+//   those two close a delimiter the retained prefix already holds. This is the
+//   refusal the two booleans 1.3.0 kept here always had, unchanged.
+//
+//   `\[` is the only way into `blockLatex`, and it carries a `[` that remend's
+//   link repair reads. That repair walks backwards over every `[` outside code
+//   and completes the first one whose `]` is missing, so an opener standing in
+//   for a `\[` several blocks back turns a tail with no bracket of its own into
+//   one ending `](streamdown:incomplete-link)`, while the whole document is left
+//   alone because the real `\[` does have a `]` after it somewhere in the
+//   retained prefix. Found by differential fuzzing against a full remend() of
+//   the same text, on a body holding an unclosed `\[` and a later stray `]`.
+//   There is no opener without the bracket, so the boundary is refused instead.
+//
+// `inlineLatex` has neither problem: `(` is read only by the backwards scan for
+// a link destination, which stops at the first newline, and the context prefix
+// ends with a blank line.
+const hasUncarriableMath = (parity: RepairParity): boolean =>
+  parity.emphasisMath !== "none" && parity.emphasisMath !== "inlineLatex";
+
 const hasNeutralRepairParity = (parity: RepairParity): boolean =>
   ![
     parity.bracketDepth > 0,
@@ -516,8 +713,7 @@ const hasNeutralRepairParity = (parity: RepairParity): boolean =>
     parity.boldFence,
     parity.emphasisInlineCode,
     parity.doubleUnderscore,
-    parity.emphasisDisplayMath,
-    parity.emphasisInlineMath,
+    hasUncarriableMath(parity),
     parity.singleAsterisk,
     parity.singleUnderscore,
     parity.tripleAsterisk,
@@ -540,6 +736,7 @@ type RetainedContext = {
   bold: boolean;
   singleAsterisk: boolean;
   singleUnderscore: boolean;
+  latex: RetainedLatexState;
   firstSingleAsterisk: "inlineCode" | "normal" | null;
   firstSingleUnderscore: "inlineCode" | "normal" | null;
   firstBoldOrSingleUnderscore: "bold" | "singleUnderscore" | null;
@@ -550,6 +747,7 @@ const createRetainedContext = (): RetainedContext => ({
   bold: false,
   singleAsterisk: false,
   singleUnderscore: false,
+  latex: "none",
   firstSingleAsterisk: null,
   firstSingleUnderscore: null,
   firstBoldOrSingleUnderscore: null,
@@ -581,13 +779,24 @@ const emphasisContext = (context: RetainedContext): string => {
     : bold + underscore;
 };
 
+const latexContext = (context: RetainedContext): string =>
+  context.latex === "inlineLatex" ? INLINE_LATEX_CONTEXT : "";
+
 // Taking the context as a value lets a candidate commit be priced before it is
 // applied, which the repeated-Markdown check in update() needs.
+//
+// The LaTeX opener goes LAST, immediately before the tail, and the ordering is
+// not cosmetic: everything after it is inside the region it opens, so a
+// `_x_\n\n` written after it would be a pair of underscores remend declines to
+// count and the emphasis context would silently carry nothing. Putting it last
+// is also what the document itself looks like, since a marker that reached the
+// boundary as a candidate was counted, which means it sat outside the region.
 function repairContextPrefix(context: RetainedContext): string {
   return (
     emphasisContext(context) +
     singleAsteriskContext(context) +
-    (context.multilineKatex ? MULTILINE_KATEX_CONTEXT : "")
+    (context.multilineKatex ? MULTILINE_KATEX_CONTEXT : "") +
+    latexContext(context)
   );
 }
 
@@ -757,6 +966,14 @@ function repairOpenFenceTail(
   );
 }
 
+// Every field but `latex` records that something EXISTS behind the boundary and
+// so can only ever be turned on. `latex` is a position rather than a fact: the
+// region the prefix opened can be closed by a later commit, so this one is
+// taken from the parity outright instead of being or-ed in. That is why each
+// commit point stores its own context, which a rewind then restores.
+const retainedLatexState = (parity: RepairParity): RetainedLatexState =>
+  parity.emphasisMath === "inlineLatex" ? "inlineLatex" : "none";
+
 const advanceContext = (
   context: RetainedContext,
   parity: RepairParity,
@@ -767,6 +984,7 @@ const advanceContext = (
   singleAsterisk: context.singleAsterisk || parity.singleAsteriskCandidate,
   singleUnderscore:
     context.singleUnderscore || parity.singleUnderscoreCandidate,
+  latex: retainedLatexState(parity),
   firstSingleAsterisk:
     context.firstSingleAsterisk ?? parity.firstSingleAsteriskCandidate,
   firstSingleUnderscore:
@@ -876,8 +1094,13 @@ function findCommitBoundary(
   tail: string,
   blocks: string[],
   candidateCount: number,
+  latex: RetainedLatexState,
 ): CommitBoundary {
-  const parity = createRepairParity();
+  // The tail does not start at the top of the document, so the scan starts
+  // where the retained prefix left remend's math scan. Only the LaTeX state can
+  // be anything but neutral there, and it is the one state whose markers the
+  // tail repair would otherwise start counting again.
+  const parity = createRepairParity(latex);
   const commit: CommitBoundary = {
     count: 0,
     length: 0,
@@ -1118,7 +1341,12 @@ export class IncrementalMarkdownCache {
       return this.render(repaired);
     }
 
-    const commit = findCommitBoundary(this.tail, blocks, candidateCount);
+    const commit = findCommitBoundary(
+      this.tail,
+      blocks,
+      candidateCount,
+      this.context.latex,
+    );
 
     // A mid-string repair can never become a raw prefix on a later append, so
     // make that fallback sticky, and do the same once the tail grows past the

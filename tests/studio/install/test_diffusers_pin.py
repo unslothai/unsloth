@@ -3,7 +3,7 @@
 
 """The pinned Diffusers revision has to survive a fresh install.sh, not just an update.
 
-MiniMax-H3 needs a Diffusers revision newer than any published release, and Studio
+MiniMax-H3 needs a Diffusers revision newer than any published release, and Unsloth
 refuses to load it otherwise. The pin originally lived in
 studio/backend/requirements/base.txt, which did not reach fresh install.sh installs at
 the time. base.txt now reaches those installs as an independent shared phase, but it

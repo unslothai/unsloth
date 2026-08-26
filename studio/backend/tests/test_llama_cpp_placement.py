@@ -242,7 +242,7 @@ def test_dspark_composed_argv_respects_placement_fit_decision(tmp_path, use_fit)
 
 def test_dspark_keeps_a_user_fit_flag(tmp_path):
     """A caller's --fit is theirs to set: the sidecar loads under either value,
-    so Studio has no reason to rewrite it."""
+    so Unsloth has no reason to rewrite it."""
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
@@ -848,8 +848,8 @@ def test_a_pass_through_drafter_pays_the_rollback_its_type_calls_for(
 def test_a_pass_through_spec_block_budgets_the_depth_the_build_defaults_to(
     tmp_path, requested_depth
 ):
-    # Studio emits no --spec-draft-n-max when the extras own the spec block, so
-    # the child runs at the build's own default. Budgeting Studio's 2 instead
+    # Unsloth emits no --spec-draft-n-max when the extras own the spec block, so
+    # the child runs at the build's own default. Budgeting Unsloth's 2 instead
     # under-reserves the rollback copies, which scale directly with it -- and a
     # request field carries no further than the platform default does, since
     # neither is emitted.
@@ -941,7 +941,7 @@ def test_a_post_rename_build_ignores_the_legacy_depth_variable(tmp_path, monkeyp
 
 def test_an_unreadable_help_budgets_the_deepest_shipped_draft_depth(tmp_path):
     # The probe timed out, or the help line carries no default. The child is still
-    # drafting at whatever the build defaults to, so Studio's own explicit-mode 2
+    # drafting at whatever the build defaults to, so Unsloth's own explicit-mode 2
     # would under-reserve the rollback copies by up to eight times.
     backend, gguf, _sidecar = _hybrid_reserve_backend(
         tmp_path,
@@ -1610,7 +1610,7 @@ def _offload_backend(tmp_path, *, gguf_gb, free_mib, avail_mib, monkeypatch, **k
 def test_weights_larger_than_vram_plus_ram_are_refused(tmp_path, monkeypatch):
     """The field case: a 13.3 GB GGUF on a 6 GB laptop card holding 4877 MiB free needs
     about 8.5 GB of host RAM, which a 10 GB host cannot hold. Unrefused, the mmap'd
-    remainder thrashes until the OS kills Studio and the desktop session."""
+    remainder thrashes until the OS kills Unsloth and the desktop session."""
     backend, gguf = _offload_backend(
         tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
     )
@@ -2169,7 +2169,7 @@ def test_an_unprobed_pool_still_abstains_when_nothing_was_masked(tmp_path, monke
 
 
 def test_a_gpu_less_host_running_a_cpu_only_build_still_abstains(tmp_path, monkeypatch):
-    """Studio installs a CPU-only prebuilt on a host with no GPU, so that host probes an
+    """Unsloth installs a CPU-only prebuilt on a host with no GPU, so that host probes an
     empty pool AND reports a build with no GPU backend. Letting the build state alone
     charge the whole model refused a 7.5 GB GGUF with 9 GB of RAM, which loads on main,
     and blamed GPU memory on a machine that has no GPU."""
@@ -2366,6 +2366,83 @@ def test_a_paravirtual_metal_launch_prices_the_whole_model(tmp_path, monkeypatch
 
     assert backend._launch_host_shortfall_message(argv, [], {}) is None
     assert backend._launch_host_shortfall_message(argv, [], {}, child_has_no_gpu = True) is not None
+
+
+def test_the_launched_load_mode_is_recorded_in_the_memory_state(tmp_path, monkeypatch):
+    """A --load-mode the launch emitted has to reach _memory_state.
+
+    "none" reads the weights into an anonymous host buffer (llama-model-loader
+    sets use_mmap only for mmap / mmap+mlock / auto), so it IS a reservation. Left
+    out of the record, a later "Don't reserve system RAM" is judged satisfied by
+    the running child and Apply keeps the reservation instead of relaunching.
+    """
+    import utils.model_memory_settings as mm
+    from core.inference.llama_server_args import memory_state_satisfies_settings
+
+    monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, False))
+    monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+    monkeypatch.setattr(mm, "should_mlock", lambda: False)
+
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps["supports_load_mode"] = True
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 40000, 48000)])
+    with patch.object(LlamaCppBackend, "probe_server_capabilities", lambda *a, **k: caps):
+        captured = _launch(backend, gguf, load_mode = "none")
+
+    assert captured["cmd"][captured["cmd"].index("--load-mode") + 1] == "none"
+    # (mlock, reserves_ram)
+    assert backend._memory_state == (False, True)
+
+    # Both consumers now see the child contradicting the setting.
+    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+    assert (
+        memory_state_satisfies_settings(
+            backend._memory_state,
+            backend._memory_policy_active,
+            backend._memory_mlock_applicable,
+        )
+        is False
+    )
+
+
+def test_a_fit_derived_load_mode_is_recorded_too(tmp_path, monkeypatch):
+    """Same record, for the mode the fit supplies rather than the user.
+
+    The fit's "none" reserves exactly as much host RAM as a hand-picked one, so a
+    launch that took it must not report itself as non-reserving to the settings
+    route and the duplicate-load comparator.
+    """
+    import utils.model_memory_settings as mm
+    from core.inference.llama_server_args import memory_state_satisfies_settings
+
+    monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, False))
+    monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+    monkeypatch.setattr(mm, "should_mlock", lambda: False)
+
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps["supports_load_mode"] = True
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 40000, 48000)])
+    with (
+        patch.object(LlamaCppBackend, "probe_server_capabilities", lambda *a, **k: caps),
+        patch.object(LlamaCppBackend, "_fit_derived_load_mode", return_value = "none"),
+    ):
+        captured = _launch(backend, gguf)  # no per-model pick: the fit supplies it
+
+    assert captured["cmd"][captured["cmd"].index("--load-mode") + 1] == "none"
+    assert backend._fit_load_mode_flags == ["--load-mode", "none"]
+    assert backend._memory_state == (False, True)
+
+    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+    assert (
+        memory_state_satisfies_settings(
+            backend._memory_state,
+            backend._memory_policy_active,
+            backend._memory_mlock_applicable,
+        )
+        is False
+    )
 
 
 # ── Tensor parallelism keeps the requested KV cache type ─────────────

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Coordinate Windows launches that consume the Tauri-managed Studio environment."""
+"""Coordinate Windows launches that consume the Tauri-managed Unsloth environment."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ _RUNTIME_GATE_HANDOFF_ENV = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF"
 
 
 class StudioRuntimeGateBusy(RuntimeError):
-    """The managed Studio environment is being installed or repaired."""
+    """The managed Unsloth environment is being installed or repaired."""
 
 
 class _SidAndAttributes(ctypes.Structure):
@@ -71,6 +71,28 @@ def _resolved_windows_path(path: Path) -> str:
     if drive and tail and not tail.rstrip("\\/"):
         return drive + "\\"
     return resolved.rstrip("\\/")
+
+
+def resolve_windows_powershell() -> str:
+    r"""Resolve Windows PowerShell without relying solely on ``PATH`` (#9440).
+
+    Public because the install path spawns PowerShell from more than this module: powershell.exe
+    lives in a SUBDIRECTORY of System32, so ``CreateProcess``'s implicit system-directory lookup
+    never finds it and a caller whose PATH omits that entry gets ``WinError 2`` instead.
+    """
+    import shutil
+
+    on_path = shutil.which("powershell.exe")
+    if on_path:
+        return on_path
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    builtin = ntpath.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    if os.path.isfile(builtin):
+        return builtin
+    pwsh = shutil.which("pwsh.exe")
+    if pwsh:
+        return pwsh
+    return "powershell.exe"
 
 
 def _canonical_windows_path(path: Path) -> str:
@@ -254,7 +276,7 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         "[Console]::Out.Write(($items|ConvertTo-Json -Compress))"
     )
     result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+        [resolve_windows_powershell(), "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,
         encoding = "utf-8",
@@ -264,13 +286,13 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"Could not inspect running processes before Studio update: {detail}")
+        raise RuntimeError(f"Could not inspect running processes before Unsloth update: {detail}")
 
     try:
         payload = json.loads(result.stdout or "[]")
     except json.JSONDecodeError as error:
         raise RuntimeError(
-            f"Could not decode the running-process list before Studio update: {error}"
+            f"Could not decode the running-process list before Unsloth update: {error}"
         ) from error
     processes = payload if isinstance(payload, list) else [payload]
     process_by_pid = {
@@ -341,7 +363,7 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         ):
             name = process.get("Name") or "process"
             raise RuntimeError(
-                "The managed Studio environment is in use by "
+                "The managed Unsloth environment is in use by "
                 f"{name} (PID {process_id}). Stop that process, then retry the update."
             )
 

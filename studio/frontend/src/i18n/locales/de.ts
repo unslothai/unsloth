@@ -892,9 +892,9 @@ export const de = {
           "Alles Folgende wird aus Ihrem eigenen Verlauf berechnet. Es wird nichts erfasst oder an Unsloth gesendet.",
         retry: "Erneut versuchen",
         privacyNote:
-          "Die Statistiken werden aus dem Chat- und Trainingsverlauf berechnet, der in Ihrer Unsloth-Installation gespeichert ist. Es wird nichts erfasst und nichts an Unsloth oder Dritte gesendet.",
+          "Die Statistiken werden aus dem lokalen Chat-, API-Nutzungs- und Trainingsverlauf Ihrer Unsloth-Installation berechnet. API-Eingaben, -Antworten und -Schlüssel werden dafür nie gespeichert. Nichts wird an Unsloth oder Dritte gesendet.",
         emptyChats:
-          "Noch keine Chats. Starten Sie ein Gespräch, dann erscheinen hier Ihre Statistiken.",
+          "Noch keine Chat- oder API-Nutzung. Starten Sie ein Gespräch oder senden Sie eine authentifizierte lokale API-Anfrage.",
         lifetimeTokens: "Tokens insgesamt",
         peakTokens: "Aktivster Tag",
         longestChat: "Längster Chat",
@@ -916,6 +916,9 @@ export const de = {
         totalMessages: "Nachrichten insgesamt",
         tokensIn: "Gesendete Tokens",
         tokensOut: "Erzeugte Tokens",
+        totalTokens: "Tokens insgesamt",
+        studioChatTokens: "Unsloth-Chat-Tokens",
+        apiTokens: "API-Tokens",
         cachedTokens: "Zwischengespeicherte Tokens",
         cachedValue: "{tokens} ({percent} % der Eingabe)",
         avgTokensPerChat: "Durchschnittliche Tokens pro Chat",
@@ -1373,7 +1376,7 @@ export const de = {
         title: "Websuche",
         images: "Bilder aus der Websuche anzeigen",
         imagesDescription:
-          "Lässt die Websuche Bilder liefern und holt eines für jeden Punkt, den eine Antwort auflistet. Vorschaubilder lädt und verkleinert Studio, der Browser kontaktiert keine Bildhosts.",
+          "Lässt die Websuche Bilder liefern und holt eines für jeden Punkt, den eine Antwort auflistet. Vorschaubilder lädt und verkleinert Unsloth, der Browser kontaktiert keine Bildhosts.",
       },
       artifacts: {
         title: "Canvas",
@@ -1395,7 +1398,7 @@ export const de = {
       exportingAction: "Wird exportiert...",
       exportConversations: "„Zuletzt verwendet“ und Projekte exportieren",
       exportConversationsDescription:
-        "Laden Sie Chats aus „Zuletzt verwendet“ oder zusätzlich auch Projekt-Chats als Raw JSONL, CSV oder ShareGPT JSONL herunter, kombiniert oder einzeln pro Chat.",
+        "Laden Sie Chats aus „Zuletzt verwendet“ oder zusätzlich auch Projekt-Chats als Training JSONL, CSV oder ShareGPT JSONL herunter, kombiniert oder einzeln pro Chat. Message JSONL ist nur einzeln pro Chat verfügbar.",
       exportConversationsAction: "Exportieren",
       exportScopeRecents: "Zuletzt verwendet",
       exportScopeAll: "Zuletzt verwendet + Projekte",
