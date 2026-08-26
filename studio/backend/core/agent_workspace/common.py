@@ -388,94 +388,16 @@ def _status_paths(output: str) -> tuple[list[str], bool]:
     return sorted(set(names)), complete
 
 
-def _git_workspace_fingerprint(root: Path, repository: Path) -> str:
-    digest = hashlib.sha256()
-    complete = True
-    relative = root.relative_to(repository).as_posix()
-    pathspec = "." if relative == "." else relative
-    commands = (
-        ("head", ["git", "rev-parse", "--verify", "--quiet", "HEAD"], 16_384),
-        (
-            "status",
-            [
-                "git",
-                "status",
-                "--porcelain=v1",
-                "-z",
-                "--untracked-files=all",
-                "--",
-                pathspec,
-            ],
-            2_000_000,
-        ),
-        (
-            "unstaged-diff",
-            [
-                "git",
-                "diff",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--full-index",
-                "--",
-                pathspec,
-            ],
-            2_000_000,
-        ),
-        (
-            "staged-diff",
-            [
-                "git",
-                "diff",
-                "--cached",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--full-index",
-                "--",
-                pathspec,
-            ],
-            2_000_000,
-        ),
-    )
-    outputs: dict[str, str] = {}
-    for label, argv, limit in commands:
-        code, output, truncated = run_bounded(
-            argv, cwd = repository, timeout_seconds = 12, output_limit = limit
-        )
-        outputs[label] = output
-        digest.update(label.encode("ascii"))
-        digest.update(str(code).encode("ascii"))
-        digest.update(output.encode("utf-8", errors = "replace"))
-        unborn_head = label == "head" and code == 1 and not output
-        if (code != 0 and not unborn_head) or truncated or "\ufffd" in output:
-            complete = False
-        if truncated:
-            digest.update(b"TRUNCATED")
+def _git_workspace_fingerprint(root: Path) -> str:
+    """Delegate Git evidence to the repository-config-neutralized runner.
 
-    names, status_complete = _status_paths(outputs.get("status", ""))
-    complete = complete and status_complete
-    if len(names) > 20_000:
-        digest.update(b"TRUNCATED-FILE-COUNT")
-        names = names[:20_000]
-        complete = False
-    remaining = _GIT_DIRTY_CONTENT_BUDGET
-    for name in names:
-        candidate = repository / name
-        try:
-            candidate.relative_to(root)
-        except ValueError:
-            digest.update(name.encode("utf-8", errors = "surrogateescape"))
-            digest.update(b"OUTSIDE-PROJECT")
-            complete = False
-            continue
-        if not candidate.exists() and not candidate.is_symlink():
-            digest.update(name.encode("utf-8", errors = "surrogateescape"))
-            digest.update(b"\0ABSENT")
-            continue
-        remaining, entry_complete = _hash_workspace_entry(
-            digest, candidate, name, remaining
-        )
-        complete = complete and entry_complete
-    return _finish_fingerprint(digest, complete)
+    ``git_service`` imports this module for shared bounded hashing primitives, so
+    importing it at module load would create a cycle. The call-time import keeps
+    one hardened Git implementation while preserving the common non-Git fallback.
+    """
+    from .git_service import workspace_fingerprint as safe_git_fingerprint
+
+    return safe_git_fingerprint(root)
 
 
 def _filesystem_workspace_fingerprint(root: Path) -> str:
@@ -516,4 +438,4 @@ def workspace_fingerprint(root: Path) -> str:
         repository = git_root(root)
     except AgentWorkspaceError:
         return _filesystem_workspace_fingerprint(root)
-    return _git_workspace_fingerprint(root, repository)
+    return _git_workspace_fingerprint(root)

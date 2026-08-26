@@ -1,10 +1,10 @@
 # Unsloth Studio Codex parity contract
 
-Snapshot date: 2026-08-25
+Snapshot date: 2026-08-26
 
 This document describes the product contract implemented by the current local working tree. It complements [CODEX_AGENT_WORKSPACE_MATRIX.md](./CODEX_AGENT_WORKSPACE_MATRIX.md), which records the exact QA rows and focused evidence.
 
-The local branch contains fetched `upstream/main` at `8194d50fceef7f06449dea8f81f33a9e6215268f`. Local HEAD is `8e8809e94ee25976ed0717d3105adf9c6d9a2e35`, 5 commits ahead and 0 behind that fetched tip. The feature source is uncommitted. PR #9673 remains recovery-only and does not contain this implementation.
+Feature source commit `3af2f62e6d72564b2fa0840ca491a48817f12c3d` is merged with fetched `upstream/main` at `55213845e3eec6fd628f0f99fce4cc3074d9ff5f` through merge commit `118e72d23ce84ec0cad3b8575a1243f7a7c0912b`. The implementation is committed as ordinary source. The live PR head and remote checks must be verified after publication.
 
 The target is operational parity, not a visual clone: a durable project root, stable project context, local administrative commands, constrained tools, reviewable Git operations, recoverable background work, isolated worktrees, and one agent contract across local and hosted runtimes.
 
@@ -20,18 +20,18 @@ The target is operational parity, not a visual clone: a durable project root, st
 
 | Area | Local status | Implemented contract | Remaining evidence or gap |
 | --- | --- | --- | --- |
-| 1. Repository workspace | Implemented locally | Managed and existing-folder projects, signed native selection grants, canonical identity, persistence, shared project cwd, RAG separation, overlap rejection, safe deletion, missing-root isolation, and in-process writer coordination. | Packaged removable, network, Unicode, case, long-path, and permission smokes are unrun. External processes and separate Studio processes are not serialized. Windows command and descriptor traversal functionality fails closed. |
+| 1. Repository workspace | Implemented locally | Managed and existing-folder projects, signed native selection grants, canonical identity, persistence, shared project cwd, RAG separation, overlap rejection, safe deletion, missing-root isolation, and in-process writer coordination. Windows repository and instruction reads use handle-verified traversal. | Packaged removable, network, Unicode, case, long-path, and permission smokes are unrun. External processes and separate Studio processes are not serialized. Arbitrary Windows project commands fail closed. |
 | 2. Durable goal | Implemented locally | Local `/goal` show, set, shorthand, done, reopen, clear, and help; project scope; durable history; bounded context; stable ordering; revision behavior; and a backend fresh-verification completion gate. | Real model context smoke remains unrun. |
 | 3. Repository instructions | Implemented locally | Root and nested `AGENTS.md`, subtree scope, ancestor-to-descendant order, no-follow reads, size and encoding bounds, refresh, and stable composition with project instructions and goal. | Real local and hosted runtime smokes remain unrun. |
-| 4. Discovery and context | Implemented locally | Ignore-aware bounded maps, negation, heavy and binary exclusions, symlink safety, cancellation, refresh, non-Git fallback, explicit nested-repository exclusion, and relevance selection. | Packaged responsiveness is unrun. The local 100,000-path fixture completed in 1.26 seconds. |
+| 4. Discovery and context | Implemented locally | Ignore-aware bounded maps, negation, heavy and binary exclusions, symlink safety, cancellation, refresh, non-Git fallback, explicit nested-repository exclusion, and relevance selection. | Packaged responsiveness is unrun. The local 100,000-path fixture completed in 1.144 seconds and stopped at its configured path and byte bounds. |
 | 5. Verification | Partial | Durable ordered checks, local `/verify`, structured evidence, timeout, cancellation, bounded logs, staleness, process cleanup, and macOS or Linux project confinement. | Windows PowerShell and cmd execution is unavailable and fails closed. Packaged macOS and Linux shell smokes are unrun. One Linux-only AF_UNIX check was skipped on the local macOS host. |
-| 6. Git | Implemented locally | Bounded status and diff, binary safety, hostile repository-config neutralization, Studio checkpoints, fingerprint-safe rollback, collision-safe branches, and two-phase prepared commits that preserve branch, index, and worktree. | No feature commit or push has been made. |
+| 6. Git | Implemented locally | Bounded status and diff, binary safety, hostile repository-config neutralization, Studio checkpoints, fingerprint-safe rollback, collision-safe branches, and two-phase prepared commits that preserve branch, index, and worktree. | The source is committed. The pushed PR head and remote checks still require live verification. |
 | 7. Durable plans | Implemented locally | Goal-linked plans, ordered tasks, revisions, task states, blockers, verification requirements and evidence, restart recovery, local `/plan`, and completion summaries. | Packaged restart smoke remains unrun. |
 | 8. Background execution | Implemented locally | Durable queue, atomic scheduling, production inference executor routing, task isolation, cancellation, retry lineage, bounded output, restart interruption, and missing-root failure. | Real GGUF, MLX, provider, and Codex runs are unrun. |
 | 9. Parallel agents and worktrees | Implemented locally | Marker-backed owned worktrees, isolated task sessions, worktree verification, clean merge, retained conflicts, cancellation, safe cleanup, and restart recovery. | Cross-process and external writers remain outside the process-local scheduler. Conflict resolution is explicit, not automatic. |
-| 10. Review and pull request | Partial | Changed-file and diff evidence, fresh checks, goal and plan state, prepared-commit review, redacted PR drafting, and confirmed connected GitHub handoff with unknown-outcome handling. | No real GitHub connector call was made. The live PR remains recovery-only. |
+| 10. Review and pull request | Partial | Changed-file and diff evidence, fresh checks, goal and plan state, prepared-commit review, redacted PR drafting, and confirmation-bound connected GitHub handoff with unknown-outcome handling. | Tests use a controlled connector. No real product GitHub connector call was made, and pending handoff confirmations are process-local rather than restart-durable. Publication of this source and remote PR checks are separate live gates. |
 | 11. Harness portability | Partial | One project-context contract across local, provider, Anthropic-style, Gemini-style, OpenAI-compatible, and Codex routes; model switching; local administrative commands; compare context; and queued task isolation. | Real llama.cpp, MLX, small-model healing, hosted provider, and Codex subscription runs are unrun. |
-| 12. Security and destructive safety | Partial | Raw path rejection, expiring one-use purpose grants, identity checks, sensitive-root rejection, descriptor-relative edits, POSIX process confinement, project-safe Git, non-destructive deletion and cleanup, and bounded escaped prompt or review content. | Windows execution and descriptor traversal lacks an equivalent confinement implementation and fails closed. Physical destructive-safety smokes remain unrun. |
+| 12. Security and destructive safety | Partial | Raw path rejection, expiring one-use purpose grants, identity checks, sensitive-root rejection, descriptor-relative POSIX edits, POSIX process confinement, handle-verified Windows reads, project-safe Git, identity-checked deletion of Studio-owned storage, preservation of user-owned repositories, and bounded escaped prompt or review content. | Arbitrary Windows project edits and commands lack an equivalent filesystem sandbox and fail closed. Physical destructive-safety smokes remain unrun. |
 
 ## Product behavior
 
@@ -49,7 +49,7 @@ The current contract does not claim a complete Codex command palette. `/init`, `
 
 ### Tools and verification
 
-Project file edits resolve descriptor-relative paths and reject root escape. Project commands run with an explicit cwd and environment contract. On macOS they use `sandbox-exec`; on Linux they use `bubblewrap`; child network access is denied. Windows command and descriptor traversal requests fail closed because no equivalent confinement boundary is implemented.
+On POSIX, project file edits resolve descriptor-relative paths and reject root escape. Project commands run with an explicit cwd and environment contract. On macOS they use `sandbox-exec`; on Linux they use `bubblewrap`; child network access is denied. Windows repository and instruction reads verify Win32 handles, root identity, containment, long paths, case-insensitive identity, and reparse-point rejection. Arbitrary Windows project edits and commands fail closed because no equivalent filesystem sandbox is implemented.
 
 Verification persists ordered test, lint, build, and custom checks with timestamps, exit status, bounded output, source fingerprints, freshness, cancellation, and timeout. Goal completion can require current passing evidence. Background agent tasks use the same project or worktree identity and evidence contract.
 
@@ -89,8 +89,8 @@ These items appeared in the earlier roadmap but are not part of the user-provide
 2. A user-selected workspace is user-owned. Project deletion cannot delete, rename, empty, or replace it.
 3. RAG Sources and workspace files are separate concepts.
 4. One provider-neutral project contract serves local and hosted runtimes.
-5. Goal, plan, verification, task, worktree, review, and Git state is durable and project-scoped.
-6. Every Studio mutation is bounded, attributable, cancellable where applicable, and protected from stale state.
+5. Goal, plan, verification, task, worktree, and Git evidence is durable and project-scoped. Review summaries are regenerated, and pending GitHub handoff confirmations are process-local.
+6. Studio mutations are bounded, project-scoped, cancellable where applicable, and protected from stale state. Authentication does not imply a durable actor audit ledger.
 7. Parallel work uses owned worktrees. Process-local locks coordinate Studio writers but do not claim control over external processes.
 8. Git operations never trust repository-controlled executable configuration.
 9. Conflict and cleanup paths preserve user work and do not use destructive fallback.
@@ -98,4 +98,4 @@ These items appeared in the earlier roadmap but are not part of the user-provide
 
 ## Certification boundary
 
-The local implementation is not release-ready. Certification still requires a committed reviewable source diff, a fresh branch comparison before publication, packaged macOS and Linux runs, a Windows implementation and validation for project execution and descriptor traversal, real llama.cpp and MLX runs, at least one real hosted provider, Codex transport, a live GitHub handoff, physical removable and destructive-safety checks, and recorded evidence for every manual row.
+The implementation is ready for source review once the pushed PR head and CI are verified, but it is not release-ready. Certification still requires packaged macOS, Linux, and Windows runs, a secure Windows project-command implementation, real llama.cpp and MLX runs, at least one real hosted provider, Codex transport, a live product GitHub handoff, physical removable and destructive-safety checks, and recorded evidence for every manual row.

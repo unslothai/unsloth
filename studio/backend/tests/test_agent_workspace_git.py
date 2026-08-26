@@ -15,6 +15,7 @@ import pytest
 from core.agent_workspace.common import AgentWorkspaceError, workspace_fingerprint
 from core.agent_workspace.background import BackgroundTaskManager
 from core.agent_workspace import git_service as git_service_module
+from core.agent_workspace import verification as verification_module
 from core.agent_workspace.execution import (
     acquire_workspace_execution_slot,
     release_workspace_execution_slot,
@@ -230,6 +231,46 @@ def test_git_operations_do_not_execute_repository_configured_commands(
     )
     assert (repository / "binary.bin").read_bytes() == binary_checkpoint
     _assert_commands_not_executed(markers)
+
+
+def test_verification_fingerprint_neutralizes_repository_executable_config(tmp_path):
+    repository = tmp_path / "repo"
+    commands = tmp_path / "configured-commands"
+    repository.mkdir()
+    commands.mkdir()
+    _repository(repository)
+    (repository / ".gitattributes").write_text(
+        "*.txt filter=hostile-process\n*.md filter=hostile-clean\n",
+        encoding = "utf-8",
+    )
+    (repository / "process.txt").write_text("base\n", encoding = "utf-8")
+    (repository / "clean.md").write_text("base\n", encoding = "utf-8")
+    _git(repository, "add", ".gitattributes", "process.txt", "clean.md")
+    _git(repository, "commit", "-qm", "add hostile filter fixtures")
+
+    fsmonitor_command, fsmonitor_marker = _executable_marker_command(
+        commands, "verification-fsmonitor", passthrough = False
+    )
+    process_command, process_marker = _executable_marker_command(
+        commands, "verification-process", passthrough = False
+    )
+    clean_command, clean_marker = _executable_marker_command(
+        commands, "verification-clean"
+    )
+    _git(repository, "config", "core.fsmonitor", fsmonitor_command)
+    _git(repository, "config", "filter.hostile-process.process", process_command)
+    _git(repository, "config", "filter.hostile-process.required", "true")
+    _git(repository, "config", "filter.hostile-clean.clean", clean_command)
+    _git(repository, "config", "filter.hostile-clean.required", "true")
+    (repository / "process.txt").write_text("changed\n", encoding = "utf-8")
+    (repository / "clean.md").write_text("changed\n", encoding = "utf-8")
+
+    fingerprint = verification_module.workspace_fingerprint(repository)
+
+    assert len(fingerprint) == 64
+    _assert_commands_not_executed(
+        [fsmonitor_marker, process_marker, clean_marker]
+    )
 
 
 def test_worktree_checkout_does_not_execute_repository_content_filters(

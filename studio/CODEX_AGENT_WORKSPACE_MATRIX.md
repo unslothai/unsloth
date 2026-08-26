@@ -1,16 +1,16 @@
 # Unsloth Studio agent workspace QA matrix
 
-Snapshot date: 2026-08-25
+Snapshot date: 2026-08-26
 
 Local branch: `feat/codex-agent-workspace`
 
-Local HEAD: `8e8809e94ee25976ed0717d3105adf9c6d9a2e35`
+Feature source commit: `3af2f62e6d72564b2fa0840ca491a48817f12c3d`
 
-Fetched `upstream/main`: `8194d50fceef7f06449dea8f81f33a9e6215268f`
+Upstream merge commit: `118e72d23ce84ec0cad3b8575a1243f7a7c0912b`
 
-Local relationship to fetched upstream: 5 commits ahead, 0 behind.
+Fetched `upstream/main`: `55213845e3eec6fd628f0f99fce4cc3074d9ff5f`
 
-The local branch contains the fetched upstream tip. The feature implementation is ordinary source in the local working tree, but it is still uncommitted. The live PR #9673 remains a recovery-only PR and does not contain this implementation. Nothing in this document claims that the live PR, a packaged build, or a release candidate has passed.
+The feature branch contains that upstream tip through a normal merge and is reviewable ordinary source. Publication state and remote CI must be verified on PR #9673 after each push. Nothing in this document claims that a packaged build, physical platform, live provider, or release candidate has passed.
 
 Status meanings:
 
@@ -24,22 +24,23 @@ Status meanings:
 
 | Gate | Result | Evidence or remaining gate |
 | --- | --- | --- |
-| G0: reviewable feature diff | PASS locally, FAIL on live PR | Python, TypeScript, React, Rust, tests, workflow, and documentation are visible in the working tree. They have not been committed or pushed to PR #9673. |
-| G1: current with upstream main | PASS locally | Local HEAD contains fetched `upstream/main` at `8194d50f`. Refresh immediately before any publication. |
-| G2: ordinary source changes | PASS locally | Recovery payload files and the unsafe restore workflow are removed locally. The replacement is directly reviewable source. |
+| G0: reviewable feature diff | PASS on feature branch | Python, TypeScript, React, Rust, tests, workflow, and documentation are committed as ordinary source. Verify the live PR head and changed-file count after publication. |
+| G1: current with upstream main | PASS at snapshot | Merge commit `118e72d23` contains fetched `upstream/main` at `55213845e`. Refresh immediately before publication. |
+| G2: ordinary source changes | PASS | Recovery payload files and the unsafe restore workflow are removed. The replacement is directly reviewable source. |
 | G3: backend, frontend, and Tauri wiring | PASS locally | Native folder selection, signed grants, persistence, project context, agent workflow routes, and the Agent Workspace panel are connected. |
-| G4: feature-specific automation | PASS for focused suites | Exact focused counts are recorded below. A new full repository integration result is not claimed here. |
+| G4: feature-specific automation | PASS for the merged feature suites | Exact local counts are recorded below. Full repository, remote CI, packaged app, and live runtime results are not implied. |
 | G5: native platform certification | MANUAL | Packaged macOS, Windows, and Linux runs have not been recorded. |
-| G6: full Codex parity | NOT CERTIFIED | Windows project command and descriptor traversal functionality remains fail-closed. Real model, provider, Codex, GitHub, packaged app, and physical platform checks remain unrun. |
+| G6: full Codex parity | NOT CERTIFIED | Windows handle-verified repository and instruction traversal exists, but arbitrary Windows project edits and command execution remain fail-closed. Real model, provider, Codex, GitHub product handoff, packaged app, and physical platform checks remain unrun. |
 
 ## 1. Repository workspace
 
 | IDs | Result | Evidence or remaining gap |
 | --- | --- | --- |
-| WS-01 to WS-08 | PASS | Managed projects remain available. Existing folders use a native picker and purpose-bound grant, persist by canonical identity, share project cwd across chats and code tools, remain separate from RAG Sources, and reuse the existing project record. |
+| WS-01 to WS-05, WS-07, and WS-08 | PASS | Managed projects remain available. Existing folders use a native picker and purpose-bound grant, persist by canonical identity, share project cwd across chats and code tools, support bounded reads, remain separate from RAG Sources, and reuse the existing project record. |
+| WS-06 | PARTIAL | Direct project edits use descriptor-relative confinement on macOS and Linux. Windows project edits fail closed pending an equivalent confinement implementation. |
 | WS-09 to WS-12 | PASS | Equality and ancestor or descendant overlap are rejected for managed and folder-backed roots. Project deletion never deletes a user-owned repository, including `delete_files=true`. |
 | WS-13 to WS-16 | PASS | Missing, read-only, symlink-selected, replayed, and identity-replaced roots fail without corrupting the project list or creating a partial project. |
-| WS-17 to WS-23 | MANUAL | Removable volume recovery, network and mapped-drive policy, Unicode paths, Windows case folding and long paths, packaged macOS access persistence, and packaged Linux folder access need platform evidence. Windows project command and descriptor traversal functionality is currently unavailable and fails closed. |
+| WS-17 to WS-23 | MANUAL | Removable volume recovery, network and mapped-drive policy, Unicode paths, Windows case folding and long paths, packaged macOS access persistence, and packaged Linux folder access need platform evidence. Windows repository and `AGENTS.md` reads use handle-verified traversal; their Windows CI and packaged evidence remains pending until the remote matrix runs. |
 | WS-24 | PARTIAL | Project and worktree writes use process-local cooperative writer slots with deterministic in-process behavior. Separate Studio processes and external Git or editor writers are not serialized by that lock. |
 
 ## 2. Durable project goal and `/goal`
@@ -69,7 +70,7 @@ Status meanings:
 | DISC-09 to DISC-12 | PASS | File, byte, and token limits are enforced and disclosed. Cancellation, refresh, rename, and deletion remove stale map entries. |
 | DISC-13 and DISC-14 | PASS | Non-Git folders produce a bounded map. Nested repositories and submodule-like boundaries are explicitly excluded from the selected repository map. |
 | DISC-15 | PASS | Metadata discovery and relevance selection avoid inserting the entire repository into each prompt. |
-| DISC-16 | PASS for local fixture | The 100,000-path fixture completed in 1.26 seconds and stopped at its configured bound. Packaged platform responsiveness remains part of G5. |
+| DISC-16 | PASS for local fixture | The 100,000-path fixture completed in 1.144 seconds and stopped at 20,000 scanned paths and 20,000 included bytes with `path-limit` disclosure. Packaged platform responsiveness remains part of G5. |
 
 ## 5. Verification policy
 
@@ -127,7 +128,7 @@ Process-local writer slots coordinate Studio operations. They do not serialize a
 | REV-01 to REV-04 | PASS | The Agent Workspace panel and routes expose bounded changed-file, staged, unstaged, untracked, diff, fresh verification, goal, plan, and blocker evidence. |
 | REV-05 | PASS | Prepared-commit review is selected-path, two-phase, confirmation-bound, and non-mutating to the user branch and index. |
 | REV-06 | PASS | A bounded, redacted PR title and body draft works without GitHub credentials. |
-| REV-07 | PARTIAL | The connected GitHub handoff is wired to the exact connector schema with request digest, connector snapshot, one-use confirmation, and unknown-outcome handling. Tests use a fake connector; no live GitHub request was made. |
+| REV-07 | PARTIAL | The connected GitHub handoff is wired to the exact connector schema with request digest, connector snapshot, one-use process-local confirmation, and unknown-outcome handling. Tests use a fake connector; no live GitHub request was made, and pending confirmations do not survive restart. |
 | REV-08 to REV-10 | PASS | Local paths, credentials, and secrets are redacted; large evidence is bounded; and local review works without a remote. |
 
 ## 11. Harness and model portability
@@ -147,26 +148,31 @@ Process-local writer slots coordinate Studio operations. They do not serialize a
 | --- | --- | --- |
 | SEC-01 to SEC-05 | PASS | Raw renderer paths, expired grants, replay, purpose mismatch, and identity swaps are rejected. |
 | SEC-06 and SEC-07 | PASS | Filesystem roots, home directories, sensitive credential roots, unsafe network roots, and managed-root overlap are rejected. |
-| SEC-08 | PARTIAL | Descriptor-relative edit confinement and POSIX child-process confinement prevent project-root escape on macOS and Linux. Windows project command and descriptor traversal functionality fails closed. External processes are outside the process-local writer scheduler. |
+| SEC-08 | PARTIAL | Descriptor-relative edit confinement and POSIX child-process confinement prevent project-root escape on macOS and Linux. Windows repository and instruction reads use verified Win32 handles, while arbitrary Windows project edits and commands fail closed pending an equivalent filesystem sandbox. External processes are outside the process-local writer scheduler. |
 | SEC-09 to SEC-11 | PASS | Rollback, project deletion, worktree merge, and cleanup require ownership and fingerprint evidence and never use destructive fallback against user work. |
 | SEC-12 | PASS | Goal, instruction, review, task output, and PR-draft boundaries are escaped, bounded, and redacted. |
 
 ## Focused validation evidence
 
-The following results were recorded against this working tree or its immediately hardened revision. The groups overlap and must not be added together:
+The following local results were recorded after merging the fetched upstream tip. Overlapping focused reruns are identified and must not be added to the consolidated counts:
 
-- Git and worktree behavior: 61 passed.
-- Execution, confinement, and deletion behavior: 205 passed, 1 skipped. The skip is the Linux-only AF_UNIX check on the local macOS host.
-- Durable workflow, routes, and folder behavior: 65 passed.
-- Authorization, background inference, GitHub handoff, credential, and MCP behavior: 68 passed.
-- Native grant and logging behavior: 18 passed.
-- Focused frontend behavior: 48 passed.
-- Rust native lease, intent, path policy, and redaction behavior: 39 passed.
+- Consolidated backend workspace suite: 491 passed, 5 host-specific skips. The skips are four Windows-only handle and process-tree checks plus one Linux-only AF_UNIX check on the local macOS host.
+- The two initially suspect cancellation and macOS confinement cases were rerun outside the Codex host sandbox: 2 passed. This overlaps the consolidated backend suite.
+- Project persistence regression pair after updating legacy mocks: 65 passed. This overlaps the consolidated backend suite.
+- Full frontend Node test suite: 5,193 passed, 0 failed.
+- Frontend production build: passed. Vite reported existing chunk-size and mixed dynamic-import warnings.
 - Frontend TypeScript typecheck: passed.
-- Repository discovery fixture: 100,000 paths in 1.26 seconds with the configured bound enforced.
+- Targeted ESLint: passed.
+- Targeted Biome: exited 0 with 124 warning-level diagnostics. This is not described as warning-free.
+- Full Tauri Rust test suite: 413 passed, 0 failed, with one unrelated dead-code warning.
+- Changed Rust files passed `rustfmt --check` with child modules skipped deliberately.
+- Changed Python files passed Ruff.
+- The direct-source workflow parsed with two jobs.
+- `git diff --check` passed.
+- Repository discovery fixture: 100,000 paths in 1.144 seconds with the configured bounds enforced and disclosed.
 
-These are focused results. This document does not invent or imply a later full integration-suite result.
+These are source and local integration results. They do not imply remote CI, packaged desktop, physical platform, or live runtime certification.
 
 ## Release decision
 
-The source implementation is materially present in the local working tree, but the release remains not certified. The implementation is uncommitted, the live PR remains recovery-only, Windows project execution and traversal functionality is unavailable, and real runtimes, providers, Codex transport, GitHub submission, packaged builds, and physical platform smokes remain unrun. Do not publish, merge, or describe this as release-ready until those gates are resolved and the real source diff is committed to a fresh reviewable PR.
+The source implementation is committed and reviewable, but the release remains not certified. Arbitrary Windows project edits and execution, real runtimes, providers, Codex transport, the product's live GitHub connector handoff, packaged builds, and physical platform smokes remain unrun. The PR can enter source review once its pushed head and CI are verified. Do not merge or describe the product as release-ready until the remaining gates have recorded evidence.
