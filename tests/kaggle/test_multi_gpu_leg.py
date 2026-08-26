@@ -353,8 +353,7 @@ def test_single_device_reaches_the_child_and_sets_a_device_map():
     source = (SMOKE_DIR / "run_t4_smoke.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     train = next(
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "train_once"
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "train_once"
     )
     body = ast.unparse(train)
     assert "single_device" in body
@@ -366,10 +365,7 @@ def test_single_device_reaches_the_child_and_sets_a_device_map():
     # first version of this and it survived deleting the forwarding outright,
     # because `ap.add_argument("--single-device", ...)` is in the same function
     # -- an assertion satisfied by its own surrounding text.
-    main = next(
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "main"
-    )
+    main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
     assert "cmd.append('--single-device')" in ast.unparse(main), (
         "the flag is parsed but never forwarded, so the cycle child loads "
         "sharded and dies at step 0 exactly as the probe did"
@@ -389,8 +385,7 @@ def test_a_crash_mid_cycle_still_reports_what_was_measured():
     source = (SMOKE_DIR / "run_t4_smoke.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     facts = next(
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "multi_gpu_facts"
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "multi_gpu_facts"
     )
     # Stashed as soon as there is anything to stash, not on the way out: a
     # reading that lives only in a frame being unwound is a reading nobody has.
@@ -398,10 +393,7 @@ def test_a_crash_mid_cycle_still_reports_what_was_measured():
     assert "global _LAST_MULTI_GPU_FACTS" in published
     assert "_LAST_MULTI_GPU_FACTS = facts" in published
 
-    main = next(
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "main"
-    )
+    main = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
     child = ast.unparse(main)
     assert "except BaseException as exc" in child
     assert "'multi_gpu': _LAST_MULTI_GPU_FACTS" in child
