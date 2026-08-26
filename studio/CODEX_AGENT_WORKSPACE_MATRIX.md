@@ -6,9 +6,9 @@ Local branch: `feat/codex-agent-workspace`
 
 Feature source commit: `3af2f62e6d72564b2fa0840ca491a48817f12c3d`
 
-Upstream merge commit: `118e72d23ce84ec0cad3b8575a1243f7a7c0912b`
+Upstream merge commit: `eb04d095b9f99c47ab3c6d4776a81046b2697d3f`
 
-Fetched `upstream/main`: `55213845e3eec6fd628f0f99fce4cc3074d9ff5f`
+Fetched `upstream/main`: `14ffa5988b961664feb5670818d8ed7ee686582c`
 
 The feature branch contains that upstream tip through a normal merge and is reviewable ordinary source. Publication state and remote CI must be verified on PR #9673 after each push. Nothing in this document claims that a packaged build, physical platform, live provider, or release candidate has passed.
 
@@ -25,7 +25,7 @@ Status meanings:
 | Gate | Result | Evidence or remaining gate |
 | --- | --- | --- |
 | G0: reviewable feature diff | PASS on feature branch | Python, TypeScript, React, Rust, tests, workflow, and documentation are committed as ordinary source. Verify the live PR head and changed-file count after publication. |
-| G1: current with upstream main | PASS at snapshot | Merge commit `118e72d23` contains fetched `upstream/main` at `55213845e`. Refresh immediately before publication. |
+| G1: current with upstream main | PASS at snapshot | Merge commit `eb04d095b` contains fetched `upstream/main` at `14ffa5988`. Refresh immediately before publication. |
 | G2: ordinary source changes | PASS | Recovery payload files and the unsafe restore workflow are removed. The replacement is directly reviewable source. |
 | G3: backend, frontend, and Tauri wiring | PASS locally | Native folder selection, signed grants, persistence, project context, agent workflow routes, and the Agent Workspace panel are connected. |
 | G4: feature-specific automation | PASS for the merged feature suites | Exact local counts are recorded below. Full repository, remote CI, packaged app, and live runtime results are not implied. |

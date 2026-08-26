@@ -4,7 +4,7 @@ Snapshot date: 2026-08-26
 
 This document describes the product contract implemented by the current local working tree. It complements [CODEX_AGENT_WORKSPACE_MATRIX.md](./CODEX_AGENT_WORKSPACE_MATRIX.md), which records the exact QA rows and focused evidence.
 
-Feature source commit `3af2f62e6d72564b2fa0840ca491a48817f12c3d` is merged with fetched `upstream/main` at `55213845e3eec6fd628f0f99fce4cc3074d9ff5f` through merge commit `118e72d23ce84ec0cad3b8575a1243f7a7c0912b`. The implementation is committed as ordinary source. The live PR head and remote checks must be verified after publication.
+Feature source commit `3af2f62e6d72564b2fa0840ca491a48817f12c3d` is merged with fetched `upstream/main` at `14ffa5988b961664feb5670818d8ed7ee686582c` through merge commit `eb04d095b9f99c47ab3c6d4776a81046b2697d3f`. The implementation is committed as ordinary source. The live PR head and remote checks must be verified after publication.
 
 The target is operational parity, not a visual clone: a durable project root, stable project context, local administrative commands, constrained tools, reviewable Git operations, recoverable background work, isolated worktrees, and one agent contract across local and hosted runtimes.
 
