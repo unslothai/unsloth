@@ -1,10 +1,10 @@
-# The Diffusers revision Studio is built against. THE single source of truth for it:
+# The Diffusers revision Unsloth is built against. THE single source of truth for it:
 # no other requirements file may name diffusers, and a test in
 # tests/studio/install/test_diffusers_pin.py enforces that.
 #
 # Why a git archive and not a release: MiniMax-H3 needs the modular ModularPipeline /
 # MiniMaxH3Transformer3DModel work that landed after 0.39.0 and is not in any published
-# wheel yet, so a released version makes Studio refuse to load H3 at all. The archive
+# wheel yet, so a released version makes Unsloth refuse to load H3 at all. The archive
 # reports itself as 0.40.0.dev0.
 #
 # Why it is installed from its own file, in its own step: base.txt is applied near the

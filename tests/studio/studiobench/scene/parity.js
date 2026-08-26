@@ -61,7 +61,7 @@
 //
 // ── AND A NOTE ON ANY SCAN THAT CAN RETURN ZERO ──────────────────────────────────────────────
 //
-// `styleProbe` below walks a hand-written selector list. If Studio renames a class the list goes
+// `styleProbe` below walks a hand-written selector list. If Unsloth renames a class the list goes
 // quiet, matches nothing, and its digest becomes the hash of an empty string -- identical on both
 // arms, reported as a MATCH. A scan of nothing must never be reported as agreement, so
 // `compare_styles` refuses a zero-element probe instead of matching it, and `elements` travels
@@ -91,7 +91,7 @@
 //                       happens to be scrolled, which the film varies deliberately.
 //   record identifiers  thread ids, message ids and attachment ids are minted by the BACKEND when
 //                       the fixture seeds the thread. The two arms of an A/B are two separate
-//                       Studio installs with two separate databases, so these can never agree and
+//                       Unsloth installs with two separate databases, so these can never agree and
 //                       carry no information about the frontend.
 //   absolute URLs       `src`/`href` carry the arm's own origin, and the two arms are on two
 //                       ports by construction. `http://127.0.0.1:5830/x` and `...:5831/x` are the
@@ -176,7 +176,15 @@
   // neither presence nor value, unlike VOLATILE_ATTRS which keeps the presence. Optional and off
   // by default: every existing caller (the whole-thread digest, the per-message rows, the overlays
   // and the node-driven unit tests) passes nothing and gets exactly what it got before.
-  const signature = (root, dropAttrs) => {
+  //
+  // `elide`, when given, is a Set of ELEMENTS whose subtree this digest does not serialise. It is
+  // not a way of ignoring them: a marker carrying the tag and the element's `data-role` is written
+  // in their place, so the element's PRESENCE, its position among its siblings and its role are
+  // still compared and a message that vanished still moves the digest. Only the content inside it
+  // is withheld. The one caller is the streamed-message elision in `capture()`; the whole argument
+  // for it is stated there. Optional and off by default, so every existing caller passes nothing
+  // and gets byte-for-byte what it got before.
+  const signature = (root, dropAttrs, elide) => {
     if (!root) return "";
     const parts = [];
     const walk = (el, depth) => {
@@ -184,6 +192,15 @@
       // exactly the silent false negative this instrument exists to rule out. The marker is left
       // in the signature so anything deeper is visible as "not walked" rather than as "absent".
       if (depth > 40) { parts.push("<!depth-cap>"); return; }
+      if (elide && elide.has(el)) {
+        // Named, not silent. A reader of the raw signature sees exactly which element was held
+        // back and why, rather than a hole they have to infer from a length.
+        parts.push(
+          "<!in-flight " + el.tagName.toLowerCase() +
+          " role=" + ((el.getAttribute && el.getAttribute("data-role")) || "?") + ">"
+        );
+        return;
+      }
       parts.push("<" + el.tagName.toLowerCase());
       const names = [];
       for (const attr of el.attributes) {
@@ -286,10 +303,13 @@
 
   // ── VISIBLE-REGION PARITY ────────────────────────────────────────────────────────────────────
   //
-  // THE POLICY THIS SERVES. All changes must preserve UI and UX idempotency, with two exemptions:
-  // a difference may be accepted deliberately when performance improves dramatically, and a
-  // difference that exists only OFF SCREEN is fine by definition, because rendering only what is
-  // visible is an accepted technique rather than a parity violation.
+  // THE POLICY THIS SERVES. All changes must preserve UI and UX idempotency, with three
+  // exemptions: a difference may be accepted deliberately when performance improves dramatically;
+  // a difference that exists only OFF SCREEN is fine by definition, because rendering only what is
+  // visible is an accepted technique rather than a parity violation; and a select-all need not
+  // select all, PROVIDED the copy stays complete. Nothing in this file can see the third -- the
+  // clipboard is scored behaviourally, in analysis/behaviour.py -- so a selection that shrank is
+  // not a finding here.
   //
   // The whole-document digest above cannot express the second exemption. It compares everything
   // that is in the DOM, so ANY deferred off-screen work fails it by construction -- virtualization,
@@ -601,9 +621,29 @@
             VIS.ever.add(entry.target.__sbOrdinal);
           }
         }
-        const nodes = (D().messages && D().messages()) || [];
+        const dom = D();
+        const nodes = (dom.messages && dom.messages()) || [];
+        // THE SAME NODE SET THE POSITIVE CONTROL BELOW COUNTS. The rows used to re-walk the
+        // `data-status` / `aria-busy` selectors inline, so "the rows read the same hooks as the
+        // control" was true only while two copies happened to agree. Read from one call and the
+        // control cannot fire while a row still claims to be in flight, or the reverse.
+        const live = new Set((dom.streamingMessages && dom.streamingMessages()) || []);
         const byOrdinal = {};
         let mounted_ever_visible = 0;
+        // TWO MOUNTED ROWS CANNOT BE ONE MESSAGE, and until this counter existed nothing said so.
+        // The assignment below is keyed by ordinal, so a second row reusing one SILENTLY REPLACED
+        // the first row's digest, and `VIS.ever` is a Set of numbers so it collapsed them too.
+        // Whether the ghost row was caught was pure DOM order: reproduced in a browser, the same
+        // ghost inserted BEFORE the real row returns MATCH and AFTER it returns DIFFER.
+        //
+        // COUNTED DIRECTLY, NOT DERIVED. `unmounted_at_capture` looks like it should notice, but
+        // the extra row and the vacancy cancel in exactly the renumber case, so it reads a clean 0
+        // over a live collision.
+        //
+        // The residual: a collision that had resolved to one row by the time `capture()` ran is
+        // not detectable here. Seeing it needs the clash recorded where the ordinal is stamped.
+        let ordinal_collisions = 0;
+        const collided = [];
         for (let i = 0; i < nodes.length; i++) {
           const el = nodes[i];
           const ord = typeof el.__sbOrdinal === "number" ? el.__sbOrdinal : ordinalOf(el, i + 1);
@@ -635,15 +675,67 @@
           // holes -- and those are the checks that can say what a right ordinal would be, which a
           // digest comparison against an arm that publishes none never could.
           const sig = signature(el, VIRTUALIZATION_ATTRS);
+          if (Object.prototype.hasOwnProperty.call(byOrdinal, String(ord))) {
+            ordinal_collisions += 1;
+            if (collided.indexOf(ord) === -1) collided.push(ord);
+          }
           byOrdinal[String(ord)] = {
             role: el.getAttribute("data-role") || "?",
             digest: hash(sig),
             chars: sig.length,
+            // Still being written at capture time, so its digest names a point in a stream rather
+            // than a rendering. Carried here for the same reason as in the structural capture and
+            // handled the same way by `compare_visible`: residue, never a difference.
+            in_flight: live.has(el),
           };
         }
         const ever = [...VIS.ever].sort((a, b) => a - b);
+        // THE SAME POSITIVE CONTROL THE STRUCTURAL CAPTURE CARRIES, because this payload is scored
+        // by `compare_visible` on its own and never consults the structural one. The per-row
+        // `in_flight` above is taken from the SAME `streamingMessages()` call, so it goes quiet in
+        // the same way and at the same moment, and the arms of an A/B are two DIFFERENT builds --
+        // `--ab REF` installs the treatment under its own `UNSLOTH_STUDIO_HOME` -- so a renamed
+        // hook on the treatment only is the asymmetric case rather than a symmetric one that
+        // cancels out. Both rows then read
+        // `in_flight: false`, one arm's reply is mid-tail and the other's has finished, and the
+        // loop in `compare_visible` scores that as a rendering difference: the wall-clock false
+        // alarm this whole change exists to remove.
+        //
+        // READ GLOBALLY, not over the visible rows. "Is a reply being written" and "is the message
+        // it is being written into on screen" are different questions, and a reply streaming below
+        // the fold is an ordinary state that must not refuse anything.
+        const generating = dom.generating
+          ? Boolean(dom.generating())
+          : Boolean(dom.isRunning && dom.isRunning());
+        // WHY THE PROBE IS QUIET, which is three questions and not one. See
+        // `dom.statusHookPresent` / `dom.lastAssistantPublishesStatus`.
+        //
+        //   the last assistant message IS publishing parts and none of them says running
+        //     -> the hook's VOCABULARY changed. Blind, unless this arm is windowing, in which case
+        //        the message being written may not be the last one mounted and nothing here can
+        //        tell the two apart.
+        //   the last assistant message publishes NOTHING
+        //     -> it has no parts yet, which is ordinary -- unless no assistant message anywhere
+        //        publishes anything, and then the hook itself is gone. Blind on any arm, windowed
+        //        or not, because a settled message would still be carrying it.
+        const lastPublishes = dom.lastAssistantPublishesStatus
+          ? Boolean(dom.lastAssistantPublishesStatus())
+          : false;
+        const anyPublishes = dom.statusHookPresent ? Boolean(dom.statusHookPresent()) : true;
+        const windowedArm = dom.isWindowed ? Boolean(dom.isWindowed()) : false;
+        const probeBlind = lastPublishes ? !windowedArm : !anyPublishes;
         return {
           visible_attempted: true,
+          streaming: generating,
+          // Carried so a reader can tell the two zero-in-flight readings apart in the record, not
+          // only in the verdict: a stream this capture could not see, versus a hook that is gone.
+          status_hook_present: anyPublishes,
+          // `hookGone` and not merely "nothing is running": see `dom.statusHookPresent`. A windowed
+          // arm scrolled away from the tail can UNMOUNT the message being written, and
+          // `streamingMessages()` can only scan mounted DOM, so `live.size` is zero on a build
+          // whose hooks are perfectly intact. That is the ordinary state this mode exists to
+          // score, and refusing it would discard the settled rows that WERE on screen.
+          in_flight_unplaced: Boolean(generating && live.size === 0 && probeBlind),
           // Every ordinal the viewport ever showed during the window, INCLUDING any that have
           // since been unmounted. The gap between this and `messages` is the honest measure of
           // what a windowed arm could not be asked about at capture time.
@@ -656,6 +748,11 @@
           // ordinal and so appear nowhere above, which is a hole in the compared set rather than
           // agreement, and it is counted here so a reader can see it is zero.
           unplaced_rows: VIS.unplaced,
+          // Mounted, ever-visible rows whose ordinal a row already written had. See the note in
+          // the loop: the digest map and `ever_visible` both lose one of the two, so a nonzero
+          // count here means neither of them can be compared.
+          ordinal_collisions,
+          collided_ordinals: collided.sort((a, b) => a - b),
           messages: byOrdinal,
         };
       } catch (e) {
@@ -701,9 +798,87 @@
         const isThread = Boolean(found && found !== document.body &&
                                  found.classList && found.classList.contains("aui-thread-root"));
         const root = found || document.body;
-        const whole = signature(root);
-        const messages = [];
         const nodes = (dom.messages && dom.messages()) || [];
+        // ── THE STREAMED MESSAGE, AND WHY IT GETS ITS OWN DIGEST ────────────────────────────────
+        //
+        // A message that is still being written has no defined moment. The two arms of an A/B are
+        // two cells run back to back against ONE pacer: the bytes on the wire are identical by
+        // construction, but each arm has its own send click, its own `t0` and its own paint clock,
+        // and the digest is taken at a wall-clock offset in the film rather than at a character
+        // count in the stream. So the two arms are compared at two different points in the same
+        // reply, and the difference that comes back is wall clock wearing the shape of a UI change.
+        //
+        // That is the failure this whole file's neighbours were written against: measuring at a
+        // moment whose meaning is not stable across the things being compared. It is the same
+        // mistake as a census taken on a `data-state` flip, and it is worse here because the
+        // renderer amplifies it. Mid-stream, Unsloth does not show a PREFIX of the finished reply:
+        // `parseIncompleteMarkdown` runs remend over the tail and closes whatever construct is
+        // half-arrived, KaTeX renders the repaired formula (and, while it will not parse, writes
+        // the parse error and its character offset into a `title`), Shiki re-tokenises the repaired
+        // fence, and the trailing code block carries `data-incomplete`. None of that is monotonic
+        // in how much text has arrived, which is why the difference cannot be recognised by its
+        // size and why a same-length mismatch here is not evidence of a missed volatile.
+        //
+        // MEASURED, on the shipped corpus (unit 9, 4,238 characters) driven through remend, KaTeX
+        // and Shiki into the shipped `signature()`. Stepping the arrived text by the pacer's own
+        // 24-character chunk, 175 of the 175 adjacent pairs produce a different digest -- one chunk
+        // of skew is enough to fail a stable action outright. At one-character resolution the
+        // serialised length moves DOWNWARDS at 52 of 4,237 steps and 34 pairs of distinct stream
+        // positions serialise to exactly the same length with different digests, which is the
+        // same-length drift that reads as a normaliser gap. It also cuts the other way: 398 of the
+        // 4,237 one-character advances move nothing at all.
+        //
+        // WHAT IS DONE ABOUT IT. The in-flight message is named, and a SECOND whole-thread digest
+        // is taken with its subtree elided -- a marker in its place, so its presence, its position
+        // and its role are still compared and a message that vanished still moves the digest. The
+        // comparison layer scores the settled document on the settled digest and refuses a verdict
+        // on the in-flight message rather than calling it a difference. It is NOT normalised away
+        // and it is not folded into a pass: see `analysis/parity.compare`.
+        //
+        // THE SCAFFOLD DIGEST ELIDES EVERY MESSAGE, NOT ONLY THE STREAMING ONES, and that is not
+        // over-reach -- it is the only version of this that is comparable across arms. Whether a
+        // given message is in flight is a property of ONE arm at the moment ITS digest was taken,
+        // and the ordinary case is precisely that the arms disagree about it: one has finished the
+        // reply and the other has not. A thread digest that elided each arm's own in-flight set
+        // would then be two different walks, and the two would differ because of the elision
+        // itself. Eliding all of them makes the walk identical on both sides by construction.
+        //
+        // Nothing is given up by decomposing it this way. The whole-thread digest is the scaffold
+        // plus every message subtree in place; the scaffold keeps a marker carrying each message's
+        // tag, role and position, and every message subtree is digested on its own row below. So a
+        // message that moved, vanished, changed role or changed content still moves something, and
+        // the comparison layer can withhold ONE of those rows without losing the rest.
+        const inFlightNodes = (dom.streamingMessages && dom.streamingMessages()) || [];
+        const inFlight = new Set(inFlightNodes);
+        const running = Boolean(dom.isRunning && dom.isRunning());
+        // The narrower reading, and the positive control below is the one place that needs it.
+        // `isRunning()` is true whenever the composer is refusing a fresh send, and a prompt
+        // waiting in the queue on an IDLE thread refuses one too. See `dom.generating`.
+        const generating = dom.generating ? Boolean(dom.generating()) : running;
+        // Whether the app still publishes the status contract at all. See
+        // `dom.statusHookPresent`: a hook that is GONE is a blind instrument, a hook that is
+        // present with nothing running is an ordinary settled or not-yet-mounted thread.
+        // WHY THE PROBE IS QUIET, which is three questions and not one. See
+        // `dom.statusHookPresent` / `dom.lastAssistantPublishesStatus`.
+        //
+        //   the last assistant message IS publishing parts and none of them says running
+        //     -> the hook's VOCABULARY changed. Blind, unless this arm is windowing, in which case
+        //        the message being written may not be the last one mounted and nothing here can
+        //        tell the two apart.
+        //   the last assistant message publishes NOTHING
+        //     -> it has no parts yet, which is ordinary -- unless no assistant message anywhere
+        //        publishes anything, and then the hook itself is gone. Blind on any arm, windowed
+        //        or not, because a settled message would still be carrying it.
+        const lastPublishes = dom.lastAssistantPublishesStatus
+          ? Boolean(dom.lastAssistantPublishesStatus())
+          : false;
+        const anyPublishes = dom.statusHookPresent ? Boolean(dom.statusHookPresent()) : true;
+        const windowedArm = dom.isWindowed ? Boolean(dom.isWindowed()) : false;
+        const probeBlind = lastPublishes ? !windowedArm : !anyPublishes;
+        const whole = signature(root);
+        const scaffold = signature(root, undefined, new Set(nodes));
+        const messages = [];
+        const in_flight = [];
         for (let i = 0; i < nodes.length; i++) {
           const sig = signature(nodes[i]);
           const row = {
@@ -712,6 +887,10 @@
             digest: hash(sig),
             chars: sig.length,
           };
+          if (inFlight.has(nodes[i])) {
+            row.in_flight = true;
+            in_flight.push(i);
+          }
           if (want_raw) row.raw = sig;
           messages.push(row);
         }
@@ -735,6 +914,58 @@
           root_kind: isThread ? "thread" : "body",
           digest: hash(whole),
           chars: whole.length,
+          // The thread with every message replaced by a marker: the viewport, the composer, the
+          // empty state, and each message's tag, role and position. `digest` = this plus the
+          // per-message rows below, which is what lets a single message be withheld from the
+          // comparison without the other two thirds of the reading going with it.
+          digest_scaffold: hash(scaffold),
+          chars_scaffold: scaffold.length,
+          // Mounted indices of the messages that were still being written. An EMPTY list on a
+          // page where nothing is running is the ordinary case and means what it says.
+          in_flight,
+          streaming: running,
+          // THE POSITIVE CONTROL, and it is not decoration. `streamingMessages()` walks selectors
+          // written against Unsloth's markup: rename `data-status` and it goes quiet, matches
+          // nothing, and every reading silently becomes "nothing was streaming" -- which is the
+          // strongest claim this capture can make about the stream and would be supported by no
+          // observation at all. The app says a reply is running through a different control (the
+          // Stop button), so when the two disagree the disagreement is carried out rather than
+          // resolved here, and `analysis/parity.comparability` refuses the pair.
+          //
+          // IT IS `generating()` AND NOT `isRunning()` that is compared against, and that
+          // difference is most of this field's meaning. `isRunning()` is also true while a queued
+          // prompt waits on a thread that is doing NOTHING, and on that thread no message
+          // publishes a running status because none is running -- so reading it here would refuse
+          // an ordinary settled pair before `compare()` ever reached its settled digests, and
+          // would report the instrument as broken to say it. That is this file's own failure
+          // mode: reading at a moment whose meaning is not stable across the things being
+          // compared. See `dom.generating`.
+          //
+          // AND IT REQUIRES THE HOOK TO BE GONE, not merely quiet. `streamingMessages()` scans
+          // MOUNTED DOM, so it also returns nothing in the gap between a send being accepted and
+          // the reply's first part rendering, and on an arm that has unmounted the message it is
+          // writing into. Neither is a broken instrument. See `dom.statusHookPresent`.
+          in_flight_unplaced: Boolean(
+            generating && inFlightNodes.length === 0 && probeBlind
+          ),
+          status_hook_present: anyPublishes,
+          // The queued-idle interval itself, recorded rather than resolved away, so a reader can
+          // tell why a capture with `streaming: true` placed no message in flight.
+          // INCLUDING THE DISPATCHED WAIT. `isRunning()` matches "Stop generating" and
+          // "Queue message" only, so the interval where a dispatched queue entry renders
+          // "Stop queued message" recorded `streaming` and `queued_idle` both false -- identical
+          // to a settled Send arm. A pair straddling that transient then had a differing composer
+          // with no run-state difference to account for it, and the comparison layer is entitled
+          // to call that a rendering regression. It is queue timing.
+          queued_idle: Boolean(
+            (running || (dom.stopQueuedButton ? Boolean(dom.stopQueuedButton()) : false)) &&
+              !generating
+          ),
+          // The composer's run-state slot, as a token. Carried so the comparison layer can tell a
+          // scaffold that differs because the two arms were at different points in one turn from a
+          // scaffold that differs because something was rendered differently. See
+          // `dom.runStateControl` and `analysis/parity.generation_disagrees`.
+          composer_control: dom.runStateControl ? dom.runStateControl() : null,
           messages,
           overlays,
           styles,

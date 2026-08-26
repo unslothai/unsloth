@@ -159,7 +159,7 @@ _CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
 
 
 def _consume_start_api_key_marker_env() -> bool:
-    """Consume the one-shot readiness marker passed across a Studio re-exec."""
+    """Consume the one-shot readiness marker passed across an Unsloth re-exec."""
     return os.environ.pop(_START_API_KEY_MARKER_ENV, None) == "1"
 
 
@@ -237,7 +237,7 @@ _WINDOWS_CLI_ENTRYPOINT = (
 # package), for a package whose __init__ raises, and for one whose dependencies
 # an interrupted install never fetched. Every one of those is a venv the
 # trampoline cannot start, and this probe gates the headless-public strip of
-# .bootstrap_password, so a false pass there is a public Studio with no login
+# .bootstrap_password, so a false pass there is a public Unsloth with no login
 # page and no plaintext recovery credential. Paying the import is what makes the
 # probe's answer the launch's answer.
 _MANAGED_CLI_IMPORT_PROBE = (
@@ -304,7 +304,7 @@ def _studio_runtime_launch_guard(*, inherited: bool = False):
         )
         raise typer.Exit(1)
     except OSError as exc:
-        typer.echo(f"Error: could not coordinate the Studio launch: {exc}", err = True)
+        typer.echo(f"Error: could not coordinate the Unsloth launch: {exc}", err = True)
         raise typer.Exit(1)
 
     try:
@@ -401,7 +401,7 @@ def _managed_cli_package_present(python: Path) -> bool:
     directory is metadata, not a runnable CLI. It matters here specifically:
     this gate stands in front of the headless-public strip of
     .bootstrap_password, so passing a venv that then fails to import is the one
-    outcome the gate's placement exists to prevent -- a public Studio with no
+    outcome the gate's placement exists to prevent -- a public Unsloth with no
     login page and no plaintext recovery credential.
 
     The probe runs the trampoline's own ``from unsloth_cli import app`` rather
@@ -433,7 +433,7 @@ def _managed_cli_package_present(python: Path) -> bool:
         # runs THAT interpreter, so it is going to fail the same way, and the
         # on-disk layout cannot say otherwise. Fail closed, because the caller
         # strips .bootstrap_password on a headless public launch before it
-        # re-execs: passing here would leave a public Studio with no login page
+        # re-execs: passing here would leave a public Unsloth with no login page
         # and no plaintext recovery credential, which is worse than telling the
         # user to re-run setup.
         return False
@@ -1722,7 +1722,7 @@ def studio_default(
         max = _PARALLEL_MAX,
         help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
-            f"Default {_PARALLEL_DEFAULT_PLAIN}. The Studio run settings "
+            f"Default {_PARALLEL_DEFAULT_PLAIN}. The Unsloth run settings "
             "(Parallel Slots) override it per load."
         ),
     ),
@@ -2244,7 +2244,7 @@ def run(
         rich_help_panel = _RUN_PANEL_MODEL,
         help = (
             "Speculative decoding mode for GGUF models. DSpark automatically uses a "
-            "matching dspark-*.gguf sidecar when available. Default: unset (Studio auto)."
+            "matching dspark-*.gguf sidecar when available. Default: unset (Unsloth auto)."
         ),
     ),
     spec_draft_n_max: Optional[int] = typer.Option(
@@ -2283,7 +2283,7 @@ def run(
         help = (
             "Force server-side tools (web search, code execution) on or off for "
             "every request. Default: on for every bind, with a request's own "
-            "enable_tools: false (what the Studio UI sends) honored. /v1/messages "
+            "enable_tools: false (what the Unsloth UI sends) honored. /v1/messages "
             "takes the on direction per request (enable_tools) because it has no "
             "confirmation channel; the off direction still applies everywhere."
         ),
@@ -2385,7 +2385,7 @@ def run(
         help = (
             "llama-server parallel decode slots. N requests share one "
             "loaded model; each slot gets ctx/N KV cache. Default "
-            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value). The Studio "
+            f"{_PARALLEL_DEFAULT_RUN} (pre-PR hardcoded value). The Unsloth "
             "run settings (Parallel Slots) can override it per load."
         ),
     ),
@@ -2455,7 +2455,7 @@ def run(
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
-    # A newer outer CLI can re-exec into an older Studio venv; pass this signal via
+    # A newer outer CLI can re-exec into an older Unsloth venv; pass this signal via
     # env so an older child ignores it instead of treating it as a llama-server arg.
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
     start_api_key_marker = start_api_key_marker or inherited_start_api_key_marker
@@ -2777,7 +2777,7 @@ def run(
         # Headless serving prints its own URL/API-key banner; the Tauri-only
         # TAURI_PORT line would corrupt that machine-parseable output.
         emit_tauri_port = False,
-        # We read the bound port back below, so a fallback past another Studio is
+        # We read the bound port back below, so a fallback past another Unsloth is
         # safe here and keeps side-by-side model runs working.
         abort_if_own_studio = False,
     )
@@ -3551,12 +3551,16 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
 
     if platform.system() == "Windows":
-        powershell_args = ["powershell.exe"]
+        # Resolved, not bare: the gate that runs immediately before this in setup() and update()
+        # had to stop trusting PATH for exactly this reason (#9440), and the Popen below has no
+        # OSError handler, so a bare name here just moves the same WinError 2 one frame later.
+        powershell = _studio_runtime_gate.resolve_windows_powershell()
+        powershell_args = [powershell]
         # PRESENCE, not truthiness: install.ps1 publishes this around the handoff and sets it to
         # "{}" when it found no proxy, so treating that as "nobody handed anything over" would
         # send an installer launch off to reload the profiles it deliberately discarded.
         if os.environ.get("_UNSLOTH_PS_PROXY_DEFAULTS") is None:
-            probed = _probe_profile_proxy_defaults(_profile_probe_hosts() or ["powershell.exe"])
+            probed = _probe_profile_proxy_defaults(_profile_probe_hosts() or [powershell])
             if probed:
                 env = {**(env or os.environ), "_UNSLOTH_PS_PROXY_DEFAULTS": probed}
         # -NoProfile unconditionally, not just on the hidden branch: install.ps1 hands off to
@@ -3758,7 +3762,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
     checkouts = _installers_on_disk(_installer_script_candidates(installer_name))
 
     if is_windows:
-        ps_argv: List[str] = ["powershell.exe"]
+        ps_argv: List[str] = [_studio_runtime_gate.resolve_windows_powershell()]
         # -NoProfile unconditionally, as in _run_setup_script above: gating it on the hidden
         # branch left the visible console path, where a profile is exactly what IS loaded.
         ps_argv.append("-NoProfile")
@@ -3908,14 +3912,14 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
     managed_conflicts = _studio_deps.installed_metadata_conflicts(names = managed_names)
     if managed_conflicts:
         typer.echo("", err = True)
-        typer.echo("Update finished, but Studio package metadata is inconsistent:", err = True)
+        typer.echo("Update finished, but Unsloth package metadata is inconsistent:", err = True)
         for entry in managed_conflicts:
             typer.echo(f"  {entry}", err = True)
         typer.echo("", err = True)
         typer.echo("The file check cannot safely choose between these records.", err = True)
         typer.echo("The installer could not repair its managed package metadata.", err = True)
         typer.echo(
-            "Recreate the managed environment before running the Studio installer again.", err = True
+            "Recreate the managed environment before running the Unsloth installer again.", err = True
         )
         typer.echo("", err = True)
         typer.echo(
@@ -3929,7 +3933,7 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
         for entry in other_conflicts:
             typer.echo(f"  {entry}", err = True)
         typer.echo("", err = True)
-        typer.echo("Studio skipped file verification for these packages.", err = True)
+        typer.echo("Unsloth skipped file verification for these packages.", err = True)
         typer.echo(
             "Reinstall the intended version from its original package source, or use a clean environment.",
             err = True,
@@ -3943,7 +3947,7 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
         typer.echo(f"  {entry}", err = True)
     typer.echo("", err = True)
     typer.echo("An update cannot repair these. pip sees intact package metadata and", err = True)
-    typer.echo("reinstalls nothing, so Studio will keep failing to start. Reinstall", err = True)
+    typer.echo("reinstalls nothing, so Unsloth will keep failing to start. Reinstall", err = True)
     typer.echo("over the top:", err = True)
     # Carry a custom root into the command. The shim is a bare symlink and
     # _ensure_studio_env_exported only sets os.environ for this process, so the
@@ -4089,7 +4093,7 @@ def update(
         os.environ.pop("STUDIO_LOCAL_REPO", None)
     # main gained a runtime gate around setup; this branch replaced the
     # rename-to-.deleteme helpers with the launcher transaction. Both apply:
-    # the gate keeps a second Studio process off the venv, the transaction
+    # the gate keeps a second Unsloth process off the venv, the transaction
     # keeps the launcher recoverable across the setup it wraps.
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
     with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
@@ -4508,9 +4512,9 @@ class _WindowsLauncherUpdateTransaction:
         self.launcher = scripts / "unsloth.exe"
         self.backup = scripts / "unsloth.exe.update-backup"
         self.legacy_backup = scripts / "unsloth.exe.deleteme"
-        # Under the Studio home, not the venv: setup.ps1 removes the whole
+        # Under the Unsloth home, not the venv: setup.ps1 removes the whole
         # $VenvDir to rebuild a stale torch, and an open handle inside it makes
-        # Windows refuse the recursive delete. One lock per Studio home is the
+        # Windows refuse the recursive delete. One lock per Unsloth home is the
         # right grain anyway, since that is what names the managed venv.
         self.lock_path = STUDIO_HOME / "unsloth.exe.update-lock"
         # install.ps1 hardlinks this to the launcher, so it survives the old

@@ -294,7 +294,7 @@ class BenchContext:
     context: Any            # BrowserContext
     page: Any               # the page under measurement
     cdp: Any | None
-    base_url: str           # the Studio the session is driving
+    base_url: str           # the Unsloth the session is driving
     session_id: str
     tier: str
     instrument_level: int
@@ -333,7 +333,7 @@ condition and adds four:
 | `anchored_at_end` | the app reports itself at the bottom (`.aui-thread-scroll-to-bottom` carrying `invisible`), falling back to the scrollTop arithmetic only when it does not |
 | `pin_settled` | `--aui-scroll-stabilizer` is off the viewport, i.e. the autoscroll has finished pinning |
 
-**This is a contract the arm must meet, not a signal that exists today.** Studio ships no
+**This is a contract the arm must meet, not a signal that exists today.** Unsloth ships no
 virtualization and no ordinal attributes anywhere in the chat thread. WAI-ARIA already requires a
 list whose items are not all in the DOM to publish `aria-setsize` and `aria-posinset`, so an arm
 that omits them is unusable with a screen reader whatever it does to the frame rate, and refusing
@@ -372,7 +372,8 @@ and `thread_total` on every parity capture, `mounted_before` / `mounted_after` o
 `reopen_readiness` on `thread_reopen`, `visible` on every action row, `observation_ms` on every
 action row, `stream_samples` / `attached_fraction_of_stream` / `reattachments` on the cell's
 `follow`, `reply_chars_scoreable` / `wire_parse_failures_in_window` /
-`wire_pending_chars_at_close` on every `stream_cost` window, and the gate rows
+`wire_pending_chars_at_close` on every `stream_cost` window, `ordinal_collisions` /
+`collided_ordinals` on every visible-region capture, and the gate rows
 `thread_ready:{mode}`, `thread_complete`, `follows_the_stream` and `windowed_readiness:{arm}`.
 
 **What `thread_reopen` measures.** `reopen_ms` runs from the click on the thread's sidebar row
@@ -444,11 +445,16 @@ limitation next to the passing verdict rather than leaving it in a source commen
 
 ### The policy, and the three claims
 
-All changes must preserve UI and UX idempotency, with two exemptions:
+All changes must preserve UI and UX idempotency, with three exemptions:
 
 1. a UI difference may be accepted DELIBERATELY when performance improves dramatically;
 2. a difference that exists only OFF SCREEN is fine by definition, because rendering only what is
-   visible is an accepted technique rather than a parity violation.
+   visible is an accepted technique rather than a parity violation;
+3. a select-all need not select all, PROVIDED the copy it produces stays complete. Copy may
+   serialise the thread from the message store as markdown or plain text instead of reproducing a
+   DOM selection. Completeness of the copied content is REQUIRED, silent truncation being data
+   loss; visual selection fidelity is NOT. This is what makes deferral and virtualization cheap,
+   because the copy path stops depending on what is mounted.
 
 The whole-document digest cannot express exemption 2. It compares everything in the DOM, so every
 deferred-off-screen technique fails it by construction: virtualization, deferred fence
@@ -458,11 +464,13 @@ rather than giving one, so there is now a mode that gives one.
 `sweep/ui_parity.py --mode auto|digest|visible|behaviour`. Every report prints the CLAIM it is
 making AND the POLICY it is being judged against, because "PARITY OK" has meant three different
 things in this file's history and none of them is "the UI is unchanged". The claim says what was
-compared; the policy says what a pass is worth, and the two exemptions are what decide that. Only
+compared; the policy says what a pass is worth, and the three exemptions are what decide that. Only
 the `visible` mode can GRANT the off-screen exemption, and its policy line says so, together with
-the reminder that the exemption does not remove the floor. `analysis/parity.py` holds both as
-`POLICY` and `POLICY_BY_MODE`, and a test fails if any mode prints a claim without a policy beside
-it -- a constant nothing prints is a constant nobody reads.
+the reminder that the exemption does not remove the floor. No mode grants exemption 3 off a digest:
+`behaviour` is the only one that speaks to it, through `clipboard_carries_the_whole_thread`, and
+where there is no readable `select_all_copy` it records the exemption rather than granting it.
+`analysis/parity.py` holds both as `POLICY` and `POLICY_BY_MODE`, and a test fails if any mode
+prints a claim without a policy beside it -- a constant nothing prints is a constant nobody reads.
 
 | mode | claim | fails on |
 | --- | --- | --- |
@@ -490,6 +498,135 @@ id, so `r1K.base.rep0` and `r100K.base.rep0` collided: a payload carrying more t
 silently overwrote one rung's rows with the other's and could pair a 1K base against a 100K
 treatment.
 
+### A message that is still being written is refused, not scored
+
+The digest is taken at the CLOSE of an action window, which is a wall-clock offset in the film. The
+two arms are two cells run back to back against one pacer: the bytes on the wire are identical by
+construction, but each has its own send click, its own `t0` and its own paint clock. So a slot that
+lands inside a live reply digests two different points in the same stream, and the difference that
+comes back is wall clock wearing the shape of a UI change. Same family as every entry in
+`outputs/rp/INSTRUMENT-DEFECTS.md`: **measuring at a moment whose meaning is not stable across the
+things being compared.**
+
+You cannot recognise it by its size. Mid-stream Unsloth does not show a prefix of the finished
+reply: `parseIncompleteMarkdown` runs remend over the tail and closes the half-arrived construct,
+KaTeX renders the repaired formula and writes its parse error and character offset into a `title`,
+Shiki re-tokenises the repaired fence, and the trailing code block carries `data-incomplete`.
+Measured on the frozen corpus's streamed unit through the real remend, KaTeX and Shiki into the
+shipped `signature()`: stepping by the pacer's own 24-character chunk, **175 of 175 adjacent pairs
+differ**; at one-character resolution the signature gets SHORTER at 52 of 4,237 steps, 34 pairs of
+distinct stream positions serialise to exactly the same length with different digests, and 398
+steps move the digest not at all.
+
+So `scene/parity.js` names the in-flight messages from the app's own published state --
+assistant-ui's `data-status` on the text part, `aria-busy` on the reasoning content -- and the
+capture carries `in_flight`, `streaming`, `in_flight_unplaced`, and `digest_scaffold`: the thread
+with EVERY message replaced by a marker carrying its tag, role and position. `digest` is the
+scaffold plus the per-message rows, so comparing them separately is the same reading taken apart,
+and taken apart it can withhold one message.
+
+`analysis/parity.compare` then has three outcomes rather than two:
+
+| the settled document | the in-flight message | verdict |
+| --- | --- | --- |
+| differs | anything | `DIFFER`, localised to the settled things only. This is the case that used to be lost: the action was silenced wholesale by `UNSTABLE_ACTIONS` and a real regression elsewhere in the thread printed under "expected to vary" |
+| agrees | agrees | `MATCH`, unchanged. Two arms that landed on the same point serialised identically, which is the claim |
+| agrees | differs | `NOT COMPARABLE`. Not a pass. The claim quantifies over the whole thread and one message did not serialise identically, for a reason with no defined moment |
+
+Every message is elided from the scaffold, not only the streaming ones, because whether a message
+is in flight is a property of ONE arm at the moment ITS digest was taken and the ordinary case is
+that the arms disagree about it. Eliding all of them makes the walk identical on both sides by
+construction.
+
+`in_flight_unplaced` is the positive control and it is checked AFTER `mount_count_mismatch`: a
+reply that is running while no message publishes a streaming state means the selector hooks have
+gone quiet, and a scan that can return zero must not report "nothing was streaming" on the strength
+of never having looked. A build that drops a message while a reply runs is still a finding, because
+that reading does not depend on the stream split.
+
+It reads `dom.generating()` and NOT `dom.isRunning()`, and the two are different questions.
+`isRunning()` answers "is the composer refusing a fresh send", which every wait loop in
+`scene/actions.py` needs and which is why it accepts the Queue button: with text in the composer a
+running thread renders Queue and no Stop at all. But `ComposerRightControls` renders the same
+`aria-label="Queue message"` a second time, under `isQueueRunning && !thread.isRunning`, while a
+queued prompt waits to be dispatched and nothing whatever is generating -- reachable by one
+Cmd/Ctrl+Enter, and held for the pump's 50 ms and for 500 ms per indexing retry. Read there,
+`isRunning()` sets the control on a perfectly ordinary settled thread, `streaming_probe` refuses
+the pair before `compare()` reaches its settled digests, and `sweep/ui_parity` buckets that refusal
+as `blind` and still exits 0. So the queued-idle interval is separated from active streaming:
+`generating()` is `stopButton() || (queueButton() && !promptQueue())`, the queue surface being
+`PromptQueueStack`'s own accessible name, which is present in exactly the states that render the
+queued-idle button. The capture carries `queued_idle` so the distinction is in the record rather
+than only in the verdict. What that gives up, pinned in
+`scene/selftest/test_studiobench_queued_idle_live.py`: with a queue run holding a further prompt
+AND a reply streaming AND text in the composer, the control is not armed for that capture. It
+under-claims rather than over-claims, and probe blindness is a renamed selector, so it is global
+and the run's other captures still catch it.
+
+**A quiet scan has three causes and only one of them is a broken instrument.**
+`streamingMessages()` scans MOUNTED DOM, so it returns nothing when a windowed arm has unmounted
+the message it is writing into (which is what windowing is for, and is reachable the moment
+`scroll_during_generation` leaves the tail off screen while later slots run), and it returns nothing
+in the gap between a send being accepted and the reply's first part arriving, where the assistant
+message is mounted with zero parts and thread.tsx renders "Generating..." in place of any hook --
+`send_turn` returns the instant `isRunning()` flips, so a capture lands there twice a film. So the
+control asks for evidence of blindness rather than for silence:
+
+| the last assistant message | and | conclusion |
+| --- | --- | --- |
+| publishes parts, none running | the arm mounts the whole thread | **blind.** The row cannot be missing, so a quiet scan is the only explanation left. This is what catches a build that changed the status VALUE rather than the attribute. |
+| publishes parts, none running | the arm is windowing | not blind. The message being written may not be the last one mounted, and nothing here can tell that from a changed value. |
+| publishes nothing | some other assistant message does | not blind. It has no parts yet, which is ordinary. |
+| publishes nothing | no assistant message does | **blind.** `data-status` is one line in markdown-text.tsx, rendered for `complete` parts too, so a settled message would still be carrying it. Fires on a windowed arm as well. |
+
+All of it is scoped to ASSISTANT messages, because a user message never publishes `data-status` even
+on a working build -- only assistant parts render through `MarkdownText`. The capture carries
+`status_hook_present` so the readings are distinguishable in the record and not only in the verdict.
+What the second row gives up is pinned by `test_what_the_windowed_narrowing_gives_up`: a windowed arm
+whose status vocabulary changed is not caught, though the same build trips on any full-mount pair.
+It under-claims rather than over-claims.
+
+**The refusal covers the readings that depend on where the stream had got to, and nothing else.**
+A refusal is bucketed as `blind` by `structural_report` and `visible_report`, and neither consults
+it for the exit code, so anything swallowed by it leaves the run green. Three readings survive it:
+
+- **the overlays**, in `compare`. A dialog, a menu or the model picker is walked from `document`,
+  outside `.aui-thread-root`, so its digest carries neither the streamed message nor the composer.
+- **a user row**, in `compare_visible`, when BOTH arms call that ordinal the user's. A reply is
+  written into an assistant message, so that row cannot be the stream. The two arms having to agree
+  is what makes it provable rather than trusted.
+- **a role change**, in `compare_visible`, even on a row that is in flight. The role is captured
+  beside the digest, and how far a reply has arrived says nothing about whose message it is, so a
+  treatment that renders the live assistant row as `data-role="user"` is reported rather than
+  elided with the transient content digest.
+
+**The SCAFFOLD is readable only when the two arms rendered the same composer control.**
+`ThreadPrimitive.Root` wraps `ThreadComposerDock`, so the composer is inside the thread root and
+inside `digest_scaffold`, and `ComposerRightControls` puts exactly one control in its run-state slot:
+Send when nothing is happening, Stop while a reply is written, Queue while one is queued or while
+text sits in the box mid-reply, and the research pair. Those are different subtrees. Measured on two
+byte-identical threads differing only in that slot: Stop against Send moves the scaffold from 373 to
+381 characters and changes its digest, with no message content involved.
+
+So the capture carries `composer_control`, the token naming which control was in that slot, and the
+comparison asks whether the two arms agree on it. `streaming` is too coarse to ask with: it is
+`isRunning()`, true for Stop AND for Queue, so a queued-idle arm and a streaming arm agree on it
+while rendering two different subtrees.
+
+- **The arms agree on the token:** the scaffold is comparable, and a scaffolding change is reported
+  as it always was -- including inside the blind-probe refusal, alongside the overlays.
+- **They disagree, and the scaffold is the ONLY thing that moved:** `NOT_COMPARABLE`. The pair this
+  whole mode exists for is one arm that has finished its reply against one still writing it; its
+  messages are withheld correctly and its composer used to make it `DIFFER` with the single claim
+  `thread scaffolding outside any message (373->381c)`. Withheld rather than ignored: calling it
+  `MATCH` would hide a genuine composer regression, and `NOT_COMPARABLE` is not a pass.
+- **They disagree and something else also moved:** reported exactly as before. The withholding is
+  not a blanket.
+
+**The PR's own null battery could not see this**, which is why it survived a 15-of-15-to-0 null: the
+null is one build against itself at six points in ONE stream, so both arms are generating and both
+render Stop. The bias is symmetric within the control and cancels exactly. A flat null proves
+repeatability, never comparability.
 ### The two boundary decisions in visible-region parity
 
 Written down because this is where a visible-region check goes wrong quietly.
@@ -532,6 +669,37 @@ only by a batch that mounted a message element, so a stream (text churn inside m
 none. A row that can be placed by neither route is stamped with no ordinal and counted in
 `unplaced_rows` rather than given a guess.
 
+**Two mounted rows publishing ONE position make the capture unreadable, and it says so.** The
+per-message digests are keyed by that position and `ever_visible` is a set of them, so a second row
+carrying a position a row already holds replaces the first one's digest and adds nothing to the
+set: three rows on screen produce a capture indistinguishable from a capture of two. Which of the
+two survives is DOM order, so the pair reaches MATCH exactly when the survivor happens to agree with
+the other arm. It is counted as `ordinal_collisions` with the positions named in
+`collided_ordinals`, and any nonzero count makes the pair NOT COMPARABLE before `ever_visible` and
+`messages` are read, because both of them are short by a row. The count is taken directly and NOT
+derived from `unmounted_at_capture`: in the renumber case the extra row at one position and the
+vacancy at another cancel, and that reads a clean zero over a live collision. The limit, stated: a
+collision that had resolved to one row by capture time is not visible here, and seeing it would need
+the clash recorded when the position is stamped.
+
+
+**The streaming probe's positive control travels with the VISIBLE payload too, because
+`compare_visible` never sees the structural one.** A windowed pair is scored from
+`parityVisible.capture()` alone, and its per-row `in_flight` is read off the same
+`streamingMessages()` call the control counts. The two arms are two separately installed builds
+(`--ab REF` gives the treatment its own `UNSLOTH_STUDIO_HOME`), so a head that renames or moves the
+`data-status` / `aria-busy` hook is blinded on ONE arm only: nothing cancels out, every row on that
+arm reads settled, and a reply that is mid-tail on one side and finished on the other used to land
+in the per-ordinal loop as "N visible message(s) rendered differently" -- the wall-clock false alarm
+this mode exists to avoid, arriving through the one door left open. The null control cannot absorb
+it either, being base-vs-base: both arms are blinded or neither, `derive_unstable` counts the
+resulting `NOT_COMPARABLE` as blind rather than as an observation, and the action never becomes
+unstable. So the capture carries `streaming` and `in_flight_unplaced` (from `dom.generating()`, read
+GLOBALLY -- a reply streaming below the fold is an ordinary state and must refuse nothing), and
+`compare_visible` reuses `streaming_probe` to return `NOT_COMPARABLE`. It sits after the
+different-messages-on-screen and viewport-ended-empty findings and before the digest comparison, the
+same ordering `compare` uses around `mount_count_mismatch`: losing the thread stays a finding
+whether or not the stream could be placed.
 **The visible-region noise floor is keyed by (rung, action), and needs more than one observation.**
 `visible_unstable_set` derives it from a base-vs-base null control. It returned ACTION NAMES, so a
 single differing null pair silenced that action for every rep and every rung -- and a payload

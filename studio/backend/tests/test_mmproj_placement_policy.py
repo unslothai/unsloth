@@ -525,7 +525,7 @@ def test_a_heterogeneous_pair_is_ranked_before_the_projector_is_charged(tmp_path
 
 def test_a_remembered_mmproj_auto_does_not_survive_the_vision_switch(tmp_path):
     """--mmproj-auto asks llama-server to find the adjacent projector on its own, so
-    suppressing Studio's --mmproj and the env vars is not enough: vision would come
+    suppressing Unsloth's --mmproj and the env vars is not enough: vision would come
     back on a load that reports it off and never charged the projector's VRAM.
     llama.cpp is last-wins on the pair, so the disable form has to follow the extras."""
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
@@ -652,7 +652,7 @@ def test_the_download_interlock_is_not_relaxed_by_the_vision_switch(tmp_path):
 def test_a_user_pinned_projector_is_not_charged_against_vram(tmp_path):
     """--no-mmproj-offload puts the projector in host RAM, so its bytes are not on
     the card. Charging them anyway shrank the context and spilled layers to make
-    room for VRAM nothing occupies, which is worse placement than Studio's own."""
+    room for VRAM nothing occupies, which is worse placement than Unsloth's own."""
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
 
     cmd = _launch(backend, gguf, extra_args = ["--no-mmproj-offload"])["cmd"]
@@ -982,15 +982,15 @@ def test_the_negative_environment_spelling_pins_on_presence_alone(tmp_path, monk
 )
 def test_the_resolved_placement_follows_arg_cpps_own_precedence(extras, env, expected):
     """Environment first, argv on top, the negative spelling short-circuiting on
-    presence. Anything else and Studio budgets for a placement the child does not
+    presence. Anything else and Unsloth budgets for a placement the child does not
     run."""
     assert _resolved_mmproj_offload(extras, env) is expected
 
 
 def test_an_unparseable_environment_value_is_still_the_callers_placement(tmp_path, monkeypatch):
-    """No side to budget for, but the variable is set, so Studio must not append its
+    """No side to budget for, but the variable is set, so Unsloth must not append its
     own spelling on top: common_params_parse throws on the value and the load fails
-    naming the caller's variable, not a Studio flag they never chose."""
+    naming the caller's variable, not an Unsloth flag they never chose."""
     monkeypatch.setenv("LLAMA_ARG_MMPROJ_OFFLOAD", "yes")
     backend, gguf = _backend(tmp_path, memory = [(0, 8_692, 16_384)])
 
@@ -1357,7 +1357,7 @@ def test_studios_own_projector_outranks_the_inherited_one_in_the_estimate(tmp_pa
 
 def test_a_suppressed_image_projector_hands_the_budget_to_the_inherited_one(tmp_path, monkeypatch):
     """The combination that slipped through: the CONFIGURED projector is
-    image-capable, so the switch drops it and Studio emits no --mmproj at all, while
+    image-capable, so the switch drops it and Unsloth emits no --mmproj at all, while
     the inherited one is audio-only and is kept. argv only beats the environment when
     there IS argv, so the inherited projector is what loads, and it is what has to be
     charged."""
@@ -1394,7 +1394,7 @@ def test_a_suppressed_image_projector_hands_the_budget_to_the_inherited_one(tmp_
 
 
 def test_the_extras_opt_out_does_not_excuse_an_inherited_projector(tmp_path, monkeypatch):
-    """--no-mmproj sets params.no_mmproj, which stops Studio resolving one of its own
+    """--no-mmproj sets params.no_mmproj, which stops Unsloth resolving one of its own
     and stops the HF download, but server-context.cpp gates the load on a non-empty
     mmproj.path and never reads that field. The inherited projector loads straight
     through the opt-out, so the guard has to keep charging it."""
@@ -1413,7 +1413,7 @@ def test_the_extras_opt_out_does_not_excuse_an_inherited_projector(tmp_path, mon
 
 
 def test_the_extras_opt_out_moves_the_charge_to_the_inherited_projector(tmp_path, monkeypatch):
-    """--no-mmproj makes llama_cpp.py skip the resolve, so Studio emits no --mmproj
+    """--no-mmproj makes llama_cpp.py skip the resolve, so Unsloth emits no --mmproj
     and the configured projector never loads. It does not unset an inherited path,
     which then loads unopposed. The estimate has to move with the launch: drop the
     configured file, charge the inherited one.
@@ -1554,7 +1554,10 @@ def test_both_cpu_recovery_call_sites_pass_the_vision_state(tmp_path):
     assert source.count("disable_vision = disable_vision,") == calls
 
 
-def test_a_tensor_load_downgraded_to_layer_split_still_gives_the_projector_up(tmp_path):
+@pytest.mark.parametrize("cache_type_kv", [None, "q8_0"])
+def test_a_tensor_load_downgraded_to_layer_split_still_gives_the_projector_up(
+    tmp_path, cache_type_kv
+):
     """The corner the probe's TP exclusion used to leave at main's behaviour.
 
     Tensor parallelism is requested, so the probe withholds its answer: layer-split
@@ -1564,12 +1567,15 @@ def test_a_tensor_load_downgraded_to_layer_split_still_gives_the_projector_up(tm
     downgrade is final the load is layer split, the probe's answer applies, and the
     projector goes to the CPU instead of the model spilling layers around it.
 
+    Both cache types, because the downgrade leaves the requested one alone: the probe
+    prices the cache that actually loads, so the verdict holds for either.
+
     Two cards too small to pool the 6 GiB model with its 1 GiB projector, but large
     enough to hold the model alone once the encoder moves.
     """
     backend, gguf = _backend(tmp_path, memory = [(0, 4_400, 8_192), (1, 4_400, 8_192)])
 
-    cmd = _launch(backend, gguf, tensor_parallel = True)["cmd"]
+    cmd = _launch(backend, gguf, tensor_parallel = True, cache_type_kv = cache_type_kv)["cmd"]
 
     # Reachable ONLY through the deferred application: with tensor_parallel requested
     # the probe never applies its verdict at the probe site.
@@ -1597,27 +1603,11 @@ def test_a_surviving_tensor_load_keeps_its_projector(tmp_path):
     assert "--no-mmproj-offload" not in cmd
 
 
-def test_a_dropped_quantized_cache_holds_the_deferred_pin_back(tmp_path):
-    """The verdict was measured against the f16 cache the tensor attempt ran with.
-
-    _restore_after_tensor_downgrade puts the quantized cache back before layer
-    placement, so the footprint the verdict priced is heavier than the one that
-    actually loads. Acting on it would pin a projector that fits and buy an 8.8x
-    image encode for nothing, which is the outcome this probe exists to avoid.
-    """
-    backend, gguf = _backend(tmp_path, memory = [(0, 4_400, 8_192), (1, 4_400, 8_192)])
-
-    cmd = _launch(backend, gguf, tensor_parallel = True, cache_type_kv = "q8_0")["cmd"]
-
-    assert "--mmproj" in cmd
-    assert "--no-mmproj-offload" not in cmd
-
-
 def test_a_gpu_drafter_holds_the_deferred_pin_back(tmp_path):
-    """The drafter-drop probe carries the same tensor exclusion this one did, so it
-    has not run either. The documented order is projector first and drafter second;
-    pinning without being able to re-ask the second half pays the encoder cost and
-    still reaches --fit on."""
+    """The drafter-drop probe is gated off under tensor parallelism, so it has not
+    run. The documented order is projector first and drafter second; pinning without
+    being able to re-ask the second half pays the encoder cost and still reaches
+    --fit on."""
     backend, gguf = _drafter_backend(tmp_path, [(0, 4_400, 8_192), (1, 4_400, 8_192)])
 
     cmd = _launch(

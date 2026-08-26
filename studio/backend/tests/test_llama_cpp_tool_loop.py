@@ -17,6 +17,8 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -261,6 +263,164 @@ def _structured_tool_call(tool_name: str, arguments: dict, call_id: str) -> list
         ),
         _done(),
     ]
+
+
+def test_forced_web_search_tool_choice_is_sent_until_a_tool_runs(monkeypatch):
+    """#9730: a forced web_search must reach llama-server on the first turn.
+
+    After the call executes, the follow-up is auto so the model can answer.
+    """
+    first_stream = _structured_tool_call(
+        "web_search", {"query": "current Linux kernel version"}, "call_search"
+    )
+    second_stream = [_sse({"content": "The current version of the Linux kernel is 6.10."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, second_stream], payloads)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: "Linux kernel 6.10",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {
+                    "role": "user",
+                    "content": (
+                        "Search the web for the current version of the Linux kernel, "
+                        "then answer in one sentence."
+                    ),
+                }
+            ],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "python",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                },
+            ],
+            tool_choice = {"type": "function", "function": {"name": "web_search"}},
+            max_tool_iterations = 5,
+            permission_mode = "off",
+        )
+    )
+
+    assert payloads[0]["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["web_search"]
+    assert payloads[1]["tool_choice"] == "auto"
+    assert any(
+        event.get("type") == "tool_start" and event.get("tool_name") == "web_search"
+        for event in events
+    )
+
+
+def test_forced_tool_choice_must_exist_in_the_catalog(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [], payloads)
+
+    with pytest.raises(ValueError, match = "Forced tool 'python' is not enabled"):
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "run python"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                tool_choice = {"type": "function", "function": {"name": "python"}},
+                max_tool_iterations = 1,
+            )
+        )
+
+    assert payloads == []
+
+
+def test_forced_tool_choice_retries_after_other_structured_calls(monkeypatch):
+    wrong_code = "print('wrong tool')\n" * 20
+    streams = [
+        _structured_tool_call("python", {"code": wrong_code}, "call_python"),
+        _structured_tool_call("web_search", {"query": "kernel version"}, "call_search"),
+        [_sse({"content": "The search completed."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "Linux kernel result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search the web"}],
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "python"}},
+            ],
+            tool_choice = {"type": "function", "function": {"name": "web_search"}},
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert payloads[0]["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["web_search"]
+    assert payloads[1]["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in payloads[1]["tools"]] == ["web_search"]
+    assert payloads[2]["tool_choice"] == "auto"
+    assert calls == [("web_search", {"query": "kernel version"})]
+    assert [event.get("tool_name") for event in events if event.get("type") == "tool_start"] == [
+        "web_search"
+    ]
+
+
+def test_none_tool_choice_never_executes_model_tool_calls(monkeypatch):
+    stream = [
+        *_structured_tool_call("python", {"code": "print(1)"}, "call_python")[:-1],
+        _sse({"content": "I will answer without tools."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    def fail_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    def fail_autoinject(*_args, **_kwargs):
+        raise AssertionError("tool_choice=none must not autoinject retrieval")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fail_execute_tool)
+    monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "answer directly"}],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "python",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            tool_choice = "none",
+            max_tool_iterations = 1,
+            rag_scope = {"thread_id": "t1", "autoinject": True},
+        )
+    )
+
+    assert len(payloads) == 1
+    assert "tools" not in payloads[0]
+    assert "tool_choice" not in payloads[0]
+    assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
+    assert any(event.get("text") == "I will answer without tools." for event in events)
 
 
 def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
@@ -2141,6 +2301,7 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 1,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2207,6 +2368,7 @@ def test_post_tool_stall_still_nudged_after_a_pre_tool_reprompt(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2275,6 +2437,7 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2340,6 +2503,7 @@ def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2502,6 +2666,7 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_after_a_tool(monkeyp
             messages = [{"role": "user", "content": "What is the capital of Japan?"}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2551,6 +2716,7 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_pre_tool(monkeypatch
             messages = [{"role": "user", "content": "What is the capital of Japan?"}],
             tools = tools,
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2597,6 +2763,7 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
                 }
             ],
             max_tool_iterations = 1,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2902,6 +3069,7 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
             messages = [{"role": "user", "content": "Make a red square."}],
             tools = tools,
             max_tool_iterations = 1,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2972,6 +3140,7 @@ def test_plan_without_action_nudge_is_announced_on_the_status_channel(monkeypatc
             messages = [{"role": "user", "content": "What colour is the square?"}],
             tools = [_WEB_SEARCH_TOOL],
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -2998,6 +3167,7 @@ def test_plan_without_action_nudge_status_clears_when_the_retry_just_answers(mon
             messages = [{"role": "user", "content": "What colour is the square?"}],
             tools = [_WEB_SEARCH_TOOL],
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
         )
     )
 
@@ -3074,6 +3244,22 @@ def test_nudge_status_absent_when_nudging_is_disabled(monkeypatch):
             tools = [_WEB_SEARCH_TOOL],
             max_tool_iterations = 2,
             nudge_tool_calls = False,
+        )
+    )
+
+    assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
+    assert len(payloads) == 1
+
+
+def test_nudge_is_off_when_the_request_flag_is_omitted(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, _nudge_then_search_streams(), payloads)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "What colour is the square?"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
         )
     )
 
@@ -3218,6 +3404,7 @@ def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
             messages = [{"role": "user", "content": "summarize the docs"}],
             tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
             max_tool_iterations = 2,
+            nudge_tool_calls = True,
             rag_scope = {"thread_id": "t1"},
         )
     )
@@ -3232,6 +3419,48 @@ def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
     ]
     assert len(nudges) == 1, nudges
     assert events
+
+
+def test_rag_autoinject_only_resolves_matching_forced_choices(monkeypatch):
+    monkeypatch.setattr(
+        "core.inference.tools.build_rag_autoinject",
+        lambda *_a, **_k: {
+            "events": [],
+            "messages": [{"role": "user", "content": "Retrieved passage: Tokyo."}],
+        },
+    )
+    tools = [
+        {"type": "function", "function": {"name": "search_knowledge_base"}},
+        {"type": "function", "function": {"name": "web_search"}},
+    ]
+
+    def first_payload(tool_choice):
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [[_sse({"content": "The passage describes Tokyo."}), _done()]],
+            payloads,
+        )
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "summarize the docs"}],
+                tools = tools,
+                tool_choice = tool_choice,
+                max_tool_iterations = 1,
+                nudge_tool_calls = False,
+                rag_scope = {"thread_id": "t1"},
+            )
+        )
+        return payloads[0]
+
+    matching = first_payload({"type": "function", "function": {"name": "search_knowledge_base"}})
+    required = first_payload("required")
+    unrelated = first_payload({"type": "function", "function": {"name": "web_search"}})
+
+    assert matching["tool_choice"] == "auto"
+    assert required["tool_choice"] == "auto"
+    assert unrelated["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in unrelated["tools"]] == ["web_search"]
 
 
 def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypatch):
@@ -3268,6 +3497,7 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "run python"}],
             tools = [{"type": "function", "function": {"name": "python"}}],
+            tool_choice = {"type": "function", "function": {"name": "python"}},
             max_tool_iterations = 2,
             confirm_tool_calls = True,
             # Unset defaults to "auto", which would not prompt this safe print(1).
@@ -3281,6 +3511,7 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
     assert len(starts) == 2
     assert [event["result"] for event in ends] == [TOOL_REJECTED_MESSAGE, "OK"]
     assert calls == [("python", {"code": "print(1)"})]
+    assert [payload.get("tool_choice") for payload in payloads] == ["required", "auto", "auto"]
 
 
 def _streamed_structured_tool_call(
@@ -5897,7 +6128,7 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
     )
 
     branch = [
-        # Studio always prepends one and a fit never evicts it, so counting it as the
+        # Unsloth always prepends one and a fit never evicts it, so counting it as the
         # front of the branch reported zero on every compaction.
         {"role": "system", "content": "you are helpful"},
         {"role": "user", "content": "u" * 1200},

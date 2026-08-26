@@ -40,11 +40,16 @@ from utils.upload_limits import (
     upload_limit_bytes,
     upload_limit_label,
 )
+from utils.xet_notice_settings import reserve_xet_notice
 from utils.helper_precache_settings import (
     DEFAULT_HELPER_PRECACHE_ENABLED,
     get_helper_precache_enabled,
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
+)
+from utils.download_transport_settings import (
+    get_download_transport_mode,
+    set_download_transport_mode,
 )
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
@@ -95,6 +100,11 @@ from utils.openai_auto_switch_settings import (
     idle_unload_is_configured,
     set_model_override,
     set_openai_auto_switch,
+)
+from utils.keyless_api_access import (
+    access_exposure,
+    get_keyless_api_access_settings,
+    set_keyless_api_access,
 )
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
@@ -568,6 +578,32 @@ class HelperPrecacheResponse(BaseModel):
     disabled_by_env: bool
 
 
+class DownloadTransportPayload(BaseModel):
+    mode: Literal["auto", "xet", "http"]
+
+
+class DownloadTransportResponse(BaseModel):
+    mode: str
+    xet_available: bool
+    xet_unavailable_reason: Optional[str] = None
+    # What "auto" resolves to here right now, and why.
+    auto_resolves_to: str
+    auto_reason: Optional[str] = None
+
+
+class XetNoticeReservePayload(BaseModel):
+    # A legacy localStorage count from a client that has not reported one before.
+    # Can only raise the stored count (see reserve_xet_notice), so a client cannot
+    # talk its own way back under the limit with it.
+    seen_hint: int = 0
+
+
+class XetNoticeResponse(BaseModel):
+    granted: bool
+    shown: int
+    limit: int
+
+
 class ModelMemoryPayload(BaseModel):
     # None leaves the stored value untouched, so the switches save independently.
     keep_resident: Optional[bool] = None
@@ -825,6 +861,20 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     )
 
 
+def _download_transport_response(mode: str | None = None) -> DownloadTransportResponse:
+    # No Xet probe: this renders a row, not a download start. The free-RAM gate is asked for
+    # anyway, since the row states what the next download will use.
+    from hub.utils.download_registry import get_download_transport_capabilities
+    caps = get_download_transport_capabilities(ram_gate = True)
+    return DownloadTransportResponse(
+        mode = get_download_transport_mode() if mode is None else mode,
+        xet_available = caps.xet.available,
+        xet_unavailable_reason = caps.xet.reason,
+        auto_resolves_to = caps.auto_resolves_to,
+        auto_reason = caps.auto_reason,
+    )
+
+
 # Distinct from None, which is a real launch this policy does not govern.
 _NO_LAUNCH = object()
 
@@ -1002,7 +1052,7 @@ def update_llama_cpp_path(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> LlamaCppPathResponse:
-    # Only the interactive Studio UI may change this executable setting.
+    # Only the interactive Unsloth UI may change this executable setting.
     require_ui_session(via_api_key)
     try:
         set_custom_llama_cpp_path(payload.path)
@@ -1064,6 +1114,48 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+@router.get("/download-transport", response_model = DownloadTransportResponse)
+def get_download_transport(
+    current_subject: str = Depends(get_current_subject),
+) -> DownloadTransportResponse:
+    return _download_transport_response()
+
+
+@router.put("/download-transport", response_model = DownloadTransportResponse)
+def update_download_transport(
+    payload: DownloadTransportPayload, current_subject: str = Depends(get_current_subject)
+) -> DownloadTransportResponse:
+    try:
+        mode = set_download_transport_mode(payload.mode)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid download transport."),
+            event = "settings.update_download_transport_failed",
+            log = logger,
+        ) from exc
+    return _download_transport_response(mode)
+
+
+@router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
+def post_xet_notice_reserve(
+    payload: XetNoticeReservePayload, current_subject: str = Depends(get_current_subject)
+) -> XetNoticeResponse:
+    """Take one of the remaining notices. POST because it mutates the count."""
+    try:
+        result = reserve_xet_notice(payload.seen_hint)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not reserve the Xet download notice."),
+            event = "settings.reserve_xet_notice_failed",
+            log = logger,
+        ) from exc
+    return XetNoticeResponse(**result)
 
 
 @router.get("/model-memory", response_model = ModelMemoryResponse)
@@ -1975,6 +2067,17 @@ def rotate_preview_links(
     return PreviewLinkRotateResponse(rotated = True)
 
 
+class KeylessApiAccessPayload(BaseModel):
+    scope: Literal["off", "inference", "full"]
+    tools: Optional[StrictBool] = None
+
+
+class KeylessApiAccessResponse(BaseModel):
+    scope: Literal["off", "inference", "full"]
+    tools: bool
+    exposure: Optional[Literal["colab", "public_url", "private_lan", "network"]] = None
+
+
 class PreviewSharingPayload(BaseModel):
     enabled: bool
 
@@ -2091,6 +2194,9 @@ class LanAccessResponse(BaseModel):
     can_stop: bool
     block_reason: Optional[str] = None
     serves_web_ui: bool = True
+    keyless_lan_eligible: bool = False
+    keyless_scope: Literal["off", "inference", "full"] = "off"
+    keyless_tools: bool = False
 
 
 def _lan_access_response(request: Request) -> LanAccessResponse:
@@ -2176,6 +2282,57 @@ def update_preview_sharing(
         ) from exc
     logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
     return PreviewSharingResponse(enabled = enabled)
+
+
+def _require_ui_session_for_keyless(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
+    """Only a signed-in UI session may change who needs a key.
+
+    An sk-unsloth key must not be able to switch authentication off for the whole
+    install, and a keyless caller must not be able to widen its own scope; both are
+    ``authenticated_via_api_key``, so one check covers them.
+    """
+    if via_api_key:
+        raise HTTPException(
+            status_code = 403,
+            detail = "Keyless API access can only be changed from the Unsloth UI.",
+        )
+
+
+def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
+    scope, tools = get_keyless_api_access_settings()
+    return KeylessApiAccessResponse(
+        scope = scope,
+        tools = tools,
+        exposure = access_exposure(request.app.state),
+    )
+
+
+@router.get("/keyless-api-access", response_model = KeylessApiAccessResponse)
+def get_keyless_api_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_keyless),
+) -> KeylessApiAccessResponse:
+    return _keyless_api_access_response(request)
+
+
+@router.put("/keyless-api-access", response_model = KeylessApiAccessResponse)
+def update_keyless_api_access(
+    request: Request,
+    payload: KeylessApiAccessPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_keyless),
+) -> KeylessApiAccessResponse:
+    """Choose which routes are served without an API key, and whether tools come too."""
+    scope, tools = set_keyless_api_access(payload.scope, tools = payload.tools)
+    logger.info(
+        "settings.keyless_api_access_updated subject=%s scope=%s tools=%s exposure=%s",
+        current_subject,
+        scope,
+        tools,
+        access_exposure(request.app.state),
+    )
+    return _keyless_api_access_response(request)
 
 
 def _is_bundled_avatar_url(value: str) -> bool:

@@ -727,3 +727,134 @@ def test_a_row_renumbered_in_place_is_restamped_and_reported(browser):
     # And its content is filed under the position it actually holds.
     assert "42" in got["messages"], got["messages"]
     assert got["unplaced_rows"] == 0, got
+    # A LEGITIMATE RENUMBER IS NOT A COLLISION. One node holds one position at a time here, so the
+    # collision counter added for the two-rows-one-ordinal case must not fire on this, or a correct
+    # recycling virtualizer would be refused on every action it recycles a row in.
+    assert got["ordinal_collisions"] == 0, got
+
+
+#: TWO MOUNTED ROWS PUBLISHING ONE POSITION. A virtualizer that renumbers a recycled row wrongly
+#: leaves an extra message on screen wearing a position another row already holds.
+COLLISION_FIXTURE = """
+<!doctype html><meta charset="utf-8">
+<style>
+  body { margin: 0; }
+  .aui-thread-viewport { height: 400px; overflow-y: auto; }
+  [data-role] { height: 100px; }
+</style>
+<div class="aui-thread-root">
+  <div class="aui-thread-viewport" id="vp">
+    <div aria-posinset="1"><div data-role="user">message 1</div></div>
+    <div aria-posinset="2"><div data-role="assistant">message 2</div></div>
+  </div>
+</div>
+<script>
+  window.__ghost = (before) => {
+    const vp = document.getElementById("vp");
+    const holder = document.createElement("div");
+    holder.setAttribute("aria-posinset", "1");
+    const row = document.createElement("div");
+    row.setAttribute("data-role", "user");
+    row.textContent = "a ghost the user can see";
+    holder.appendChild(row);
+    if (before) vp.insertBefore(holder, vp.firstChild);
+    else vp.appendChild(holder);
+  };
+</script>
+"""
+
+
+def _capture_with_ghost(browser, *, before: bool) -> dict:
+    pg = browser.new_page(viewport = {"width": 800, "height": 600})
+    try:
+        pg.set_content(COLLISION_FIXTURE)
+        pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
+        pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+        _watch(pg)
+        pg.evaluate("(b) => window.__ghost(b)", before)
+        pg.wait_for_timeout(150)
+        return _capture(pg)
+    finally:
+        pg.close()
+
+
+def test_two_rows_sharing_a_thread_position_are_counted_rather_than_overwritten(browser):
+    """THE DEFECT. The digest map is keyed by ordinal and the assignment was unconditional, so the
+    second row in DOM order silently REPLACED the first one's entry; `VIS.ever` is a Set of
+    numbers, so it collapsed the pair as well. Three rows on screen came out of the capture looking
+    exactly like a capture of two.
+
+    Whether that was ever caught was DOM order and nothing else. Reproduced in this browser, the
+    same ghost inserted BEFORE the row it shadows leaves the surviving digest agreeing with the
+    other arm and the pair returns MATCH; inserted after, it returns DIFFER. Last writer wins, so
+    the collision passes exactly when the survivor happens to be the one that agrees.
+    """
+    for before in (True, False):
+        got = _capture_with_ghost(browser, before = before)
+        assert got["ordinal_collisions"] == 1, (before, got)
+        assert got["collided_ordinals"] == [1], (before, got)
+        # The counter is not derived from the arithmetic, and this is why: two of the three rows
+        # on screen are filed under one key, so the map still holds two entries.
+        assert set(got["messages"]) == {"1", "2"}, got["messages"]
+
+
+def test_a_collision_refuses_the_pair_instead_of_reporting_agreement(browser):
+    """THE CONSEQUENCE, through the comparison. Three rows are on screen on one arm and two on the
+    other, and the capture cannot say so: the digest map holds two entries either way and
+    `ever_visible` holds two ordinals either way. So `compare_visible` reached a verdict out of a
+    set it did not know was short, and WHICH verdict depended only on which of the two rows sharing
+    the position happened to be written last -- MATCH when the survivor agrees with the other arm,
+    DIFFER when it does not, neither of them a statement about the row that was dropped.
+
+    Refused rather than answered. A pair whose inputs are known to be incomplete carries no verdict
+    in either direction, which is the rule this file applies to every other unreadable capture."""
+    from studiobench.analysis import parity as P
+
+    clean = _capture_with_ghost(browser, before = False)
+    clean["ordinal_collisions"] = 0
+    clean["collided_ordinals"] = []
+    ghosted = _capture_with_ghost(browser, before = True)
+    verdict = P.compare_visible(clean, ghosted)
+    assert verdict["verdict"] == P.NOT_COMPARABLE, verdict
+    assert "SAME thread position" in verdict["reason"], verdict
+
+
+def test_losing_the_thread_outranks_the_collision_refusal(browser):
+    """THE ONE FINDING A COLLISION CANNOT HAVE MANUFACTURED, so the refusal must not swallow it.
+
+    "One arm's viewport ended EMPTY and the other's did not" is raised with `severe: True` and is
+    documented at that site as not suppressible, because losing the conversation is a different kind
+    of statement from a capture that could not be read. A blanket collision refusal placed ahead of
+    it downgraded it to NOT COMPARABLE.
+
+    A collision provably cannot cause it: a collision needs TWO mounted rows sharing one position,
+    so the map it corrupts still holds an entry. It can merge two entries and never empty a map.
+    """
+    from studiobench.analysis import parity as P
+
+    ghosted = _capture_with_ghost(browser, before = True)
+    assert ghosted["ordinal_collisions"] == 1, ghosted
+    # The other arm ended with nothing on screen at all, which is the 100K `model_change` shape:
+    # 12 mounted messages to 0, never recovered.
+    empty = dict(ghosted)
+    empty["messages"] = {}
+    empty["ordinal_collisions"] = 0
+    empty["collided_ordinals"] = []
+
+    verdict = P.compare_visible(empty, ghosted)
+    assert verdict["verdict"] == P.DIFFER, verdict
+    assert verdict.get("severe") is True, verdict
+    assert "lost the thread" in verdict["reason"], verdict
+
+
+def test_a_collision_with_both_viewports_alive_is_still_refused(browser):
+    """THE CONTROL for the one above. The severe finding is the only thing that outranks the
+    refusal, so a collision on an arm whose viewport is perfectly healthy must still refuse."""
+    from studiobench.analysis import parity as P
+
+    clean = _capture_with_ghost(browser, before = False)
+    clean["ordinal_collisions"] = 0
+    clean["collided_ordinals"] = []
+    ghosted = _capture_with_ghost(browser, before = True)
+    assert clean["messages"] and ghosted["messages"], (clean, ghosted)
+    assert P.compare_visible(clean, ghosted)["verdict"] == P.NOT_COMPARABLE

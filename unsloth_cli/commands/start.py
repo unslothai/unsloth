@@ -255,8 +255,8 @@ _REASONING_OPTION = typer.Option(
     rich_help_panel = _PANEL_SERVER,
     help = (
         "llama-server reasoning mode for an auto-started coding-agent server. "
-        "Defaults to off so tool calls stay in the structured tool channel; use "
-        "'auto' or 'on' to opt back into model reasoning."
+        "Defaults to auto so the model's chat template decides; use 'on' or 'off' "
+        "to override it."
     ),
 )
 _REASONING_EFFORT_OPTION = typer.Option(
@@ -708,7 +708,7 @@ def _fail(message: str) -> NoReturn:
 
 
 def _reject_as_subagent(agent: str, args: list) -> None:
-    # Reject early, or the flag reaches the agent binary after Studio loaded the model.
+    # Reject early, or the flag reaches the agent binary after Unsloth loaded the model.
     if any(arg == "--as-subagent" or arg.startswith("--as-subagent=") for arg in args):
         _fail(f"--as-subagent is not supported for {agent}.")
 
@@ -1158,8 +1158,8 @@ def _start_studio_server(
     child_env = os.environ.copy()
     # Current llama-server versions read this documented env equivalent of --reasoning.
     # Older managed versions ignore an unknown env variable instead of failing startup on
-    # an unknown passthrough CLI flag. An omitted start option still defaults to off.
-    child_env["LLAMA_ARG_REASONING"] = server.reasoning or "off"
+    # an unknown passthrough CLI flag. An omitted start option follows the model template.
+    child_env["LLAMA_ARG_REASONING"] = server.reasoning or "auto"
     # Always written, like the line above: an inherited value would otherwise pin
     # a level the omitted flag promises to leave alone. 'default' is llama.cpp's
     # own sentinel for "keep the chat template's level".
@@ -1168,7 +1168,7 @@ def _start_studio_server(
     # unknown CLI flag as a llama-server arg; new launchers preserve it across re-exec.
     child_env[_START_API_KEY_MARKER_ENV] = "1"
     # Convey healing/nudging through the env; `unsloth run` reads these when its own
-    # flags are omitted, so this works even if run re-execs into an older Studio venv.
+    # flags are omitted, so this works even if run re-execs into an older Unsloth venv.
     # Only write when the operator set the flag explicitly; otherwise keep whatever they
     # already exported (child_env is a copy of os.environ), falling back to the start
     # defaults (healing on, nudging on) when nothing was inherited.
@@ -3295,7 +3295,7 @@ def _augment_path_with_install_dirs() -> None:
 def _probe_env(**extra: str) -> dict:
     """Environment for probes that RUN a resolved shim.
 
-    _which_with_install_dirs restores PATH before returning, so a shim backed by Studio's
+    _which_with_install_dirs restores PATH before returning, so a shim backed by Unsloth's
     managed Node would not find that node when executed.
     """
     original = os.environ.get("PATH")
@@ -3309,6 +3309,32 @@ def _probe_env(**extra: str) -> dict:
     return env
 
 
+def _prefer_windows_cmd_sibling(executable: Optional[str]) -> Optional[str]:
+    """Prefer the sibling .cmd when Windows resolved an extensionless npm/pnpm shim.
+
+    cmd-shim writes ``to``, ``to.cmd`` and ``to.ps1``, and shutil.which can return
+    the extensionless POSIX shim, which CreateProcess rejects with WinError 193.
+    Measured on windows-latest: 3.12.0 probes the bare name before PATHEXT
+    (gh-109590), and 3.12.1 onwards do not. A PATHEXT holding "." reaches the same
+    place on any version. Substituted only when the file opens with a shebang, so a
+    real PE keeps priority over a stale wrapper beside it; matched on
+    not-a-Windows-suffix so a dotted bin name is caught too.
+    """
+    if executable is None or os.name != "nt":
+        return executable
+    if Path(executable).suffix.lower() in {".exe", ".com", ".cmd", ".bat", ".ps1"}:
+        return executable
+    with contextlib.suppress(OSError):
+        with open(executable, "rb") as resolved_file:
+            if resolved_file.read(2) == b"#!":
+                # .CMD only matters on case-sensitive volumes; no writer emits .bat.
+                for extension in (".cmd", ".CMD"):
+                    sibling = Path(executable + extension)
+                    if sibling.is_file():
+                        return str(sibling)
+    return executable
+
+
 def _which_with_install_dirs(name: str) -> Optional[str]:
     # shutil.which(name), but searching the known agent install dirs too, so a version probe
     # resolves the same binary _launch() will (it augments PATH before it runs). Without this an
@@ -3318,7 +3344,9 @@ def _which_with_install_dirs(name: str) -> Optional[str]:
     original = os.environ.get("PATH")
     _augment_path_with_install_dirs()
     try:
-        return shutil.which(name)
+        # Callers spawn this result directly, so the shim rescue is needed here
+        # too, not only in _resolved_launch_command.
+        return _prefer_windows_cmd_sibling(shutil.which(name))
     finally:
         if original is None:
             os.environ.pop("PATH", None)
@@ -3345,13 +3373,13 @@ def _pinned_raw_github_commit(source: str) -> Optional[str]:
 def _npm_executable() -> Optional[str]:
     managed_node = _managed_node_tools()
     if not (managed_node and managed_node[2]):
-        executable = shutil.which("npm")
+        executable = _prefer_windows_cmd_sibling(shutil.which("npm"))
         if executable and not _wsl_windows_executable([executable]):
             return executable
         if executable:
             # WSL inherits the Windows PATH, so the rejected shim may shadow a native npm.
             for directory in os.get_exec_path():
-                candidate = shutil.which("npm", path = directory)
+                candidate = _prefer_windows_cmd_sibling(shutil.which("npm", path = directory))
                 if candidate and not _wsl_windows_executable([candidate]):
                     return candidate
 
@@ -3625,6 +3653,9 @@ def _resolved_launch_command(
     environment: Optional[dict] = None,
 ) -> list:
     """Return an argv that preserves arguments through standard Windows npm shims."""
+    # _launch resolves with raw shutil.which, so rescue here too; the sibling
+    # then enters the parser below.
+    executable = _prefer_windows_cmd_sibling(executable)
     if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
         # cmd.exe treats CR/LF inside `%*` as command separators, and Windows
         # PowerShell's native-command bridge also rewrites embedded quotes. Match
@@ -3818,7 +3849,7 @@ def _agents_config_root() -> Path:
 
 @contextlib.contextmanager
 def _temporary_agent_config(prefix: str):
-    # Nothing else prunes Studio's auth tree, so reuse the locked session helper: the next
+    # Nothing else prunes Unsloth's auth tree, so reuse the locked session helper: the next
     # launch reclaims homes left by a killed wrapper, and the lock spares live sessions.
     temp_root = _agents_config_root() / ".tmp"
     with contextlib.ExitStack() as stack:
@@ -3826,7 +3857,7 @@ def _temporary_agent_config(prefix: str):
             temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
             path = stack.enter_context(_short_ephemeral_session(temp_root, prefix))
         except OSError:
-            # Attaching to a remote or running Studio needs no local auth tree, so it may be
+            # Attaching to a remote or running Unsloth needs no local auth tree, so it may be
             # absent or unwritable. Fall back to the system temp dir, as before: no
             # reclamation there, but the OS prunes it.
             path = Path(tempfile.mkdtemp(prefix = prefix))
@@ -3996,7 +4027,7 @@ def _session_config(
     resumed next time. Either way the user's real ~/.<agent> config is left untouched.
     """
     if launch and not persist:
-        # Windows codex keeps #7519's short home (MAX_PATH); everyone else uses Studio's root.
+        # Windows codex keeps #7519's short home (MAX_PATH); everyone else uses Unsloth's root.
         parent = _ephemeral_session_parent(agent)
         prefix = _ephemeral_session_prefix(agent, parent)
         if parent is not None:

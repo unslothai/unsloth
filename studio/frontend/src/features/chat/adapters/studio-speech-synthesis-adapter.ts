@@ -2,10 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { stripSearchImageTokens } from "../search-images/search-images";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
 import type { SpeechSynthesisAdapter } from "@assistant-ui/react";
+import { encryptProviderApiKey } from "../api/providers-api";
+import { getExternalProviderApiKey } from "../external-providers";
+import { stripSearchImageTokens } from "../search-images/search-images";
+import { useExternalProvidersStore } from "../stores/external-providers-store";
 
 /** Voice for a stored voiceURI. "default" resolves to the voice the platform
  * marks as its default, so the "System default" choice means what it says
@@ -252,7 +255,109 @@ export async function generateStudioTtsAudio(
   return `data:audio/wav;base64,${data.audio.data}`;
 }
 
-function speakWithStudioModel(
+/** Speech via a saved connection's /audio/speech. Returns an object URL to release. */
+export async function generateCustomTtsAudio(
+  text: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const providersState = useExternalProvidersStore.getState();
+  if (!providersState.connectionsEnabled) {
+    throw new Error(
+      "Connections are disabled. Turn on Enable connections in Settings → Connections to use a custom TTS endpoint.",
+    );
+  }
+  const { ttsProviderId, ttsProviderModel, ttsProviderVoice } =
+    useVoiceSettingsStore.getState();
+  const model = ttsProviderModel.trim();
+  const voice = ttsProviderVoice.trim() || "alloy";
+  if (!ttsProviderId || !model) {
+    throw new Error(
+      "Custom TTS is not configured. Pick a connection and model in Settings → Voice.",
+    );
+  }
+  // A browser whose key migration failed keeps the connection selectable on a
+  // retained legacy key; send it like chat and STT do, or this call is unauthenticated.
+  const provider = providersState.providers.find(
+    (candidate) => candidate.id === ttsProviderId,
+  );
+  if (!provider) {
+    useVoiceSettingsStore.getState().setTtsProviderId("");
+    throw new Error(
+      "The custom TTS connection no longer exists. Pick another connection in Settings → Voice.",
+    );
+  }
+  const legacyApiKey = provider.hasApiKey
+    ? ""
+    : getExternalProviderApiKey(ttsProviderId).trim();
+  const encryptedApiKey = legacyApiKey
+    ? await encryptProviderApiKey(legacyApiKey)
+    : "";
+
+  // Encryption and auth refresh both yield. Reuse this check before the first
+  // request and every authFetch retry so neither path can release assistant text
+  // or a retained key after the frontend-only connection policy changes.
+  const assertConnectionSnapshot = () => {
+    const currentProvidersState = useExternalProvidersStore.getState();
+    if (!currentProvidersState.connectionsEnabled) {
+      throw new Error(
+        "Connections are disabled. Turn on Enable connections in Settings → Connections to use a custom TTS endpoint.",
+      );
+    }
+    const currentProvider = currentProvidersState.providers.find(
+      (candidate) => candidate.id === ttsProviderId,
+    );
+    if (!currentProvider) {
+      useVoiceSettingsStore.getState().setTtsProviderId("");
+      throw new Error(
+        "The custom TTS connection no longer exists. Pick another connection in Settings → Voice.",
+      );
+    }
+    if (
+      currentProvider.baseUrl !== provider.baseUrl ||
+      currentProvider.providerType !== provider.providerType ||
+      currentProvider.backendProviderType !== provider.backendProviderType ||
+      currentProvider.hasApiKey !== provider.hasApiKey ||
+      currentProvider.updatedAt !== provider.updatedAt
+    ) {
+      throw new Error(
+        "The custom TTS connection changed while the request was starting. Try again.",
+      );
+    }
+  };
+  assertConnectionSnapshot();
+  const response = await authFetch(
+    "/api/inference/audio/speech",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        input: text,
+        provider_id: ttsProviderId,
+        provider_base_url: provider.baseUrl,
+        model,
+        voice,
+        ...(encryptedApiKey ? { encrypted_api_key: encryptedApiKey } : {}),
+      }),
+      signal,
+    },
+    { beforeRetry: assertConnectionSnapshot },
+  );
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      detail?: string;
+    } | null;
+    throw new Error(body?.detail ?? `HTTP ${response.status}`);
+  }
+  return URL.createObjectURL(await response.blob());
+}
+
+/** Release a URL returned by the generate helpers (data URLs need nothing). */
+export function releaseTtsAudioUrl(url: string): void {
+  if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+}
+
+function speakWithBackendAudio(
+  generate: (text: string, signal?: AbortSignal) => Promise<string>,
   text: string,
   handleEnd: (
     reason: "finished" | "error" | "cancelled",
@@ -263,6 +368,7 @@ function speakWithStudioModel(
   const { ttsRate, ttsVolume } = useVoiceSettingsStore.getState();
   const controller = new AbortController();
   let audio: HTMLAudioElement | null = null;
+  let audioUrl: string | null = null;
   let cancelled = false;
 
   // Release the element and its multi-MB WAV data URL as soon as playback ends.
@@ -272,12 +378,20 @@ function speakWithStudioModel(
       audio.removeAttribute("src");
       audio = null;
     }
+    if (audioUrl) {
+      releaseTtsAudioUrl(audioUrl);
+      audioUrl = null;
+    }
   };
 
   void (async () => {
     try {
-      const url = await generateStudioTtsAudio(text, controller.signal);
-      if (cancelled) return;
+      const url = await generate(text, controller.signal);
+      if (cancelled) {
+        releaseTtsAudioUrl(url);
+        return;
+      }
+      audioUrl = url;
       audio = new Audio(url);
       audio.playbackRate = ttsRate;
       audio.volume = ttsVolume;
@@ -316,7 +430,7 @@ function speakWithStudioModel(
 
 /**
  * Text-to-speech for assistant messages. Reads Voice settings at speak time.
- * Engines: "system" (speechSynthesis) or "studio" (loaded TTS audio model).
+ * Engines: "system" (speechSynthesis), "studio" (local TTS model), "custom" (a connection).
  */
 export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
   /** Web Speech synthesis, used by the "system" engine. */
@@ -388,10 +502,14 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
     // Fall back to the backend model when the runtime lacks Web Speech
     // synthesis (e.g. an audio-only WebView), so read-aloud still works.
     if (
-      ttsEngine === "studio" ||
+      ttsEngine !== "system" ||
       !StudioSpeechSynthesisAdapter.systemVoicesSupported()
     ) {
-      const session = speakWithStudioModel(text, handleEnd, () => {
+      const generate =
+        ttsEngine === "custom"
+          ? generateCustomTtsAudio
+          : generateStudioTtsAudio;
+      const session = speakWithBackendAudio(generate, text, handleEnd, () => {
         if (res.status.type === "ended") return;
         // Notify subscribers of the async starting -> running transition;
         // the adapter contract drives UI state off these subscribe callbacks.

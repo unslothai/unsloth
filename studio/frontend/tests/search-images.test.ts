@@ -26,6 +26,7 @@ import {
   searchResultText,
   stripSearchImageTokens,
 } from "../src/features/chat/search-images/search-images.ts";
+import { toolArgText } from "../src/components/assistant-ui/tool-arg-text.ts";
 import { safeMarkdownUrl } from "../src/lib/safe-markdown-url.ts";
 
 const ENTRY = {
@@ -569,7 +570,7 @@ test("missingListSubjects leaves out what the model already fetched", () => {
   assert.deepEqual(missingListSubjects("Just prose.", [{ type: "text" }]), []);
 });
 
-test("thumbnails load from Studio's own endpoint, which the img policy allows", () => {
+test("thumbnails load from Unsloth's own endpoint, which the img policy allows", () => {
   const path = searchImagePath(ENTRY.id);
   assert.equal(path, "/api/inference/search-images/0123456789ab");
   const imgNode = { tagName: "img" } as Parameters<typeof safeMarkdownUrl>[2];
@@ -905,12 +906,16 @@ test("the web search card survives a query that is not a string", () => {
     cardSource.indexOf("const isUrlFetch ="),
   );
   assert.ok(args.length > 0, "the args derivation moved");
-  const derive = new Function(
+  // Passed in because the derivation now calls it: one coercion shared by every
+  // card (see tool-card-arg-coercion.test.ts).
+  const derived = new Function(
     "args",
+    "toolArgText",
     ts.transpileModule(`${args}\nreturn [query.trim(), url];`, {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText,
-  ) as (args: unknown) => [string, string];
+  ) as (args: unknown, coerce: typeof toolArgText) => [string, string];
+  const derive = (args: unknown): [string, string] => derived(args, toolArgText);
   assert.deepEqual(derive({ query: 42 }), ["42", ""]);
   assert.deepEqual(derive({ query: null, url: 7 }), ["", "7"]);
   assert.deepEqual(derive({}), ["", ""]);

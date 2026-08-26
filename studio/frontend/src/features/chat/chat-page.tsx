@@ -57,7 +57,9 @@ import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   DOWNLOAD_KIND,
+  dismissStartToast,
   downloadManager,
+  jobKeyOf,
   useRepoDownload,
 } from "@/features/hub/download-manager";
 import {
@@ -129,13 +131,17 @@ import {
   useSelectedChatArtifact,
 } from "./artifacts/store";
 import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
+import { McpServersDialogMount } from "./mcp-composer-button";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import {
   ResearchActivityPanel,
   ResearchActivitySheet,
 } from "./components/research-activity-panel";
 import { ChatModelNotice } from "./components/chat-model-notice";
-import { chatModelSwitchMeta } from "./components/chat-model-notice-switch";
+import {
+  chatModelSwitchMeta,
+  type ChatModelSwitchTarget,
+} from "./components/chat-model-notice-switch";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -176,7 +182,13 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
+  providerSupportsFastMode,
 } from "./provider-capabilities";
+import {
+  COMPOSER_INPUT_SELECTOR,
+  isSurfaceBackgrounded,
+  useShortcut,
+} from "@/features/settings";
 import {
   ChatActiveContext,
   ChatRuntimeProvider,
@@ -196,13 +208,12 @@ import {
   CHAT_TOOLS_ENABLED_KEY,
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   PENDING_CHAT_ATTACHMENT_KEY,
-  hasGgufSource,
-  isDownloadableHubRepo,
   loadOptionalBool,
   readPendingAttachmentTargetClaim,
   threadScopedOverride,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import { wantsDownloadManagerStaging } from "./utils/model-download-staging";
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
@@ -1129,6 +1140,7 @@ function createThreadNonce(): string {
 // Chat export formats, mirroring the sidebar chat menu.
 type ProjectChatExportFormat =
   | "raw-jsonl"
+  | "messages-jsonl"
   | "csv"
   | "sharegpt-jsonl"
   | typeof CONVERSATION_MARKDOWN_FORMAT;
@@ -1136,7 +1148,8 @@ const PROJECT_CHAT_EXPORT_OPTIONS: Array<{
   label: string;
   format: ProjectChatExportFormat;
 }> = [
-  { label: "Raw JSONL", format: "raw-jsonl" },
+  { label: "Training JSONL", format: "raw-jsonl" },
+  { label: "Message JSONL", format: "messages-jsonl" },
   { label: "CSV", format: "csv" },
   { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
   {
@@ -1151,6 +1164,8 @@ async function exportProjectConversation(
 ): Promise<void> {
   const exports = await import("./prompt-storage/prompt-storage-dialog");
   if (format === "raw-jsonl") return exports.exportConversationRawJsonl(threadId);
+  if (format === "messages-jsonl")
+    return exports.exportConversationMessagesJsonl(threadId);
   if (format === "csv") return exports.exportConversationCsv(threadId);
   if (format === CONVERSATION_MARKDOWN_FORMAT)
     return exports.exportConversationMarkdown(threadId);
@@ -2162,6 +2177,8 @@ export function ChatPage({
   }, [active, navigate, search.thread]);
 
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
+  // Controlled, so the chord can open the switcher and not just its trigger.
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   // Latest non-compare view, so exiting compare can restore it even when
@@ -2483,7 +2500,7 @@ export function ChatPage({
     const storedWebFetchToolsEnabled =
       threadScopedOverride("webFetchToolsEnabled") ??
       loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
-    // Studio runs Search and Code itself for any provider that advertises the
+    // Unsloth runs Search and Code itself for any provider that advertises the
     // capability, so a self-hosted connection has no hosted builtin to key off.
     // Keying the pill state on the hosted flags alone discarded the user's saved
     // preference on every reload and sent enable_tools: false, even though the
@@ -2494,7 +2511,7 @@ export function ChatPage({
         selection.modelId,
       ) === true;
     const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
-    // Read out of the placement rule, not off the Studio-tools flag: a model on
+    // Read out of the placement rule, not off the Unsloth-tools flag: a model on
     // a sandbox-owning provider that cannot use it runs nothing either way, and
     // offering the pill there restored a preference that sent no tools at all.
     const canRunCode = codeToolCanRun({
@@ -2725,14 +2742,8 @@ export function ChatPage({
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
       const store = useChatRuntimeStore.getState();
-      const wantManagerDownload =
-        isDownloadableHubRepo(selection) && !selection.isDownloaded;
+      const wantManagerStaging = wantsDownloadManagerStaging(selection);
       if (store.modelLoading) {
-        const wantBackgroundDownload =
-          wantManagerDownload ||
-          (selection.source === "hub" &&
-            hasGgufSource(selection) &&
-            !selection.isDownloaded);
         const isLoadingThisPick =
           !!loadingModel &&
           normalizeModelRef(loadingModel.id) ===
@@ -2742,19 +2753,20 @@ export function ChatPage({
           toast.info("This model is already loading", {
             description: "It's downloading as part of the load in progress.",
           });
-        } else if (wantBackgroundDownload) {
+        } else if (wantManagerStaging) {
           const outcome = await downloadManager.requestStart({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
             variant: selection.ggufVariant ?? null,
             expectedBytes: selection.expectedBytes ?? 0,
-          });
-          if (outcome === "started") {
-            toast.info("Downloading in the background", {
+            // Handed over, not raised here, so one start makes one toast.
+            callerToast: {
+              title: "Downloading in the background",
               description:
                 "It'll be ready to load once the current model finishes.",
-            });
-          } else if (outcome === "conflict") {
+            },
+          });
+          if (outcome === "conflict") {
             toast.info("Resume this download from Models", {
               description:
                 "An earlier partial download used a different transport. Open the Model hub tab to resume or restart it.",
@@ -2772,12 +2784,7 @@ export function ChatPage({
         }
         return;
       }
-      const wantManagerStage =
-        wantManagerDownload ||
-        (selection.source === "hub" &&
-          hasGgufSource(selection) &&
-          !selection.isDownloaded);
-      if (wantManagerStage) {
+      if (wantManagerStaging) {
         setPendingHubAutoLoad((current) =>
           current &&
           current.selection.id === selection.id &&
@@ -2852,9 +2859,26 @@ export function ChatPage({
       }
     },
   });
+  // The pending auto-load's job, for the context-change effect below. Written from
+  // an effect, never during render.
+  const pendingAutoLoadKeyRef = useRef<string | null>(null);
+  // The live context, so a start still in flight can check it is still on screen.
+  const chatContextKeyRef = useRef(chatContextKey);
+  useEffect(() => {
+    chatContextKeyRef.current = chatContextKey;
+  }, [chatContextKey]);
   useEffect(() => {
     const pending = pendingHubAutoLoad;
-    if (!pending) return;
+    if (!pending) {
+      pendingAutoLoadKeyRef.current = null;
+      return;
+    }
+    const pendingKey = jobKeyOf(
+      DOWNLOAD_KIND.MODEL,
+      pending.selection.id,
+      pending.selection.ggufVariant ?? null,
+    );
+    pendingAutoLoadKeyRef.current = pendingKey;
     let active = true;
     void (async () => {
       const outcome = await downloadManager.requestStart({
@@ -2862,12 +2886,21 @@ export function ChatPage({
         repoId: pending.selection.id,
         variant: pending.selection.ggufVariant ?? null,
         expectedBytes: pending.selection.expectedBytes ?? 0,
+        // Notice-only: #9663 removed this surface's own toast, so it must not
+        // return on an HTTP start or once the three notices are spent.
+        callerToast: {
+          title: "Downloading model",
+          description: "It'll load automatically once the download finishes.",
+          noticeOnly: true,
+          // The cleanup below only reaches a toast that already exists; a raise
+          // still in flight would promise an auto-load onComplete then refuses.
+          stillValid: () => chatContextKeyRef.current === pending.contextKey,
+        },
       });
       if (!active) return;
       if (outcome === "started") {
-        toast.info("Downloading model", {
-          description: "It'll load automatically once the download finishes.",
-        });
+        // No toast here, and none from the manager unless the notice folds the
+        // sentence in. The auto-load runs from onComplete.
         return;
       }
       if (outcome === "conflict") {
@@ -2891,8 +2924,19 @@ export function ChatPage({
     })();
     return () => {
       active = false;
+      // Another model was picked, so this one's completion loads nothing. A no-op
+      // once the download finished, which dismisses the same id.
+      dismissStartToast(pendingKey);
     };
   }, [pendingHubAutoLoad]);
+  // Switching thread or project keeps the pathname and pendingHubAutoLoad, so neither
+  // sweep above runs, yet onComplete refuses to load into a different contextKey.
+  useEffect(() => {
+    return () => {
+      const pendingKey = pendingAutoLoadKeyRef.current;
+      if (pendingKey) dismissStartToast(pendingKey);
+    };
+  }, [chatContextKey]);
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
       const label =
@@ -2978,7 +3022,8 @@ export function ChatPage({
   const handleCheckpointChange = useCallback(
     (
       value: string,
-      meta?: ModelSelectorChangeMeta,
+      // Partial: the switch-back carries only what the resolver cannot recover.
+      meta?: Partial<ModelSelectorChangeMeta>,
     ) => {
       const store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
@@ -3254,6 +3299,9 @@ export function ChatPage({
     })();
   }, [ejectModel, resetArtifacts]);
 
+  // Pins the picker open so a stray click cannot dismiss the step under it.
+  // Tour steps only: the effect below shuts anything left pinned once the tour
+  // is gone, so anyone else calling this would get a flash and nothing more.
   const openModelSelector = useCallback(() => {
     setModelSelectorLocked(true);
     setModelSelectorOpen(true);
@@ -3263,6 +3311,13 @@ export function ChatPage({
     setModelSelectorLocked(false);
     setModelSelectorOpen(false);
   }, []);
+
+  /** The chord's opener: no pin, so the picker stays dismissible. */
+  const toggleModelSelector = useCallback(() => {
+    // Pinned means a tour step is standing on it, and that step owns it.
+    if (modelSelectorLocked) return;
+    setModelSelectorOpen((open) => !open);
+  }, [modelSelectorLocked]);
 
   const handleModelSelectorOpenChange = useCallback(
     (open: boolean) => {
@@ -3278,6 +3333,119 @@ export function ChatPage({
   const closeSettings = useCallback(
     () => setSettingsOpen(false),
     [setSettingsOpen],
+  );
+
+  // --- Chat page shortcuts ----------------------------------------------
+  // The controls these drive are owned by this page.
+  // Both controls are the header's, and the header drops them in Compare,
+  // where each pane carries its own picker instead. Without the check the
+  // chord would toggle state nothing renders.
+  const headerPickersShown = active && view.mode !== "compare";
+  // This page stays mounted under a dialog, so `enabled` still says yes while
+  // the header is inert. Without a press-time check the chord opens a popover
+  // on the covered surface, or leaves the picker to reappear when the dialog
+  // closes. Backgrounded, not "not in the foreground": the composer travels
+  // with this header, and an unrendered layout is not a covered one.
+  const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
+  useShortcut(
+    "openModelPicker",
+    () => {
+      if (chatCovered()) return;
+      toggleModelSelector();
+    },
+    { enabled: headerPickersShown },
+  );
+  // The same condition the switcher renders by, so the chord cannot open a
+  // control that is not there and the reset below cannot miss a way it goes.
+  const projectSwitcherShown = headerPickersShown && Boolean(currentProjectId);
+  useShortcut(
+    "openProjectPicker",
+    () => {
+      if (chatCovered()) return;
+      setProjectPickerOpen(true);
+    },
+    { enabled: projectSwitcherShown },
+  );
+  // A picker left open would come back on the next visit as a ghost of the
+  // last one. Off-route is one way to leave it: this page stays mounted. So is
+  // entering Compare, and so is a standalone chat taking the project away,
+  // both of which unmount the switcher while the page is still on screen.
+  // Adjusted during render, as React prescribes for state that has to follow a
+  // value it derives from.
+  if (!projectSwitcherShown && projectPickerOpen) {
+    setProjectPickerOpen(false);
+  }
+
+  /** Step the effort level, clamped at both ends unless we are cycling. */
+  const shiftReasoningEffort = useCallback(
+    (delta: number, wrap: boolean) => {
+      const state = useChatRuntimeStore.getState();
+      const levels = state.reasoningEffortLevels;
+      // Levels stay populated for an enable_thinking model, whose request path
+      // drops the effort. Same test as the composer's effort menu.
+      const isEffort =
+        state.reasoningStyle === "reasoning_effort" ||
+        state.reasoningStyle === "enable_thinking_effort";
+      if (!state.supportsReasoning || !isEffort || levels.length === 0) {
+        toast.info("This model has no reasoning effort setting");
+        return;
+      }
+      const current = levels.indexOf(state.reasoningEffort);
+      // Loading a model that drops the level in force leaves the effort set to
+      // one that is gone, and indexOf gives -1. The first press picks the
+      // lowest level offered rather than counting a step off a missing index.
+      if (current === -1) {
+        state.setReasoningEffort(levels[0]);
+        return;
+      }
+      const from = current;
+      const next = wrap
+        ? (from + delta + levels.length) % levels.length
+        : Math.min(Math.max(from + delta, 0), levels.length - 1);
+      if (levels[next] === state.reasoningEffort) return;
+      state.setReasoningEffort(levels[next]);
+    },
+    [],
+  );
+  useShortcut(
+    "cycleReasoningEffort",
+    () => {
+      if (chatCovered()) return;
+      shiftReasoningEffort(1, true);
+    },
+    { enabled: active },
+  );
+  useShortcut(
+    "increaseReasoningEffort",
+    () => {
+      if (chatCovered()) return;
+      shiftReasoningEffort(1, false);
+    },
+    { enabled: active },
+  );
+  useShortcut(
+    "decreaseReasoningEffort",
+    () => {
+      if (chatCovered()) return;
+      shiftReasoningEffort(-1, false);
+    },
+    { enabled: active },
+  );
+
+  const fastModeSupported = providerSupportsFastMode(
+    activeExternalProviderType,
+    parseExternalModelId(inferenceParams.checkpoint)?.modelId ?? null,
+  );
+  useShortcut(
+    "toggleFastMode",
+    () => {
+      if (chatCovered()) return;
+      const state = useChatRuntimeStore.getState();
+      const next = !state.params.fastMode;
+      state.setParams({ ...state.params, fastMode: next });
+      toast.success(next ? "Fast mode on" : "Fast mode off");
+    },
+    { enabled: active && fastModeSupported },
   );
   const { isMobile, pinned } = useSidebar();
 
@@ -3493,10 +3661,10 @@ export function ChatPage({
   // `/api/models/list` nor the external ids, so without it the switch loads on
   // different arguments than the menu would.
   const handleSwitchBackToChatModel = useCallback(
-    (modelId: string) => {
+    (target: ChatModelSwitchTarget) => {
       handleCheckpointChange(
-        modelId,
-        chatModelSwitchMeta(modelId, loraModels),
+        target.modelId,
+        chatModelSwitchMeta(target, loraModels),
       );
     },
     [handleCheckpointChange, loraModels],
@@ -3664,11 +3832,47 @@ export function ChatPage({
           render their own copy and the shared-composer menu would have none. It
           also portals to body, so gate it on `active` like the tour above. */}
       {active && <BypassPermissionsConfirmDialog />}
+      {/* The MCP servers dialog: its chord has to work before MCP is switched
+          on, and the pill that used to own it only renders once it is. Mounted
+          through the route change, not gated on `active`, so it can close
+          itself on the way out instead of returning with the tab. */}
+      <McpServersDialogMount />
       {/* `--studio-chat-notice-height` is 0 until ChatModelNotice is on screen; the
           thread viewport adds it to the top padding it reserves for the header, so
           without it the first message reads under an opaque bar. Declared on the
-          nearest ancestor of BOTH so the two cannot disagree about its height. */}
-      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]">
+          nearest ancestor of BOTH so the two cannot disagree about its height.
+
+          `has-[>...]`, not `has-[...]`. This element is an ancestor of every
+          message in the thread, and a `:has()` with a DESCENDANT argument must
+          be re-checked whenever anything is inserted or removed anywhere in its
+          subtree. Answering it means walking that subtree, so here it walks the
+          whole thread on every mutation.
+
+          It is a traversal and not a restyle: Blink's own
+          `UpdateLayoutTree.elementCount` for one inserted span is 1 once both
+          this rule and the sidebar wrapper's are in their child form, 2 with
+          one of them still in descendant form and 3 with both, i.e. only the
+          subjects are ever restyled. That is why containment cannot help and
+          why the inheriting custom property this rule declares is not the
+          carrier either: the same rule declaring a non-inherited `background`
+          costs the same. Related to #9328 by family, not by mechanism.
+
+          Measured at the 500K rung, corpus 23cd2464, on a 357,843-element
+          thread, as the cost of appending one EMPTY span inside a message: 17.5
+          and 18.6 ms in two concurrent arms with this rule as it was, 9.8 and
+          9.3 ms with this rule alone deleted, and 0.10 ms with this rule and
+          the one on the sidebar wrapper both deleted. The same span appended to
+          <body> costs 0.10 ms either way, so the cost is the thread being under
+          the subject and nothing else. Chromium only: WebKitGTK and Firefox are
+          flat across all four selector forms, so this neither helps nor hurts
+          the engine Unsloth uses on Linux.
+
+          ChatModelNotice renders a direct child of this element (see below), so
+          the child combinator matches exactly what the descendant form matched.
+          If it is ever moved deeper, the notice's height stops being reserved
+          and the first message reads under the bar again, which is why
+          `tests/thread-ancestor-has-scope.test.ts` asserts the depth. */}
+      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[>[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]">
         <NativeModelDropOverlay state={nativeModelDropState} />
         {/* Fade under the top bar so messages dissolve as they scroll
             beneath it, instead of a hard cut. */}
@@ -3755,6 +3959,8 @@ export function ChatPage({
                   isLoading={projectsLoading}
                   onSelectProject={openProjectLanding}
                   onViewAllProjects={openProjectsList}
+                  open={projectPickerOpen}
+                  onOpenChange={setProjectPickerOpen}
                 />
                 {currentProject && activeThreadId ? (
                   <>
@@ -3925,6 +4131,7 @@ export function ChatPage({
           <ChatModelNotice
             threadId={view.threadId ?? newChatThreadId ?? undefined}
             checkpoint={inferenceParams.checkpoint}
+            activeGgufVariant={activeGgufVariant}
             selectableModelIds={selectableModelIds}
             onSwitch={handleSwitchBackToChatModel}
           />

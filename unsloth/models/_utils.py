@@ -527,9 +527,48 @@ def _config_get(
     field_name,
     default = None,
 ):
-    if isinstance(config, dict):
-        return config.get(field_name, default)
-    return getattr(config, field_name, default)
+    try:
+        if isinstance(config, dict):
+            return config.get(field_name, default)
+        return getattr(config, field_name, default)
+    except Exception:
+        # transformers 5.x heterogeneous configs (Gemma 3n / Gemma 4, anything
+        # with `per_layer_config`) raise AmbiguousGlobalPerLayerAttributeError,
+        # not AttributeError, on a global read of a per-layer field, so a getattr
+        # default does not cover it. This killed model load on transformers
+        # 5.15.0. Not caught by name: the class does not exist on 4.x, and a
+        # config is third-party code that may raise anything.
+        return default
+
+
+def _get_per_layer_values(config, field_name):
+    """Per-layer values for `field_name`; empty for homogeneous or 4.x configs."""
+    per_layer = _config_get(config, "per_layer_config", None)
+    if per_layer is None or isinstance(per_layer, (str, bytes)):
+        return []
+    # Three shapes: a live `_PerLayerConfigView` (a Sequence, not a list/tuple);
+    # `to_dict`/config.json, a mapping of zero-padded layer index to overrides
+    # like `{"04": {"head_dim": 512}}`; and Unsloth's SimpleNamespace wrap of it.
+    # Iterating a mapping walks the indices, not the overrides, so the probe
+    # would answer 256 where the object form answers 512.
+    if isinstance(per_layer, dict):
+        per_layer = list(per_layer.values())
+    else:
+        try:
+            iter(per_layer)
+        except TypeError:
+            # Namespace form. `iter` not `__iter__`: the view may be an
+            # old-style sequence with only `__getitem__`.
+            per_layer = list(vars(per_layer).values()) if hasattr(per_layer, "__dict__") else []
+    values = []
+    try:
+        for layer_config in per_layer:
+            value = _config_get(layer_config, field_name, None)
+            if value is not None:
+                values.append(value)
+    except Exception:
+        return values
+    return values
 
 
 def _config_set(config, field_name, value):
@@ -588,9 +627,14 @@ def _collect_attention_head_dims(config):
         "local_head_dim",
         "kv_head_dim",
     ):
-        value = _config_get(config, field_name, None)
-        if isinstance(value, int) and value > 0:
-            explicit_head_dims.append(value)
+        # Per-layer first: on a heterogeneous config the global read refuses,
+        # and no head dim reads as "no reason to disable Flash Attention" on
+        # exactly the models whose layers may exceed its ceiling.
+        candidates = _get_per_layer_values(config, field_name)
+        candidates.append(_config_get(config, field_name, None))
+        for value in candidates:
+            if isinstance(value, int) and value > 0:
+                explicit_head_dims.append(value)
 
     if len(explicit_head_dims) != 0:
         return explicit_head_dims
@@ -2760,21 +2804,60 @@ from transformers.utils.quantization_config import (
     QuantizationMethod,
 )
 
-BitsAndBytesConfig__init__ = inspect.getsource(BitsAndBytesConfig.__init__)
-BitsAndBytesConfig__init__ = re.sub(
-    r"if[\s]{1,}kwargs\:[\s]{1,}.+?\n",
-    "",
-    BitsAndBytesConfig__init__,
-    flags = re.MULTILINE,
-)
-BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.split("\n")
-length_spaces = len(re.match(r"[\s]{1,}", BitsAndBytesConfig__init__[0]).group(0))
-BitsAndBytesConfig__init__ = "\n".join(x[length_spaces:] for x in BitsAndBytesConfig__init__)
-BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
-    "__init__",
-    "_BitsAndBytesConfig__init__",
-)
-exec(BitsAndBytesConfig__init__, globals())
+# Importing this module twice in one process must not raise.
+#
+# This block reads BitsAndBytesConfig.__init__'s source, rewrites it, and (at
+# the bottom of the section) installs the result over the original. The
+# replacement is built with exec(), so it has no file on disk. On a SECOND
+# import, inspect.getsource() is therefore handed our own exec'd function,
+# linecache finds nothing to read for it, and the import dies with
+#
+#     OSError: could not get source code
+#
+# taking every later `from unsloth...` in that process with it. Anything that
+# drops unsloth from sys.modules and imports it again reaches this: on a clean
+# tree, `pytest tests/vllm_compat/test_extended_module_imports.py
+# tests/python/test_vision_lora_targeting.py` is 30 failures, and it is only
+# luck of the xdist scheduling that a full run does not usually pair them.
+#
+# The patch is idempotent by nature -- when it has already run, the wanted end
+# state is the one already in place -- so recognising our own handiwork and
+# standing down is the fix. The marker is set on the function rather than
+# tracked in a module global because a re-import gets fresh globals but the same
+# transformers class object.
+_bnb_init = BitsAndBytesConfig.__init__
+
+if getattr(_bnb_init, "__unsloth_patched__", False):
+    # Already installed by an earlier import of this module. Keep it.
+    _BitsAndBytesConfig__init__ = _bnb_init
+else:
+    try:
+        BitsAndBytesConfig__init__ = inspect.getsource(_bnb_init)
+    except (OSError, TypeError):
+        # Someone else replaced __init__ with something sourceless. Leaving
+        # theirs alone is strictly better than failing the import.
+        BitsAndBytesConfig__init__ = None
+
+    if BitsAndBytesConfig__init__ is None:
+        _BitsAndBytesConfig__init__ = _bnb_init
+    else:
+        BitsAndBytesConfig__init__ = re.sub(
+            r"if[\s]{1,}kwargs\:[\s]{1,}.+?\n",
+            "",
+            BitsAndBytesConfig__init__,
+            flags = re.MULTILINE,
+        )
+        BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.split("\n")
+        length_spaces = len(re.match(r"[\s]{1,}", BitsAndBytesConfig__init__[0]).group(0))
+        BitsAndBytesConfig__init__ = "\n".join(
+            x[length_spaces:] for x in BitsAndBytesConfig__init__
+        )
+        BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
+            "__init__",
+            "_BitsAndBytesConfig__init__",
+        )
+        exec(BitsAndBytesConfig__init__, globals())
+        _BitsAndBytesConfig__init__.__unsloth_patched__ = True
 
 if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     from accelerate.utils.dataclasses import DistributedType

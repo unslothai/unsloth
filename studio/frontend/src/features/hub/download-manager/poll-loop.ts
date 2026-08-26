@@ -65,6 +65,19 @@ import type {
   Terminal,
 } from "./download-manager-types";
 import {
+  XET_NOTICE_TITLE,
+  composeNoticeDescription,
+  shouldShowXetNotice,
+} from "./xet-progress-notice";
+import { reserveXetNoticeFromServer } from "@/features/settings/api/xet-notice";
+import {
+  currentRoute,
+  dismissStartToast,
+  liveCallerToast,
+  showCallerToast,
+  showStartToast,
+} from "./start-toast";
+import {
   getState,
   hasActiveRepoPeer,
   isCurrent,
@@ -85,7 +98,7 @@ import {
   runtimeRegistry,
   teardownRuntime,
 } from "./runtime-registry";
-import { getTransportMode } from "./transport-preference";
+import { resolveTransportMode } from "./transport-preference";
 
 function notify(
   job: ManagedDownload,
@@ -192,6 +205,10 @@ export function finalize(
 ): void {
   const job = getState().jobs[key];
   teardownRuntime(key);
+  // The 8s duration is a cap, not a description of the transfer: a finished download
+  // left the toast still claiming it was running. Before the early returns below, so
+  // a job already in a terminal display state still clears it.
+  dismissStartToast(key);
   if (!job) return;
   if (TERMINAL_DISPLAY_STATES.has(job.state)) return;
   if (job.kind === DOWNLOAD_KIND.MODEL) {
@@ -564,9 +581,13 @@ export async function startJob(
     state?: DownloadJobState;
     transport?: ResolvedTransport;
     cancelTransport?: ResolvedTransport | null;
+    /** The surface this start was asked for, to hold its toast against. Passed by
+     * `requestStart`, whose preflight is itself navigable; else taken here. */
+    originRoute?: string;
   } = {},
 ): Promise<void> {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
+  const startRoute = opts.originRoute ?? currentRoute();
   // Peer guard stops a FRESH start from double-starting a variant already
   // downloading (or colliding with a no-variant snapshot). Skipped when ADOPTING:
   // the restored own entry would look like a peer and freeze the bar; adoptJob's
@@ -606,9 +627,14 @@ export async function startJob(
   // An explicit opts.useXet (a retry pinning a transport) wins; otherwise carry the stored
   // preference UNRESOLVED so "auto" survives to effectiveTransportMode(). Collapsing it to a
   // boolean here would read "auto" as "not xet" and send every download over HTTP.
-  const requestedMode: TransportMode =
-    opts.useXet === undefined
-      ? getTransportMode()
+  // Never for an adopted job: that branch ignores requestedMode, and resolving it is now a
+  // settings round trip. Suspending here left pollingStarted=false long enough for the other
+  // concurrent adoptJob caller to replace this runtime, and both continuations then reached
+  // beginPolling, leaving duplicate timers and a leaked visibility listener.
+  const requestedMode: TransportMode = opts.adopt
+    ? TRANSPORT.HTTP
+    : opts.useXet === undefined
+      ? await resolveTransportMode()
       : opts.useXet
         ? TRANSPORT.XET
         : TRANSPORT.HTTP;
@@ -725,6 +751,50 @@ export async function startJob(
     }
     const started = transportAfterStart(mode, result.transport);
     if (started !== activeTransport) patchJob(key, { transport: started });
+    // One start, one toast: the only place a start is announced. A cancel can land
+    // mid-flight (the reissue above is the giveaway), and neither message is true
+    // of a start that is already stopping.
+    const stopping = rt.cancelRequested;
+    // Everything above was round trips the user could navigate during. Checked BEFORE
+    // reserving, since a reservation is one of three for the life of the install:
+    // spending one on a toast that will be discarded on arrival is how starting a
+    // download and going to watch it burns all three unseen.
+    const onOriginRoute = currentRoute() === startRoute;
+    if (
+      onOriginRoute &&
+      shouldShowXetNotice({
+        kind: req.kind,
+        transport: started,
+        attached: result.attached === true,
+        live: result.state === "running" && !stopping,
+      })
+    ) {
+      // Async (it asks the backend for one of the three) and nothing below waits on
+      // a toast. A lost reservation still leaves the caller owed its message.
+      void reserveXetNoticeFromServer().then(({ granted }) => {
+        // This round trip can outlive the transfer: finalize() dismisses by id before
+        // it resolves, so raising here would leave a finished or cancelled job claiming
+        // to run for another 8s, or hand a restart on the same key a stale message.
+        if (!isCurrent(key, epoch) || rt.cancelRequested) return;
+        // The caller's line can go stale while the notice stays true: chat moved
+        // thread, so nothing auto-loads, but the 0% still needs explaining.
+        const caller = liveCallerToast(req.callerToast);
+        if (granted) {
+          showStartToast(
+            key,
+            {
+              title: XET_NOTICE_TITLE,
+              description: composeNoticeDescription(caller),
+            },
+            startRoute,
+          );
+          return;
+        }
+        showCallerToast(key, caller, startRoute);
+      });
+    } else if (!stopping && onOriginRoute) {
+      showCallerToast(key, liveCallerToast(req.callerToast), startRoute);
+    }
     // An adopted job can already have fallen back from Xet to HTTP, which
     // keeps its original cancel marker and so its stop control.
     if (isResolvedTransport(result.cancel_transport)) {

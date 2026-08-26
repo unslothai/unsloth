@@ -9,7 +9,7 @@ client as its own ``_toolEvent`` frame, but the loop rebuilds the assistant
 message from the text and tool calls it saw, so that output was absent from the
 replayed conversation and the model answered from the local results alone.
 
-Studio's own tool events carry a top-level ``type`` and never appear as
+Unsloth's own tool events carry a top-level ``type`` and never appear as
 ``_toolEvent``, so local results are not replayed twice.
 """
 
@@ -132,7 +132,7 @@ def executed(monkeypatch):
     return calls
 
 
-def _run(transport):
+def _run(transport, *, nudge_tool_calls: bool | None = None):
     async def _collect():
         out: list[str] = []
         agen = stream_with_studio_tools(
@@ -150,6 +150,7 @@ def _run(transport):
                 confirm_calls = False,
                 bypass_permissions = False,
                 rag_scope = None,
+                nudge_tool_calls = nudge_tool_calls,
             ),
             cancel_event = threading.Event(),
         )
@@ -567,7 +568,7 @@ def test_a_stalled_turn_keeps_its_hosted_result(executed):
             [_DONE],
         ]
     )
-    _run(transport)
+    _run(transport, nudge_tool_calls = True)
     assert len(transport.requests) > 1, "the stall reprompt never happened"
     assert "gradient checkpointing lands" in json.dumps(transport.requests[1]["messages"])
 
@@ -618,6 +619,7 @@ def test_a_stalled_continuation_stays_one_assistant_turn(executed):
                 confirm_calls = False,
                 bypass_permissions = False,
                 rag_scope = None,
+                nudge_tool_calls = True,
             ),
             cancel_event = threading.Event(),
         )
@@ -975,7 +977,7 @@ def test_a_stalled_turn_keeps_its_thought_signature(executed):
             [_DONE],
         ]
     )
-    _run(transport)
+    _run(transport, nudge_tool_calls = True)
     reprompted = transport.requests[1]["messages"]
     stalled = [
         m

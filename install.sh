@@ -1031,6 +1031,56 @@ _smart_apt_install() {
     fi
 }
 
+# ── Helper: the studio_install_id contract ──
+# 64 lowercase hex, as in the backend (_STUDIO_INSTALL_ID_RE) and the desktop
+# app (is_valid_studio_root_id). Nothing else is an id: no backend reports it,
+# and the launcher holds it in a single-quoted assignment, so a planted value
+# with a quote in it would be launcher code.
+# Subshell bodies scope LC_ALL=C to the check: the classes below must mean the
+# same bytes in any inherited locale, and the contract is pure ASCII.
+_css_install_id_is_valid() (
+    LC_ALL=C
+    export LC_ALL
+    case "${1:-}" in
+        "" | *[!0123456789abcdef]*) return 1 ;;
+    esac
+    [ "${#1}" -eq 64 ]
+)
+
+# Echoes the id at $1 when it satisfies the contract, nothing otherwise.
+# Returns 1 when the path could not be READ, a different answer: a failed read
+# may still be sitting on a valid id.
+_css_read_valid_install_id() (
+    LC_ALL=C
+    export LC_ALL
+    # Regular files only: a FIFO here (or a symlink to one, or to a device)
+    # would park the installer on the open, waiting for a writer forever.
+    [ -f "$1" ] || return 0
+    # -s answers "no id" from stat, without a read, so an empty file we also
+    # cannot read is replaced as it was pre-validation instead of failing the
+    # install. A real id is 64 bytes and never reaches this.
+    [ -s "$1" ] || return 0
+    # A NUL cannot live in a shell variable, so command substitution drops it
+    # and <32 hex>\0<32 hex> would read back valid while the backend, which
+    # keeps the byte, reports "". Catch it by mapping NULs to a real character.
+    if [ -n "$({ tr -dc '\000' < "$1" | tr '\000' 'N'; } 2>/dev/null)" ]; then
+        return 0
+    fi
+    # Group the redirect, or the shell's own "cannot open" escapes 2>/dev/null.
+    # A failed read is reported, never flattened into "no id": permissions or a
+    # transient NFS/FUSE fault must not license a rewrite.
+    _cvi_id=$({ cat "$1"; } 2>/dev/null) || return 1
+    # Trim what the backend's .strip() trims, SURROUNDING whitespace only.
+    # Deleting interior whitespace would mint a 64-hex token out of bytes the
+    # backend reads otherwise, leaving the launcher holding an id it never
+    # reports.
+    _cvi_id=${_cvi_id#"${_cvi_id%%[![:space:]]*}"}
+    _cvi_id=${_cvi_id%"${_cvi_id##*[![:space:]]}"}
+    if _css_install_id_is_valid "$_cvi_id"; then
+        printf '%s' "$_cvi_id"
+    fi
+)
+
 # ── Helper: create desktop shortcuts and launcher script ──
 # Usage: create_studio_shortcuts <unsloth_exe> <os>
 # Creates ~/.local/share/unsloth/launch-studio.sh (shared launcher),
@@ -1071,14 +1121,24 @@ create_studio_shortcuts() {
     _css_id_dir="$STUDIO_HOME/share"
     mkdir -p "$_css_id_dir"
     _css_id_file="$_css_id_dir/studio_install_id"
-    if [ ! -s "$_css_id_file" ]; then
+    # Reuse an existing id only when it matches the contract above: a re-run
+    # over a normal install is then a no-op, and a pre-populated custom root
+    # cannot reach the launcher.
+    # Unreadable is not malformed: in a shared root the id can be a good one
+    # owned by someone else and already reported by a running backend, so
+    # regenerating would break that install. Refuse, as this did pre-validation.
+    if ! _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file"); then
+        echo "[WARN] Cannot create launcher: cannot read $_css_id_file" >&2
+        return 1
+    fi
+    if [ -z "$_css_studio_root_id" ]; then
         if [ -r /dev/urandom ]; then
             _css_new_id=$(od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
         fi
-        if [ -z "${_css_new_id:-}" ] && command -v python3 >/dev/null 2>&1; then
+        if ! _css_install_id_is_valid "${_css_new_id:-}" && command -v python3 >/dev/null 2>&1; then
             _css_new_id=$(python3 -c 'import secrets; print(secrets.token_hex(32))' 2>/dev/null)
         fi
-        if [ -z "${_css_new_id:-}" ]; then
+        if ! _css_install_id_is_valid "${_css_new_id:-}"; then
             echo "[WARN] Cannot create launcher: no entropy source for studio_install_id" >&2
             return 1
         fi
@@ -1090,18 +1150,28 @@ create_studio_shortcuts() {
         _css_id_tmp="$_css_id_file.$$.$(printf '%.8s' "$_css_new_id").tmp"
         if printf '%s' "$_css_new_id" > "$_css_id_tmp"; then
             if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then
-                # A usable incumbent always wins. A zero-length file is an
-                # interrupted write, not an id, so replace it with one rename
-                # (no unlink, so the path never vanishes). This branch also
-                # covers filesystems without hard links (exFAT/FAT32).
-                [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"
+                # A usable incumbent wins, but only a valid one: zero-length
+                # or malformed is an interrupted write or a planted value, so
+                # replace it with one rename (no unlink, the path never
+                # vanishes). Also covers filesystems without hard links
+                # (exFAT/FAT32). -d because renaming onto a directory moves
+                # the temp inside it instead of replacing it.
+                if _css_incumbent=$(_css_read_valid_install_id "$_css_id_file") \
+                    && [ -z "$_css_incumbent" ] && [ ! -d "$_css_id_file" ]; then
+                    mv "$_css_id_tmp" "$_css_id_file" 2>/dev/null || true
+                fi
             fi
         fi
         rm -f "$_css_id_tmp"
-        chmod 600 "$_css_id_file" 2>/dev/null || true
-        unset _css_new_id _css_id_tmp
+        if [ -f "$_css_id_file" ]; then
+            chmod 600 "$_css_id_file" 2>/dev/null || true
+        fi
+        # Bake what is on disk, not what we meant to write: that is what the
+        # backend reports from /api/health, whoever won the race. An unwritable
+        # or non-regular path leaves this empty and no launcher is generated.
+        _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file") || true
+        unset _css_new_id _css_id_tmp _css_incumbent
     fi
-    _css_studio_root_id=$(cat "$_css_id_file" 2>/dev/null)
     if [ -z "$_css_studio_root_id" ]; then
         echo "[WARN] Cannot create launcher: failed to read $_css_id_file" >&2
         return 1
@@ -2975,7 +3045,7 @@ _uv_venv_arm64() {  # label
 _uv_venv_requested() {  # label
     _uvvr_label="$1"
     _uvvr_req="$(_python_request "$PYTHON_VERSION")"
-    # Capture the hint while streaming Studio output live. If capture setup fails,
+    # Capture the hint while streaming Unsloth output live. If capture setup fails,
     # use the original venv path. The global directory is owned by trap cleanup.
     _UV_VENV_CAPTURE_DIR=""
     if ! command -v tee >/dev/null 2>&1 \
@@ -4690,7 +4760,7 @@ case "$_torch_index_leaf" in
             _amd_gpu_radeon=false
             # Routing the wheels is only half of unslothai#7331: ROCr rebuilds the agent
             # from HSA_OVERRIDE_GFX_VERSION in every LATER process (and this shell execs
-            # Studio further down), so leaving it set hands the freshly installed per-gfx
+            # Unsloth further down), so leaving it set hands the freshly installed per-gfx
             # wheels a device whose reported ISA matches none of their code. Only on this
             # branch, where the spoof was corroborated and native $_strix_gfx wheels are
             # going in; paths that keep generic wheels need the override as their only
@@ -5189,7 +5259,7 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.8.19}"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.8.21}"
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving
@@ -5203,7 +5273,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.8.13"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.8.15"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -5218,7 +5288,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.8.13"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.8.15"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -5452,7 +5522,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.8.13"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.8.15"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -5471,7 +5541,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.8.13"
+            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.8.15"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -5504,7 +5574,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.13" "$_unsloth_release_install_spec" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.15" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -5724,6 +5794,9 @@ else
 fi
 
 if [ "$_SETUP_EXIT" -eq 0 ]; then
+    # First: until this runs, anything that fails below reaches the exit trap, which would
+    # restore the previous environment over the one just installed.
+    _commit_studio_venv_replacement
     tauri_clear_install_error "studio setup completed"
 fi
 
@@ -5741,7 +5814,17 @@ if [ -d "$_shim_path" ] && [ ! -L "$_shim_path" ]; then
 fi
 # why: -sfn is atomic and -n prevents descent into a symlink-to-directory at
 # the shim path (the directory guard above already rejects a real directory).
-ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path"
+if ! ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path" 2>/dev/null; then
+    # A reinstall rebuilds the environment at the same path, so an entry already resolving to
+    # this executable is the shim we were about to write: not a failed install.
+    if [ "$_shim_path" -ef "$VENV_DIR/bin/unsloth" ] 2>/dev/null; then
+        substep "kept the existing shim at $_shim_path ($_LOCAL_BIN is not writable)"
+    else
+        echo "ERROR: could not create the shim at $_shim_path." >&2
+        echo "       Make $_LOCAL_BIN writable, or run '$VENV_DIR/bin/unsloth' directly." >&2
+        exit 1
+    fi
+fi
 
 # Is $2 one of the colon-separated entries of $1? Field splitting also globs, so pathname
 # expansion is off for the walk and restored afterwards: a directory holding *, ? or [ would
@@ -5777,9 +5860,14 @@ _persist_fish_path_dir() {
     # The exact line we would write, not any occurrence of the directory: /opt/uv-old must not
     # pass for /opt/uv, and fish reads none of the POSIX files that would otherwise cover it.
     if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null | grep -qxF "fish_add_path '$_pfp_quoted'"; then
-        echo "# Added by Unsloth installer" >> "$_pfp_file"
-        echo "fish_add_path '$_pfp_quoted'" >> "$_pfp_file"
-        step "path" "added $_pfp_label to PATH in $_pfp_file"
+        if {
+            echo "# Added by Unsloth installer"
+            echo "fish_add_path '$_pfp_quoted'"
+        } 2>/dev/null >> "$_pfp_file"; then
+            step "path" "added $_pfp_label to PATH in $_pfp_file"
+        else
+            step "path" "could not write $_pfp_file; add $_pfp_label to PATH yourself" "$C_WARN"
+        fi
     fi
 }
 
@@ -5823,10 +5911,17 @@ _persist_login_path_dir() {
     # shell with no uv at all.
     if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \
         | grep -E "$_PATH_LINE_RE" | grep -qE "$_plp_pattern"; then
-        echo '' >> "$_SHELL_PROFILE"
-        echo '# Added by Unsloth installer' >> "$_SHELL_PROFILE"
-        echo "export PATH=\"$_plp_literal:\$PATH\"" >> "$_SHELL_PROFILE"
-        step "path" "added $_plp_label to PATH in $_SHELL_PROFILE"
+        # One redirect, so an unwritable profile leaves no half-written entry; a warning rather
+        # than a failure, because under set -e an unguarded append would end the install.
+        if {
+            echo ''
+            echo '# Added by Unsloth installer'
+            echo "export PATH=\"$_plp_literal:\$PATH\""
+        } 2>/dev/null >> "$_SHELL_PROFILE"; then
+            step "path" "added $_plp_label to PATH in $_SHELL_PROFILE"
+        else
+            step "path" "could not write $_SHELL_PROFILE; add $_plp_label to PATH yourself" "$C_WARN"
+        fi
     fi
 }
 
@@ -5901,8 +5996,6 @@ if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
     exit "$_SETUP_EXIT"
 fi
-
-_commit_studio_venv_replacement
 
 # ── Tauri mode: done, skip shortcuts and auto-launch ──
 if [ "$TAURI_MODE" = true ]; then
