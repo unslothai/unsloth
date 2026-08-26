@@ -10997,8 +10997,8 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
     top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
     budget: int | None = None
-    # The window the budget was sized against, so `_text_token_cost` only trusts a
-    # resident GGUF that is actually serving this same window.
+    # The window the budget was sized against, so `_text_token_cost` only trusts
+    # a GGUF actually serving this same window.
     ctx_tokens = (
         _opt_int(rag_scope.get("context_length") or rag_scope.get("max_context_tokens")) or 0
     )
@@ -11038,32 +11038,28 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
 
     def _fits(candidate_text, max_tokens) -> bool:
-        # A budget of None means the estimate itself failed, so there is nothing
-        # to enforce. Zero is the opposite: a measured "no room left".
+        # None means the estimate itself failed, so there is nothing to enforce.
+        # Zero is the opposite: a measured "no room left".
         if max_tokens is None:
             return True
         if max_tokens <= 0:
             return False
-        # Priced by the serving GGUF when it can price this window, and
-        # deliberately doubled when it cannot. That doubling is the point: it is
-        # what stops dense ASCII (source code, minified JSON, hashes, which run
-        # nearer two characters per token) being charged the English four and
-        # admitted at half its real cost.
+        # Priced by the serving GGUF when it can, doubled when it cannot. The
+        # doubling is what stops dense ASCII (source, minified JSON, hashes, all
+        # nearer two characters per token) being charged the English four.
         return _text_token_cost(candidate_text, ctx_tokens) <= max_tokens
 
     def _trim(hit_text, hit_sources, max_tokens):
-        """Drop passages from the tail until the rendered block fits, else give up.
+        """Drop passages from the tail until the rendered block fits, else None.
 
-        Re-renders only when something is actually dropped, so an untrimmed
-        result is returned exactly as retrieval built it.
+        Re-renders only when something is dropped, so an untrimmed result comes
+        back exactly as retrieval built it.
 
-        When even the highest-ranked passage will not fit, this returns None
-        rather than admitting it anyway. The block joins the current turn, which
-        the rolling window is not allowed to evict, so an overflowing injection
-        does not degrade the answer, it fails the whole request with a
-        context-length error. Losing the attachment is bad, which is what this
-        branch exists to fix, but it is what main already does here, and it
-        beats returning an error instead of an answer.
+        None when not even the top passage fits: the block joins the current
+        turn, which the window may not evict, so an overflowing injection fails
+        the request rather than degrading the answer. Losing the attachment is
+        what this branch exists to prevent, but main already loses it here, and
+        that beats an error instead of an answer.
         """
         kept, rendered = list(hit_sources), hit_text
         while len(kept) > 1 and not _fits(rendered, max_tokens):
@@ -11075,13 +11071,11 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         found = search_for_autoinject(query = query, top_k = top_k, **scope)
         return _trim(found[0], found[1], max_tokens) if found else None
 
-    # An oversized thread attachment is mandatory grounding: when normal
-    # auto-injection is off, search it alone, without the optional-autoinject
-    # relevance floor, then add project context only if the combined result
-    # still fits. The whole-document budget is enforced on that path alone --
-    # with auto-injection on, retrieval stays the single combined unbudgeted
-    # search it was, so a small context or a long thread cannot silently switch
-    # RAG off.
+    # An oversized thread attachment is mandatory grounding: with auto-injection
+    # off, search it alone, without the optional-auto relevance floor, then add
+    # project context if the combination still fits. The budget binds on that
+    # path only -- with auto-injection on this stays the single combined
+    # unbudgeted search, so a small context cannot silently switch RAG off.
     if text is None and (enabled or whole_doc_requested):
         try:
             if whole_doc_requested and not enabled:
@@ -11093,9 +11087,9 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                 )
                 project_id = rag_scope.get("project_id")
                 if found and project_id:
-                    # Isolated like the whole-document companion above: the thread
-                    # grounding is already in hand, and an unavailable project index
-                    # must not send the shared handler below into discarding it.
+                    # Isolated like the whole-document companion above: an
+                    # unavailable project index must not send the shared handler
+                    # below into discarding thread grounding already in hand.
                     try:
                         proj = retrieve(
                             scope_project_id = project_id,
@@ -11106,10 +11100,9 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                         logger.warning("RAG project retrieval (fallback companion) failed: %s", exc)
                         proj = None
                     if proj:
-                        # Trim the combination rather than the project alone, which
-                        # was never entitled to the whole budget: the tail is all
-                        # project, so this keeps the passages that fit beside the
-                        # thread result instead of dropping every one of them.
+                        # Trim the combination, not the project alone, which was
+                        # never entitled to the whole budget. The tail is all
+                        # project, so what fits beside the thread result survives.
                         merged = found[1] + proj[1]
                         found = _trim(render_sources(merged), merged, budget) or found
             else:
