@@ -1548,6 +1548,75 @@ class TestDetectionMatchesWhatTheManagersActuallyEnforce:
             ((), ("pip",)),
         ) == ["exclude-newer-package"]
 
+    def test_a_relative_explicit_config_resolves_against_uvs_directory(self, tmp_path):
+        """--directory changes directory before running, so a relative --config-file is
+        resolved there. Measured: UV_WORKING_DIR=work UV_CONFIG_FILE=cfg.toml enforces
+        require-hashes, while the same relative path without it cannot even be opened."""
+        work = tmp_path / "work"
+        work.mkdir()
+        (work / "cfg.toml").write_text("[pip]\nrequire-hashes = true\n", encoding = "utf-8")
+        with mock.patch.dict(
+            os.environ,
+            {"UV_CONFIG_FILE": "cfg.toml", "UV_WORKING_DIR": str(work)},
+            clear = True,
+        ):
+            assert ips._hardened_uv_config_paths() == [str(work / "cfg.toml")]
+        # An absolute path is left alone.
+        absolute = str(work / "cfg.toml")
+        with mock.patch.dict(
+            os.environ,
+            {"UV_CONFIG_FILE": absolute, "UV_WORKING_DIR": str(tmp_path)},
+            clear = True,
+        ):
+            assert ips._hardened_uv_config_paths() == [absolute]
+
+    def test_pip_section_names_are_case_sensitive(self, tmp_path):
+        """pip normalises the OPTION name and leaves the SECTION name alone, so
+        `[INSTALL]` is a section it never selects. Measured with pip 26.2.1: an
+        `[INSTALL] require-hashes = true` installs happily, `[install]` does not."""
+        config = tmp_path / "pip.conf"
+        config.write_text("[INSTALL]\nrequire-hashes = true\n", encoding = "utf-8")
+        assert self._names({}, pip_files = [str(config)]) == ()
+        config.write_text("[install]\nrequire-hashes = true\n", encoding = "utf-8")
+        assert self._names({}, pip_files = [str(config)]) == ("pip.conf require-hashes",)
+
+    def test_config_list_keeps_section_case_too(self):
+        listing = "INSTALL.require-hashes='true'\n"
+        assert self._names({}, pip_ok = True, pip_config = listing) == ()
+
+    def test_a_gap_is_refused_before_the_manifest_is_touched(self):
+        """The refusal was right and its timing was not: the manifest is removed up
+        front, so refusing at the first resolving command left an untouched venv marked
+        half-built and the Desktop preflight then rejected a working environment."""
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"UNSLOTH_RESPECT_PM_POLICY": "1", "UV_REQUIRE_HASHES": "1"},
+                clear = True,
+            ),
+            pytest.raises(SystemExit),
+        ):
+            ips._preflight_policy_gap()
+
+    def test_the_preflight_is_silent_without_the_opt_out(self):
+        """An ordinary install must never reach the check, whatever the host has set."""
+        with mock.patch.dict(
+            os.environ, {"UV_REQUIRE_HASHES": "1", "PIP_ONLY_BINARY": ":all:"}, clear = True
+        ):
+            ips._preflight_policy_gap()
+
+    def test_the_preflight_is_silent_when_both_managers_are_configured(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "UNSLOTH_RESPECT_PM_POLICY": "1",
+                "UV_REQUIRE_HASHES": "1",
+                "PIP_REQUIRE_HASHES": "1",
+            },
+            clear = True,
+        ):
+            ips._preflight_policy_gap()
+
     def test_an_inline_comment_is_not_part_of_the_value(self):
         """The pre-3.11 fallback had already stripped the comment and then appended the
         raw line anyway, so `no-build = false # disabled` read as the value

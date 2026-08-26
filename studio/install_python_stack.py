@@ -4984,6 +4984,11 @@ def _hardened_uv_config_paths() -> "list[str]":
         # discovered set is not merely outranked, it is not read at all. Checked BEFORE
         # --no-config: measured on the pinned uv 0.12.1, an explicit file is read with
         # UV_NO_CONFIG=1 set as well, so returning nothing there dropped live policy.
+        working = os.environ.get("UV_WORKING_DIR", "").strip()
+        if working and not os.path.isabs(explicit):
+            # --directory changes directory BEFORE running, so a relative config path is
+            # resolved there and not against the directory the installer started in.
+            explicit = os.path.join(working, explicit)
         return _existing_files([explicit])
     if _config_value_is_on(os.environ.get("UV_NO_CONFIG", "")):
         # --no-config: uv discovers nothing, so nothing here is policy.
@@ -5117,7 +5122,11 @@ def _hardened_pip_sections(text: str) -> "dict[str, dict[str, str]]":
     except configparser.Error:
         return sections
     for raw_name in parser.sections():
-        name = raw_name.strip().lower()
+        # Verbatim: pip normalises the OPTION name and leaves the SECTION name alone, so
+        # `[INSTALL]` is a section pip never selects. Lowercasing it here reported a
+        # policy pip does not apply, which under the opt-out could refuse the first uv
+        # step over a cross-manager gap that did not exist.
+        name = raw_name
         if name not in sections:
             continue
         for option, value in parser.items(raw_name):
@@ -5308,8 +5317,9 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
             # `:env:` entries restate the environment, already handled above.
             if not separator or name.strip().startswith(":env:"):
                 continue
+            # Section verbatim, option normalised: that is what pip itself does, and
+            # `pip config list` prints an `INSTALL.` prefix for a section pip ignores.
             section, _, option = name.strip().rpartition(".")
-            section = section.strip().lower()
             if option not in _PIP_CONFIG_KEYS:
                 continue
             value = raw.strip().strip("'\"")
@@ -5489,6 +5499,24 @@ def _refuse_unenforceable_policy(cmd: "list[str]", missing: "list[str]") -> None
         )
     )
     sys.exit(1)
+
+
+def _preflight_policy_gap() -> None:
+    """Refuse a cross-manager gap BEFORE the install mutates anything.
+
+    The refusal is right, but its timing was not: `install_python_stack()` removes the
+    completion manifest up front, so a refusal at the first resolving command left a
+    venv that had not been touched marked as a half-built install, and `verify_install()`
+    and the Desktop preflight then rejected a working environment.
+
+    Both managers are probed, because this installer drives both and a control only one
+    of them can see is exactly what the opt-out asks to be stopped for. Nothing is
+    reported unless the opt-out is set, so an ordinary install never reaches the check.
+    """
+    for probe in (["uv", "pip", "install"], [sys.executable, "-m", "pip", "install"]):
+        missing = _unenforceable_policy(probe)
+        if missing:
+            _refuse_unenforceable_policy(probe, missing)
 
 
 def _announce_pm_policy() -> None:
@@ -6123,6 +6151,11 @@ def install_python_stack() -> int:
     # Core packages and shared base requirements occupy one progress slot. A
     # shell-installer handoff skips that slot only while base.txt has no work.
     _TOTAL = base_total - int(skip_base and base_requirements is None)
+
+    # Before the manifest goes away, so a refusal cannot leave an untouched venv marked
+    # half-built. Silent unless the opt-out is set AND a control exists that one of the
+    # two managers cannot see.
+    _preflight_policy_gap()
 
     # Drop it up front: a missing manifest is what tells the CLI, setup.sh and
     # the preflight that an interrupted run left the venv half-built. Stop if it
