@@ -15,6 +15,7 @@ from typing import Annotated, Any, Literal, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     ValidationError,
@@ -75,6 +76,22 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+def _reject_boolean(value: Any) -> Any:
+    """bool subclasses int, so lax mode would take `true` for a number the user never set."""
+    if isinstance(value, bool):
+        raise ValueError("Expected a number, got a boolean.")
+    return value
+
+
+NotABoolean = Annotated[Optional[int], BeforeValidator(_reject_boolean)]
+
+# llama.cpp spends 0xFFFFFFFF on its "draw one" sentinel, so a pin stops one below it.
+MAX_SAMPLING_SEED = 2**32 - 2
+SamplingSeed = Optional[
+    Annotated[int, Field(ge = 0, le = MAX_SAMPLING_SEED), BeforeValidator(_reject_boolean)]
+]
+
+
 class ChatRagThreadSource(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
@@ -128,22 +145,11 @@ class ChatThreadSettings(BaseModel):
     minP: Optional[float] = Field(default = None, ge = 0, le = 1)
     repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
     presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
-    # Same ceiling as the installation-wide copy: llama.cpp reads the seed as a uint32
-    # and spends 0xFFFFFFFF on its "draw one" sentinel.
-    seed: Optional[int] = Field(default = None, ge = 0, le = 2**32 - 2)
+    seed: SamplingSeed = None
     # Not length-capped, like the installation-wide copy: truncating here would
     # silently change what the chat runs with.
     systemPrompt: Optional[str] = None
     systemVariables: Optional[str] = None
-
-    @field_validator("seed", mode = "before")
-    @classmethod
-    def _no_boolean_seed(cls, value: Any) -> Any:
-        # Same contract as ChatInferenceSettings: bool subclasses int, so lax mode
-        # would store `true` as a pin of 1 the user never set.
-        if isinstance(value, bool):
-            raise ValueError("Expected a number, got a boolean.")
-        return value
 
 
 class ChatThread(BaseModel):
@@ -396,16 +402,7 @@ class ChatInferenceSettings(BaseModel):
     systemVariables: Optional[str] = None
     trustRemoteCode: Optional[bool] = None
     fastMode: Optional[bool] = None
-    # llama.cpp reads the seed as a uint32 and spends 0xFFFFFFFF on its "draw one" sentinel.
-    seed: Optional[int] = Field(default = None, ge = 0, le = 2**32 - 2)
-
-    @field_validator("seed", mode = "before")
-    @classmethod
-    def _no_booleans(cls, value: Any) -> Any:
-        # Same contract as ChatPresetLoadConfig: bool subclasses int, so lax mode stores `true` as 1.
-        if isinstance(value, bool):
-            raise ValueError("Expected a number, got a boolean.")
-        return value
+    seed: SamplingSeed = None
 
 
 class ChatPresetLoadConfig(BaseModel):
@@ -421,21 +418,12 @@ class ChatPresetLoadConfig(BaseModel):
     # The normalizer emits both keys on every preset (null included) and this model is
     # extra="forbid", so without them PUT /api/chat/settings 400s the whole save for any
     # preset carrying a loadConfig, including one that only pinned nParallel.
-    nBatch: Optional[int] = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
-    nUbatch: Optional[int] = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
+    nBatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
+    nUbatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
     tensorParallel: Optional[bool] = None
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
-
-    @field_validator("nBatch", "nUbatch", mode = "before")
-    @classmethod
-    def _no_booleans(cls, value: Any) -> Any:
-        # Same contract as LoadRequest: bool subclasses int, so lax mode would store
-        # `true` as 1 here while /load 422s it.
-        if isinstance(value, bool):
-            raise ValueError("Expected a number, got a boolean.")
-        return value
 
 
 class ChatPreset(BaseModel):
