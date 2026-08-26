@@ -4810,7 +4810,11 @@ def _hardened_settings_in_toml(
         if stripped.count("[") > stripped.count("]") and "=" in stripped:
             pending = stripped
             continue
-        joined.append(raw_line)
+        # `piece`, not the raw line: the comment has already been taken off it, and
+        # keeping it made `no-build = false # disabled` read as the value
+        # "false # disabled", which is not one of the off spellings and so reported a
+        # policy the operator had switched off.
+        joined.append(piece)
     if pending:
         joined.append(pending)
     for line in joined:
@@ -4940,6 +4944,10 @@ def _hardened_pip_config_paths() -> "list[str]":
     own (global, user, site, PIP_CONFIG_FILE); the subprocess answer still wins when it
     works, since pip merges them itself.
     """
+    # Within the user kind, pip's get_configuration_files returns
+    # [legacy_config_file, new_config_file] and loads them in that order, so the modern
+    # location is authoritative. Listing it first put the legacy file last and let
+    # ~/.pip/pip.conf override ~/.config/pip/pip.conf, which is the opposite of pip.
     name = "pip.ini" if IS_WINDOWS else "pip.conf"
     explicit = os.environ.get("PIP_CONFIG_FILE", "").strip()
     if explicit and os.path.normcase(explicit) == os.path.normcase(os.devnull):
@@ -4952,14 +4960,14 @@ def _hardened_pip_config_paths() -> "list[str]":
     candidates = []
     user: "list[str]" = []
     if IS_WINDOWS:
+        # pip's legacy user file, still in get_configuration_files(): "pip" on Windows,
+        # ".pip" elsewhere, under the expanded home. First, so %APPDATA% outranks it.
+        user.append(os.path.join(os.path.expanduser("~"), "pip", name))
         for variable in ("PROGRAMDATA", "APPDATA"):
             base = os.environ.get(variable, "")
             if base:
                 target = candidates if variable == "PROGRAMDATA" else user
                 target.append(os.path.join(base, "pip", name))
-        # pip's legacy user file, still in get_configuration_files(): "pip" on Windows,
-        # ".pip" elsewhere, under the expanded home.
-        user.append(os.path.join(os.path.expanduser("~"), "pip", name))
     else:
         # Global is EVERY entry of XDG_CONFIG_DIRS, not just the default: measured with
         # pip 26, `XDG_CONFIG_DIRS=/a:/b pip config debug` enumerates /a/pip/pip.conf and
@@ -4976,11 +4984,12 @@ def _hardened_pip_config_paths() -> "list[str]":
             candidates.append(os.path.join("/etc", "xdg", "pip", name))
         candidates.append(os.path.join("/etc", name))
         home = os.path.expanduser("~")
+        user.append(os.path.join(home, ".pip", name))
         xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
         user.append(os.path.join(xdg, "pip", name))
         if IS_MACOS:
+            # user_config_dir on macOS, so it is the modern file there and goes last.
             user.append(os.path.join(home, "Library", "Application Support", "pip", name))
-        user.append(os.path.join(home, ".pip", name))
     if not skip_user:
         candidates.extend(user)
     # Site, then the explicit file: pip's own load order, which is what makes the
@@ -5005,37 +5014,38 @@ _PIP_SECTION_RANK = {"global": 0, "install": 1, "download": 1, "wheel": 1}
 _PIP_COMMANDS = ("install", "download", "wheel")
 
 
-def _hardened_settings_by_command(text: str) -> "dict[str, dict[str, str]]":
-    """Hardened settings from a pip.conf, kept separate for each subcommand.
+_PIP_SECTIONS = ("global",) + _PIP_COMMANDS
 
-    Per command rather than combined, because precedence runs file by file and pip
-    resolves each command on its own: a user file's `[install] require-hashes = true`
-    and a site file's `[wheel] require-hashes = false` are two policies, and collapsing
-    each file before the next overwrites it loses the first entirely, reporting an
-    unhardened host while pip still hash-checks every install.
+
+def _hardened_pip_sections(text: str) -> "dict[str, dict[str, str]]":
+    """Hardened settings from a pip.conf, one bucket per section and NOT merged.
+
+    Unmerged because pip pools every file's `[global]` into one group and every file's
+    command section into another, and applies global first and the command second only
+    at the end: a `[install]` setting in a low-priority file therefore still beats a
+    `[global]` in a high-priority one. Folding global into the command sections file by
+    file gets that backwards, and let a later `[global] require-hashes = false` erase an
+    earlier `[install] require-hashes = true` pip was still applying.
+
+    Option names are normalised the way pip normalises them, lowercased with underscores
+    turned into dashes: `require_hashes = true` is a spelling pip honours, and
+    RawConfigParser keeps the underscore, so matching the dashed name alone missed it.
     """
+    sections: "dict[str, dict[str, str]]" = {name: {} for name in _PIP_SECTIONS}
     parser = configparser.RawConfigParser()
     try:
         parser.read_string(text)
     except configparser.Error:
-        return {command: {} for command in _PIP_COMMANDS}
-
-    def _section(name: str) -> "dict[str, str]":
-        values = {}
-        for key in _PIP_CONFIG_KEYS:
-            if parser.has_option(name, key):
-                values[key] = parser.get(name, key, fallback = "")
-        return values
-
-    sections = {name.strip().lower(): name for name in parser.sections()}
-    base = _section(sections["global"]) if "global" in sections else {}
-    resolved = {}
-    for command in _PIP_COMMANDS:
-        effective = dict(base)
-        if command in sections:
-            effective.update(_section(sections[command]))
-        resolved[command] = effective
-    return resolved
+        return sections
+    for raw_name in parser.sections():
+        name = raw_name.strip().lower()
+        if name not in sections:
+            continue
+        for option, value in parser.items(raw_name):
+            key = option.strip().lower().replace("_", "-")
+            if key in _PIP_CONFIG_KEYS:
+                sections[name][key] = value
+    return sections
 
 
 def _combine_pip_commands(
@@ -5058,6 +5068,18 @@ def _combine_pip_commands(
     return combined
 
 
+def _combine_pip_sections(
+    pooled: "dict[str, dict[str, tuple[str, str]]]",
+) -> "dict[str, tuple[str, str]]":
+    """pip's own resolution: `[global]` first, then the command's own section."""
+    return _combine_pip_commands(
+        {
+            command: dict(pooled.get("global", {}), **pooled.get(command, {}))
+            for command in _PIP_COMMANDS
+        }
+    )
+
+
 def _hardened_settings_in_ini(text: str) -> "dict[str, str]":
     """Hardened settings from a single pip.conf, resolved per subcommand then combined.
 
@@ -5065,11 +5087,11 @@ def _hardened_settings_in_ini(text: str) -> "dict[str, str]":
     files too: a later pip.conf setting `require-hashes = false` has to be able to cancel
     an earlier one, and a caller that only ever saw the enabled keys could not do that.
     """
-    tagged = {
-        command: {key: ("", value) for key, value in values.items()}
-        for command, values in _hardened_settings_by_command(text).items()
+    pooled = {
+        name: {key: ("", value) for key, value in values.items()}
+        for name, values in _hardened_pip_sections(text).items()
     }
-    return {key: value for key, (_source, value) in _combine_pip_commands(tagged).items()}
+    return {key: value for key, (_source, value) in _combine_pip_sections(pooled).items()}
 
 
 def _hardened_keys_in_ini(text: str) -> "list[str]":
@@ -5190,29 +5212,31 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
                 globals_[option] = value
             elif section in per_command:
                 per_command[section][option] = value
-        tagged = {
-            command: {
+        pooled = {
+            name: {
                 option: ("pip.conf", value)
-                for option, value in dict(globals_, **per_command[command]).items()
+                for option, value in (globals_ if name == "global" else per_command[name]).items()
             }
-            for command in _PIP_COMMANDS
+            for name in _PIP_SECTIONS
         }
-        pip_settings.update(_combine_pip_commands(tagged))
+        pip_settings.update(_combine_pip_sections(pooled))
     else:
         # No usable pip, so read pip's files directly rather than report an ordinary
-        # machine. They come back in pip's own load order, so a later file wins -- per
-        # subcommand, which is why each one is carried across the files and only combined
-        # at the end. Collapsing a file before reading the next let a `[wheel]` setting in
-        # a low-priority file erase an `[install]` one pip still applies.
-        by_command: "dict[str, dict[str, tuple[str, str]]]" = {name: {} for name in _PIP_COMMANDS}
+        # machine. They come back in pip's own load order, so a later file wins -- within
+        # a section, which is why every file's sections are pooled and only resolved
+        # against each other at the end. Collapsing a file before reading the next let a
+        # low-priority setting erase a higher-priority one pip still applies.
+        pooled: "dict[str, dict[str, tuple[str, str]]]" = {
+            name: {} for name in _PIP_SECTIONS
+        }
         for path in _hardened_pip_config_paths():
             text = _read_text(path)
             if text is None:
                 continue
             source = os.path.basename(path)
-            for command, values in _hardened_settings_by_command(text).items():
-                by_command[command].update({key: (source, value) for key, value in values.items()})
-        pip_settings.update(_combine_pip_commands(by_command))
+            for name, values in _hardened_pip_sections(text).items():
+                pooled[name].update({key: (source, value) for key, value in values.items()})
+        pip_settings.update(_combine_pip_sections(pooled))
     for key, (source, value) in pip_settings.items():
         if _canonical_policy_key(key) not in cancelled["pip"]:
             _record("pip", source, key, value)
@@ -5360,9 +5384,9 @@ def _announce_pm_policy() -> None:
     _note(
         f"Package manager hardening detected ({listed}). Unsloth relaxes it for its own "
         "dependency installs only -- the shipped requirements are unhashed and a few have "
-        "no wheel at any version -- and never for your other pip commands. A uv setting "
-        "still applies to the few steps that do not pin an index, since uv has no "
-        "per-command override for one. Set "
+        "no wheel at any version -- and never for your other pip commands. On the steps "
+        "that pin an index it is set aside in full; on the few that do not, only pip's "
+        "require-hashes is, so an upload cutoff or a uv setting still applies there. Set "
         f"{_POLICY_OPT_OUT_ENV}=1 to keep your policy in force everywhere instead.",
         _cyan,
     )
@@ -5806,17 +5830,23 @@ def pip_install(
                 if VERBOSE and result.stdout:
                     _safe_print(_redact_install_output(result.stdout))
                 return
-            if _respect_pm_policy():
-                # pip reads none of uv's policy, so under the opt-out the fallback would
-                # retry the very install uv refused, and succeed. Stop instead, on the
-                # same terms as any other fatal step.
+            fallback_cmd = _build_pip_cmd(args) + constraint_args_pip + req_args_pip
+            discarded = _unenforceable_policy(fallback_cmd)
+            if discarded:
+                # Only when falling back would actually DROP a control: pip reads none of
+                # uv's policy, so retrying there would install exactly what uv refused.
+                # Gating on the opt-out flag alone was wrong -- an operator who sets it
+                # pre-emptively on a host with no uv-only policy would have had every
+                # ordinary uv failure, a resolver hiccup included, turned into a fatal
+                # one with no fallback.
                 if result.stdout:
                     _safe_print(_redact_install_output(result.stdout))
                 _safe_print(
                     _red(
                         f"   uv failed and {_POLICY_OPT_OUT_ENV} is set, so the pip "
-                        "fallback is not used: pip does not read uv's policy and would "
-                        "install what uv refused. Unset it to allow the fallback."
+                        "fallback is not used: pip does not read "
+                        f"{', '.join(discarded)} and would install what uv refused. "
+                        "Unset it to allow the fallback."
                     )
                 )
                 sys.exit(result.returncode)

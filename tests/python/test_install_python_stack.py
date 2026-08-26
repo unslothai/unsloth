@@ -728,24 +728,53 @@ class TestTheOptOutIsNotDefeatedByOurOwnEscapeHatches:
         assert env is not None and env["UV_NO_CONFIG"] == "1"
         assert env["PIP_CONFIG_FILE"] == os.devnull
 
-    def test_the_pip_fallback_is_refused_under_the_opt_out(self):
-        """pip reads none of uv's policy, so falling back to it after uv refused an
-        install runs the very command the policy rejected. Stop instead."""
+    def _fallback_calls(self, environment: dict) -> "tuple[list, object]":
         calls: list = []
-
+        raised = None
         with (
             mock.patch.object(ips, "USE_UV", True),
             mock.patch.object(ips, "subprocess") as sp,
             mock.patch.object(ips, "run", lambda *a, **k: calls.append(a)),
             mock.patch.object(ips, "_invalidate_torch_runtime_probe", lambda: None),
-            mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}),
+            mock.patch.dict(os.environ, environment, clear = True),
         ):
             sp.run.return_value = mock.Mock(returncode = 2, stdout = "")
             sp.PIPE, sp.STDOUT = -1, -2
-            with pytest.raises(SystemExit) as exit_info:
+            try:
                 ips.pip_install("deps", "somepackage")
-        assert exit_info.value.code == 2
-        assert calls == [], "the pip fallback must not run under the opt-out"
+            except SystemExit as exit_info:
+                raised = exit_info
+        return calls, raised
+
+    def test_the_pip_fallback_is_refused_when_it_would_drop_a_uv_policy(self):
+        """pip reads none of uv's policy, so falling back to it after uv refused an
+        install runs the very command the policy rejected. Stop instead."""
+        calls, raised = self._fallback_calls(
+            {"UNSLOTH_RESPECT_PM_POLICY": "1", "UV_REQUIRE_HASHES": "1"}
+        )
+        assert raised is not None and raised.code == 2
+        assert calls == [], "the pip fallback must not run when it would drop the policy"
+
+    def test_the_fallback_still_runs_when_the_opt_out_drops_nothing(self):
+        """The flag alone is not a reason to refuse. An operator who sets it
+        pre-emptively on a host with no uv-only policy would otherwise have every
+        ordinary uv failure, a resolver hiccup included, turned into a fatal one."""
+        calls, raised = self._fallback_calls({"UNSLOTH_RESPECT_PM_POLICY": "1"})
+        assert raised is None, "nothing is being discarded, so nothing to refuse"
+        assert calls, "the pip fallback must still run"
+
+    def test_the_fallback_runs_when_pip_can_enforce_the_same_control(self):
+        """Both managers configured is not a gap: pip applies its own require-hashes to
+        the fallback, so the operator's policy survives it."""
+        calls, raised = self._fallback_calls(
+            {
+                "UNSLOTH_RESPECT_PM_POLICY": "1",
+                "UV_REQUIRE_HASHES": "1",
+                "PIP_REQUIRE_HASHES": "1",
+            }
+        )
+        assert raised is None
+        assert calls, "the pip fallback must still run"
 
     def test_the_pip_fallback_still_runs_by_default(self):
         """The whole point of #8530's fix: uv failing must not end the install."""
@@ -1333,6 +1362,66 @@ class TestDetectionMatchesWhatTheManagersActuallyEnforce:
     def test_a_deleted_working_directory_is_not_an_error(self):
         with mock.patch.object(os, "getcwd", mock.Mock(side_effect = OSError("gone"))):
             assert ips._uv_project_config() == []
+
+    def test_a_command_section_beats_a_global_in_a_higher_priority_file(self, tmp_path):
+        """pip pools every file's [global] into one group and every file's command
+        section into another, then applies global first and the command second, so an
+        [install] entry in a low-priority file still wins. Folding global into the
+        command sections file by file let a later [global] erase it."""
+        first = tmp_path / "user.conf"
+        first.write_text("[install]\nrequire-hashes = true\n", encoding = "utf-8")
+        second = tmp_path / "site.conf"
+        second.write_text("[global]\nrequire-hashes = false\n", encoding = "utf-8")
+        assert self._names({}, pip_files = [str(first), str(second)]) == (
+            "user.conf require-hashes",
+        )
+
+    def test_the_underscore_spelling_is_normalised(self, tmp_path):
+        """pip's _normalize_name lowercases and turns underscores into dashes, so
+        `require_hashes` is a spelling it honours. RawConfigParser keeps the underscore,
+        so matching only the dashed name read a hardened host as ordinary."""
+        config = tmp_path / "pip.conf"
+        config.write_text("[global]\nREQUIRE_HASHES = true\n", encoding = "utf-8")
+        assert self._names({}, pip_files = [str(config)]) == ("pip.conf require-hashes",)
+
+    def test_the_modern_user_file_outranks_the_legacy_one(self):
+        """pip's get_configuration_files returns the user kind as
+        [legacy_config_file, new_config_file] and loads them in that order."""
+        with (
+            mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
+            _posix_home(),
+            mock.patch.object(ips, "IS_WINDOWS", False),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(os.path, "isfile", lambda path: True),
+        ):
+            paths = [path.replace(os.sep, "/") for path in ips._hardened_pip_config_paths()]
+        assert paths.index("/home/u/.pip/pip.conf") < paths.index(
+            "/home/u/.config/pip/pip.conf"
+        ), paths
+
+    def test_the_windows_appdata_file_outranks_the_legacy_one(self):
+        with (
+            mock.patch.dict(os.environ, {"APPDATA": "C:\\a"}, clear = True),
+            mock.patch.object(ips, "IS_WINDOWS", True),
+            mock.patch.object(os.path, "expanduser", lambda p: p.replace("~", "C:\\u", 1)),
+            mock.patch.object(os.path, "isfile", lambda path: True),
+        ):
+            # os.path.join follows the RUNNER, so normalise both separators: this test is
+            # about the ORDER of the locations, not how a platform spells a path.
+            paths = [
+                path.replace("\\", "/").replace(os.sep, "/")
+                for path in ips._hardened_pip_config_paths()
+            ]
+        assert paths.index("C:/u/pip/pip.ini") < paths.index("C:/a/pip/pip.ini"), paths
+
+    def test_an_inline_comment_is_not_part_of_the_value(self):
+        """The pre-3.11 fallback had already stripped the comment and then appended the
+        raw line anyway, so `no-build = false # disabled` read as the value
+        "false # disabled", which is not an off spelling."""
+        body = "no-build = false # disabled by the platform team\n"
+        with mock.patch.object(ips, "_tomllib", None):
+            assert ips._hardened_keys_in_toml(body, ((),)) == []
+            assert ips._hardened_keys_in_toml("no-build = true # on\n", ((),)) == ["no-build"]
 
 
 class TestPolicyEnvIsPlatformAndHardwareInvariant:
