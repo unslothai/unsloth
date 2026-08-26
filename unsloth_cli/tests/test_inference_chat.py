@@ -449,9 +449,10 @@ def test_catalog_cached_entries_filter_non_chat_rows(monkeypatch, tmp_path):
         # config for can_chat to read, so only its own flag keeps it out of chat.
         {"repo_id": "org/Sdxl", "task": None, "diffusers": True},
     ]
-    fake_cfg = types.ModuleType("utils.models.model_config")
-    fake_cfg._is_mmproj = lambda name: "mmproj" in name.lower()
-    monkeypatch.setitem(sys.modules, "utils.models.model_config", fake_cfg)
+    # The real variant lister, not a stub: it decides these labels and picks the load target,
+    # so a stub tests the plumbing and none of the answer. Pulls neither torch nor fastapi, and
+    # syspath_prepend is undone after the test, so the suite keeps its no-server-import property.
+    monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
     monkeypatch.setattr(cat, "_cached_catalog_rows", lambda: (gguf_rows, model_rows))
 
     entries = cat.cached_entries()
@@ -2436,3 +2437,128 @@ def test_catalog_pins_an_active_cache_adapter_to_its_snapshot(tmp_path):
         "cache_path": str(repo),
     }
     assert cat._cached_model_load_id(plain) == "Org/Chat"
+
+
+QUANT_LAYOUTS = [
+    ([("Tiny-Q4_K_M.gguf", 16)], "Q4_K_M"),
+    ([("Tiny-Q4_K_M.gguf", 16), ("Tiny-Q8_0.gguf", 16)], "Q4_K_M, Q8_0"),
+    # One directory per quant. snapshots/*/*.gguf is one level deep, so this rendered blank.
+    ([("Q4_K_M/Tiny-Q4_K_M.gguf", 16), ("Q8_0/Tiny-Q8_0.gguf", 16)], "Q4_K_M, Q8_0"),
+    # A split quant is ONE thing to pick. The glob listed every shard as its own label.
+    ([(f"Tiny-Q4_K_M-0000{n}-of-00003.gguf", 16) for n in (1, 2, 3)], "Q4_K_M"),
+    # The case the host decides: fnmatch normcases on Windows and not on Linux or macOS, so
+    # "*.gguf" found this file on one platform only and the cache read differently per machine.
+    ([("Tiny-Q8_0.GGUF", 16)], "Q8_0"),
+    ([("Tiny-Q4_K_M.gguf", 16), ("mmproj-F16.gguf", 16)], "Q4_K_M"),
+]
+
+
+@pytest.mark.parametrize("files,expected", QUANT_LAYOUTS)
+def test_quant_labels_read_the_layouts_the_hub_actually_writes(
+    monkeypatch, tmp_path, files, expected
+):
+    from unsloth_cli import _model_catalog as cat
+
+    monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
+    repo = tmp_path / "models--org--Tiny-GGUF"
+    for name, size in files:
+        target = repo / "snapshots" / "abc" / name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"\0" * size)
+
+    assert cat._quant_labels("org/Tiny-GGUF", str(repo)) == expected
+
+
+def test_quant_labels_follow_the_pin_rather_than_the_ref(monkeypatch, tmp_path):
+    """A pinned row loads its snapshot, not the one refs/main names.
+
+    The inventory pins precisely when the ref resolves somewhere worse, so labelling by the
+    ref advertised a quant the row will never open and hid the one it will.
+    """
+    from unsloth_cli import _model_catalog as cat
+
+    monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
+    repo = tmp_path / "models--org--Two-GGUF"
+    by_ref = repo / "snapshots" / ("a" * 40)
+    pinned = repo / "snapshots" / ("b" * 40)
+    by_ref.mkdir(parents = True)
+    pinned.mkdir(parents = True)
+    (by_ref / "Two-Q2_K.gguf").write_bytes(b"\0" * 16)
+    (pinned / "Two-Q6_K.gguf").write_bytes(b"\0" * 16)
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("a" * 40)
+
+    assert cat._quant_labels("org/Two-GGUF", str(repo), str(pinned)) == "Q6_K"
+    assert cat._quant_labels("org/Two-GGUF", str(repo)) == "Q2_K"
+
+
+def test_quant_labels_leave_out_a_quant_that_cannot_be_loaded(monkeypatch, tmp_path):
+    """An interrupted second quant is not selectable, so it is not advertised.
+
+    _preferred_complete_gguf narrows to complete_snapshot_variants before choosing the load
+    target; the detail column reads the same set, or it names a quant nothing can open.
+    """
+    from unsloth_cli import _model_catalog as cat
+
+    monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
+    repo = tmp_path / "models--org--Tiny-GGUF"
+    snapshot = repo / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Tiny-Q4_K_M.gguf").write_bytes(b"\0" * 16)
+    (snapshot / "Tiny-Q8_0-00001-of-00003.gguf").write_bytes(b"\0" * 16)
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("a" * 40)
+
+    assert cat._quant_labels("org/Tiny-GGUF", str(repo)) == "Q4_K_M"
+
+
+def test_one_undecodable_ref_does_not_empty_the_downloaded_group(monkeypatch, tmp_path):
+    """read_text raises UnicodeDecodeError, which is a ValueError and not an OSError.
+
+    Uncaught it leaves _quant_labels, aborts cached_entries, and _safe then hides every
+    Downloaded row because one repo in the cache has a torn ref.
+    """
+    from unsloth_cli import _model_catalog as cat
+
+    monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
+    repo = tmp_path / "models--org--Tiny-GGUF"
+    snapshot = repo / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Tiny-Q4_K_M.gguf").write_bytes(b"\0" * 16)
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_bytes(b"\xff\xfe\x00not utf-8")
+
+    rows = [{"repo_id": "org/Tiny-GGUF", "cache_path": str(repo), "task": "text-generation"}]
+    monkeypatch.setattr(cat, "_cached_catalog_rows", lambda: (rows, []))
+
+    entries = cat.cached_entries()
+    assert [(e.name, e.detail) for e in entries] == [("org/Tiny-GGUF", "Q4_K_M")]
+
+
+def test_a_pin_survives_a_symlinked_cache_root(monkeypatch, tmp_path):
+    """inventory_scan resolves the snapshot it pins; cache_path keeps the configured spelling.
+
+    Under a symlinked cache root (or a Windows junction) those two name one directory and
+    are not lexically equal, so a membership test against the listed snapshots dropped a
+    good pin back onto the ref it was pinned away from.
+    """
+    from unsloth_cli import _model_catalog as cat
+
+    monkeypatch.syspath_prepend(str(_REPO_ROOT / "studio" / "backend"))
+    physical = tmp_path / "physical_hub"
+    physical.mkdir()
+    repo = physical / "models--org--Two-GGUF"
+    by_ref = repo / "snapshots" / ("a" * 40)
+    pinned = repo / "snapshots" / ("b" * 40)
+    by_ref.mkdir(parents = True)
+    pinned.mkdir(parents = True)
+    (by_ref / "Two-Q2_K.gguf").write_bytes(b"\0" * 16)
+    (pinned / "Two-Q6_K.gguf").write_bytes(b"\0" * 16)
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("a" * 40)
+
+    configured = tmp_path / "configured_hub"
+    configured.symlink_to(physical, target_is_directory = True)
+    cache_path = configured / "models--org--Two-GGUF"
+
+    assert cat._quant_labels("org/Two-GGUF", str(cache_path), str(pinned.resolve())) == "Q6_K"

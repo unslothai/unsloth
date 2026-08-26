@@ -188,7 +188,7 @@ p8="$_TMP_ROOT/inst8/studioF"
 mkdir -p "$p8/stable-diffusion.cpp/build/bin"
 : > "$p8/stable-diffusion.cpp/build/bin/sd-server"  # no owner marker: the user's own build
 _custom_studio_roots() { printf '%s\n' "$p8"; }
-assert_not_lists "unowned nested build under a non-Studio root is left running" "$p8/stable-diffusion.cpp"
+assert_not_lists "unowned nested build under a non-Unsloth root is left running" "$p8/stable-diffusion.cpp"
 
 # 8b. But under a real Unsloth root, which the loop deletes wholesale, the unmarked nested build is
 #     stopped anyway: the current-root finder can select it without a marker, and deleting the tree

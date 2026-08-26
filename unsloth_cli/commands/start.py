@@ -255,8 +255,8 @@ _REASONING_OPTION = typer.Option(
     rich_help_panel = _PANEL_SERVER,
     help = (
         "llama-server reasoning mode for an auto-started coding-agent server. "
-        "Defaults to off so tool calls stay in the structured tool channel; use "
-        "'auto' or 'on' to opt back into model reasoning."
+        "Defaults to auto so the model's chat template decides; use 'on' or 'off' "
+        "to override it."
     ),
 )
 _REASONING_EFFORT_OPTION = typer.Option(
@@ -1158,8 +1158,8 @@ def _start_studio_server(
     child_env = os.environ.copy()
     # Current llama-server versions read this documented env equivalent of --reasoning.
     # Older managed versions ignore an unknown env variable instead of failing startup on
-    # an unknown passthrough CLI flag. An omitted start option still defaults to off.
-    child_env["LLAMA_ARG_REASONING"] = server.reasoning or "off"
+    # an unknown passthrough CLI flag. An omitted start option follows the model template.
+    child_env["LLAMA_ARG_REASONING"] = server.reasoning or "auto"
     # Always written, like the line above: an inherited value would otherwise pin
     # a level the omitted flag promises to leave alone. 'default' is llama.cpp's
     # own sentinel for "keep the chat template's level".

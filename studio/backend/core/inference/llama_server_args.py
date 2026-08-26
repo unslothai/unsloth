@@ -608,6 +608,9 @@ _SPEC_DRAFT_CACHE_V_FLAGS: frozenset[str] = frozenset(
 )
 _SPEC_DRAFT_CACHE_FLAGS: frozenset[str] = _SPEC_DRAFT_CACHE_K_FLAGS | _SPEC_DRAFT_CACHE_V_FLAGS
 _FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
+# The fitter's per-device margin. Never stripped (llama.cpp is last-wins), so a
+# pass-through value is what the child really keeps free; see fit_target_margin_in.
+_FIT_TARGET_FLAGS: frozenset[str] = frozenset({"-fitt", "--fit-target"})
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
@@ -864,6 +867,93 @@ def fit_is_effectively_on(
     if raw_value is None:
         return True
     return str(raw_value).strip().lower() not in _ENV_FALSE_VALUES
+
+
+def fit_target_margin_in(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[float]:
+    """The per-device margin an effective ``--fit-target`` asks the fitter to keep.
+
+    ``-fitt/--fit-target`` takes a list of MiB values, one per device, and a
+    single value is broadcast across all of them (common/arg.cpp; default 1024,
+    ``fit_params_target`` in common/common.h). The fitter refuses
+    to allocate into that margin and spills the rest to host RAM instead
+    (``targets.push_back(dmds_full[id].free - margins[id])``, common/fit.cpp), so
+    a load-mode fit that credits VRAM has to price it.
+
+    Returns the LARGEST value in the list, because the fit charges one margin to
+    every device it credits and understating would claim a fit that is not there.
+    ``None`` when nothing readable is set, which leaves the caller on llama.cpp's
+    own default rather than on a guess. Last-wins over argv, and the env twin only
+    when argv sets nothing, the same precedence ``fit_is_effectively_on`` uses.
+    """
+    raw_value = _last_flag_value(args, _FIT_TARGET_FLAGS)
+    if raw_value is None and env:
+        raw_value = env.get("LLAMA_ARG_FIT_TARGET")
+    if raw_value is None:
+        return None
+    values: list[float] = []
+    # Upstream splits on both "," and "/" (common/arg.cpp), so "4096/4096" is a
+    # well-formed two-device margin; reading it as one token would wrongly abstain.
+    for part in str(raw_value).replace("/", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            values.append(float(part))
+        except ValueError:
+            # Upstream rejects the whole list, so abstain rather than price part of it.
+            return None
+    return max(values) if values else None
+
+
+def split_policy_starves_devices(
+    args: Optional[Iterable[str]],
+    n_credited: int,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """True when the effective split leaves fewer devices holding weights than ``n_credited``.
+
+    ``--split-mode`` and ``--tensor-split`` are pass-through under auto-select
+    (``_SPLIT_SHADOWING_FLAGS`` is stripped only when the Tensor Parallelism toggle
+    owns the split), so both reach the child appended after Unsloth's own placement
+    flags. Either can quietly shrink the pool a pooled VRAM credit was priced for:
+
+    * ``--split-mode none`` is ``LLAMA_SPLIT_MODE_NONE`` (common/arg.cpp), which
+      puts the whole model on ``--main-gpu`` alone. ``row``/``layer``/``tensor``
+      all keep every device, so only ``none`` starves.
+    * ``--tensor-split`` is a per-device proportion list, and upstream zero-fills
+      every device past the end of the list (common/arg.cpp), so a short list
+      starves the tail just as an explicit ``0`` starves its own device.
+
+    Value-aware on purpose: a restatement that keeps all devices is not an
+    override, and voiding on it would abstain from a fit that is really there.
+    """
+    if n_credited <= 1:
+        return False
+    mode = _last_flag_value(args, _SPLIT_MODE_FLAGS)
+    if mode is None and env:
+        mode = env.get("LLAMA_ARG_SPLIT_MODE")
+    if str(mode or "").strip().lower() == "none":
+        return True
+    raw_split = _last_flag_value(args, _TENSOR_SPLIT_FLAGS)
+    if raw_split is None and env:
+        raw_split = env.get("LLAMA_ARG_TENSOR_SPLIT")
+    if raw_split is None:
+        return False
+    holding = 0
+    # Upstream splits on both "," and "/" (common/arg.cpp).
+    for part in str(raw_split).replace("/", ",").split(",")[:n_credited]:
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            if float(part) > 0.0:
+                holding += 1
+        except ValueError:
+            # Upstream throws on this and the child never starts: nothing to misprice.
+            return False
+    return holding < n_credited
 
 
 def parse_cache_override_per_axis(
@@ -1433,6 +1523,58 @@ def scrub_denied_env(env: dict) -> list[str]:
     for name in removed:
         env.pop(name, None)
     return removed
+
+
+def extra_args_select_load_mode(extra_args: Optional[Iterable[str]]) -> bool:
+    """Whether the pass-through block already picks a loader mode itself.
+
+    The argv twin of ``memory_env_selects_load_mode``, and it answers for both
+    spellings: the ``--load-mode`` enum, and the flags it replaced
+    (``--no-mmap`` / ``--mmap`` / the direct-IO pair), which are what this launch
+    emits on a build predating the enum (``_LEGACY_LOAD_MODE_FLAGS``) and so are
+    what a user's own flag would collide with there.
+
+    Presence, not value: a fit-derived mode stands aside for any pick the user made
+    rather than trying to rank the two. Their tokens are appended after the managed
+    block and llama.cpp is last-wins, so theirs governs either way.
+    """
+    for raw in extra_args or ():
+        if _flag_name(str(raw)) in _LOAD_MODE_FLAGS | _LOAD_MODE_ALIAS_FLAGS:
+            return True
+    return False
+
+
+def memory_env_selects_load_mode(env: Optional[Mapping[str, str]]) -> bool:
+    """Whether the inherited environment already picks a loader mode.
+
+    llama.cpp applies the ``LLAMA_ARG_*`` twins BEFORE argv (common/arg.cpp runs
+    its environment loop and only then "handle command line arguments"), and both
+    assign the same ``params.load_mode``, so a managed ``--load-mode`` emitted here
+    beats an inherited choice without the user typing anything. A mode DERIVED from
+    a fit has to stand aside for that choice, the same way it stands aside for the
+    per-model pick; a hand-typed flag is argv and still wins by last-arg.
+
+    Per variable, matching what upstream really does with each value: a no-value
+    option (``--mlock``) runs its handler only for a truthy one (``opt.handler_void
+    && is_truthy(value)``), a negative alias (``LLAMA_ARG_NO_MMAP`` /
+    ``LLAMA_ARG_NO_DIO``) counts by PRESENCE whatever it says (``get_value_from_env``
+    forces "0" when it exists), and the rest assign a mode for any value they parse.
+    """
+    if not env:
+        return False
+    for name in MEMORY_ENV_VARS:
+        if name not in env:
+            continue
+        value = str(env.get(name) or "").strip()
+        if name == "LLAMA_ARG_MLOCK":
+            if value.lower() in _ENV_TRUE_VALUES:
+                return True
+            continue
+        if name in {"LLAMA_ARG_NO_MMAP", "LLAMA_ARG_NO_DIO"}:
+            return True
+        if value:
+            return True
+    return False
 
 
 def scrub_memory_env(env: dict) -> list[str]:

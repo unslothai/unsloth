@@ -20,7 +20,7 @@
  * ONE PASSWORD PER ARM when both arms are attached. Two separately booted Unsloth instances mint two
  * different bootstrap passwords, so reusing the first for the treatment is a 401 on the second
  * arm only, after the browser is up. `--password-b` defaults to `--password`, which is right
- * for the single-Studio case and wrong for this one.
+ * for the single-Unsloth case and wrong for this one.
  *
  * A run carrying this is a PROBE RUN and its payload is never scored: the probe forces layout on
  * every sample, and one of the things it forces is the very rendering it is asking about. See the

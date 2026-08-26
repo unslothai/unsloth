@@ -6824,3 +6824,37 @@ def test_a_speech_arch_is_the_same_answer_in_every_layer():
     assert models_route._SPEECH_GGUF_ARCHS is SPEECH_GGUF_ARCHS
     assert compat_archs is SPEECH_GGUF_ARCHS
     assert LlamaCppBackend._SPEECH_ARCHES is SPEECH_GGUF_ARCHS
+
+
+# Moved into catalog_classification, or no longer imported from utils.gguf_archs. Each was
+# importable from routes.models before, so each may be held by something outside this repo.
+MOVED_OUT_OF_ROUTES_MODELS = (
+    "SPEECH_GGUF_ARCHS",
+    "_H3_DENOISER_GGUF_PREFIXES",
+    "_LOADABLE_MEDIA_GGUF_TASKS",
+    "_MAX_TASK_CLASSIFY_GGUFS",
+    "_PLACEHOLDER_DIFFUSION_GGUF_ARCHS",
+    "_TASK_CLASSIFY_READ_SECONDS",
+    "_default_ref_offers_no_whole_quant",
+    "_gguf_family_buildable",
+    "_is_h3_bundle_gguf_hint",
+    "_video_family_buildable",
+    "is_speech_gguf_architecture",
+)
+
+
+@pytest.mark.parametrize("name", MOVED_OUT_OF_ROUTES_MODELS)
+def test_a_name_that_moved_out_of_routes_models_still_resolves_there(name):
+    """Extracting a helper must not retire the name it was reachable by.
+
+    Not style. ``llama_cpp._video_arch_is_pickable`` imports ``_video_family_buildable`` from
+    here inside a ``try`` returning True on any exception, so losing the name raised nothing:
+    the probe just started saying yes, promising the Video page GGUFs it will not offer.
+    """
+    assert hasattr(models_route, name)
+
+
+def test_the_video_page_probe_resolves_the_helper_it_imports():
+    """The exact import that broke, asserted at its own call site."""
+    from routes.models import _video_family_buildable
+    assert callable(_video_family_buildable)
