@@ -12,6 +12,7 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 from __future__ import annotations
 
 import ast
+import configparser
 import functools
 import glob
 import importlib
@@ -28,6 +29,11 @@ import tempfile
 import textwrap
 import urllib.request
 from pathlib import Path
+
+try:  # 3.11+. Only the hardening notice uses it, and it degrades to a regex without it.
+    import tomllib as _tomllib
+except ImportError:  # pragma: no cover - exercised on 3.9/3.10 interpreters
+    _tomllib = None
 
 _STUDIO_DIR = Path(__file__).resolve().parent
 _BACKEND_DIR = _STUDIO_DIR / "backend"
@@ -4647,6 +4653,8 @@ _PM_POLICY_ENV_VARS = (
     "UV_NO_BINARY_PACKAGE",
     "UV_REQUIRE_HASHES",
     "UV_EXCLUDE_NEWER",
+    "UV_ONLY_BINARY",
+    "UV_ONLY_BINARY_PACKAGE",
     "PIP_ONLY_BINARY",
     "PIP_NO_BINARY",
     "PIP_REQUIRE_HASHES",
@@ -4681,8 +4689,20 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
 
 # Settings whose presence means the host has deliberately hardened its package manager,
 # as opposed to merely configuring a mirror. Named in the notice so the operator can see
-# which of their controls the installer is about to set aside.
-_HARDENED_CONFIG_KEYS = ("require-hashes", "only-binary", "no-binary", "no-build")
+# which of their controls the installer is about to set aside. The `-package` and
+# `exclude-newer` spellings are here for the same reason UV_EXCLUDE_NEWER is in
+# _PM_POLICY_ENV_VARS: an upload cutoff is a reproducibility control, and relaxing one
+# silently is the thing this notice exists to stop.
+_HARDENED_CONFIG_KEYS = (
+    "require-hashes",
+    "only-binary",
+    "no-binary",
+    "no-binary-package",
+    "no-build",
+    "no-build-package",
+    "exclude-newer",
+    "exclude-newer-package",
+)
 
 
 def _config_value_is_on(value: str) -> bool:
@@ -4690,16 +4710,88 @@ def _config_value_is_on(value: str) -> bool:
     return value.strip().lower() not in ("", "0", "false", "no", "none", ":none:")
 
 
+def _toml_value_is_on(value: object) -> bool:
+    """The same test for an already-parsed TOML value.
+
+    `no-build = false` is an ordinary machine, and a list policy switched off is spelled
+    as the empty list, so neither may be reported as active hardening.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (list, tuple)):
+        return bool(value)
+    return _config_value_is_on(str(value))
+
+
+def _hardened_keys_in_toml(text: str, tables: "tuple[tuple[str, ...], ...]") -> "list[str]":
+    """Hardened keys switched ON inside the named tables of a TOML document.
+
+    `tables` is the path to each table to look in, so a uv.toml is read at its root and
+    under `[pip]`, and a pyproject under `[tool.uv]` / `[tool.uv.pip]`, without a stray
+    `no-build` in some unrelated tool's table counting as uv policy.
+
+    tomllib is 3.11+, and this module still runs on older interpreters, so the fallback
+    is a value-capturing regex. Both test the VALUE: reporting `no-build = false` would
+    put a security notice in front of a user who had switched the policy off.
+    """
+    found: list[str] = []
+    data = None
+    if _tomllib is not None:
+        try:
+            data = _tomllib.loads(text)
+        except Exception:
+            data = None
+    if data is not None:
+        for table in tables:
+            node: object = data
+            for part in table:
+                node = node.get(part) if isinstance(node, dict) else None
+                if node is None:
+                    break
+            if not isinstance(node, dict):
+                continue
+            for key in _HARDENED_CONFIG_KEYS:
+                if key in node and _toml_value_is_on(node[key]):
+                    found.append(key)
+        return found
+    for key in _HARDENED_CONFIG_KEYS:
+        # Line-anchored so a commented-out setting, or the same word inside a longer key,
+        # is not reported as active policy.
+        match = re.search(rf"^[ \t]*{re.escape(key)}[ \t]*=[ \t]*(.*)$", text, re.MULTILINE)
+        if match and _toml_value_is_on(match.group(1).strip().strip("\"'")):
+            found.append(key)
+    return found
+
+
+def _existing_files(candidates: "list[str]") -> "list[str]":
+    found = []
+    for path in candidates:
+        try:
+            if os.path.isfile(path):
+                found.append(path)
+        except OSError:
+            # A path this process cannot stat (permissions, a dead network mount) is
+            # simply not a config file we can report on.
+            continue
+    return found
+
+
 def _hardened_uv_config_paths() -> "list[str]":
     """The uv config files this host has, where a no-build / require-hashes could live.
 
-    System, user and invocation directory, which are the documented locations: uv reads
-    `~/.config/uv/uv.toml` on macOS AND Linux (not Application Support) and
+    System, user, invocation directory and the cwd pyproject, which is what uv actually
+    reads: `~/.config/uv/uv.toml` on macOS AND Linux (not Application Support) and
     `%APPDATA%\\uv\\uv.toml` on Windows, with `/etc/uv/uv.toml` and `%PROGRAMDATA%\\uv`
-    as the system-wide pair. The system one matters most here: a fleet operator hardening
-    every machine puts `no-build` there. uv also reads a pyproject [tool.uv] and a
-    workspace root above the cwd; those are left out deliberately -- this list drives a
-    NOTICE, and missing one costs a line of output, not a behaviour change.
+    as the system-wide pair. The system one matters most: a fleet operator hardening every
+    machine puts `no-build` there.
+
+    The cwd `pyproject.toml` is included because uv 0.12.1 (the pinned version) really
+    does read it -- measured, `[tool.uv.pip] require-hashes = true` there fails a
+    `uv pip install`, and `-v` logs "Found workspace configuration". A PARENT directory's
+    `pyproject.toml` or `uv.toml` is NOT read by `uv pip install`, and neither is a bare
+    `./uv.toml`: the same probe logs only "Searching for user configuration" and the
+    policy does not apply. `./uv.toml` is kept in the list anyway, since it costs a line
+    of output and other uv subcommands this module drives may yet read it.
     """
     candidates = []
     explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
@@ -4718,19 +4810,76 @@ def _hardened_uv_config_paths() -> "list[str]":
         candidates.append("/etc/uv/uv.toml")
     try:
         # A deleted working directory raises here rather than returning anything.
-        candidates.append(os.path.join(os.getcwd(), "uv.toml"))
+        cwd = os.getcwd()
     except OSError:
-        pass
+        cwd = ""
+    if cwd:
+        candidates.append(os.path.join(cwd, "uv.toml"))
+        candidates.append(os.path.join(cwd, "pyproject.toml"))
+    return _existing_files(candidates)
+
+
+def _hardened_pip_config_paths() -> "list[str]":
+    """pip's documented configuration files, for when `python -m pip` cannot be run.
+
+    install.sh creates the venv with uv, which does not seed pip, so at the moment this
+    notice runs `python -m pip config list` returns nonzero and a require-hashes living
+    only in pip.conf is invisible -- while the pip FALLBACK later in the install reads it
+    perfectly well. Locations are pip's own (global, user, site, then PIP_CONFIG_FILE);
+    the subprocess answer is still preferred when it works, because pip merges them in
+    its own documented order and reports the winner.
+    """
+    name = "pip.ini" if IS_WINDOWS else "pip.conf"
+    explicit = os.environ.get("PIP_CONFIG_FILE", "").strip()
+    if explicit and os.path.normcase(explicit) == os.path.normcase(os.devnull):
+        # Documented: PIP_CONFIG_FILE=os.devnull disables the loading of ALL config files.
+        return []
+    candidates = []
+    if IS_WINDOWS:
+        for variable in ("PROGRAMDATA", "APPDATA"):
+            base = os.environ.get(variable, "")
+            if base:
+                candidates.append(os.path.join(base, "pip", name))
+    else:
+        candidates.append(os.path.join("/etc", "xdg", "pip", name))
+        candidates.append(os.path.join("/etc", name))
+        home = os.path.expanduser("~")
+        xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+        candidates.append(os.path.join(xdg, "pip", name))
+        if IS_MACOS:
+            candidates.append(os.path.join(home, "Library", "Application Support", "pip", name))
+        candidates.append(os.path.join(home, ".pip", name))
+    site = os.environ.get("VIRTUAL_ENV", "") or sys.prefix
+    if site:
+        candidates.append(os.path.join(site, name))
+    if explicit:
+        candidates.append(explicit)
+    return _existing_files(candidates)
+
+
+def _hardened_keys_in_ini(text: str) -> "list[str]":
+    """Hardened keys switched ON in a pip.conf, in any of its sections."""
+    parser = configparser.RawConfigParser()
+    try:
+        parser.read_string(text)
+    except configparser.Error:
+        return []
     found = []
-    for path in candidates:
-        try:
-            if os.path.isfile(path):
-                found.append(path)
-        except OSError:
-            # A path this process cannot stat (permissions, a dead network mount) is
-            # simply not a config file we can report on.
-            continue
+    for section in parser.sections():
+        for key in _HARDENED_CONFIG_KEYS:
+            if parser.has_option(section, key):
+                value = parser.get(section, key, fallback = "")
+                if _config_value_is_on(value):
+                    found.append(key)
     return found
+
+
+def _read_text(path: str) -> "str | None":
+    try:
+        with open(path, encoding = "utf-8", errors = "replace") as handle:
+            return handle.read()
+    except OSError:
+        return None
 
 
 @functools.lru_cache(maxsize = 1)
@@ -4768,17 +4917,26 @@ def _hardened_pm_policy_names() -> "tuple[str, ...]":
             option = name.strip().rpartition(".")[2]
             if option in _HARDENED_CONFIG_KEYS and _config_value_is_on(raw.strip().strip("'\"")):
                 found.append(f"pip.conf {option}")
-    for path in _hardened_uv_config_paths():
-        try:
-            with open(path, encoding = "utf-8", errors = "replace") as handle:
-                text = handle.read()
-        except OSError:
-            continue
-        for key in _HARDENED_CONFIG_KEYS:
-            # Line-anchored so a commented-out setting, or the same word inside a longer
-            # key, is not reported as active policy.
-            if re.search(rf"^\s*{re.escape(key)}\s*=", text, re.MULTILINE):
+    else:
+        # No usable pip, so read pip's files directly rather than report an ordinary
+        # machine. Only in this branch: when pip answered, it already merged them.
+        for path in _hardened_pip_config_paths():
+            text = _read_text(path)
+            if text is None:
+                continue
+            for key in _hardened_keys_in_ini(text):
                 found.append(f"{os.path.basename(path)} {key}")
+    for path in _hardened_uv_config_paths():
+        text = _read_text(path)
+        if text is None:
+            continue
+        tables = (
+            (("tool", "uv"), ("tool", "uv", "pip"))
+            if os.path.basename(path) == "pyproject.toml"
+            else ((), ("pip",))
+        )
+        for key in _hardened_keys_in_toml(text, tables):
+            found.append(f"{os.path.basename(path)} {key}")
     return tuple(dict.fromkeys(found))
 
 
@@ -4794,8 +4952,10 @@ def _announce_pm_policy() -> None:
     if _respect_pm_policy():
         _note(
             f"{_POLICY_OPT_OUT_ENV} is set: keeping {listed} in force for Unsloth's own "
-            "dependency installs. Steps whose requirements are unhashed, or have no "
-            "wheel at any version, will fail rather than be installed.",
+            "dependency installs, which will now fail where your policy forbids them "
+            "rather than be relaxed. pip and uv apply it exactly as they would for you, "
+            "including where they choose not to: pip does not apply only-binary to an "
+            "explicitly supplied source archive.",
             _cyan,
         )
         return
@@ -5106,13 +5266,15 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
 
     Under UNSLOTH_RESPECT_PM_POLICY the pinned branch still scrubs the INDEX variables --
     the pin is itself a provenance control and the opt-out is not a request to weaken it
-    -- but the policy variables survive and pip.conf is left readable, so require-hashes,
-    no-build and only-binary apply to the pinned installs too. The residual cost is that
-    an `extra-index-url` in pip.conf can still add a candidate source to the pip fallback;
-    that is the price of honouring the same file's security settings. UV_NO_CONFIG stays
-    on either way because uv has no surgical equivalent, and the only pinned installs are
-    wheel-only torch repairs, which a uv.toml no-build was never going to block; the
-    UV_REQUIRE_HASHES / UV_NO_BUILD spellings that CAN reach them are preserved.
+    -- but the policy variables survive, pip.conf is left readable, and uv's config
+    discovery is left on, so require-hashes, no-build and only-binary apply to the pinned
+    installs too. Config discovery has to stay: measured on the pinned uv 0.12.1, a user
+    `~/.config/uv/uv.toml` with `[pip] require-hashes = true` fails a pinned install and
+    UV_NO_CONFIG=1 makes the same install succeed, so keeping it would discard exactly the
+    control the opt-out promises to honour. The residual cost is symmetric on both tools:
+    an `extra-index-url` in pip.conf, or an `[[index]]` in that uv.toml, can still add a
+    candidate source under the opt-out. That is the price of reading the same files'
+    security settings, and it is why the default path does the opposite.
     """
     if not _is_pinned_index_cmd(cmd):
         relaxed = _relaxed_pip_policy_env(cmd)
@@ -5124,9 +5286,9 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     env = os.environ.copy()
     for name in _UV_INDEX_ENV_VARS:
         env.pop(name, None)
-    env["UV_NO_CONFIG"] = "1"
     if _respect_pm_policy():
         return env
+    env["UV_NO_CONFIG"] = "1"
     for name in _PM_POLICY_ENV_VARS:
         env.pop(name, None)
     env["PIP_CONFIG_FILE"] = os.devnull
@@ -5235,7 +5397,22 @@ def pip_install(
                 if VERBOSE and result.stdout:
                     _safe_print(_redact_install_output(result.stdout))
                 return
-            _safe_print(_red(f"   uv failed, falling back to pip..."))
+            if _respect_pm_policy():
+                # The fallback exists to rescue a uv failure, but pip reads none of uv's
+                # policy: under the opt-out it would retry the very install uv refused
+                # and succeed, which is the bypass the flag was set to prevent. Stop
+                # instead, on the same terms as any other fatal step.
+                if result.stdout:
+                    _safe_print(_redact_install_output(result.stdout))
+                _safe_print(
+                    _red(
+                        f"   uv failed and {_POLICY_OPT_OUT_ENV} is set, so the pip "
+                        "fallback is not used: pip does not read uv's policy and would "
+                        "install what uv refused. Unset it to allow the fallback."
+                    )
+                )
+                sys.exit(result.returncode)
+            _safe_print(_red("   uv failed, falling back to pip..."))
             if result.stdout:
                 _safe_print(_redact_install_output(result.stdout))
 
