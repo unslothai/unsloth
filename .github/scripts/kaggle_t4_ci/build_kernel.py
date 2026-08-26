@@ -1066,6 +1066,9 @@ pending_lock = threading.Lock()
 # with room and both decide to use it.
 card_load = {{i: 0.0 for i in range(N_GPU)}}
 card_count = {{i: 0 for i in range(N_GPU)}}
+# Concurrent payloads that hold no card index. A list rather than an int so the
+# nested lane functions can mutate it without a `global` in generated source.
+unpinned_count = [0]
 
 
 def _admit(gpu_index, name):
@@ -1078,6 +1081,12 @@ def _admit(gpu_index, name):
     """
     want = VRAM_GB.get(name, 1.0)
     if card_count[gpu_index] >= MAX_LEGS_PER_CARD:
+        return False
+    # An unpinned payload contends for the same 4 vCPUs without holding a card,
+    # so the total bound has to see it here as well. Enforcing it only in
+    # _admit_all would let the card queue fill up beside it and put N_GPU *
+    # MAX_LEGS_PER_CARD + 1 installs on four cores.
+    if sum(card_count.values()) + unpinned_count[0] >= N_GPU * MAX_LEGS_PER_CARD:
         return False
     if card_count[gpu_index] and card_load[gpu_index] + want > CARD_VRAM_BUDGET_GB:
         return False
@@ -1100,8 +1109,8 @@ def _admit_all(name):
     for card 1, which is capacity nothing is using and which can deadlock
     against a big leg waiting for card 0.
 
-    VRAM is charged to EVERY card and the COUNT to exactly one, and the split is
-    not a nicety. `card_load` tracks memory, and an all-card leg genuinely holds
+    VRAM is charged to EVERY card and the CONTENTION to a global counter, and
+    both halves of that are measurements rather than preferences. `card_load` tracks memory, and an all-card leg genuinely holds
     a CUDA context on each card -- measured at 1.2 GB on
     unsloth-probe-multigpu-r2-a280e2, which is why its declaration is 1.2 rather
     than the 0.7 the other Qwen legs carry. `card_count` tracks something else
@@ -1110,38 +1119,53 @@ def _admit_all(name):
     for memory". An all-card leg is ONE process. Charging it a slot on both
     cards counts one process twice.
 
-    That is not a theoretical tidiness. Charged on both cards it takes one of
-    the two slots on each, and the driver simulation then shows **no card ever
-    holding two legs at once** -- canary beside frontier, Default beside
-    control, all of it gone. The co-tenancy is most of why a fifth and sixth leg
-    are affordable, so double-counting one process would have paid for this leg
-    by cancelling the feature that makes it free.
+    Charging the count PER CARD is wrong in both available ways, and each was
+    caught by a different instrument.
 
-    Returns the card the count was charged to, so the release puts it back
-    where it came from.
+    Charged on EVERY card it takes one of the two slots on each, and the driver
+    simulation showed no card ever holding two legs at once -- the co-tenancy
+    that makes a fifth and sixth leg affordable, gone.
+
+    Charged on ONE card it decides a placement it has nothing to do with, and
+    that cost 188.7s of wall clock on hardware. The A/B of
+    unsloth-probe-ab-baseline-5leg-20db9c against
+    unsloth-probe-ab-with-multigpu-6169ca, same commit and same day:
+
+      A  1936.4s   gpu0 10.0s idle    gpu1 3.0s idle
+      B  2125.1s   gpu0 622.6s idle   gpu1 0.0s idle
+
+    In B, Studio wanted a card at t=653. gpu0 held canary plus this leg's count
+    -- two, the cap -- so it was refused and took gpu1, where the 1707s vision
+    leg had ~1080s left. gpu1 then carried BOTH of the two longest payloads
+    while gpu0 idled for over ten minutes. The leg itself ran 28.2 -> 668.1
+    fully overlapped and contributed nothing directly.
+
+    So the contention goes on a GLOBAL counter. MAX_LEGS_PER_CARD is a proxy
+    for 4 vCPUs, and its own comment says so -- "the legs contend for CORES long
+    before they contend for memory". An unpinned process contends for those
+    cores without occupying a card, and the total concurrency bound
+    (N_GPU * MAX_LEGS_PER_CARD) is what it should count against. VRAM still goes
+    on every card, because the CUDA context really is on every card.
     """
     want = VRAM_GB.get(name, 1.0)
     with pending_lock:
         for g in range(N_GPU):
             if card_count[g] and card_load[g] + want > CARD_VRAM_BUDGET_GB:
-                return None
-        # The count goes on the emptiest card, so the leg displaces as little
-        # queued work as it can.
-        counted = min(range(N_GPU), key = lambda g: card_count[g])
-        if card_count[counted] >= MAX_LEGS_PER_CARD:
-            return None
+                return False
+        if sum(card_count.values()) + unpinned_count[0] >= N_GPU * MAX_LEGS_PER_CARD:
+            return False
         for g in range(N_GPU):
             card_load[g] += want
-        card_count[counted] += 1
-    return counted
+        unpinned_count[0] += 1
+    return True
 
 
-def _release_all(name, counted):
+def _release_all(name):
     want = VRAM_GB.get(name, 1.0)
     with pending_lock:
         for g in range(N_GPU):
             card_load[g] -= want
-        card_count[counted] -= 1
+        unpinned_count[0] -= 1
 
 
 def worker(gpu_index, seed):
@@ -1295,13 +1319,10 @@ print("{DRIVER_SENTINEL}_SEEDS " + json.dumps(
 all_card_threads = []
 for _idx, _name in _all_card_queue:
     def _all_card_lane(idx=_idx, name=_name):
-        counted = None
-        while counted is None:
-            counted = _admit_all(name)
-            if counted is None:
-                # Every card is full. Something is running or the queue would be
-                # empty, so wait for a release rather than spin.
-                time.sleep(1.0)
+        while not _admit_all(name):
+            # Everything is full. Something is running or the queue would be
+            # empty, so wait for a release rather than spin.
+            time.sleep(1.0)
         try:
             print("{DRIVER_SENTINEL}_ALL_CARD " + json.dumps(
                 {{"payload": name, "gpus": N_GPU}}), flush=True)
@@ -1310,7 +1331,7 @@ for _idx, _name in _all_card_queue:
             # measure the single-card branch under a multi-GPU name.
             run_one(name, None, idx)
         finally:
-            _release_all(name, counted)
+            _release_all(name)
     _t = threading.Thread(target = _all_card_lane, daemon = False)
     _t.start()
     all_card_threads.append(_t)

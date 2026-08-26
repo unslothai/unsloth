@@ -319,42 +319,51 @@ def test_the_reservation_is_all_or_nothing():
     source = _driver_source()
     body = source.split("def _admit_all(name):")[1].split("def _release_all")[0]
     check, commit = body.split("for g in range(N_GPU):")[1:3]
-    # Every rejection happens BEFORE any card is charged. `None` rather than
-    # False because the admission now returns which card carries the count.
-    assert "return None" in check
-    assert "return None" not in commit
+    # Every rejection happens BEFORE any card is charged.
+    assert "return False" in check
+    assert "return False" not in commit
     assert "card_load[g] += want" in commit
     assert "card_load[g] += want" not in check
 
 
-def test_the_count_is_charged_to_ONE_card_and_the_vram_to_every_card():
-    """The two ledgers track different things and the split is load-bearing.
+def test_the_contention_is_global_and_the_vram_is_per_card():
+    """The two ledgers track different things, and charging the wrong one to a
+    card has now cost twice.
 
-    `card_load` is memory, and an all-card leg really does hold a CUDA context
-    on each card -- 1.2 GB measured on unsloth-probe-multigpu-r2-a280e2.
+    `card_load` is memory. An all-card leg really does hold a CUDA context on
+    each card -- 1.2 GB measured on unsloth-probe-multigpu-r2-a280e2 -- so it is
+    charged to every card.
+
     `card_count` is a proxy for 4-vCPU CONTENTION; `MAX_LEGS_PER_CARD`'s own
     comment says the legs "contend for CORES long before they contend for
-    memory". An all-card leg is ONE process, so charging it a slot on both
-    cards counts one process twice.
+    memory". An unpinned process contends for those cores without occupying a
+    card, so it counts against the TOTAL bound and against no card in
+    particular.
 
-    The first version did exactly that, and the driver simulation then showed
-    NO card holding two legs at once -- the co-tenancy that makes a fifth and
-    sixth leg affordable, gone. It would have paid for this leg by cancelling
-    the feature that makes it free.
+    Charged per card it was wrong in both available ways. On every card, the
+    driver simulation showed no card holding two legs at once. On ONE card, it
+    decided a placement it had nothing to do with and cost 188.7s on hardware:
+    in unsloth-probe-ab-with-multigpu-6169ca Studio was refused gpu0 (canary
+    plus this leg's count = the cap) and took gpu1, where the 1707s vision leg
+    had ~1080s left, so gpu1 carried both long payloads and gpu0 idled 622.6s.
+    The same kernel without the leg (unsloth-probe-ab-baseline-5leg-20db9c) ran
+    1936.4s with 10.0s and 3.0s of idle.
     """
     source = _driver_source()
     body = source.split("def _admit_all(name):")[1].split("def _release_all")[0]
-    commit = body.split("counted = min(")[1]
-    assert "for g in range(N_GPU):\n            card_load[g] += want" in commit
-    assert "card_count[counted] += 1" in commit
-    assert "card_count[g] += 1" not in commit, (
-        "the count is charged per card, so one process is counted twice and "
-        "the queue loses a slot on every card"
+    assert "unpinned_count[0] += 1" in body
+    assert "card_count[" not in body.split("card_load[g] += want")[1], (
+        "the all-card leg is charging a card slot again, which is what put the "
+        "two longest payloads on one card and idled the other for 622.6s"
     )
-    # And the release has to put it back on the SAME card, or the ledger drifts
-    # by one slot per all-card leg and a card silently stops taking work.
-    release = source.split("def _release_all(name, counted):")[1].split("\n\n")[0]
-    assert "card_count[counted] -= 1" in release
+    # The global bound has to be enforced on BOTH paths. In _admit_all only, the
+    # card queue fills up beside the unpinned leg and puts one more install than
+    # the bound allows onto four cores.
+    pinned = source.split("def _admit(gpu_index, name):")[1].split("def _release")[0]
+    for where, text in (("_admit", pinned), ("_admit_all", body)):
+        assert "unpinned_count[0] >= N_GPU * MAX_LEGS_PER_CARD" in text, where
+    release = source.split("def _release_all(name):")[1].split("\n\n")[0]
+    assert "unpinned_count[0] -= 1" in release
 
 
 def test_the_all_card_lane_is_joined_with_the_card_workers():

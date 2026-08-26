@@ -416,21 +416,16 @@ def _drive_packed(
 # Renamed from ALL_LEGS when the Default leg made the kernel five: a name that
 # counts is a name that goes stale silently, and two assertions below had
 # already hardcoded the 4 to match it.
-# The legs that enter the CARD QUEUE, which is what every scheduling rule in
-# this file is about. An all-card leg is deliberately not one of them: ORDER
-# filters it out and it gets its own lane, so feeding it to a rule about who
-# shares a card asks that rule a question it was not written to answer.
+# Every wired leg, INCLUDING the all-card one, because the scheduling rules
+# below have to hold for the set that actually ships.
 #
-# It is not merely irrelevant, it actively misleads. With `multi_gpu` included
-# the co-tenancy rule below went red, and the cause was two things at once: the
-# all-card leg really does take one of the four slots, AND the free slot then
-# landed on card 1, whose seed worker sleeps out a 5s start stagger that dwarfs
-# the 0.4s stub durations. On hardware the legs run 400-700s and that stagger is
-# noise. Diagnosing it as "co-tenancy is broken" would have been wrong.
-#
-# What the all-card leg genuinely costs is asserted separately, below.
-ALL_LEGS = [n for n in KERNELS[0] if not LEGS[n].all_cards]
-ALL_KERNEL_LEGS = list(KERNELS[0])
+# This was narrowed to exclude all-card legs for one commit, on the reasoning
+# that a leg outside the card queue cannot answer a question about who shares a
+# card. The reasoning was half right and the narrowing was hiding a bug: the
+# all-card leg was charging a card_count slot, so it really did cost the queue
+# a slot on a card, and the co-tenancy rule really was failing. The count is
+# global now and the rule holds with the leg present, so the wider set is back.
+ALL_LEGS = list(KERNELS[0])
 
 
 def test_losing_tmp_drops_the_kernel_back_to_one_leg_per_card(tmp_path):
@@ -527,7 +522,20 @@ def test_no_card_is_ever_asked_to_hold_more_than_it_has(tmp_path):
     # and the split is 2/2; under the sub-second stubs here the first card
     # legitimately drains most of the queue before the second clears its
     # stagger. Pinning 2/2 would be pinning the stub's timing.
-    assert set(p["cuda"] for p in stub.papermill) == {"0", "1"}, stub.papermill
+    # Both cards pinned, across the payloads that HAVE a card index. An
+    # all-card leg is unpinned by design -- that is the whole reason it exists,
+    # since unsloth binds its DEVICE_COUNT > 1 helpers on visibility -- so it
+    # inherits the ambient CUDA_VISIBLE_DEVICES exactly as the Studio lanes do,
+    # and asserting it against a card index tests the box this ran on.
+    pinned = [
+        p for p in stub.papermill
+        if p["notebook"] not in {f"t4_{LEGS[n].name}.ipynb" for n in ALL_LEGS if LEGS[n].all_cards}
+    ]
+    assert set(p["cuda"] for p in pinned) == {"0", "1"}, stub.papermill
+    assert len(pinned) < len(stub.papermill), (
+        "no unpinned payload ran, so the exclusion above is filtering nothing "
+        "and this rule is not being asked the question it was narrowed for"
+    )
 
 
 def test_gptoss_starts_in_the_second_wave_so_the_prefetch_has_a_window(tmp_path):
@@ -668,10 +676,21 @@ def test_the_studio_install_never_takes_a_card_and_the_legs_never_wait_for_it(
     # many legs each card takes depends on leg duration against the 5s venv
     # stagger, and under sub-second stubs the first card legitimately drains
     # most of the queue.
-    leg_cards = [c["cuda"] for n, c in calls.items() if n.startswith("t4_")]
-    assert len(leg_cards) == len(ALL_LEGS), calls
-    assert set(leg_cards) <= {"0", "1"}, leg_cards
+    # "every leg" here means every leg that HAS a card. An all-card leg is
+    # unpinned by design and inherits the ambient CUDA_VISIBLE_DEVICES, like the
+    # Studio lanes above; asserting it against a card index tests the box the
+    # suite ran on rather than the scheduler.
+    unpinned = {f"t4_{LEGS[n].name}.ipynb" for n in ALL_LEGS if LEGS[n].all_cards}
+    leg_cards = [
+        c["cuda"] for n, c in calls.items() if n.startswith("t4_") and n not in unpinned
+    ]
+    assert len(leg_cards) == len(ALL_LEGS) - len(unpinned), calls
     assert set(leg_cards) == {"0", "1"}, leg_cards
+    # Every all-card leg really did run, and really did run unpinned. Without
+    # this the exclusion above could quietly cover a leg that never started.
+    for notebook in unpinned:
+        assert notebook in calls, sorted(calls)
+        assert calls[notebook]["cuda"] == AMBIENT_CUDA, calls[notebook]
     # Two legs on a card is legal now (see the VRAM budget); what must hold is
     # that the summed appetite never exceeds what the card has.
     for card, peak in driven["stub"].peak_card_gb.items():
