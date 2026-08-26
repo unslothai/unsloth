@@ -129,6 +129,7 @@ def _wsl_networking_mode() -> Optional[str]:
             capture_output = True,
             check = False,
             text = True,
+            encoding = "utf-8",
             timeout = 1,
         )
     except (OSError, subprocess.SubprocessError):

@@ -283,6 +283,10 @@ class ScanFolderInfo(BaseModel):
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+    status: str = Field(
+        default = "ok",
+        description = "Last scan result: ok, permission_denied, missing, or unreadable",
+    )
 
 
 class BrowseEntry(BaseModel):

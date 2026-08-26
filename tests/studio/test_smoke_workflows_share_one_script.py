@@ -23,7 +23,7 @@ REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / ".github" / "scripts" / "studio_smoke" / "multi_turn_chat.py"
 LEGS = (
     "studio-inference-smoke.yml",
-    "studio-mac-inference-smoke.yml",
+    "studio-mac-ui-smoke.yml",
     "studio-windows-inference-smoke.yml",
 )
 

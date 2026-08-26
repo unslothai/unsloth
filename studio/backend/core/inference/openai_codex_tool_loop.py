@@ -47,6 +47,7 @@ class CodexToolPolicy:
     confirm_calls: bool
     bypass_permissions: bool
     rag_scope: dict[str, Any] | None
+    nudge_tool_calls: bool | None = None
 
 
 class CodexTransport:
@@ -117,6 +118,7 @@ def stream_codex_with_studio_tools(
             bypass_permissions = policy.bypass_permissions,
             rag_scope = policy.rag_scope,
             auto_heal = False,
+            nudge_tool_calls = policy.nudge_tool_calls,
         ),
         cancel_event = cancel_event,
     )
