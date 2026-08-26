@@ -10,6 +10,7 @@ Mistral, Granite and Gemma-4 templates.
 """
 
 import ast
+import collections
 import datetime
 import json
 from pathlib import Path
@@ -3082,11 +3083,16 @@ _CONTROLLER_MODULES = ("llama_cpp.py", "safetensors_agentic.py")
 # the catalog its own prompt advertised, which is a different bug, so closing it needs the
 # transport to say whether it templated the prompt. That is a product change and belongs in
 # its own PR; this entry keeps the gap visible and makes a FOURTH loop fail below.
-# Keyed by ``(path under studio/backend, enclosing function)`` rather than by filename: a
-# SECOND controller in this module, or a same-named module elsewhere, must not inherit the
-# exemption this one earned.
+# Keyed by ``(path under studio/backend, enclosing function, how many sites it holds)`` rather
+# than by filename: a SECOND controller in this function or this module, or a same-named module
+# elsewhere, must not inherit the exemption this one earned.
+#
+# The COUNT rather than a line number, deliberately. A line number moves when anything above it
+# does, so it would fail on an unrelated edit -- the fragility this file exists to remove -- while
+# the count moves only when a controller is added or removed, which is exactly the event that has
+# to force a decision.
 _CONTROLLER_SITES_OUT_OF_SCOPE = frozenset(
-    {("core/inference/studio_tool_loop.py", "stream_with_studio_tools")}
+    {("core/inference/studio_tool_loop.py", "stream_with_studio_tools", 1)}
 )
 
 # The two loops the guard above resolves, as paths for the same reason.
@@ -3599,10 +3605,11 @@ def test_every_tool_loop_controller_is_classified():
 
     Per SITE, not per file. The guard above resolves every site in the two local modules;
     `_CONTROLLER_SITES_OUT_OF_SCOPE` names the external one and says why. A second controller
-    added to that same module is a different flow and has to be classified on its own (#7066).
+    added to that same module, or to that same function, is a different flow and has to be
+    classified on its own (#7066).
     """
     backend = _REPO_ROOT / "studio" / "backend"
-    found = set()
+    counts: dict[tuple[str, str], int] = collections.Counter()
     for path in sorted(backend.rglob("*.py")):
         if "tests" in path.parts:
             continue
@@ -3617,7 +3624,8 @@ def test_every_tool_loop_controller_is_classified():
                 ),
                 "<module>",
             )
-            found.add((relative, enclosing))
+            counts[(relative, enclosing)] += 1
+    found = {(path, enclosing, total) for (path, enclosing), total in counts.items()}
     assert found, "nothing builds a ToolLoopController any more"
     covered = {site for site in found if site[0] in _CONTROLLER_MODULE_PATHS}
     unclassified = found - covered - _CONTROLLER_SITES_OUT_OF_SCOPE
