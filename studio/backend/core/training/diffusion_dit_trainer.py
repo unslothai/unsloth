@@ -584,7 +584,11 @@ def _resolve_base_precision(cfg, spec, device) -> str:
         try:
             import torch
 
-            free_gb = torch.cuda.mem_get_info()[0] / 1e9
+            # Windows ROCm over-reports free VRAM (#8403), which would pick a
+            # dense precision the card cannot actually hold.
+            from utils.hardware import trusted_mem_get_info
+
+            free_gb = trusted_mem_get_info()[0] / 1e9
             capability = torch.cuda.get_device_capability()
             has_fp8 = hasattr(torch, "float8_e4m3fn")
         except Exception:  # noqa: BLE001 -- probe failure -> the safe mode
@@ -1498,7 +1502,7 @@ def _assert_gated_access(base_model: str, hf_token: Optional[str]) -> None:
     if name in _GATED_TRAIN_REPOS and not (hf_token and str(hf_token).strip()):
         raise ValueError(
             f"'{base_model}' is a gated Hugging Face repo. Accept its license on the Hub "
-            f"and add your HF token in Studio settings before training from it."
+            f"and add your HF token in Unsloth settings before training from it."
         )
 
 

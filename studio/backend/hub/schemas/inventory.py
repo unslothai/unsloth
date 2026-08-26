@@ -24,6 +24,14 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    download_remaining_bytes: Optional[int] = Field(
+        None,
+        description = (
+            "Bytes a resume still has to fetch: the total minus what is already on disk "
+            "and reusable. Set only on a partial variant; null when not partial or when "
+            "the plan cannot be resolved."
+        ),
+    )
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
@@ -45,8 +53,15 @@ class GgufVariantDetail(BaseModel):
         None,
         description = (
             'Transport recorded for the partial state ("http" or '
-            '"xet"), or null if not partial / unknown. Frontend uses '
-            "this to pick Resume (http) vs Redownload (xet) labels."
+            '"xet"), or null if not partial / unknown.'
+        ),
+    )
+    partial_resumable: bool = Field(
+        False,
+        description = (
+            "Whether THIS partial can be continued byte for byte, which is what picks "
+            "Resume over Continue. False for a Xet partial, and for an HTTP one no "
+            "installed writer can reopen."
         ),
     )
     dependency_key: Optional[str] = Field(
@@ -177,6 +192,10 @@ class LocalModelInfo(BaseModel):
             '"xet"), or null if not partial / unknown.'
         ),
     )
+    partial_resumable: bool = Field(
+        False,
+        description = "Whether THIS partial can be continued byte for byte.",
+    )
 
 
 class LocalModelListResponse(BaseModel):
@@ -210,6 +229,7 @@ class CachedRepoBase(BaseModel):
     last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
+    partial_resumable: bool = False
     inventory_id: Optional[str] = None
     load_id: Optional[str] = None
     model_format: ModelFormat = "unknown"
@@ -249,6 +269,11 @@ class CachedModelRepo(CachedRepoBase):
     # never a pick on ANY page. It still gets a row, because these run to tens of GB and the row
     # is how they are seen and deleted; the pickers filter on this instead.
     companion: bool = False
+    # True when the SELECTED revision is a diffusers pipeline. An unrecognised one carries no
+    # task and no root config for can_chat, so this flag is all that keeps it out of a chat
+    # picker. Declared because response_model drops undeclared keys, which left the CLI
+    # (reading the dict in-process) and the frontend disagreeing about the same row.
+    diffusers: bool = False
 
 
 class CachedModelsResponse(BaseModel):
@@ -276,6 +301,10 @@ class ScanFolderInfo(BaseModel):
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+    status: str = Field(
+        default = "ok",
+        description = "Last scan result: ok, permission_denied, missing, or unreadable",
+    )
 
 
 class ScanFoldersResponse(BaseModel):
@@ -284,10 +313,6 @@ class ScanFoldersResponse(BaseModel):
 
 class RemoveScanFolderResponse(BaseModel):
     ok: bool
-
-
-class RecommendedFoldersResponse(BaseModel):
-    folders: List[str] = Field(default_factory = list)
 
 
 class DeleteCachedModelResponse(BaseModel):
@@ -336,71 +361,6 @@ class OrphanCompanionInfo(BaseModel):
 class OrphanCompanionsResponse(BaseModel):
     companions: List[OrphanCompanionInfo] = Field(default_factory = list)
     total_bytes: int = 0
-
-
-class BrowseEntry(BaseModel):
-    """A directory entry surfaced by the folder browser."""
-
-    name: str = Field(..., description = "Entry name (basename, not full path)")
-    has_models: bool = Field(
-        False,
-        description = (
-            "Hint that the directory likely contains models "
-            "(*.gguf, *.safetensors, config.json, or HF-style "
-            "`models--*` subfolders). Used by the UI to highlight "
-            "promising candidates; the scanner itself is authoritative."
-        ),
-    )
-    hidden: bool = Field(
-        False,
-        description = "Name starts with a dot (e.g. `.cache`)",
-    )
-
-
-class BrowseFoldersResponse(BaseModel):
-    """Response schema for the folder browser endpoint."""
-
-    current: str = Field(..., description = "Absolute path of the directory just listed")
-    parent: Optional[str] = Field(
-        None,
-        description = (
-            "Parent directory of `current`, or null if `current` is the "
-            "filesystem root. The frontend uses this to render an `Up` row."
-        ),
-    )
-    entries: List[BrowseEntry] = Field(
-        default_factory = list,
-        description = (
-            "Subdirectories of `current`. Sorted with model-bearing "
-            "directories first, then alphabetically case-insensitive; "
-            "hidden entries come last within each group."
-        ),
-    )
-    suggestions: List[str] = Field(
-        default_factory = list,
-        description = (
-            "Handy starting points (home, HF cache, already-registered "
-            "scan folders). Rendered as quick-pick chips above the list."
-        ),
-    )
-    truncated: bool = Field(
-        False,
-        description = (
-            "True when the listing was capped because the directory had "
-            "more subfolders than the server is willing to enumerate in "
-            "one request. The UI should show a hint telling the user to "
-            "narrow their path."
-        ),
-    )
-    model_files_here: int = Field(
-        0,
-        description = (
-            "Count of GGUF/safetensors files immediately inside "
-            "``current``. Used by the UI to surface a hint on leaf "
-            "model directories (which otherwise look `empty` because "
-            "they contain only files, no subdirectories)."
-        ),
-    )
 
 
 class ModelsFolderResponse(BaseModel):

@@ -72,6 +72,27 @@ def test_direct_gguf_file_in_marked_dir_still_lists_siblings(in_tmp_cwd):
     assert all(v.downloaded for v in response.variants)
 
 
+def test_an_audio_only_projector_does_not_flag_vision(in_tmp_cwd):
+    """The picker badge reads this flag, and ultravox / Voxtral / Qwen3-ASR ship a
+    projector for audio input only."""
+    import struct
+
+    (in_tmp_cwd / "config.json").write_text("{}")
+    (in_tmp_cwd / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+    key = "clip.has_audio_encoder"
+    (in_tmp_cwd / "mmproj-F16.gguf").write_bytes(
+        struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+        + struct.pack("<Q", len(key))
+        + key.encode()
+        + struct.pack("<I", 7)
+        + struct.pack("<?", True)
+    )
+
+    response = _variants(os.fspath(in_tmp_cwd / "model-Q4_K_M.gguf"))
+    assert [v.quant for v in response.variants] == ["Q4_K_M"]
+    assert response.has_vision is False
+
+
 @pytest.mark.parametrize(
     "relpath",
     [

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import functools
 import json
 import logging
 import os
@@ -25,48 +24,11 @@ _logger = logging.getLogger(__name__)
 FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/releases/download"
 
 
-@functools.lru_cache(maxsize = 1)
-def has_blackwell_gpu() -> bool:
-    """Return True if any visible NVIDIA GPU has compute capability >= 10.0 (Blackwell).
-
-    Cached for the process lifetime; tests mocking nvidia-smi must call
-    ``has_blackwell_gpu.cache_clear()`` first.
-    """
-    # Detection disabled for now: Dao-AILab ships Blackwell (sm_100+) flash-attn
-    # wheels and url_exists() already gates resolution, so we no longer skip
-    # flash-attn on Blackwell. The nvidia-smi probe below is kept for possible
-    # future arch-based gating; drop this early return to re-enable it.
-    return False
-    exe = shutil.which("nvidia-smi")
-    if not exe:
-        return False
-    try:
-        result = subprocess.run(
-            [exe, "--query-gpu=compute_cap", "--format=csv,noheader"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 10,
-            env = child_env_without_native_path_secret(),
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    if result.returncode != 0:
-        return False
-    for line in result.stdout.splitlines():
-        cap = line.strip()
-        if not cap:
-            continue
-        major_part = cap.split(".", 1)[0]
-        try:
-            major = int(major_part)
-        except ValueError:
-            continue
-        if major >= 10:
-            return True
-    return False
+# No arch gate here, deliberately. has_blackwell_gpu() skipped flash-attn when upstream
+# published no sm_100+ wheels (#5420), then became the bug once it did, denying B200 hosts
+# a working wheel (#6961). An arch gate encodes a snapshot of what upstream ships and goes
+# stale silently both ways; the callers' post-install import check catches a wheel that
+# will not load whatever the cause.
 
 
 def wheel_platform_tag() -> str | None:
@@ -264,7 +226,7 @@ def pytorch_wheel_index_base_url() -> str:
 
 _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
     # torch 2.7.0 (xFormers 0.0.30) is deliberately absent: it predates the stable-ABI
-    # switch, so it publishes one wheel per interpreter and stops at cp312, and Studio's
+    # switch, so it publishes one wheel per interpreter and stops at cp312, and Unsloth's
     # default interpreter is 3.13. Supporting it would mean a per-interpreter gate here
     # and a second one in install.ps1 for a four-year-old torch that resolves to nothing
     # on the default install anyway.
@@ -287,7 +249,7 @@ _XFORMERS_WHEEL_VERSIONS: dict[str, dict[str, str]] = {
 #
 # An exact-key table alone refuses the patch releases: 2.10.1, 2.11.1 and 2.12.1 are all
 # supported resident builds this file names elsewhere, and each of them missed and left
-# Studio on native attention. Enumerating patches is not an option -- they are published
+# Unsloth on native attention. Enumerating patches is not an option -- they are published
 # after this code ships -- and 0.0.35 is compiled against 2.10.0 by design, with upstream
 # stating that "binary builds targeting PyTorch 2.10+ will be compatible with any later
 # version". So above 2.10.0 the answer is known without a table.
@@ -433,7 +395,7 @@ def redact_url_credentials(url: str) -> str:
     UNSLOTH_PYTORCH_MIRROR is allowed to be a private index, and people put credentials in
     it -- ``https://user:token@mirror/whl`` or ``...?token=``. The wheel URL built from it
     is handed to pip AND printed, so without this the secret lands in the backend log the
-    first time Studio installs (or fails to install) xFormers. Same rule as the installer's
+    first time Unsloth installs (or fails to install) xFormers. Same rule as the installer's
     Remove-IndexUrlCredentials, so both sides redact identically.
     """
     separator = url.find("://")

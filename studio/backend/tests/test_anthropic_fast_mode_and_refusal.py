@@ -102,17 +102,25 @@ def _capture(
     return captured, out_lines
 
 
-def test_fast_mode_attaches_beta_header_and_speed_on_opus_4_7(monkeypatch):
-    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7")
+def test_fast_mode_attaches_beta_header_and_speed_on_opus_5(monkeypatch):
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-5")
     assert cap["body"].get("speed") == "fast", cap["body"]
     beta = cap["headers"].get("anthropic-beta", "")
     assert "fast-mode-2026-02-01" in beta, beta
 
 
-def test_fast_mode_attaches_beta_header_and_speed_on_opus_4_6(monkeypatch):
+def test_fast_mode_dropped_on_opus_4_7(monkeypatch):
+    """4.7 dropped fast mode upstream and 400s on `speed`."""
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7")
+    assert "speed" not in cap["body"], cap["body"]
+
+
+def test_fast_mode_dropped_on_opus_4_6(monkeypatch):
+    """4.6 accepts `speed` but answers at standard speed and standard rates,
+    so the toggle would promise a speed-up that never arrives."""
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-6")
-    assert cap["body"].get("speed") == "fast", cap["body"]
-    assert "fast-mode-2026-02-01" in cap["headers"].get("anthropic-beta", "")
+    assert "speed" not in cap["body"], cap["body"]
+    assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
 def test_fast_mode_dropped_on_sonnet(monkeypatch):

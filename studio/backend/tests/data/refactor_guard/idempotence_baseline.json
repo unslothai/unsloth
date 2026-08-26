@@ -1,0 +1,66 @@
+[
+  {
+    "function": "_strip_markup_segment",
+    "input": "get_weather[ARGS]get_weather[ARGS]{",
+    "module": "core.tool_healing",
+    "once": "get_weather[ARGS]",
+    "twice": "",
+    "variant": "{\"final\": true}"
+  },
+  {
+    "function": "apply_tool_strip_patterns",
+    "input": "get_weather[ARGS]get_weather[ARGS]{",
+    "module": "core.tool_healing",
+    "once": "get_weather[ARGS]",
+    "twice": "",
+    "variant": ""
+  },
+  {
+    "function": "strip_tool_call_markup",
+    "input": "get_weather[ARGS]get_weather[ARGS]{",
+    "module": "core.tool_healing",
+    "once": "get_weather[ARGS]",
+    "twice": "",
+    "variant": "{\"final\": true}"
+  },
+  {
+    "function": "strip_tool_patterns",
+    "input": "get_weather[ARGS]get_weather[ARGS]{",
+    "module": "core.tool_healing",
+    "once": "get_weather[ARGS]",
+    "twice": "",
+    "variant": ""
+  },
+  {
+    "function": "strip_segment",
+    "input": "<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}</tool_call>call:get_weather{city:<|\"|>Paris<|\"|>}",
+    "module": "core.inference.tool_call_parser",
+    "once": "call:get_weather{city:<|\"|>Paris<|\"|>}",
+    "twice": "",
+    "variant": "{\"seg_final\": true}"
+  },
+  {
+    "function": "strip_segment",
+    "input": "<｜tool▁calls▁begin｜>function<｜tool▁sep｜>get_weather\n```json\n{\"city\": \"Paris\"}\n```<｜tool▁calls▁end｜>get_weather[ARGS]{\"city\": \"Paris\"}",
+    "module": "core.inference.tool_call_parser",
+    "once": "get_weather[ARGS]{\"city\": \"Paris\"}",
+    "twice": "",
+    "variant": "{\"seg_final\": false}"
+  },
+  {
+    "function": "strip_tool_markup",
+    "input": "<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}</tool_call>call:get_weather{city:<|\"|>Paris<|\"|>}",
+    "module": "core.inference.tool_call_parser",
+    "once": "call:get_weather{city:<|\"|>Paris<|\"|>}",
+    "twice": "",
+    "variant": "{\"final\": true}"
+  },
+  {
+    "function": "strip_tool_markup",
+    "input": "<｜tool▁calls▁begin｜>function<｜tool▁sep｜>get_weather\n```json\n{\"city\": \"Paris\"}\n```<｜tool▁calls▁end｜>get_weather[ARGS]{\"city\": \"Paris\"}",
+    "module": "core.inference.tool_call_parser",
+    "once": "get_weather[ARGS]{\"city\": \"Paris\"}",
+    "twice": "",
+    "variant": "{\"final\": false}"
+  }
+]

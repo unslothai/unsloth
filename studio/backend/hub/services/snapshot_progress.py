@@ -31,6 +31,7 @@ from hub.utils.hf_cache_state import (
     snapshot_selection_key,
 )
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -211,6 +212,9 @@ def _variant_main_shard_present(
     entries, complete = _walk_files(snapshot_dir)
     for path in entries:
         relative = path.relative_to(snapshot_dir).as_posix()
+        # A sidecar left by a deleted quant answers the quant matcher, so the job is re-adopted.
+        if is_appledouble_metadata(path):
+            continue
         if variant_file_matcher(relative, companions = False):
             return True
     return None if not complete else False
@@ -266,6 +270,8 @@ def _materialized_bytes(snapshot_dir: Path, variant_file_matcher: "VariantFileMa
         entries = list(snapshot_dir.rglob("*"))  # unordered: the result is a sum
     except OSError:
         return 0
+    # Same false "still active" as the companion clause below, reached by a stranded sidecar.
+    entries = [path for path in entries if not is_appledouble_metadata(path)]
 
     def _accepts(relative: str, *, companions: bool) -> bool:
         # A matcher that understands the distinction gets asked for it; an older one is
@@ -506,9 +512,11 @@ def compute_snapshot_progress(
     variant_file_set_unknown = variant is not None and not expected_hashes
     # Resolved at most once, and only if a reading gets far enough to need it.
     metadata_files: "_Lazy[tuple[download_manifest.ExpectedFile, ...]]" = _Lazy(
-        lambda: tuple(expected_files_resolver(repo_id, hf_token))
-        if expected_files_resolver is not None
-        else ()
+        lambda: (
+            tuple(expected_files_resolver(repo_id, hf_token))
+            if expected_files_resolver is not None
+            else ()
+        )
     )
 
     readings: list[tuple[int, int, Optional[str], bool, Optional[bool]]] = []
@@ -598,6 +606,17 @@ def compute_snapshot_progress(
         # swept -- and an orphan outlives the process that would have unlinked it on the way out.
         for blob_hash in completed_hashes:
             partial_bytes.pop(blob_hash, None)
+        # Largest wins, deliberately, even though a killed attempt's partial can sit beside its
+        # replacement's under the same etag. Preferring the freshest mtime reads better against
+        # a corpse but oscillates between two GENUINELY live writers, which is what a broken
+        # advisory lock produces: each write makes a different one newest, so the bar would
+        # jump between the leader and the straggler.
+        #
+        # A corpse is not this reading's problem to solve, because it should not outlive the
+        # job that made it: a terminal job sweeps its own blobs without waiting out the
+        # abandonment grace, and a backend that died before it could is caught at boot. If one
+        # survives both (an unrelated client holding the blob lock over it) the bar over-reads
+        # until the next sweep, which is a smaller wrong than a reading that will not sit still.
         in_progress_bytes = sum(partial_bytes.values())
         snapshot_dirs: "_Lazy[list[Path]]" = _Lazy(
             lambda entry = entry: _retained_snapshot_dirs(entry)

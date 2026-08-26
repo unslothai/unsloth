@@ -17,8 +17,10 @@ export const ar = {
     searchAriaLabel: "البحث في {noun}",
     modelSourceAriaLabel: "مصدر النموذج",
     hubSectionAriaLabel: "قسم Hub",
-    pickModelFile: "اختيار ملف نموذج من القرص",
-    ejectLoadedModel: "إخراج النموذج المحمّل",
+    modelDropped: "لم يعد متاحًا",
+    modelDroppedByProvider: "{provider} · لم يعد متاحًا",
+    modelDisabled: "غير مُفعَّل",
+    modelDisabledByProvider: "{provider} · غير مُفعَّل",
     multipleMatches:
       "توجد عدة نتائج مطابقة ضمن {noun}. اختر نتيجة من القائمة.",
     rateLimitedTitle: "تم بلوغ حد طلبات Hugging Face",
@@ -83,6 +85,7 @@ export const ar = {
       recipes: "الوصفات",
       images: "الصور",
       video: "الفيديو",
+      audio: "الصوت",
       trainChecking: "جارٍ التحقق من دعم هذا الجهاز للتدريب...",
       videoChecking: "جارٍ التحقق من دعم هذا الجهاز للفيديو...",
       more: "المزيد",
@@ -91,6 +94,8 @@ export const ar = {
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
+      showMore: "عرض المزيد",
+      showLess: "عرض أقل",
       settings: "الإعدادات",
       api: "API",
       lightMode: "الوضع الفاتح",
@@ -104,6 +109,44 @@ export const ar = {
       title: "الصفحة غير موجودة",
       description: "{path} غير موجود.",
       backToChat: "العودة إلى المحادثة",
+    },
+    selection: {
+      pinProjects: "تثبيت المشاريع",
+      unpinProjects: "إلغاء تثبيت المشاريع",
+      deleteProjects: "حذف المشاريع",
+      deleteProjectsTitle: "حذف المشاريع",
+      deleteProjectsDescription:
+        "هل تريد حذف {count} مشاريع؟ ستُحذف محادثاتها نهائيًا.",
+      deleteProjectsFilesDescription:
+        "يُحذف مجلد مساحة عمل كل مشروع من القرص.",
+      countSelected: "{count} محددة",
+      pinChats: "تثبيت المحادثات",
+      unpinChats: "إلغاء تثبيت المحادثات",
+      archiveChats: "أرشفة المحادثات",
+      markUnread: "وضع علامة كغير مقروءة",
+      deleteChats: "حذف المحادثات",
+      deleteTitle: "حذف المحادثات",
+      deleteDescription: "هل تريد حذف {count} محادثة؟ لا يمكن التراجع عن ذلك.",
+      deleteFilesDescription:
+        "يُحذف مجلد بيئة العزل الخاص بكل محادثة من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
+      deleteFilesLabel: "حذف الملفات ومجلد بيئة العزل",
+      deleteChatFilesDescription:
+        "يُزال مجلد بيئة العزل الخاص بهذه المحادثة من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
+    },
+    organize: {
+      sidebarHeading: "تنظيم الشريط الجانبي",
+      byProject: "حسب المشروع",
+      inOneList: "في قائمة واحدة",
+      sortChatsBy: "ترتيب المحادثات حسب",
+      sortPinnedBy: "ترتيب المثبتة حسب",
+      priority: "الأولوية",
+      lastUpdated: "آخر تحديث",
+      manualOrder: "ترتيب يدوي",
+      moveUp: "تحريك لأعلى",
+      moveDown: "تحريك لأسفل",
+      organizeChats: "تنظيم المحادثات",
+      organizeProjects: "تنظيم المشاريع",
+      sortPinnedChats: "ترتيب المحادثات المثبتة",
     },
     dialog: {
       deleteChat: {
@@ -139,6 +182,8 @@ export const ar = {
       closeAriaLabel: "إغلاق الإعدادات",
       searchPlaceholder: "ابحث في الإعدادات…",
       searchNoResults: "لم يُعثر على أي إعداد.",
+      panelFailed: "تعذر تحميل هذا القسم.",
+      panelReload: "إعادة التحميل",
     },
     tabs: {
       general: "عام",
@@ -148,10 +193,268 @@ export const ar = {
       chat: "المحادثة",
       connections: "الاتصالات",
       apiKeys: "API",
+      remoteLan: "الوصول عن بُعد والشبكة المحلية",
       about: "حول",
       data: "البيانات",
       agents: "الوكلاء",
+      debugging: "السجلات",
       voice: "الصوت",
+      keyboardShortcuts: "الاختصارات",
+    },
+    keyboardShortcuts: {
+      title: "اختصارات لوحة المفاتيح",
+      description:
+        "غيّر أي اختصار، أو امسحه لتحرير التركيبة لمتصفحك أو نظام التشغيل.",
+      searchPlaceholder: "بحث في الاختصارات…",
+      noResults: "لا توجد اختصارات مطابقة لهذا البحث.",
+      unassigned: "غير معيّن",
+      recording: "اضغط المفاتيح…",
+      recordingHint: "اضغط التركيبة الجديدة، أو Esc للإلغاء.",
+      needsModifier: "أضف ⌘ أو Ctrl أو Alt. المفتاح المجرد سيبتلع الكتابة.",
+      conflict: "مستخدم أيضاً في اختصار آخر",
+      conflictShadowed: "اختصار آخر يملك هذه التركيبة ويعمل بدلاً منه",
+      edit: "تغيير الاختصار",
+      clear: "إزالة الاختصار",
+      reset: "استعادة الافتراضي",
+      resetAll: "إعادة تعيين الكل إلى الافتراضي",
+      primarySlot: "الاختصار",
+      alternateSlot: "اختصار بديل",
+      browserReserved:
+        "قد يحتفظ متصفحك بهذه التركيبة لنفسه. تعمل في تطبيق سطح المكتب.",
+      actions: {
+        openSettings: {
+          label: "فتح الإعدادات",
+          description: "فتح مربع حوار الإعدادات",
+        },
+        openKeyboardShortcuts: {
+          label: "اختصارات لوحة المفاتيح",
+          description: "فتح قائمة الاختصارات هذه",
+        },
+        searchChats: {
+          label: "بحث في المحادثات",
+          description: "فتح مربع حوار بحث المحادثات",
+        },
+        openMcpServers: {
+          label: "خوادم MCP",
+          description: "إعداد خوادم MCP لهذه المحادثة",
+        },
+        logOut: {
+          label: "تسجيل الخروج",
+          description: "تسجيل الخروج من Unsloth",
+        },
+        approveToolRequest: {
+          label: "الموافقة على الطلب",
+          description: "السماح باستدعاء الأداة قيد الانتظار",
+        },
+        declineToolRequest: {
+          label: "رفض الطلب",
+          description: "رفض استدعاء الأداة قيد الانتظار",
+        },
+        newChat: {
+          label: "محادثة جديدة",
+          description: "بدء محادثة جديدة",
+        },
+        newTemporaryChat: {
+          label: "محادثة مؤقتة جديدة",
+          description: "بدء محادثة لا تُحفظ في السجل",
+        },
+        newStandaloneChat: {
+          label: "محادثة مستقلة جديدة",
+          description: "بدء محادثة خارج أي مشروع",
+        },
+        archiveChat: {
+          label: "أرشفة المحادثة",
+          description: "أرشفة المحادثات المحددة، أو المحادثة الحالية",
+        },
+        markChatUnread: {
+          label: "وضع علامة كغير مقروءة",
+          description: "وضع علامة غير مقروءة على المحادثات المحددة، أو المحادثة الحالية",
+        },
+        togglePinChat: {
+          label: "تبديل التثبيت",
+          description: "تثبيت المحادثات المحددة أو إلغاء تثبيتها، أو المحادثة الحالية",
+        },
+        selectAllChats: {
+          label: "تحديد كل المحادثات",
+          description: "تحديد كل محادثة في الشريط الجانبي",
+        },
+        clearChatSelection: {
+          label: "مسح التحديد",
+          description: "إلغاء تحديد المحادثات المحددة. زر Escape يمسحه أيضًا",
+        },
+        deleteSelectedChats: {
+          label: "حذف المحادثات المحددة",
+          description: "حذف كل محادثة محددة",
+        },
+        nextRecentlyViewedChat: {
+          label: "المحادثة التالية التي عُرضت مؤخرًا",
+          description: "التقدم بين المحادثات المعروضة مؤخرًا",
+        },
+        previousRecentlyViewedChat: {
+          label: "المحادثة السابقة التي عُرضت مؤخرًا",
+          description: "الرجوع بين المحادثات المعروضة مؤخرًا",
+        },
+        nextChat: {
+          label: "المحادثة التالية",
+          description: "الانتقال إلى المحادثة التالية في الشريط الجانبي",
+        },
+        previousChat: {
+          label: "المحادثة السابقة",
+          description: "الانتقال إلى المحادثة السابقة في الشريط الجانبي",
+        },
+        nextChatNeedingAttention: {
+          label: "المحادثة التالية التي تحتاج انتباهًا",
+          description: "الانتقال إلى المحادثة التالية قيد التوليد أو الانتظار أو غير المقروءة",
+        },
+        clearAllUnreads: {
+          label: "وضع علامة مقروء على الكل",
+          description: "وضع علامة مقروءة على كل المحادثات",
+        },
+        goToRecentChat1: {
+          label: "الانتقال إلى المحادثة الأخيرة 1",
+          description: "فتح المحادثة 1 ضمن «الأخيرة»",
+        },
+        goToRecentChat2: {
+          label: "الانتقال إلى المحادثة الأخيرة 2",
+          description: "فتح المحادثة 2 ضمن «الأخيرة»",
+        },
+        goToRecentChat3: {
+          label: "الانتقال إلى المحادثة الأخيرة 3",
+          description: "فتح المحادثة 3 ضمن «الأخيرة»",
+        },
+        goToRecentChat4: {
+          label: "الانتقال إلى المحادثة الأخيرة 4",
+          description: "فتح المحادثة 4 ضمن «الأخيرة»",
+        },
+        goToRecentChat5: {
+          label: "الانتقال إلى المحادثة الأخيرة 5",
+          description: "فتح المحادثة 5 ضمن «الأخيرة»",
+        },
+        goToRecentChat6: {
+          label: "الانتقال إلى المحادثة الأخيرة 6",
+          description: "فتح المحادثة 6 ضمن «الأخيرة»",
+        },
+        switchToChat: {
+          label: "التبديل إلى المحادثة",
+          description: "الانتقال إلى مساحة عمل المحادثة",
+        },
+        switchToProjects: {
+          label: "التبديل إلى المشاريع",
+          description: "الانتقال إلى مساحة عمل المشاريع",
+        },
+        switchToHub: {
+          label: "التبديل إلى مركز النماذج",
+          description: "الانتقال إلى مركز النماذج",
+        },
+        switchToTrain: {
+          label: "التبديل إلى التدريب",
+          description: "الانتقال إلى مساحة عمل التدريب",
+        },
+        switchToRecipes: {
+          label: "التبديل إلى Recipes",
+          description: "الانتقال إلى Data Recipes",
+        },
+        switchToImages: {
+          label: "التبديل إلى الصور",
+          description: "الانتقال إلى مساحة عمل الصور",
+        },
+        switchToVideo: {
+          label: "التبديل إلى الفيديو",
+          description: "الانتقال إلى مساحة عمل الفيديو",
+        },
+        switchToAudio: {
+          label: "التبديل إلى الصوت",
+          description: "الانتقال إلى مساحة عمل الصوت",
+        },
+        switchToExport: {
+          label: "التبديل إلى التصدير",
+          description: "الانتقال إلى مساحة عمل التصدير",
+        },
+        toggleSidebar: {
+          label: "تبديل الشريط الجانبي",
+          description: "إظهار الشريط الجانبي أو إخفاؤه",
+        },
+        toggleApiMonitor: {
+          label: "تبديل نشاط API",
+          description: "إظهار مراقب نشاط API أو إخفاؤه",
+        },
+        openModelPicker: {
+          label: "فتح منتقي النموذج",
+          description: "اختيار النموذج لهذه المحادثة",
+        },
+        openProjectPicker: {
+          label: "فتح منتقي المشروع",
+          description: "الانتقال إلى مشروع آخر من ترويسة المحادثة",
+        },
+        startDictation: {
+          label: "الإملاء",
+          description: "بدء الإملاء في مربع الكتابة أو إيقافه",
+        },
+        attachFiles: {
+          label: "إرفاق صور وملفات",
+          description: "إضافة مرفق إلى مربع الكتابة",
+        },
+        sendMessage: {
+          label: "إرسال الرسالة",
+          description: "إرسال ما في مربع الكتابة",
+        },
+        cycleReasoningEffort: {
+          label: "تدوير مستوى التفكير",
+          description: "التنقل بين مستويات جهد التفكير",
+        },
+        increaseReasoningEffort: {
+          label: "زيادة جهد التفكير",
+          description: "رفع جهد التفكير مستوى واحدًا",
+        },
+        decreaseReasoningEffort: {
+          label: "خفض جهد التفكير",
+          description: "خفض جهد التفكير مستوى واحدًا",
+        },
+        toggleFastMode: {
+          label: "تبديل وضع Fast",
+          description: "تشغيل وضع Fast أو إيقافه",
+        },
+        renameChat: {
+          label: "إعادة تسمية المحادثة",
+          description: "إعادة تسمية المحادثة الحالية",
+        },
+        forkChat: {
+          label: "تفريع المحادثة",
+          description: "إنشاء محادثة جديدة من آخر رسالة",
+        },
+        copyChatAsMarkdown: {
+          label: "نسخ بصيغة Markdown",
+          description: "نسخ المحادثة كاملة إلى الحافظة بصيغة Markdown",
+        },
+        copySessionId: {
+          label: "نسخ معرّف الجلسة",
+          description: "نسخ معرّف جلسة البيئة المعزولة لهذه المحادثة",
+        },
+      },
+    },
+    debugging: {
+      logSection: "ملف السجل",
+      source: "ملف السجل",
+      sourceHint: "تكتب مشغّلات النماذج سجلاتها الخاصة، لذا غالبًا ما يكون سبب فشل التحميل أو التوليد موضّحًا فيها لا في سجل الخادم.",
+      path: "الموقع",
+      pathCopy: "نسخ المسار",
+      refreshSection: "التحديث",
+      mode: "الوضع",
+      modeLive: "مباشر",
+      modeInterval: "كل 3 ثوانٍ",
+      modeManual: "يدوي",
+      refreshNow: "تحديث الآن",
+      privacyNote: "تُخفى بيانات الاعتماد في هذا العرض. أما في الملف الموجود على القرص فلا تُخفى.",
+      copyVisible: "نسخ السجل الظاهر",
+      empty: "لم يُسجَّل أي شيء بعد.",
+      disabled: "التسجيل في ملف مُعطَّل (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "لم يُعثر على أي ملف سجل.",
+      unreadable: "تعذّرت قراءة ملف السجل.",
+      timeout: "انتهت مهلة طلب السجل. قد يتعذر الوصول إلى الخادم.",
+      droppedNotice: "تم تخطي بعض الأسطر: كُتب السجل بسرعة أكبر مما أمكن قراءته.",
+      morePending: "لا يزال يجري قراءة أسطر إضافية، وستظهر عند التحديث التالي.",
+      staleSession: "تسجيل الملفات معطل، لذا هذه جلسة سابقة ولن يتم تحديثها.",
+      keywords: "تصحيح الأخطاء سجل السجلات خطأ أخطاء تعطل تتبع تشخيص استكشاف الأخطاء debug log logs error",
     },
     voice: {
       title: "الصوت",
@@ -165,6 +468,16 @@ export const ar = {
         engineModel: "التفريغ النصي المحلي",
         engineModelDescription:
           "يشغّل نموذج تحويل الكلام إلى نص (STT) محليًا ويعمل دون اتصال. نزّله ثم حمّله، ويُفرَغ من الذاكرة بعد فترة من عدم الاستخدام.",
+        engineCustom: "نقطة نهاية مخصصة",
+        engineCustomDescription:
+          "يرسل الصوت المسجّل إلى خادم STT متوافق مع OpenAI من الاتصالات.",
+        connectionLabel: "الاتصال",
+        connectionDescription:
+          "أضف خادمًا متوافقًا مع OpenAI ومفتاح API اختياريًا في الاتصالات.",
+        connectionPlaceholder: "اختر اتصالًا",
+        connectionEmpty: "لا توجد اتصالات متاحة",
+        customModelLabel: "النموذج",
+        customModelDescription: "اسم النموذج المرسل إلى /v1/audio/transcriptions.",
         sttModelLabel: "نموذج التعرّف على الكلام",
         sttModelDescription: "اختر نموذج STT أو ابحث عنه لتشغيله محليًا.",
         sttModelSearchPlaceholder: "ابحث عن نموذج",
@@ -214,6 +527,8 @@ export const ar = {
         allowMicrophone: "السماح بالميكروفون",
         micAccessBlocked:
           "تم حظر الوصول إلى الميكروفون. اسمح بالوصول إلى الميكروفون لصفحة Unsloth هذه ثم أعد المحاولة.",
+        micAccessBlockedDesktop:
+          "تم حظر الوصول إلى الميكروفون. أعد المحاولة واختر السماح، أو مكّن الميكروفون من إعدادات الخصوصية في النظام.",
         micAccessUnsupported:
           "الوصول إلى الميكروفون غير مدعوم في هذا المتصفح أو السياق.",
         systemDefault: "الإعداد الافتراضي للنظام",
@@ -221,6 +536,7 @@ export const ar = {
         languageLabel: "لغة الإملاء",
         languageDescription: "اللغة المراد التعرّف عليها",
         languageAuto: "تلقائي (لغة المتصفح)",
+        languageAutoDetect: "تلقائي (اكتشاف اللغة)",
       },
       dictionary: {
         sectionTitle: "قاموس الإملاء",
@@ -283,9 +599,20 @@ export const ar = {
           "يستخدم النموذج الصوتي المُحمَّل (مثل Orpheus)",
         engineSystem: "أصوات النظام",
         engineStudio: "تحميل نموذج TTS",
+        engineCustom: "نقطة نهاية مخصصة",
+        engineCustomDescription:
+          "خادم TTS متوافق مع OpenAI من اتصالاتك (مثل Kokoro)",
+        connectionLabel: "الاتصال",
+        connectionDescription:
+          "أضف خادمًا متوافقًا مع OpenAI من علامة تبويب الاتصالات",
+        connectionPlaceholder: "اختر اتصالًا",
+        customModelLabel: "النموذج",
+        customVoiceDescription:
+          "اسم الصوت الذي تتوقعه نقطة النهاية؛ القيمة الافتراضية alloy",
         modelLabel: "نموذج TTS",
         modelDescription:
           "حمّل نموذجًا صوتيًا من محدّد النماذج (مثل Orpheus TTS)",
+        openAudioAction: "فتح الصوت",
         voiceLabel: "الصوت",
         voiceDescription: "أفضل الأصوات على هذا الجهاز",
         speedLabel: "السرعة",
@@ -295,6 +622,7 @@ export const ar = {
         previewDescription: "تشغيل عيّنة قصيرة",
         previewFailed: "فشلت معاينة تحويل النص إلى كلام",
         previewAction: "معاينة",
+        preparingAction: "جارٍ الإنشاء…",
         stopAction: "إيقاف",
         ttsLabel: "تحويل النص إلى كلام",
         notSupported: "غير مدعوم في هذا المتصفح",
@@ -366,6 +694,16 @@ export const ar = {
           "حرّر ذاكرة VRAM بعد هذا العدد من ثواني الخمول. تُبقي القيمة 0 النموذج محمّلًا، والحد الأدنى 60 ثانية.",
         idleSecondsAriaLabel:
           "عدد الثواني قبل التفريغ التلقائي عند الخمول",
+        mediaEnable: "تبديل نموذج الصور والفيديو حسب الطلب",
+        mediaEnableDescription:
+          "تحميل نموذج صور أو فيديو منزّل ومذكور في طلب API قبل التوليد. إعداد مستقل: الإعداد أعلاه يخص نموذج المحادثة فقط. مُعطّل افتراضيًا.",
+        mediaIdleUnload: "التفريغ التلقائي عند الخمول للصور والفيديو",
+        mediaIdleUnloadDescription:
+          "حرّر ذاكرة VRAM بتفريغ نموذجَي الصور والفيديو بعد هذا العدد من ثواني الخمول. إنه إعداد مستقل: الإعداد أعلاه يخصّ نموذج المحادثة فقط. تُبقي القيمة 0 النموذجين محمَّلين، والحد الأدنى 60 ثانية.",
+        mediaIdleSecondsAriaLabel:
+          "عدد الثواني قبل التفريغ التلقائي عند الخمول للصور والفيديو",
+        mediaIdlePaused:
+          "متوقف مؤقتًا أثناء تفعيل إبقاء النموذج في ذاكرة وحدة معالجة الرسوميات.",
         idleNeedsEnable: "فعّل «تبديل النموذج حسب الطلب» أولًا.",
         idleActiveViaEnv:
           "التفريغ التلقائي عند الخمول مُفعَّل عبر متغير البيئة UNSLOTH_MODEL_IDLE_TTL.",
@@ -378,6 +716,9 @@ export const ar = {
         keepKv: "الاحتفاظ بسياق المحادثة عند التفريغ التلقائي بسبب الخمول",
         keepKvDescription:
           "يحفظ ذاكرة KV المؤقتة قبل التفريغ التلقائي عند الخمول، حتى لا تعيد المحادثات المستأنفة قراءة السجل. بحد أقصى 10 جيجابايت على القرص.",
+        apiOnly: "تفريغ النماذج التي حمّلتها واجهة API فقط",
+        apiOnlyDescription:
+          "يُبقي التفريغ التلقائي عند الخمول النموذج الذي حمّلته من Unsloth في الذاكرة، ولا يفرّغ سوى النماذج التي حمّلها طلب عبر واجهة API.",
       },
       previewSharing: {
         sectionTitle: "مشاركة المعاينة",
@@ -412,14 +753,37 @@ export const ar = {
         launchAtLogin: "تشغيل Unsloth عند تسجيل الدخول",
         launchAtLoginDescription:
           "يبدأ Unsloth في الخلفية عند تسجيل الدخول، ويبقى في شريط القوائم أو علبة النظام حتى تفتحه.",
+
+        closeToTray: "الإغلاق إلى علبة النظام",
+        closeToTrayDescription:
+          "إبقاء Unsloth وخادمه قيد التشغيل في الخلفية عند إغلاق النافذة الرئيسية.",
+        closeToTraySaveError: "تعذّر تحديث إعداد الإغلاق إلى علبة النظام.",
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },
-      gettingStarted: "البدء",
-      startOnboarding: "بدء الإعداد التمهيدي",
-      startOnboardingDescription:
-        "إعادة فتح معالج الإعداد دون تغيير حسابك.",
-      startOnboardingAction: "بدء الإعداد التمهيدي",
+      downloads: {
+        sectionTitle: "التنزيلات",
+        transport: "طريقة نقل التنزيل",
+        transportDescription:
+          "كيف تصل ملفات النماذج ومجموعات البيانات من Hugging Face. يتابع HTTPS من حيث توقف، أما Xet فغالبًا أسرع في التنزيل الأول لكنه يبدأ الملف من جديد إذا ألغيت.",
+        transportHint:
+          "HTTPS هو TLS عادي: تسمح به كل الشبكات والوكلاء وشبكات VPN، ويتابع النقل الملغى أو المنقطع من البايتات الموجودة على القرص، ويبقى استخدام الذاكرة ثابتًا. يجلب Xet كتلاً منزوعة التكرار، فيمكن أن يصل مستودع يشترك في بيانات مع مستودع لديك أسرع بكثير، لكنه يحتاج hf_xet ويستهلك ذاكرة أكبر، والإلغاء يتخلص من الملف الجاري. يقرر Auto حسب هذا الجهاز: يوازن الذاكرة وما إذا كان Xet قد تعطل هنا، ويعود إلى HTTPS عند الحاجة.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "TLS قياسي. يتابع بعد الإلغاء، ويعمل على أي شبكة، واستخدام ذاكرة ثابت.",
+        transportDescriptionNoResume:
+          "كيفية تنزيل ملفات النماذج ومجموعات البيانات من Hugging Face. لا يمكن لأي من وسيلتي النقل الاستئناف في هذا التثبيت، لذا يبدأ التنزيل الملغى من جديد؛ وغالبًا ما يكون Xet أسرع في التنزيل الأول.",
+        httpsHintNoResume:
+          "TLS قياسي. يعمل على أي شبكة مع استخدام ثابت للذاكرة. لا يمكن لهذا التثبيت استئناف تنزيل ملغى.",
+        xetHint:
+          "نقل بكتل منزوعة التكرار. أسرع غالبًا في التنزيل الجديد، ويبدأ الملف من جديد عند الإلغاء، ويحتاج ذاكرة أكبر.",
+        autoHint:
+          "يختار حسب الجهاز وينتقل إلى HTTPS إذا تعطل Xet أو فشل هنا.",
+        autoCurrently: "يستخدم Auto على هذا الجهاز {transport}.",
+        xetMissing: "Xet غير متاح لأن hf_xet غير مثبت.",
+      },
       uploads: {
         sectionTitle: "عمليات الرفع",
         maxUploadSize: "الحد الأقصى لحجم رفع مجموعة بيانات التدريب",
@@ -430,6 +794,7 @@ export const ar = {
         embeddingModel: "نموذج التضمين (Embedding)",
         embeddingModelDescription:
           "نموذج Hugging Face أو مسار محلي يُستخدم لفهرسة مستنداتك والبحث فيها. القيمة الافتراضية هي {defaultModel}.",
+        searchPlaceholder: "ابحث عن نماذج التضمين",
         reindexWarning:
           "يؤثر فقط في المستندات التي تُفهرس حديثًا. أعِد رفع المستندات الحالية بعد تغيير النموذج.",
         emptyError: "أدخل معرّف نموذج Hugging Face أو مسارًا محليًا.",
@@ -502,9 +867,9 @@ export const ar = {
           "كل ما يلي محسوب من سجلك الخاص. لا يُجمَع أي شيء ولا يُرسَل إلى Unsloth.",
         retry: "إعادة المحاولة",
         privacyNote:
-          "تُحسب الإحصاءات من سجل المحادثات والتدريب المحفوظ في نسخة Unsloth لديك. لا يُجمَع أي شيء، ولا يُرسَل شيء إلى Unsloth أو إلى أي طرف ثالث.",
+          "تُحسب الإحصاءات من سجل المحادثات واستخدام API والتدريب المحلي في نسخة Unsloth لديك. لا تُحفظ مطالبات API أو ردوده أو مفاتيحه للإحصاءات، ولا يُرسل شيء إلى Unsloth أو أي طرف ثالث.",
         emptyChats:
-          "لا توجد محادثات بعد. ابدأ محادثة وستظهر إحصاءاتك هنا.",
+          "لا يوجد استخدام للمحادثات أو API بعد. ابدأ محادثة أو أرسل طلب API محليًا ومصادقًا عليه لتظهر إحصاءاتك هنا.",
         lifetimeTokens: "إجمالي التوكنات",
         peakTokens: "يوم الذروة",
         longestChat: "أطول محادثة",
@@ -526,6 +891,9 @@ export const ar = {
         totalMessages: "إجمالي الرسائل",
         tokensIn: "التوكنات المُرسَلة",
         tokensOut: "التوكنات المُولَّدة",
+        totalTokens: "إجمالي التوكنات",
+        studioChatTokens: "توكنات محادثة Unsloth",
+        apiTokens: "توكنات API",
         cachedTokens: "التوكنات المخزّنة مؤقتًا",
         cachedValue: "{tokens} ({percent}% من المُدخَلات)",
         avgTokensPerChat: "متوسط التوكنات لكل محادثة",
@@ -706,6 +1074,8 @@ export const ar = {
         title: "أجهزة GPU",
         ggufInference: "استدلال GGUF",
         unavailable: "غير متاح",
+        detecting: "جارٍ البحث عن وحدات GPU...",
+        unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
         noGpu: "لم يُكتشف أي GPU مرئي. تُعرض موارد CPU فقط أعلاه.",
         unknownDevice: "GPU غير معروف",
         deviceWithIndex: "GPU {index}",
@@ -713,6 +1083,58 @@ export const ar = {
         used: "{value} مستخدم",
         free: "{value} متاح",
         total: "{value} إجمالي",
+      },
+      llamaBackend: {
+        title: "محرك استدلال GGUF",
+        label: "خلفية الحوسبة",
+        description: "الخلفية التي يستخدمها llama.cpp لتشغيل نماذج GGUF.",
+        runningOn: "يعمل llama.cpp حاليًا على {backend}.",
+        hint: "يثبّت إصدار llama.cpp الخاص بهذه الخلفية ويحافظ عليه عبر التحديثات. مفيد عندما ينهار الاختيار التلقائي أو لا يدعمه تعريف كرت الشاشة لديك. تظهر فقط الخلفيات التي يتوفر لها إصدار لهذا الجهاز، والتدريب لا يتأثر.",
+        autoWith: "تلقائي ({backend})",
+        apply: "تطبيق",
+        applying: "جارٍ التثبيت...",
+        applyHint: "ينزّل الإصدار الجديد ويعيد تشغيل llama.cpp. سيتم تفريغ النموذج المحمّل.",
+        applyHintWithSize: "ينزّل {size} ويعيد تشغيل llama.cpp. سيتم تفريغ النموذج المحمّل.",
+        switchedTo: "يعمل llama.cpp الآن على {backend}.",
+        switchFailed: "تعذّر تغيير خلفية llama.cpp.",
+        switchInterrupted: "توقفت عملية التبديل قبل اكتمالها.",
+        envLocked: "تم ضبطها على {backend} عبر متغيّر البيئة UNSLOTH_LLAMA_CPP_BACKEND، وهو يتجاوز هذا الإعداد.",
+        customPath: {
+          label: "مجلد llama.cpp مخصّص",
+          description: "استخدم إصدار llama-server الخاص بك.",
+          hint: "اختر مجلد llama.cpp الذي يحتوي على llama-server، أو إصدارًا يوجد فيه ضمن build/bin. يُستخدم وقت التشغيل المخصّص لمحادثة GGUF والتضمينات ونماذج الصوت المدعومة. تبقى لمتغيرات البيئة الأولوية.",
+          automatic: "تلقائي (مضمّن)",
+          bundled: "يستخدم وقت تشغيل llama.cpp الذي ثبّته Unsloth.",
+          active: "سيُستخدم llama-server المخصّص عند تحميل النموذج التالي.",
+          environmentManaged: "تديره متغير البيئة {variable}.",
+          missingBinary: "لم يعد llama-server متاحًا في هذا المجلد. اختر مجلدًا آخر أو استخدم وقت التشغيل المضمّن.",
+          reloadRequired: "أعد تحميل النموذج لاستخدام llama-server المحدد.",
+          change: "تغيير",
+          saving: "جارٍ الحفظ...",
+          useBundled: "استخدام المضمّن",
+          chooseTitle: "اختر مجلد llama.cpp",
+          chooseAction: "استخدام هذا المجلد",
+          saved: "تم تحديث مجلد llama.cpp",
+          saveError: "تعذّر تحديث مجلد llama.cpp",
+        },
+        backends: {
+          auto: "تلقائي",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "لم يُعثر على تثبيت llama.cpp مُدار، لذا لا توجد خلفية لتبديلها.",
+          localLink: "llama.cpp مجلد محلي ربطته بنفسك، ولن يستبدله Unsloth.",
+          sourceBuild: "بُني هذا الإصدار من llama.cpp من الشيفرة المصدرية، لذا لا يمكن تبديل خلفيته من هنا.",
+          customPath: "تم تحديد مجلد llama.cpp مخصّص. يحدد هذا الإصدار خلفية الحوسبة.",
+          unresolved: "تعذّر التحقق من الخلفيات المتاحة. تحقّق من اتصالك وحاول مرة أخرى.",
+        },
+        // لا يظهر: كلمات إضافية لبحث الإعدادات.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf استدلال cuda rocm hip vulkan metal cpu gpu مسرّع prebuilt تبديل محرك",
       },
       modelMemory: {
         title: "ذاكرة النموذج",
@@ -812,7 +1234,7 @@ export const ar = {
       quickstart: {
         title: "بناء أمر",
         description:
-          "شغّل وكيلًا على النموذج المُحمَّل حاليًا في Studio. حمّل نموذجًا أولًا، ثم استبدل claude بأي وكيل مدعوم أدناه.",
+          "شغّل وكيلًا على النموذج المُحمَّل حاليًا في Unsloth. حمّل نموذجًا أولًا، ثم استبدل claude بأي وكيل مدعوم أدناه.",
         noneDetected: "لم يُعثر في متغيّر PATH لديك على أي واجهة أوامر لوكيل مدعوم.",
         installed: "مثبّت",
       },
@@ -833,7 +1255,7 @@ export const ar = {
         description:
           "تُحلَّل رايات Unsloth أولًا؛ وأي شيء لا يتعرّف عليه يُمرَّر كما هو إلى الوكيل.",
         model:
-          "يختار نموذجًا. بدون ‎--model يستخدم unsloth start النموذج المُحمَّل حاليًا في Studio، ويُظهر خطأ إن لم يكن هناك أي نموذج محمَّل.",
+          "يختار نموذجًا. بدون ‎--model يستخدم unsloth start النموذج المُحمَّل حاليًا في Unsloth، ويُظهر خطأ إن لم يكن هناك أي نموذج محمَّل.",
         contextLength:
           "يحدد طول السياق المطلوب (اسم بديل: ‎--max-seq-length).",
         ggufVariant: "يختار نسخة تكميم GGUF.",
@@ -846,12 +1268,16 @@ export const ar = {
         asSubagent:
           "يبقي الوكيل الأصلي على نموذجه الحالي ويسجّل Unsloth كوكيل فرعي محلي (Claude Code وCodex وOpenCode).",
         apiKey: "يمرّر مفتاح API الخاص بـ Unsloth (أو اضبط UNSLOTH_API_KEY).",
+        reasoning:
+          "استخدام الاستدلال في المحادثة: on أو off أو auto. ويتبع auto قالب المحادثة الخاص بالنموذج، وهو غالبًا on.",
+        reasoningEffort:
+          "جهد الاستدلال المُمرَّر إلى قالب المحادثة الخاص بالنموذج، مثل medium. وتختلف المستويات بحسب النموذج، فاستخدم مستوى يقبله. وبدون قيمة يبقى مستوى القالب.",
         yolo: "يتخطى طلبات الموافقة. استخدمه في البيئات الموثوقة فقط.",
       },
       remote: {
-        title: "الاتصال بنسخة بعيدة من Studio",
+        title: "الاتصال بنسخة بعيدة من Unsloth Studio",
         description:
-          "وجّه unsloth start إلى نسخة من Studio تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
+          "وجّه unsloth start إلى نسخة من Unsloth Studio تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
       },
       passthrough: {
         title: "تمرير وسائط إلى الوكيل",
@@ -865,6 +1291,9 @@ export const ar = {
       },
     },
     chat: {
+      projectsSection: "إظهار قسم المشاريع",
+      projectsSectionDescription:
+        "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
       title: "المحادثة",
       description: "خصّص طريقة عمل المحادثة على هذا الجهاز.",
       modelSelection: {
@@ -889,12 +1318,32 @@ export const ar = {
         compareChat: "مقارنة المحادثات",
         exportChat: "تصدير المحادثة",
       },
+      pastedTextThreshold: "ضغط النصوص الملصقة الطويلة",
+      pastedTextThresholdDescription: "النص الملصق الأطول من هذا الحد يصبح مرفق \u200e.txt بدلاً من ملء مربع الرسالة. اضغط {shortcut} للصق في مربع الرسالة على أي حال.",
+      pastedTextThresholdOff: "إيقاف",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
       modelDisclaimerDescription:
         'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',
+      projectAttachments: "مشاركة الملفات عبر المشروع",
+      projectAttachmentsDescription:
+        "الإعداد الافتراضي للملفات المرفقة في محادثة تنتمي إلى مشروع: فهرستها للمشروع بأكمله حتى تتمكن كل محادثة فيه من استخدامها. يمكن لكل محادثة تجاوز ذلك من قائمة الإرفاق.",
+      rememberParamsPerModel: "تذكر الإعدادات لكل نموذج",
+      rememberParamsPerModelDescription:
+        "عند تبديل النموذج تُستعاد درجة الحرارة والموجّه وبقية الإعدادات التي استخدمتها آخر مرة مع ذلك النموذج. عند الإيقاف تبقى مجموعة إعدادات واحدة لكل النماذج.",
+      thinking: {
+        collapseByDefault: "طيّ التفكير افتراضيًا",
+        collapseByDefaultDescription:
+          "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
+      },
+      webSearch: {
+        title: "البحث على الويب",
+        images: "عرض الصور من البحث على الويب",
+        imagesDescription:
+          "يتيح للبحث على الويب إرجاع صور، ويجلب صورة لكل عنصر تعدّده الإجابة. يجلب Unsloth الصور المصغّرة ويغيّر حجمها، لذا لا يتصل المتصفح بمضيفي الصور أبدًا.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "طي كتل HTML",
@@ -914,7 +1363,7 @@ export const ar = {
       exportingAction: "جارٍ التصدير...",
       exportConversations: "تصدير العناصر الأخيرة والمشاريع",
       exportConversationsDescription:
-        "نزّل العناصر الأخيرة وحدها أو مع محادثات المشاريع بصيغة JSONL خام أو CSV أو ShareGPT JSONL، في ملف مجمّع أو في ملف لكل محادثة.",
+        "نزّل العناصر الأخيرة وحدها أو مع محادثات المشاريع بصيغة Training JSONL أو CSV أو ShareGPT JSONL، في ملف مجمّع أو في ملف لكل محادثة. يتوفر Message JSONL لكل محادثة فقط.",
       exportConversationsAction: "تصدير",
       exportScopeRecents: "العناصر الأخيرة",
       exportScopeAll: "العناصر الأخيرة + المشاريع",
@@ -922,12 +1371,14 @@ export const ar = {
       exportPerChatSuffix: "(لكل محادثة)",
       importChats: "استيراد المحادثات",
       importChatsDescription:
-        "استيراد ملف بصيغة JSONL أو NDJSON أو CSV إلى العناصر الأخيرة.",
+        "استيراد ملف تصدير من Open WebUI أو JSONL أو NDJSON أو CSV إلى الأخيرة.",
       importChatsAction: "استيراد",
       importNoConversations: "لم يُعثر على محادثات في الملف.",
       importedOneChat: "تم استيراد محادثة واحدة إلى العناصر الأخيرة.",
       importedChatCount:
         "تم استيراد المحادثات إلى العناصر الأخيرة. العدد: {count}.",
+      importingChats: "جارٍ استيراد المحادثات: {count} حتى الآن ({percent}%)...",
+      importedChatCountPartial: "تم استيراد {count} محادثة إلى الأخيرة؛ تعذّر حفظ {failed} منها.",
       importFailed: "فشل الاستيراد.",
       clearHistory: "مسح سجل المحادثات",
       clearHistoryDescription: "حذف سجل المحادثات من هذا الجهاز.",
@@ -973,7 +1424,14 @@ export const ar = {
         "أدر سجل المحادثات والملفات المرفوعة المخزّنة على هذا الجهاز.",
       archivedChats: "المحادثات المؤرشفة",
       archivedChatsDescription: "اعرض المحادثات التي أرشفتها وأدرها.",
+      archivedImages: "الصور المؤرشفة",
+      archivedImagesDescription: "اعرض الصور التي أرشفتها وأدرها.",
+      archivedVideos: "الفيديوهات المؤرشفة",
+      archivedVideosDescription: "اعرض الفيديوهات التي أرشفتها وأدرها.",
       manageAction: "إدارة",
+      manageChats: "إدارة المحادثات",
+      manageChatsDescription:
+        "حدد عدة محادثات لنقلها أو تثبيتها أو أرشفتها أو تصديرها أو حذفها.",
       exportArchivedChats: "تصدير",
       exportingArchivedChats: "جارٍ التصدير...",
       exportedOneArchivedChat: "تم تصدير محادثة مؤرشفة واحدة",
@@ -996,6 +1454,9 @@ export const ar = {
       confirmBeforeDeleting: "التأكيد قبل الحذف",
       confirmBeforeDeletingDescription:
         "يطلب تأكيدًا قبل حذف أي محادثة. عطّله للحذف الفوري.",
+      alwaysDeleteFiles: "حذف الملفات دائمًا",
+      alwaysDeleteFilesDescription:
+        "حذف المحادثة يزيل أيضًا مجلد بيئة العزل الخاص بها من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
       filesSection: "الملفات",
       uploadedFiles: "الملفات المرفوعة",
       uploadedFilesDescription:
@@ -1017,6 +1478,11 @@ export const ar = {
     connections: {
       title: "الاتصالات",
       description: "إدارة المزوّدين والاتصالات الخارجية.",
+    },
+    remoteLan: {
+      title: "الوصول عن بُعد والشبكة المحلية",
+      description:
+        "الوصول إلى Unsloth من أجهزتك الأخرى عبر شبكتك المحلية أو عنوان URL عام مؤقت.",
     },
     apiKeys: {
       title: "API",
@@ -1190,24 +1656,8 @@ export const ar = {
       modelTooltip: "النموذج الأساسي الذي تريد ضبطه.",
       methodTooltip: "طريقة تدريب النموذج. يحدّث LoRA وQLoRA محوّلات صغيرة بدلاً من جميع الأوزان.",
       datasetTooltip: "بيانات التدريب المستخدمة لضبط النموذج.",
-      hfTokenLabel: "رمز Hugging Face",
       hfTokenDescription:
         "مطلوب للنماذج ومجموعات البيانات المقيّدة أو الخاصة.",
-      hfTokenGet: "الحصول على رمز",
-      hfTokenChecking: "جارٍ التحقق من الرمز…",
-      modelPickerDescription:
-        "ابحث في Hugging Face أو اختر نموذجًا قابلًا للتدريب موجودًا على هذا الجهاز.",
-      trainingMethod: "طريقة التدريب",
-      trainingMethodDescription: "اختر كيفية الضبط الدقيق لـ {model}",
-      trainingMethodTooltip:
-        "يستخدم QLoRA تكميم 4 بت لتقليل استخدام VRAM إلى الحد الأدنى. يستخدم LoRA أوزان 16 بت، بينما يحدّث الضبط الدقيق الكامل جميع الأوزان.",
-      datasetPickerDescription:
-        "ابحث في Hugging Face أو اختر مجموعة بيانات موجودة على هذا الجهاز.",
-      uploadDataset: "تحميل مجموعة بيانات",
-      uploadDatasetDescription: "يدعم CSV وJSONL وJSON وParquet.",
-      chooseFile: "اختيار ملف",
-      format: "التنسيق",
-      autoDetect: "اكتشاف تلقائي",
       uploadLocalLabel: "أو حمّل ملفًا محليًا",
       sourceBrowse: "استعراض",
       releaseToUpload: "أفلت للتحميل",
@@ -1263,6 +1713,12 @@ export const ar = {
         "مجموعة البيانات هذه غير موجودة على الجهاز بعد. سيُنزّلها التدريب تلقائيًا.",
       noticeDatasetPartial:
         "سيُكمل التدريب التنزيل غير المكتمل لمجموعة البيانات قبل قراءتها.",
+      noticeTransformersUpgrade:
+        "لا يدعم أي إصدار مثبَّت من transformers هذه البنية بعد. عند بدء التشغيل سيُعرض تثبيت transformers {version} أولاً.",
+      noticeSixteenBitOnly:
+        "تتدرَّب هذه البنية بـ LoRA بدقة 16 بت: خيار 4 بت غير متاح لها، لذا يحتاج التشغيل ذاكرة VRAM أكبر بكثير من QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "تثبيت ذلك الإصدار بدل الإبقاء على شيفرة النموذج نفسه ينقل هذا التشغيل إلى LoRA بدقة 16 بت، وهو يحتاج ذاكرة VRAM أكبر بكثير من QLoRA.",
       advancedSettings: "الإعدادات المتقدمة",
       defaultAdvancedSettings: "الإعدادات الافتراضية",
       nonDefaultAdvancedSettings: "{count} غير افتراضي",
@@ -1325,8 +1781,8 @@ export const ar = {
         "لا يمكن استخدام مخرجات المهايئ كنماذج أساسية للتدريب.",
       reasonNotTrainable: "هذا النموذج الموجود على الجهاز غير قابل للتدريب.",
       reasonUnsupportedFormat: "تنسيق هذا النموذج غير مدعوم للتدريب.",
-      vramNeeds: "يحتاج إلى نحو {est}GB من VRAM (GPU: {total}GB)",
-      vramTight: "نحو {est}GB من VRAM (المساحة ضيقة على {total}GB)",
+      vramNeeds: "يحتاج إلى نحو {est}GB من VRAM (GPU: {total}GiB)",
+      vramTight: "نحو {est}GB من VRAM (المساحة ضيقة على {total}GiB)",
       vramApprox: "نحو {est}GB من VRAM",
       sourceModelsFolder: "مجلد النماذج",
       sourceHfCache: "ذاكرة HF المؤقتة",
@@ -1373,23 +1829,6 @@ export const ar = {
     loadingRuntime: "جارٍ تحميل بيئة تشغيل التدريب...",
     checkingSupport: "جارٍ التحقق من دعم هذا الجهاز للتدريب...",
     backToHistory: "العودة إلى السجل",
-    sections: {
-      model: "النموذج",
-      dataset: "مجموعة البيانات",
-      params: "المعلمات",
-      training: "التدريب",
-      charts: "الرسوم البيانية",
-      progress: "تقدم التدريب",
-    },
-    configure: {
-      title: "الإعداد",
-      description: "اختر نموذجًا ومجموعة بيانات وإعدادات التدريب.",
-      startTraining: "بدء التدريب",
-      starting: "جارٍ البدء...",
-      loadingModel: "جارٍ تحميل النموذج...",
-      checkingDataset: "جارٍ التحقق من مجموعة البيانات...",
-      trainingConfig: "تكوين التدريب",
-    },
     dataset: {
       selectors: {
         subset: "المجموعة الفرعية",
@@ -1412,7 +1851,6 @@ export const ar = {
         manualTooLong: "استخدم 128 حرفًا أو أقل.",
         manualInvalid: "تحتوي هذه القيمة على أحرف غير مدعومة.",
       },
-      source: "مصدر مجموعة البيانات",
       sourceAriaLabel: "مصدر مجموعة البيانات",
       localDataset: "مجموعة بيانات محلية",
       localDatasetRows: " / عدد الصفوف: {count}",
@@ -1429,8 +1867,6 @@ export const ar = {
       fileTooLarge: "الملف كبير جدًا",
       fileTooLargeDescription:
         "حجم {file} هو {size}. تدعم عمليات تحميل بيانات التدريب حجمًا يصل إلى {limit}.",
-      uploadLimitsHint:
-        "CSV وJSONL وJSON وParquet · بحد أقصى {limit}؛ PDF/DOCX/TXT ← Learning Recipes",
       documentRedirect: {
         title: "يجب تحويل هذا الملف أولًا",
         genericFile: "هذا الملف",
@@ -1515,7 +1951,6 @@ export const ar = {
       uploadOneFileAtATime: "ارفع ملفًا واحدًا في كل مرة",
       uploadSingleFileDescription:
         "لا يمكن رفع أكثر من ملف واحد لمجموعة بيانات التدريب.",
-      preview: "معاينة مجموعة البيانات",
       previewLoadingHuggingFace:
         "جارٍ جلب معاينة مجموعة البيانات من Hugging Face...",
       previewLoading: "جارٍ تحميل المعاينة...",
@@ -1537,8 +1972,6 @@ export const ar = {
         requiredDescription:
           "عيّن أدوارًا للأعمدة باستخدام القوائم المنسدلة في الرؤوس. يجب تعيين {required} على الأقل.",
       },
-      split: "التقسيم",
-      subset: "المجموعة الفرعية",
       s3: {
         title: "تكوين S3",
         description:
@@ -1549,20 +1982,11 @@ export const ar = {
         regionPlaceholder: "us-east-1",
         prefix: "بادئة المسار",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "مسار اختياري داخل الحاوية إلى ملفات مجموعة البيانات",
         accessKeyId: "معرّف مفتاح الوصول",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "مفتاح الوصول السري",
         secretAccessKeyPlaceholder: "مفتاح الوصول السري لـ AWS الخاص بك",
         useIamRole: "استخدام دور IAM",
-        useIamRoleTooltip:
-          "استخدم بيانات اعتماد دور IAM بدلاً من مفاتيح الوصول (موصى به لـ EC2/SageMaker)",
-        testConnection: "اختبار الاتصال",
-        connectionSuccess: "تم الاتصال بحاوية S3 بنجاح",
-        connectionFailed: "فشل الاتصال بحاوية S3",
-        comingSoon: "تكامل S3 قريبًا",
-        comingSoonDescription:
-          "يتطلب تحميل مجموعات بيانات S3 مكتبة boto3. هذه الميزة قيد التطوير.",
       },
     },
     params: {
@@ -1759,7 +2183,6 @@ export const ar = {
         "تم حذف العملية، لكن تعذّرت إزالة ملفاتها.",
       deleteArtifactsRetainedError:
         "تعذّرت إزالة ملفات المحوّل، لذلك تم الاحتفاظ بعملية التدريب في السجل.",
-      emptyTitle: "لا توجد عمليات تدريب بعد",
       emptyDescription:
         "لا توجد عمليات تدريب بعد. ابدأ أول عملية تدريب في علامة تبويب الإعداد.",
       loadError: "فشل تحميل عمليات التدريب",
@@ -1772,9 +2195,6 @@ export const ar = {
       deleteTitle: "حذف عملية التدريب؟",
       deleteDescription:
         "سيؤدي هذا إلى حذف عملية التدريب هذه وجميع مقاييسها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
-      runCount: "{count} عملية",
-      oneRun: "عملية واحدة",
-      resume: "استئناف",
       resumeTraining: "استئناف التدريب",
       resuming: "جارٍ الاستئناف...",
       deleteRun: "حذف العملية",
@@ -1907,9 +2327,6 @@ export const ar = {
       dataset: "مجموعة البيانات",
       datasetStreaming: "مجموعة البيانات: تُقرأ بالتدفّق (من دون تنزيل كامل)",
       modelWeights: "أوزان النموذج",
-    },
-    tour: {
-      guidedTour: "جولة إرشادية",
     },
   },
   modelMemory: {

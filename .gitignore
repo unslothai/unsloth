@@ -208,9 +208,6 @@ tmp/
 **/node_modules/
 auth.db
 
-# Packaging snapshot of the root CHANGELOG.md (written by build.sh)
-studio/CHANGELOG.md
-
 # Tauri local build/generated output
 studio/src-tauri/target/
 studio/src-tauri/gen/
@@ -250,3 +247,8 @@ logs/
 
 # Audio fixture downloaded by tests/saving/text_to_speech_models at import time.
 Speech_12dB_s16.flac
+
+# Generated at test time by tests/studio/install/test_selection_logic.py, which points
+# storage_roots.studio_root at it. It is a mutable SQLite runtime database, not a fixture,
+# so a test run or an Unsloth start rewrites it and dirties the checkout.
+.studio-test-root/

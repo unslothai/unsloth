@@ -468,7 +468,7 @@ def client(monkeypatch):
     return c
 
 
-# Studio-relative paths: the route resolves/contains them before spawn.
+# Unsloth-relative paths: the route resolves/contains them before spawn.
 _BODY = {
     "base_model": "stabilityai/sdxl-turbo",
     "data_dir": "uploads/my-images",
@@ -482,7 +482,7 @@ def test_route_start_ok(client):
     assert r.status_code == 200, r.text
     assert r.json() == {"job_id": "job-123", "status": "running"}
     assert client._fake.started_with["base_model"] == "stabilityai/sdxl-turbo"
-    # Paths were resolved to absolute Studio-contained locations before spawn.
+    # Paths were resolved to absolute Unsloth-contained locations before spawn.
     from pathlib import Path
 
     assert Path(client._fake.started_with["data_dir"]).is_absolute()
@@ -629,7 +629,9 @@ def test_route_start_preflights_gated_base_off_the_coroutine_thread(client, monk
     assert threads["preflight"] is not threads["inline"]  # offloaded to a worker, not run inline
 
 
-def test_a_clip_trained_family_is_not_turned_away_by_the_clip_refusal(client, monkeypatch):
+def test_a_clip_trained_family_is_not_turned_away_by_the_clip_refusal(
+    client, monkeypatch, dit_train_host
+):
     """The refusal exists to protect the IMAGE discovery, so it must not outrank a clip family.
 
     It ran unconditionally and fires on any folder with a clip in it, above the discovery that
@@ -665,7 +667,7 @@ def test_a_clip_trained_family_is_not_turned_away_by_the_clip_refusal(client, mo
     assert len(consulted) == 1
 
 
-def test_a_clip_family_still_refuses_a_folder_holding_stills(client, monkeypatch):
+def test_a_clip_family_still_refuses_a_folder_holding_stills(client, monkeypatch, dit_train_host):
     """Exempting a clip family from the clip refusal must not exempt it from the mixed case.
 
     discover_clip_caption_pairs enumerates video extensions only, so a still in a clip folder
@@ -1046,7 +1048,7 @@ def test_route_start_rejects_nonpositive_snr_gamma(client):
 
 
 def test_route_start_rejects_uncontained_paths(client):
-    # An absolute path outside the Studio dataset roots is a 400, not silently accepted.
+    # An absolute path outside the Unsloth dataset roots is a 400, not silently accepted.
     r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "/etc"})
     assert r.status_code == 400
 

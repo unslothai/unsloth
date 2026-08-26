@@ -19,13 +19,15 @@ import { WebUpdateBanner } from "@/components/web/update-banner";
 import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { DeepLinkHandler } from "@/features/deep-links";
-import { DownloadManagerPanel } from "@/features/hub/download-manager";
+import {
+  DownloadManagerPanel,
+  dismissStartToasts,
+} from "@/features/hub/download-manager";
 import { LoadedModelsIndicator } from "@/features/loaded-models";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
   applyCustomizationToDocument,
   useAppearanceCustomStore,
-  useStackGeometry,
   useTheme,
 } from "@/features/settings";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
@@ -33,6 +35,8 @@ import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
+import { getToastOffsets } from "@/lib/toast-offset";
+import { Z_LAYER } from "@/lib/z-layers";
 import { useRouterState } from "@tanstack/react-router";
 import { MotionConfig } from "motion/react";
 import {
@@ -55,8 +59,8 @@ import {
   type MeasuredWindowLayout,
   type WindowLayoutGuard,
   finalizeAppWindowLayout,
-  shouldFinishWindowLayoutWait,
   measureWindowLayout,
+  shouldFinishWindowLayoutWait,
 } from "./window-layout-lifecycle";
 
 interface AppProviderProps {
@@ -72,6 +76,15 @@ type TauriMonitor = NonNullable<
 
 // Keep in step with MOBILE_BREAKPOINT in hooks/use-mobile.ts.
 const MIN_DESKTOP_LAYOUT_WIDTH = 768;
+
+// Room the corner rail keeps around its cards so its overflow clip does not cut
+// their shadows off (#9246). Sized off the rendered blur, not the radius:
+// below, dark's 0 8px 28px -6px is one level of #181818 by 16px and light's is
+// one level of white by 8px; above, light ends by 6px and dark is under a level
+// by 8px. The rail sits on `bottom-0` and its bottom padding carries the cards
+// back up, so they still land 16px off the corner.
+const STACK_SHADOW_GUTTER_BOTTOM = 16;
+const STACK_SHADOW_GUTTER_TOP = 8;
 
 // Logical px per CSS px: webview zoom above the display scale (Windows text
 // scaling); 1 if none.
@@ -252,8 +265,9 @@ async function applyAppWindowLayout(
 ): Promise<void> {
   const windowModule = await import("@tauri-apps/api/window");
   const { invoke } = await import("@tauri-apps/api/core");
-  const { restoreStateCurrent, StateFlags } =
-    await import("@tauri-apps/plugin-window-state");
+  const { restoreStateCurrent, StateFlags } = await import(
+    "@tauri-apps/plugin-window-state"
+  );
   if (!isCurrent()) return;
 
   const win = windowModule.getCurrentWindow();
@@ -377,7 +391,6 @@ function TauriUpdateLayer({
   appContent: ReactNode;
 }) {
   const update = useTauriUpdate(isExternalServer);
-  const stack = useStackGeometry();
   const isUpdating =
     update.status === "updating-backend" ||
     update.status === "downloading" ||
@@ -397,9 +410,23 @@ function TauriUpdateLayer({
   ) : (
     // Capped like the browser stack: the download panel shares it, so both must fit.
     <div
-      ref={stack.ref}
-      className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
-      style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
+      // Scrolls at the cap rather than spilling cards off screen: at a large
+      // type size the banner floors alone exceed it. Wheel over a card scrolls
+      // this box and focus scrolls into it, so the fold is reachable while the
+      // rail stays click-through.
+      // The gutter keeps the card shadows out of that clip: across, cancelled
+      // by the negative margin; below and above, by the block padding. The
+      // cards still land on 16px, since the box sits on the floor and the
+      // bottom gutter carries them back up.
+      className="pointer-events-none fixed bottom-0 right-4 -mx-3 flex max-h-[calc(100dvh_-_8px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
+      // Block gutter in px, never a spacing utility: those are rem, and at any
+      // root but 16px the cards would drift off the corner. Across stays a
+      // utility, since px-3 and -mx-3 cancel whatever a rem is worth.
+      style={{
+        paddingTop: STACK_SHADOW_GUTTER_TOP,
+        paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+        zIndex: Z_LAYER.OVERLAY_STACK,
+      }}
     >
       <UpdateBanner
         status={update.status}
@@ -428,14 +455,12 @@ function TauriUpdateLayer({
 }
 
 const HIDDEN_TITLEBAR_SIDEBAR_ROUTES = new Set([
-  "/onboarding",
   "/login",
   "/change-password",
   "/signup",
 ]);
 
 const WEB_UPDATE_HIDDEN_ROUTES = new Set([
-  "/onboarding",
   "/login",
   "/change-password",
   "/signup",
@@ -513,7 +538,6 @@ function DesktopChromeVarsEffect({
 
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const stack = useStackGeometry();
   const {
     status,
     logs,
@@ -551,7 +575,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     };
   }, []);
 
-
   useEffect(() => {
     if (!isTauri) return;
     let disposed = false;
@@ -560,16 +583,18 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     void wasLaunchedHidden().then(async (hiddenAtLaunch) => {
       if (!hiddenAtLaunch || disposed) return;
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      const unlisten = await getCurrentWindow().onFocusChanged(({ payload }) => {
-        if (!payload || disposed) return;
-        stopListening?.();
-        stopListening = undefined;
-        // Native tray reveal focuses the window. Re-run the deferred layout now
-        // that currentMonitor() can resolve the restored display.
-        launchedHidden = Promise.resolve(false);
-        appliedWindowModeRef.current = null;
-        setWindowRevealRevision((revision) => revision + 1);
-      });
+      const unlisten = await getCurrentWindow().onFocusChanged(
+        ({ payload }) => {
+          if (!payload || disposed) return;
+          stopListening?.();
+          stopListening = undefined;
+          // Native tray reveal focuses the window. Re-run the deferred layout now
+          // that currentMonitor() can resolve the restored display.
+          launchedHidden = Promise.resolve(false);
+          appliedWindowModeRef.current = null;
+          setWindowRevealRevision((revision) => revision + 1);
+        },
+      );
       if (disposed) unlisten();
       else stopListening = unlisten;
     });
@@ -680,9 +705,22 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         {/* Capped to the viewport, or a long download list plus expanded notes
             pushes the top of the stack off screen. */}
         <div
-          ref={stack.ref}
-          className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
-          style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
+          // Scrolls at the cap rather than spilling cards off screen: at a
+          // large type size the banner floors alone exceed it. Wheel over a
+          // card scrolls this box and focus scrolls into it, so the fold is
+          // reachable while the rail stays click-through.
+          // The gutter keeps the card shadows out of that clip: across,
+          // cancelled by the negative margin; below and above, by the block
+          // padding. The cards still land on 16px, since the box sits on the
+          // floor and the bottom gutter carries them back up.
+          className="pointer-events-none fixed bottom-0 right-4 -mx-3 flex max-h-[calc(100dvh_-_8px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
+          // Block gutter in px, never a spacing utility: those are rem, and at
+          // any root but 16px the cards would drift off the corner.
+          style={{
+            paddingTop: STACK_SHADOW_GUTTER_TOP,
+            paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+            zIndex: Z_LAYER.OVERLAY_STACK,
+          }}
         >
           <WebUpdateBanner
             positioned={false}
@@ -838,9 +876,20 @@ const REDUCED_MOTION_MAP = {
 } as const;
 
 export function AppProvider({ children }: AppProviderProps) {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const toastOffsets = getToastOffsets(
+    pathname,
+    isTauri,
+    shouldUseCustomWindowTitlebar(),
+  );
   const reduceMotion = useAppearanceCustomStore(
     (s) => s.customization.reduceMotion,
   );
+  // A start toast describes the surface it was raised on, and lasts 8s from a
+  // root-level Toaster; see dismissStartToasts for what it lands on otherwise.
+  useEffect(() => {
+    dismissStartToasts();
+  }, [pathname]);
   return (
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>
@@ -853,10 +902,10 @@ export function AppProvider({ children }: AppProviderProps) {
           visibleToasts={2}
           expand={true}
           closeButton={true}
-          // Clear the chat header buttons on the right. On desktop, also drop
-          // below the ~34px custom window titlebar so toasts don't cover the
-          // minimize / maximize / close controls.
-          offset={{ top: isTauri ? 46 : 12, right: 64 }}
+          // Header routes clear their controls. Desktop chrome also stays clear,
+          // except where a macOS page header overlays the native titlebar.
+          offset={toastOffsets.default}
+          mobileOffset={toastOffsets.mobile}
         />
       </TooltipProvider>
     </MotionConfig>

@@ -67,6 +67,8 @@ PHASE_SKIPPED = "skipped"
 
 _IDLE_JOB_FIELDS = dict(
     state = JOB_IDLE,
+    operation = None,
+    requested_backend = None,
     message = "",
     from_tag = None,
     to_tag = None,
@@ -137,12 +139,13 @@ def resolve_prebuilt_for_host(
     installer_script: Callable[[], Optional[Path]],
     log_message: str,
     extra_args: tuple[str, ...] = (),
+    mode: tuple[str, ...] = ("--resolve-prebuilt", "latest"),
 ) -> Optional[dict]:
-    """Run ``<installer> --resolve-prebuilt latest --output-format json`` (no
-    download); return the parsed payload or None. Fail-open: any error -> None so
-    a source build never blocks the app."""
+    """Run one of the installer's read-only resolvers (``--resolve-prebuilt latest``
+    by default) with ``--output-format json``; return the parsed payload or None.
+    Fail-open: any error -> None so a source build never blocks the app."""
     now = time.time()
-    cache_key = tuple(extra_args)
+    cache_key = (*mode, *extra_args)
     if not force_refresh and memo.get("key") == cache_key:
         if now - memo.get("at", 0.0) < RESOLVE_TTL_SECONDS:
             return memo.get("value")
@@ -154,8 +157,7 @@ def resolve_prebuilt_for_host(
         cmd = [
             sys.executable,
             str(script),
-            "--resolve-prebuilt",
-            "latest",
+            *mode,
             "--output-format",
             "json",
             *extra_args,
@@ -471,6 +473,8 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
             result = phase["run"](set_progress) or {}
         except Exception as exc:
             failure = phase.get("failure_message") or f"{name} update failed."
+            if phase.get("affects_job_reload", True):
+                reload_required = reload_required or bool(getattr(exc, "reload_required", False))
             with job_lock:
                 job["phases"][name].update(state = PHASE_ERROR, error = str(exc))
                 for later in phases[index + 1 :]:
@@ -485,7 +489,7 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
                     error = str(exc),
                     finished_at = utcnow(),
                 )
-                if done_messages:
+                if done_messages or reload_required:
                     job["reload_required"] = reload_required
             return
         set_progress(1.0)

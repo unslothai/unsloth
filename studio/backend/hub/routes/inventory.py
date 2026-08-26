@@ -9,7 +9,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Query
 
-from auth.authentication import get_current_subject
+from auth.authentication import allow_ambient_hf_token, get_current_subject
 from hub.dependencies import get_hf_token
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
@@ -23,7 +23,6 @@ from hub.schemas.downloads import (
 )
 from hub.schemas.inventory import (
     AddScanFolderRequest,
-    BrowseFoldersResponse,
     CachedGgufResponse,
     CachedModelsResponse,
     DeleteCachedModelResponse,
@@ -32,7 +31,6 @@ from hub.schemas.inventory import (
     HiddenModelsResponse,
     LocalModelListResponse,
     ModelsFolderResponse,
-    RecommendedFoldersResponse,
     OrphanCompanionsResponse,
     RemoveScanFolderResponse,
     ScanFolderInfo,
@@ -43,7 +41,6 @@ from hub.services.models import (
     companion_cleanup,
     deletion,
     downloads,
-    folder_browser,
     gguf_variants,
     local_inventory,
 )
@@ -82,20 +79,6 @@ def remove_scan_folder_endpoint(
     return local_inventory.remove_scan_folder_response(folder_id)
 
 
-@router.get("/recommended-folders", response_model = RecommendedFoldersResponse)
-def get_recommended_folders(current_subject: str = Depends(get_current_subject)):
-    return folder_browser.get_recommended_folders_response()
-
-
-@router.get("/browse-folders", response_model = BrowseFoldersResponse)
-def browse_folders(
-    path: Optional[str] = Query(None),
-    show_hidden: bool = Query(False),
-    current_subject: str = Depends(get_current_subject),
-):
-    return folder_browser.browse_folders_response(path, show_hidden)
-
-
 @router.get("/models-folder", response_model = ModelsFolderResponse)
 def get_models_folder(current_subject: str = Depends(get_current_subject)):
     return local_inventory.get_models_folder_response()
@@ -125,9 +108,14 @@ async def get_gguf_variants(
 async def download_model(
     body: DownloadModelRequest,
     hf_token: Optional[str] = Depends(get_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    return await downloads.download_model_response(body, hf_token)
+    return await downloads.download_model_response(
+        body,
+        hf_token,
+        allow_ambient_token = allow_ambient_token,
+    )
 
 
 @router.post("/download/cancel", response_model = CancelDownloadResponse, status_code = 202)

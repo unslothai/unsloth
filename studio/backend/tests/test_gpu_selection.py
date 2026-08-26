@@ -358,20 +358,22 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
     def test_uuid_parent_visibility_falls_back_to_torch(self):
         """UUID/MIG masks fall through nvidia to the torch fallback and
         still report visible devices using relative ordinals."""
+        # Inventory shape: this endpoint reads name and total and discards used, so
+        # it asks for the context-free helper.
         fake_torch_devices = [
             {
                 "index": 0,
                 "visible_ordinal": 0,
                 "name": "GPU-A",
                 "total_gb": 24.0,
-                "used_gb": 2.0,
+                "used_gb": None,
             },
             {
                 "index": 1,
                 "visible_ordinal": 1,
                 "name": "GPU-B",
                 "total_gb": 24.0,
-                "used_gb": 3.0,
+                "used_gb": None,
             },
         ]
         with (
@@ -379,7 +381,7 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
             patch("utils.hardware.hardware._torch_get_physical_gpu_count", return_value = 2),
             patch(
-                "utils.hardware.hardware._torch_get_per_device_info",
+                "utils.hardware.hardware._torch_get_device_inventory",
                 return_value = fake_torch_devices,
             ),
         ):

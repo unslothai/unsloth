@@ -43,7 +43,7 @@ Everything here fails CLOSED for the same reason. ``apply_activation_rotation`` 
 it cannot find, on a module that is not a Linear, on an ``in_features`` the group does not
 divide, and on a rotation kind it does not implement. Its caller (the prequant loader) turns that
 into a refused checkpoint and a dense fallback, which is slow but correct. Rotated artifacts also
-carry their own format tag, so a Studio old enough to predate this module rejects them outright
+carry their own format tag, so an Unsloth old enough to predate this module rejects them outright
 instead of running them unrotated.
 
 torch is imported inside the functions, matching the other lazily-loaded inference helpers, so
@@ -52,11 +52,12 @@ reading the metadata contract costs no import.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any, Iterable, Optional
 
 # ── the metadata contract, carried in the prequant checkpoint's own ``metadata`` dict ──────────
 # The rotation KIND. A value this module does not implement is refused, so a future scheme can be
-# added without a released Studio silently treating it as this one.
+# added without a released Unsloth silently treating it as this one.
 CONVROT_KIND = "convrot_hadamard_v1"
 # Key naming mirrors the adaLN curve contract next door (``adaln_form`` / ``curve_dim`` /
 # ``curve_grid``): a form tag plus the parameters needed to reproduce the form.
@@ -91,7 +92,7 @@ def is_power_of_four(size: Any) -> bool:
 
 # ── the rotation itself ───────────────────────────────────────────────────────────────────────
 # Mirrors comfy-kitchen's ``_build_hadamard`` / ``_rotate_activation`` / ``_rotate_weight``, in a
-# few lines of torch rather than a dependency on a wheel Studio does not ship.
+# few lines of torch rather than a dependency on a wheel Unsloth does not ship.
 
 _HADAMARD_CACHE: dict = {}
 
@@ -163,9 +164,18 @@ def rotate_convrot_weight_(module: Any, group_size: int) -> None:
     module.weight.data = rotated.to(weight.dtype)
 
 
+@lru_cache(maxsize = None)
 def convrot_linear_class() -> Any:
     """The ``nn.Linear`` subclass that rotates its input, built lazily so importing this module
-    never imports torch.
+    never imports torch, and built exactly ONCE.
+
+    The cache is not a micro-optimisation, it is the difference between one compiled graph and
+    dozens. A class defined inside a function is a NEW class object on every call, and
+    ``torch.compile`` guards each frame on ``___check_type_id`` of the modules it closes over. So
+    handing every rotated projection its own ConvRotLinear made each one look like a different
+    type and retraced the block it lives in: measured 23 recompiles against bfloat16's 1 on the
+    same job, 178 s of first-call compile against 14 s, on a denoiser with 350 rotated
+    projections. Sharing one class collapses that back to a single trace.
 
     A CLASS SWAP rather than a wrapper module, and that is load-bearing twice over: the module
     stays an ``nn.Linear``, so torchao's filter and ``quantize_`` treat it exactly as they treat

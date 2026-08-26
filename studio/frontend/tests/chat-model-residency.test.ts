@@ -128,7 +128,11 @@ test("the picker's Loaded badge asks residency, not the selection", () => {
     ),
     "utf8",
   );
-  assert.match(pickers, /const loadedModelId = chatModelLoaded\(\{/);
+  assert.match(pickers, /const chatLoadedModelId = chatModelLoaded\(\{/);
+  assert.match(
+    pickers,
+    /const loadedModelId = loadedModelIdOverride \?\? chatLoadedModelId/,
+  );
   assert.match(pickers, /residentCheckpoint,/);
   assert.doesNotMatch(
     pickers,
@@ -187,9 +191,11 @@ test("an eviction drops the pick, not just the loaded marks", () => {
     ),
     "utf8",
   );
+  // Anchored on the branch, not on the file: other catches sit above it now.
+  const branchStart = hook.indexOf("} else if (!statusRes.active_model");
   const branch = hook.slice(
-    hook.indexOf("} else if (!statusRes.active_model"),
-    hook.indexOf("} catch (error) {"),
+    branchStart,
+    hook.indexOf("} catch (error) {", branchStart),
   );
   assert.match(branch, /clearCheckpoint\(\)/);
   // Guarded twice: a model that was never confirmed resident has nothing to

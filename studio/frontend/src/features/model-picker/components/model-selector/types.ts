@@ -10,13 +10,27 @@ export interface ModelOption {
   description?: string;
   icon?: ReactNode;
   isGguf?: boolean;
+  /** Fixed quant used by a specialized on-device runtime. Generic Hub GGUF
+   * rows discover their variants dynamically instead. */
+  deviceQuant?: string;
+  /** Fallback metadata for task-owned caches that an older generic inventory
+   * cannot describe. Current servers normally provide a full cached row. */
+  deviceSize?: string;
+  deviceSizeBytes?: number;
+  deviceLoaded?: boolean;
 }
 
 export interface LoraModelOption extends ModelOption {
   baseModel?: string;
   updatedAt?: number;
   source?: "training" | "exported" | "local";
+
+  /** This local GGUF is one directly loadable artifact, not a repo whose quant
+   * variants must be listed first. */
+  isDirectGguf?: boolean;
   exportType?: "lora" | "merged" | "gguf";
+  /** Codec when the checkpoint fine-tunes an audio model, else null. */
+  audioType?: string | null;
 }
 
 export interface ExternalModelOption extends ModelOption {
@@ -37,7 +51,7 @@ export interface ModelSelectorChangeMeta {
   /** Native GGUF context, threaded so a staged pick can seed the slider. */
   contextLength?: number | null;
   /** Direct local .gguf file picked without a variant (custom folder / LM
-   *  Studio). Marks it as a GGUF source for the deferred-load staging flow. */
+   *  Unsloth). Marks it as a GGUF source for the deferred-load staging flow. */
   isGguf?: boolean;
   /** Staged metadata confirmed the separate DiffusionGemma runner. */
   isDiffusion?: boolean;
@@ -47,6 +61,9 @@ export interface ModelSelectorChangeMeta {
   loadId?: string | null;
   /** Native path token so an active-model reload can reopen a file-picked GGUF. */
   nativePathToken?: string;
+  /** Hub pipeline tag for an uncurated pick, so a task page can tell which task
+   *  the repo does when it is not in the page's catalog. */
+  pipelineTag?: string | null;
   nativePathExpiresAtMs?: number | null;
 }
 

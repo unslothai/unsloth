@@ -70,6 +70,80 @@ export type Scenario = {
   download: (request: any) => string;
 };
 
+// The stored-arguments hydration the auto-load runs before it calls /load. Neutral
+// here on purpose: these scenarios are about the failure gate, not about which flags
+// a model launches with, and a stub that invented some would change the /load payload
+// every scenario asserts on. fetchLoadExtraArgs answers "nothing stored", which is
+// what a fresh install has, and the sanitizer is identity so a scenario that does set
+// llamaExtraArgs still sends exactly what it set.
+export async function loadManagedLlamaFlags(): Promise<any> {
+  return null;
+}
+export async function fetchLoadExtraArgs(
+  _loadId: string,
+  _aliasId?: string | null,
+  _variant?: string | null,
+): Promise<{ tokens: string[]; explicit: boolean }> {
+  return { tokens: [], explicit: false };
+}
+export function sanitizeStoredExtraArgs(
+  tokens: readonly string[],
+  _managed: ReadonlySet<string>,
+  _limits?: any,
+): string[] {
+  return [...tokens];
+}
+
+// The llama-server tuning group, mirroring
+// studio/frontend/src/features/chat/lib/server-tuning-fields.ts. Real logic rather
+// than a neutral stub: serverTuningLoadPayload spreads into the /load payload these
+// scenarios assert on, so a stub that always returned {} would keep passing if the
+// real one started sending a field. These are pure and import nothing, so copying
+// them costs only the drift this file already guards against by name.
+export function serverTuningLoadPayload(values: any): any {
+  return {
+    ...(values?.loadMode != null ? { load_mode: values.loadMode } : {}),
+    ...(values?.specDraftCacheDtype != null
+      ? { spec_draft_cache_type: values.specDraftCacheDtype }
+      : {}),
+    ...(values?.ctxCheckpoints != null
+      ? { ctx_checkpoints: values.ctxCheckpoints }
+      : {}),
+    ...(values?.cacheRam != null ? { cache_ram: values.cacheRam } : {}),
+  };
+}
+export function clearedServerTuningState(): any {
+  return {
+    loadMode: null,
+    loadedLoadMode: null,
+    specDraftCacheDtype: null,
+    loadedSpecDraftCacheDtype: null,
+    ctxCheckpoints: null,
+    loadedCtxCheckpoints: null,
+    cacheRam: null,
+    loadedCacheRam: null,
+  };
+}
+export function committedServerTuningState(values: any, isDiffusion = false): any {
+  if (isDiffusion) {
+    return clearedServerTuningState();
+  }
+  const loadMode = values?.loadMode ?? null;
+  const specDraftCacheDtype = values?.specDraftCacheDtype ?? null;
+  const ctxCheckpoints = values?.ctxCheckpoints ?? null;
+  const cacheRam = values?.cacheRam ?? null;
+  return {
+    loadMode,
+    loadedLoadMode: loadMode,
+    specDraftCacheDtype,
+    loadedSpecDraftCacheDtype: specDraftCacheDtype,
+    ctxCheckpoints,
+    loadedCtxCheckpoints: ctxCheckpoints,
+    cacheRam,
+    loadedCacheRam: cacheRam,
+  };
+}
+
 export const EVENTS: any[] = [];
 let SCENARIO: Scenario;
 export function setScenario(scenario: Scenario) {
@@ -94,6 +168,17 @@ async function getInferenceStatus() {
 function isExternalModelId(value: unknown) {
   return typeof value === "string" && value.startsWith("external::");
 }
+// chat-runtime-store.ts:
+//   return storedPreserveThinking ?? preserveThinkingDefaultFromLoad(resp);
+// No scenario here sets a stored preference, so the stub is the model-family
+// default the backend resolves, verbatim from resolve-preserve-thinking-default.ts:
+//   Boolean(resp.supports_preserve_thinking && resp.preserve_thinking_default)
+// Present because the sliced region calls it; without it every scenario in this
+// file fails on the harness guard rather than on anything it means to test.
+function resolvePreserveThinkingOnLoad(resp: any) {
+  return Boolean(resp?.supports_preserve_thinking && resp?.preserve_thinking_default);
+}
+
 function resolveInferenceCheckpointId(status: any) {
   return status.active_model
     ? (status.model_identifier ?? status.active_model)
@@ -150,6 +235,31 @@ function mlxRuntimeStateFrom(resp: any) {
     mlxKvQuantReason: resp.mlx_kv_quant_reason ?? null,
     chatTemplateOverrideReason: resp.chat_template_override_reason ?? null,
     mlxKvQuantNote: resp.mlx_kv_quant_note ?? null,
+  };
+}
+// Imported by chat-adapter.ts from ../utils/mmproj-fallback, and used by the auto-load
+// success toast to say how a load was degraded. Without a stub it is a bare
+// ReferenceError inside the retry loop, which scores as a failed load and fails every
+// scenario as a wrong-model assertion -- the exact shape the guard below exists to
+// catch, and the third time it has happened (see #7699).
+//
+// Mirrors the real composition rather than returning a fixed string: these scenarios do
+// not assert on toast copy, but a stub that ignored its arguments would let a call site
+// stop passing one of the two reasons without anything here noticing, which is the bug
+// this helper was introduced to fix. The exact wording lives in mmproj-fallback.ts and
+// is tested in studio/frontend/tests/mmproj-fallback.test.ts.
+function loadFallbackNotice(
+  baseTitle: string,
+  cpuFallbackReason: any,
+  mmprojFallbackReason: any,
+) {
+  const parts: string[] = [];
+  if (cpuFallbackReason) parts.push(`cpu:${cpuFallbackReason}`);
+  if (mmprojFallbackReason) parts.push(`mmproj:${mmprojFallbackReason}`);
+  return {
+    title: parts.length > 0 ? `${baseTitle} (${parts.join(", ")})` : baseTitle,
+    description: parts.length > 0 ? parts.join(" ") : undefined,
+    degraded: parts.length > 0,
   };
 }
 async function prepareHfTokenForUse(token: any) {
@@ -218,6 +328,10 @@ const toast: any = Object.assign(
     info: (msg: string) => EVENTS.push({ kind: "toast.info", msg }),
   },
 );
+
+function mmprojFallbackMessage(reason: string) {
+  return `mmproj fallback: ${reason}`;
+}
 
 async function tryAdoptServerActiveModel() { return false; }
 function resolveSpeculativeSettingsForLoad() {
@@ -1257,7 +1371,7 @@ def test_a_cached_text_generation_repo_still_auto_loads():
 
 def test_a_provisional_mac_platform_does_not_hide_a_remote_backends_models():
     """Before the probe lands chatOnly is a browser guess: a Mac browser on a
-    remote Linux Studio would hide every local safetensors model."""
+    remote Linux Unsloth would hide every local safetensors model."""
     safetensors = (
         "{ ...LOCAL_GGUF, id: 'st', load_id: 'st', path: '/models/st',"
         " model_format: 'safetensors' }"

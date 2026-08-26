@@ -17,6 +17,8 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - 'install.ps1'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
       - 'pyproject.toml'
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
@@ -25,6 +27,7 @@ on:
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/run-studio-ui-lane.sh'
       # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
   push:
@@ -32,11 +35,11 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -58,7 +61,11 @@ jobs:
       GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
       GGUF_VARIANT: UD-Q4_K_XL
       GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
-      STUDIO_PORT: '18896'
+      # No STUDIO_PORT here any more. One job-wide port was the right shape when
+      # one server ran at a time; the lanes each need their own, so the port now
+      # belongs beside the lane that owns it in run-studio-ui-lane.sh. Leaving a
+      # job-wide knob that nothing reads only invites a future step to set it and
+      # expect the lanes to follow.
       HF_HOME: ${{ github.workspace }}/hf-cache
       # Force UTF-8 for stdio so Python tools (hf download, Unsloth
       # CLI, etc.) can print Unicode characters like the success
@@ -119,12 +126,15 @@ jobs:
         # merge ref -- per GitHub's docs they "can only be restored by re-runs
         # of the pull request" -- while every PR *can* restore from the default
         # branch. So a PR-scoped save helps almost nothing and competes for the
-        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # per-repo cache budget, and when that budget is exceeded GitHub evicts
         # by least-recently-used, which deletes main's copies that all PRs share.
-        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
-        # same 4.6GB model held four times on four different PR refs and no copy
-        # on main at all. That is the thrash loop: PR misses -> downloads ->
-        # saves its own copy -> evicts main's -> next PR misses.
+        # This repo's budget is 50 GiB, not GitHub's 10GB default, and it was
+        # measured at 49.63 GiB across 258 entries -- 99.3% full, so eviction runs
+        # at the margin. 20.74 GiB of that (42%) is the SAME key held on several
+        # refs, and every one of those keys already has a copy on main, so the
+        # PR-scoped duplicates are redundant by construction. That is the thrash
+        # loop: PR misses -> downloads -> saves its own copy -> evicts main's ->
+        # next PR misses.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -174,6 +184,17 @@ jobs:
           Set-Content -LiteralPath (Join-Path $appDir 'launch-studio.vbs') -Value 'WScript.Echo "legacy"' -Encoding Unicode
           Write-Host "seeded legacy launch-studio.vbs at $appDir"
 
+      # 96s of a ~257s install on Windows (`[72s] building frontend...` -> `[168s]
+      # frontend built`, 37% of it), spent in five Windows jobs on every commit to
+      # produce byte-identical output. The key hashes exactly the paths
+      # studio/setup.ps1:3526-3549 checks before rebuilding, so a hit means the build
+      # inputs are byte-identical; the action's own reasoning, and the assertion that
+      # a hit was actually REUSED rather than rebuilt, live in
+      # .github/actions/frontend-dist-restore and -save.
+      - name: Restore the built frontend
+        id: fe-dist
+        uses: ./.github/actions/frontend-dist-restore
+
       - name: Install Unsloth (--local, --no-torch)
         # install.ps1 is the supported Windows installer. install.sh
         # has no Windows branch (apt-get / brew calls). The PS1
@@ -196,8 +217,30 @@ jobs:
           # -Command rather than -File: $ProgressPreference is a preference
           # variable, so it does not cross a process boundary on its own.
           $child = '$ErrorActionPreference = ''Stop''; $ProgressPreference = ''SilentlyContinue''; & ./install.ps1 --local --no-torch; exit $LASTEXITCODE'
-          pwsh -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1 | Tee-Object -FilePath logs/install.log
+          # Elapsed-seconds prefix, added to the STEP LOG only. Tee-Object writes
+          # logs/install.log upstream of this filter, so the artifact keeps exactly
+          # what install.ps1 produced and the readers of it are unaffected.
+          #
+          # install.ps1 and studio/setup.ps1 are deliberately untouched. This is a
+          # display filter over a stream the step already pipes, so there is no
+          # switch for the installer to interpret and no way for a real user's
+          # install to behave differently from this one. The install costs 268-292s
+          # here against 88s for the same install on Linux, and nothing in its
+          # output says where that goes.
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          pwsh -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1 |
+            Tee-Object -FilePath logs/install.log |
+            ForEach-Object { '[{0,4:N0}s] {1}' -f $sw.Elapsed.TotalSeconds, $_ }
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
+
+      # Paired with the restore above: asserts the hit was reused (a `building
+      # frontend` line after a hit fails the job -- otherwise the cache costs a
+      # download, saves nothing, and still reports a hit), then saves on main only.
+      - name: Save the built frontend
+        uses: ./.github/actions/frontend-dist-save
+        with:
+          cache-hit: ${{ steps.fe-dist.outputs.cache-hit }}
+          key: ${{ steps.fe-dist.outputs.key }}
 
       - name: Assert install.ps1 used the Windows llama.cpp prebuilt
         run: |
@@ -318,98 +361,143 @@ jobs:
         # packages. windows-latest ships the system frameworks
         # Chromium needs (Edge / WebView2) already.
         run: |
-          python -m pip install 'playwright>=1.45'
+          python -m pip install 'playwright>=1.45,<2'
           python -m playwright install chromium
 
-      - name: Reset auth + boot Unsloth
-        run: |
-          # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
-
-      - name: Wait for /api/health
-        run: |
-          bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
-
-      - name: Pass bootstrap password to the Playwright step
-        run: |
-          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
-          NEW="CIUi-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
-          NEW2="CIUi-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
-          echo "::add-mask::$OLD"
-          echo "::add-mask::$NEW"
-          echo "::add-mask::$NEW2"
-          echo "STUDIO_OLD_PW=$OLD"   >> "$GITHUB_ENV"
-          echo "STUDIO_NEW_PW=$NEW"   >> "$GITHUB_ENV"
-          echo "STUDIO_NEW2_PW=$NEW2" >> "$GITHUB_ENV"
-
-      - name: Drive the chat UI with Playwright
+      # Two lanes, concurrently, on one runner.
+      #
+      # These five Playwright suites ran one after another for ~788s of a 20.6
+      # minute job, 88% of it in steps over 60s, and this job was the last
+      # finisher on every sampled commit where no macOS job ran. They are
+      # disjoint -- each boots its own server and drives its own browser -- and
+      # the ports were ALREADY distinct. The only thing forcing sequence was
+      # shared state: boot-studio-api-only.sh hardcoded ~/.unsloth/studio/auth
+      # and every "pass the bootstrap password" step read that same path back.
+      # Teaching the script to honour UNSLOTH_STUDIO_HOME, the way its two
+      # siblings have since #9158, is the whole enabling change.
+      #
+      # The lane bodies live in run-studio-ui-lane.sh, which documents the state
+      # split and why there are two lanes and not five. Wait on BOTH before
+      # failing: backgrounding defeats `set -e`, and without an explicit
+      # wait-and-collect one lane's breakage hides the other's.
+      #
+      # AND BOUND BOTH. Nothing here used to have a deadline shorter than the
+      # job's own 45 minutes. Every wait inside the suites is per-operation --
+      # 60s default, 540s a turn, 1080s for the rapid-submit predicate -- and
+      # five turns of a stalled model reach the job cap before any single one of
+      # them fires. On the #9425 branch this step started at 04:33:01 and never
+      # returned; the runner killed the job at its cap and GitHub recorded the
+      # result as "cancelled", which `gh pr checks` renders as a failure and
+      # which reads exactly like ordinary concurrency supersession. See
+      # studio-backend-ci.yml, wedged the same way and bounded the same way.
+      #
+      # And it left nothing to read. The lane .out files are only cat'ed after
+      # both `wait`s return, so a stalled step prints NOTHING while it stalls;
+      # the `if: always()` artifact upload does not run when the runner kills
+      # the job at its cap; and Python block-buffers stdout into a file, so the
+      # buffer went down with the process. 48 minutes, no logs, no artifacts.
+      #
+      # So: `timeout` per lane, a heartbeat while they run, unbuffered stdout so
+      # what they printed survives being killed, and the server log tailed next
+      # to the lane log because a lane killed mid-turn is usually explained by
+      # the llama-server it was driving. A lane that wedges now fails, names
+      # itself, and leaves evidence, and its sibling still reports its own
+      # result instead of being buried with it.
+      - name: Drive the UI suites in two parallel lanes
+        # Bounds the whole step below the job's 45m cap even if `timeout` itself
+        # is defeated, and -- the point -- leaves room for "Upload Playwright
+        # artifacts" to actually run. ~7m of prologue precedes this step.
+        timeout-minutes: 28
         env:
-          BASE_URL: http://127.0.0.1:18896
-          PW_ART_DIR: logs/playwright
-          STUDIO_UI_STRICT: '1'
-          # windows-latest free runner is 4 vCPU / 16 GB; gemma-3-
-          # 270m turn latency under llama-server's CPU backend can
-          # crowd the 180s default (slower than ubuntu-latest on
-          # the same model). Keep the same generous budget the Mac
-          # job uses.
-          STUDIO_UI_TURN_TIMEOUT_MS: '540000'
-        run: |
-          mkdir -p logs/playwright
-          python tests/studio/playwright_chat_ui.py
-
-      - name: Stop Unsloth (chat-ui ends with Shutdown click; this is belt-and-suspenders)
-        if: always()
-        run: |
-          kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
-
-      - name: Edge permission controls
-        run: |
-          bash .github/scripts/run-studio-permission-browser.sh 18895 chromium msedge
-
-      # Real Edge, which is also the WebView2 the desktop app embeds on Windows.
-      - name: Loaded-models indicator (Edge)
-        run: |
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 chromium msedge
-
-      - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
-        run: |
-          bash .github/scripts/boot-studio-api-only.sh \
-            --port 18897 --log logs/studio_extra.log --pid-var STUDIO_EXTRA_PID
-
-      - name: Wait for /api/health on 18897
-        run: |
-          bash .github/scripts/wait-for-health.sh \
-            --port 18897 --log logs/studio_extra.log --tmp /tmp/health2.json
-
-      - name: Pass bootstrap pw for extra UI test
-        run: |
-          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
-          NEW="CIUiExtra-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
-          echo "::add-mask::$OLD"
-          echo "::add-mask::$NEW"
-          echo "STUDIO_EXTRA_OLD_PW=$OLD" >> "$GITHUB_ENV"
-          echo "STUDIO_EXTRA_NEW_PW=$NEW" >> "$GITHUB_ENV"
-
-      - name: Drive Compare/Recipes/Export/Unsloth/Settings with Playwright
-        env:
-          BASE_URL: http://127.0.0.1:18897
-          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
-          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
-          PW_ART_DIR: logs/playwright_extra
-          STUDIO_UI_STRICT: '1'
-          STUDIO_UI_TURN_TIMEOUT_MS: '540000'
           GGUF_REPO: ${{ env.GGUF_REPO }}
           GGUF_VARIANT: ${{ env.GGUF_VARIANT }}
+          # Block-buffered stdout is discarded when a wedged lane is killed,
+          # which is the one run whose output is worth having.
+          PYTHONUNBUFFERED: '1'
         run: |
-          mkdir -p logs/playwright_extra
-          python tests/studio/playwright_extra_ui.py
+          mkdir -p logs
+          # The backstop, not the first line of defence: the suites' own wall
+          # watchdogs should fire first and say which step they died on. 1500s
+          # is 3.6x the measured lane wall (375s chat, 413s extra) and 3x the
+          # slowest this step has ever been while succeeding (508s over 521
+          # runs). The failures it is here for sat at 2900s. SIGINT first so a
+          # suite can unwind and print the wait it was stuck on; SIGKILL 60s
+          # later for the native Windows processes MSYS cannot signal politely.
+          #
+          lane_timeout=1500
 
-      - name: Stop second Unsloth
-        if: always()
-        run: |
-          kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
-          sleep 2
+          # Which `timeout` matters here. C:\Windows\System32\timeout.exe is on
+          # PATH too, with entirely different semantics (`timeout /t N`), and
+          # this job prepends a shim directory to GITHUB_PATH -- so the bare
+          # name is not safe to resolve. Prefer the absolute coreutils path,
+          # accept a bare one that proves itself with --version (which System32
+          # does not answer), and fail loudly rather than silently running the
+          # lanes unbounded again: MinGit trims usr/bin, so this is worth
+          # checking rather than assuming.
+          lane_timeout_bin=""
+          for candidate in /usr/bin/timeout timeout; do
+            if "$candidate" --version >/dev/null 2>&1; then
+              lane_timeout_bin="$candidate"
+              break
+            fi
+          done
+          if [ -z "$lane_timeout_bin" ]; then
+            echo "::error::no GNU coreutils timeout on this runner; the UI lanes would run unbounded and a wedge would burn the whole job again. Install coreutils or bound the lanes another way."
+            exit 1
+          fi
+          echo "[lanes] bounding each lane with $lane_timeout_bin at ${lane_timeout}s"
+
+          pids=""
+          for lane in chat extra; do
+            "$lane_timeout_bin" --signal=INT --kill-after=60 "$lane_timeout" \
+              bash .github/scripts/run-studio-ui-lane.sh "$lane" \
+              >"logs/lane-$lane.out" 2>&1 &
+            pids="$pids $!:$lane"
+          done
+
+          # Without this the step is silent for its entire duration, so a stall
+          # is indistinguishable from progress while it is happening.
+          (
+            while sleep 60; do
+              for lane in chat extra; do
+                [ -f "logs/lane-$lane.out" ] || continue
+                echo "[heartbeat ${SECONDS}s] $lane: $(tail -n 1 "logs/lane-$lane.out" 2>/dev/null)"
+              done
+            done
+          ) &
+          heartbeat=$!
+
+          rc=0
+          for entry in $pids; do
+            lane="${entry##*:}"
+            status=0
+            wait "${entry%%:*}" || status=$?
+            [ "$status" -eq 0 ] && continue
+            rc=1
+            case "$status" in
+              124|137)
+                echo "::error::Windows UI lane $lane did not finish within ${lane_timeout}s and was killed. Its last output and its server log are below, and in the uploaded artifacts."
+                ;;
+              *)
+                echo "::error::Windows UI lane $lane failed (exit $status)"
+                ;;
+            esac
+          done
+          kill "$heartbeat" 2>/dev/null || true
+
+          for f in logs/lane-*.out; do
+            echo "::group::$f"
+            cat "$f"
+            echo "::endgroup::"
+          done
+          for f in logs/studio-lane-*.log; do
+            [ -f "$f" ] || continue
+            echo "::group::$f (tail)"
+            tail -n 80 "$f"
+            echo "::endgroup::"
+          done
+          exit "$rc"
+
 
       - name: Upload Playwright artifacts
         if: always()
@@ -417,13 +505,17 @@ jobs:
         with:
           name: windows-studio-ui-smoke-artifacts
           path: |
-            logs/studio.log
-            logs/studio_extra.log
+            logs/studio-lane-*.log
+            logs/lane-*.out
+            logs/boot-*.out
             logs/install.log
             logs/playwright
             logs/playwright-permissions-*
+            logs/playwright-indicator-*
             logs/playwright_extra
+            logs/playwright_update_banner
             logs/studio-permissions-*.log
+            logs/studio-indicator-*.log
           # 1 day, matching the repository-wide cap. A larger value here is
           # silently clamped to that cap today, so stating 7 only invites the
           # artifacts to re-inflate if the cap is ever raised.

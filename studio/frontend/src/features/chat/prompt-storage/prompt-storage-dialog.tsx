@@ -59,11 +59,29 @@ import { notifyChatHistoryUpdated } from "../api/chat-api";
 import { toolResultModelText } from "../api/chat-adapter";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
-import { createConversationMarkdownExporter } from "../utils/conversation-markdown-export";
 import {
+  buildNamedConversationsMarkdown,
+  createConversationMarkdownBuilder,
+  createConversationMarkdownExporter,
+} from "../utils/conversation-markdown-export";
+import { parseCsv } from "../utils/csv-parse";
+import {
+  canMergeConversationExport,
+  conversationJsonlBody,
+  exportFormatIncludesSiblings,
+  ndjsonBody,
+  type ConversationJsonlLayout,
+} from "../utils/ndjson";
+import { orderByParentChain } from "../utils/message-order";
+import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
+import {
+  buildConversationMarkdown,
   contentBlocksToMarkdownBlocks,
   renderConversationBlocks,
 } from "../utils/conversation-markdown";
+import { planChatItemSources } from "../utils/project-source-plan";
+import { stripSearchImageTokens } from "../search-images/search-images.ts";
+import { saveMarkdownAsProjectSource } from "@/features/rag";
 
 function newId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -91,7 +109,7 @@ function csvEscape(val: string): string {
 
 function exportPromptJsonl(entry: PromptEntry): Promise<void> {
   return downloadBlob(
-    JSON.stringify({ name: entry.name, text: entry.text }),
+    ndjsonBody([JSON.stringify({ name: entry.name, text: entry.text })]),
     `${sanitizeFilename(entry.name)}.jsonl`,
     "application/x-ndjson",
   );
@@ -106,8 +124,8 @@ function exportPromptCsv(entry: PromptEntry): Promise<void> {
 }
 
 function exportAllPromptsJsonl(entries: PromptEntry[]): Promise<void> {
-  const lines = entries.map((e) => JSON.stringify({ name: e.name, text: e.text })).join("\n");
-  return downloadBlob(lines, "prompts.jsonl", "application/x-ndjson");
+  const lines = entries.map((e) => JSON.stringify({ name: e.name, text: e.text }));
+  return downloadBlob(ndjsonBody(lines), "prompts.jsonl", "application/x-ndjson");
 }
 
 function exportAllPromptsCsv(entries: PromptEntry[]): Promise<void> {
@@ -117,15 +135,15 @@ function exportAllPromptsCsv(entries: PromptEntry[]): Promise<void> {
 
 function exportListJsonl(entry: PromptListEntry): Promise<void> {
   return downloadBlob(
-    JSON.stringify({ name: entry.name, items: entry.items }),
+    ndjsonBody([JSON.stringify({ name: entry.name, items: entry.items })]),
     `${sanitizeFilename(entry.name)}.jsonl`,
     "application/x-ndjson",
   );
 }
 
 function exportAllListsJsonl(entries: PromptListEntry[]): Promise<void> {
-  const lines = entries.map((e) => JSON.stringify({ name: e.name, items: e.items })).join("\n");
-  return downloadBlob(lines, "prompt-lists.jsonl", "application/x-ndjson");
+  const lines = entries.map((e) => JSON.stringify({ name: e.name, items: e.items }));
+  return downloadBlob(ndjsonBody(lines), "prompt-lists.jsonl", "application/x-ndjson");
 }
 
 function exportListCsv(entry: PromptListEntry): Promise<void> {
@@ -188,57 +206,27 @@ function contentBlocksToText(content: unknown): string {
     return parts.join("\n\n");
   }
 
-// Order via parentId chain: createdAt misorders turns (GPT response slots
-// predate the user's next message); the parent chain is timestamp-independent.
-type _Msg = { id: string; parentId?: string | null; createdAt?: number };
-
-function orderByParentChain<T extends _Msg>(
-  messages: T[],
+async function loadConversationMessages(
+  threadId: string,
   options: {
-    /** Append messages off the selected chain (abandoned branches) at the
-     *  end. Full exports keep everything; fine-tune conversion must not,
-     *  since alternate replies would merge into one conversation. */
+    emptyMessage?: string;
     includeSiblings?: boolean;
   } = {},
-): T[] {
-  const { includeSiblings = true } = options;
-  const byId = new Map<string, T>(messages.map((m) => [m.id, m]));
-  const childrenOf = new Map<string | null, T[]>();
-  for (const m of messages) {
-    const pid = m.parentId ?? null;
-    if (!childrenOf.has(pid)) childrenOf.set(pid, []);
-    childrenOf.get(pid)!.push(m);
-  }
-
-  const result: T[] = [];
-  let cur: string | null = null;
-  while (childrenOf.has(cur)) {
-    const children: T[] = childrenOf.get(cur)!;
-    const next: T = children.reduce((a: T, b: T) =>
-      (a.createdAt ?? 0) >= (b.createdAt ?? 0) ? a : b,
-    );
-    result.push(next);
-    cur = next.id;
-    byId.delete(next.id);
-  }
-
-  if (includeSiblings) {
-    for (const [, m] of byId) result.push(m);
-  }
-  return result;
-}
-
-async function loadConversationMessages(threadId: string) {
+) {
+  const {
+    emptyMessage = "No messages in this conversation to export.",
+    includeSiblings = true,
+  } = options;
   const raw = await listStoredChatMessages(threadId);
   if (raw.length === 0) {
-    toast.info("No messages in this conversation to export.");
+    toast.info(emptyMessage);
     return null;
   }
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the
   // chain would invert order, so keep raw order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return raw;
-  return orderByParentChain(raw) as typeof raw;
+  return orderByParentChain(raw, { includeSiblings }) as typeof raw;
 }
 
 function exportTs(): string {
@@ -254,7 +242,11 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
   if (Array.isArray(msg.attachments)) {
     for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
       if (!attachment?.content) continue;
-      const attText = contentBlocksToText(attachment.content);
+      // A paste carries a wrapper the same text never had when it fitted
+      // inline, so strip it rather than exporting the marker.
+      const attText = unwrapPastedTextContent(
+        contentBlocksToText(attachment.content),
+      );
       if (attText) parts.push(attText);
     }
   }
@@ -273,6 +265,10 @@ function messageToMarkdown(msg: { content: unknown; attachments?: unknown }): st
         ...contentBlocksToMarkdownBlocks(
           attachment.content,
           normalizeToolResult,
+        ).map((block) =>
+          block.kind === "text"
+            ? { ...block, text: unwrapPastedTextContent(block.text) }
+            : block,
         ),
       );
     }
@@ -308,9 +304,14 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
     ...blocks.map((b) => b as Record<string, unknown>),
     ...attachments.flatMap((a) => {
       const att = a as { content?: unknown };
-      return Array.isArray(att.content)
-        ? (att.content as Record<string, unknown>[])
-        : [];
+      if (!Array.isArray(att.content)) return [];
+      // Attachment text only: a message body is verbatim, and the paste
+      // wrapper is not something the user wrote.
+      return (att.content as Record<string, unknown>[]).map((part) =>
+        part?.type === "text" && typeof part.text === "string"
+          ? { ...part, text: unwrapPastedTextContent(part.text) }
+          : part,
+      );
     }),
   ];
 
@@ -325,6 +326,8 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
       } else if (p.type === "reasoning" || p.type === "thinking") {
         const t = typeof p.thinking === "string" ? p.thinking : typeof p.text === "string" ? p.text : "";
         if (t) textParts.push(`<thinking>\n${t}\n</thinking>`);
+      } else if (p.type === "image" && typeof p.image === "string" && p.image) {
+        textParts.push("[image attachment]");
       } else if (p.type === "tool-call") {
         const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${toolCalls.length}`;
         const name = typeof p.toolName === "string" ? p.toolName : "unknown";
@@ -386,7 +389,7 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
 
   if (conversations.length === 0) { toast.info("No exportable content."); return; }
   await downloadBlob(
-    JSON.stringify({ conversations }),
+    ndjsonBody([JSON.stringify({ conversations })]),
     "conversation-" + exportTs() + ".jsonl",
     "application/x-ndjson",
   );
@@ -395,14 +398,29 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
 // OpenAI/ChatML JSONL: {"messages": [{"role","content"}, ...]} per conversation;
 // Unsloth reads this as a ChatML dataset.
 export async function exportConversationRawJsonl(threadId: string): Promise<void> {
-  const messages = await loadConversationMessages(threadId);
+  return exportConversationJsonl(threadId, "training");
+}
+
+export async function exportConversationMessagesJsonl(threadId: string): Promise<void> {
+  return exportConversationJsonl(threadId, "messages");
+}
+
+async function exportConversationJsonl(
+  threadId: string,
+  layout: ConversationJsonlLayout,
+): Promise<void> {
+  const messages = await loadConversationMessages(threadId, {
+    includeSiblings: exportFormatIncludesSiblings(
+      layout === "training" ? "jsonl-raw" : "jsonl-messages",
+    ),
+  });
   if (!messages) return;
 
   const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
   if (oaiMsgs.length === 0) { toast.info("No exportable content."); return; }
   await downloadBlob(
-    JSON.stringify({ messages: oaiMsgs }),
-    "conversation-" + exportTs() + ".jsonl",
+    ndjsonBody([conversationJsonlBody(oaiMsgs, layout)]),
+    `conversation${layout === "messages" ? "-messages" : ""}-${exportTs()}.jsonl`,
     "application/x-ndjson",
   );
 }
@@ -426,6 +444,13 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   );
 }
 
+/** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
+export const buildConversationMarkdownForThread =
+  createConversationMarkdownBuilder({
+    loadMessages: loadConversationMessages,
+    renderMessage: messageToMarkdown,
+  });
+
 export const exportConversationMarkdown = createConversationMarkdownExporter({
   loadMessages: loadConversationMessages,
   renderMessage: messageToMarkdown,
@@ -434,10 +459,89 @@ export const exportConversationMarkdown = createConversationMarkdownExporter({
   notifyNoContent: () => toast.info("No exportable content."),
 });
 
-export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
+// "skipped" is an empty conversation, which has already said so and must not
+// stop the rest of a pair; "failed" has toasted a reason, so stop there rather
+// than stack a second one.
+type SaveSourceOutcome = "saved" | "skipped" | "failed";
+
+async function saveConversationAsProjectSource(
+  threadId: string,
+  projectId: string,
+  title: string,
+): Promise<SaveSourceOutcome> {
+  const messages = await loadConversationMessages(threadId, {
+    emptyMessage: "No messages in this conversation to save.",
+  });
+  if (!messages) return "skipped";
+  const markdown = buildConversationMarkdown(
+    messages.map((msg) => ({
+      role: String(msg.role ?? ""),
+      // As the markdown exporter does: a project source is retrieved back into
+      // context, so the renderer's tokens must not be saved as prose.
+      content: stripSearchImageTokens(messageToMarkdown(msg)),
+    })),
+  );
+  if (!markdown) {
+    toast.info("No content to save.");
+    return "skipped";
+  }
+  const saved = await saveMarkdownAsProjectSource(projectId, markdown, title, {
+    quiet: true,
+  });
+  return saved ? "saved" : "failed";
+}
+
+export async function saveChatItemAsProjectSource(
+  item: { id: string; title: string; type: string },
+  projectId: string,
+): Promise<void> {
+  const plans = planChatItemSources(
+    item,
+    item.type === "single" ? [] : await listStoredChatThreads({ pairId: item.id }),
+  );
+  let saved = 0;
+  for (const plan of plans) {
+    const outcome = await saveConversationAsProjectSource(
+      plan.id,
+      projectId,
+      plan.title,
+    );
+    if (outcome === "failed") break;
+    if (outcome === "saved") saved += 1;
+  }
+  // One toast per click, not one per thread in the pair.
+  if (saved === 1) toast.success("Saved to project sources.");
+  else if (saved > 1) {
+    toast.success(`Saved ${saved} chats to project sources.`);
+  }
+}
+
+/**
+ * A sidebar row as one markdown document, for the "Copy as Markdown" shortcut.
+ * The halves of a compare pair are named the way saving them to project sources
+ * names them, after their models: the two arrive in whichever order they last
+ * answered in, so position alone would label them wrong.
+ */
+export async function buildChatItemMarkdown(item: {
+  id: string;
+  title: string;
+  type: string;
+}): Promise<string> {
+  const plans = planChatItemSources(
+    item,
+    item.type === "single" ? [] : await listStoredChatThreads({ pairId: item.id }),
+  );
+  return buildNamedConversationsMarkdown(
+    plans,
+    buildConversationMarkdownForThread,
+  );
+}
+
+export type ConvExportFormat = "jsonl-raw" | "jsonl-messages" | "csv" | "sharegpt";
 
 const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
-  "jsonl-raw": "Raw JSONL",
+  "jsonl-raw": "Training JSONL",
+  "jsonl-messages": "Message JSONL",
   csv: "CSV",
   sharegpt: "ShareGPT JSONL",
 };
@@ -446,18 +550,26 @@ export const EXPORT_FORMATS_LIST = (
   Object.keys(EXPORT_FORMAT_LABELS) as ConvExportFormat[]
 ).map((fmt) => ({ fmt, label: EXPORT_FORMAT_LABELS[fmt] }));
 
+export const COMBINED_EXPORT_FORMATS_LIST = EXPORT_FORMATS_LIST.filter(
+  ({ fmt }) => canMergeConversationExport(fmt),
+);
+
 async function buildThreadContent(
   threadId: string,
   format: ConvExportFormat,
 ): Promise<string | null> {
-  const messages = await loadConversationMessages(threadId);
+  const messages = await loadConversationMessages(threadId, {
+    includeSiblings: exportFormatIncludesSiblings(format),
+  });
   if (!messages) return null;
 
-  if (format === "jsonl-raw") {
-    // OpenAI/ChatML: Unsloth reads the "messages" key as ChatML.
+  if (format === "jsonl-raw" || format === "jsonl-messages") {
     const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
     if (oaiMsgs.length === 0) return null;
-    return JSON.stringify({ messages: oaiMsgs });
+    return conversationJsonlBody(
+      oaiMsgs,
+      format === "jsonl-messages" ? "messages" : "training",
+    );
   }
 
   if (format === "sharegpt") {
@@ -498,6 +610,10 @@ export async function exportBulkConversationsMerged(
   basename: string,
 ): Promise<void> {
   if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
+  if (!canMergeConversationExport(format) && threadIds.length > 1) {
+    toast.info("Message JSONL is available per chat.");
+    return;
+  }
 
   const parts: string[] = [];
   const header = csvHeader(format);
@@ -511,7 +627,7 @@ export async function exportBulkConversationsMerged(
 
   const body = header
     ? header + "\n" + parts.join("\n")
-    : parts.join("\n");
+    : ndjsonBody(parts);
 
   await downloadBlob(
     body,
@@ -535,7 +651,7 @@ export async function exportBulkConversationsSeparate(
   for (const id of threadIds) {
     const content = await buildThreadContent(id, format);
     if (!content) continue;
-    const body = header ? header + "\n" + content : content;
+    const body = header ? header + "\n" + content : ndjsonBody([content]);
     files[`${id}.${ext}`] = strToU8(body);
   }
 
@@ -610,10 +726,15 @@ function messageToPlainText(msg: {
   attachments?: unknown;
 }): string {
   const parts: string[] = [];
-  const collect = (blocks: unknown) => {
+  // Only attachment text is unwrapped: a message body is verbatim, and may
+  // legitimately quote the wrapper syntax in a code sample.
+  const collect = (blocks: unknown, fromAttachment = false) => {
+    const normalize = fromAttachment
+      ? unwrapPastedTextContent
+      : (text: string) => text;
     // Legacy and imported histories can store content as a plain string.
     if (typeof blocks === "string") {
-      if (blocks.trim()) parts.push(blocks);
+      if (blocks.trim()) parts.push(normalize(blocks));
       return;
     }
     if (!Array.isArray(blocks)) return;
@@ -623,14 +744,14 @@ function messageToPlainText(msg: {
       }
       const block = b as Record<string, unknown>;
       if (block.type === "text" && typeof block.text === "string" && block.text) {
-        parts.push(block.text);
+        parts.push(normalize(block.text));
       }
     }
   };
   collect(msg.content);
   if (Array.isArray(msg.attachments)) {
     for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
-      collect(attachment?.content);
+      collect(attachment?.content, true);
     }
   }
   return parts.join("\n\n").trim();
@@ -786,7 +907,7 @@ export async function exportFineTuneJsonl(
   }
   const suffix = format === "openai" ? "" : `-${format}`;
   await downloadBlob(
-    lines.join("\n"),
+    ndjsonBody(lines),
     `chat-finetune${suffix}-${exportTs()}.jsonl`,
     "application/x-ndjson",
   );
@@ -796,234 +917,6 @@ export async function exportFineTuneJsonl(
     );
   }
   return conversations;
-}
-
-// role:"tool" results are absorbed into the preceding assistant tool-call
-// part's `result` field rather than becoming separate records.
-function oaiMessagesToRecords(
-  oaiMsgs: unknown[],
-  threadId: string,
-  baseTs: number,
-): MessageRecord[] {
-  const toolResults = new Map<string, string>();
-  for (const m of oaiMsgs) {
-    const msg = m as Record<string, unknown>;
-    if (msg.role === "tool" && typeof msg.tool_call_id === "string") {
-      toolResults.set(msg.tool_call_id, typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? ""));
-    }
-  }
-
-  const records: MessageRecord[] = [];
-  let prevId: string | null = null;
-  let idx = 0;
-
-  for (const m of oaiMsgs) {
-    const msg = m as Record<string, unknown>;
-    const role = msg.role as string;
-    if (role === "tool") continue;
-
-    const id = crypto.randomUUID();
-
-    let content: unknown[];
-
-    if (role === "assistant") {
-      const parts: unknown[] = [];
-      if (typeof msg.content === "string" && msg.content.trim()) {
-        parts.push({ type: "text", text: msg.content });
-      }
-      if (Array.isArray(msg.tool_calls)) {
-        for (const tc of msg.tool_calls) {
-          const tcObj = tc as Record<string, unknown>;
-          const fn = (tcObj.function as Record<string, unknown>) ?? {};
-          const tcId = typeof tcObj.id === "string" ? tcObj.id : crypto.randomUUID();
-          const name = typeof fn.name === "string" ? fn.name : "unknown";
-          const argsStr = typeof fn.arguments === "string" ? fn.arguments : "{}";
-          let args: unknown = {};
-          try { args = JSON.parse(argsStr); } catch { /* keep empty */ }
-          const result = toolResults.get(tcId);
-          parts.push({
-            type: "tool-call",
-            toolCallId: tcId,
-            toolName: name,
-            args,
-            argsText: argsStr,
-            ...(result !== undefined ? { result } : {}),
-          });
-        }
-      }
-      content = parts;
-    } else {
-      const raw = msg.content;
-      if (Array.isArray(raw)) {
-        content = raw.flatMap((p): unknown[] => {
-          const part = p as Record<string, unknown>;
-          if (part.type === "text" && typeof part.text === "string") {
-            return [{ type: "text", text: part.text }];
-          }
-          if (part.type === "image_url") {
-            const iu = (part.image_url as Record<string, unknown>) ?? {};
-            return [{ type: "image", image: typeof iu.url === "string" ? iu.url : "" }];
-          }
-          return [];
-        });
-      } else {
-        content = typeof raw === "string" && raw.trim() ? [{ type: "text", text: raw }] : [];
-      }
-    }
-
-    if (content.length === 0) continue;
-
-    records.push({
-      id,
-      threadId,
-      parentId: prevId,
-      role: role as MessageRecord["role"],
-      content: content as MessageRecord["content"],
-      createdAt: baseTs + idx,
-    });
-    prevId = id;
-    idx++;
-  }
-
-  return records;
-}
-
-function sharegptToRecords(
-  conversations: unknown[],
-  threadId: string,
-  baseTs: number,
-): MessageRecord[] {
-  const records: MessageRecord[] = [];
-  let prevId: string | null = null;
-  let idx = 0;
-  for (const c of conversations) {
-    const conv = c as Record<string, unknown>;
-    const from = typeof conv.from === "string" ? conv.from : "";
-    const value = typeof conv.value === "string" ? conv.value : "";
-    if (!value.trim()) continue;
-    const role: MessageRecord["role"] = from === "human" ? "user" : from === "system" ? "system" : "assistant";
-    const id = crypto.randomUUID();
-    records.push({
-      id,
-      threadId,
-      parentId: prevId,
-      role,
-      content: [{ type: "text", text: value }] as MessageRecord["content"],
-      createdAt: baseTs + idx,
-    });
-    prevId = id;
-    idx++;
-  }
-  return records;
-}
-
-function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
-  // parseCsv handles quoted newlines, so multi-line message content
-  // round-trips; a naive per-line split would break those records.
-  const rows = parseCsv(csvText).slice(1);
-  const records: MessageRecord[] = [];
-  let prevId: string | null = null;
-  let idx = 0;
-  for (const row of rows) {
-    if (row.length < 2) continue;
-    const role = row[0].trim();
-    const content = row.slice(1).join(",");
-    if (!content.trim()) continue;
-    const validRole = role === "user" || role === "assistant" || role === "system" ? role : "user";
-    const id = crypto.randomUUID();
-    records.push({
-      id,
-      threadId,
-      parentId: prevId,
-      role: validRole as MessageRecord["role"],
-      content: [{ type: "text", text: content }] as MessageRecord["content"],
-      createdAt: baseTs + idx,
-    });
-    prevId = id;
-    idx++;
-  }
-  return records;
-}
-
-interface ParsedConversation {
-  title: string;
-  threadId: string;
-  messages: MessageRecord[];
-}
-
-function parseImportText(text: string, filename: string): ParsedConversation[] {
-  const results: ParsedConversation[] = [];
-  const basename = filename.replace(/\.[^.]+$/, "");
-
-  const isJsonl = /\.(jsonl|ndjson)$/i.test(filename);
-  const isCsv = /\.csv$/i.test(filename);
-
-  if (isCsv) {
-    const threadId = crypto.randomUUID();
-    const messages = csvToRecords(text, threadId, Date.now());
-    if (messages.length > 0) {
-      results.push({ title: basename, threadId, messages });
-    }
-    return results;
-  }
-
-  if (isJsonl) {
-    const lines = text.split(/\r?\n/).filter((l) => l.trim());
-    lines.forEach((line, lineIdx) => {
-      let obj: Record<string, unknown>;
-      try { obj = JSON.parse(line); } catch { return; }
-
-      // Fresh ID: reusing the exported thread_id would clobber an existing
-      // thread on import.
-      const threadId = crypto.randomUUID();
-      const title = typeof obj.title === "string" ? obj.title : `${basename} ${lineIdx + 1}`;
-      const baseTs = typeof obj.created_at === "number" ? obj.created_at : Date.now() + lineIdx;
-
-      let messages: MessageRecord[] = [];
-
-      if (Array.isArray(obj.messages)) {
-        messages = oaiMessagesToRecords(obj.messages, threadId, baseTs);
-      } else if (Array.isArray(obj.conversations)) {
-        messages = sharegptToRecords(obj.conversations, threadId, baseTs);
-      }
-
-      if (messages.length > 0) {
-        results.push({ title, threadId, messages });
-      }
-    });
-    return results;
-  }
-
-  // Unknown extension: retry as JSONL.
-  return parseImportText(text, filename + ".jsonl");
-}
-
-export async function importConversationsFromFile(
-  file: File,
-  projectId: string | null = null,
-): Promise<number> {
-  const text = await file.text();
-  const parsed = parseImportText(text, file.name);
-  if (parsed.length === 0) return 0;
-
-  const now = Date.now();
-  await Promise.all(
-    parsed.map(async ({ title, threadId, messages }) => {
-      const thread: ThreadRecord = {
-        id: threadId,
-        title,
-        modelType: "base",
-        projectId: projectId ?? null,
-        archived: false,
-        createdAt: messages[0]?.createdAt ?? now,
-      };
-      await saveStoredChatThread(thread);
-      await syncStoredChatMessages(threadId, messages, { pruneMissing: false });
-    }),
-  );
-
-  notifyChatHistoryUpdated();
-  return parsed.length;
 }
 
 // ShareGPT training exports: prompt → one record (human turn + empty gpt slot);
@@ -1036,7 +929,7 @@ function exportPromptTrainingJsonl(entry: PromptEntry): Promise<void> {
     ],
   };
   return downloadBlob(
-    JSON.stringify(record),
+    ndjsonBody([JSON.stringify(record)]),
     `${sanitizeFilename(entry.name)}-training.jsonl`,
     "application/x-ndjson",
   );
@@ -1051,9 +944,8 @@ function exportPromptsTrainingJsonl(entries: PromptEntry[]): Promise<void> {
           { from: "gpt", value: "" },
         ],
       }),
-    )
-    .join("\n");
-  return downloadBlob(lines, "prompts-training.jsonl", "application/x-ndjson");
+    );
+  return downloadBlob(ndjsonBody(lines), "prompts-training.jsonl", "application/x-ndjson");
 }
 
 function exportListTrainingJsonl(entry: PromptListEntry): Promise<void> {
@@ -1062,7 +954,7 @@ function exportListTrainingJsonl(entry: PromptListEntry): Promise<void> {
     { from: "gpt", value: "" },
   ]);
   return downloadBlob(
-    JSON.stringify({ conversations }),
+    ndjsonBody([JSON.stringify({ conversations })]),
     `${sanitizeFilename(entry.name)}-training.jsonl`,
     "application/x-ndjson",
   );
@@ -1076,65 +968,8 @@ function exportListsTrainingJsonl(entries: PromptListEntry[]): Promise<void> {
         { from: "gpt", value: "" },
       ]);
       return JSON.stringify({ conversations });
-    })
-    .join("\n");
-  return downloadBlob(lines, "prompt-lists-training.jsonl", "application/x-ndjson");
-}
-
-// RFC 4180 CSV parser: handles quoted fields with embedded newlines/commas.
-function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let i = 0;
-
-  function finishRow() {
-    rows.push(row);
-    row = [];
-  }
-
-  while (i < text.length) {
-    if (text[i] === '"') {
-      i++;
-      let cell = "";
-      while (i < text.length) {
-        if (text[i] === '"') {
-          if (text[i + 1] === '"') {
-            cell += '"';
-            i += 2;
-          } else {
-            i++;
-            break;
-          }
-        } else {
-          cell += text[i++];
-        }
-      }
-      row.push(cell);
-      if (text[i] === ",") { i++; }
-      else if (text[i] === "\r") { i++; if (text[i] === "\n") i++; finishRow(); }
-      else if (text[i] === "\n") { i++; finishRow(); }
-    } else if (text[i] === "\r") {
-      i++;
-      if (text[i] === "\n") i++;
-      row.push("");
-      finishRow();
-    } else if (text[i] === "\n") {
-      i++;
-      row.push("");
-      finishRow();
-    } else {
-      let cell = "";
-      while (i < text.length && text[i] !== "," && text[i] !== "\r" && text[i] !== "\n") {
-        cell += text[i++];
-      }
-      row.push(cell);
-      if (text[i] === ",") { i++; }
-      else if (text[i] === "\r") { i++; if (text[i] === "\n") i++; finishRow(); }
-      else if (text[i] === "\n") { i++; finishRow(); }
-    }
-  }
-  if (row.length > 0) rows.push(row);
-  return rows;
+    });
+  return downloadBlob(ndjsonBody(lines), "prompt-lists-training.jsonl", "application/x-ndjson");
 }
 
 async function importPromptsFromText(text: string, isCsv: boolean): Promise<{ count: number; skipped: number }> {

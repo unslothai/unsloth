@@ -21,7 +21,6 @@ import shutil
 import threading
 import time
 import traceback
-import structlog
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from loggers import get_logger
@@ -798,7 +797,13 @@ class _MLXTrainerAdapter:
         dataset_local_path: Optional[str] = None,
         dataset_revision: Optional[str] = None,
         require_exact_resume_resources: bool = False,
+        max_train_rows: Optional[int] = None,
+        max_train_rows_seed: int = 3407,
     ) -> Optional[tuple]:
+        # Signature must match UnslothTrainer, which hands back this adapter on an
+        # MLX host. The MLX worker loads its own data and derives the row bound from
+        # its config, so the two bound arguments are accepted and deliberately not
+        # forwarded: a copy here would be a second source of truth.
         self._dataset_config = {
             "hf_dataset": dataset_source or "",
             "local_datasets": local_datasets,
@@ -1194,6 +1199,27 @@ class TrainingBackend:
             self._status_start_request_id = start_request_id
             self._prune_start_requests_locked()
             return "reserved", record
+
+    def peek_start_request(self, start_request_id: str) -> Optional[TrainingStartRequestRecord]:
+        """The lookup half of reserve_start_request(), with no reservation.
+
+        Returns the record a retry would replay (live or cancellation-tombstoned), refreshing
+        the tombstone TTL as the reserve path does so a retry keeps a cancellation alive, or
+        None when the id is unknown and the caller is free to reserve it."""
+        with self._lock:
+            self._prune_start_cancel_tombstones_locked()
+            existing = self._start_requests.get(start_request_id)
+            if existing is not None:
+                return existing
+            cancelled = self._start_cancel_tombstones.get(start_request_id)
+            if cancelled is None:
+                return None
+            record = cancelled[1]
+            self._start_cancel_tombstones[start_request_id] = (
+                time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
+                record,
+            )
+            return record
 
     def resolve_start_request(
         self,
@@ -3449,19 +3475,6 @@ class TrainingBackend:
 
         fig.tight_layout()
         return fig
-
-    def _transfer_to_inference_backend(self) -> bool:
-        """Transfer model to inference backend.
-
-        No-op: with subprocess training the model is freed on exit, so inference
-        must load from the saved checkpoint on disk.
-        """
-        logger.info(
-            "_transfer_to_inference_backend: subprocess training — "
-            "model must be loaded from disk (output_dir=%s)",
-            self._output_dir,
-        )
-        return False
 
 
 # ========== GLOBAL INSTANCE ==========

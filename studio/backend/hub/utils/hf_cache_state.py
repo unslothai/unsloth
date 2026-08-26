@@ -48,6 +48,144 @@ def incomplete_blob_hash(name: str) -> Optional[str]:
     return process_unique.group("blob_hash") if process_unique else stem
 
 
+# The last huggingface_hub line whose partials a later attempt can append to.
+_LAST_RESUMABLE_PARTIAL_VERSION = (1, 17)
+
+# How long a partial must sit untouched before it reads as abandoned rather than in flight.
+# huggingface_hub writes to one continuously, so anything still advancing has a live writer --
+# possibly a client in another process that no registry here can see. Shared by the sweep that
+# deletes abandoned partials and the progress scan that must not report one as current.
+ABANDONED_PARTIAL_SECONDS = 120
+
+
+def hf_partials_are_resumable(hub_cache: Optional[str] = None) -> bool:
+    """Whether an interrupted download leaves bytes the next attempt can reuse.
+
+    Up to 1.17 huggingface_hub appended to a shared ``<etag>.incomplete`` and restarted from
+    its length over a Range request. 1.18 moved the writer to a process-unique
+    ``<etag>.<nonce>.incomplete``, opened ``"wb"`` and unlinked in a ``finally``
+    (huggingface/huggingface_hub#4228), so an interrupted file is refetched from zero and
+    whatever partial survives a hard kill can never be read again.
+
+    An unreadable version answers True: not knowing which writer is installed is not grounds
+    for deleting bytes that may still be resumable.
+
+    On 1.18+ this also asks whether the download worker will put the 1.17 writer back
+    (:mod:`hub.utils.resumable_partials`), since a restored resumer makes partials reusable again.
+    That half turns on the filesystem the partial is on, so *hub_cache* names the root being asked
+    about. Unsloth remembers several and they need not lock alike: without it, a selected cache on a
+    network mount would condemn a local cache's partials to the abandoned-partial sweep. Omitting it
+    asks about the cache in force, which is where a new download lands.
+
+    Deliberately not cached here. The verdict is a fact about a filesystem, not about a path, so a
+    result keyed on the path alone survives a remount at the same name and outlives a momentary
+    failure to probe. The expensive part, the lock probe, is cached in
+    :mod:`hub.utils.resumable_partials` against the mounted device instead, and a probe that could
+    not run raises rather than answering, so nothing remembers a bad moment.
+    """
+    try:
+        from huggingface_hub import __version__ as hf_version
+    except Exception:  # noqa: BLE001 - an unimportable hub is the caller's problem, not ours
+        return True
+    release = []
+    for chunk in str(hf_version).split(".")[:2]:
+        digits = ""
+        for char in chunk:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            return True
+        release.append(int(digits))
+    if tuple(release) <= _LAST_RESUMABLE_PARTIAL_VERSION:
+        return True
+    try:
+        from hub.utils.resumable_partials import _ProbeUnavailable, can_restore_partials
+        try:
+            return can_restore_partials(hub_cache)
+        except _ProbeUnavailable:
+            # Nothing was shown, so nothing is promised -- and nothing is remembered either.
+            return False
+    except Exception:  # noqa: BLE001 - no restoration is just the stock answer
+        from loggers import get_logger
+        get_logger(__name__).debug(
+            "Resumable-partial restoration unavailable; partials stay unresumable.",
+            exc_info = True,
+        )
+        return False
+
+
+def invalidate_partial_resumability() -> None:
+    """Re-decide resumability, for when the cache moves to another filesystem.
+
+    The verdict depends on whether ``flock`` excludes a second writer where the partial lands, so
+    it cannot be carried over from the old root.
+    """
+    try:
+        from hub.utils.resumable_partials import invalidate_probe_cache
+        invalidate_probe_cache()
+    except Exception:  # noqa: BLE001 - nothing to invalidate is not an error
+        pass
+
+
+def partial_is_process_unique(name: str) -> bool:
+    """Whether a partial filename carries the 1.18+ per-process nonce."""
+    if not name.endswith(INCOMPLETE_SUFFIX):
+        return False
+    return _PROCESS_UNIQUE_PARTIAL_RE.fullmatch(name[: -len(INCOMPLETE_SUFFIX)]) is not None
+
+
+def blob_download_lock_held(entry: Path, blob_hash: str) -> bool:
+    """Whether some process holds huggingface_hub's per-blob download lock right now.
+
+    hf takes ``<hub cache>/.locks/<repo dir>/<etag>.lock`` for the whole of a file download, so
+    a lock we cannot take means a live writer -- including a client in another process that no
+    peer registry here can see. It answers False when the lock cannot be probed at all, since
+    upstream calls the lock best-effort and some filesystems grant it to everyone; callers pair
+    it with a staleness check rather than trusting it alone.
+    """
+    lock_path = entry.parent / ".locks" / entry.name / f"{blob_hash}.lock"
+    if not lock_path.exists():
+        # hf creates the lock file before taking the lock, so no file means no writer. It is
+        # also the answer for a SoftFileLock, whose file IS the lock (see below).
+        return False
+    try:
+        from filelock import FileLock, Timeout
+    except Exception:  # noqa: BLE001 - no filelock at all means no opinion
+        return False
+    try:
+        with FileLock(str(lock_path), timeout = 0):
+            return False
+    except Timeout:
+        return True
+    except Exception:  # noqa: BLE001 - deliberately broad, see below
+        # A filesystem without flock raises NotImplementedError here, and upstream's
+        # WeakFileLock answers it by retrying as a SoftFileLock (huggingface_hub
+        # utils/_fixes.py). Retrying is pointless for a PROBE: a soft lock is its file, and we
+        # only reach this line because that file exists, so the soft answer is "held" too.
+        # What matters is that the exception does not escape -- it used to travel out through
+        # the purge and fail the download on every retry. Any other unprobeable error answers
+        # the same way, because the caller's remaining guard is a staleness check that an
+        # ownership claim may skip, and a wrong "free" there deletes a live writer's file.
+        return True
+
+
+def partial_is_resumable(name: str, hub_cache: Optional[Path | str] = None) -> bool:
+    """Whether any later attempt could append to this particular partial.
+
+    Two conditions, and the layout half matters on its own: a nonce partial is private to the
+    process that created it, so even a legacy writer will not reopen it. That combination is
+    reachable whenever caches are shared across environments, which this repo's own pins
+    produce (Python 3.10+ takes hub >= 1.23, older takes 0.36.2, one cache between them).
+
+    *hub_cache* is the root the partial lives under. Callers walking more than one cache must pass
+    it, since the answer is partly a property of that root's filesystem.
+    """
+    if partial_is_process_unique(name):
+        return False
+    return hf_partials_are_resumable(str(hub_cache) if hub_cache is not None else None)
+
+
 def _safe_is_dir(path: Path, scan_errors: Optional[list] = None) -> bool:
     """``Path.is_dir()`` returning False instead of raising when the path or a
     parent is unreadable (e.g. a restricted ``~/.cache/huggingface/hub``), so
@@ -164,14 +302,43 @@ def blob_bytes_present(path: Path) -> int:
     ``st_blocks``, falling back to ``st_size`` where it is unreported (Windows,
     some network filesystems)."""
     st = path.stat()
-    blocks = getattr(st, "st_blocks", 0)
-    if blocks > 0:
+    blocks = getattr(st, "st_blocks", None)
+    if blocks is not None and blocks > 0:
         return min(blocks * 512, st.st_size)
+    # A present zero is not a missing field. A parallel writer that sets the partial to its
+    # final length before its first chunk lands sits exactly here, and reading st_size then
+    # says "0 B left" on a download that has transferred nothing. The zero alone is not enough
+    # to act on -- a mount that never populates st_blocks looks the same -- so confirm the
+    # emptiness directly before believing it.
+    if blocks == 0 and _holds_no_data(path):
+        return 0
     if sys.platform == "win32":
         allocated = _windows_allocated_size(path)
         if allocated is not None:
             return min(allocated, st.st_size)
     return st.st_size
+
+
+def _holds_no_data(path: Path) -> bool:
+    """Whether the file has no allocated extent anywhere, asked of the kernel rather than
+    inferred. ``SEEK_DATA`` past the end of the last extent is ENXIO, so a file with nothing
+    written raises on the very first seek. Every other answer -- an unsupported seek, an
+    unreadable path -- leaves the caller's size fallback in charge.
+    """
+    seek_data = getattr(os, "SEEK_DATA", None)
+    if seek_data is None:
+        return False
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        os.lseek(fd, 0, seek_data)
+    except OSError as exc:
+        return exc.errno == errno.ENXIO
+    finally:
+        os.close(fd)
+    return False
 
 
 def _windows_allocated_size(path: Path) -> Optional[int]:

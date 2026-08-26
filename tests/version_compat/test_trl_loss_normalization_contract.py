@@ -106,8 +106,14 @@ def _pristine_sft_config_cls():
     """TRL's own SFTConfig, not the generated subclass patching rebinds over it."""
     import trl
 
+    # Go by the marker rather than the name: the generated subclass is renamed
+    # onto TRL's own name so that instances of it keep pickling, so `Unsloth`
+    # no longer appears in `__name__`. `__dict__` rather than `getattr`, so a
+    # user subclass of the generated class does not inherit its way past this.
     cls = trl.SFTConfig
-    return cls.__mro__[1] if cls.__name__.startswith("Unsloth") else cls
+    while "_unsloth_patched_rl_config" in cls.__dict__ or cls.__name__.startswith("Unsloth"):
+        cls = cls.__mro__[1]
+    return cls
 
 
 def test_pristine_trl_sft_config_default_is_nll_too():

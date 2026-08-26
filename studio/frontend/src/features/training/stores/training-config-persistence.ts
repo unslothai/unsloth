@@ -9,10 +9,7 @@ import {
   LR_DEFAULT_LORA,
 } from "@/config/training";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's unrelated React exports.
-import {
-  getHfToken,
-  useHfTokenStore,
-} from "@/features/hub/stores/hf-token-store";
+import { stageLegacyHfTokenForMigration } from "@/features/hub/stores/hf-token-store";
 import { isTrainingMethod } from "@/types/training";
 import type { DatasetFormat } from "@/types/training";
 import type {
@@ -27,7 +24,7 @@ import {
 } from "./training-config-policy";
 
 export const TRAINING_CONFIG_PERSISTENCE_NAME = "unsloth_training_config_v1";
-export const TRAINING_CONFIG_PERSISTENCE_VERSION = 20;
+export const TRAINING_CONFIG_PERSISTENCE_VERSION = 21;
 
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
   new Set([
@@ -51,6 +48,8 @@ export function partializeTrainingConfig(
 ): Partial<TrainingConfigStore> {
   const partial = Object.fromEntries(
     Object.entries(state).filter(([key, value]) => {
+
+      if (key === "hfToken") return false;
       if (typeof value === "function") {
         return false;
       }
@@ -130,10 +129,10 @@ function migrateThroughVersion12(
   if (version < 12) {
     const legacyToken =
       typeof state.hfToken === "string" ? state.hfToken.trim() : "";
-    if (legacyToken && !getHfToken()) {
-      useHfTokenStore.getState().setToken(legacyToken);
+    if (legacyToken) {
+      stageLegacyHfTokenForMigration(legacyToken);
     }
-    state.hfToken = undefined;
+    // Keep the legacy value persisted until authenticated migration confirms the backend write.
   }
 }
 
@@ -227,6 +226,17 @@ function migrateThroughVersion19(
   }
 }
 
+function migrateThroughVersion21(
+  state: PersistedTrainingConfig,
+  version: number,
+): void {
+  if (version < 21) {
+    // currentStep belonged to the onboarding wizard and was persisted, so without
+    // this it survives every rehydrate and partialize writes it straight back.
+    Reflect.deleteProperty(state, "currentStep");
+  }
+}
+
 function isDatasetFormat(value: unknown): value is DatasetFormat {
   return (
     value === "auto" ||
@@ -278,6 +288,7 @@ export function migrateTrainingConfig(
   migrateThroughVersion17(state, version);
   migrateThroughVersion18(state, version);
   migrateThroughVersion19(state, version);
+  migrateThroughVersion21(state, version);
   return state as unknown as TrainingConfigStore;
 }
 
@@ -285,8 +296,9 @@ export function mergeTrainingConfig(
   persisted: unknown,
   current: TrainingConfigStore,
 ): TrainingConfigStore {
-  const persistedState = persisted as Partial<TrainingConfigState>;
-  const persistedRecord = persisted as PersistedTrainingConfig;
+  const persistedRecord = { ...(persisted as PersistedTrainingConfig) };
+  delete persistedRecord.hfToken;
+  const persistedState = persistedRecord as Partial<TrainingConfigState>;
   const modelDefaultsAppliedFor =
     typeof persistedState.modelDefaultsAppliedFor === "string" &&
     persistedState.modelDefaultsAppliedFor.length > 0 &&
