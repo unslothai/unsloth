@@ -284,11 +284,18 @@ def train_once(args, run_index: int) -> dict:
         #   RuntimeError: Expected all tensors to be on the same device, but got
         #   index is on cuda:0, different from other tensors on cuda:1
         #
-        # That is an upstream bug and it is filed. Training a sharded model here
-        # would put a red in front of every PR for a fault no reader of this
-        # repo can fix, which is how a check gets switched off before the day it
-        # is right. The binding coverage -- the whole reason this leg exists --
-        # does not depend on it.
+        # WHETHER THAT IS A BUG IS NOT SETTLED, and an earlier version of this
+        # comment claimed it was filed. It is not filed, and the repo's own
+        # history is split on it: #2467 was closed with "unsloth runs on only 1
+        # gpu.. It wont run in multi gpu systems. force it to use only 1 gpu",
+        # while #2882 -- the same message, a different call site -- was closed
+        # as fixed. So this may be documented behaviour rather than a defect.
+        #
+        # What is not in doubt is that it is not THIS repo's to work around in a
+        # per-PR check. Training a sharded model here would put a red in front
+        # of every PR for a fault no reader can act on, which is how a check
+        # gets switched off before the day it is right. The binding coverage --
+        # the whole reason this leg exists -- does not depend on it.
         load_kwargs["device_map"] = {"": 0}
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model,

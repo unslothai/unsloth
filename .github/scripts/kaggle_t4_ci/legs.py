@@ -575,8 +575,12 @@ LEGS: dict[str, Leg] = {
             # sharded this model 232849408 params on cuda:0 and 155582464 on
             # cuda:1, unsloth announced `Num GPUs used = 2`, and step 0 died at
             # unsloth/models/llama.py:972 with `index is on cuda:0, different
-            # from other tensors on cuda:1`. Sharded training is broken
-            # upstream; the bindings this leg exists to cover are not.
+            # from other tensors on cuda:1`. Whether that is a DEFECT is not
+            # settled -- #2467 was closed with "unsloth runs on only 1 gpu",
+            # #2882 with the same message at another call site was closed as
+            # fixed -- so it may be documented behaviour. Either way it is not
+            # something a per-PR check should go red on, and the bindings this
+            # leg exists to cover do not depend on it.
             "--single-device",
             # NO --export-gguf, and this is a measurement rather than a saving.
             # The bundle `install_llama_cpp` fetches for the notebook legs is
