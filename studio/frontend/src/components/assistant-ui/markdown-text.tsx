@@ -60,6 +60,7 @@ import {
 import {
   DeferredFenceShell,
   fenceMode,
+  trimmedLength,
   trimTrailingNewlines,
   useFenceReached,
 } from "./code-fence-defer";
@@ -553,7 +554,7 @@ function FenceBlock({
     mode !== "off",
     Boolean(isIncomplete),
     languageToken,
-    source.length,
+    trimmedLength(source),
     warm,
   );
 
