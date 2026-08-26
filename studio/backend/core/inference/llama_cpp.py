@@ -19061,9 +19061,7 @@ class LlamaCppBackend:
                         # whose weights and KV llama.cpp distributes like any other.
                         # None once the drafter is CPU-offloaded (_mtp_draft_for_budget
                         # is nulled there), which is the case that really is off-GPU.
-                        "separate_draft_on_gpu": bool(
-                            _mtp_will_engage and _mtp_draft_for_budget
-                        ),
+                        "separate_draft_on_gpu": bool(_mtp_will_engage and _mtp_draft_for_budget),
                         # The planner reads the real tensor table, not a bucket
                         # total, so it can spill the MINIMUM set of blocks.
                         "model_path": model_path,
@@ -19243,9 +19241,7 @@ class LlamaCppBackend:
                         0
                         if _fit_env_mmproj_on_host
                         else _fit_env_mmproj_bytes
-                        + self._inherited_mmproj_soft_overhead(
-                            _fit_env_mmproj_bytes, on_host = False
-                        )
+                        + self._inherited_mmproj_soft_overhead(_fit_env_mmproj_bytes, on_host = False)
                     )
                     _fit_load_mode = self._fit_derived_load_mode(
                         model_size = _fit_model_size,
