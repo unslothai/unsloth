@@ -1392,6 +1392,7 @@ try:
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
+        _flash_attn_enabled_from_args,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
@@ -1447,6 +1448,7 @@ except ImportError:
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
+        _flash_attn_enabled_from_args,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
@@ -8135,6 +8137,31 @@ def _gguf_runtime_bytes(
                     _resolved_checkpoints = 0
             except Exception as _cc_exc:
                 logger.debug("ctx-checkpoints capability probe failed: %s", _cc_exc)
+        # load_model appends --flash-attn on to every launch whose build has the flag,
+        # so the default here is ON, not off. The false arm pads variable-width V
+        # tensors to the model-wide maximum (_max_kv_value_width), which on an
+        # architecture whose global and SWA layers disagree about n_embd_v_gqa
+        # inflates the whole cache and can call a load that fits an overflow. Resolved
+        # the way the launch resolves it: the managed default, narrowed by the
+        # capability probe, then llama.cpp's own env-then-last-wins-argv rule. A
+        # quantized V still forces it on top of all that, because llama-context.cpp
+        # turns it on itself rather than refusing the load.
+        _fa_default = True
+        try:
+            _fa_caps = LlamaCppBackend.probe_server_capabilities()
+            # Same ``found`` test as the checkpoint probe above: the defaults dict
+            # reports nothing supported, so keying on the flag alone would size every
+            # unprobed host as flash-attention-less.
+            if _fa_caps.get("found") and not _fa_caps.get("supports_flash_attn", True):
+                _fa_default = False
+        except Exception as _fa_exc:
+            logger.debug("flash-attention capability probe failed: %s", _fa_exc)
+        flash_attn = (
+            _flash_attn_enabled_from_args(
+                llama_extra_args, default = _fa_default, env = os.environ
+            )
+            or v_forces_flash_attn
+        )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
             cache_type_for_budget,
@@ -8147,7 +8174,7 @@ def _gguf_runtime_bytes(
             # a load asking for them needs materially more memory than one that
             # does not.
             ctx_checkpoints = _resolved_checkpoints,
-            flash_attn = v_forces_flash_attn,
+            flash_attn = flash_attn,
         )
         # The checkpoint share of that cache, by difference rather than by re-deriving
         # the SWA layer walk: the snapshots are the only term that separates the two
@@ -8163,7 +8190,7 @@ def _gguf_runtime_bytes(
                 kv_unified = kv_unified,
                 n_ubatch = effective_ubatch,
                 ctx_checkpoints = 0,
-                flash_attn = v_forces_flash_attn,
+                flash_attn = flash_attn,
             )
             kv_checkpoint_bytes = max(0, int(kv) - int(_kv_without))
         _resolved = dict(
@@ -10080,7 +10107,16 @@ def _gguf_memory_breakdown(
     # which is not: 32 snapshots per slot is the default, so charging them to VRAM
     # warned about GPU pressure an SWA load never creates.
     gpu_kv_bytes = max(0, runtime.kv_bytes - runtime.kv_checkpoint_bytes)
-    gpu_bytes = gpu_weights + (gpu_kv_bytes if kv_on_gpu else 0)
+    # And only the offloaded layers' share of it. A cache buffer is allocated on
+    # model.dev_layer(il) (llama-kv-cache.cpp), so a layer left on the CPU keeps its
+    # cache in host RAM -- the same rule the launch documents where it plans a spill.
+    # Charging the whole cache to VRAM at a partial offload contradicted the weights
+    # term right above, which is scaled, and at a long context the cache is the larger
+    # of the two: a 10-of-40 Manual placement read as exceeding a card it fits on.
+    # Linear in the layer count, like the weights, which is an approximation on a
+    # model whose layers do not all cache alike but is far nearer than charging all
+    # of it; --gpu-layers 0 and a full offload are both exact.
+    gpu_bytes = gpu_weights + (int(gpu_kv_bytes * gpu_fraction) if kv_on_gpu else 0)
     if gpu_fraction > 0.0:
         # Compute buffers land on the devices running layers.
         gpu_bytes += runtime.compute_bytes
@@ -10088,8 +10124,15 @@ def _gguf_memory_breakdown(
     # cache. The drafter's own KV follows the drafter: a separate drafter does not
     # inherit --gpu-layers (llama.cpp overwrites it with the draft placement, default
     # auto), so at --gpu-layers 0 it is still on the GPU and still holds that cache.
+    # An embedded head is the exception in the other direction: it has no file, so
+    # host_drafter_bytes is 0 and drafter_on_gpu answered yes even for a target the
+    # user placed on the CPU. It is part of the target's own tensors and llama.cpp
+    # gives it the target's context, so it goes where the target goes -- and at
+    # --gpu-layers 0 that is host RAM, where charging its cache to VRAM raised a
+    # multi-gigabyte warning about a card the load never touches.
+    _drafter_on_gpu = (gpu_fraction > 0.0) if embedded_mtp else drafter_on_gpu
     drafter_runtime_gpu_bytes = (target_spec_bytes if kv_on_gpu else 0) + (
-        (drafter_runtime_bytes - target_spec_bytes) if drafter_on_gpu else 0
+        (drafter_runtime_bytes - target_spec_bytes) if _drafter_on_gpu else 0
     )
     gpu_bytes += drafter_runtime_gpu_bytes
     # The encoder's buffers sit with the projector, so --no-mmproj-offload takes them

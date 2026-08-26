@@ -530,9 +530,13 @@ class TestMemoryBreakdown:
         # And the reverse: the extras can turn it off as well as on.
         assert priced(["--split-mode", "layer"], True) == layer
 
-    def test_manual_split_divides_the_weights_but_not_the_cache(self, config, gqa_gguf):
-        # llama.cpp keeps the whole KV cache on the GPU under a partial layer
-        # offload (only --no-kv-offload moves it), so only the weights split.
+    def test_manual_split_divides_the_cache_with_the_weights(self, config, gqa_gguf):
+        # A cache buffer is allocated on model.dev_layer(il) whenever offload_kqv is
+        # on (llama-kv-cache.cpp), so a layer left on the CPU keeps its cache in host
+        # RAM: --no-kv-offload moves ALL of it, and a partial --gpu-layers moves the
+        # rest with the layers. Charging the whole cache to VRAM here contradicted the
+        # weights term beside it, and at a long context the cache is the larger of the
+        # two, so a small Manual offload read as exceeding a card it fits on.
         b = ri._gguf_memory_breakdown(
             config, gqa_gguf, n_ctx = 8192, gpu_memory_mode = "manual", gpu_layers = 6
         )
@@ -540,9 +544,15 @@ class TestMemoryBreakdown:
         assert b.layer_count == _GQA_FIELDS["block_count"]
         assert b.gpu_layers == 6
         assert b.gpu_bytes == (
-            int(self.MAIN_BYTES * fraction) + self.COMPANION_BYTES + b.kv_bytes + b.compute_bytes
+            int(self.MAIN_BYTES * fraction)
+            + self.COMPANION_BYTES
+            + int(b.kv_bytes * fraction)
+            + b.compute_bytes
         )
+        # The cache is still counted in full in the aggregate figure: the host holds
+        # the other share, it does not vanish.
         assert b.gpu_bytes < b.total_bytes
+        assert b.kv_bytes > int(b.kv_bytes * fraction)
 
     def test_a_partial_offload_splits_only_the_main_weight(self, config, gqa_gguf):
         # --gpu-layers splits the model, not the companions beside it: a projector
@@ -2395,6 +2405,24 @@ class TestAnEmbeddedMtpHeadIsPriced:
             # Unmoved: the same bytes on the same device as with no pin at all.
             assert pinned.drafter_runtime_gpu_bytes == unpinned.drafter_runtime_gpu_bytes, pin
             assert pinned.drafter_runtime_bytes == unpinned.drafter_runtime_bytes, pin
+
+    def test_a_cpu_placed_target_takes_the_embedded_head_with_it(self, nextn_model):
+        """The other half of the same rule: it follows the target DOWN as well as up.
+
+        An embedded head has no file, so host_drafter_bytes is 0 and the drafter is
+        GPU-resident by default. That default is only right while the target is: the
+        head is part of the target's tensors and llama.cpp gives it the target's
+        context, so at --gpu-layers 0 its cache is in host RAM. Charging it to VRAM
+        there raised a multi-gigabyte warning about a card the load never touches.
+        """
+        gguf, config = nextn_model
+        on_cpu = ri._gguf_memory_breakdown(
+            config, gguf, n_ctx = 131072, gpu_memory_mode = "manual", gpu_layers = 0
+        )
+        assert on_cpu is not None
+        # Still allocated, and still in the aggregate figure -- just not on the card.
+        assert on_cpu.drafter_runtime_bytes > 0
+        assert on_cpu.drafter_runtime_gpu_bytes == 0
 
 
 class TestACpuOnlyHostShowsNoGpuFootprint:
