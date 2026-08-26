@@ -857,6 +857,7 @@ def test_inventory_totals_match_the_occupancy_path(monkeypatch, totals):
     assert [d["index"] for d in inventory] == [d["index"] for d in occupancy]
     assert [d["visible_ordinal"] for d in inventory] == [d["visible_ordinal"] for d in occupancy]
     assert all(d["used_gb"] is None for d in inventory)
+    assert all(d["shared_memory"] is False for d in inventory)
 
 
 def test_inventory_never_touches_mem_get_info(monkeypatch):
@@ -907,6 +908,7 @@ def test_visibility_endpoint_uses_inventory_not_occupancy(monkeypatch):
                 "name": "MI300X",
                 "total_gb": 192.0,
                 "used_gb": None,
+                "shared_memory": False,
             },
             {
                 "index": 1,
@@ -914,6 +916,7 @@ def test_visibility_endpoint_uses_inventory_not_occupancy(monkeypatch):
                 "name": "MI300X",
                 "total_gb": 192.0,
                 "used_gb": None,
+                "shared_memory": True,
             },
         ],
     )
@@ -921,6 +924,7 @@ def test_visibility_endpoint_uses_inventory_not_occupancy(monkeypatch):
     assert result["available"] is True
     assert [d["memory_total_gb"] for d in result["devices"]] == [192.0, 192.0]
     assert [d["name"] for d in result["devices"]] == ["MI300X", "MI300X"]
+    assert [d["shared_memory"] for d in result["devices"]] == [False, True]
     assert result["index_kind"] == "physical"
 
 
@@ -964,6 +968,7 @@ def test_rocm_apu_inventory_keeps_the_gtt_total(monkeypatch):
 
     assert inventory[0]["total_gb"] == occupancy[0]["total_gb"] == 100.0
     assert inventory[0]["total_gb"] != round(_APU_CARVE_OUT / (1024**3), 2)
+    assert inventory[0]["shared_memory"] is True
 
 
 class _FakeRocmProps(_FakeProps):
@@ -995,7 +1000,9 @@ def test_rocm_discrete_inventory_stays_context_free(monkeypatch):
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
-    assert hw._torch_get_device_inventory([0])[0]["total_gb"] == 178.35
+    inventory = hw._torch_get_device_inventory([0])[0]
+    assert inventory["total_gb"] == 178.35
+    assert inventory["shared_memory"] is False
 
 
 def test_an_apu_shaped_name_on_cuda_stays_context_free(monkeypatch):
@@ -1068,7 +1075,9 @@ def test_rocm_unclassified_apu_keeps_the_driver_total_on_an_older_runtime(monkey
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 1))
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
-    assert hw._torch_get_device_inventory([0])[0]["total_gb"] == 100.0
+    inventory = hw._torch_get_device_inventory([0])[0]
+    assert inventory["total_gb"] == 100.0
+    assert inventory["shared_memory"] is False
 
 
 def test_rocm_unclassified_apu_keeps_the_driver_total_without_the_flag(monkeypatch):
@@ -1078,7 +1087,9 @@ def test_rocm_unclassified_apu_keeps_the_driver_total_without_the_flag(monkeypat
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
-    assert hw._torch_get_device_inventory([0])[0]["total_gb"] == 100.0
+    inventory = hw._torch_get_device_inventory([0])[0]
+    assert inventory["total_gb"] == 100.0
+    assert inventory["shared_memory"] is False
 
 
 def test_rocm_props_that_cannot_be_classified_keep_the_driver_total(monkeypatch):
@@ -1094,7 +1105,9 @@ def test_rocm_props_that_cannot_be_classified_keep_the_driver_total(monkeypatch)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
-    assert hw._torch_get_device_inventory([0])[0]["total_gb"] == 100.0
+    inventory = hw._torch_get_device_inventory([0])[0]
+    assert inventory["total_gb"] == 100.0
+    assert inventory["shared_memory"] is False
 
 
 def test_hip_runtime_version_reads_both_wheel_spellings(monkeypatch):
