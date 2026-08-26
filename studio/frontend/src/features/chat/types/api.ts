@@ -281,7 +281,7 @@ export interface LoadModelResponse {
   gpu_layers?: number;
   /** Set when an automatic Vulkan startup crash was recovered by loading on CPU. */
   cpu_fallback_reason?: CpuFallbackReason | null;
-  /** How Studio recovered after a multimodal projector failed at startup. */
+  /** How Unsloth recovered after a multimodal projector failed at startup. */
   mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;

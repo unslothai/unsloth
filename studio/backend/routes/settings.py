@@ -1052,7 +1052,7 @@ def update_llama_cpp_path(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> LlamaCppPathResponse:
-    # Only the interactive Studio UI may change this executable setting.
+    # Only the interactive Unsloth UI may change this executable setting.
     require_ui_session(via_api_key)
     try:
         set_custom_llama_cpp_path(payload.path)

@@ -345,7 +345,7 @@ def test_an_already_active_sidecar_is_not_blamed_on_the_install(monkeypatch):
 
 
 def test_route_is_off_the_openai_compatible_mount():
-    # /v1 is the OpenAI-compatible surface; a Studio preflight has no business there.
+    # /v1 is the OpenAI-compatible surface; an Unsloth preflight has no business there.
     inf_mod = _route()
     paths = {route.path for route in inf_mod.studio_router.routes}
     assert "/transformers-upgrade-check" in paths

@@ -216,7 +216,7 @@ def test_full_mount_is_admitted_in_full_mode(browser):
     assert r.conditions["settled"] is True
     assert r.probe["mounted"] == MESSAGES
     # AND THE ORDINAL CONDITIONS ARE NOT APPLICABLE HERE, which is not the same as passing.
-    # Studio publishes no aria-posinset anywhere, so a `full` arm has none to validate and must
+    # Unsloth publishes no aria-posinset anywhere, so a `full` arm has none to validate and must
     # never be gated on them; `None` is the value the parity layer and this gate both use for a
     # surface that was not measured rather than one that agreed.
     assert r.conditions["posinset_ordinals_valid"] is None

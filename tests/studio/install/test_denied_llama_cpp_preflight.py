@@ -207,7 +207,7 @@ def test_the_preflight_cannot_be_the_thing_that_breaks_the_run() -> None:
 
 
 def test_a_custom_studio_home_is_never_called_a_cache_we_own() -> None:
-    """Do not call an unreadable custom Studio home a managed cache."""
+    """Do not call an unreadable custom Unsloth home a managed cache."""
     body = _function_source(INSTALL_PS1, "Invoke-ManagedLlamaCppPreflight")
     # Use the same predicate for path selection and ownership wording.
     assert "$homeIsCustom = Test-StudioHomeIsCustom" in body
