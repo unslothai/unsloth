@@ -103,10 +103,25 @@ export class StreamInterruptedError extends Error {
  * content, so the chat UI can explain a completed stream holding only a thinking panel.
  */
 export class GenerationLengthError extends Error {
-  constructor() {
+  /**
+   * @param maxTokensWasSet whether the user actually configured a Max Tokens value.
+   *
+   * With Max Tokens left on "Max" the backend already requests the WHOLE context length
+   * (`payload["max_tokens"] = self._effective_context_length`), so generation stops at the
+   * context wall rather than at any setting, and "Increase Max Tokens" is advice that
+   * cannot be followed: it is at its maximum and raising it changes nothing. Observed on a
+   * 4096-token window where the prompt left roughly a thousand tokens to answer in, which
+   * medium thinking spent before writing anything.
+   */
+  constructor(maxTokensWasSet = true) {
     super(
-      "The model reached the Max Tokens limit before producing a final answer. " +
-        "Increase Max Tokens or disable thinking, then retry.",
+      maxTokensWasSet
+        ? "The model reached the Max Tokens limit before producing a final answer. " +
+            "Increase Max Tokens or disable thinking, then retry."
+        : "The model ran out of room to answer: thinking used what the context window " +
+            "had left after the prompt, before any answer was written. Max Tokens is " +
+            "already unlimited, so raising it will not help -- increase the Context " +
+            "Length in Model settings, or disable thinking, then retry.",
     );
     this.name = "GenerationLengthError";
   }
@@ -1378,6 +1393,12 @@ function classifyStructuredDeltaContent(content: unknown): {
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
+  /**
+   * The window this request is served by, when the caller knows it. Used only to tell a
+   * user-chosen Max Tokens apart from the backend's stand-in for "Max", which is the whole
+   * context length -- the two need opposite advice when generation stops on length.
+   */
+  loadedContextLength?: number | null,
 ): AsyncGenerator<OpenAIChatChunk> {
   const response = await authFetch("/v1/chat/completions", {
     method: "POST",
@@ -1411,7 +1432,14 @@ export async function* streamChatCompletions(
       sawReasoningContent &&
       !sawAssistantContent
     ) {
-      throw new GenerationLengthError();
+      // The backend substitutes the full context length when the user left Max Tokens on
+      // "Max", so a payload value equal to it is indistinguishable from unset here -- and
+      // both mean the same thing to the user: the setting is not the lever.
+      throw new GenerationLengthError(
+        payload.max_tokens !== undefined
+          && payload.max_tokens !== null
+          && payload.max_tokens < (loadedContextLength ?? Number.POSITIVE_INFINITY),
+      );
     }
   };
 

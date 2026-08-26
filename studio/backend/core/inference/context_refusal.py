@@ -200,6 +200,15 @@ _ROLE_ADVICE = {
         "A tool returned more than this context window can hold",
         "ask for a smaller slice of the file or page",
     ),
+    # The model passed a file-sized argument to a tool. The user did not type it and
+    # cannot split it, and the tool cannot be asked for less: `edit_file` with an empty
+    # `old_string` is whole-file creation, so the content IS the argument. The only levers
+    # are the window itself and not asking for a file this size in a window this small.
+    "assistant_tool_call": (
+        "Most of this prompt is the file the model passed to a tool",
+        "The file the model passed to a tool does not fit on its own",
+        "ask for a smaller file, or raise the Context Length before retrying",
+    ),
     # The reply resumed after it hit Max Tokens: the user cannot split or shorten it.
     "assistant": (
         "Most of this prompt is the reply being continued",
@@ -257,4 +266,43 @@ def describe_oversize(request_tokens: int, context_tokens: int) -> str:
     return (
         f"{head}{cause}, so shortening the conversation {hedge}. Increase the Context "
         f"Length in Model settings, or {lever}."
+    )
+
+
+def describe_unservable_tool_call(
+    tool_name: str,
+    request_tokens: int,
+    context_tokens: int,
+    *,
+    compacted_calls: int = 0,
+) -> str:
+    """The message for a tool call refused BEFORE it ran, because its turn cannot be served.
+
+    `describe_oversize` reconstructs blame from a recorded diagnosis, because by the time it
+    speaks the request has already been rejected and the cause has to be inferred. This one
+    is said by the loop that is holding the call, so it names the tool outright instead of
+    guessing at a role, and it is the only refusal on this path that can promise nothing was
+    written -- which is the fact the user most needs and the 400 could never offer.
+
+    ``compacted_calls`` is reported when history was already spent trying to make room, so
+    "increase the Context Length" does not read as advice nobody tried.
+    """
+    # Says "leaving no room to reply" rather than only quoting the two numbers. The bar is
+    # the window minus a small reply floor, so a refusal at 3,740 against 4,096 reads as a
+    # contradiction unless the message accounts for the gap it is refusing over.
+    head = (
+        f"Not enough context left to run {tool_name}: the next request would be about "
+        f"{request_tokens} tokens of a {context_tokens}-token window, leaving no room to "
+        "reply. "
+    )
+    tried = ""
+    if compacted_calls > 0:
+        calls = "call" if compacted_calls == 1 else "calls"
+        tried = (
+            f"Arguments from {compacted_calls} earlier tool {calls} were already compacted "
+            "to make room. "
+        )
+    return (
+        head + tried + "Nothing was written. Increase the Context Length in Model settings, "
+        "or ask for a smaller file, then try again."
     )

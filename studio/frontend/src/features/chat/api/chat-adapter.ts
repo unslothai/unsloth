@@ -5866,7 +5866,15 @@ export function createOpenAIStreamAdapter(
             clearSelectedImageEditReference();
             requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
-            const stream = streamChatCompletions(requestPayload, runSignal);
+            // The window is passed so a length-stop can tell a Max Tokens the user chose
+            // from the backend's stand-in for "Max" (the whole context length). The two
+            // need opposite advice, and "Increase Max Tokens" cannot be acted on when it
+            // is already unlimited.
+            const stream = streamChatCompletions(
+              requestPayload,
+              runSignal,
+              runtime.customContextLength ?? runtime.ggufContextLength ?? null,
+            );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
 

@@ -350,6 +350,274 @@ def tool_result_budget(
     return max(0, int(target * buffer) - int(prompt_tokens or 0))
 
 
+def turn_is_servable(
+    context_length: int,
+    max_tokens: Optional[int],
+    prompt_tokens: int,
+    *,
+    buffer: float = _TOOL_RESULT_BUDGET_BUFFER,
+) -> bool:
+    """Whether the next prompt fits once this tool returns, given an EMPTY result.
+
+    `tool_result_budget` answers how much a result may add and clamps at zero, which the
+    truncation reads as "cut hard" -- a number, never a refusal. So a turn whose prompt is
+    already over budget before the tool has returned anything is indistinguishable from one
+    with a little room left, and the loop runs the tool either way. The side effect lands,
+    the result is squeezed to its notice, and the request is rejected regardless.
+
+    Zero room is the refusal the budget could not express. Asked with the notice reserve
+    charged, because a result cut to nothing still carries the notice saying so, and at
+    this end of the scale that IS the whole message.
+    """
+    if context_length <= 1:
+        return True
+    return prompt_tokens + _RESULT_NOTICE_RESERVE + _reply_floor(context_length) <= context_length
+
+
+def _reply_floor(context_length: int) -> int:
+    """The least reply room a turn must leave to be worth running.
+
+    Deliberately NOT `prompt_budget`, which sets aside the whole of `max_tokens`. That is
+    the right reserve for sizing a result, and much too strict for deciding whether a call
+    may run at all: at a 4096 window it leaves 3072 for the prompt, so the gate refused
+    turns of 3,504 and 3,740 tokens that llama-server would have served without complaint,
+    and the model sat retrying smaller and smaller edits against a bar it could not see.
+
+    llama-server admits a prompt on size alone (`n_tokens() >= n_ctx`), so that is the line
+    this has to draw, minus only enough to answer in. `_RESCUE_REPLY_FLOOR_DIVISOR` already
+    encodes that judgement for the compaction rescue -- small on purpose, ruling out the
+    stub-answer end rather than promising a full reply.
+    """
+    return max(1, context_length // _RESCUE_REPLY_FLOOR_DIVISOR)
+
+
+# How much of a completed call's arguments has to be at stake before replacing them with a
+# receipt is worth the edit. Below this the placeholder is a wash against what it removes,
+# and the model loses sight of its own last action for nothing.
+_ARG_COMPACTION_FLOOR_CHARS = 1024
+
+
+def _compacted_arguments(
+    name: str, arguments: str, phrase: Optional[str] = None
+) -> Optional[str]:
+    """A receipt standing in for a completed call's arguments, or None to leave them.
+
+    The arguments of a call that has ALREADY run are the one part of a tool exchange that
+    is pure history: the tool received them in full, the side effect landed, and for the
+    file tools the content is on disk and re-readable. Replaying them verbatim buys the
+    model nothing it cannot recover, which is what makes them the right thing to spend
+    when a turn spills -- unlike the result, which is the only record of what happened.
+
+    Structured rather than dropped, and naming the path, so the model can still see which
+    file it just wrote and go and read it. A bare "[omitted]" reads as a failed call and
+    is answered with a retry of the same oversized write.
+    """
+    # Resolved here, not as a default: the constant is defined below this function, and a
+    # literal default silently kept the OLD wording on this path while the executed and
+    # refused paths moved to the new one -- the same receipt the model misread as tool
+    # output, still being emitted by the most common caller.
+    phrase = phrase or _COMPLETED_PHRASE
+    if not isinstance(arguments, str) or len(arguments) < _ARG_COMPACTION_FLOOR_CHARS:
+        return None
+    try:
+        parsed = json.loads(arguments)
+    except Exception:
+        # Unparseable arguments still cost the window, and a call that has already run
+        # cannot be re-issued from them, so the size alone is an honest receipt.
+        return json.dumps(
+            {"_unsloth_compacted": f"{len(arguments)} chars of arguments elided after the call ran"},
+            ensure_ascii = False,
+        )
+    if not isinstance(parsed, dict):
+        return None
+    path = parsed.get("path") or parsed.get("file_path") or parsed.get("filePath")
+    elided = 0
+
+    def _shrink(value: Any, key: str = "") -> Any:
+        """Elide every large string, at whatever depth it sits.
+
+        Depth is not optional: `edit_file` takes an `edits` ARRAY so several changes cost
+        one call instead of one each, which puts the file content at
+        `edits[i].new_string`. A top-level-only pass sees nothing there and quietly
+        compacts nothing -- the batching and the compaction were written a day apart and
+        only the tests noticed they had stopped meeting.
+        """
+        nonlocal elided
+        if isinstance(value, str) and len(value) >= _ARG_COMPACTION_FLOOR_CHARS:
+            elided += len(value)
+            where = f" to {path}" if path and key != "path" else ""
+            return f"<{len(value)} chars {phrase.format(where = where)}>"
+        if isinstance(value, dict):
+            return {inner: _shrink(item, inner) for inner, item in value.items()}
+        if isinstance(value, list):
+            return [_shrink(item, key) for item in value]
+        return value
+
+    kept = {key: _shrink(value, key) for key, value in parsed.items()}
+    if not elided:
+        return None
+    try:
+        compacted = json.dumps(kept, ensure_ascii = False)
+    except Exception:
+        return None
+    # Never grow the prompt to describe it: a call whose bulk is spread across many small
+    # fields leaves nothing to elide and the receipts cost more than the fields did.
+    return compacted if len(compacted) < len(arguments) else None
+
+
+_REFUSED_PHRASE = (
+    "of arguments you sent, elided because this call was refused before it ran; nothing was written"
+)
+# Worded so the model cannot mistake it for the tool's OUTPUT. The first version read
+# "<2581 chars written; re-read the file to see it>" and was quoted straight back in
+# the model's reasoning as "the tool result says ... the output was omitted" -- it
+# concluded the sandbox had mangled its file and abandoned a working approach. Says
+# "you sent" so the owner of the text is unambiguous, and says what it is not.
+_COMPLETED_PHRASE = (
+    "of arguments you sent, already written{where}; elided from this transcript to save room -- this is not the tool's output, read the file back if you need the content"
+)
+
+
+def compact_executed_call_arguments(messages: list[dict], call_id: str) -> list[dict]:
+    """Replace ONE just-run call's arguments with a receipt, whatever else is protected.
+
+    `compact_completed_tool_arguments` deliberately holds the newest exchange back, which
+    is right while a call is still in flight and wrong the instant it returns. Running a
+    tool needs no context at all -- only the NEXT prompt does, and by then the arguments
+    describe something already on disk.
+
+    That distinction is what lets an oversized call be run instead of refused: refusing
+    left the arguments in the transcript anyway, the model retried with a fresh oversized
+    call, and each round added a receipt and a refusal message while reclaiming less.
+    Measured over three rounds of one thread: 50%, then 34%, then 15% of the conversation
+    recovered, ending in a one-character reply. Running the call and compacting it costs
+    the same tokens once and leaves the file written.
+    """
+    return _compact_one_call(messages, call_id, _COMPLETED_PHRASE)
+
+
+def compact_refused_tool_arguments(messages: list[dict], call_id: str) -> list[dict]:
+    """Drop the arguments of one call that was declined, naming it as never sent.
+
+    Refusing a call does not on its own make the turn servable, and on the template that
+    made the refusal necessary it actively does not: an assistant turn's `tool_calls` are
+    rendered only once a `tool` message answers them, and the refusal IS such a message.
+    So declining costs the prompt the very arguments it was declining to afford, and the
+    generation that follows is rejected with nothing written -- an accurate refusal the
+    user never gets to act on.
+
+    These arguments are the one case with no replay value whatsoever: the call did not
+    run, so nothing on disk reflects them and there is nothing to re-read. Their own
+    receipt has to say so, because the wording used for a completed call would tell the
+    model to go and read a file that was never written.
+    """
+    return _compact_one_call(messages, call_id, _REFUSED_PHRASE)
+
+
+def _compact_one_call(messages: list[dict], call_id: str, phrase: str) -> list[dict]:
+    """Rewrite exactly one call's arguments to a receipt worded by `phrase`."""
+    if not call_id:
+        return messages
+    out: list[dict] = []
+    for message in messages:
+        calls = message.get("tool_calls")
+        if message.get("role") != "assistant" or not isinstance(calls, list) or not calls:
+            out.append(message)
+            continue
+        new_calls: list[dict] = []
+        changed = False
+        for call in calls:
+            function = call.get("function") if isinstance(call, dict) else None
+            if not isinstance(function, dict) or str(call.get("id") or "") != str(call_id):
+                new_calls.append(call)
+                continue
+            replacement = _compacted_arguments(
+                str(function.get("name") or ""), function.get("arguments"), phrase
+            )
+            if replacement is None:
+                new_calls.append(call)
+                continue
+            new_calls.append({**call, "function": {**function, "arguments": replacement}})
+            changed = True
+        out.append({**message, "tool_calls": new_calls} if changed else message)
+    return out
+
+
+def compact_completed_tool_arguments(
+    messages: list[dict],
+    *,
+    protect_last: int = 0,
+) -> tuple[list[dict], int]:
+    """Replace oversized arguments of already-executed calls with receipts.
+
+    Returns the new message list and the number of calls compacted. The input is never
+    mutated: this rewrites what is REPLAYED to the model, exactly as
+    `strip_result_for_model` already does for results, while the stored thread and the
+    arguments the tool actually received stay byte-identical.
+
+    Only calls with a `role=tool` reply present are touched. A call still awaiting its
+    result is the turn in flight, and rewriting its arguments would tell the model it
+    wrote something different from what the tool is at that moment being handed.
+
+    Oldest first, so the freshest exchange -- the one the model is mid-way through
+    reasoning about -- is the last thing spent. ``protect_last`` holds that many trailing
+    messages clear of the pass entirely.
+    """
+    answered: set[str] = set()
+    for message in messages:
+        if message.get("role") == "tool":
+            call_id = message.get("tool_call_id")
+            if call_id:
+                answered.add(str(call_id))
+    if not answered:
+        return messages, 0
+
+    limit = len(messages) - int(protect_last or 0)
+    out: list[dict] = []
+    compacted_calls = 0
+    for index, message in enumerate(messages):
+        calls = message.get("tool_calls") if index < limit else None
+        if message.get("role") != "assistant" or not isinstance(calls, list) or not calls:
+            out.append(message)
+            continue
+        new_calls: list[dict] = []
+        changed = False
+        for call in calls:
+            function = call.get("function") if isinstance(call, dict) else None
+            if not isinstance(function, dict) or str(call.get("id") or "") not in answered:
+                new_calls.append(call)
+                continue
+            replacement = _compacted_arguments(
+                str(function.get("name") or ""), function.get("arguments")
+            )
+            if replacement is None:
+                new_calls.append(call)
+                continue
+            new_calls.append(
+                {**call, "function": {**function, "arguments": replacement}}
+            )
+            changed = True
+            compacted_calls += 1
+        out.append({**message, "tool_calls": new_calls} if changed else message)
+    return (out, compacted_calls) if compacted_calls else (messages, 0)
+
+
+def _blamed_role(message: dict) -> str:
+    """The advice key for a turn: its role, except a call the model made itself.
+
+    An assistant turn carrying `tool_calls` is reported as `assistant_tool_call` rather
+    than `assistant`, because the two have opposite levers. "The reply being continued is
+    too long, start a new reply" is the right answer for a resumed generation and the
+    wrong one for a turn whose bulk is an 8 KB file the model passed to `edit_file`:
+    starting a new reply re-runs the same write. Kept as a role key so the split costs
+    the advice table one row and `_blame_latest_turn` nothing.
+    """
+    role = str(message.get("role") or "")
+    if role == "assistant" and message.get("tool_calls"):
+        return "assistant_tool_call"
+    return role
+
+
 def _latest_turn_count(
     messages: list[dict], count_tokens: Callable[[list[dict]], int]
 ) -> tuple[int, bool]:
@@ -482,7 +750,7 @@ def turn_diagnosis(
     return {
         "latest_turn_tokens": latest,
         # Whose message it is: often a tool result the user cannot shorten.
-        "latest_turn_role": str(messages[-1].get("role") or ""),
+        "latest_turn_role": _blamed_role(messages[-1]),
         "shared_prompt_tokens": shared,
         # Whether the number above is a token count or a four-characters-a-token guess.
         "latest_turn_exact": bool(exact),

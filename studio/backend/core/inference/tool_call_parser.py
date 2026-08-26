@@ -272,6 +272,52 @@ def reprompt_to_act_message(tool_hint: str) -> str:
     )
 
 
+# How much of the unfinished thought is carried into the continuation. The point is to
+# resume, not to replay: the whole thought is what filled the window, so putting it back
+# reproduces the same ending. The tail is the part still being worked on.
+_LENGTH_PROGRESS_TAIL_CHARS = 600
+
+
+def unfinished_thought_progress(reasoning: str) -> str:
+    """The short note that stands in for a thought the window cut off."""
+    tail = reasoning.strip()[-_LENGTH_PROGRESS_TAIL_CHARS:].lstrip()
+    return f"Where I had got to:\n{tail}"
+
+
+def thinking_exhausted_message(context_length: Optional[int] = None) -> str:
+    """Shown when even a thinking-off retry produced nothing visible.
+
+    Names the lever the user actually has. Hermes surfaces the same advice
+    (NousResearch/hermes-agent, `_thinking_exhausted`) and Codex's guidance for the
+    identical symptom is likewise to lower reasoning effort, because no amount of
+    retrying fits a thought that did not fit the first time.
+    """
+    window = f" of the {context_length}-token window" if context_length else ""
+    return (
+        "The model spent its whole reply{}on reasoning and had none left for an "
+        "answer, twice in a row.\n\n"
+        "To get past this:\n"
+        "- Lower the reasoning effort, or turn thinking off\n"
+        "- Or raise the context length, so a thought and an answer both fit\n"
+        "- Or ask for a smaller piece of the task at a time"
+    ).format(window + " " if window else " ")
+
+
+def continue_after_length_message() -> str:
+    """The user message appended when a turn ended inside its own reasoning.
+
+    The instruction is to ACT, not to think more carefully: the previous turn ended with
+    nothing to show because thinking consumed the whole window, so asking for more
+    deliberation is asking for the same ending a second time.
+    """
+    return (
+        "Your previous turn ran out of room while thinking, so nothing was produced. "
+        "Do not think further and do not restate your reasoning. Act now: call a tool "
+        "or give the answer directly. If the whole answer will not fit, produce the "
+        "first part now and continue afterwards."
+    )
+
+
 # Qwen / Hermes ``<tool_call>{json}``.
 _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
 # Qwen3.5 ``<function=name>`` and the attribute form ``<function name="name">``

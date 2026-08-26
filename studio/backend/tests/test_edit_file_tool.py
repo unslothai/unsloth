@@ -38,6 +38,20 @@ def workdir(tmp_path, monkeypatch):
 
 
 def _edit(**arguments) -> str:
+    """Call edit_file, accepting the single-edit spelling these tests were written in.
+
+    The tool now takes an ``edits`` array so several changes to one file cost one call
+    instead of one call each. Every case below is about one edit, and what it asserts --
+    matching, uniqueness, encoding, containment, receipts -- is unchanged by the batching,
+    so the shape is adapted here rather than restating 50 call sites.
+    """
+    if "edits" not in arguments:
+        edit = {
+            key: arguments.pop(key)
+            for key in ("old_string", "new_string", "replace_all")
+            if key in arguments
+        }
+        arguments["edits"] = [edit]
     return execute_tool("edit_file", arguments, session_id = "t")
 
 
@@ -495,7 +509,7 @@ class TestFullAccessEscapesTheWorkdir:
         outside.write_text("x = 1\n")
         result = execute_tool(
             "edit_file",
-            {"path": str(outside), "old_string": "x = 1", "new_string": "x = 2"},
+            {"path": str(outside), "edits": [{"old_string": "x = 1", "new_string": "x = 2"}]},
             session_id = "t",
             disable_sandbox = True,
         )
@@ -537,7 +551,7 @@ class TestCreationLeavesNothingBehindWhenTheWriteFails:
         try:
             result = execute_tool(
                 "edit_file",
-                {"path": "report.py", "old_string": "", "new_string": body},
+                {"path": "report.py", "edits": [{"old_string": "", "new_string": body}]},
                 session_id = "t",
             )
         finally:
@@ -552,14 +566,14 @@ class TestCreationLeavesNothingBehindWhenTheWriteFails:
         try:
             execute_tool(
                 "edit_file",
-                {"path": "report.py", "old_string": "", "new_string": body},
+                {"path": "report.py", "edits": [{"old_string": "", "new_string": body}]},
                 session_id = "t",
             )
         finally:
             self._restore(saved)
         retry = execute_tool(
             "edit_file",
-            {"path": "report.py", "old_string": "", "new_string": body},
+            {"path": "report.py", "edits": [{"old_string": "", "new_string": body}]},
             session_id = "t",
         )
         assert not retry.startswith("Error:")
@@ -600,9 +614,134 @@ class TestCreationLeavesNothingBehindWhenTheWriteFails:
         target.write_text("x = 1\n")
         result = execute_tool(
             "edit_file",
-            {"path": "keep.py", "old_string": "", "new_string": "y = 2\n"},
+            {"path": "keep.py", "edits": [{"old_string": "", "new_string": "y = 2\n"}]},
             session_id = "t",
         )
         assert result.startswith("Error:")
         assert "already exists" in result
         assert target.read_text() == "x = 1\n"
+
+
+class TestBatchedEdits:
+    """Several changes to one file in one call.
+
+    The point is token cost, not convenience: every extra call replays the whole
+    conversation and leaves an assistant turn plus a tool result in the window for good.
+    llama.cpp's own edit_file takes an `edits` array for the same reason.
+    """
+
+    def _edits(self, path, edits):
+        return execute_tool("edit_file", {"path": path, "edits": edits}, session_id = "t")
+
+    def test_several_edits_land_in_one_call(self, workdir):
+        target = workdir / "a.py"
+        target.write_text("alpha\nbeta\ngamma\n")
+        result = self._edits(
+            "a.py",
+            [
+                {"old_string": "alpha", "new_string": "A"},
+                {"old_string": "gamma", "new_string": "G"},
+            ],
+        )
+        assert target.read_text() == "A\nbeta\nG\n"
+        assert "2 replacements" in result
+
+    def test_every_old_string_matches_the_original_not_the_running_result(self, workdir):
+        """The model copied each snippet out of the file it read, so that is what they match."""
+        target = workdir / "a.py"
+        target.write_text("one\ntwo\n")
+        self._edits(
+            "a.py",
+            [
+                {"old_string": "one", "new_string": "two"},
+                {"old_string": "two", "new_string": "three"},
+            ],
+        )
+        # The second edit takes the ORIGINAL "two", not the one the first just wrote.
+        assert target.read_text() == "two\nthree\n"
+
+    def test_one_bad_edit_writes_none_of_them(self, workdir):
+        """A half-applied batch is worse than a refused one: the model cannot tell which half."""
+        target = workdir / "a.py"
+        target.write_text("alpha\nbeta\n")
+        result = self._edits(
+            "a.py",
+            [
+                {"old_string": "alpha", "new_string": "A"},
+                {"old_string": "nowhere", "new_string": "B"},
+            ],
+        )
+        assert result.startswith("Error:")
+        assert "edit 2" in result
+        assert target.read_text() == "alpha\nbeta\n"
+
+    def test_overlapping_edits_are_refused(self, workdir):
+        target = workdir / "a.py"
+        target.write_text("hello world\n")
+        result = self._edits(
+            "a.py",
+            [
+                {"old_string": "hello world", "new_string": "x"},
+                {"old_string": "world", "new_string": "y"},
+            ],
+        )
+        assert result.startswith("Error:")
+        assert "overlap" in result
+        assert target.read_text() == "hello world\n"
+
+    def test_an_ambiguous_entry_names_which_one(self, workdir):
+        target = workdir / "a.py"
+        target.write_text("v = 1\nv = 1\nkeep\n")
+        result = self._edits(
+            "a.py",
+            [
+                {"old_string": "keep", "new_string": "kept"},
+                {"old_string": "v = 1", "new_string": "v = 2"},
+            ],
+        )
+        assert "edit 2" in result
+        assert "2 places" in result
+        assert target.read_text() == "v = 1\nv = 1\nkeep\n"
+
+    def test_replace_all_is_per_entry(self, workdir):
+        target = workdir / "a.py"
+        target.write_text("v = 1\nv = 1\nw = 1\n")
+        result = self._edits(
+            "a.py",
+            [
+                {"old_string": "v = 1", "new_string": "v = 2", "replace_all": True},
+                {"old_string": "w = 1", "new_string": "w = 2"},
+            ],
+        )
+        assert target.read_text() == "v = 2\nv = 2\nw = 2\n"
+        assert "3 replacements" in result
+
+    def test_creation_cannot_be_batched_with_edits(self, workdir):
+        """An empty old_string writes the whole file, so there is nothing to edit beside it."""
+        result = self._edits(
+            "new.py",
+            [
+                {"old_string": "", "new_string": "x = 1\n"},
+                {"old_string": "x", "new_string": "y"},
+            ],
+        )
+        assert result.startswith("Error:")
+        assert not (workdir / "new.py").exists()
+
+    def test_an_empty_edits_array_says_what_to_send(self, workdir):
+        (workdir / "a.py").write_text("x = 1\n")
+        result = execute_tool("edit_file", {"path": "a.py", "edits": []}, session_id = "t")
+        assert result.startswith("Error:")
+        assert "edits" in result
+
+    def test_a_large_replace_all_batch_stays_linear(self, workdir):
+        """Rebuilding the string per replacement is quadratic; this caught that at 10s."""
+        target = workdir / "big.py"
+        target.write_text("v = 1\n" * 40000)
+        started = time.monotonic()
+        result = self._edits(
+            "big.py", [{"old_string": "v = 1", "new_string": "v = 2", "replace_all": True}]
+        )
+        assert not result.startswith("Error:")
+        assert time.monotonic() - started < 2.0
+        assert target.read_text() == "v = 2\n" * 40000

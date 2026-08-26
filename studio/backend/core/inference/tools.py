@@ -9370,55 +9370,154 @@ def _edit_file_create(
     return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
 
 
+def _edit_file_parse_edits(raw) -> "tuple[list[tuple[str, str, bool]], str]":
+    """Validate the `edits` array into `(old, new, replace_all)` triples.
+
+    Every string is normalized the way the file is, so a snippet copied out of `cat`
+    output with plain newlines still matches a Windows-authored file.
+
+    The surrogate check is per entry and up front, before anything is written: a
+    truncated emoji escape ("\\ud83d") survives `json.loads` as a lone surrogate that
+    cannot be encoded, and the UnicodeEncodeError the write raises is swallowed upstream
+    into "Unknown tool: edit_file" -- the one answer that sends the model back to the
+    whole-file rewrite. `old_string` needs no check, being only ever compared.
+    """
+    if not isinstance(raw, list) or not raw:
+        return [], (
+            "Error: 'edits' must be a non-empty array of {old_string, new_string} "
+            "objects. Send every change to this file as separate entries in it."
+        )
+    edits: list[tuple[str, str, bool]] = []
+    for index, entry in enumerate(raw, 1):
+        if not isinstance(entry, dict):
+            return [], f"Error: edit {index} is not an object with old_string/new_string."
+        old = entry.get("old_string")
+        new = entry.get("new_string")
+        # Checked, not coerced: str(None) would write the literal "None" into a file.
+        if not isinstance(old, str) or not isinstance(new, str):
+            return [], (
+                f"Error: edit {index} needs 'old_string' and 'new_string' to both be "
+                "strings."
+            )
+        try:
+            new.encode("utf-8")
+        except UnicodeEncodeError:
+            return [], (
+                f"Error: edit {index} has unpaired surrogate characters in "
+                "'new_string', usually a half-written emoji; nothing was written. "
+                "Send it again as plain text."
+            )
+        replace_all = _edit_file_replace_all(entry.get("replace_all"))
+        if replace_all is None:
+            return [], f"Error: edit {index} needs 'replace_all' to be true or false."
+        edits.append((old.replace("\r\n", "\n"), new.replace("\r\n", "\n"), replace_all))
+    return edits, ""
+
+
+def _edit_file_apply_all(
+    before: str, edits: "list[tuple[str, str, bool]]", name: str
+) -> "tuple[str, int, str, str, int, str]":
+    """Apply every edit against the ORIGINAL text, or none of them.
+
+    Matched against `before` rather than against the running result, which is the rule
+    llama.cpp's own `edit_file` states and the only one a model can reason about: it
+    copied each `old_string` out of the file it read, so an entry that silently matched
+    the output of an earlier entry would land somewhere it never saw.
+
+    Spans are resolved for all entries first and checked for overlap, then applied right
+    to left so the earlier offsets stay valid. Every failure returns before a single byte
+    is written -- a partly applied batch is the one outcome worse than a refused one,
+    because the model cannot tell which half landed.
+    """
+    spans: list[tuple[int, int, str, int]] = []
+    for index, (old, new, replace_all) in enumerate(edits, 1):
+        count = before.count(old)
+        if count == 0:
+            return "", 0, "", "", 0, (
+                f"Error: edit {index}'s 'old_string' was not found in {name}. It must "
+                "match the file byte for byte, including indentation. Read the file and "
+                "copy the text to replace out of it."
+            )
+        if count > 1 and not replace_all:
+            return "", 0, "", "", 0, (
+                f"Error: edit {index}'s 'old_string' matches {count} places in {name}. "
+                "Include surrounding lines to make it unique, or set replace_all on that "
+                f"entry to change all {count}."
+            )
+        start = before.find(old)
+        while start >= 0:
+            spans.append((start, start + len(old), new, index))
+            if not replace_all:
+                break
+            start = before.find(old, start + len(old))
+    spans.sort()
+    for (start, end, _, index), (next_start, _, _, next_index) in zip(spans, spans[1:]):
+        if next_start < end:
+            return "", 0, "", "", 0, (
+                f"Error: edits {index} and {next_index} overlap in {name}. Every "
+                "old_string is matched against the file as it was before this call, so "
+                "two edits cannot cover the same text. Combine them into one entry."
+            )
+    # One pass with a cursor, not a slice-and-concat per span. Rebuilding the whole string
+    # for every replacement is quadratic, and `replace_all` over a large file is exactly
+    # where that bites: a file with tens of thousands of matches took 10s where the single
+    # `str.replace` it succeeded took well under one.
+    parts: list[str] = []
+    cursor = 0
+    for start, end, new, _ in spans:
+        parts.append(before[cursor:start])
+        parts.append(new)
+        cursor = end
+    parts.append(before[cursor:])
+    after = "".join(parts)
+    first_start, first_end, first_new, _ = spans[0]
+    return after, len(spans), before[first_start:first_end], first_new, first_start, ""
+
+
 def _edit_file(
     arguments: dict,
     session_id: "str | None" = None,
     disable_sandbox: bool = False,
 ) -> str:
-    """Replace an exact string in a file. See the notes above."""
-    old = arguments.get("old_string")
-    new = arguments.get("new_string")
-    # Checked, not coerced: str(None) would write the literal "None" into a file.
-    if not isinstance(old, str) or not isinstance(new, str):
-        return "Error: 'old_string' and 'new_string' must both be strings."
-    # A truncated emoji escape ("\ud83d") survives json.loads as a lone surrogate
-    # that cannot be encoded, and the UnicodeEncodeError the write raises is
-    # swallowed upstream into "Unknown tool: edit_file" -- the one answer that
-    # sends the model back to the whole-file rewrite. old_string needs no check,
-    # being only ever compared.
-    try:
-        new.encode("utf-8")
-    except UnicodeEncodeError:
-        return (
-            "Error: 'new_string' contains unpaired surrogate characters, usually "
-            "a half-written emoji; nothing was written. Send it again as plain text."
-        )
+    """Replace exact strings in a file. See the notes above."""
+    edits, error = _edit_file_parse_edits(arguments.get("edits"))
+    if error:
+        return error
     target, error = _edit_file_resolve(
         str(arguments.get("path") or ""), session_id, disable_sandbox
     )
     if error:
         return error
     name = os.path.basename(target)
-    # Normalized for the same reason the file is, so the two can match.
-    old = old.replace("\r\n", "\n")
-    new = new.replace("\r\n", "\n")
-    replace_all = _edit_file_replace_all(arguments.get("replace_all"))
-    if replace_all is None:
-        return "Error: 'replace_all' must be true or false."
     # Decided before the no-op check below, not after: both strings empty is the
     # documented way to create __init__.py or .gitkeep, and read as "identical,
     # nothing to change" it was refused, leaving no way to write a zero-byte
     # file.
-    if not old:
+    if not edits[0][0]:
+        if len(edits) > 1:
+            return (
+                "Error: an empty 'old_string' creates the file, so it cannot be "
+                f"combined with the other {len(edits) - 1} edit(s). Create the file "
+                "in one call, then edit it in the next."
+            )
         return _edit_file_create(
             target,
-            new,
+            edits[0][1],
             name,
             "\n",
             workdir = None if disable_sandbox else _get_workdir(session_id),
         )
-    if old == new:
-        return "Error: 'old_string' and 'new_string' are identical; nothing to change."
+    for index, (old, new, _) in enumerate(edits, 1):
+        if not old:
+            return (
+                f"Error: edit {index} has an empty 'old_string'. Only a single edit "
+                "may be empty, and only to create the file."
+            )
+        if old == new:
+            return (
+                f"Error: edit {index} has identical 'old_string' and 'new_string'; "
+                "nothing to change."
+            )
     try:
         st = os.stat(target)
     except FileNotFoundError:
@@ -9445,20 +9544,11 @@ def _edit_file(
     before, newline, bom, error = _edit_file_decode(data, target)
     if error:
         return error
-    count = before.count(old)
-    if count == 0:
-        return (
-            f"Error: 'old_string' was not found in {name}. It must match the "
-            "file byte for byte, including indentation. Read the file and copy "
-            "the text to replace out of it."
-        )
-    if count > 1 and not replace_all:
-        return (
-            f"Error: 'old_string' matches {count} places in {name}. Include "
-            "surrounding lines to make it unique, or pass replace_all=true to "
-            f"change all {count}."
-        )
-    after = before.replace(old, new) if replace_all else before.replace(old, new, 1)
+    after, total, first_old, first_new, change_at, error = _edit_file_apply_all(
+        before, edits, name
+    )
+    if error:
+        return error
     error = _edit_file_write(
         target,
         after,
@@ -9472,11 +9562,11 @@ def _edit_file(
     # Windowed around the first replacement, rather than diffing the whole file.
     return _edit_file_receipt(
         before,
-        old,
-        new,
+        first_old,
+        first_new,
         name,
-        count if replace_all else 1,
-        change_at = max(before.find(old), 0),
+        total,
+        change_at = change_at,
     )
 
 
@@ -9809,14 +9899,20 @@ EDIT_FILE_TOOL = {
         # The description does the steering: given the tool but no preference,
         # a model keeps writing heredocs because that is what it was trained on.
         "description": (
-            "Change a file by replacing an exact string in it. Prefer this over "
+            "Change a file by replacing exact strings in it. Prefer this over "
             "rewriting a file with python or a shell heredoc: it sends only the "
             "lines that change, so editing a large file costs a fraction of the "
             "tokens and cannot drop the parts you did not retype. Read the file "
-            "first and copy old_string out of it verbatim, including indentation. "
-            "old_string must match exactly one place unless replace_all is true; "
-            "if it matches none or several you get an error and nothing is "
-            "written. Paths are relative to the working directory."
+            "first and copy each old_string out of it verbatim, including "
+            "indentation. Send every change to one file as separate entries in "
+            "edits rather than calling this repeatedly: each call replays the "
+            "whole conversation, so one call with five edits costs far less than "
+            "five calls. Every old_string is matched against the file as it was "
+            "BEFORE this call, not against the result of the edits before it, and "
+            "no two may overlap. Each must match exactly one place unless that "
+            "entry sets replace_all; if any entry matches none or several you get "
+            "an error and NOTHING is written. Paths are relative to the working "
+            "directory."
         ),
         "parameters": {
             "type": "object",
@@ -9825,26 +9921,40 @@ EDIT_FILE_TOOL = {
                     "type": "string",
                     "description": "File to edit, relative to the working directory.",
                 },
-                "old_string": {
-                    "type": "string",
+                "edits": {
+                    "type": "array",
                     "description": (
-                        "Exact text to replace, copied from the file. Pass an "
-                        "empty string to create a new file."
+                        "One or more replacements to apply together. A single "
+                        "entry whose old_string is empty creates a new file."
                     ),
-                },
-                "new_string": {
-                    "type": "string",
-                    "description": "Text to put in its place.",
-                },
-                "replace_all": {
-                    "type": "boolean",
-                    "description": (
-                        "Replace every occurrence instead of requiring a unique "
-                        "match. Defaults to false."
-                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_string": {
+                                "type": "string",
+                                "description": (
+                                    "Exact text to replace, copied from the file. "
+                                    "Empty creates a new file."
+                                ),
+                            },
+                            "new_string": {
+                                "type": "string",
+                                "description": "Text to put in its place.",
+                            },
+                            "replace_all": {
+                                "type": "boolean",
+                                "description": (
+                                    "Replace every occurrence of this entry's "
+                                    "old_string instead of requiring a unique "
+                                    "match. Defaults to false."
+                                ),
+                            },
+                        },
+                        "required": ["old_string", "new_string"],
+                    },
                 },
             },
-            "required": ["path", "old_string", "new_string"],
+            "required": ["path", "edits"],
         },
     },
 }
@@ -10185,6 +10295,28 @@ def execute_tool(
     # turn's own tool exchanges existed, which is precisely the undercount that lets the
     # last result overflow.
     _REQUEST_RESULT_BUDGET.set(result_budget_tokens)
+    # Arguments that never parsed, for a tool with no single argument they could be.
+    # Answered here rather than by the tool, which can only report the keys it wanted and
+    # would blame the model for omitting them: `edit_file` said "'old_string' and
+    # 'new_string' must both be strings" about a call that sent neither because its JSON
+    # was cut off mid-string. Naming the real fault is what makes the retry the right one.
+    # Imported here for the same reason `strip_result_for_model` is: at module scope this
+    # closes an import cycle, since the controller reads this module's own schemas.
+    from .tool_loop_controller import UNPARSED_ARGUMENTS_KEY  # noqa: PLC0415
+
+    if isinstance(arguments, dict) and UNPARSED_ARGUMENTS_KEY in arguments:
+        raw = str(arguments.get(UNPARSED_ARGUMENTS_KEY) or "")
+        truncated = raw.lstrip().startswith(("{", "[")) and not raw.rstrip().endswith(("}", "]"))
+        cause = (
+            "they stop part-way through, so they were probably cut off"
+            if truncated
+            else "they are not valid JSON"
+        )
+        return (
+            f"Error: the arguments to {name} could not be read -- {cause}. Nothing was "
+            f"run. Send the call again as complete JSON; if the content is long, split it "
+            "into smaller calls."
+        )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
         return _fit_result_to_room(

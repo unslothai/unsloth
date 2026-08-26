@@ -24,7 +24,91 @@ _CANONICAL_HEAL_ARG = {
     "python": "code",
     "terminal": "command",
     "render_html": "code",
+    # Not derivable: web_search declares no REQUIRED argument, because a call carrying
+    # only `url` fetches that page without searching. A bare string is still a query,
+    # which is what the old catch-all default got right for this tool and only this one.
+    "web_search": "query",
 }
+
+# Where a bare string lands when the tool it was sent to has no argument that could hold
+# it. Read by `execute_tool`, which answers with what actually went wrong instead of
+# letting the tool report a missing key it was never given.
+UNPARSED_ARGUMENTS_KEY = "__unsloth_unparsed_arguments__"
+
+
+def _looks_like_broken_json(raw: str) -> bool:
+    """Whether this text was MEANT to be a JSON object and stopped before finishing.
+
+    Opening with a bracket is necessary but not sufficient, and treating it as sufficient
+    was wrong in both directions: `{not json at all` is a bare string a model sent for a
+    single-argument tool, and healing it into that argument is the right answer, while
+    `{"code":"html = ...` is a call cut off mid-stream that must not become the program.
+
+    What separates them is WHERE the decode fails. A call that was cut off runs out of
+    input -- either inside a string that never closes, or at the very end of what arrived.
+    Text that merely opens with a brace fails earlier, with input still to go.
+    """
+    text = raw.strip()
+    if not text.startswith(("{", "[")):
+        return False
+    try:
+        json.loads(text)
+    except json.JSONDecodeError as error:
+        return error.msg.startswith("Unterminated string") or error.pos >= len(text)
+    return False
+
+
+def _healable_keys_from_schemas() -> "dict[str, str]":
+    """Built-in tool -> its single required string argument, for the tools that have one.
+
+    Derived from the schemas rather than hand-listed. The map above was hand-kept, so it
+    silently went stale the moment a tool was added: `edit_file` landed with three
+    required arguments and no entry, and every unparseable call to it was healed into a
+    "query" key that only exists on the search tools. A schema-derived answer cannot rot
+    the same way -- a new tool is either single-string and healable, or it is not and says
+    so.
+    """
+    try:
+        from core.inference.tools import ALL_TOOLS  # noqa: PLC0415 -- cycle at import time
+    except Exception:  # noqa: BLE001 -- healing must never break a chat
+        return {}
+    keys: dict[str, str] = {}
+    for tool in ALL_TOOLS or []:
+        function = tool.get("function") if isinstance(tool, Mapping) else None
+        if not isinstance(function, Mapping):
+            continue
+        name = str(function.get("name") or "")
+        parameters = function.get("parameters")
+        if not name or not isinstance(parameters, Mapping):
+            continue
+        properties = parameters.get("properties")
+        required = parameters.get("required")
+        if not isinstance(properties, Mapping) or not isinstance(required, list):
+            continue
+        required_names = [item for item in required if isinstance(item, str)]
+        if len(required_names) != 1:
+            continue
+        key = required_names[0]
+        schema = properties.get(key)
+        if not isinstance(schema, Mapping):
+            continue
+        kind = schema.get("type")
+        if kind == "string" or (isinstance(kind, list) and "string" in kind):
+            keys[name] = key
+    return keys
+
+
+_HEAL_ARG_CACHE: "dict[str, str] | None" = None
+
+
+def _heal_arg_key(tool_name: str) -> "str | None":
+    """The argument a bare string should become, or None when there isn't one."""
+    global _HEAL_ARG_CACHE
+    if tool_name in _CANONICAL_HEAL_ARG:
+        return _CANONICAL_HEAL_ARG[tool_name]
+    if _HEAL_ARG_CACHE is None:
+        _HEAL_ARG_CACHE = _healable_keys_from_schemas()
+    return _HEAL_ARG_CACHE.get(tool_name)
 _ONE_SHOT_TOOLS = frozenset({"render_html"})
 
 NoopReason = Literal["duplicate", "disabled", "render_html_repeat"]
@@ -192,8 +276,24 @@ def coerce_tool_arguments(
         except (json.JSONDecodeError, ValueError):
             pass
         if heal:
-            key = _CANONICAL_HEAL_ARG.get(tool_name, "query")
-            return CoercedArguments({key: raw_args}, True)
+            # Healing exists for a model that sends its ONE argument as a bare string
+            # instead of an object. Text that opens like JSON and fails to parse is not
+            # that -- it is a broken object, usually one cut off mid-stream, and wrapping
+            # it whole becomes the argument's value. Observed on `python`, which has a
+            # single `code` argument and so was healable: a truncated call arrived as
+            # `{"code":"html = ...`, the entire fragment was passed as the PROGRAM, and the
+            # model read its own file back as `{"code":"html = ...` and spent the rest of
+            # the turn convinced the sandbox had mangled it. Same defect `edit_file` had;
+            # having a single string argument only hid it.
+            key = None if _looks_like_broken_json(raw_args) else _heal_arg_key(tool_name)
+            if key is not None:
+                return CoercedArguments({key: raw_args}, True)
+            # No single argument this text could be. Inventing one used to default to
+            # "query", which edit_file -- three required arguments, none of them a
+            # query -- then reported as "'old_string' and 'new_string' must both be
+            # strings": a type error blaming the model for a key it never sent, on a
+            # call whose real problem was that its JSON never finished arriving.
+            return CoercedArguments({UNPARSED_ARGUMENTS_KEY: raw_args}, False)
         return CoercedArguments({"raw": raw_args}, False)
     return CoercedArguments({}, False)
 
