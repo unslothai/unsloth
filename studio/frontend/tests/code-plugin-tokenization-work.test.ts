@@ -72,6 +72,49 @@ const highlightOnce = (
     if (immediate) resolve(immediate);
   });
 
+/*
+ * THE SAME CALL, BUT WAITING FOR THE TOKENIZED ANSWER RATHER THAN THE FIRST ONE.
+ *
+ * `highlightOnce` resolves with whatever `plugin.highlight` hands back synchronously, which is the
+ * right thing during the streaming loop above: each update there is meant to go down the tokenizing
+ * path and the immediate value IS the result. It is the wrong thing for the final correctness check,
+ * and that is a real Windows CI failure rather than a hypothetical. When a grown fence past
+ * `MIN_INCREMENTAL_CHARS` is called again inside `REFRESH_MS`, `code-plugin.ts` returns
+ * `approximateResult` synchronously and delivers the real tokens LATER through the callback --
+ * which `highlightOnce` has already thrown away. The deepEqual then compares approximate tokens,
+ * every one of them coloured `#005CC5`, against the reference.
+ *
+ * Sleeping longer does not fix it, and that is worth being precise about: `settle()` counts from
+ * when this test resumed, while the throttle counts from the plugin's own `lastTokenizedAt`, and a
+ * trailing refresh scheduled by an earlier update can land after the sleep began and push that
+ * timestamp forward. There is no sleep length that makes the immediate value reliably the
+ * tokenized one.
+ *
+ * So prefer the callback when there is one. If the plugin took the tokenizing path it returns the
+ * exact result and never calls back, so the immediate value is adopted once the refresh window has
+ * provably passed. Either way the assertion is unchanged and just as strict; only its input stops
+ * depending on how loaded the machine is.
+ */
+const highlightTokenized = (
+  plugin: ReturnType<typeof createCodePlugin>,
+  code: string,
+): Promise<HighlightResult> =>
+  new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: HighlightResult) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const immediate = plugin.highlight(
+      { code, language: LANGUAGE, themes: THEMES },
+      finish,
+    );
+    // SETTLE_MS is longer than REFRESH_MS, so a queued refresh has fired by the time this runs; if
+    // none was queued, `immediate` was already the tokenized result.
+    if (immediate) setTimeout(() => finish(immediate), SETTLE_MS);
+  });
+
 test("a streaming fence is tokenized once, not once per update", async () => {
   assert.ok(
     SOURCE.length > 4 * MIN_INCREMENTAL_CHARS,
@@ -100,7 +143,7 @@ test("a streaming fence is tokenized once, not once per update", async () => {
     updates += 1;
   }
   await settle();
-  last = await highlightOnce(plugin, SOURCE);
+  last = await highlightTokenized(plugin, SOURCE);
 
   assert.ok(
     updates >= 12,
