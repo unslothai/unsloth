@@ -1612,6 +1612,34 @@ def test_a_live_row_whose_role_changed_carries_no_positive_reading():
     assert row["undetermined"] is True
 
 
+def test_a_settled_match_cannot_supply_the_observation_that_mints_an_exemption():
+    # DECIDING an action and CLASSIFYING it unstable are different claims, and only the first is
+    # this flag's to make. One real DIFFER beside one settled-match refusal is one differing
+    # comparison, so letting the refusal supply the second observation would derive
+    # `(rung, action)` into the MEASURED exemption set on a reading that never saw the live
+    # subtree -- the excuse set growing, which `SETTLED_MATCH` promises it cannot do.
+    rows = streaming_pair_rows(
+        "r100K.base.rep0",
+        "r100K.treatment.rep0",
+        "keystroke",
+        base_tail = "T18277",
+        treat_tail = "T18253",
+    )
+    settled = P.compare(rows[0]["parity"], rows[1]["parity"])
+    assert settled[P.SETTLED_MATCH] is True
+    differ = {"verdict": P.DIFFER, "reason": "", "moved": ["msg0"]}
+    row = P.derive_unstable([("keystroke", differ), ("keystroke", settled)])["keystroke"]
+    assert row["observations"] == 2
+    assert row["differed"] == 1
+    assert row[P.SETTLED_MATCH] == 1
+    # Decided, because two readings answered; NOT unstable, because only one of them compared.
+    assert row["undetermined"] is False
+    assert row["unstable"] is False
+    # Two complete comparisons still classify exactly as before.
+    both = P.derive_unstable([("keystroke", differ), ("keystroke", differ)])["keystroke"]
+    assert both["unstable"] is True
+
+
 def test_the_audit_decides_an_action_whose_only_leftover_was_the_live_reply(tmp_path):
     # END TO END, the case that turned the job red: two repetitions of `keystroke` inside a live
     # turn, the settled thread identical on every arm and only the in-flight tail a chunk apart.

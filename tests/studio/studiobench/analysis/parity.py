@@ -1122,7 +1122,14 @@ def derive_unstable(
             SETTLED_MATCH: settled[action],
             # Unstable only with enough observations to mean it. Below that the honest answer is
             # "not enough evidence", which is not the same as "stable" and is not reported as it.
-            "unstable": bool(d and n >= min_observations),
+            #
+            # COUNTED FROM THE COMPLETE COMPARISONS ONLY, so a settled-match refusal can decide an
+            # action but can never help CLASSIFY one as unstable. One DIFFER beside one settled
+            # match is one differing comparison, and letting the refusal supply the second
+            # observation would mint an exemption out of a reading that never saw the live
+            # subtree. It can still lower `undetermined`, which is the direction that only ever
+            # narrows the excuse set.
+            "unstable": bool(d and (n - settled[action]) >= min_observations),
             "undetermined": n < min_observations,
         }
     return out
