@@ -23,8 +23,8 @@ if "structlog" not in sys.modules:
             return lambda *args, **kwargs: None
 
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger=_DummyLogger,
-        get_logger=lambda *args, **kwargs: _DummyLogger(),
+        BoundLogger = _DummyLogger,
+        get_logger = lambda *args, **kwargs: _DummyLogger(),
     )
 
 from utils.models.model_config import (  # noqa: E402
@@ -57,9 +57,9 @@ def test_base_model_from_dir_name(dir_name, expected):
 
 
 def _write_adapter(directory):
-    directory.mkdir(parents=True)
+    directory.mkdir(parents = True)
     # No base_model_name_or_path, so detection has to fall through to the directory name.
-    (directory / "adapter_config.json").write_text(json.dumps({}), encoding="utf-8")
+    (directory / "adapter_config.json").write_text(json.dumps({}), encoding = "utf-8")
     (directory / "adapter_model.safetensors").write_bytes(b"")
     return directory
 
