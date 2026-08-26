@@ -1445,6 +1445,7 @@ def streaming_pair_rows(
     `treat_settled` and `treat_scaffold` exist so the negative controls can move something the
     stream provably cannot reach, and watch the branch decline to fire.
     """
+
     def side(cid: str, tail: str, settled_digest: str, scaffold_digest: str) -> dict:
         return {
             "row_type": "action",
@@ -1501,8 +1502,13 @@ def test_a_mid_stream_tail_is_still_a_refusal_and_never_a_pass():
     # whose live message renders wrongly sits in exactly this shape, `structural_report` files a
     # refusal under `blind` and takes its exit code without it, so promoting this to MATCH would
     # hide a real regression. The repair is in what the NULL counts, not in what the result says.
-    rows = streaming_pair_rows("r100K.base.rep0", "r100K.treatment.rep0", "keystroke",
-                               base_tail = "T18277", treat_tail = "T18253")
+    rows = streaming_pair_rows(
+        "r100K.base.rep0",
+        "r100K.treatment.rep0",
+        "keystroke",
+        base_tail = "T18277",
+        treat_tail = "T18253",
+    )
     got = P.compare(rows[0]["parity"], rows[1]["parity"])
     assert got["verdict"] == P.NOT_COMPARABLE
     assert "STILL BEING WRITTEN" in got["reason"]
@@ -1514,8 +1520,13 @@ def test_a_mid_stream_tail_is_still_a_refusal_and_never_a_pass():
 def test_a_refusal_that_read_the_settled_thread_is_an_observation():
     # The unit the audit is built on. Two settled-match refusals are two observations of
     # non-difference, so the action is decided and is NOT called unstable.
-    rows = streaming_pair_rows("r100K.base.rep0", "r100K.treatment.rep0", "keystroke",
-                               base_tail = "T18277", treat_tail = "T18253")
+    rows = streaming_pair_rows(
+        "r100K.base.rep0",
+        "r100K.treatment.rep0",
+        "keystroke",
+        base_tail = "T18277",
+        treat_tail = "T18253",
+    )
     pair = ("keystroke", P.compare(rows[0]["parity"], rows[1]["parity"]))
     row = P.derive_unstable([pair, pair])["keystroke"]
     assert row["observations"] == 2
@@ -1542,9 +1553,14 @@ def test_a_settled_message_that_moved_is_a_difference_not_an_observation():
     # The other control, one layer down: the flag is only set when everything OUTSIDE the live
     # message agreed. Move a settled row and the pair is a DIFFER, so the null records real
     # instability exactly as before.
-    rows = streaming_pair_rows("r100K.base.rep0", "r100K.treatment.rep0", "keystroke",
-                               base_tail = "T18277", treat_tail = "T18253",
-                               treat_settled = "MOVED")
+    rows = streaming_pair_rows(
+        "r100K.base.rep0",
+        "r100K.treatment.rep0",
+        "keystroke",
+        base_tail = "T18277",
+        treat_tail = "T18253",
+        treat_settled = "MOVED",
+    )
     got = P.compare(rows[0]["parity"], rows[1]["parity"])
     assert got["verdict"] == P.DIFFER
     assert P.SETTLED_MATCH not in got
@@ -1554,9 +1570,14 @@ def test_a_scaffold_that_moved_is_a_difference_not_an_observation():
     # And the scaffold half of the same claim. Both arms agree they are streaming and agree about
     # the composer control, so this is not the generation-disagreement refusal: it is a thread
     # scaffolding change on a pair that was otherwise identical, and it stays a finding.
-    rows = streaming_pair_rows("r100K.base.rep0", "r100K.treatment.rep0", "keystroke",
-                               base_tail = "T18277", treat_tail = "T18253",
-                               treat_scaffold = "MOVED")
+    rows = streaming_pair_rows(
+        "r100K.base.rep0",
+        "r100K.treatment.rep0",
+        "keystroke",
+        base_tail = "T18277",
+        treat_tail = "T18253",
+        treat_scaffold = "MOVED",
+    )
     got = P.compare(rows[0]["parity"], rows[1]["parity"])
     assert got["verdict"] == P.DIFFER
     assert P.SETTLED_MATCH not in got
@@ -1571,10 +1592,20 @@ def test_the_audit_decides_an_action_whose_only_leftover_was_the_live_reply(tmp_
         tmp_path,
         "inflight",
         [
-            streaming_pair_rows("r100K.base.rep0", "r100K.treatment.rep0", "keystroke",
-                                base_tail = "T18277", treat_tail = "T18253"),
-            streaming_pair_rows("r100K.base.rep1", "r100K.treatment.rep1", "keystroke",
-                                base_tail = "T21004", treat_tail = "T20980"),
+            streaming_pair_rows(
+                "r100K.base.rep0",
+                "r100K.treatment.rep0",
+                "keystroke",
+                base_tail = "T18277",
+                treat_tail = "T18253",
+            ),
+            streaming_pair_rows(
+                "r100K.base.rep1",
+                "r100K.treatment.rep1",
+                "keystroke",
+                base_tail = "T21004",
+                treat_tail = "T20980",
+            ),
         ],
     )
     rc, report = U.audit_null([null], scope = {("r100K", "keystroke")})
@@ -1593,8 +1624,11 @@ def test_the_audit_still_fails_when_the_capture_itself_was_blind(tmp_path):
     cells = []
     for rep, tails in (("rep0", ("T1", "T2")), ("rep1", ("T3", "T4"))):
         cell = streaming_pair_rows(
-            f"r100K.base.{rep}", f"r100K.treatment.{rep}", "keystroke",
-            base_tail = tails[0], treat_tail = tails[1],
+            f"r100K.base.{rep}",
+            f"r100K.treatment.{rep}",
+            "keystroke",
+            base_tail = tails[0],
+            treat_tail = tails[1],
         )
         for row in cell:
             row["parity"]["in_flight_unplaced"] = True
@@ -1616,10 +1650,20 @@ def test_a_settled_match_can_never_grow_the_excuse_set(tmp_path):
         tmp_path,
         "narrow",
         [
-            streaming_pair_rows("r100K.base.rep0", "r100K.treatment.rep0", "keystroke",
-                                base_tail = "A", treat_tail = "B"),
-            streaming_pair_rows("r100K.base.rep1", "r100K.treatment.rep1", "keystroke",
-                                base_tail = "C", treat_tail = "D"),
+            streaming_pair_rows(
+                "r100K.base.rep0",
+                "r100K.treatment.rep0",
+                "keystroke",
+                base_tail = "A",
+                treat_tail = "B",
+            ),
+            streaming_pair_rows(
+                "r100K.base.rep1",
+                "r100K.treatment.rep1",
+                "keystroke",
+                base_tail = "C",
+                treat_tail = "D",
+            ),
         ],
     )
     unstable, _derived, _checks = U.unstable_set([null])

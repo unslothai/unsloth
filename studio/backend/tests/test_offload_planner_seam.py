@@ -1244,6 +1244,8 @@ def test_the_flat_mtp_reserve_reaches_the_spill_budget():
     reserved = _plan(stub, free_mib = 24 * 1024, usable_mib = 14 * 1024)
     assert generous is not None and reserved is not None
     assert len(reserved.spilled_blocks) > len(generous.spilled_blocks)
+
+
 def test_the_seam_computes_a_per_layer_kv_vector():
     """The data already existed on the backend (_sliding_window_pattern); it just
     never crossed into the planner. Only the RATIOS travel: full attention holds
