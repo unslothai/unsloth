@@ -3241,9 +3241,7 @@ def _rocm_single_numeric_mask_matches(devices: list[Dict[str, Any]]) -> bool:
 
 
 def _rocm_linux_sysfs_vram_by_index(
-    devices: list[Dict[str, Any]],
-    *,
-    allow_numeric_mask: bool = False,
+    devices: list[Dict[str, Any]], *, allow_numeric_mask: bool = False
 ) -> Dict[int, tuple[float, float]]:
     """Map safe physical ROCm indices to their raw Linux sysfs VRAM readings."""
     if not devices or platform.system() != "Linux":
