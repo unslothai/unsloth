@@ -171,10 +171,42 @@ def test_clang_cl_does_need_msvc_headers(tmp_path, monkeypatch):
     assert _msvc_env.crt_headers_reachable() is False
 
 
-def test_needs_msvc_headers_assumes_yes_when_triton_is_too_old(monkeypatch):
-    """No triton.runtime.build to ask: keep the pre-existing behaviour rather than opening a hole."""
+def test_xpu_triton_without_the_private_api_is_not_gated(tmp_path, monkeypatch):
+    """setup.ps1 swaps triton-windows for torch's pytorch-triton-xpu on Intel, and that owns the
+    same top-level `triton` package without `runtime.build`'s helpers. Reading a missing private
+    API as "MSVC required" would disable torch.compile on every Windows XPU install, which is a
+    regression against main, where the gate was only `import triton`."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("INCLUDE", str(tmp_path))  # no stdlib.h
     monkeypatch.setitem(sys.modules, "triton.runtime.build", None)
+    monkeypatch.setattr(_msvc_env, "_rocm_clang_cl_present", lambda: False)
+    assert _msvc_env._needs_msvc_headers() is False
+    assert _msvc_env.crt_headers_reachable() is True
+
+
+def test_no_private_api_but_rocm_clang_cl_on_disk_is_gated(tmp_path, monkeypatch):
+    """The other half: an AMD box whose Triton does not expose the API still gets the gate,
+    because get_cc() would pick the ROCm clang-cl sitting right there."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("INCLUDE", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "triton.runtime.build", None)
+    monkeypatch.setattr(_msvc_env, "_rocm_clang_cl_present", lambda: True)
+    # Left real, this asks the runner's own Visual Studio and answers for the wrong machine.
+    monkeypatch.setattr(_msvc_env, "_triton_finds_crt_headers", lambda: False)
     assert _msvc_env._needs_msvc_headers() is True
+    assert _msvc_env.crt_headers_reachable() is False
+
+
+def test_rocm_clang_cl_present_probes_the_platlib_path(tmp_path, monkeypatch):
+    """The path is the one get_cc() builds, so a typo here silently disables the whole gate."""
+    import sysconfig
+
+    monkeypatch.setattr(sysconfig, "get_path", lambda name: str(tmp_path))
+    assert _msvc_env._rocm_clang_cl_present() is False
+    exe = tmp_path / "_rocm_sdk_core" / "lib" / "llvm" / "bin"
+    exe.mkdir(parents = True)
+    (exe / "clang-cl.exe").write_text("")
+    assert _msvc_env._rocm_clang_cl_present() is True
 
 
 # ── gate_torch_compile_on_windows: the arm the workers actually call ──

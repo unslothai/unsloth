@@ -68,23 +68,41 @@ def _triton_finds_crt_headers() -> bool:
     return any(d and os.path.isfile(os.path.join(d, "stdlib.h")) for d in inc_dirs)
 
 
+def _rocm_clang_cl_present() -> bool:
+    """Whether the ROCm wheel's clang-cl, the compiler #7595 is about, is installed.
+
+    `get_cc()` prefers it over everything else, so its presence decides the question on its own.
+    Kept as a plain path check because it has to answer for Triton builds that do not expose
+    `triton.runtime.build`, and because it cannot be fooled by a different Triton owning the
+    top-level package.
+    """
+    import sysconfig  # noqa: PLC0415
+    return os.path.isfile(
+        os.path.join(
+            sysconfig.get_path("platlib"), "_rocm_sdk_core", "lib", "llvm", "bin", "clang-cl.exe"
+        )
+    )
+
+
 def _needs_msvc_headers() -> bool:
     """Whether the compiler Triton will actually pick needs the MSVC/SDK headers.
 
-    Only cl.exe and clang-cl do. `get_cc()` prefers the ROCm wheel's clang-cl, which is why AMD
-    hits this and nobody else does; without that wheel it falls through to the bundled TinyCC,
-    which carries its own headers and is never passed a `/I` for the SDK. Gating a TinyCC box on
-    MSVC would disable torch.compile on the ordinary Windows NVIDIA install, which works fine.
+    Only cl.exe and clang-cl do, and `get_cc()` reaches clang-cl by preferring the ROCm wheel's,
+    which is why AMD hits this and nobody else does. Without that wheel it falls through to the
+    bundled TinyCC, which carries its own headers and is never passed an SDK `/I`.
+
+    Asking Triton is exact, so try that first. But several Triton builds own the top-level
+    `triton` package without that private API: setup.ps1 swaps triton-windows for torch's
+    pytorch-triton-xpu on Intel, and older builds predate `is_clang_cl`. Answering "MSVC
+    required" for those would disable torch.compile on installs that compile fine, so the
+    fallback checks for the one compiler this is about instead of assuming the worst.
     """
     try:
         from triton.runtime.build import get_cc, is_clang_cl, is_msvc
-    except Exception:  # noqa: BLE001 -- older/absent Triton: assume the MSVC path, as before
-        return True
-    try:
         cc = get_cc()
-    except Exception:  # noqa: BLE001 -- no compiler at all is its own failure, not ours to judge
-        logger.debug("Triton's compiler selection raised", exc_info = True)
-        return True
+    except Exception:  # noqa: BLE001 -- another Triton flavour, or no compiler: ask the disk
+        logger.debug("Triton's compiler selection is unavailable", exc_info = True)
+        return _rocm_clang_cl_present()
     return bool(is_msvc(cc) or is_clang_cl(cc))
 
 
