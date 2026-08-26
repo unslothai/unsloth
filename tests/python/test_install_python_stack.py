@@ -1426,9 +1426,9 @@ class TestDetectionMatchesWhatTheManagersActuallyEnforce:
         explicit file that happened to be named pyproject.toml."""
         explicit = tmp_path / "pyproject.toml"
         explicit.write_text("no-build = true\n", encoding = "utf-8")
-        assert self._names(
-            {"UV_CONFIG_FILE": str(explicit)}, uv_files = [str(explicit)]
-        ) == ("pyproject.toml no-build",)
+        assert self._names({"UV_CONFIG_FILE": str(explicit)}, uv_files = [str(explicit)]) == (
+            "pyproject.toml no-build",
+        )
         # A DISCOVERED pyproject.toml keeps the [tool.uv] schema, where a root key is
         # some other tool's setting and not uv policy.
         assert self._names({}, uv_files = [str(explicit)]) == ()
@@ -1438,13 +1438,11 @@ class TestDetectionMatchesWhatTheManagersActuallyEnforce:
         `[pip] require-hashes = true`, which uv enforces. Read as one literal key it
         matched nothing and the policy was dropped on 3.9 and 3.10."""
         with mock.patch.object(ips, "_tomllib", None):
-            assert ips._hardened_keys_in_toml(
-                "pip.require-hashes = true\n", ((), ("pip",))
-            ) == ["require-hashes"]
+            assert ips._hardened_keys_in_toml("pip.require-hashes = true\n", ((), ("pip",))) == [
+                "require-hashes"
+            ]
             # A dotted key naming a table we do not read stays ignored.
-            assert ips._hardened_keys_in_toml(
-                "other.require-hashes = true\n", ((), ("pip",))
-            ) == []
+            assert ips._hardened_keys_in_toml("other.require-hashes = true\n", ((), ("pip",))) == []
 
     def test_a_download_only_section_is_not_an_opinion_about_install(self, tmp_path):
         """pip resolves each subcommand separately, so `[download] only-binary = :all:`

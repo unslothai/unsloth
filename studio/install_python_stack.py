@@ -5179,9 +5179,7 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
     }
     cancelled: "dict[str, set[str]]" = {"pip": set(), "uv": set()}
 
-    def _record(
-        tool: str, source: str, key: str, value: str, slots: "tuple[str, ...]"
-    ) -> None:
+    def _record(tool: str, source: str, key: str, value: str, slots: "tuple[str, ...]") -> None:
         if source == "env" and not value.strip():
             # pip drops empty environment values before applying precedence, so
             # PIP_ONLY_BINARY='' neither enables a control nor cancels a pip.conf that
@@ -5303,9 +5301,7 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
         # a standalone uv.toml whatever it is called, so an explicit file that happens to
         # be named pyproject.toml still has its policy read from the root tables.
         is_pyproject = os.path.basename(path) == "pyproject.toml" and path != explicit_uv
-        tables = (
-            (("tool", "uv"), ("tool", "uv", "pip")) if is_pyproject else ((), ("pip",))
-        )
+        tables = (("tool", "uv"), ("tool", "uv", "pip")) if is_pyproject else ((), ("pip",))
         for key, value in _hardened_settings_in_toml(text, tables).items():
             uv_settings[key] = (os.path.basename(path), value)
     for key, (source, value) in uv_settings.items():
