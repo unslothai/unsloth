@@ -65,13 +65,22 @@ def _make_backend(monkeypatch, streams: list[object], payloads: list[dict]):
 
     @contextlib.contextmanager
     def fake_stream_with_retry(
-        _client, _url, payload, _cancel_event, headers = None, first_token_deadline = None
+        _client,
+        _url,
+        payload,
+        _cancel_event,
+        headers = None,
+        first_token_deadline = None,
     ):
         payloads.append(copy.deepcopy(payload))
         stream = streams.pop(0)
         yield type("FakeResponse", (), {"status_code": 200, "chunks": stream})()
 
-    def fake_iter_text_cancellable(response, _cancel_event, first_token_deadline = None):
+    def fake_iter_text_cancellable(
+        response,
+        _cancel_event,
+        first_token_deadline = None,
+    ):
         yield from response.chunks
 
     monkeypatch.setattr(backend, "_stream_with_retry", fake_stream_with_retry)

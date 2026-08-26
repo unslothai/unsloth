@@ -6186,8 +6186,7 @@ def test_an_unservable_tool_call_is_refused_before_it_runs(monkeypatch):
     refusals = [
         event
         for event in events
-        if event.get("type") == "tool_end"
-        and "Nothing was written" in str(event.get("result", ""))
+        if event.get("type") == "tool_end" and "Nothing was written" in str(event.get("result", ""))
     ]
     assert refusals, [e.get("type") for e in events]
     assert "edit_file" in refusals[0]["result"]
@@ -6205,9 +6204,7 @@ def test_compacting_an_earlier_call_lets_the_next_one_run(monkeypatch):
         "type": "function",
         "function": {
             "name": "edit_file",
-            "arguments": json.dumps(
-                {"path": "page.html", "old_string": "", "new_string": earlier}
-            ),
+            "arguments": json.dumps({"path": "page.html", "old_string": "", "new_string": earlier}),
         },
     }
     history = [
@@ -6224,7 +6221,11 @@ def test_compacting_an_earlier_call_lets_the_next_one_run(monkeypatch):
     streams = [
         _structured_tool_call(
             "edit_file",
-            {"path": "page.html", "old_string": "<title>a</title>", "new_string": "<title>b</title>"},
+            {
+                "path": "page.html",
+                "old_string": "<title>a</title>",
+                "new_string": "<title>b</title>",
+            },
             "call_fix_title",
         ),
         [_sse({"content": "Fixed."}), _done()],
@@ -6256,8 +6257,7 @@ def test_compacting_an_earlier_call_lets_the_next_one_run(monkeypatch):
     assert not [
         event
         for event in events
-        if event.get("type") == "tool_end"
-        and "Nothing was written" in str(event.get("result", ""))
+        if event.get("type") == "tool_end" and "Nothing was written" in str(event.get("result", ""))
     ]
     # The assertions above hold with no gate at all -- an ungated loop runs every tool it
     # is handed. What distinguishes the fix is the prompt SENT after the tool returned:
@@ -6417,7 +6417,8 @@ def test_an_oversized_call_is_run_and_compacted_rather_than_refused(monkeypatch)
 
     assert executed == ["edit_file"], "the call was refused instead of run"
     assert not [
-        e for e in events
+        e
+        for e in events
         if e.get("type") == "tool_end" and "Nothing was written" in str(e.get("result", ""))
     ]
     assert len(payloads) >= 2, "no follow-up generation was made"

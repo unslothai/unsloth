@@ -24654,9 +24654,7 @@ class LlamaCppBackend:
                 # much of the window a reply is owed. Over it means tight, not fatal, so
                 # this compacts and never refuses -- a turn that fits is always sent.
                 if self._effective_context_length and conversation:
-                    _reply_target = prompt_budget(
-                        self._effective_context_length, max_tokens
-                    )
+                    _reply_target = prompt_budget(self._effective_context_length, max_tokens)
                     if estimate_messages_tokens_dense(conversation) > 0.7 * _reply_target:
                         try:
                             _prompt_now = self.count_chat_tokens(
@@ -25371,9 +25369,7 @@ class LlamaCppBackend:
                             yield {"type": "status", "text": ""}
                             yield {
                                 "type": "content",
-                                "text": _thinking_exhausted_message(
-                                    self._effective_context_length
-                                ),
+                                "text": _thinking_exhausted_message(self._effective_context_length),
                             }
                             _meta = _build_metadata_event(
                                 _iter_usage, _iter_timings, _iter_finish_reason
@@ -25785,9 +25781,7 @@ class LlamaCppBackend:
                     # refuse it, on the strength of what compacting it will reclaim.
                     _compact_after_execution = False
                     if self._effective_context_length:
-                        _room_target = prompt_budget(
-                            self._effective_context_length, max_tokens
-                        )
+                        _room_target = prompt_budget(self._effective_context_length, max_tokens)
                         # Cheap gate first. The exact count is a template render plus a
                         # tokenizer pass over the whole conversation, and this runs per
                         # call; a thread with room to spare must not pay for it. The
@@ -25901,13 +25895,11 @@ class LlamaCppBackend:
                                         break
                                 from core.inference import context_refusal  # noqa: PLC0415
 
-                                _unservable_text = (
-                                    context_refusal.describe_unservable_tool_call(
-                                        decision.tool_name,
-                                        _turn_tokens,
-                                        self._effective_context_length,
-                                        compacted_calls = _compacted_calls,
-                                    )
+                                _unservable_text = context_refusal.describe_unservable_tool_call(
+                                    decision.tool_name,
+                                    _turn_tokens,
+                                    self._effective_context_length,
+                                    compacted_calls = _compacted_calls,
                                 )
                                 logger.warning(
                                     "Refused %s before execution: prompt would be %d tokens "

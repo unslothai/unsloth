@@ -9396,8 +9396,7 @@ def _edit_file_parse_edits(raw) -> "tuple[list[tuple[str, str, bool]], str]":
         # Checked, not coerced: str(None) would write the literal "None" into a file.
         if not isinstance(old, str) or not isinstance(new, str):
             return [], (
-                f"Error: edit {index} needs 'old_string' and 'new_string' to both be "
-                "strings."
+                f"Error: edit {index} needs 'old_string' and 'new_string' to both be strings."
             )
         try:
             new.encode("utf-8")
@@ -9433,16 +9432,30 @@ def _edit_file_apply_all(
     for index, (old, new, replace_all) in enumerate(edits, 1):
         count = before.count(old)
         if count == 0:
-            return "", 0, "", "", 0, (
-                f"Error: edit {index}'s 'old_string' was not found in {name}. It must "
-                "match the file byte for byte, including indentation. Read the file and "
-                "copy the text to replace out of it."
+            return (
+                "",
+                0,
+                "",
+                "",
+                0,
+                (
+                    f"Error: edit {index}'s 'old_string' was not found in {name}. It must "
+                    "match the file byte for byte, including indentation. Read the file and "
+                    "copy the text to replace out of it."
+                ),
             )
         if count > 1 and not replace_all:
-            return "", 0, "", "", 0, (
-                f"Error: edit {index}'s 'old_string' matches {count} places in {name}. "
-                "Include surrounding lines to make it unique, or set replace_all on that "
-                f"entry to change all {count}."
+            return (
+                "",
+                0,
+                "",
+                "",
+                0,
+                (
+                    f"Error: edit {index}'s 'old_string' matches {count} places in {name}. "
+                    "Include surrounding lines to make it unique, or set replace_all on that "
+                    f"entry to change all {count}."
+                ),
             )
         start = before.find(old)
         while start >= 0:
@@ -9453,10 +9466,17 @@ def _edit_file_apply_all(
     spans.sort()
     for (start, end, _, index), (next_start, _, _, next_index) in zip(spans, spans[1:]):
         if next_start < end:
-            return "", 0, "", "", 0, (
-                f"Error: edits {index} and {next_index} overlap in {name}. Every "
-                "old_string is matched against the file as it was before this call, so "
-                "two edits cannot cover the same text. Combine them into one entry."
+            return (
+                "",
+                0,
+                "",
+                "",
+                0,
+                (
+                    f"Error: edits {index} and {next_index} overlap in {name}. Every "
+                    "old_string is matched against the file as it was before this call, so "
+                    "two edits cannot cover the same text. Combine them into one entry."
+                ),
             )
     # One pass with a cursor, not a slice-and-concat per span. Rebuilding the whole string
     # for every replacement is quadratic, and `replace_all` over a large file is exactly
@@ -9544,9 +9564,7 @@ def _edit_file(
     before, newline, bom, error = _edit_file_decode(data, target)
     if error:
         return error
-    after, total, first_old, first_new, change_at, error = _edit_file_apply_all(
-        before, edits, name
-    )
+    after, total, first_old, first_new, change_at, error = _edit_file_apply_all(before, edits, name)
     if error:
         return error
     error = _edit_file_write(

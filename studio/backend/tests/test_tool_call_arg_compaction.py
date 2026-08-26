@@ -26,7 +26,11 @@ from core.inference.context_window import (
 )
 
 
-def _call(call_id = "c1", name = "edit_file", **arguments):
+def _call(
+    call_id = "c1",
+    name = "edit_file",
+    **arguments,
+):
     return {
         "id": call_id,
         "type": "function",
@@ -34,15 +38,18 @@ def _call(call_id = "c1", name = "edit_file", **arguments):
     }
 
 
-def _thread(body, *, answered = True, call_id = "c1"):
+def _thread(
+    body,
+    *,
+    answered = True,
+    call_id = "c1",
+):
     messages = [
         {"role": "user", "content": "Create a Flappy Bird game in HTML"},
         {
             "role": "assistant",
             "content": "Writing the file.",
-            "tool_calls": [
-                _call(call_id, path = "flappy-bird.html", old_string = "", new_string = body)
-            ],
+            "tool_calls": [_call(call_id, path = "flappy-bird.html", old_string = "", new_string = body)],
         },
     ]
     if answered:
@@ -175,11 +182,9 @@ def test_zero_room_is_the_refusal_the_budget_could_not_express(prompt_tokens, se
 
 
 def test_a_tool_call_turn_is_blamed_apart_from_a_resumed_reply():
-    """"Start a new reply" re-runs the same oversized write, so the two need different advice."""
+    """ "Start a new reply" re-runs the same oversized write, so the two need different advice."""
     assert _blamed_role({"role": "assistant", "content": "half a repl"}) == "assistant"
-    assert (
-        _blamed_role({"role": "assistant", "tool_calls": [_call()]}) == "assistant_tool_call"
-    )
+    assert _blamed_role({"role": "assistant", "tool_calls": [_call()]}) == "assistant_tool_call"
     assert _blamed_role({"role": "tool", "content": "out"}) == "tool"
 
 
@@ -194,9 +199,7 @@ def test_the_pre_execution_refusal_promises_nothing_was_written():
 
 def test_the_refusal_says_when_history_was_already_spent():
     """Otherwise "increase the Context Length" reads as advice nobody tried."""
-    assert "compacted" in describe_unservable_tool_call(
-        "edit_file", 4237, 4096, compacted_calls = 2
-    )
+    assert "compacted" in describe_unservable_tool_call("edit_file", 4237, 4096, compacted_calls = 2)
     assert "compacted" not in describe_unservable_tool_call("edit_file", 4237, 4096)
 
 
@@ -259,7 +262,12 @@ def test_a_refused_call_is_not_described_as_written():
                 }
             ],
         },
-        {"role": "tool", "tool_call_id": "c1", "name": "edit_file", "content": "Not enough context"},
+        {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "name": "edit_file",
+            "content": "Not enough context",
+        },
     ]
 
     fitted = compact_refused_tool_arguments(messages, "c1")
@@ -311,7 +319,7 @@ def test_the_gate_refuses_only_what_the_server_would_reject(prompt_tokens, serva
 
 
 def test_the_refusal_does_not_read_as_a_contradiction():
-    """"3740 tokens against a 4096-token window" invites the obvious objection."""
+    """ "3740 tokens against a 4096-token window" invites the obvious objection."""
     message = describe_unservable_tool_call("edit_file", 3740, 4096)
 
     assert "no room to reply" in message

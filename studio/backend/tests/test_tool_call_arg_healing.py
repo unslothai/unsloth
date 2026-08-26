@@ -105,7 +105,7 @@ def test_a_healable_tool_still_reaches_the_tool_not_the_guard():
     assert coerced.arguments == {"code": "print('hi')"}
 
 
-_TRUNCATED_PYTHON = '{"code":"html = open(\'game.html\',\'w\')\\nhtml.write(\'<!DOCTYPE'
+_TRUNCATED_PYTHON = "{\"code\":\"html = open('game.html','w')\\nhtml.write('<!DOCTYPE"
 
 
 def test_broken_json_is_not_healed_even_for_a_single_string_tool():
@@ -149,11 +149,11 @@ def test_text_that_merely_opens_with_a_brace_still_heals(raw):
 @pytest.mark.parametrize(
     "raw",
     [
-        _TRUNCATED,                      # stops inside new_string
-        _TRUNCATED_PYTHON,               # stops inside code
-        '{"a": 1,',                      # stops after a comma
-        '{"a": ',                        # stops before a value
-        '[{"a":1},',                     # stops inside an array
+        _TRUNCATED,  # stops inside new_string
+        _TRUNCATED_PYTHON,  # stops inside code
+        '{"a": 1,',  # stops after a comma
+        '{"a": ',  # stops before a value
+        '[{"a":1},',  # stops inside an array
     ],
 )
 def test_a_call_that_ran_out_of_input_is_never_healed(raw):

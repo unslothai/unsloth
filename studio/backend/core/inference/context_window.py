@@ -398,7 +398,9 @@ _ARG_COMPACTION_FLOOR_CHARS = 1024
 
 
 def _compacted_arguments(
-    name: str, arguments: str, phrase: Optional[str] = None
+    name: str,
+    arguments: str,
+    phrase: Optional[str] = None,
 ) -> Optional[str]:
     """A receipt standing in for a completed call's arguments, or None to leave them.
 
@@ -425,7 +427,9 @@ def _compacted_arguments(
         # Unparseable arguments still cost the window, and a call that has already run
         # cannot be re-issued from them, so the size alone is an honest receipt.
         return json.dumps(
-            {"_unsloth_compacted": f"{len(arguments)} chars of arguments elided after the call ran"},
+            {
+                "_unsloth_compacted": f"{len(arguments)} chars of arguments elided after the call ran"
+            },
             ensure_ascii = False,
         )
     if not isinstance(parsed, dict):
@@ -473,9 +477,7 @@ _REFUSED_PHRASE = (
 # the model's reasoning as "the tool result says ... the output was omitted" -- it
 # concluded the sandbox had mangled its file and abandoned a working approach. Says
 # "you sent" so the owner of the text is unambiguous, and says what it is not.
-_COMPLETED_PHRASE = (
-    "of arguments you sent, already written{where}; elided from this transcript to save room -- this is not the tool's output, read the file back if you need the content"
-)
+_COMPLETED_PHRASE = "of arguments you sent, already written{where}; elided from this transcript to save room -- this is not the tool's output, read the file back if you need the content"
 
 
 def compact_executed_call_arguments(messages: list[dict], call_id: str) -> list[dict]:
@@ -544,9 +546,7 @@ def _compact_one_call(messages: list[dict], call_id: str, phrase: str) -> list[d
 
 
 def compact_completed_tool_arguments(
-    messages: list[dict],
-    *,
-    protect_last: int = 0,
+    messages: list[dict], *, protect_last: int = 0
 ) -> tuple[list[dict], int]:
     """Replace oversized arguments of already-executed calls with receipts.
 
@@ -593,9 +593,7 @@ def compact_completed_tool_arguments(
             if replacement is None:
                 new_calls.append(call)
                 continue
-            new_calls.append(
-                {**call, "function": {**function, "arguments": replacement}}
-            )
+            new_calls.append({**call, "function": {**function, "arguments": replacement}})
             changed = True
             compacted_calls += 1
         out.append({**message, "tool_calls": new_calls} if changed else message)

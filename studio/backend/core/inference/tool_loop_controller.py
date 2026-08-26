@@ -109,6 +109,8 @@ def _heal_arg_key(tool_name: str) -> "str | None":
     if _HEAL_ARG_CACHE is None:
         _HEAL_ARG_CACHE = _healable_keys_from_schemas()
     return _HEAL_ARG_CACHE.get(tool_name)
+
+
 _ONE_SHOT_TOOLS = frozenset({"render_html"})
 
 NoopReason = Literal["duplicate", "disabled", "render_html_repeat"]
