@@ -23,6 +23,17 @@ sys.path.insert(0, str(STUDIO_DIR))
 import install_python_stack as ips
 
 
+def _posix_home(path: str = "/home/u"):
+    """Make os.path.expanduser deterministic regardless of the RUNNER's platform.
+
+    ntpath.expanduser reads USERPROFILE, not HOME, so on windows-latest a test that only
+    sets HOME gets a literal "~" back and the POSIX branch it is exercising cannot be
+    asserted at all. Patching the function is the honest fix: these tests are about which
+    locations the installer searches, not about how a platform spells a home directory.
+    """
+    return mock.patch.object(os.path, "expanduser", lambda p: p.replace("~", path, 1))
+
+
 class TestBuildUvCmdTorchBackend:
     """Verify _build_uv_cmd only adds --torch-backend when UV_TORCH_BACKEND is set."""
 
@@ -858,6 +869,7 @@ class TestConfigDetectionReadsValuesNotJustKeys:
         # would fail the whole suite on windows-latest.
         with (
             mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
+            _posix_home(),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.object(os.path, "isfile", lambda path: True),
@@ -869,6 +881,7 @@ class TestConfigDetectionReadsValuesNotJustKeys:
         assert "/home/u/.pip/pip.conf" in posix
         with (
             mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
+            _posix_home(),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", True),
             mock.patch.object(os.path, "isfile", lambda path: True),
@@ -1052,6 +1065,7 @@ class TestPipGlobalConfigFollowsXdg:
                 {"HOME": "/home/u", "XDG_CONFIG_DIRS": os.pathsep.join(["/a", "/b"])},
                 clear = True,
             ),
+            _posix_home(),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.object(os.path, "isfile", lambda path: True),
@@ -1064,6 +1078,7 @@ class TestPipGlobalConfigFollowsXdg:
     def test_the_default_is_used_when_unset(self):
         with (
             mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
+            _posix_home(),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.object(os.path, "isfile", lambda path: True),
@@ -1074,6 +1089,7 @@ class TestPipGlobalConfigFollowsXdg:
     def test_macos_reads_its_global_set_from_xdg_data_dirs(self):
         with (
             mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
+            _posix_home(),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", True),
             mock.patch.object(os.path, "isfile", lambda path: True),
@@ -1084,6 +1100,7 @@ class TestPipGlobalConfigFollowsXdg:
             mock.patch.dict(
                 os.environ, {"HOME": "/home/u", "XDG_DATA_DIRS": "/d"}, clear = True
             ),
+            _posix_home(),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", True),
             mock.patch.object(os.path, "isfile", lambda path: True),
@@ -1215,6 +1232,7 @@ class TestTheNoticeCannotTakeAnInstallDown:
         # follows the RUNNER, not the patched IS_WINDOWS.
         with (
             mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
+            _posix_home(),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(os.path, "isfile", lambda path: True),
         ):
@@ -1236,6 +1254,7 @@ class TestTheNoticeCannotTakeAnInstallDown:
     def test_a_deleted_working_directory_is_survivable(self):
         with (
             mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
+            _posix_home(),
             mock.patch.object(os, "getcwd", mock.Mock(side_effect = FileNotFoundError)),
             mock.patch.object(os.path, "isfile", lambda path: True),
         ):
@@ -1244,6 +1263,7 @@ class TestTheNoticeCannotTakeAnInstallDown:
     def test_an_unstattable_path_is_skipped(self):
         with (
             mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
+            _posix_home(),
             mock.patch.object(os.path, "isfile", mock.Mock(side_effect = PermissionError)),
         ):
             assert ips._hardened_uv_config_paths() == []
