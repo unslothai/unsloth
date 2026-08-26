@@ -296,6 +296,7 @@ from pathlib import Path
 from datetime import datetime
 
 from routes import (
+    agent_workspace_router,
     auth_router,
     chat_history_router,
     data_recipe_router,
@@ -669,6 +670,20 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
+    try:
+        from core.agent_workspace.worktrees import reconcile_worktrees_on_startup
+
+        worktree_recovery = reconcile_worktrees_on_startup()
+        if worktree_recovery["errors"] or worktree_recovery["attention"]:
+            _lifespan_log.warning(
+                "Studio worktree recovery retained %s item(s) for manual attention; "
+                "%s reconciliation error(s)",
+                worktree_recovery["attention"],
+                worktree_recovery["errors"],
+            )
+    except Exception as exc:
+        _lifespan_log.warning("Studio worktree recovery failed at startup: %s", exc)
+
     reap_hub_orphan_workers()
     try:
         from hub.utils.download_manifest import migrate_ordinary_v2_manifests_for_downgrade
@@ -713,6 +728,10 @@ async def lifespan(app: FastAPI):
     from core.inference.key_exchange import init_key_pair
 
     init_key_pair()
+    from core.agent_workspace.background import register_agent_executor
+    from core.agent_workspace.inference_executor import execute_background_agent
+
+    register_agent_executor(execute_background_agent)
     _lifespan_log.info(
         "lifespan pre-auth setup completed in %.1fms",
         (_time.perf_counter() - _lifespan_started) * 1000,
@@ -750,6 +769,22 @@ async def lifespan(app: FastAPI):
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
+
+    # Stop project-agent work before inference and child-process teardown. Managed
+    # CLI adapters receive cancellation and terminate their process trees; any
+    # adapter that misses the bounded shutdown window is persisted as interrupted.
+    try:
+        from core.agent_workspace.background import manager as agent_background_manager
+
+        agent_background_manager.prepare_for_app_exit(timeout_seconds = 10)
+    except Exception as exc:
+        _lifespan_log.warning(
+            "project-agent background shutdown failed: %s", exc
+        )
+    finally:
+        from core.agent_workspace.background import register_agent_executor
+
+        register_agent_executor(None)
 
     # Retire the coordinated warm at shutdown entry too. run_lifespan_shutdown() repeats
     # this after cleanup, but its awaits would otherwise let startup imports continue for
@@ -1362,6 +1397,11 @@ app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
+app.include_router(
+    agent_workspace_router,
+    prefix = "/api/agent-workspace",
+    tags = ["agent-workspace"],
+)
 app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
 # Unsloth-only inference endpoints (cancel, etc.) are not on the /v1 OpenAI-compat prefix.
@@ -2450,14 +2490,14 @@ def setup_frontend(
 
         file_path = (build_path / full_path).resolve()
 
-        # Block path traversal — resolved path must stay inside build_path
+        # Block path traversal: resolved path must stay inside build_path
         if not file_path.is_relative_to(build_path.resolve()):
             return Response(status_code = 403)
 
         if file_path.is_file():
             return FileResponse(file_path)
 
-        # Serve index.html as bytes — avoids Content-Length mismatch
+        # Serve index.html as bytes: avoids Content-Length mismatch
         return _build_index_response(request)
 
     return True

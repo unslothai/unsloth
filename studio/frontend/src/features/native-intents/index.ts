@@ -7,6 +7,7 @@ export {
   consumeNativePathToken,
   openModelsDir,
   pickNativeDocumentFolder,
+  pickNativeProjectFolder,
   pickHuggingFaceCacheDir,
   readNativeAttachmentFile,
   registerNativeAttachmentPath,

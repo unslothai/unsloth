@@ -2321,6 +2321,12 @@ export function AppSidebar() {
    *  its own folder, and deletion never touches the project workspace. */
   function deleteTargetHasFiles(target: DeleteTarget | null): boolean {
     if (!target) return false;
+    if (
+      target.kind === "project" &&
+      target.project.workspaceKind === "folder"
+    ) {
+      return false;
+    }
     return target.kind !== "run";
   }
 
@@ -4277,7 +4283,7 @@ export function AppSidebar() {
           )}
         />
         <SidebarMenu className="gap-3 group-data-[collapsible=icon]:gap-2.5">
-          {/* Update affordance — shows only when a newer version is available. */}
+          {/* Update affordance: shows only when a newer version is available. */}
           {showUpdateCard && (
             <SidebarMenuItem>
               <button
@@ -4551,6 +4557,9 @@ export function AppSidebar() {
                   &quot;{confirmingDelete.project.name}&quot;
                 </span>
                 ? Its chats will be permanently deleted.
+                {confirmingDelete.project.workspaceKind === "folder"
+                  ? " The selected repository will remain on disk."
+                  : ""}
               </>
             ) : null}
           </DialogDescription>
@@ -4563,8 +4572,7 @@ export function AppSidebar() {
               </span>
               <span className="block break-words text-xs leading-5 text-muted-foreground">
                 {confirmingDelete?.kind === "project"
-                  ? (confirmingDelete.project.rootPath ??
-                    "The project workspace folder will be removed from disk.")
+                  ? "The project workspace folder will be removed from disk."
                   : confirmingDelete?.kind === "projects"
                     ? t("shell.selection.deleteProjectsFilesDescription")
                     : confirmingDelete?.kind === "chats"

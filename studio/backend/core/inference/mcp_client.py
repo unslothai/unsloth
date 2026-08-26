@@ -221,7 +221,7 @@ def _oauth_store():
         from key_value.aio.stores.filetree import FileTreeStore
         from utils.paths.storage_roots import ensure_dir, studio_root
 
-        # Hash keys/collections — fastmcp uses raw URLs as keys, and FileTreeStore
+        # Hash keys/collections: fastmcp uses raw URLs as keys, and FileTreeStore
         # would treat the "://" as nested directories.
         _oauth_token_store = FileTreeStore(
             data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens"),
@@ -1257,10 +1257,22 @@ def call_tool_sync(
     without one stay one-shot. HTTP servers always stay one-shot.
     ``cancel_event`` (threading.Event) cancels the in-flight call when set.
     ``config_check`` (callable -> bool) re-validates the caller's server config
-    before a fresh stdio session is cached; False fails the call."""
+    immediately before dispatch on both transports; False fails the call."""
+
+    def _config_ok() -> bool:
+        if config_check is None:
+            return True
+        try:
+            return bool(config_check())
+        except Exception:  # noqa: BLE001
+            return False
 
     async def _one_shot() -> Any:
+        if not _config_ok():
+            raise RuntimeError("MCP server or approved operation changed before dispatch")
         async with _client(url, headers, use_oauth) as client:
+            if not _config_ok():
+                raise RuntimeError("MCP server or approved operation changed before dispatch")
             # raise_on_error=False lets an is_error result (which may still carry
             # image content) reach _flatten_result instead of FastMCP raising ToolError
             # and dropping the images. Transport failures still raise (handled below).

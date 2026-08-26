@@ -9,6 +9,7 @@ import {
   findLatestUserAudioBase64,
   findLatestUserVideoBase64,
   messagesContainImage,
+  resolveSandboxSessionId,
 } from "../api/chat-adapter";
 import { countChatInputTokens } from "../api/chat-api";
 import { isExternalModelId } from "../external-providers";
@@ -302,6 +303,8 @@ export async function refreshContextUsage(
       payloadThreadId,
     );
     if (stale()) return;
+    const sessionId = await resolveSandboxSessionId(payloadThreadId);
+    if (stale()) return;
     const countExtras = await buildLocalTokenCountExtras(payloadThreadId);
     if (stale()) return;
 
@@ -311,6 +314,7 @@ export async function refreshContextUsage(
       await countChatInputTokens({
         model: capturedCheckpoint,
         messages: outbound,
+        session_id: sessionId,
         ...buildLocalTokenCountReasoning(),
         ...countExtras,
       });

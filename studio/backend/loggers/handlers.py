@@ -120,7 +120,7 @@ _WATCHDOG_POLL_PATHS = {"/api/liveness"}
 _LIVENESS_DEDUP_KEY = ("GET", "\x00liveness", b"", 200)
 _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
-    r"(?i)(\b(?:native_path_lease|nativePathLease)[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+    r"(?i)(\b(?:native_path_lease|nativePathLease)[\"']?\s*[:=]\s*[\"']?)[^\s\"'&,}\]]+"
 )
 _EXCLUDED_PATHS = {
     "/api/train/status",

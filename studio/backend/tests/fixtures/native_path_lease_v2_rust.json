@@ -1,0 +1,22 @@
+{
+  "secret_base64url": "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE",
+  "envelope_nonce_base64url": "AAECAwQFBgcICQoLDA0ODw",
+  "payload": {
+    "version": 2,
+    "operation": "open-project",
+    "canonical_path": "/tmp/unsloth-native-lease-known-answer",
+    "path_kind": "document-folder",
+    "path_type": "directory",
+    "source_kind": "dialog",
+    "token_id_hash": "cfc4cd587594f30f2c5d9aceeeb780508e65178e378c6deba7ed6182e7683e75",
+    "issued_at_ms": 1700000000000,
+    "expires_at_ms": 1700000120000,
+    "nonce": "102132435465768798a9bacbdcedfe0f",
+    "display_label": "unsloth-native-lease-known-answer",
+    "size_bytes": null,
+    "modified_ms": null,
+    "device_id": "7",
+    "file_id": "8"
+  },
+  "lease": "2.AAECAwQFBgcICQoLDA0ODwiJ5bf9RqcIm2kwLzjzU0mkwNb1TFKIqNHMLKu-Y6RT72MIlEnRf8qgi7giBSM4xbt-Nj3JNq_5y1IVALtgbZWomdScsUdssUk6k8wtMldobZapVsnsvsL0qFVOVZs1kFuHBicmjEIz94ipHwADfDLCM4OtzIvK6ywnOmcy2xrNfc3D6Irpow7p07Nqynvi9E7kCo0drzdQFP3CXiS2Bm_D-Hd3UsMkUGu7U9Yn-WzjBujy6Ng_kFhnbZwQwlEpuab7tsUaSMPqsXXS_SpoYbyDRP3NES_nbUeqdoG-5kzn4hIBr9kqq763VwwXSIlyV5qiJSidyT2BKtxhjsObAsbviCX4Zv-WtKqwZW6l001_fGKYeKX8-5G6InZFOeTBhCoiLzR94__yTajJL1MWpiSP5XvERFF_bTeLrhRvccdDA-9a3xSqV46YMr44W_eEvCGbkwfnjHcIa9Pgypj__kSeF6KdWExPt667UQgQutDMUOVCjF8QRp33-lv9xkQfnAj0I-yv_EqyPGZ_exar2aQM2N8Q4wG1jVVyYtBmG4bZeymQ6UYrDrKuevTb2p-8ePTtQAdxCDgTVjF4tIST7GAQbZI6l8pHCNgitkPm-w2yc3W7i1xJAQ0UwDQbgIxI.xfqoyH7ZkRQCW8SHFwGdckJFPHICBmJUU-_nB24ZOfQ"
+}

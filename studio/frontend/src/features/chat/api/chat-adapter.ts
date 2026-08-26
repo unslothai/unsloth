@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import {
-  clearedServerTuningState,
-  committedServerTuningState,
-  serverTuningLoadPayload,
-} from "../lib/server-tuning-fields";
+  SANDBOX_FILE_TOOLS,
+  type SandboxFile,
+  extractCreatedFiles,
+  isSandboxFileList,
+  isSandboxToolResult,
+  sandboxSessionIdFor,
+} from "@/components/assistant-ui/sandbox-files";
+import { usePlatformStore } from "@/config/env";
 import { authFetch, getAuthToken } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { DOWNLOAD_KIND } from "@/features/hub/download-manager/constants";
@@ -23,52 +26,14 @@ import {
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import { resolveInitialConfig } from "@/features/model-picker";
-import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
+import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
-import { usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
-import {
-  SANDBOX_FILE_TOOLS,
-  extractCreatedFiles,
-  isSandboxFileList,
-  isSandboxToolResult,
-  type SandboxFile,
-  sandboxSessionIdFor,
-} from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
-import {
-  answerTextFromParts,
-  extractSearchImages,
-  isSearchImageEntry,
-  isSearchImagesToolResult,
-  missingListSubjects,
-  SEARCH_IMAGE_TOOL,
-  searchResultText,
-  stripSearchImageTokens,
-  type SearchImageEntry,
-  type SearchImagesToolResult,
-} from "../search-images/search-images";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
-import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
-import {
-  adoptPreStreamRunReservation,
-  findPreStreamRunReservation,
-  preStreamRunThreadIdsForAdapter,
-  releasePreStreamRunForThreadIds,
-  releasePreStreamRunReservation,
-} from "../utils/pre-stream-run-reservation";
-import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
-import {
-  consumeQueuedChatRunSettings,
-  snapshotQueuedChatRunSettings,
-} from "../utils/queued-chat-run-settings";
-import {
-  mergeQueuedModelCapabilities,
-  type QueuedModelCapabilities,
-} from "../utils/queued-model-capabilities";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
@@ -79,25 +44,57 @@ import {
   isPromptCacheTtl,
   loadExternalProviders,
   parseExternalModelId,
-
   providerModelSupportsStudioTools,
   providerModelSupportsVision,
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
   toExternalBackendProviderType,
 } from "../external-providers";
+import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
+import {
+  clearedServerTuningState,
+  committedServerTuningState,
+  serverTuningLoadPayload,
+} from "../lib/server-tuning-fields";
+import {
+  SEARCH_IMAGE_TOOL,
+  type SearchImageEntry,
+  type SearchImagesToolResult,
+  answerTextFromParts,
+  extractSearchImages,
+  isSearchImageEntry,
+  isSearchImagesToolResult,
+  missingListSubjects,
+  searchResultText,
+  stripSearchImageTokens,
+} from "../search-images/search-images";
+import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
+import {
+  adoptPreStreamRunReservation,
+  findPreStreamRunReservation,
+  preStreamRunThreadIdsForAdapter,
+  releasePreStreamRunForThreadIds,
+  releasePreStreamRunReservation,
+} from "../utils/pre-stream-run-reservation";
+import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
+import {
+  consumeQueuedChatRunSettings,
+  snapshotQueuedChatRunSettings,
+} from "../utils/queued-chat-run-settings";
+import {
+  type QueuedModelCapabilities,
+  mergeQueuedModelCapabilities,
+} from "../utils/queued-model-capabilities";
+import { compareContextSnapshotForPair } from "../utils/compare-context-snapshot";
 
 import {
+  type CodexReasoningLedger,
   addCodexReasoning,
-
   codexLocalToolRoundId,
   codexReasoningForToolCalls,
   readCodexReasoning,
-
   shouldReplayAssistantReasoning,
-
   startsNewCodexToolRound,
-  type CodexReasoningLedger,
 } from "../codex-reasoning";
 
 import { toolCallReplayArguments } from "../tool-call-arguments";
@@ -106,14 +103,19 @@ import {
   resolveToolCallPartId,
 } from "../tool-call-id";
 
-import { buildResearchInferenceRequest } from "../research-inference-request";
-import { pickFriendlyContainerName } from "../lib/friendly-names";
+import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
+import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   reasoningCapsFromLoad,
   resolveInferenceCheckpointId,
   tryAdoptServerActiveModel,
 } from "../lib/apply-inference-status-to-store";
-import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
+import { pickFriendlyContainerName } from "../lib/friendly-names";
+import {
+  resolveFitMaxSeqLength,
+  resolveManualAutoCtxPin,
+} from "../presets/preset-policy";
+import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
@@ -128,26 +130,31 @@ import {
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
 } from "../provider-capabilities";
-import { selectCodeToolNames } from "./code-tool-placement";
+import { buildResearchInferenceRequest } from "../research-inference-request";
 import {
+  GPU_LAYERS_AUTO,
   type PendingImageEditReference,
   type RagAutoInject,
-  GPU_LAYERS_AUTO,
-  loadedGpuMemoryFields,
-  reconcilePersistedGpuIds,
-  resolveLoadedSpeculativeSettings,
-  resolveSpeculativeSettingsForLoad,
-  persistGpuMemoryModeOnLoad,
-  resolvePreserveThinkingOnLoad,
-  resolveToolsEnabledOnLoad,
-  saveSpeculativeType,
   awaitThreadScopedPairing,
   flushPendingChatSettings,
+  loadedGpuMemoryFields,
+  persistGpuMemoryModeOnLoad,
+  reconcilePersistedGpuIds,
+  resolveLoadedSpeculativeSettings,
+  resolvePreserveThinkingOnLoad,
+  resolveSpeculativeSettingsForLoad,
+  resolveToolsEnabledOnLoad,
+  saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
-import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
-import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import {
+  beginExternalResearchFollow,
+  ingestResearchUpdate,
+  terminalResearchStatuses,
+  useResearchRunStore,
+  watchResearchRun,
+} from "../stores/research-run-store";
 import {
   shouldPreserveFullOutput,
   toolOutputKey,
@@ -158,8 +165,8 @@ import type { ModelType, ThreadRecord } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
   CpuFallbackReason,
-  MmprojFallbackReason,
   GgufVariantDetail,
+  MmprojFallbackReason,
   OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
@@ -167,27 +174,17 @@ import type {
   OpenAIReasoningContentPart,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
-import { loadFallbackNotice } from "../utils/mmproj-fallback";
 import {
+  getStoredChatProject,
   getStoredChatThread,
   getStoredChatThreadReadResult,
-  getStoredChatProject,
   isThreadIncognito,
-  listStoredChatThreads,
   listStoredChatMessages,
+  listStoredChatThreads,
   saveStoredChatMessage,
+  updateStoredChatProject,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
-import {
-  readLastLocalModelLoad,
-  recordLastLocalModelLoad,
-  type LastLocalModelKind,
-} from "../utils/last-local-model-load";
-import { createRetryableSharedRead } from "../utils/retryable-shared-read";
-import {
-  createImageGateRunOwner,
-  getImageInputUnavailableReason,
-} from "../utils/image-input-support";
 import {
   historyCannotHelp,
   latestTurnIsTheProblem,
@@ -196,46 +193,75 @@ import {
   promptWasShortened,
 } from "../utils/context-truncation";
 import {
-  createThinkTagTracker,
-  extractDeltaText,
-  parseAssistantContent,
-} from "../utils/parse-assistant-content";
+  CONTINUE_INSTRUCTION,
+  type IncompleteReason,
+  budgetImpliesTruncation,
+  joinContinuation,
+  readContinuationRequest,
+  readIncompleteInfo,
+  rejectsAssistantPrefill,
+  resumesExactly,
+} from "../utils/continuation";
+import {
+  createImageGateRunOwner,
+  getImageInputUnavailableReason,
+} from "../utils/image-input-support";
 import { createSegmentedAssistantText } from "../utils/incremental-assistant-content";
 import {
-  createTrailingPlaceholderWatch,
-  stripTrailingTemplatePlaceholder,
-} from "../utils/trailing-template-placeholder";
-import { createStreamPublishGate } from "../utils/stream-pacing";
+  type LastLocalModelKind,
+  readLastLocalModelLoad,
+  recordLastLocalModelLoad,
+} from "../utils/last-local-model-load";
+import { loadFallbackNotice } from "../utils/mmproj-fallback";
+import {
+  createThinkTagTracker,
+  extractDeltaText,
+  type parseAssistantContent,
+} from "../utils/parse-assistant-content";
 import {
   countReasoningGroups,
   createReasoningDurationTracker,
   lastReasoningGroupTextLength,
 } from "../utils/reasoning-duration";
-import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
+import { createRetryableSharedRead } from "../utils/retryable-shared-read";
+import {
+  type ProjectSlashCommand,
+  executeGoalSlashCommand,
+  executePlanSlashCommand,
+  executeReviewSlashCommand,
+  executeStatusSlashCommand,
+  executeVerifySlashCommand,
+  parseProjectSlashCommand,
+} from "../utils/slash-commands";
+import { createStreamPublishGate } from "../utils/stream-pacing";
+import {
+  createTrailingPlaceholderWatch,
+  stripTrailingTemplatePlaceholder,
+} from "../utils/trailing-template-placeholder";
+import {
+  createAgentPlan,
+  getAgentGitStatus,
+  getAgentReview,
+  getAgentWorkspace,
+  listAgentPlans,
+  runAgentVerification,
+  updateAgentPlan,
+} from "./agent-workspace-api";
 import type { CachedGgufRepo, CachedModelRepo } from "./chat-api";
 import {
-  budgetImpliesTruncation,
-  CONTINUE_INSTRUCTION,
-  type IncompleteReason,
-  joinContinuation,
-  readIncompleteInfo,
-  readContinuationRequest,
-  rejectsAssistantPrefill,
-  resumesExactly,
-} from "../utils/continuation";
-import {
-  generateAudio,
   GenerationLengthError,
+  StreamInterruptedError,
   fetchGgufStagedMetadata,
+  generateAudio,
   getInferenceStatus,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
   loadModel,
   streamChatCompletions,
-  StreamInterruptedError,
   validateModel,
 } from "./chat-api";
+import { selectCodeToolNames } from "./code-tool-placement";
 import {
   createOpenAIContainer,
   listOpenAIContainers,
@@ -244,13 +270,6 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
-import {
-  beginExternalResearchFollow,
-  ingestResearchUpdate,
-  terminalResearchStatuses,
-  useResearchRunStore,
-  watchResearchRun,
-} from "../stores/research-run-store";
 import { cancelResearchRun, createResearchRun } from "./research-api";
 
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
@@ -454,7 +473,10 @@ function getNestedValue(
   values: Record<string, unknown>,
   path: string,
 ): unknown | undefined {
-  const parts = path.split(".").map((part) => part.trim()).filter(Boolean);
+  const parts = path
+    .split(".")
+    .map((part) => part.trim())
+    .filter(Boolean);
   if (parts.length === 0) {
     return undefined;
   }
@@ -674,8 +696,7 @@ function documentCitationToSource(
   // Anthropic numbers inline [N] per citation, not per source URL.
   // Fold citation type + position-bearing fields into the id so distinct
   // citations on the same source keep separate Sources entries.
-  const citationType =
-    typeof cit.type === "string" ? String(cit.type) : "";
+  const citationType = typeof cit.type === "string" ? String(cit.type) : "";
   const positionParts = [
     cit.search_result_index,
     cit.start_char_index,
@@ -1083,9 +1104,7 @@ function isSandboxWrapper(
   return isSandboxToolResult(result);
 }
 
-export function isMcpImageToolResult(
-  val: unknown,
-): val is McpImageToolResult {
+export function isMcpImageToolResult(val: unknown): val is McpImageToolResult {
   if (typeof val !== "object" || val === null) {
     return false;
   }
@@ -1138,7 +1157,8 @@ function serializeToolResultPart(
     const replayText = isSearchImagesToolResult(result)
       ? stripSearchImageTokens(result.text)
       : result.text;
-    content = replayText.length > 0 ? replayText : JSON.stringify({ result: "" });
+    content =
+      replayText.length > 0 ? replayText : JSON.stringify({ result: "" });
   } else {
     try {
       content = JSON.stringify(result);
@@ -1210,7 +1230,6 @@ function setAssistantCodexReasoning(
       : {};
   message.extra_content = { ...extra, openai_codex_reasoning: reasoning };
 }
-
 
 function attachAssistantThoughtSignature(
   messages: SerializedMessage[],
@@ -1356,7 +1375,6 @@ function serializeAssistantReplayMessages(
       if (!toolResult && !canReplayToolCallWithoutRoleTool(toolPart)) {
         continue;
       }
-
 
       const provenance = getToolReplayProvenance(toolPart);
       const localRoundId = codexLocalToolRoundId(provenance);
@@ -1629,7 +1647,8 @@ export function messagesUsePrivateContent(messages: RunMessages): boolean {
       (message.content ?? []).some(
         (part) =>
           (part.type === "tool-call" &&
-            (part as { toolName?: string }).toolName === "search_knowledge_base") ||
+            (part as { toolName?: string }).toolName ===
+              "search_knowledge_base") ||
           isPrivateMediaPart(part),
       )
     ) {
@@ -1688,7 +1707,8 @@ function extractVideoPartBase64(
 ): string | undefined {
   if (!part || part.type !== "file") return undefined;
   const filePart = part as unknown as { data?: string; mimeType?: string };
-  if (!filePart.data || !/^video\//i.test(filePart.mimeType ?? "")) return undefined;
+  if (!filePart.data || !/^video\//i.test(filePart.mimeType ?? ""))
+    return undefined;
   return filePart.data.startsWith("data:")
     ? filePart.data.split(",")[1]
     : filePart.data;
@@ -1734,7 +1754,7 @@ export const CANVAS_FALLBACK_INSTRUCTION =
  */
 export async function buildOutboundMessagesForTokenCount(
   messages: RunMessages,
-  threadId: string | undefined,
+  _threadId: string | undefined,
 ): Promise<OpenAIChatMessage[]> {
   const outboundMessages = pruneOutboundHistory(messages, true)
     .flatMap((message) => toOpenAIMessages(message, true))
@@ -1744,24 +1764,10 @@ export async function buildOutboundMessagesForTokenCount(
 
   const { params, artifactsEnabled, supportsTools } =
     useChatRuntimeStore.getState();
-  const safeSystemPrompt =
-    typeof params.systemPrompt === "string"
-      ? resolveSystemPromptVariables(
-          params.systemPrompt,
-          typeof params.systemVariables === "string"
-            ? params.systemVariables
-            : "",
-        )
-      : "";
-  const projectInstructions = await resolveProjectInstructions(threadId);
-  const combinedSystemPrompt = [
-    projectInstructions
-      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-      : "",
-    safeSystemPrompt.trim(),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const combinedSystemPrompt = resolveUserSystemPrompt(
+    params.systemPrompt,
+    params.systemVariables,
+  );
   if (combinedSystemPrompt) {
     outboundMessages.unshift({
       role: "system",
@@ -1930,11 +1936,12 @@ async function resolveUseAdapter(
     return undefined;
   }
   try {
-    const thread = await (readThreadRecord?.() ?? getStoredChatThread(threadId));
+    const thread = await (readThreadRecord?.() ??
+      getStoredChatThread(threadId));
     if (!thread?.pairId) {
       return undefined;
     }
-    // model1/model2 threads skip the adapter toggle — each side loads
+    // model1/model2 threads skip the adapter toggle: each side loads
     // its own model via /api/inference/load before generation.
     if (thread.modelType === "model1" || thread.modelType === "model2") {
       return undefined;
@@ -1945,53 +1952,40 @@ async function resolveUseAdapter(
   }
 }
 
-async function resolveProjectInstructions(
-  threadId: string | undefined,
-  readThreadRecord?: ThreadRecordReader,
-): Promise<string> {
-  const projectId = await resolveProjectId(threadId, readThreadRecord);
-  if (!projectId) {
-    return "";
-  }
-
-  const project = await getStoredChatProject(projectId).catch(() => null);
-  if (!project || project.archived) {
-    return "";
-  }
-  return project.instructions?.trim() ?? "";
+function latestSlashCommandText(messages: RunMessages): string {
+  const message = [...messages]
+    .reverse()
+    .find((candidate) => candidate.role === "user");
+  if (!message || !Array.isArray(message.content)) return "";
+  return message.content
+    .filter(
+      (
+        part,
+      ): part is Extract<(typeof message.content)[number], { type: "text" }> =>
+        part.type === "text" && typeof part.text === "string",
+    )
+    .map((part) => part.text)
+    .join("\n")
+    .trim();
 }
 
-async function resolveChatInstructions(
-  threadId: string | undefined,
+function resolveUserSystemPrompt(
   systemPrompt: unknown,
   systemVariables: unknown,
-  readThreadRecord?: ThreadRecordReader,
-): Promise<string> {
-  const safeSystemPrompt =
+): string {
+  return (
     typeof systemPrompt === "string"
       ? resolveSystemPromptVariables(
           systemPrompt,
           typeof systemVariables === "string" ? systemVariables : "",
         )
-      : "";
-  const projectInstructions = await resolveProjectInstructions(
-    threadId,
-    readThreadRecord,
-  );
-  return [
-    projectInstructions
-      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-      : "",
-    safeSystemPrompt.trim(),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+      : ""
+  ).trim();
 }
 
-// A run resolves the project separately for the sandbox, the RAG scope and the
-// instructions, and while a fresh thread's row is still being written they all
-// take the composer fallback. Answered once per thread and reused, or a
-// navigation between those calls mixes two projects into one request.
+// A run resolves the project separately for sandbox and RAG identity. While a
+// fresh thread's row is still being written both use the composer fallback.
+// The backend owns project instruction and goal context for every transport.
 const composerProjectByPendingThread = new Map<string, string | null>();
 
 /** The project the run started in, kept for the whole run. Only the first send
@@ -2054,7 +2048,77 @@ export async function resolveProjectId(
   return composerProjectId ?? null;
 }
 
-async function resolveSandboxSessionId(
+export async function executeLocalProjectSlashCommand(
+  slashCommand: ProjectSlashCommand,
+  options: {
+    threadId?: string;
+    composerProjectId?: string | null;
+  } = {},
+): Promise<string> {
+  const projectId = await resolveProjectId(
+    options.threadId,
+    undefined,
+    options.composerProjectId !== undefined
+      ? { composerProjectId: options.composerProjectId }
+      : undefined,
+  );
+  let response = `The \`/${slashCommand.name}\` command is available only inside a project.`;
+  if (!projectId) {
+    return response;
+  }
+
+  const project = await getStoredChatProject(projectId).catch(() => null);
+  if (!project || project.archived) {
+    return "This project is unavailable.";
+  }
+
+  try {
+    switch (slashCommand.name) {
+      case "goal":
+        response = (
+          await executeGoalSlashCommand(
+            slashCommand,
+            project,
+            updateStoredChatProject,
+          )
+        ).response;
+        break;
+      case "verify":
+        response = await executeVerifySlashCommand(
+          slashCommand,
+          projectId,
+          runAgentVerification,
+        );
+        break;
+      case "plan":
+        response = await executePlanSlashCommand(slashCommand, projectId, {
+          listPlans: listAgentPlans,
+          createPlan: createAgentPlan,
+          updatePlan: updateAgentPlan,
+        });
+        break;
+      case "status":
+        response = await executeStatusSlashCommand(slashCommand, project, {
+          getWorkspace: getAgentWorkspace,
+          getGitStatus: getAgentGitStatus,
+        });
+        break;
+      case "review":
+        response = await executeReviewSlashCommand(
+          slashCommand,
+          projectId,
+          getAgentReview,
+        );
+        break;
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    response = `\`/${slashCommand.name}\` failed: ${detail}`;
+  }
+  return response;
+}
+
+export async function resolveSandboxSessionId(
   threadId: string | undefined,
   readThreadRecord?: ThreadRecordReader,
 ): Promise<string | undefined> {
@@ -2110,10 +2174,14 @@ function autoLoadCandidateKey(
   return `${kind}:${normalizeTarget(id)}:${(ggufVariant ?? "").toLowerCase()}`;
 }
 
-function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolean {
+function hasBigEndianGgufMarker(
+  filename: string,
+  quant?: string | null,
+): boolean {
   const normalized = filename.replace(/\\/g, "/").toLowerCase();
   const separatorIndex = normalized.lastIndexOf("/");
-  const basename = separatorIndex >= 0 ? normalized.slice(separatorIndex + 1) : normalized;
+  const basename =
+    separatorIndex >= 0 ? normalized.slice(separatorIndex + 1) : normalized;
   const parent = separatorIndex >= 0 ? normalized.slice(0, separatorIndex) : "";
   const stem = basename.replace(/\.[^.]*$/, "");
   const quantKey = quant?.trim().toLowerCase() || "";
@@ -2127,7 +2195,9 @@ function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolea
     if (quantIndex >= 0 && quantIndex < (match.index ?? 0)) {
       return true;
     }
-    const tail = stem.slice((match.index ?? 0) + match[0].length).replace(/^[._-]+/, "");
+    const tail = stem
+      .slice((match.index ?? 0) + match[0].length)
+      .replace(/^[._-]+/, "");
     if (!tail || !GGUF_KNOWN_QUANT_RE.test(tail)) {
       return !quantInParentOnly;
     }
@@ -2269,8 +2339,7 @@ function snapshotVisibleModelState(
 
 function restoreVisibleModelState(snapshot: VisibleModelStateSnapshot): void {
   const liveUsage = useChatRuntimeStore.getState();
-  liveUsage
-    .setCheckpoint(snapshot.settings.params.checkpoint, undefined, {
+  liveUsage.setCheckpoint(snapshot.settings.params.checkpoint, undefined, {
       trackQueuedSettings: false,
       // The model being stepped off is the one the background load put there.
       persist: false,
@@ -2419,7 +2488,9 @@ function isAutoLoadableLocalRow(
 // Reading only the field made such a row a Transformers source, which sends the
 // safetensors context length to /load and remembers the wrong kind.
 function isGgufLocalRow(row: LocalModelInfo): boolean {
-  return row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf");
+  return (
+    row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf")
+  );
 }
 
 /** Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides
@@ -2873,12 +2944,18 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
 
   function noteLoadFailure(label: string, error: unknown): void {
     const detail =
-      error instanceof Error && error.message.trim() ? error.message.trim() : "";
+      error instanceof Error && error.message.trim()
+        ? error.message.trim()
+        : "";
     // loadModel also rejects before /api/inference/load is sent (dismissed token dialog, dead
     // backend): those stop the Hub download, but must not blame the model.
-    const marker = error as { unslothTransportFailure?: boolean; unslothUserCancelled?: boolean };
+    const marker = error as {
+      unslothTransportFailure?: boolean;
+      unslothUserCancelled?: boolean;
+    };
     const blamesModel = !(
-      marker?.unslothTransportFailure === true || marker?.unslothUserCancelled === true
+      marker?.unslothTransportFailure === true ||
+      marker?.unslothUserCancelled === true
     );
     loadFailure.current = {
       label,
@@ -2974,7 +3051,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const failureLabel = candidate.ggufVariant
       ? `${candidate.id} (${candidate.ggufVariant})`
       : candidate.id;
-    const { config } = resolveInitialConfig(candidate.id, candidate.ggufVariant);
+    const { config } = resolveInitialConfig(
+      candidate.id,
+      candidate.ggufVariant,
+    );
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
       ggufVariant: candidate.ggufVariant,
@@ -3050,7 +3130,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           sanitizeStoredExtraArgs(tokens, managed?.managed ?? new Set<string>(), {
             maxBytes: managed?.maxBytes,
             windowsCommandBudget: managed?.windowsCommandBudget,
-          });
+            },
+          );
         if (resolvedExtraArgs === undefined) {
           const stored = await fetchLoadExtraArgs(
             modelPath,
@@ -3086,9 +3167,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         // comes up as it did before the feature existed.
       }
     }
-    const effectiveTensorParallel = isDiffusion
-      ? false
-      : config.tensorParallel;
+    const effectiveTensorParallel = isDiffusion ? false : config.tensorParallel;
     // The diffusion runner has no projector to skip, so the toggle is inert there.
     const effectiveDisableVision = isDiffusion ? false : config.disableVision;
     const effectiveGpuIds =
@@ -3250,7 +3329,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             : { maxSeqLength: effectiveMaxSeqLength }),
           maxTokens:
             candidate.kind === "gguf"
-              ? loadResp.context_length ?? 131072
+              ? (loadResp.context_length ?? 131072)
               : effectiveMaxSeqLength,
         },
         {
@@ -3283,16 +3362,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         );
         // Slots this auto-load committed. Diffusion ignores --parallel, so a count
         // there would mint a phantom override a saved preset carries onto a GGUF.
-        const committedSlots = (loadResp.is_diffusion ?? false)
-          ? null
-          : (config.nParallel ?? null);
+        const committedSlots =
+          (loadResp.is_diffusion ?? false) ? null : (config.nParallel ?? null);
         // same rule for the batch sizes
-        const committedNBatch = (loadResp.is_diffusion ?? false)
-          ? null
-          : (config.nBatch ?? null);
-        const committedNUbatch = (loadResp.is_diffusion ?? false)
-          ? null
-          : (config.nUbatch ?? null);
+        const committedNBatch =
+          (loadResp.is_diffusion ?? false) ? null : (config.nBatch ?? null);
+        const committedNUbatch =
+          (loadResp.is_diffusion ?? false) ? null : (config.nUbatch ?? null);
         useChatRuntimeStore.setState({
           ggufContextLength: loadResp.context_length ?? 131072,
           ggufMaxContextLength:
@@ -3334,8 +3410,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // own model and config, so a stale true would show Vision off over a
           // loaded projector, and the next Apply would send it.
           disableVision: loadResp.disable_vision ?? false,
-          loadedVisionDisabledByUser:
-            loadResp.vision_disabled_by_user ?? false,
+          loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
           ...loadedGpuMemoryFields(loadResp),
           loadedCustomContextLength: keepCustomCtx,
           defaultChatTemplate: loadResp.chat_template ?? null,
@@ -3383,8 +3458,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // load has no projector, and a stale true would stage it for the next
           // model that has one.
           disableVision: false,
-          loadedVisionDisabledByUser:
-            loadResp.vision_disabled_by_user ?? false,
+          loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
           // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
           // GGUF load left, matching the interactive/status sibling load paths.
           ...loadedGpuMemoryFields(loadResp),
@@ -3452,7 +3526,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         cachedModelsRunOnThisPlatform()
           ? allModelRepos.filter(isChattableCachedRepo)
           : [],
-        localRows.filter((row) => isAutoLoadableLocalRow(row, cachedInventoryFailed)),
+        localRows.filter((row) =>
+          isAutoLoadableLocalRow(row, cachedInventoryFailed),
+        ),
         store.params.maxSeqLength,
         options?.abortSignal,
       ),
@@ -3486,7 +3562,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
           const candidate = await resolveAutoLoadCandidate(
             source,
-            isRemembered ? lastLoaded?.ggufVariant ?? null : null,
+            isRemembered ? (lastLoaded?.ggufVariant ?? null) : null,
             isTried,
           );
           options?.abortSignal?.throwIfAborted();
@@ -3649,11 +3725,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
         useChatRuntimeStore
           .getState()
-          .setCheckpoint(
-            DEFAULT_CHAT_MODEL_REPO,
-            DEFAULT_CHAT_MODEL_VARIANT,
-            { trackQueuedSettings: !options?.preserveVisibleSettings },
-          );
+          .setCheckpoint(DEFAULT_CHAT_MODEL_REPO, DEFAULT_CHAT_MODEL_VARIANT, {
+            trackQueuedSettings: !options?.preserveVisibleSettings,
+          });
         const store = useChatRuntimeStore.getState();
         store.setModelRequiresTrustRemoteCode(
           loadResp.requires_trust_remote_code ?? false,
@@ -3688,7 +3762,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
         reasoningEnabled: loadResp.supports_reasoning ?? false,
         ...reasoningCapsFromLoad(loadResp),
-        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
+          supportsPreserveThinking:
+            loadResp.supports_preserve_thinking ?? false,
         preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
         supportsTools: loadResp.supports_tools ?? false,
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
@@ -3755,9 +3830,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   }
 }
 
-async function resolveQueuedEmptyLocalModel(
-  abortSignal: AbortSignal,
-): Promise<{
+async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
   loadFailureReported?: boolean;
@@ -3877,6 +3950,9 @@ export function createOpenAIStreamAdapter(
       unstable_threadId,
       unstable_assistantMessageId,
     }) {
+      const projectContextSnapshotId = compareContextSnapshotForPair(
+        options.pairId,
+      );
       // Before the first await: hydration and a model load both run ahead of the
       // first resolveProjectId, and a send survives navigation. Only consulted
       // while the thread's own row is still missing.
@@ -3939,12 +4015,8 @@ export function createOpenAIStreamAdapter(
         ? async () => (await sharedThreadRecordRead()).thread
         : undefined;
       const releaseCurrentPreStreamRun = () =>
-        releasePreStreamRunForThreadIds([
-          unstable_threadId,
-          resolvedThreadId,
-        ]);
-      const queuedRunSettings =
-        consumeQueuedChatRunSettings(resolvedThreadId);
+        releasePreStreamRunForThreadIds([unstable_threadId, resolvedThreadId]);
+      const queuedRunSettings = consumeQueuedChatRunSettings(resolvedThreadId);
       let queuedEmptyModelRuntime: QueuedResolvedModelRuntime | null = null;
       const persistResolvedQueuedModel = async (modelId: string) => {
         if (
@@ -4064,13 +4136,16 @@ export function createOpenAIStreamAdapter(
                 ),
               }
           : liveRuntime;
-        if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
+        if (!resolvedThreadId)
+          throw new Error("Research requires a saved chat.");
         if (!unstable_assistantMessageId) {
           throw new Error(
             "Deep research could not bind its assistant message. Please retry the send.",
           );
         }
-        const userMessage = [...messages].reverse().find((m) => m.role === "user");
+        const userMessage = [...messages]
+          .reverse()
+          .find((m) => m.role === "user");
         if (!userMessage) throw new Error("Research requires a user message.");
         const userMessageIndex = messages.indexOf(userMessage);
         const userMessageParentId =
@@ -4078,10 +4153,12 @@ export function createOpenAIStreamAdapter(
         const { params } = runtime;
         await persistResolvedQueuedModel(params.checkpoint);
         const selectedCheckpoint = params.checkpoint.trim();
-        const researchExternalSelection = parseExternalModelId(selectedCheckpoint);
+        const researchExternalSelection =
+          parseExternalModelId(selectedCheckpoint);
         const researchExternalProvider = researchExternalSelection
           ? loadExternalProviders().find(
-              (provider) => provider.id === researchExternalSelection.providerId,
+              (provider) =>
+                provider.id === researchExternalSelection.providerId,
             )
           : null;
         if (
@@ -4125,11 +4202,9 @@ export function createOpenAIStreamAdapter(
         const projectRagEnabled = researchProjectId
           ? await projectHasSources(researchProjectId)
           : false;
-        const researchInstructions = await resolveChatInstructions(
-          resolvedThreadId,
+        const researchInstructions = resolveUserSystemPrompt(
           params.systemPrompt,
           params.systemVariables,
-          readThreadRecord,
         );
         const ragScope =
           runtime.ragEnabled || projectRagEnabled
@@ -4170,7 +4245,9 @@ export function createOpenAIStreamAdapter(
         };
         runtime.registerThreadServerCancel(threadKey, researchServerCancel);
         releaseCurrentPreStreamRun();
-        runtime.setThreadRunning(threadKey, true, { owner: researchServerCancel });
+        runtime.setThreadRunning(threadKey, true, {
+          owner: researchServerCancel,
+        });
         let report = "";
         let releaseResearchFollow: (() => void) | null = null;
         const researchFollowController = new AbortController();
@@ -4180,13 +4257,15 @@ export function createOpenAIStreamAdapter(
         const forwardAdapterAbort = () => {
           researchFollowController.abort(abortSignal.reason);
         };
-        abortSignal.addEventListener("abort", forwardAdapterAbort, { once: true });
+        abortSignal.addEventListener("abort", forwardAdapterAbort, {
+          once: true,
+        });
         try {
           // The normal history adapter persists messages after model execution,
           // but research validates the user message before it can start.
-          const storedUserMessage = (await listStoredChatMessages(resolvedThreadId)).find(
-            (message) => message.id === userMessage.id,
-          );
+          const storedUserMessage = (
+            await listStoredChatMessages(resolvedThreadId)
+          ).find((message) => message.id === userMessage.id);
           await saveStoredChatMessage({
             id: userMessage.id,
             threadId: resolvedThreadId,
@@ -4203,7 +4282,9 @@ export function createOpenAIStreamAdapter(
             userMessageId: userMessage.id,
             assistantMessageId: unstable_assistantMessageId,
             inferenceRequest,
-            ...(researchInstructions ? { instructions: researchInstructions } : {}),
+            ...(researchInstructions
+              ? { instructions: researchInstructions }
+              : {}),
             ...(ragScope ? { ragScope } : {}),
             budgets: {
               modelTimeoutSeconds: runtime.researchModelTimeoutSeconds,
@@ -4226,8 +4307,7 @@ export function createOpenAIStreamAdapter(
           );
           if (
             !queuedRunSettings ||
-            resolvedThreadId ===
-              useChatRuntimeStore.getState().activeThreadId
+            resolvedThreadId === useChatRuntimeStore.getState().activeThreadId
           ) {
             runtime.setDeepResearchEnabled(false);
           }
@@ -4271,14 +4351,19 @@ export function createOpenAIStreamAdapter(
             };
           }
         } catch (error) {
-          if (!abortSignal.aborted && !researchFollowController.signal.aborted) {
+          if (
+            !abortSignal.aborted &&
+            !researchFollowController.signal.aborted
+          ) {
             throw error;
           }
         } finally {
           abortSignal.removeEventListener("abort", forwardAdapterAbort);
           releaseResearchFollow?.();
           runtime.clearThreadServerCancel(threadKey, researchServerCancel);
-          runtime.setThreadRunning(threadKey, false, { owner: researchServerCancel });
+          runtime.setThreadRunning(threadKey, false, {
+            owner: researchServerCancel,
+          });
         }
         return;
       }
@@ -4510,7 +4595,6 @@ export function createOpenAIStreamAdapter(
         isExternalRequest &&
         !externalApiKey &&
         !externalProvider?.hasApiKey &&
-
         !externalProviderUsesOAuth &&
         !externalProviderIsCustom &&
         !externalProviderIsGeminiCustomBase
@@ -4577,8 +4661,10 @@ export function createOpenAIStreamAdapter(
       // boundaries, not two spellings of one feature, so the stored pill keeps
       // meaning the provider's sandbox wherever it meant that before the Studio
       // loop reached these providers. See code-tool-placement.ts.
-      const { local: studioLocalCodeTools, hosted: hostedCodeToolsForThisTurn } =
-        selectCodeToolNames({
+      const {
+        local: studioLocalCodeTools,
+        hosted: hostedCodeToolsForThisTurn,
+      } = selectCodeToolNames({
           codeToolsEnabled,
           hostedCodeExecutionForThisTurn: codeExecEnabledForThisTurn,
           providerHostsCodeExecution: providerHostsCodeExecution(
@@ -4604,9 +4690,7 @@ export function createOpenAIStreamAdapter(
       // follow-ups; the backend Gemini translator rebuilds the
       // functionCall / functionResponse parts (with thoughtSignature).
       const outboundMessages = survivingMessages
-        .flatMap((message) =>
-          toOpenAIMessages(message, !isExternalRequest),
-        )
+        .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
@@ -4663,11 +4747,9 @@ export function createOpenAIStreamAdapter(
         }
       }
 
-      const combinedSystemPrompt = await resolveChatInstructions(
-        resolvedThreadId,
+      const combinedSystemPrompt = resolveUserSystemPrompt(
         params.systemPrompt,
         params.systemVariables,
-        readThreadRecord,
       );
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
@@ -4797,7 +4879,7 @@ export function createOpenAIStreamAdapter(
 
       // Block when ANY image is in the outbound payload (current or prior
       // turns) and the loaded model can't process images. Once a chat
-      // contains an image, a non-vision model can't respond — the user
+      // contains an image, a non-vision model can't respond: the user
       // starts a new chat to switch models.
       if (imageBase64) {
         const activeModel = runtime.models.find(
@@ -5301,9 +5383,7 @@ export function createOpenAIStreamAdapter(
             params.checkpoint ||
             "Unknown model",
           responseModelId:
-            responseModelId ||
-            externalSelection?.modelId ||
-            params.checkpoint,
+            responseModelId || externalSelection?.modelId || params.checkpoint,
           ...(externalProvider?.id ? { providerId: externalProvider.id } : {}),
           providerName:
             externalProvider?.name ??
@@ -5333,10 +5413,10 @@ export function createOpenAIStreamAdapter(
               codeExecEnabledForThisTurn ||
               (!isExternalRequest && supportsTools && codeToolsEnabled),
             images: imageGenerationEnabledForThisTurn,
-            mcp:
-              supportsStudioToolsForThisTurn && mcpEnabledForChat,
+            mcp: supportsStudioToolsForThisTurn && mcpEnabledForChat,
             docs:
-              supportsStudioToolsForThisTurn && (ragEnabled || projectRagEnabled),
+              supportsStudioToolsForThisTurn &&
+              (ragEnabled || projectRagEnabled),
             artifacts: renderHtmlToolEnabledForThisTurn,
             confirmToolCalls,
             bypassPermissions,
@@ -5501,7 +5581,7 @@ export function createOpenAIStreamAdapter(
                   }).catch(() => {});
                 } catch {
                   // Fall back to the backend's container_auto path on
-                  // failure — keeps the chat moving (the auto-created
+                  // failure: keeps the chat moving (the auto-created
                   // container is unnamed); the next turn can retry.
                   openaiCodeExecContainerId = null;
                 }
@@ -5511,6 +5591,10 @@ export function createOpenAIStreamAdapter(
               model: externalSelection.modelId,
               messages: outboundMessages,
               stream: true,
+              ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
+              ...(projectContextSnapshotId
+                ? { project_context_snapshot_id: projectContextSnapshotId }
+                : {}),
               // Never forwarded upstream (the proxy sends an explicit field list);
               // the trailing assistant turn is what asks a provider to continue.
               ...(continuation ? { continue_final_message: true } : {}),
@@ -5605,8 +5689,18 @@ export function createOpenAIStreamAdapter(
                     // older bundle sent meaning hosted search, so without this
                     // flag Search silently stayed hosted.
                     run_tools_locally: true,
-                    ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
-                    ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+                    ...(sandboxSessionId
+                      ? { session_id: sandboxSessionId }
+                      : {}),
+                    ...(projectContextSnapshotId
+                      ? {
+                          project_context_snapshot_id:
+                            projectContextSnapshotId,
+                        }
+                      : {}),
+                    ...(resolvedThreadId
+                      ? { thread_id: resolvedThreadId }
+                      : {}),
                     ...(ragEnabled || projectRagEnabled
                       ? {
                           rag_scope: {
@@ -5714,7 +5808,11 @@ export function createOpenAIStreamAdapter(
                       : {
                           reasoning_effort: fallbackExternalEffort,
                         }
-                  : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
+                  : {
+                      thinking: {
+                        type: reasoningEnabled ? "enabled" : "disabled",
+                      },
+                    }
                 : {}),
             };
           }
@@ -5742,6 +5840,9 @@ export function createOpenAIStreamAdapter(
             video_base64: videoBase64,
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
+            ...(projectContextSnapshotId
+              ? { project_context_snapshot_id: projectContextSnapshotId }
+              : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
@@ -5832,7 +5933,9 @@ export function createOpenAIStreamAdapter(
                             ? { whole_doc: false }
                             : {}),
                           context_length:
-                            runtime.ggufContextLength ?? params.maxSeqLength ?? undefined,
+                            runtime.ggufContextLength ??
+                            params.maxSeqLength ??
+                            undefined,
                         },
                       }
                     : {}),
@@ -5894,7 +5997,8 @@ export function createOpenAIStreamAdapter(
                   contextTruncation,
                   chunk.context_truncated,
                 );
-                const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
+                const activeThreadId =
+                  useChatRuntimeStore.getState().activeThreadId;
                 // What must stay silent is a fit that returned the ORIGINAL messages:
                 // toasting "older turns were removed" is untrue there, and burns the
                 // once-per-thread flag. Not `fits`, which is also false for a shortened
@@ -5929,9 +6033,7 @@ export function createOpenAIStreamAdapter(
               const reasoningMs = (
                 chunk as { _reasoningDurationMs?: number } | null | undefined
               )?._reasoningDurationMs;
-              if (
-                reasoningDurationTracker.recordServerDuration(reasoningMs)
-              ) {
+              if (reasoningDurationTracker.recordServerDuration(reasoningMs)) {
                 continue;
               }
 
@@ -6111,8 +6213,7 @@ export function createOpenAIStreamAdapter(
                       ? `${toolConfirmationScopeId}:${approvalId}`
                       : backendToolCallId
                         ? resolveToolPartId(backendToolCallId)
-                        : approvalId ||
-                          `${toolEvent.tool_name}_${Date.now()}`;
+                        : approvalId || `${toolEvent.tool_name}_${Date.now()}`;
                   if (awaitingConfirmation && backendToolCallId) {
                     toolConfirmationIdsByBackendId.set(backendToolCallId, id);
                   }
@@ -6246,7 +6347,8 @@ export function createOpenAIStreamAdapter(
                           text: rawResult.slice(0, mcpImgIdx),
                           images,
                         };
-                        if (isMcpImageToolResult(candidate)) mcpImages = candidate;
+                        if (isMcpImageToolResult(candidate))
+                          mcpImages = candidate;
                       } catch {
                         // Not a valid envelope; fall through below.
                       }
@@ -6466,10 +6568,8 @@ export function createOpenAIStreamAdapter(
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
               // Normalize structured delta.content (mistral magistral).
-              const {
-                text: delta,
-                structuredReasoningContinues,
-              } = extractDeltaText(rawDelta);
+              const { text: delta, structuredReasoningContinues } =
+                extractDeltaText(rawDelta);
               // Latest Gemini text-part thoughtSignature for next-turn replay.
               const deltaExtraContent = (
                 chunk.choices?.[0]?.delta as
@@ -6481,17 +6581,24 @@ export function createOpenAIStreamAdapter(
               // replay. Pace previews, never state.
               let replayStateChanged = false;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
-                const extraRecord = deltaExtraContent as Record<string, unknown>;
+                const extraRecord = deltaExtraContent as Record<
+                  string,
+                  unknown
+                >;
                 const eGoogle = extraRecord.google;
                 if (eGoogle && typeof eGoogle === "object") {
-                  const sig = (eGoogle as Record<string, unknown>).thought_signature;
+                  const sig = (eGoogle as Record<string, unknown>)
+                    .thought_signature;
                   if (typeof sig === "string" && sig) {
                     replayStateChanged ||= sig !== latestTextThoughtSignature;
                     latestTextThoughtSignature = sig;
                   }
                 }
                 const codexReasoning = extraRecord.openai_codex_reasoning;
-                if (Array.isArray(codexReasoning) && codexReasoning.length > 0) {
+                if (
+                  Array.isArray(codexReasoning) &&
+                  codexReasoning.length > 0
+                ) {
                   codexReasoningLedger = addCodexReasoning(
                     codexReasoningLedger,
                     codexReasoning,
@@ -6634,7 +6741,8 @@ export function createOpenAIStreamAdapter(
                     toolCallParts[existingIndex] = updated;
                   } else {
                     const callId =
-                      stablePartId || `tool_call_${idx ?? toolCallParts.length}`;
+                      stablePartId ||
+                      `tool_call_${idx ?? toolCallParts.length}`;
 
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);
@@ -6748,8 +6856,7 @@ export function createOpenAIStreamAdapter(
               const parsedReasoningGroupCount =
                 countReasoningGroups(assistantContent);
               if (
-                parsedReasoningGroupCount >
-                reasoningDurationTracker.groupCount
+                parsedReasoningGroupCount > reasoningDurationTracker.groupCount
               ) {
                 reasoningDurationTracker.startGroup(
                   parsedReasoningGroupCount - 1,
@@ -6928,7 +7035,8 @@ export function createOpenAIStreamAdapter(
           }
           if (
             usageThreadIsVisible &&
-            useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
+            useChatRuntimeStore.getState().params.checkpoint ===
+              params.checkpoint
           ) {
             useChatRuntimeStore.getState().setContextUsage(usage);
           }
@@ -6962,7 +7070,9 @@ export function createOpenAIStreamAdapter(
           ragEnabled ||
           projectRagEnabled ||
           messagesUsePrivateContent(messages) ||
-          toolCallParts.some((part) => part.toolName === "search_knowledge_base");
+          toolCallParts.some(
+            (part) => part.toolName === "search_knowledge_base",
+          );
         // This run's own values, destructured from the runtime it started with,
         // not the store as it stands now. Both are per-chat, and a run finishing
         // after the user moved to a chat on "auto" would read that chat's
@@ -6990,7 +7100,9 @@ export function createOpenAIStreamAdapter(
             // Linked by hand: AbortSignal.any is newer than the Safari floor.
             const lookupAbort = new AbortController();
             const onRunAbort = () => lookupAbort.abort();
-            runAbort.signal.addEventListener("abort", onRunAbort, { once: true });
+            runAbort.signal.addEventListener("abort", onRunAbort, {
+              once: true,
+            });
             const lookupTimer = setTimeout(() => lookupAbort.abort(), 15_000);
             try {
               // authFetch, not a raw fetch: an access token that expired during a long
@@ -7072,7 +7184,9 @@ export function createOpenAIStreamAdapter(
 
               openaiCodexReasoning: codexReasoningLedger,
               contextTruncation,
-              incomplete: incompleteReason ? { reason: incompleteReason } : undefined,
+              incomplete: incompleteReason
+                ? { reason: incompleteReason }
+                : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: meta?.timings ?? undefined,
@@ -7265,12 +7379,29 @@ export function createOpenAIStreamAdapter(
         args.unstable_threadId,
         useChatRuntimeStore.getState().activeThreadId,
       );
-      const reservationToken =
-        findPreStreamRunReservation(preStreamThreadIds);
+      const reservationToken = findPreStreamRunReservation(preStreamThreadIds);
       if (reservationToken) {
         adoptPreStreamRunReservation(reservationToken, preStreamThreadIds);
       }
       try {
+        const commandText = latestSlashCommandText(args.messages);
+        const slashCommand = parseProjectSlashCommand(commandText);
+        if (slashCommand) {
+          const creationClaim = args.unstable_threadId
+            ? readThreadCreationClaim(args.unstable_threadId)
+            : undefined;
+          const composerProjectIdAtSend = creationClaim
+            ? creationClaim.projectId
+            : (useChatRuntimeStore.getState().activeProjectId ?? null);
+          const response = await executeLocalProjectSlashCommand(slashCommand, {
+            threadId: args.unstable_threadId,
+            composerProjectId: composerProjectIdAtSend,
+          });
+          yield {
+            content: [{ type: "text" as const, text: response }],
+          };
+          return;
+        }
         yield* adapter.run(args);
       } catch (error) {
         if (!args.abortSignal.aborted) {

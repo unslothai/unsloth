@@ -7,8 +7,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 type HmacSha256 = Hmac<Sha256>;
 
 pub const LEASE_SECRET_ENV: &str = "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET";
-const LEASE_VERSION: u8 = 1;
+const LEASE_VERSION: u8 = 2;
 const LEASE_TTL: Duration = Duration::from_secs(2 * 60);
+const LEASE_NONCE_BYTES: usize = 16;
+const LEASE_ENCRYPTION_DOMAIN: &[u8] = b"unsloth-native-path-lease-v2-encryption\0";
+const LEASE_AUTH_DOMAIN: &[u8] = b"unsloth-native-path-lease-v2-auth\0";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -19,6 +22,7 @@ pub enum NativePathOperation {
     DatasetImport,
     Attach,
     LinkDocuments,
+    OpenProject,
     Reveal,
     Open,
 }
@@ -50,7 +54,7 @@ pub enum NativePathType {
     Directory,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct NativePathLeasePayload {
     pub version: u8,
@@ -155,14 +159,58 @@ pub fn sign_path_lease(
 }
 
 fn sign_payload(secret: &[u8], payload: &NativePathLeasePayload) -> Result<String, String> {
+    let nonce = rand::random::<[u8; LEASE_NONCE_BYTES]>();
+    sign_payload_with_nonce(secret, payload, &nonce)
+}
+
+fn sign_payload_with_nonce(
+    secret: &[u8],
+    payload: &NativePathLeasePayload,
+    nonce: &[u8],
+) -> Result<String, String> {
+    if nonce.len() != LEASE_NONCE_BYTES {
+        return Err("native path lease envelope nonce has the wrong length".to_string());
+    }
     let payload_json = serde_json::to_vec(payload).map_err(|e| e.to_string())?;
-    let payload_b64 = URL_SAFE_NO_PAD.encode(payload_json);
-    let signature = sign_bytes(secret, payload_b64.as_bytes())?;
+    let ciphertext = xor_lease_stream(secret, nonce, &payload_json)?;
+    let mut envelope = Vec::with_capacity(LEASE_NONCE_BYTES + ciphertext.len());
+    envelope.extend_from_slice(nonce);
+    envelope.extend_from_slice(&ciphertext);
+    let signature = sign_lease_envelope(secret, &envelope)?;
     Ok(format!(
-        "{}.{}",
-        payload_b64,
+        "{}.{}.{}",
+        LEASE_VERSION,
+        URL_SAFE_NO_PAD.encode(envelope),
         URL_SAFE_NO_PAD.encode(signature)
     ))
+}
+
+fn xor_lease_stream(secret: &[u8], nonce: &[u8], input: &[u8]) -> Result<Vec<u8>, String> {
+    let mut output = Vec::with_capacity(input.len());
+    for (block_index, chunk) in input.chunks(32).enumerate() {
+        let counter = u64::try_from(block_index).map_err(|e| e.to_string())?;
+        let mut seed = Vec::with_capacity(
+            LEASE_ENCRYPTION_DOMAIN.len() + nonce.len() + std::mem::size_of::<u64>(),
+        );
+        seed.extend_from_slice(LEASE_ENCRYPTION_DOMAIN);
+        seed.extend_from_slice(nonce);
+        seed.extend_from_slice(&counter.to_be_bytes());
+        let stream = sign_bytes(secret, &seed)?;
+        output.extend(
+            chunk
+                .iter()
+                .zip(stream.iter())
+                .map(|(byte, mask)| byte ^ mask),
+        );
+    }
+    Ok(output)
+}
+
+fn sign_lease_envelope(secret: &[u8], envelope: &[u8]) -> Result<Vec<u8>, String> {
+    let mut authenticated = Vec::with_capacity(LEASE_AUTH_DOMAIN.len() + envelope.len());
+    authenticated.extend_from_slice(LEASE_AUTH_DOMAIN);
+    authenticated.extend_from_slice(envelope);
+    sign_bytes(secret, &authenticated)
 }
 
 fn sign_bytes(secret: &[u8], bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -185,9 +233,22 @@ pub fn hex_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    #[derive(serde::Deserialize)]
+    struct NativeLeaseKnownAnswer {
+        secret_base64url: String,
+        envelope_nonce_base64url: String,
+        payload: NativePathLeasePayload,
+        lease: String,
+    }
+
     fn decode_payload(lease: &str) -> serde_json::Value {
-        let payload = lease.split('.').next().unwrap();
-        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap()
+        let parts: Vec<&str> = lease.split('.').collect();
+        assert_eq!(parts[0], LEASE_VERSION.to_string());
+        let envelope = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        let (nonce, ciphertext) = envelope.split_at(LEASE_NONCE_BYTES);
+        let payload =
+            xor_lease_stream(b"01234567890123456789012345678901", nonce, ciphertext).unwrap();
+        serde_json::from_slice(&payload).unwrap()
     }
 
     #[test]
@@ -199,7 +260,25 @@ mod tests {
     }
 
     #[test]
-    fn signed_lease_has_two_base64url_parts() {
+    fn v2_known_answer_is_stable_for_python_verification() {
+        let vector: NativeLeaseKnownAnswer = serde_json::from_str(include_str!(
+            "../../backend/tests/fixtures/native_path_lease_v2_rust.json"
+        ))
+        .unwrap();
+        let secret = URL_SAFE_NO_PAD
+            .decode(vector.secret_base64url.as_bytes())
+            .unwrap();
+        let envelope_nonce = URL_SAFE_NO_PAD
+            .decode(vector.envelope_nonce_base64url.as_bytes())
+            .unwrap();
+
+        let lease = sign_payload_with_nonce(&secret, &vector.payload, &envelope_nonce).unwrap();
+
+        assert_eq!(lease, vector.lease);
+    }
+
+    #[test]
+    fn signed_lease_is_an_opaque_authenticated_envelope() {
         let lease = sign_path_lease(
             b"01234567890123456789012345678901",
             NativePathLeaseRequest {
@@ -218,9 +297,13 @@ mod tests {
         )
         .unwrap();
         let parts: Vec<&str> = lease.native_path_lease.split('.').collect();
-        assert_eq!(parts.len(), 2);
-        assert!(!parts[0].contains('='));
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "2");
         assert!(!parts[1].contains('='));
+        assert!(!parts[2].contains('='));
+        let envelope = URL_SAFE_NO_PAD.decode(parts[1]).unwrap();
+        assert!(!String::from_utf8_lossy(&envelope).contains("/tmp/model.gguf"));
+        assert!(!lease.native_path_lease.contains("model.gguf"));
     }
 
     #[test]

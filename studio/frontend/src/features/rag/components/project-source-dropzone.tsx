@@ -22,11 +22,11 @@ import {
 import { RAG_UPLOAD_ACCEPT } from "../types/rag";
 import { partitionSupported } from "./source-drop-policy";
 import {
-  addStagedSources,
   EXPIRY_GRACE_MS,
+  type StagedSource,
+  addStagedSources,
   isExpired,
   nativeExpiryMs,
-  type StagedSource,
   stagedFromFile,
   stagedFromIntent,
 } from "./staged-source";
@@ -110,7 +110,12 @@ async function uploadStaged(
                 await consumeNativePathToken(entry.upload.nativeToken, "attach")
               ).nativePathLease,
             };
-      const result = await uploadProjectDocument(projectId, source, ocr, caption);
+      const result = await uploadProjectDocument(
+        projectId,
+        source,
+        ocr,
+        caption,
+      );
       // Same bytes under another name: the backend hashes content, so this is
       // the document already uploaded. Say so rather than imply a new source.
       if (documentIds.has(result.documentId)) merged.push(entry.name);
@@ -282,7 +287,9 @@ export function ProjectSourceDropzone({
       const failed = settled.length - staged.length;
       if (failed > 0) {
         toast.error(
-          failed === 1 ? "Couldn't add a dropped file" : `Couldn't add ${failed} dropped files`,
+          failed === 1
+            ? "Couldn't add a dropped file"
+            : `Couldn't add ${failed} dropped files`,
         );
       }
     },
@@ -313,7 +320,16 @@ export function ProjectSourceDropzone({
 
   return (
     <div className="space-y-2.5">
-      <p className="text-ui-15 font-medium text-foreground">Sources</p>
+      <div>
+        <p className="text-ui-15 font-medium text-foreground">
+          Sources{" "}
+          <span className="font-normal text-muted-foreground">(optional)</span>
+        </p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          Add reference files for retrieval. Sources stay separate from the
+          project workspace and never become working files.
+        </p>
+      </div>
       {/* Panel is the drop target; the inner button owns the click so staged
           rows can carry their own remove buttons. */}
       <div
