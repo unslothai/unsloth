@@ -2801,21 +2801,60 @@ from transformers.utils.quantization_config import (
     QuantizationMethod,
 )
 
-BitsAndBytesConfig__init__ = inspect.getsource(BitsAndBytesConfig.__init__)
-BitsAndBytesConfig__init__ = re.sub(
-    r"if[\s]{1,}kwargs\:[\s]{1,}.+?\n",
-    "",
-    BitsAndBytesConfig__init__,
-    flags = re.MULTILINE,
-)
-BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.split("\n")
-length_spaces = len(re.match(r"[\s]{1,}", BitsAndBytesConfig__init__[0]).group(0))
-BitsAndBytesConfig__init__ = "\n".join(x[length_spaces:] for x in BitsAndBytesConfig__init__)
-BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
-    "__init__",
-    "_BitsAndBytesConfig__init__",
-)
-exec(BitsAndBytesConfig__init__, globals())
+# Importing this module twice in one process must not raise.
+#
+# This block reads BitsAndBytesConfig.__init__'s source, rewrites it, and (at
+# the bottom of the section) installs the result over the original. The
+# replacement is built with exec(), so it has no file on disk. On a SECOND
+# import, inspect.getsource() is therefore handed our own exec'd function,
+# linecache finds nothing to read for it, and the import dies with
+#
+#     OSError: could not get source code
+#
+# taking every later `from unsloth...` in that process with it. Anything that
+# drops unsloth from sys.modules and imports it again reaches this: on a clean
+# tree, `pytest tests/vllm_compat/test_extended_module_imports.py
+# tests/python/test_vision_lora_targeting.py` is 30 failures, and it is only
+# luck of the xdist scheduling that a full run does not usually pair them.
+#
+# The patch is idempotent by nature -- when it has already run, the wanted end
+# state is the one already in place -- so recognising our own handiwork and
+# standing down is the fix. The marker is set on the function rather than
+# tracked in a module global because a re-import gets fresh globals but the same
+# transformers class object.
+_bnb_init = BitsAndBytesConfig.__init__
+
+if getattr(_bnb_init, "__unsloth_patched__", False):
+    # Already installed by an earlier import of this module. Keep it.
+    _BitsAndBytesConfig__init__ = _bnb_init
+else:
+    try:
+        BitsAndBytesConfig__init__ = inspect.getsource(_bnb_init)
+    except (OSError, TypeError):
+        # Someone else replaced __init__ with something sourceless. Leaving
+        # theirs alone is strictly better than failing the import.
+        BitsAndBytesConfig__init__ = None
+
+    if BitsAndBytesConfig__init__ is None:
+        _BitsAndBytesConfig__init__ = _bnb_init
+    else:
+        BitsAndBytesConfig__init__ = re.sub(
+            r"if[\s]{1,}kwargs\:[\s]{1,}.+?\n",
+            "",
+            BitsAndBytesConfig__init__,
+            flags = re.MULTILINE,
+        )
+        BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.split("\n")
+        length_spaces = len(re.match(r"[\s]{1,}", BitsAndBytesConfig__init__[0]).group(0))
+        BitsAndBytesConfig__init__ = "\n".join(
+            x[length_spaces:] for x in BitsAndBytesConfig__init__
+        )
+        BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
+            "__init__",
+            "_BitsAndBytesConfig__init__",
+        )
+        exec(BitsAndBytesConfig__init__, globals())
+        _BitsAndBytesConfig__init__.__unsloth_patched__ = True
 
 if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     from accelerate.utils.dataclasses import DistributedType
