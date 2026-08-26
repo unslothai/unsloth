@@ -6,11 +6,11 @@ Torch reads TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL late: into a function-local
 `static const bool` inside `check_flash_attention_hardware_support` and
 `check_mem_efficient_hardware_support`
 (`aten/src/ATen/native/transformers/cuda/sdp_utils.cpp`, unchanged from 2.8
-through 2.11), so it is fixed at the first ROCm SDPA capability probe, not while
-the C++ extension loads. `import torch` before `import unsloth` is therefore
-still in time -- and it is what `studio/backend/core/training/trainer.py` does.
-Skipping the write there leaves the gate shut and finetuning back on the
-quadratic MATH path #8819 measured."""
+through 2.11 and main), so it is fixed at the first ROCm SDPA capability probe,
+not while the C++ extension loads. `import torch` before `import unsloth` is
+therefore still in time, and that is the order
+`studio/backend/core/training/trainer.py` uses. Skipping the write there leaves
+the gate shut and finetuning back on the quadratic MATH path #8819 measured."""
 
 import ast
 import functools
@@ -18,7 +18,6 @@ import os
 import pathlib
 import subprocess
 import sys
-import textwrap
 import types
 
 import pytest
@@ -34,7 +33,7 @@ def _gate_statement():
     for node in ast.parse(_SOURCE).body:
         if _GATE in ast.unparse(node):
             return node
-    return None
+    raise AssertionError(f"no top-level statement in {_INIT} sets {_GATE}")
 
 
 def _open_gate(modules, environ):
@@ -48,7 +47,9 @@ def _open_gate(modules, environ):
 
 
 def _first_torch_import():
-    """Where Unsloth itself first imports torch, i.e. the deadline for the write."""
+    """Where Unsloth itself first imports torch. The variable is only read at the
+    first SDPA probe, but staying above every import here keeps it that way even if
+    something Unsloth imports probes on the way in."""
     return min(
         (
             node.lineno
@@ -65,7 +66,6 @@ def _first_torch_import():
 
 def test_the_gate_is_opened_above_unsloths_own_torch_import():
     statement = _gate_statement()
-    assert statement is not None, "the AOTriton gate write is gone"
     environ = {}
     _open_gate({}, environ)
     assert environ.get(_GATE) == "1"
@@ -95,10 +95,10 @@ def _run(code, **env):
     path = [str(_ROOT)]
     if os.environ.get("PYTHONPATH"):
         path.append(os.environ["PYTHONPATH"])
-    # Importing Unsloth sets the gate here; each case says its own.
+    # Importing Unsloth sets the gate; each case supplies its own starting value.
     clean = {k: v for k, v in os.environ.items() if k != _GATE}
     return subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(code)],
+        [sys.executable, "-c", code],
         capture_output = True,
         text = True,
         env = dict(clean, PYTHONPATH = os.pathsep.join(path), **env),
@@ -125,7 +125,7 @@ _REPORT = "import os, unsloth\nprint('GATE', os.environ.get({name!r}))".format(n
     ids = ["unsloth_first", "torch_first"],
 )
 def test_importing_unsloth_opens_the_gate(prologue):
-    """The end to end shape of #8819, both ways round."""
+    """The end-to-end shape of #8819, both ways round."""
     _needs_unsloth()
     out = _run(prologue + _REPORT)
     assert out.returncode == 0, out.stderr
