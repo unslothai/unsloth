@@ -15,6 +15,16 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 SETUP_SH = REPO_ROOT / "studio" / "setup.sh"
 
+
+def _install_id_helpers() -> str:
+    """The shipped _css_install_id_is_valid / _css_read_valid_install_id bodies,
+    sliced out of install.sh so the shell tests below run the real validator."""
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    start = src.index("_css_install_id_is_valid() {")
+    end = src.index("# ── Helper: create desktop shortcuts", start)
+    return src[start:end]
+
+
 # Stub the rollback helper with a move. The directory predicate is extracted
 # from install.sh because it controls whether the guard runs.
 _INSTALL_GUARD_STUBS = (
@@ -626,29 +636,33 @@ def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(t
     assert (
         urandom_idx < py_fallback_idx
     ), "/dev/urandom must be tried before the python3 secrets fallback"
-    # Non-empty id file check before generation is what makes re-runs idempotent.
+    # Reusing an existing id only when it is valid is what makes re-runs
+    # idempotent -- and keeps a pre-planted value out of the launcher.
     assert (
-        'if [ ! -s "$_css_id_file" ]; then' in block
-    ), "install.sh must skip id generation when the file already has content"
+        '_css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")' in block
+    ), "install.sh must reuse an existing id only after validating it"
 
     # Behavioral check: run the generation block twice to confirm idempotence.
     studio_home = tmp_path / "studio"
     (studio_home / "share").mkdir(parents = True)
     gen_script = (
-        f'STUDIO_HOME="{studio_home}"\n'
+        _install_id_helpers()
+        + f'STUDIO_HOME="{studio_home}"\n'
         '_css_id_dir="$STUDIO_HOME/share"\n'
         '_css_id_file="$_css_id_dir/studio_install_id"\n'
         # Replicate the generation block narrowly so it fails loud on contract drift.
         "gen() {\n"
-        '    if [ ! -s "$_css_id_file" ]; then\n'
+        '    _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")\n'
+        '    if [ -z "$_css_studio_root_id" ]; then\n'
         '        _css_new_id=$(od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d " \\n")\n'
         '        _t="$_css_id_file.$$.tmp"\n'
         '        printf "%s" "$_css_new_id" > "$_t"\n'
         '        ln "$_t" "$_css_id_file" 2>/dev/null \\\n'
         '            || { [ -s "$_css_id_file" ] || mv "$_t" "$_css_id_file"; }\n'
         '        rm -f "$_t"\n'
+        '        _css_studio_root_id="$_css_new_id"\n'
         "    fi\n"
-        '    cat "$_css_id_file"\n'
+        '    printf "%s\\n" "$_css_studio_root_id"\n'
         "}\n"
         "a=$(gen); b=$(gen)\n"
         '[ "$a" = "$b" ] || { echo MISMATCH; exit 1; }\n'
@@ -668,16 +682,19 @@ def test_install_sh_publishes_the_id_without_clobbering():
     """install.sh must publish the id no-clobber, so it cannot replace one the desktop app minted."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
     fn_start = src.index('_css_id_dir="$STUDIO_HOME/share"')
-    block = src[fn_start : fn_start + 2400]
+    block = src[fn_start : fn_start + 3000]
     assert (
         'ln "$_css_id_tmp" "$_css_id_file"' in block
     ), "install.sh must publish the id with ln (EEXIST on a race), not a clobbering mv"
+    _guarded_mv = (
+        'if [ -z "$_css_studio_root_id" ] && mv "$_css_id_tmp" "$_css_id_file"; then'
+    )
     assert 'mv "$_css_id_tmp" "$_css_id_file"' not in block.replace(
-        '[ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"', ""
+        _guarded_mv, ""
     ), "the only remaining mv must be the no-hard-link fallback, guarded on the destination"
     assert (
-        '[ -s "$_css_id_file" ] || mv' in block
-    ), "the mv branch must refuse to replace a usable incumbent id"
+        _guarded_mv in block
+    ), "the mv branch must refuse to replace a usable (valid) incumbent id"
     assert (
         'rm -f "$_css_id_file"' not in block
     ), "never unlink the id: an unlink opens a window where a valid id is deleted"
@@ -695,12 +712,16 @@ def test_install_sh_id_publish_adopts_the_winner_of_a_race(tmp_path):
     # Replicate the publish step with the guard removed, so only the publication
     # primitive decides the outcome: a clobbering mv would overwrite the incumbent.
     publish = (
-        f'_css_id_file="{id_file}"\n'
+        _install_id_helpers()
+        + f'_css_id_file="{id_file}"\n'
         '_css_id_tmp="$_css_id_file.$$.tmp"\n'
         '_css_new_id="' + "b" * 64 + '"\n'
         'printf "%s" "$_css_new_id" > "$_css_id_tmp"\n'
         'if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then\n'
-        '    [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"\n'
+        '    _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")\n'
+        '    if [ -z "$_css_studio_root_id" ] && mv "$_css_id_tmp" "$_css_id_file"; then\n'
+        '        _css_studio_root_id="$_css_new_id"\n'
+        "    fi\n"
         "fi\n"
         'rm -f "$_css_id_tmp"\n'
         'cat "$_css_id_file"\n'
@@ -725,12 +746,16 @@ def test_install_sh_id_publish_replaces_a_blank_incumbent(tmp_path):
     fresh = "c" * 64
 
     publish = (
-        f'_css_id_file="{id_file}"\n'
+        _install_id_helpers()
+        + f'_css_id_file="{id_file}"\n'
         f'_css_new_id="{fresh}"\n'
         '_css_id_tmp="$_css_id_file.$$.$(printf "%.8s" "$_css_new_id").tmp"\n'
         'printf "%s" "$_css_new_id" > "$_css_id_tmp"\n'
         'if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then\n'
-        '    [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"\n'
+        '    _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")\n'
+        '    if [ -z "$_css_studio_root_id" ] && mv "$_css_id_tmp" "$_css_id_file"; then\n'
+        '        _css_studio_root_id="$_css_new_id"\n'
+        "    fi\n"
         "fi\n"
         'rm -f "$_css_id_tmp"\n'
         'cat "$_css_id_file"\n'
@@ -738,6 +763,65 @@ def test_install_sh_id_publish_replaces_a_blank_incumbent(tmp_path):
     res = subprocess.run(["sh", "-c", publish], text = True, capture_output = True)
     assert res.returncode == 0, res.stderr
     assert res.stdout.strip() == fresh, "a blank id must be replaced, not adopted"
+
+
+def test_install_sh_never_bakes_a_planted_id_into_the_launcher(tmp_path):
+    """A pre-planted studio_install_id must be regenerated, not embedded.
+
+    The launcher holds the id in a single-quoted shell assignment, so a value
+    containing a quote would break out and run as launcher code on every
+    Studio start. Custom roots (UNSLOTH_STUDIO_HOME) can live in shared or
+    workspace directories, so the file is not trusted just for being there.
+    """
+    studio_home = tmp_path / "studio"
+    (studio_home / "share").mkdir(parents = True)
+    id_file = studio_home / "share" / "studio_install_id"
+    marker = tmp_path / "pwned"
+    id_file.write_text(f"x'; touch {marker}; exit 0 #", encoding = "utf-8")
+
+    launcher = tmp_path / "launch-studio.sh"
+    script = (
+        _install_id_helpers()
+        + f'_css_id_file="{id_file}"\n'
+        '_css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")\n'
+        'if [ -z "$_css_studio_root_id" ]; then\n'
+        '    _css_studio_root_id=$(od -An -N32 -tx1 /dev/urandom | tr -d " \\n")\n'
+        "fi\n"
+        # The real embedding step from install.sh.
+        f"printf \"%s\\n\" \"_EXPECTED_STUDIO_ROOT_ID='@@STUDIO_ROOT_ID@@'\" > {launcher}\n"
+        f'sed -e "s|@@STUDIO_ROOT_ID@@|$_css_studio_root_id|g" {launcher} > {launcher}.tmp\n'
+        f"mv {launcher}.tmp {launcher}\n"
+    )
+    res = subprocess.run(["sh", "-c", script], text = True, capture_output = True)
+    assert res.returncode == 0, res.stderr
+
+    baked = launcher.read_text(encoding = "utf-8").strip()
+    prefix, quoted = "_EXPECTED_STUDIO_ROOT_ID='", baked[len("_EXPECTED_STUDIO_ROOT_ID='") : -1]
+    assert baked.startswith(prefix) and baked.endswith("'"), f"unexpected launcher line: {baked!r}"
+    assert len(quoted) == 64 and all(
+        c in "0123456789abcdef" for c in quoted
+    ), f"a planted id must be regenerated, got {quoted!r}"
+
+    # Belt and braces: sourcing the generated line must not run anything.
+    subprocess.run(["sh", "-c", f". {launcher}"], text = True, capture_output = True)
+    assert not marker.exists(), "the planted id executed as launcher code"
+
+
+def test_install_ps1_validates_an_existing_id_before_embedding_it():
+    """install.ps1 must reject a non-hex existing id instead of interpolating it.
+
+    -cnotmatch, not -notmatch: PowerShell's -match is case-insensitive and
+    would accept an uppercase id the backend's regex rejects.
+    """
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    idx = src.index('$_studioIdFile = Join-Path $_studioIdDir "studio_install_id"')
+    block = src[idx : idx + 1200]
+    assert (
+        "$_studioRootId -cnotmatch '^[0-9a-f]{64}$'" in block
+    ), "install.ps1 must validate an existing id as 64 lowercase hex before reuse"
+    assert block.index("ReadAllText($_studioIdFile)") < block.index(
+        "$_studioRootId -cnotmatch"
+    ), "the validation must follow the read and precede any use of the value"
 
 
 def test_install_ps1_publishes_the_id_without_clobbering():
@@ -766,8 +850,8 @@ def test_install_ps1_publishes_the_id_without_clobbering():
         "$_studioRootId = $_adoptedRootId" in block
     ), "the adopted id must become the value baked into the launcher"
     assert (
-        "if ($_adoptedRootId)" in block
-    ), "install.ps1 must only adopt a non-empty id, so a blank one cannot become the expected id"
+        "if ($_adoptedRootId -cmatch '^[0-9a-f]{64}$')" in block
+    ), "install.ps1 must only adopt a valid id, so a blank or planted one cannot become the expected id"
     assert (
         "Remove-Item -LiteralPath $_studioIdFile" not in block
     ), "never unlink the id: an unlink opens a window where a valid id is deleted"

@@ -1031,6 +1031,31 @@ _smart_apt_install() {
     fi
 }
 
+# ── Helper: the studio_install_id contract ──
+# Exactly 64 lowercase hex characters, the same rule the backend applies in
+# studio/backend/main.py (_STUDIO_INSTALL_ID_RE) and the desktop app applies
+# in desktop_backend_owner.rs (is_valid_studio_root_id). Anything else is not
+# an id: no backend can ever report it, and since the launcher holds it in a
+# single-quoted shell assignment, a pre-planted value containing a quote would
+# become launcher code. Validate before reuse, regenerate anything else.
+_css_install_id_is_valid() {
+    case "${1:-}" in
+        "" | *[!0123456789abcdef]*) return 1 ;;
+    esac
+    [ "${#1}" -eq 64 ]
+}
+
+# Echoes the id stored at $1 if it satisfies the contract, nothing otherwise.
+_css_read_valid_install_id() {
+    # Group the redirect so an unreadable/absent file is silent: 2>/dev/null on
+    # `tr` alone would not cover the shell's own "cannot open" message.
+    _cvi_id=$({ tr -d ' \t\r\n' < "$1"; } 2>/dev/null || true)
+    if _css_install_id_is_valid "$_cvi_id"; then
+        printf '%s' "$_cvi_id"
+    fi
+    unset _cvi_id
+}
+
 # ── Helper: create desktop shortcuts and launcher script ──
 # Usage: create_studio_shortcuts <unsloth_exe> <os>
 # Creates ~/.local/share/unsloth/launch-studio.sh (shared launcher),
@@ -1071,14 +1096,18 @@ create_studio_shortcuts() {
     _css_id_dir="$STUDIO_HOME/share"
     mkdir -p "$_css_id_dir"
     _css_id_file="$_css_id_dir/studio_install_id"
-    if [ ! -s "$_css_id_file" ]; then
+    # An existing id is reused only when it matches the contract above, so a
+    # re-run over a normal install is a no-op and a pre-populated custom root
+    # cannot inject anything into the generated launcher.
+    _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")
+    if [ -z "$_css_studio_root_id" ]; then
         if [ -r /dev/urandom ]; then
             _css_new_id=$(od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
         fi
-        if [ -z "${_css_new_id:-}" ] && command -v python3 >/dev/null 2>&1; then
+        if ! _css_install_id_is_valid "${_css_new_id:-}" && command -v python3 >/dev/null 2>&1; then
             _css_new_id=$(python3 -c 'import secrets; print(secrets.token_hex(32))' 2>/dev/null)
         fi
-        if [ -z "${_css_new_id:-}" ]; then
+        if ! _css_install_id_is_valid "${_css_new_id:-}"; then
             echo "[WARN] Cannot create launcher: no entropy source for studio_install_id" >&2
             return 1
         fi
@@ -1089,19 +1118,24 @@ create_studio_shortcuts() {
         # $$ is the parent's pid inside a subshell in some shells.
         _css_id_tmp="$_css_id_file.$$.$(printf '%.8s' "$_css_new_id").tmp"
         if printf '%s' "$_css_new_id" > "$_css_id_tmp"; then
-            if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then
-                # A usable incumbent always wins. A zero-length file is an
-                # interrupted write, not an id, so replace it with one rename
-                # (no unlink, so the path never vanishes). This branch also
-                # covers filesystems without hard links (exFAT/FAT32).
-                [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"
+            if ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then
+                _css_studio_root_id="$_css_new_id"
+            else
+                # A usable incumbent always wins -- but only a valid one. A
+                # zero-length or malformed file is an interrupted write or a
+                # pre-planted value, so replace it with one rename (no unlink,
+                # so the path never vanishes). This branch also covers
+                # filesystems without hard links (exFAT/FAT32).
+                _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")
+                if [ -z "$_css_studio_root_id" ] && mv "$_css_id_tmp" "$_css_id_file"; then
+                    _css_studio_root_id="$_css_new_id"
+                fi
             fi
         fi
         rm -f "$_css_id_tmp"
         chmod 600 "$_css_id_file" 2>/dev/null || true
         unset _css_new_id _css_id_tmp
     fi
-    _css_studio_root_id=$(cat "$_css_id_file" 2>/dev/null)
     if [ -z "$_css_studio_root_id" ]; then
         echo "[WARN] Cannot create launcher: failed to read $_css_id_file" >&2
         return 1
