@@ -1047,9 +1047,18 @@ _css_install_id_is_valid() {
 
 # Echoes the id stored at $1 if it satisfies the contract, nothing otherwise.
 _css_read_valid_install_id() {
-    # Group the redirect so an unreadable/absent file is silent: 2>/dev/null on
-    # `tr` alone would not cover the shell's own "cannot open" message.
-    _cvi_id=$({ tr -d ' \t\r\n' < "$1"; } 2>/dev/null || true)
+    # Regular files only. A FIFO (or a symlink to one, or to a device) at this
+    # path would park the installer on the open, waiting for a writer forever.
+    [ -f "$1" ] || return 0
+    # Group the redirect so an unreadable file is silent: 2>/dev/null on `cat`
+    # alone would not cover the shell's own "cannot open" message.
+    _cvi_id=$({ cat "$1"; } 2>/dev/null || true)
+    # Trim exactly what the backend's .strip() trims, the SURROUNDING
+    # whitespace. Deleting interior whitespace instead would mint a 64-hex
+    # token out of bytes the backend reads as something else, and the launcher
+    # would then hold an id its own backend never reports.
+    _cvi_id=${_cvi_id#"${_cvi_id%%[![:space:]]*}"}
+    _cvi_id=${_cvi_id%"${_cvi_id##*[![:space:]]}"}
     if _css_install_id_is_valid "$_cvi_id"; then
         printf '%s' "$_cvi_id"
     fi
@@ -1100,6 +1109,15 @@ create_studio_shortcuts() {
     # re-run over a normal install is a no-op and a pre-populated custom root
     # cannot inject anything into the generated launcher.
     _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")
+    # An id we merely cannot READ is not a malformed id. It can be a perfectly
+    # good one owned by another user in a shared root, and a running backend
+    # may already be reporting it, so regenerating would break that install.
+    # Refuse instead, which is what this did before the id was validated.
+    if [ -z "$_css_studio_root_id" ] && [ -f "$_css_id_file" ] \
+        && [ ! -r "$_css_id_file" ]; then
+        echo "[WARN] Cannot create launcher: cannot read $_css_id_file" >&2
+        return 1
+    fi
     if [ -z "$_css_studio_root_id" ]; then
         if [ -r /dev/urandom ]; then
             _css_new_id=$(od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')

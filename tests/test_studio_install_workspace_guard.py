@@ -630,7 +630,7 @@ def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(t
     """_create_shortcuts seeds ids from /dev/urandom (python3 secrets fallback) and is re-run idempotent."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
     fn_start = src.index('_css_data_dir="$DATA_DIR"')
-    block = src[fn_start : fn_start + 3000]
+    block = src[fn_start : fn_start + 4200]
     urandom_idx = block.index("od -An -N32 -tx1 /dev/urandom")
     py_fallback_idx = block.index("python3 -c 'import secrets;", urandom_idx)
     assert (
@@ -681,7 +681,7 @@ def test_install_sh_publishes_the_id_without_clobbering():
     """install.sh must publish the id no-clobber, so it cannot replace one the desktop app minted."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
     fn_start = src.index('_css_id_dir="$STUDIO_HOME/share"')
-    block = src[fn_start : fn_start + 3000]
+    block = src[fn_start : fn_start + 4200]
     assert (
         'ln "$_css_id_tmp" "$_css_id_file"' in block
     ), "install.sh must publish the id with ln (EEXIST on a race), not a clobbering mv"
@@ -710,7 +710,7 @@ def test_install_sh_bakes_the_id_that_is_actually_on_disk(tmp_path):
     """
     src = INSTALL_SH.read_text(encoding = "utf-8")
     fn_start = src.index('_css_id_dir="$STUDIO_HOME/share"')
-    block = src[fn_start : fn_start + 3000]
+    block = src[fn_start : fn_start + 4200]
     read_back = '_css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")'
     assert block.count(read_back) >= 2, "the id must be re-read after publication"
     assert block.rindex(read_back) > block.index(
@@ -796,6 +796,101 @@ def test_install_sh_id_publish_replaces_a_blank_incumbent(tmp_path):
     res = subprocess.run(["sh", "-c", publish], text = True, capture_output = True)
     assert res.returncode == 0, res.stderr
     assert res.stdout.strip() == fresh, "a blank id must be replaced, not adopted"
+
+
+def test_install_sh_trims_only_surrounding_whitespace_in_an_existing_id(tmp_path):
+    """Interior whitespace must fail the check, not be deleted into a valid id.
+
+    The backend applies `.strip()` and then an exact regex, so `<32 hex>\\n<32
+    hex>` is NOT an id to it. Deleting the newline instead would mint a 64-hex
+    token the installer bakes into the launcher while the backend keeps
+    reporting "", and the launcher would reject its own backend forever.
+    """
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    assert (
+        "tr -d ' \\t\\r\\n'" not in src
+    ), "install.sh must not delete interior whitespace from the id"
+    assert (
+        '_cvi_id=${_cvi_id#"${_cvi_id%%[![:space:]]*}"}' in src
+        and '_cvi_id=${_cvi_id%"${_cvi_id##*[![:space:]]}"}' in src
+    ), "install.sh must trim only the surrounding whitespace, as the backend does"
+
+    id_file = tmp_path / "studio_install_id"
+    probe = _install_id_helpers() + f'printf "OUT=[%s]\\n" "$(_css_read_valid_install_id "{id_file}")"\n'
+    for content, expect_reuse in [
+        ("a" * 32 + "\n" + "a" * 32, False),
+        ("a" * 32 + " " + "a" * 32, False),
+        ("  " + "a" * 64 + "  \n", True),
+        ("\n\n" + "a" * 64 + "\n\n", True),
+        ("\t" + "a" * 64 + "\r\n", True),
+    ]:
+        id_file.write_text(content, encoding = "utf-8")
+        res = subprocess.run(["sh", "-c", probe], text = True, capture_output = True)
+        assert res.returncode == 0, res.stderr
+        got = res.stdout.strip()[len("OUT=[") : -1]
+        assert bool(got) is expect_reuse, f"{content!r} -> {got!r}"
+        if expect_reuse:
+            assert got == "a" * 64, f"surrounding whitespace must be trimmed, got {got!r}"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason = "root reads regardless of mode bits")
+def test_install_sh_refuses_an_unreadable_existing_id(tmp_path):
+    """An id we cannot READ must not be treated as malformed and replaced.
+
+    In a shared root the file can be a perfectly good id owned by another user
+    (this installer chmod 600s it), and a running backend may already report
+    it. Regenerating would break that install, so the shortcut step refuses,
+    which is what it did before the id was validated at all.
+    """
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    fn_start = src.index('_css_id_dir="$STUDIO_HOME/share"')
+    block = src[fn_start : fn_start + 4200]
+    assert (
+        '[ -f "$_css_id_file" ] \\\n        && [ ! -r "$_css_id_file" ]' in block
+    ), "install.sh must separate an unreadable id from a malformed one"
+    assert (
+        "[WARN] Cannot create launcher: cannot read" in block
+    ), "the unreadable-id branch must warn"
+
+    studio_home = tmp_path / "studio"
+    (studio_home / "share").mkdir(parents = True)
+    id_file = studio_home / "share" / "studio_install_id"
+    id_file.write_text("b" * 64, encoding = "utf-8")
+    id_file.chmod(0o000)
+    try:
+        probe = (
+            _install_id_helpers()
+            + f'_css_id_file="{id_file}"\n'
+            '_css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")\n'
+            'if [ -z "$_css_studio_root_id" ] && [ -f "$_css_id_file" ] \\\n'
+            '    && [ ! -r "$_css_id_file" ]; then echo REFUSED; exit 0; fi\n'
+            'echo "REUSED=$_css_studio_root_id"\n'
+        )
+        res = subprocess.run(["sh", "-c", probe], text = True, capture_output = True)
+        assert res.returncode == 0, res.stderr
+        assert "REFUSED" in res.stdout, f"expected a refusal, got {res.stdout!r}"
+    finally:
+        id_file.chmod(0o600)
+    assert id_file.read_text() == "b" * 64, "the unreadable id must survive untouched"
+
+
+def test_install_sh_never_reads_a_non_regular_id_path(tmp_path):
+    """A FIFO at the id path must not park the installer on the open.
+
+    `cat` on a FIFO blocks until a writer appears, so an unconditional read of
+    a shared/custom root would hang the install forever.
+    """
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    assert (
+        '[ -f "$1" ] || return 0' in src
+    ), "install.sh must read the id only from a regular file"
+
+    id_file = tmp_path / "studio_install_id"
+    os.mkfifo(id_file)
+    probe = _install_id_helpers() + f'printf "OUT=[%s]\\n" "$(_css_read_valid_install_id "{id_file}")"\n'
+    res = subprocess.run(["sh", "-c", probe], text = True, capture_output = True, timeout = 20)
+    assert res.returncode == 0, res.stderr
+    assert "OUT=[]" in res.stdout, f"a FIFO must read as no id, got {res.stdout!r}"
 
 
 def test_install_sh_never_bakes_a_planted_id_into_the_launcher(tmp_path):
@@ -893,7 +988,7 @@ def test_install_sh_create_shortcuts_fails_fast_when_no_entropy():
     """With no entropy source, _create_shortcuts must `return 1` not bake an empty studio_root_id."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
     fn_start = src.index('_css_data_dir="$DATA_DIR"')
-    block = src[fn_start : fn_start + 4200]
+    block = src[fn_start : fn_start + 5200]
     assert (
         "[WARN] Cannot create launcher: no entropy source for studio_install_id" in block
     ), "install.sh must warn when neither urandom nor python3 is available"
