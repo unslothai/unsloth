@@ -1077,3 +1077,25 @@ def test_the_forced_backend_probe_does_not_wait_on_a_model_load(monkeypatch):
         assert answered.wait(timeout = 5), "the resolver probe blocked on the construction lock"
 
     assert result == {"resolved": "llama-server", "fallback": False}
+
+
+def test_a_model_reloaded_behind_an_unload_is_still_reported_and_freed(monkeypatch):
+    """An ST wrapper descheduled between _get_backend() returning it and its encode
+    starting is retired by an unload landing in the gap, and then reloads the
+    module-level model with no backend to publish. Answering "nothing is loaded"
+    stranded those weights for the life of the process: the next unload saw no
+    backend and freed nothing."""
+    monkeypatch.setattr(embeddings, "_backend", None, raising = False)
+    monkeypatch.setattr(embeddings, "_backend_key", None, raising = False)
+    monkeypatch.setattr(embeddings, "_model", object(), raising = False)
+    monkeypatch.setattr(embeddings, "_name", "org/embedder", raising = False)
+
+    assert embeddings.backend_is_loaded() is True
+    assert embeddings.backend_is_loaded("org/embedder") is True
+    assert embeddings.backend_is_loaded("org/other") is False
+
+    assert embeddings.release_backend() is True
+    assert embeddings._model is None
+    assert embeddings.backend_is_loaded() is False
+    # And with nothing resident it stays a no-op.
+    assert embeddings.release_backend() is False

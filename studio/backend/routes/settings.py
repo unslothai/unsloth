@@ -2465,15 +2465,22 @@ def _resolve_embedding_model_plan(
     # and the first warm or index then fails in _resolve_binary. Scoped to models
     # only llama can serve -- one that publishes safetensors still has the
     # ST fallback further down, which is a usable plan rather than an error.
-    if (local_gguf or _model_names_gguf_repo(resolved)) and not _llama_runtime_available():
+    llama_only = (
+        local_gguf
+        or _model_names_gguf_repo(resolved)
+        # An explicit llama policy (or a runtime pin) refuses the safetensors
+        # fallback for every model, not only GGUF-named ones, so an ordinary repo
+        # id is just as unservable here without a binary.
+        or not _sentence_transformers_fallback_allowed(resolved)
+    )
+    if llama_only and not _llama_runtime_available():
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
             backend = backend,
             error = (
-                f"{resolved!r} publishes GGUF weights, which only the llama-server "
-                "backend can load, and no llama-server binary was found. Install "
-                "llama.cpp or set LLAMA_SERVER_PATH / UNSLOTH_LLAMA_CPP_PATH, or "
-                "select a model that publishes sentence-transformers weights."
+                f"{resolved!r} can only be embedded by the llama-server backend "
+                "here, and no llama-server binary was found. Install llama.cpp or "
+                "set LLAMA_SERVER_PATH / UNSLOTH_LLAMA_CPP_PATH."
             ),
         )
 

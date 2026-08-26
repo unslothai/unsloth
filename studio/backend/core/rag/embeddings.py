@@ -1022,7 +1022,15 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
     """
     backend = _backend
     if backend is None:
-        return False
+        # No published backend does not mean nothing is loaded. An ST wrapper
+        # descheduled between _get_backend() returning it and its encode starting
+        # is retired by an unload that lands in the gap, and then reloads the
+        # module-level model. Answering False there stranded it: release_backend
+        # saw no backend and returned without freeing anything, so the weights sat
+        # in memory for the life of the process while Settings reported unloaded.
+        if model_name is None:
+            return _model is not None
+        return _model is not None and _name == model_name
     if model_name is None:
         # A llama backend whose process is gone is not resident, whichever model
         # was asked about.
@@ -1059,7 +1067,11 @@ def release_backend() -> bool:
         _forced_backends.clear()
         backend, _backend, _backend_key = _backend, None, None
     if backend is None:
-        return False
+        # Nothing published, but the module-level model can still be there: an
+        # encode holding a wrapper an earlier unload retired reloads it with no
+        # backend to publish. Freeing it here is what stops that unload's leak
+        # from being permanent, and it is a no-op when nothing is resident.
+        return _release_st_model()
     _dispose_replaced_backend(backend)
     return True
 

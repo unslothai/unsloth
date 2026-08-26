@@ -347,6 +347,9 @@ def test_resolution_shares_one_deadline_across_every_remote_fallback(monkeypatch
     monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda *a, **k: [])
     monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
+    # An install that embeds with llama-server has the binary; the test host does
+    # not, and a plan only llama can serve is refused without one.
+    monkeypatch.setattr(settings, "_llama_runtime_available", lambda: True)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda model: False)
     monkeypatch.setattr(settings, "_local_gguf_backend_error", lambda model: None)
     monkeypatch.setattr(
@@ -436,6 +439,9 @@ def test_sentence_transformers_size_matches_the_full_snapshot_download(monkeypat
 
 def test_explicit_llama_policy_does_not_offer_safetensors(client, monkeypatch):
     _no_gguf_anywhere(monkeypatch)
+    # The policy is what makes this llama-only; the install still has the binary,
+    # or the plan is refused for that reason before the GGUF search runs.
+    monkeypatch.setattr(settings, "_llama_runtime_available", lambda: True)
     monkeypatch.setattr(settings, "_sentence_transformers_fallback_allowed", lambda model: False)
     monkeypatch.setattr(
         settings,
@@ -483,7 +489,7 @@ def test_nothing_anywhere_still_reports_the_save_reason(client, monkeypatch):
 def test_a_local_gguf_is_already_the_artifact(client, monkeypatch):
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
     # An install that embeds with llama-server has the binary; the test host does
-    # not, and a GGUF plan is refused without one.
+    # not, and a plan only llama can serve is refused without one.
     monkeypatch.setattr(settings, "_llama_runtime_available", lambda: True)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: True)
 
@@ -1065,3 +1071,22 @@ def test_a_declared_module_the_directory_lacks_is_not_present(client, monkeypatc
 
     (partial / "1_Pooling").mkdir()
     assert settings._local_sentence_transformer_is_present(str(partial)) is True
+
+
+def test_an_explicit_llama_policy_refuses_any_model_without_the_binary(client, monkeypatch):
+    """An explicit RAG_EMBED_BACKEND=llama-server refuses the safetensors fallback
+    for every model, not only GGUF-named ones, so an ordinary repo id is just as
+    unservable without a binary. Scoping the check to the name offered and
+    persisted a managed download _resolve_binary would reject at first use."""
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
+    monkeypatch.setattr(settings, "_llama_runtime_available", lambda: False)
+    monkeypatch.setattr(settings, "_sentence_transformers_fallback_allowed", lambda model: False)
+    monkeypatch.setattr(
+        settings,
+        "_remote_embedding_gguf_plan",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no plan may be offered")),
+    )
+
+    body = _resolve(client, "org/embedder").json()
+    assert body["download_repo"] is None
+    assert "no llama-server binary was found" in body["error"]
