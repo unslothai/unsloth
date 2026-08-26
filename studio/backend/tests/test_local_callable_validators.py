@@ -35,8 +35,7 @@ def test_oxc_batch_falls_back_when_node_times_out(monkeypatch, tmp_path):
 
     assert len(calls) == 1
     assert calls[0][1]["timeout"] == validators._OXC_TIMEOUT_S
-    # The wrapper needs the same budget to bound oxlint, which this process cannot
-    # reach: killing the wrapper leaves its own child running.
+    # The wrapper needs the same budget: oxlint is a grandchild this kill cannot reach.
     assert json.loads(calls[0][1]["input"])["timeout_ms"] == validators._OXC_TIMEOUT_S * 1000
     assert len(results) == 2
     assert all(result["is_valid"] is False for result in results)
@@ -48,11 +47,9 @@ def test_oxc_batch_falls_back_when_node_times_out(monkeypatch, tmp_path):
 
 
 def test_the_wrapper_kills_oxlint_against_the_remaining_caller_budget():
-    # Python's timeout SIGKILLs only the Node wrapper, so oxlint, a grandchild, has to
-    # be killed inside validate.mjs or it survives as an orphan. A fixed inner bound is
-    # not enough: parsing and writing the batch runs first, so what oxlint gets has to
-    # be what is left of the caller's budget. The backend ships no JS test runner, so
-    # the invariant is guarded on the source.
+    # Python's timeout SIGKILLs only the wrapper, so oxlint has to die inside validate.mjs.
+    # A fixed inner bound is not enough: parsing runs first, so oxlint gets what is left of
+    # the caller's budget. Guarded on the source because the backend ships no JS test runner.
     source = validators._OXC_RUNNER_PATH.read_text(encoding = "utf-8")
 
     assert re.search(

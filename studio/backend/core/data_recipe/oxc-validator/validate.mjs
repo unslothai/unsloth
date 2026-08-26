@@ -20,15 +20,13 @@ const CODE_SHAPES = new Set(["auto", "module", "snippet"]);
 const SNIPPET_PREFIX = "(() => {\n";
 const SNIPPET_SUFFIX = "\n})();\nexport {};\n";
 const OXLINT_SUPPRESSED_RULES = ["no-unused-vars", "no-new-array"];
-// The caller kills only this wrapper, so a wedged oxlint has to be killed from here
-// or it survives as an orphan. Its deadline is therefore the caller's own budget
-// minus whatever this process already spent parsing and writing snippets.
+// The caller kills only this wrapper, so a wedged oxlint has to die here or it is
+// orphaned. Its deadline is the caller's budget minus what this process already spent.
 const PROCESS_START_MS = Date.now();
 const OXLINT_DEFAULT_BUDGET_MS = 30_000;
-// Covers node startup, which precedes the clock above, plus this process's wind-down.
+// Covers node startup, which precedes the clock above.
 const OXLINT_BUDGET_MARGIN_MS = 2_000;
-// Below this there is no room left to lint, and starting oxlint would only hand the
-// caller's kill an orphan.
+// Below this, starting oxlint would only hand the caller's kill an orphan.
 const OXLINT_MIN_TIMEOUT_MS = 1_000;
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url));
 
