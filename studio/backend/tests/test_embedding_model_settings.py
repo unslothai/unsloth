@@ -376,3 +376,26 @@ def test_a_reset_keeps_a_pending_only_resolution_for_the_default(settings_store)
     ems._resolved_gguf_memo.clear()
     ems._invalidate_cache()
     assert ems.get_stored_download_pending(default) is True
+
+
+def test_pinning_a_model_memoizes_what_was_resolved_for_it(settings_store, monkeypatch):
+    """A worker pins its model by reading the effective one, then scans for a while
+    and embeds afterwards. Only the repo/backend getters used to populate the memo,
+    so a save for another model in that gap left the pinned job with nothing to
+    fall back to and moved it onto the derived <model>-GGUF mid-run."""
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    from core.rag import config
+
+    ems.set_rag_embedding_model(
+        "org/embedder-a", gguf_repo = "mirror/off-convention-GGUF", backend = "llama-server"
+    )
+    # Nothing has read the resolution yet; the pin is the only thing that happens.
+    ems._resolved_gguf_memo.clear()
+    assert config.effective_embedding_model() == "org/embedder-a"
+
+    ems.set_rag_embedding_model("org/embedder-b", gguf_repo = None, backend = None)
+
+    assert config.effective_gguf_repo_for_embedding_model("org/embedder-a") == (
+        "mirror/off-convention-GGUF"
+    )
+    assert ems.get_stored_backend("org/embedder-a") == "llama-server"
