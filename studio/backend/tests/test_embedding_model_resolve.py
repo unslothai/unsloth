@@ -479,6 +479,9 @@ def test_nothing_anywhere_still_reports_the_save_reason(client, monkeypatch):
 
 def test_a_local_gguf_is_already_the_artifact(client, monkeypatch):
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
+    # An install that embeds with llama-server has the binary; the test host does
+    # not, and a GGUF plan is refused without one.
+    monkeypatch.setattr(settings, "_llama_runtime_available", lambda: True)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: True)
 
     body = _resolve(client, "/models/my-embedder.gguf").json()
@@ -938,3 +941,39 @@ def test_a_local_directory_named_gguf_is_still_a_sentence_transformers_model(mon
     monkeypatch.setattr(ems, "get_stored_backend", lambda model: None)
 
     assert rag_embeddings._resolve_auto_for_model(str(local)) == "sentence-transformers"
+
+
+def test_a_gguf_only_model_is_refused_when_llama_server_is_missing(client, monkeypatch):
+    """A GGUF-named model routes to llama-server because nothing else can open it,
+    which says nothing about whether this install can run that backend. Without the
+    binary the plan was advertised as valid and the transfer persisted, and the
+    first warm failed in _resolve_binary with the download already done."""
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
+    monkeypatch.setattr(settings, "_llama_runtime_available", lambda: False)
+
+    body = _resolve(client, "unsloth/bge-m3-GGUF").json()
+    assert body["download_repo"] is None
+    assert "no llama-server binary was found" in body["error"]
+
+
+def test_a_safetensors_model_still_falls_back_when_llama_server_is_missing(
+    client, monkeypatch
+):
+    """The refusal is scoped to models only llama can serve. One that publishes
+    safetensors has a usable plan on the other backend, and turning that into an
+    error would strand it too."""
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
+    monkeypatch.setattr(settings, "_llama_runtime_available", lambda: False)
+    monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
+    monkeypatch.setattr(settings, "_remote_embedding_gguf_plan", lambda *a, **k: None)
+    monkeypatch.setattr(settings, "_search_hub_for_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(settings, "_cached_embedding_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(settings, "_sentence_transformers_fallback_allowed", lambda m: True)
+    monkeypatch.setattr(
+        settings, "_safetensors_plan", lambda m, t: ("org/st-only", ["model.safetensors"])
+    )
+    monkeypatch.setattr(settings, "_cached_snapshot_has_st_weights", lambda m: True)
+
+    body = _resolve(client, "org/st-only").json()
+    assert body["error"] is None
+    assert body["backend"] == "sentence-transformers"

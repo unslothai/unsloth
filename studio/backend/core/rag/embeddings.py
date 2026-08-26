@@ -118,20 +118,27 @@ def _load_device() -> str:
 
 
 _torchao_stub_done = False
+# Guards the stub's one-shot state and the sentence-transformers import that has to
+# follow it. Its own lock, not ``_lock``: that one is held across a whole model
+# construction, so borrowing it made a preflight probe wait out someone else's
+# multi-minute download. Always taken innermost, so there is no ordering to get
+# wrong.
+_stub_lock = threading.Lock()
 
 
 def _install_torchao_stub_once() -> None:
     """Neutralize torchao before importing sentence-transformers. On Windows ROCm,
     torchao (pulled in by transformers.quantizers) imports an absent c10d backend
     and aborts, dropping the embedder to llama-server. Workers stub it too; the
-    embedder runs in the main process. No-op elsewhere; runs once under ``_lock``."""
+    embedder runs in the main process. No-op elsewhere; runs once."""
     global _torchao_stub_done
-    if _torchao_stub_done:
-        return
-    _torchao_stub_done = True
-    from core._torchao_stub import install_torchao_windows_rocm_stub
+    with _stub_lock:
+        if _torchao_stub_done:
+            return
+        _torchao_stub_done = True
+        from core._torchao_stub import install_torchao_windows_rocm_stub
 
-    install_torchao_windows_rocm_stub()
+        install_torchao_windows_rocm_stub()
 
 
 class UnsafeEmbeddingModelError(RuntimeError):
@@ -763,11 +770,14 @@ def sentence_transformers_runtime_available() -> bool:
     """
     try:
         _load_device()
-        with _lock:
-            # The stub's one-shot state and the import it protects share the
-            # same lock as the real model-loading path.
-            _install_torchao_stub_once()
-            from sentence_transformers import SentenceTransformer
+        # Not under ``_lock``. Both the resolve GET and the PUT run this before any
+        # deadline-bounded Hub call, and ``_get`` holds ``_lock`` across an entire
+        # SentenceTransformer construction, download included: sharing it meant
+        # opening or saving Settings during a slow first load blocked for as long
+        # as that load took, past every deadline the resolver applies to itself.
+        # The stub keeps its ordering guarantee under its own lock.
+        _install_torchao_stub_once()
+        from sentence_transformers import SentenceTransformer
 
         return callable(SentenceTransformer)
     except Exception as exc:  # noqa: BLE001 - any failed runtime import selects the fallback

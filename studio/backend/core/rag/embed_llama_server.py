@@ -107,10 +107,10 @@ class LlamaServerBackend:
         self._port: int | None = None
         self._stdout_lines: list[str] = []
         self._stdout_thread: threading.Thread | None = None
-        # No lock: probes are idempotent (a duplicate 1-text encode is benign)
-        # and dim() -> encode() -> _ensure_ready() -> _resolve_model_path() can
-        # re-enter on a mid-probe model change, which would self-deadlock a
-        # non-reentrant lock held across the probe.
+        # Belongs to whichever model the one subprocess is serving, so dim() takes
+        # the same _serve_lock the request path does. Reentrant precisely because
+        # dim() -> encode() -> _ensure_ready() re-enters it on one thread, which a
+        # plain lock held across the probe would self-deadlock.
         self._dim: int | None = None
         # One subprocess serves one GGUF, so readiness and the request relying on
         # it must be indivisible: otherwise a swap between them lands A's POST on
@@ -1018,9 +1018,13 @@ class LlamaServerBackend:
     def dim(self, *, model_name = None) -> int:
         """Embedding width, probed via a 1-text encode and cached per model
         (_resolve_model_path clears it when the effective repo changes).
-        Unlocked: concurrent probes are benign, and locking would deadlock when
-        the probe's encode respawns onto a changed model (see __init__)."""
-        with self._operation():
+
+        Under the same lock the request path uses, for the same reason: ``_dim``
+        belongs to the one subprocess, so with two jobs pinned to models of
+        different width, one could ready A, have the other switch to B and cache
+        B's width, and then answer A with it. Reentrant, so the probe's own encode
+        re-enters rather than deadlocking."""
+        with self._operation(), self._serve_lock:
             self._ensure_ready(model_name)
             cached = self._dim
             if cached is not None:

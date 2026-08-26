@@ -1524,3 +1524,49 @@ def test_a_swap_cannot_land_between_readiness_and_the_request(monkeypatch):
     # The swap is after the request completed, never between ready and post.
     assert order[:3] == ["ready:org/model-a", "post", "post-done"]
     assert order[-1] == "swap"
+
+
+def test_a_dim_probe_is_serialized_with_a_model_switch(monkeypatch):
+    """One subprocess serves one GGUF, so ``_dim`` belongs to whichever model is
+    loaded. With two jobs pinned to models of different width, a probe that ran
+    outside the request path's lock could ready A, have the other switch to B and
+    cache B's width, and then answer A with it."""
+    b = LlamaServerBackend()
+    monkeypatch.setattr(b, "_ensure_ready", lambda model_name = None: None)
+    observed = {}
+
+    def _probe_encode(texts, normalize = False, model_name = None):
+        # A second job trying to take the server while this probe is mid-flight.
+        acquired = []
+        switcher = threading.Thread(
+            target = lambda: acquired.append(b._serve_lock.acquire(timeout = 0.5))
+        )
+        switcher.start()
+        switcher.join()
+        if acquired[0]:
+            b._serve_lock.release()
+        observed["excluded"] = not acquired[0]
+        return np.zeros((1, 384), dtype = np.float32)
+
+    monkeypatch.setattr(b, "encode", _probe_encode)
+
+    assert b.dim() == 384
+    assert observed["excluded"] is True, "a model switch could land inside the probe"
+
+
+def test_the_runtime_probe_does_not_wait_on_a_model_load(monkeypatch):
+    """Both the resolve GET and the PUT run this preflight before any
+    deadline-bounded Hub call, and ``_get`` holds ``_lock`` across a whole
+    SentenceTransformer construction, download included. Sharing that lock made
+    opening or saving Settings during a first load block for as long as the load."""
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
+    finished = threading.Event()
+
+    def _probe():
+        embeddings.sentence_transformers_runtime_available()
+        finished.set()
+
+    with embeddings._lock:  # stands in for a load in progress
+        worker = threading.Thread(target = _probe, daemon = True)
+        worker.start()
+        assert finished.wait(timeout = 60), "the resolve preflight waited on the model-load lock"

@@ -1855,6 +1855,29 @@ def _ambient_hf_token() -> Optional[str]:
         return None
 
 
+def _model_names_gguf_repo(model: str) -> bool:
+    """Whether ``model`` is a repo id naming GGUF weights, per the embedder's rule."""
+    from core.rag import embeddings
+
+    try:
+        return embeddings._model_names_gguf_repo(model)
+    except Exception:  # noqa: BLE001 - a name test that cannot answer blocks nothing
+        return False
+
+
+def _llama_runtime_available() -> bool:
+    """Whether a llama-server binary this install can launch is present.
+
+    Shares the embedder's own probe so the resolver and the loader cannot disagree
+    about whether the backend exists."""
+    from core.rag import embeddings
+
+    try:
+        return embeddings._llama_server_runtime_available()
+    except Exception:  # noqa: BLE001 - an unanswerable probe must not block saving
+        return True
+
+
 def _llama_backend_active(model: str | None = None) -> bool:
     """Whether llama serves the active model, or would serve ``model`` if supplied.
 
@@ -2403,8 +2426,27 @@ def _resolve_embedding_model_plan(
             size_bytes = None if cached else _hf_snapshot_size(download_repo, token),
         )
 
+    local_gguf = _resolves_as_local_gguf(resolved)
+    # A GGUF-named model is routed here whatever the hardware says, because nothing
+    # else can open those weights. That routing does not make the backend runnable:
+    # without a binary the plan is advertised as valid and the transfer persisted,
+    # and the first warm or index then fails in _resolve_binary. Scoped to models
+    # only llama can serve -- one that publishes safetensors still has the
+    # ST fallback further down, which is a usable plan rather than an error.
+    if (local_gguf or _model_names_gguf_repo(resolved)) and not _llama_runtime_available():
+        return EmbeddingModelResolveResponse(
+            embedding_model = resolved,
+            backend = backend,
+            error = (
+                f"{resolved!r} publishes GGUF weights, which only the llama-server "
+                "backend can load, and no llama-server binary was found. Install "
+                "llama.cpp or set LLAMA_SERVER_PATH / UNSLOTH_LLAMA_CPP_PATH, or "
+                "select a model that publishes sentence-transformers weights."
+            ),
+        )
+
     # A local .gguf (file or folder) is already the artifact; nothing to fetch.
-    if _resolves_as_local_gguf(resolved):
+    if local_gguf:
         return EmbeddingModelResolveResponse(embedding_model = resolved, backend = backend, cached = True)
     local_error = _local_gguf_backend_error(resolved)
     if local_error:
