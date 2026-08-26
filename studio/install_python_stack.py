@@ -4914,6 +4914,32 @@ def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
     return tuple(dict.fromkeys(on))
 
 
+def _pip_no_index_in_force() -> bool:
+    """Is pip's no-index effectively ON, counting the config file as well as the env?
+
+    `--no-index` means "ignore the indexes and look only at find-links", so whether
+    PIP_FIND_LINKS is the sole remaining source or merely an extra one depends on this.
+    Reading only the environment got it wrong for an operator whose `no-index = true`
+    sits in pip.conf, which the opt-out keeps readable: find-links was scrubbed as
+    additive and the fallback was left with no sources at all.
+
+    Only reached under the opt-out, so the default path adds no probe and stays exactly
+    as it was. When the environment speaks it decides, in either direction, because pip
+    reads it ahead of its files. Otherwise this falls back to the advisory scan, which
+    for PIP keys is complete: `pip config list` reports every file pip would load.
+
+    An unavailable scan reads as off, and that cannot cost an install: the scan only
+    fails when the venv has no pip, and PIP_FIND_LINKS is inert without pip, since uv
+    reads UV_FIND_LINKS instead.
+    """
+    raw = os.environ.get("PIP_NO_INDEX")
+    if raw is not None and raw.strip():
+        return _config_value_is_on(raw, "no-index")
+    return any(
+        source == "pip.conf" and key == "no-index" for _tool, source, key in _detected_policy()
+    )
+
+
 def _hardened_pm_policy_names() -> "tuple[str, ...]":
     """The detected policy, as the notice prints it."""
     return tuple(
@@ -5284,7 +5310,9 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     # Read as the BOOLEAN it is: without the key this fell through to the generic
     # reading, where `:none:` counts as empty and the variable was dropped even though
     # pip rejects that value outright.
-    no_index_on = _config_value_is_on(os.environ.get("PIP_NO_INDEX", ""), "no-index")
+    # Computed only under the opt-out: the default branch scrubs everything regardless,
+    # so it never pays for the scan behind this.
+    no_index_on = respect and _pip_no_index_in_force()
     for name in _UV_INDEX_ENV_VARS:
         # UV_CONFIG_FILE is an index variable only incidentally: measured, a file named
         # by it carrying `[pip] require-hashes = true` fails a pinned install, and

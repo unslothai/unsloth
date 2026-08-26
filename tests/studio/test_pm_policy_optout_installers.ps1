@@ -132,6 +132,29 @@ Fast-Install --index-url https://x torch | Out-Null
 Check "an explicit OFF is carried through, not dropped" ($Recorded['PIP_NO_INDEX'] -eq '0')
 Check "but find-links is scrubbed, being additive again" ($null -eq $Recorded['PIP_FIND_LINKS'])
 
+# The effective state can come from pip.conf, which the opt-out keeps readable. Reading
+# only the environment scrubbed find-links as additive and left the fallback with no
+# sources at all. `python` is stubbed so the probe is a fixture, not a real pip.
+Write-Host "a config-only no-index still keeps find-links"
+Reset-Env
+$script:PipNoIndexInForce = $null
+function python { if ($args -contains 'list') { "global.no-index = true" }; $global:LASTEXITCODE = 0 }
+$env:UNSLOTH_RESPECT_PM_POLICY = "1"
+$env:PIP_FIND_LINKS = "C:\op\wheels"
+Fast-Install --index-url https://x torch | Out-Null
+Check "find-links survives a pip.conf no-index" ($Recorded['PIP_FIND_LINKS'] -eq "C:\op\wheels")
+
+Write-Host "and with no no-index anywhere it is still additive"
+Reset-Env
+$script:PipNoIndexInForce = $null
+function python { $global:LASTEXITCODE = 0 }
+$env:UNSLOTH_RESPECT_PM_POLICY = "1"
+$env:PIP_FIND_LINKS = "C:\op\wheels"
+Fast-Install --index-url https://x torch | Out-Null
+Check "find-links is scrubbed when nothing sets no-index" ($null -eq $Recorded['PIP_FIND_LINKS'])
+$script:PipNoIndexInForce = $null
+Remove-Item function:python -ErrorAction SilentlyContinue
+
 Write-Host "a command with no pinned index is untouched either way"
 Reset-Env
 $env:UV_CONFIG_FILE = "C:\op\uv.toml"

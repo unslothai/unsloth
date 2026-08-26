@@ -2910,3 +2910,89 @@ class TestAnExplicitNoIndexOverrideSurvivesTheOptOut:
             assert env is not None
             assert "PIP_NO_INDEX" not in env, value
             assert "PIP_FIND_LINKS" not in env, value
+
+
+class TestNoIndexCountsTheConfigFileNotJustTheEnvironment:
+    """`--no-index` means "ignore indexes, look only at find-links", so whether
+    PIP_FIND_LINKS is the sole source or an extra one depends on the EFFECTIVE state.
+    The opt-out keeps pip.conf readable, so a `no-index = true` living there counts;
+    reading only the environment scrubbed find-links as additive and left the pip
+    fallback with no sources at all.
+    """
+
+    PINNED = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+
+    @pytest.fixture
+    def no_index_conf(self, tmp_path):
+        path = tmp_path / "pip.conf"
+        path.write_text("[global]\nno-index = true\n", encoding = "utf-8")
+        return str(path)
+
+    def _env(self, monkeypatch, **environ):
+        for key in ("PIP_NO_INDEX", "PIP_FIND_LINKS", "PIP_CONFIG_FILE"):
+            monkeypatch.delenv(key, raising = False)
+        for key, value in environ.items():
+            monkeypatch.setenv(key, value)
+        ips._detected_policy.cache_clear()
+        try:
+            return ips._install_env_for_cmd(list(self.PINNED))
+        finally:
+            ips._detected_policy.cache_clear()
+
+    def test_find_links_survives_a_config_only_no_index(self, monkeypatch, no_index_conf):
+        env = self._env(
+            monkeypatch,
+            UNSLOTH_RESPECT_PM_POLICY = "1",
+            PIP_CONFIG_FILE = no_index_conf,
+            PIP_FIND_LINKS = "/op/wheels",
+        )
+        assert env is not None
+        assert env.get("PIP_FIND_LINKS") == "/op/wheels"
+
+    def test_find_links_is_still_scrubbed_with_no_no_index_anywhere(self, monkeypatch):
+        env = self._env(
+            monkeypatch,
+            UNSLOTH_RESPECT_PM_POLICY = "1",
+            PIP_CONFIG_FILE = os.devnull,
+            PIP_FIND_LINKS = "/op/wheels",
+        )
+        assert env is not None
+        assert "PIP_FIND_LINKS" not in env
+
+    def test_the_environment_overrides_the_config_in_both_directions(
+        self, monkeypatch, no_index_conf
+    ):
+        # pip reads the environment ahead of its files, so an explicit off wins and
+        # find-links goes back to being merely additive.
+        env = self._env(
+            monkeypatch,
+            UNSLOTH_RESPECT_PM_POLICY = "1",
+            PIP_CONFIG_FILE = no_index_conf,
+            PIP_NO_INDEX = "0",
+            PIP_FIND_LINKS = "/op/wheels",
+        )
+        assert env is not None
+        assert env.get("PIP_NO_INDEX") == "0"
+        assert "PIP_FIND_LINKS" not in env
+
+    def test_the_default_path_scrubs_both_and_asks_pip_nothing(self, monkeypatch, no_index_conf):
+        # The scan must not be reached without the opt-out: the default path is the one
+        # that has to stay exactly as it was.
+        monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+        called = []
+        original = ips._detected_policy
+
+        def _spy():
+            called.append(True)
+            return original()
+
+        _spy.cache_clear = original.cache_clear
+        monkeypatch.setattr(ips, "_detected_policy", _spy)
+        env = self._env(
+            monkeypatch,
+            PIP_CONFIG_FILE = no_index_conf,
+            PIP_FIND_LINKS = "/op/wheels",
+        )
+        assert env is not None
+        assert "PIP_FIND_LINKS" not in env and "PIP_NO_INDEX" not in env
+        assert called == []

@@ -4659,12 +4659,45 @@ function Test-RespectPmPolicy {
     return @('', '0', 'false', 'no') -notcontains $value.Trim().ToLowerInvariant()
 }
 
-# PIP_NO_INDEX read the way pip reads it, for the one variable the opt-out keeps.
-# Same false set as pip's strtobool, which is what _config_value_is_on() uses.
+# Is pip's no-index effectively ON, counting pip.conf as well as the environment?
+# `--no-index` means "ignore the indexes and look only at find-links", so this decides
+# whether PIP_FIND_LINKS is the sole remaining source or merely an extra one. Reading
+# only the environment got it wrong for an operator whose `no-index = true` sits in
+# pip.conf, which the opt-out keeps readable: find-links was dropped as additive and the
+# fallback was left with no sources at all. Mirrors _pip_no_index_in_force().
+#
+# The environment decides when it speaks, in either direction, because pip reads it
+# ahead of its files. Otherwise ask pip, once per run. A probe that fails reads as off,
+# which cannot cost anything: it only fails when there is no pip, and PIP_FIND_LINKS is
+# inert without pip, since uv reads UV_FIND_LINKS instead.
+$script:PipNoIndexInForce = $null
 function Test-PipNoIndexOn {
     $value = [Environment]::GetEnvironmentVariable('PIP_NO_INDEX')
-    if ($null -eq $value) { return $false }
-    return @('', 'n', 'no', 'f', 'false', 'off', '0') -notcontains $value.Trim().ToLowerInvariant()
+    if ($null -ne $value -and $value.Trim() -ne '') {
+        # Same false set as pip's strtobool, which is what _config_value_is_on() uses.
+        return @('n', 'no', 'f', 'false', 'off', '0') -notcontains $value.Trim().ToLowerInvariant()
+    }
+    if ($null -ne $script:PipNoIndexInForce) { return $script:PipNoIndexInForce }
+    $script:PipNoIndexInForce = $false
+    try {
+        $listed = & python -m pip config list 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            foreach ($line in @($listed)) {
+                # Section verbatim, option normalised: the split pip itself makes. `:env:`
+                # entries restate the environment, which the branch above already read.
+                if (-not "$line".Contains('=')) { continue }
+                $name = ("$line" -split '=', 2)[0].Trim()
+                $raw = ("$line" -split '=', 2)[1].Trim().Trim("'", '"').ToLowerInvariant()
+                if ($name.StartsWith(':env:')) { continue }
+                $option = ($name -split '\.')[-1].ToLowerInvariant().Replace('_', '-')
+                $section = $name.Substring(0, [Math]::Max(0, $name.Length - $option.Length)).TrimEnd('.')
+                if ($option -ne 'no-index') { continue }
+                if (@('global', 'install', 'download', 'wheel') -notcontains $section) { continue }
+                $script:PipNoIndexInForce = @('n', 'no', 'f', 'false', 'off', '0', '') -notcontains $raw
+            }
+        }
+    } catch { $script:PipNoIndexInForce = $false }
+    return $script:PipNoIndexInForce
 }
 
 # Helper: install a package, preferring uv with pip fallback
