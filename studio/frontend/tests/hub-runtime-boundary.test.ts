@@ -89,7 +89,18 @@ test("residency remains a cache mutation safety input", () => {
     /subscribeResidentStatusRefresh\(\s*refreshResidentModelStatus/,
   );
   assert.ok((hubPage.match(/residentModelIdMatches\(/g) ?? []).length >= 2);
+  assert.ok((hubPage.match(/selectedModel\.loadId/g) ?? []).length >= 2);
   assert.match(hubPage, /runtime=\{inspectorRuntime\}/);
+
+  const selectedView = readFileSync(
+    path.join(HUB_ROOT, "hooks/use-selected-model-view.ts"),
+    "utf8",
+  );
+  assert.match(selectedView, /loadId: selectedCachedRow\.loadId/);
+  assert.match(
+    selectedView,
+    /loadId: selectedCachedRow\?\.loadId \?\? selectedLocalRow\?\.loadId \?\? null/,
+  );
 
   assert.match(
     ggufCard,

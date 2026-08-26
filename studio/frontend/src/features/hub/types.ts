@@ -40,6 +40,7 @@ export interface DiscoverRow {
 
 export interface SelectedModelView {
   id: string;
+  loadId: string | null;
   kind: "discover" | "cache" | "local";
   displayId: string;
   hubRepoId: string | null;

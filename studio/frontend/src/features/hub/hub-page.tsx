@@ -324,6 +324,7 @@ function selectedRepoMatchesRuntime(
     !residentModelIdMatches(
       runtimeId,
       selectedModel.id,
+      selectedModel.loadId,
       selectedModel.hubRepoId,
       selectedModel.path,
       selectedModel.displayId,
@@ -1228,6 +1229,7 @@ export function ModelsPage() {
     return residentModelIdMatches(
       loadingModel.id,
       selectedModel.id,
+      selectedModel.loadId,
       selectedModel.hubRepoId,
       selectedModel.path,
       selectedModel.displayId,

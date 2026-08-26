@@ -48,8 +48,8 @@
 }
 
 @layer base {
-  /* Shared measure for every centered Hub column (top bar, catalog, detail,
-     settings). Container-relative, so the column tracks the width actually
+  /* Shared measure for every centered Hub column (top bar, catalog, detail).
+     Container-relative, so the column tracks the width actually
      available instead of pinning to 1100px and leaving wide empty gutters.
      The floor keeps the old measure on ~1280px laptops, the cap stops rows
      stretching on ultrawides, and `max-width` never forces overflow, so the

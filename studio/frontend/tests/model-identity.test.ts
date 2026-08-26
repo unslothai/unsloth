@@ -104,11 +104,29 @@ test("a resident path-loaded model is matched by the id /status reports", () => 
     ),
     true,
   );
-  // A repo in an inactive cache keeps the repo id as its settings identity.
+  // A repo in an inactive cache can be reconciled through its public id.
   assert.equal(
     residentModelIdMatches(
       "unsloth/Qwen3-8B-GGUF",
       "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF/snapshots/abc123",
+      "unsloth/Qwen3-8B-GGUF",
+    ),
+    true,
+  );
+  const pinnedSnapshot =
+    "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF/snapshots/abc123";
+  assert.equal(
+    residentModelIdMatches(
+      pinnedSnapshot,
+      "unsloth/Qwen3-8B-GGUF",
+      "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF",
+    ),
+    false,
+  );
+  assert.equal(
+    residentModelIdMatches(
+      pinnedSnapshot,
+      pinnedSnapshot,
       "unsloth/Qwen3-8B-GGUF",
     ),
     true,

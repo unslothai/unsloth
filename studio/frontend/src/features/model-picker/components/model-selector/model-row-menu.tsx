@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Condensed row actions for model rows: everything except the run-settings
-// gear collapses into one dots menu (pin, update, delete) so rows don't grow
-// an icon strip. Mirrors the sidebar chat rows' MoreVertical menu pattern.
+// Condensed row actions for model rows so pin, update, and delete do not grow
+// into an icon strip. Mirrors the sidebar chat rows' MoreVertical menu pattern.
 
 import {
   DropdownMenu,

@@ -56,6 +56,7 @@ export function useSelectedModelView({
       ) {
         return {
           id: selectedLocalRow.loadId,
+          loadId: selectedLocalRow.loadId,
           kind: "local",
           displayId: selectedDiscoverRow.id,
           hubRepoId: selectedDiscoverRow.result.id,
@@ -124,6 +125,7 @@ export function useSelectedModelView({
             : null);
       return {
         id: selectedDiscoverRow.id,
+        loadId: selectedCachedRow?.loadId ?? selectedLocalRow?.loadId ?? null,
         kind: "discover",
         displayId: selectedDiscoverRow.id,
         hubRepoId: selectedDiscoverRow.result.id,
@@ -204,6 +206,7 @@ export function useSelectedModelView({
       const mergedBaseModel = selectedHfResult?.baseModel ?? null;
       return {
         id: selectedCachedRow.repoId,
+        loadId: selectedCachedRow.loadId,
         kind: "cache",
         displayId: selectedCachedRow.repoId,
         hubRepoId: selectedCachedRow.repoId,
@@ -281,6 +284,7 @@ export function useSelectedModelView({
       if (isPartialHubCache && selectedLocalRow.repoId) {
         return {
           id: selectedLocalRow.repoId,
+          loadId: selectedLocalRow.loadId,
           kind: "cache",
           displayId: selectedLocalRow.repoId,
           hubRepoId: selectedLocalRow.repoId,
@@ -328,6 +332,7 @@ export function useSelectedModelView({
 
       return {
         id: selectedLocalRow.loadId,
+        loadId: selectedLocalRow.loadId,
         kind: "local",
         displayId: localDisplayId,
         hubRepoId: localHubRepoId,
