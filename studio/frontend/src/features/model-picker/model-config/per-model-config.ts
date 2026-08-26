@@ -206,7 +206,10 @@ export {
   SPECULATIVE_TYPES,
 } from "@/lib/speculative-modes";
 
-const STORAGE_KEY = "unsloth_model_configs";
+/** Exported so cross-tab listeners can tell this key's storage event from the
+ *  dozens of others Studio writes. */
+export const PER_MODEL_CONFIG_STORAGE_KEY = "unsloth_model_configs";
+const STORAGE_KEY = PER_MODEL_CONFIG_STORAGE_KEY;
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // v2 added nBatch / nUbatch, v3 llamaExtraArgs, v4 disableVision and v5 the

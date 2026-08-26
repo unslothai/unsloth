@@ -1298,6 +1298,12 @@ export interface KvCacheEstimate {
   /** Context the estimate was computed at, which is the native length when the
    *  request omitted one. */
   n_ctx: number | null;
+  /** Vision projector footprint, at its worst-case VRAM multiple. Null when the
+   *  model ships none or vision is disabled. */
+  projector_bytes: number | null;
+  /** True when the configured speculative mode attaches a drafter the route did
+   *  not price (dspark/dflash). The total is then a floor, not an answer. */
+  spec_unpriced: boolean;
 }
 
 export interface KvCacheEstimateOptions {
@@ -1306,6 +1312,15 @@ export interface KvCacheEstimateOptions {
   nParallel?: number | null;
   /** Speculative mode, so an MTP draft reserve is priced into the estimate. */
   speculativeType?: string | null;
+  /** --spec-draft-n-max; a Hybrid Mamba target keeps one rollback state per
+   *  drafted token, which dominates its reserve. */
+  specDraftNMax?: number | null;
+  /** Draft KV dtype, quantized independently of the main cache. */
+  specDraftCacheType?: string | null;
+  /** --ctx-checkpoints; each adds an SWA snapshot per slot. */
+  ctxCheckpoints?: number | null;
+  /** Vision off frees the projector, so it is not charged. */
+  disableVision?: boolean;
   signal?: AbortSignal;
 }
 
@@ -1319,7 +1334,16 @@ export async function estimateKvCache(
   nCtx?: number,
   options: KvCacheEstimateOptions = {},
 ): Promise<KvCacheEstimate> {
-  const { cacheTypeKv, nParallel, speculativeType, signal } = options;
+  const {
+    cacheTypeKv,
+    nParallel,
+    speculativeType,
+    specDraftNMax,
+    specDraftCacheType,
+    ctxCheckpoints,
+    disableVision,
+    signal,
+  } = options;
   const params = new URLSearchParams({ repo_id: repoId, quant });
   if (nCtx && nCtx > 0) params.set("n_ctx", String(nCtx));
   if (cacheTypeKv) params.set("cache_type_kv", cacheTypeKv);
@@ -1327,6 +1351,15 @@ export async function estimateKvCache(
   // server's slot count", which now defaults to more than one.
   if (nParallel && nParallel > 0) params.set("n_parallel", String(nParallel));
   if (speculativeType) params.set("speculative_type", speculativeType);
+  // Zero is a real choice for both of these (no rollback states, no
+  // checkpoints), so they are sent whenever set rather than when truthy.
+  if (specDraftNMax != null && specDraftNMax >= 0)
+    params.set("spec_draft_n_max", String(specDraftNMax));
+  if (specDraftCacheType)
+    params.set("spec_draft_cache_type", specDraftCacheType);
+  if (ctxCheckpoints != null && ctxCheckpoints >= 0)
+    params.set("ctx_checkpoints", String(ctxCheckpoints));
+  if (disableVision) params.set("disable_vision", "true");
   const response = await authFetch(
     `/api/models/kv-cache-estimate?${params}`,
     signal ? { signal } : undefined,

@@ -122,3 +122,58 @@ test("a zero figure is a measurement, not a missing one", () => {
     false,
   );
 });
+
+// --- settings that must reach the request, and the ones that must suppress it ---
+
+const { extraArgsOwnPlacement, PLACEMENT_OWNING_ARGS } = await import(
+  "../src/lib/model-memory.ts"
+);
+
+test("draft depth and checkpoints key apart, including zero", () => {
+  // Zero is a real choice for both (no rollback states, no checkpoints), so it
+  // must not collapse into "unset" the way a `?? ""` would make it.
+  for (const field of ["specDraftNMax", "ctxCheckpoints"] as const) {
+    const unset = estimateCacheKey({ ...BASE });
+    const zero = estimateCacheKey({ ...BASE, [field]: 0 });
+    const some = estimateCacheKey({ ...BASE, [field]: 16 });
+    assert.notEqual(zero, unset, `${field}: 0 collapsed into unset`);
+    assert.notEqual(some, zero);
+    assert.notEqual(some, unset);
+  }
+});
+
+test("draft cache dtype and vision both re-key", () => {
+  assert.notEqual(
+    estimateCacheKey({ ...BASE, specDraftCacheType: "q8_0" }),
+    estimateCacheKey({ ...BASE }),
+  );
+  assert.notEqual(
+    estimateCacheKey({ ...BASE, disableVision: true }),
+    estimateCacheKey({ ...BASE }),
+  );
+});
+
+test("pass-through args that own placement make the bar abstain", () => {
+  // These are appended after Unsloth's own flags, so they decide where the load
+  // runs and the VRAM total stops describing it.
+  for (const flag of PLACEMENT_OWNING_ARGS) {
+    assert.equal(
+      extraArgsOwnPlacement([flag, "0"]),
+      true,
+      `${flag} did not suppress the bar`,
+    );
+    // The "--flag=value" argv shape has to be recognised too.
+    assert.equal(extraArgsOwnPlacement([`${flag}=0`]), true, `${flag}=0`);
+  }
+});
+
+test("ordinary pass-through args do not suppress the bar", () => {
+  // Sampling and logging flags say nothing about placement.
+  assert.equal(extraArgsOwnPlacement(null), false);
+  assert.equal(extraArgsOwnPlacement(undefined), false);
+  assert.equal(extraArgsOwnPlacement([]), false);
+  assert.equal(extraArgsOwnPlacement(["--temp", "0.7", "--verbose"]), false);
+  // A near-miss must not match on a prefix.
+  assert.equal(extraArgsOwnPlacement(["--device-draft"]), false);
+  assert.equal(extraArgsOwnPlacement(["--gpu-layers-draft"]), false);
+});

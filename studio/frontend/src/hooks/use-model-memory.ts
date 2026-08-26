@@ -11,6 +11,8 @@
  */
 
 import {
+  CHAT_GPU_MEMORY_MODE_KEY,
+  CHAT_SPECULATIVE_TYPE_KEY,
   estimateKvCache,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
@@ -21,6 +23,7 @@ import {
   normalizeModelIdentity,
 } from "@/features/hub";
 import {
+  PER_MODEL_CONFIG_STORAGE_KEY,
   PER_MODEL_CONFIG_UPDATED_EVENT,
   type PerModelConfig,
   listPerModelConfigs,
@@ -34,6 +37,7 @@ import {
   computeModelMemory,
   estimateCacheKey,
   estimateIsUnsized,
+  extraArgsOwnPlacement,
 } from "@/lib/model-memory";
 import { useInferenceGpuInfo } from "./use-gpu-info";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
@@ -44,6 +48,16 @@ export interface ModelMemorySource {
   quant: string;
   /** Size from the listing, so the bar draws before the estimate arrives. */
   sizeBytes?: number | null;
+  /**
+   * The concrete thing this row loads, when the listing resolved one.
+   *
+   * Selecting the row loads this, while the estimate resolved by repo id alone,
+   * so on a duplicate or recovered HF cache the two could pick different copies
+   * of the same quant and the bar would describe a model the click does not
+   * open. Falls back to the repo id upstream, so sending it changes nothing for
+   * an ordinary row.
+   */
+  loadId?: string | null;
 }
 
 interface Estimate {
@@ -52,6 +66,10 @@ interface Estimate {
   specBytes: number | null;
   /** Context the KV figure was computed at, for the per-token rate. */
   nCtx: number;
+  /** Vision projector footprint, resident alongside the weights. */
+  projectorBytes: number | null;
+  /** The configured drafter could not be priced, so the total is a floor. */
+  specUnpriced: boolean;
 }
 
 const CACHE = new Map<string, Estimate>();
@@ -106,6 +124,8 @@ const MISS: Estimate = {
   weightsBytes: null,
   specBytes: null,
   nCtx: 0,
+  projectorBytes: null,
+  specUnpriced: false,
 };
 
 /**
@@ -124,12 +144,31 @@ function subscribeToConfigChanges(onChange: () => void): () => void {
     onChange();
   };
   window.addEventListener(PER_MODEL_CONFIG_UPDATED_EVENT, onConfigWrite);
+  // The custom event above is same-tab only, by construction: the native
+  // storage event fires in every OTHER document sharing the origin and never in
+  // the one that made the write. So settings edited in a second Studio tab
+  // arrive here as a storage event and nowhere else, and without this a mounted
+  // bar kept its old fit or OOM verdict indefinitely.
+  const onStorage = (event: Event) => {
+    const key = (event as StorageEvent).key;
+    // A null key means the whole store was cleared, which counts.
+    if (key == null || WATCHED_STORAGE_KEYS.includes(key)) onConfigWrite();
+  };
+  window.addEventListener("storage", onStorage);
   const unsubscribeStore = useChatRuntimeStore.subscribe(onChange);
   return () => {
     window.removeEventListener(PER_MODEL_CONFIG_UPDATED_EVENT, onConfigWrite);
+    window.removeEventListener("storage", onStorage);
     unsubscribeStore();
   };
 }
+
+/** localStorage keys whose cross-tab writes change what the bar should show. */
+const WATCHED_STORAGE_KEYS = [
+  PER_MODEL_CONFIG_STORAGE_KEY,
+  CHAT_GPU_MEMORY_MODE_KEY,
+  CHAT_SPECULATIVE_TYPE_KEY,
+];
 
 let configEpoch = 0;
 let lastConfigSignature = "";
@@ -217,6 +256,11 @@ function budgetIsMeaningful(config: PerModelConfig | undefined): boolean {
   const sessionPin = useChatRuntimeStore.getState().selectedGpuIds;
   if (sessionPin != null && sessionPin.length > 0) return false;
   if (!config) return true;
+  // Pass-through args are appended after Unsloth's own flags, so an -ngl or a
+  // device pin in that box is what the launch actually uses. Reading only the
+  // structured fields left the bar charting a CPU-offloaded run against every
+  // GPU on the host.
+  if (extraArgsOwnPlacement(config.llamaExtraArgs)) return false;
   return (
     config.selectedGpuIds == null &&
     (config.gpuLayers == null || config.gpuLayers < 0) &&
@@ -249,6 +293,10 @@ async function fetchEstimate(
     cacheTypeKv: config?.kvCacheDtype,
     nParallel: config?.nParallel,
     speculativeType: effectiveSpeculativeType(config),
+    specDraftNMax: config?.specDraftNMax,
+    specDraftCacheType: config?.specDraftCacheDtype,
+    ctxCheckpoints: config?.ctxCheckpoints,
+    disableVision: config?.disableVision,
   })
     .then((r) => {
       const estimate: Estimate = {
@@ -256,6 +304,8 @@ async function fetchEstimate(
         weightsBytes: r.weights_bytes,
         specBytes: r.spec_bytes,
         nCtx: r.n_ctx ?? 0,
+        projectorBytes: r.projector_bytes ?? null,
+        specUnpriced: r.spec_unpriced === true,
       };
       // A 200 that could size nothing arrives down the success path, so
       // remembering it as a success pinned the row blank for the rest of the
@@ -338,6 +388,7 @@ export function useModelMemory(
   const repoId = source?.repoId;
   const quant = source?.quant;
   const sizeBytes = source?.sizeBytes;
+  const loadId = source?.loadId;
   // Keyed on primitives rather than the object: callers build the source inline,
   // so a fresh identity each render would loop forever.
   const plan = useMemo(() => {
@@ -345,16 +396,22 @@ export function useModelMemory(
     const config = configFor({ repoId, quant });
     const nCtx = pinnedContext(config);
     const cacheKey = estimateCacheKey({
-      repoId,
+      repoId: loadId || repoId,
       quant,
       sizeBytes,
       nCtx,
       kvCacheDtype: config?.kvCacheDtype,
       speculativeType: effectiveSpeculativeType(config),
       nParallel: config?.nParallel,
+      specDraftNMax: config?.specDraftNMax,
+      specDraftCacheType: config?.specDraftCacheDtype,
+      ctxCheckpoints: config?.ctxCheckpoints,
+      disableVision: config?.disableVision,
     });
     return {
-      source: { repoId, quant },
+      // Identity for the request is the row's own load target; the saved config
+      // is still looked up by repo id, which is how it is keyed.
+      source: { repoId: loadId || repoId, quant },
       config,
       nCtx,
       cacheKey,
@@ -365,7 +422,7 @@ export function useModelMemory(
     // into the cache key instead would evict every row's answer on any save.
     // biome-ignore lint/correctness/useExhaustiveDependencies: see above
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, repoId, quant, sizeBytes, epoch, budgetIsDedicatedVram]);
+  }, [enabled, repoId, loadId, quant, sizeBytes, epoch, budgetIsDedicatedVram]);
 
   useEffect(() => {
     if (!plan) return;
@@ -383,13 +440,27 @@ export function useModelMemory(
   return useMemo(() => {
     if (!plan?.trustBudget) return computeModelMemory({});
     const estimate = entry?.key === plan.cacheKey ? entry.estimate : undefined;
+    // A drafter we could not price is the launch's largest single allocation
+    // (a DSpark sidecar runs to about 11 GB). Charting the rest would read as a
+    // comfortable fit for a load that is nothing of the sort, so draw nothing.
+    if (estimate?.specUnpriced) return computeModelMemory({});
+    const weights = estimate?.weightsBytes ?? source?.sizeBytes;
     return computeModelMemory({
-      weightsBytes: estimate?.weightsBytes ?? source?.sizeBytes,
+      // The projector is resident alongside the weights, so it belongs in that
+      // segment rather than as a fourth sliver the eye cannot resolve.
+      weightsBytes:
+        weights == null ? weights : weights + (estimate?.projectorBytes ?? 0),
       kvBytes: estimate?.kvBytes,
       specBytes: estimate?.specBytes,
       nCtx: estimate?.nCtx,
       gpuGb,
       budgetFraction,
+      // With no pinned context the estimate is sized at the model's native
+      // length, but a default load sends 0 and the loader auto-reduces to the
+      // largest context that fits. Warning OOM for a length it would never have
+      // tried is the false positive this whole bar exists to avoid, so the
+      // verdict softens and only the weights can still fail outright.
+      contextIsAutoFitted: plan.nCtx == null,
     });
   }, [plan, entry, source?.sizeBytes, gpuGb, budgetFraction]);
 }

@@ -59,6 +59,8 @@ export {
   CHAT_RAG_OCR_KEY,
   normalizeSpeculativeType,
   readPersistedSpeculativeType,
+  CHAT_GPU_MEMORY_MODE_KEY,
+  CHAT_SPECULATIVE_TYPE_KEY,
   readPersistedGpuMemoryMode,
   reconcilePersistedGpuIds,
   reconcilePersistedGpuSelection,

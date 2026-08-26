@@ -48,6 +48,7 @@ export {
   DEFAULT_PER_MODEL_CONFIG,
   normalizeMaxSeqLength,
   type PerModelConfig,
+  PER_MODEL_CONFIG_STORAGE_KEY,
   PER_MODEL_CONFIG_UPDATED_EVENT,
   adoptLegacyConfigKey,
   listPerModelConfigs,

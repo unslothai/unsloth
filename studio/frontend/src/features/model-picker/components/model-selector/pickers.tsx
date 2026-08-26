@@ -4945,6 +4945,7 @@ export function HubModelPicker({
               repoId: c.repo_id,
               quant: variant.quant,
               sizeBytes: variant.size_bytes,
+              loadId: c.load_id,
             }}
             gpuGb={inferenceGpu.memoryTotalGb}
             showVision={c.has_vision || sole.hasVision}
