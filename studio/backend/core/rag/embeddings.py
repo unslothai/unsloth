@@ -697,9 +697,7 @@ def _get_backend():
     global _backend, _backend_key
     raw = _raw_backend()
     with _backend_lock:
-        key = _forced_backend_key or (
-            _resolve_auto_for_model() if raw in _AUTO_ALIASES else raw
-        )
+        key = _forced_backend_key or (_resolve_auto_for_model() if raw in _AUTO_ALIASES else raw)
         if _backend is not None and _backend_key == _backend_cache_key(raw, key):
             return _backend
         if key in _ST_ALIASES:

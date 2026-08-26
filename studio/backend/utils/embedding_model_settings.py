@@ -104,6 +104,7 @@ def _get_stored_pair() -> tuple[str, str | None, str | None] | None:
         gen = _generation
     try:
         from storage.studio_db import get_app_setting
+
         stored = get_app_setting(EMBEDDING_MODEL_SETTING_KEY, None)
         stored_repo = get_app_setting(EMBEDDING_GGUF_SETTING_KEY, None)
         stored_backend = get_app_setting(EMBEDDING_BACKEND_SETTING_KEY, None)
@@ -136,7 +137,11 @@ def get_rag_embedding_model() -> str:
     return get_stored_embedding_model() or default_embedding_model()
 
 
-def set_rag_embedding_model(value: Any, gguf_repo: Any = None, backend: Any = None) -> str:
+def set_rag_embedding_model(
+    value: Any,
+    gguf_repo: Any = None,
+    backend: Any = None,
+) -> str:
     parsed = validate_embedding_model(value)
     from storage.studio_db import upsert_app_settings
 

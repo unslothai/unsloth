@@ -2038,7 +2038,6 @@ def _st_backend_available() -> bool:
     """Whether sentence-transformers could actually run here. A GGUF-only install
     has no torch, so the safetensors fallback is not on offer there."""
     from importlib.util import find_spec
-
     try:
         return all(find_spec(mod) is not None for mod in ("torch", "sentence_transformers"))
     except Exception:  # noqa: BLE001 - a broken import path is a no
@@ -2049,7 +2048,6 @@ def _st_weight_files(model: str, hf_token: Optional[str]) -> Optional[list[str]]
     """The repo's own weight files, or None when it publishes none we can load."""
     try:
         from huggingface_hub import list_repo_files
-
         files = list_repo_files(model, token = hf_token)
     except Exception:  # noqa: BLE001 - missing/gated repo or offline
         return None
@@ -2060,9 +2058,7 @@ def _st_weight_files(model: str, hf_token: Optional[str]) -> Optional[list[str]]
     return None
 
 
-def _safetensors_plan(
-    model: str, hf_token: Optional[str]
-) -> Optional[tuple[str, list[str]]]:
+def _safetensors_plan(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
     """``(repo, files)`` for running ``model`` on sentence-transformers instead.
 
     An embedder with no GGUF still works from its own safetensors, for about 1 GB

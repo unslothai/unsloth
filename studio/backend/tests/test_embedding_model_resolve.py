@@ -149,9 +149,7 @@ def test_no_gguf_falls_back_to_the_models_own_safetensors(client, monkeypatch):
     """Safetensors cost about 1 GB more memory but they load, so they beat both
     refusing the model and pulling a stranger's conversion."""
     _no_gguf_anywhere(monkeypatch)
-    monkeypatch.setattr(
-        settings, "_safetensors_plan", lambda m, token: (m, ["model.safetensors"])
-    )
+    monkeypatch.setattr(settings, "_safetensors_plan", lambda m, token: (m, ["model.safetensors"]))
     monkeypatch.setattr(settings, "_hf_files_size", lambda repo, files, token: 4096)
     import utils.utils as utils
 
@@ -270,9 +268,7 @@ def test_the_chosen_backend_is_read_back_by_the_loader(monkeypatch):
     from core.rag import embeddings as rag_embeddings
 
     ems._invalidate_cache()
-    ems.set_rag_embedding_model(
-        "unsloth/Qwen3-Embedding-8B", backend = "sentence-transformers"
-    )
+    ems.set_rag_embedding_model("unsloth/Qwen3-Embedding-8B", backend = "sentence-transformers")
     assert ems.get_stored_backend("unsloth/Qwen3-Embedding-8B") == "sentence-transformers"
     assert rag_embeddings._resolve_auto_for_model() == "sentence-transformers"
 
