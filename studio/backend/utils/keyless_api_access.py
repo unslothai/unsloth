@@ -446,6 +446,26 @@ def _host_authority_is_direct(request: Any, scope: str) -> bool:
             address = ipaddress.IPv4Address(literal)
         except ValueError:
             return False
+    return keyless_authority_address_allowed(address, scope)
+
+
+def keyless_authority_address_allowed(address: Any, scope: str) -> bool:
+    """Whether a parsed authority literal is one ``scope`` could be reached at.
+
+    The single place this question is answered, so the admission rule and anything that
+    advertises an address to the user cannot drift apart -- `lan_access_settings`
+    reported a keyless-eligible LAN URL for an IPv4-mapped literal that admission
+    refuses, because it had its own copy of the test.
+
+    Takes an already-parsed address so the caller keeps responsibility for parsing the
+    spelling faithfully. It must NOT have been canonicalised: the mapped form is refused
+    precisely because the browser does not treat it as loopback, so un-mapping it first
+    erases the distinction being tested.
+    """
+    from utils.lan_access_settings import _private_non_loopback
+
+    if address is None:
+        return False
     if address.is_unspecified:
         return False
     if getattr(address, "ipv4_mapped", None) is not None:

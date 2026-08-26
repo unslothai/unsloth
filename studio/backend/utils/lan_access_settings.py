@@ -281,14 +281,32 @@ def _has_keyless_lan_url(urls: list[str]) -> bool:
     that resolves to a private address and is still refused. Reporting it as eligible is
     what made the LAN panel and the usage examples advertise `Bearer not-needed` against
     a URL that answers 401, so the literal is required here too.
+
+    Admission decides this, through the shared
+    `keyless_api_access.keyless_authority_address_allowed`. A second copy of the test is
+    what let an IPv4-mapped literal such as `::ffff:192.168.1.24` be advertised while
+    admission refused it: `_normalized_ip` un-maps, and un-mapping is exactly what the
+    mapped form is refused for. So the literal is parsed here as written.
     """
+    import ipaddress
     from urllib.parse import urlparse
+
+    from utils.keyless_api_access import (
+        KEYLESS_SCOPE_INFERENCE,
+        keyless_authority_address_allowed,
+    )
 
     for url in urls:
         parsed = urlparse(url)
         if not parsed.hostname:
             continue
-        if _normalized_ip(parsed.hostname) is None:
+        try:
+            # urlparse already strips the IPv6 brackets and lowercases; parse the
+            # remaining literal without normalising it
+            address = ipaddress.ip_address(parsed.hostname)
+        except ValueError:
+            continue
+        if not keyless_authority_address_allowed(address, KEYLESS_SCOPE_INFERENCE):
             continue
         if _all_addresses_are(parsed.hostname, parsed.port or 80, _private_non_loopback):
             return True

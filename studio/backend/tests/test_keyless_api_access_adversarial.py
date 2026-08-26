@@ -546,6 +546,44 @@ def test_a_loopback_spelling_the_browser_will_not_vouch_for_is_refused():
             ), f"{spelling} was refused under {scope_name}"
 
 
+def test_what_the_ui_advertises_matches_what_admission_accepts():
+    """The LAN panel must not offer a keyless URL that admission answers 401 on.
+
+    `lan_access_settings._has_keyless_lan_url` decides whether the panel and the usage
+    examples print `Bearer not-needed`. It had its own copy of the authority test, and
+    the copy used `_normalized_ip`, which un-maps IPv4-mapped IPv6 -- so a launch on
+    `::ffff:192.168.1.24` was advertised as keyless-eligible while admission refused the
+    mapped authority. Both now answer through `keyless_authority_address_allowed`, so
+    this pins the two ends together rather than the mapped case alone.
+    """
+    from utils.keyless_api_access import keyless_authority_address_allowed
+    from utils.lan_access_settings import _has_keyless_lan_url
+
+    advertised_and_admitted = [
+        ("http://192.168.1.24:8888", "192.168.1.24:8888", True),
+        ("http://10.0.0.5:8888", "10.0.0.5:8888", True),
+        ("http://[fd00::1]:8888", "[fd00::1]:8888", True),
+        ("http://[::ffff:192.168.1.24]:8888", "[::ffff:192.168.1.24]:8888", False),
+        ("http://[::ffff:c0a8:118]:8888", "[::ffff:c0a8:118]:8888", False),
+        ("http://box.local:8888", "box.local:8888", False),
+        ("http://8.8.8.8:8888", "8.8.8.8:8888", False),
+    ]
+    for url, authority, expected in advertised_and_admitted:
+        assert _has_keyless_lan_url([url]) is expected, f"UI disagreed on {url}"
+        assert (
+            _host_authority_is_direct(request_for(headers = {"Host": authority}), "inference")
+            is expected
+        ), f"admission disagreed on {authority}"
+
+    # and the shared classifier refuses a mapped literal however it is spelled
+    import ipaddress
+
+    for mapped in ("::ffff:192.168.1.24", "::ffff:c0a8:118", "::ffff:127.0.0.1"):
+        assert (
+            keyless_authority_address_allowed(ipaddress.ip_address(mapped), "inference") is False
+        ), f"{mapped} was allowed"
+
+
 def test_an_authority_the_scope_cannot_be_reached_at_is_refused():
     """Being an address rather than a name is not enough; it has to be a local one.
 
