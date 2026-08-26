@@ -4205,9 +4205,7 @@ def _staged_restore_args(name: str, staged: str) -> "tuple[list[str], str]":
         return default, ""
     try:
         digest = hashlib.sha256(Path(wheel).read_bytes()).hexdigest()
-        handle = tempfile.NamedTemporaryFile(
-            "w", suffix = ".txt", delete = False, encoding = "utf-8"
-        )
+        handle = tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False, encoding = "utf-8")
         with handle:
             handle.write(f"{os.path.abspath(wheel)} --hash=sha256:{digest}\n")
     except OSError:
@@ -4784,7 +4782,6 @@ def _config_value_is_on(value: str, key: "str | None" = None) -> bool:
     return text not in _OFF_VALUES
 
 
-
 # The same control under each manager's name, so an explicitly disabled variable can
 # cancel a config entry that enables the same thing.
 _POLICY_KEY_ALIASES = {
@@ -4812,6 +4809,7 @@ def _env_policy_key(name: str) -> str:
 
 # The pip subcommands this module drives.
 _PIP_COMMANDS = ("install", "download", "wheel")
+
 
 @functools.lru_cache(maxsize = 1)
 def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
@@ -4876,9 +4874,10 @@ def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
             # Printed in load order, so the last definition of a given entry wins.
             settings[(section, option)] = raw.strip().strip("'\"")
         for (_section, option), value in settings.items():
-            if _config_value_is_on(value, option) and _canonical_policy_key(
-                option
-            ) not in cancelled:
+            if (
+                _config_value_is_on(value, option)
+                and _canonical_policy_key(option) not in cancelled
+            ):
                 on.append(("pip", "pip.conf", option))
 
     return tuple(dict.fromkeys(on))

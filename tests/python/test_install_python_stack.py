@@ -631,8 +631,12 @@ class TestTheMetadataRepairCannotStrandThePackage:
             args, cleanup = ips._staged_restore_args("unsloth-zoo", str(staged))
         assert cleanup == ""
         assert args == [
-            "--no-deps", "--force-reinstall", "--no-index",
-            "--find-links", str(staged), "unsloth-zoo",
+            "--no-deps",
+            "--force-reinstall",
+            "--no-index",
+            "--find-links",
+            str(staged),
+            "unsloth-zoo",
         ]
 
     def test_the_opt_out_restores_through_a_real_hash(self, tmp_path):
@@ -641,9 +645,7 @@ class TestTheMetadataRepairCannotStrandThePackage:
         honestly. Measured: pip accepts this under PIP_REQUIRE_HASHES=1, and rejects it
         with THESE PACKAGES DO NOT MATCH THE HASHES if the wheel is altered."""
         staged, wheel = self._staged(tmp_path)
-        with mock.patch.dict(
-            os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True
-        ):
+        with mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True):
             args, cleanup = ips._staged_restore_args("unsloth-zoo", str(staged))
         try:
             assert args[:4] == ["--no-deps", "--force-reinstall", "--no-index", "-r"]
@@ -657,9 +659,7 @@ class TestTheMetadataRepairCannotStrandThePackage:
         """The wheel spells the project with an underscore and the requirement with a
         dash, so the match has to normalise both."""
         staged, _ = self._staged(tmp_path)
-        with mock.patch.dict(
-            os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True
-        ):
+        with mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True):
             args, cleanup = ips._staged_restore_args("Unsloth_Zoo", str(staged))
         assert cleanup, "the underscore spelling must match unsloth_zoo-1.0-...whl"
         os.unlink(cleanup)
@@ -669,9 +669,7 @@ class TestTheMetadataRepairCannotStrandThePackage:
         whatever pip says about them."""
         staged = tmp_path / "empty"
         staged.mkdir()
-        with mock.patch.dict(
-            os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True
-        ):
+        with mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True):
             args, cleanup = ips._staged_restore_args("unsloth-zoo", str(staged))
         assert cleanup == "" and args[-1] == "unsloth-zoo"
 
@@ -732,9 +730,7 @@ class TestHardenedPolicyIsAnnounced:
         """The point of keeping detection advisory: with nothing detected the notice is
         silent, and the opt-out still withholds every relaxation."""
         assert self._names({}) == ()
-        with mock.patch.dict(
-            os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True
-        ):
+        with mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True):
             assert ips._relaxed_pip_policy_env(["python", "-m", "pip", "install", "x"]) == {}
             assert ips._sdist_only_build_args("diffusers") == []
 
@@ -830,9 +826,7 @@ class TestTheOptOutIsNotDefeatedByOurOwnEscapeHatches:
         )
         assert raised is None
         assert calls, "the pip fallback must still run"
-        with mock.patch.dict(
-            os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True
-        ):
+        with mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True):
             assert ips._relaxed_pip_policy_env(["python", "-m", "pip", "install", "x"]) == {}
 
     def test_the_fallback_still_runs_when_the_opt_out_drops_nothing(self):
