@@ -895,7 +895,7 @@ export const hi = {
         tokensIn: "भेजे गए टोकन",
         tokensOut: "बनाए गए टोकन",
         totalTokens: "कुल टोकन",
-        studioChatTokens: "Studio Chat टोकन",
+        studioChatTokens: "Unsloth Chat टोकन",
         apiTokens: "API टोकन",
         cachedTokens: "कैश किए गए टोकन",
         cachedValue: "{tokens} (इनपुट का {percent}%)",
@@ -1345,7 +1345,7 @@ export const hi = {
         title: "वेब खोज",
         images: "वेब खोज से छवियाँ दिखाएँ",
         imagesDescription:
-          "वेब खोज को छवियाँ लौटाने दें और उत्तर में सूचीबद्ध हर चीज़ के लिए एक छवि लाएँ। थंबनेल Studio द्वारा लाए और छोटे किए जाते हैं, इसलिए ब्राउज़र कभी छवि होस्ट से संपर्क नहीं करता।",
+          "वेब खोज को छवियाँ लौटाने दें और उत्तर में सूचीबद्ध हर चीज़ के लिए एक छवि लाएँ। थंबनेल Unsloth द्वारा लाए और छोटे किए जाते हैं, इसलिए ब्राउज़र कभी छवि होस्ट से संपर्क नहीं करता।",
       },
       artifacts: {
         title: "Canvas",

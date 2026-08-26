@@ -3077,7 +3077,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            raise ValueError('Unsloth: truncating to `max_length = ' + str(args.max_length) + '` left every row with no supervised token, so there is nothing to train on. The supervised part of your rows starts past that length: raise `max_length`, or set `truncation_mode = \"keep_end\"` if the completion sits at the end of each row.')\n"
                     # A producer that truncates every row enforces the cap just as
                     # `truncate_dataset` would, so keep padding-free rather than pay the
-                    # fallback for a guarantee already held. Studio's online tokenization
+                    # fallback for a guarantee already held. Unsloth's online tokenization
                     # is this shape: a `with_transform` view capped on read, invisible
                     # without reading -- and reading it all is the eager pass it avoids.
                     # Not under `eval_packing`: that split is meant to be overlength and

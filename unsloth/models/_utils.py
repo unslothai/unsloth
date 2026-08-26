@@ -548,7 +548,7 @@ def _get_per_layer_values(config, field_name):
         return []
     # Three shapes: a live `_PerLayerConfigView` (a Sequence, not a list/tuple);
     # `to_dict`/config.json, a mapping of zero-padded layer index to overrides
-    # like `{"04": {"head_dim": 512}}`; and Studio's SimpleNamespace wrap of it.
+    # like `{"04": {"head_dim": 512}}`; and Unsloth's SimpleNamespace wrap of it.
     # Iterating a mapping walks the indices, not the overrides, so the probe
     # would answer 256 where the object form answers 512.
     if isinstance(per_layer, dict):

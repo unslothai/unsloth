@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What an idle Studio actually asks for, and how often.
+"""What an idle Unsloth actually asks for, and how often.
 
 Every path the middleware classifies has to appear here with a poll period. That is the
 whole mechanism: you cannot quiet a path without saying how often it is polled, and you
 cannot start polling a path without classifying it. ``test_log_budget`` checks both
 directions, so this file and ``loggers/handlers.py`` cannot drift apart silently.
 
-Periods marked "measured" come from driving two real Studio instances for twelve minutes
+Periods marked "measured" come from driving two real Unsloth instances for twelve minutes
 and reading the access log back. The rest are the interval the UI declares at its call
 site, and are marked "declared"; they are used identically by the replay and by the
 expectation, so an imprecise one costs realism in the global envelope, never correctness of
@@ -117,7 +117,7 @@ KNOWN_UNCLASSIFIED_POLLS: frozenset[str] = frozenset()
 # class formula perfectly and still push the total up, which is exactly what happened to
 # /api/liveness, whose 15s probe sat in the 300ms burst class and logged every single time.
 #
-# Raising either of these is a product decision about how much Studio is allowed to write.
+# Raising either of these is a product decision about how much Unsloth is allowed to write.
 # It is not a knob to turn because a test went red. The class formulas tell you whether the
 # suppression rules are being honoured; these tell you whether the result is acceptable.
 #

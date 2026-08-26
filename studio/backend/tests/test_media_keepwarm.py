@@ -325,7 +325,7 @@ def test_a_job_that_lives_between_two_polls_still_gets_the_full_ttl(media, monke
 def test_a_veto_applied_during_the_step_stops_the_next_teardown(media, monkeypatch):
     # One step tears down both backends and freeing several GB takes seconds. Reading the
     # effective TTL once for the whole step let a residency veto turned on during the
-    # diffusion unload be ignored by the video one, so Studio freed a model its own settings
+    # diffusion unload be ignored by the video one, so Unsloth freed a model its own settings
     # response already reported as pinned.
     ttl = {"value": 60}
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: ttl["value"])
@@ -502,7 +502,7 @@ def test_a_chat_ttl_alone_leaves_the_media_backends_alone(media, store, monkeypa
 def test_the_off_tick_does_not_import_the_media_modules(store, monkeypatch):
     # Off is the default and has to stay free: the tick runs every 15s from startup, so
     # importing diffusion or video to find out there is nothing loaded would drag torch
-    # into a Studio that never opened either page. No engine fakes here on purpose --
+    # into an Unsloth that never opened either page. No engine fakes here on purpose --
     # this is the real resolution path.
     store[settings.OPENAI_AUTO_SWITCH_SETTING_KEY] = True
     store[settings.AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
@@ -533,7 +533,7 @@ def test_a_failing_unload_does_not_stop_the_other_backend(media, monkeypatch):
 
 def test_an_unimported_backend_is_not_imported_to_check_it(monkeypatch):
     # The tick runs every 15s from startup; resolving the engines would drag torch in
-    # on a Studio that has never opened the Image or Video page.
+    # on an Unsloth that has never opened the Image or Video page.
     for module in ("core.inference.diffusion", "core.inference.sd_cpp_backend"):
         monkeypatch.delitem(sys.modules, module, raising = False)
     monkeypatch.delitem(sys.modules, "core.inference.video", raising = False)
@@ -561,7 +561,7 @@ def test_a_path_that_is_not_a_mounted_route_is_not_tracked():
     # by repeating one below the TTL.
     assert mk.owner_for_path("/v1/not-a-route/images/generations") is None
     assert mk.owner_for_path("/api/inference/nope/video/generate") is None
-    # The Studio routes are mounted under /api/inference only; /v1 carries the OpenAI shape.
+    # The Unsloth routes are mounted under /api/inference only; /v1 carries the OpenAI shape.
     assert mk.owner_for_path("/v1/images/generate") is None
     assert mk.owner_for_path("/v1/video/load") is None
 

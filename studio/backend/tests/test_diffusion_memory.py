@@ -901,7 +901,7 @@ def test_plan_fits_total_capacity():
 # load-time refusal that replaces that SIGKILL with a message.
 
 _MPS_TOTAL_MIB = 16 * 1024
-_MPS_FREE_MIB = int(_MPS_TOTAL_MIB * 0.80)  # RAM free once macOS + a browser + Studio are up
+_MPS_FREE_MIB = int(_MPS_TOTAL_MIB * 0.80)  # RAM free once macOS + a browser + Unsloth are up
 
 
 def _unified_plan(
@@ -1038,7 +1038,7 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
     where the weights genuinely cannot fit, and must stay silent where they can.
 
     ``video_families`` is a pure table module (no torch, no diffusers), so this stays hermetic.
-    ``free`` is modelled at 80% of RAM, the share left once macOS, a browser and Studio are up.
+    ``free`` is modelled at 80% of RAM, the share left once macOS, a browser and Unsloth are up.
     """
     from core.inference.video_families import _FAMILIES
     from core.inference.diffusion_memory import (

@@ -45,7 +45,7 @@ def is_keyless(credentials: Optional[HTTPAuthorizationCredentials]) -> bool:
 
 
 def _names_a_session(token: str) -> bool:
-    """Whether this bearer claims a Studio sign-in this install actually knows.
+    """Whether this bearer claims an Unsloth sign-in this install actually knows.
 
     A session token stays authoritative even under keyless API access: letting an
     expired one through would leave the app running as the admin instead of prompting
@@ -125,7 +125,7 @@ def request_admitted_without_credential(request: Request) -> bool:
 
 
 def admitted_without_session(request: Any) -> bool:
-    """True when keyless API access lets this request through with no Studio sign-in.
+    """True when keyless API access lets this request through with no Unsloth sign-in.
 
     The single predicate behind both the auth dependency below and the route-level
     checks that ask whether a caller is the Unsloth UI or a programmatic client.
