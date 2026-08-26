@@ -28,7 +28,18 @@ export function sanitizeCompactionHeadroomRatio(
   value: unknown,
 ): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  return Math.max(0, Math.min(0.9, Math.round(value * 100) / 100));
+  const clamped = Math.max(0, Math.min(0.9, Math.round(value * 100) / 100));
+  let nearest: (typeof COMPACTION_HEADROOM_CHOICES)[number] =
+    COMPACTION_HEADROOM_CHOICES[0];
+  let best = Math.abs(clamped - nearest);
+  for (const choice of COMPACTION_HEADROOM_CHOICES) {
+    const distance = Math.abs(clamped - choice);
+    if (distance < best) {
+      nearest = choice;
+      best = distance;
+    }
+  }
+  return nearest;
 }
 
 export function compactionStyleValue(
@@ -70,19 +81,27 @@ export function ggufCompactionRequestFields(options: {
   contextPolicy: LocalContextPolicy;
   compactionHeadroomRatio: number;
 }): {
-  context_overflow?: "truncate_oldest";
+  context_overflow?: "error" | "truncate_oldest";
   context_policy?: LocalContextPolicy;
   compaction_headroom_ratio?: number;
 } {
-  if (!options.isGguf || !options.autoCompactEnabled) return {};
+  if (!options.isGguf) return {};
+  if (!options.autoCompactEnabled) {
+    // An omitted field falls back to UNSLOTH_CONTEXT_OVERFLOW, which may still
+    // compact. "error" is an explicit refusal of that fallback.
+    return { context_overflow: "error" };
+  }
   if (options.contextPolicy === "rolling") {
     return {
       context_overflow: "truncate_oldest",
       context_policy: "rolling",
-      compaction_headroom_ratio: options.compactionHeadroomRatio,
+      compaction_headroom_ratio:
+        sanitizeCompactionHeadroomRatio(options.compactionHeadroomRatio) ??
+        DEFAULT_COMPACTION_HEADROOM_RATIO,
     };
   }
-  // Checkpoint is the process default; omit context_policy so an older server
-  // and today's payload stay identical.
-  return { context_overflow: "truncate_oldest" };
+  return {
+    context_overflow: "truncate_oldest",
+    context_policy: "checkpoint",
+  };
 }

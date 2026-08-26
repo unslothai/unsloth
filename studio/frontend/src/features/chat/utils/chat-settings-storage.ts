@@ -20,6 +20,10 @@ import {
 } from "../presets/preset-policy";
 import type { ReasoningEffort } from "../stores/chat-runtime-store";
 import {
+  sanitizeCompactionHeadroomRatio,
+  sanitizeContextPolicy,
+} from "./auto-compaction";
+import {
   assignSanitizedMirroredSettings,
   hasNoMirroredSettings,
 } from "./mirrored-chat-settings";
@@ -260,15 +264,10 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   const autoHealToolCalls = sanitizeBool(value.autoHealToolCalls);
   const nudgeToolCalls = sanitizeBool(value.nudgeToolCalls);
   const autoCompactEnabled = sanitizeBool(value.autoCompactEnabled);
-  const contextPolicy =
-    value.contextPolicy === "checkpoint" || value.contextPolicy === "rolling"
-      ? value.contextPolicy
-      : undefined;
-  const compactionHeadroomRatio =
-    typeof value.compactionHeadroomRatio === "number" &&
-    Number.isFinite(value.compactionHeadroomRatio)
-      ? Math.max(0, Math.min(0.9, value.compactionHeadroomRatio))
-      : undefined;
+  const contextPolicy = sanitizeContextPolicy(value.contextPolicy);
+  const compactionHeadroomRatio = sanitizeCompactionHeadroomRatio(
+    value.compactionHeadroomRatio,
+  );
   const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 1);
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 

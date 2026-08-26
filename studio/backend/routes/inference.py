@@ -4167,7 +4167,7 @@ async def _select_request_tools(
     # is added on that condition rather than requested.
     has_archive = _thread_has_conversation_archive(getattr(payload, "thread_id", None))
     tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
-    if has_archive and (tools_on or (checkpoint_fitted and _checkpoint_needs_search())):
+    if has_archive and (tools_on or (checkpoint_fitted and _checkpoint_needs_search(payload))):
         tools = tools + [t for t in ALL_TOOLS if t["function"]["name"] == "search_conversation"]
         if not tools_on:
             # After a reset, search_conversation is the only route back to what was
@@ -4230,11 +4230,17 @@ _CHECKPOINT_SESSION_NUDGE = (
 )
 
 
-def _checkpoint_needs_search() -> bool:
+def _checkpoint_needs_search(payload = None) -> bool:
     """Whether the context policy makes search_conversation load-bearing rather than extra.
 
-    Read at call time, so flipping UNSLOTH_CONTEXT_POLICY needs no restart.
+    ``context_policy`` on the request overrides UNSLOTH_CONTEXT_POLICY, matching the
+    fitter, so tool admission and the compaction nudge follow the same effective policy.
     """
+    requested = _request_context_policy(payload)
+    if requested == "checkpoint":
+        return True
+    if requested == "rolling":
+        return False
     try:
         from core.inference import checkpoint
         return checkpoint.enabled()
@@ -4247,6 +4253,7 @@ def _apply_compaction_nudge(
     tools: list[dict],
     *,
     checkpoint_fitted: bool = False,
+    payload = None,
 ) -> str:
     """Append the compacted-session nudge when the conversation-archive tool is active.
 
@@ -4262,7 +4269,7 @@ def _apply_compaction_nudge(
     if "search_conversation" not in tool_names:
         return nudge
     text = _COMPACTED_SESSION_NUDGE
-    if checkpoint_fitted and _checkpoint_needs_search():
+    if checkpoint_fitted and _checkpoint_needs_search(payload):
         text = text + " " + _CHECKPOINT_SESSION_NUDGE
     if not nudge:
         return text
@@ -16520,7 +16527,7 @@ async def openai_chat_completions(
             and _cli_policy is not False
             and llama_backend.supports_tools
             and _rolling_context_policy(payload) is not None
-            and _checkpoint_needs_search()
+            and _checkpoint_needs_search(payload)
             and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
             # And an epoch actually happened here: a rolling-window thread archives
             # identically, and there the loop would open for a repair that cannot happen.
@@ -16608,6 +16615,7 @@ async def openai_chat_completions(
                 _nudge,
                 tools_to_use,
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
+                payload = payload,
             )
 
             if _nudge:

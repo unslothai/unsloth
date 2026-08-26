@@ -61,6 +61,7 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
+import { ggufCompactionRequestFields } from "../utils/auto-compaction";
 import {
   consumeQueuedChatRunSettings,
   snapshotQueuedChatRunSettings,
@@ -5727,18 +5728,12 @@ export function createOpenAIStreamAdapter(
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
             stream_options: { include_usage: true },
-            ...(activeModel?.isGguf === true && runtime.autoCompactEnabled
-              ? {
-                  context_overflow: "truncate_oldest" as const,
-                  ...(runtime.contextPolicy === "rolling"
-                    ? {
-                        context_policy: "rolling" as const,
-                        compaction_headroom_ratio:
-                          runtime.compactionHeadroomRatio,
-                      }
-                    : {}),
-                }
-              : {}),
+            ...ggufCompactionRequestFields({
+              isGguf: activeModel?.isGguf === true,
+              autoCompactEnabled: runtime.autoCompactEnabled,
+              contextPolicy: runtime.contextPolicy,
+              compactionHeadroomRatio: runtime.compactionHeadroomRatio,
+            }),
             temperature: params.temperature,
             top_p: params.topP,
             max_tokens: params.maxTokens,

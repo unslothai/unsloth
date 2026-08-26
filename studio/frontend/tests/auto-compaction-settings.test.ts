@@ -8,9 +8,10 @@ import {
   compactionStyleValue,
   ggufCompactionRequestFields,
   parseCompactionStyle,
+  sanitizeCompactionHeadroomRatio,
 } from "../src/features/chat/utils/auto-compaction.ts";
 
-test("auto-compact off omits the rolling overflow field", () => {
+test("auto-compact off sends an explicit error overflow policy", () => {
   assert.deepEqual(
     ggufCompactionRequestFields({
       isGguf: true,
@@ -18,11 +19,11 @@ test("auto-compact off omits the rolling overflow field", () => {
       contextPolicy: "checkpoint",
       compactionHeadroomRatio: 0.25,
     }),
-    {},
+    { context_overflow: "error" },
   );
 });
 
-test("checkpoint compaction sends truncate_oldest and no policy override", () => {
+test("checkpoint compaction sends truncate_oldest and the checkpoint policy", () => {
   assert.deepEqual(
     ggufCompactionRequestFields({
       isGguf: true,
@@ -30,7 +31,7 @@ test("checkpoint compaction sends truncate_oldest and no policy override", () =>
       contextPolicy: "checkpoint",
       compactionHeadroomRatio: 0.25,
     }),
-    { context_overflow: "truncate_oldest" },
+    { context_overflow: "truncate_oldest", context_policy: "checkpoint" },
   );
 });
 
@@ -71,11 +72,29 @@ test("the settings select round-trips style values", () => {
   });
 });
 
-test("the chat adapter still names the rolling overflow field", () => {
+test("unsupported headroom ratios snap to an exposed choice", () => {
+  assert.equal(sanitizeCompactionHeadroomRatio(0.9), 0.25);
+  assert.equal(sanitizeCompactionHeadroomRatio(0.07), 0.05);
+  assert.equal(compactionStyleValue("rolling", 0.9), "rolling:0.25");
+  assert.deepEqual(
+    ggufCompactionRequestFields({
+      isGguf: true,
+      autoCompactEnabled: true,
+      contextPolicy: "rolling",
+      compactionHeadroomRatio: 0.9,
+    }),
+    {
+      context_overflow: "truncate_oldest",
+      context_policy: "rolling",
+      compaction_headroom_ratio: 0.25,
+    },
+  );
+});
+
+test("the chat adapter sends compaction fields through the shared helper", () => {
   const adapter = readFileSync(
     new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
     "utf8",
   );
-  assert.match(adapter, /context_overflow:\s*"truncate_oldest"/);
-  assert.match(adapter, /context_policy:\s*"rolling"/);
+  assert.match(adapter, /ggufCompactionRequestFields\(/);
 });

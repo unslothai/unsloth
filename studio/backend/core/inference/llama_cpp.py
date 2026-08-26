@@ -217,6 +217,16 @@ def _compaction_fit_kwargs(
     return extra
 
 
+def _request_uses_checkpoint(requested_policy: Optional[str] = None) -> bool:
+    """Process default, unless this request named checkpoint or rolling."""
+    if requested_policy == "checkpoint":
+        return True
+    if requested_policy == "rolling":
+        return False
+    from core.inference import checkpoint
+    return checkpoint.enabled()
+
+
 def _fit_context(messages, **kwargs):
     """The context policy in one place, so the five call sites do not each pick one.
 
@@ -235,9 +245,7 @@ def _fit_context(messages, **kwargs):
     try:
         from core.inference import checkpoint
 
-        use_checkpoint = (
-            checkpoint.enabled() if requested_policy is None else requested_policy == "checkpoint"
-        )
+        use_checkpoint = _request_uses_checkpoint(requested_policy)
         if not can_reset and use_checkpoint and int(kwargs.get("sticky_dropped") or 0) > 0:
             # An epoch is in force but THIS request may not reset. Falling straight through
             # to rolling was the worst of both: it replays the checkpoint-sized (near-total)
@@ -957,7 +965,9 @@ def _archive_content_on_branch(content, transcript: Optional[list[str]]) -> bool
 
 
 def _sticky_compaction_boundary(
-    thread_id: Optional[str], branch_messages: Optional[list[dict]] = None
+    thread_id: Optional[str],
+    branch_messages: Optional[list[dict]] = None,
+    context_policy: Optional[str] = None,
 ) -> int:
     """How many leading messages this thread last compacted away, or 0.
 
@@ -973,7 +983,6 @@ def _sticky_compaction_boundary(
     if not thread_id:
         return 0
     try:
-        from core.inference import checkpoint
         from storage import studio_db
 
         # The stored rows are the whole DAG, so the newest assistant turn can belong to a
@@ -1030,13 +1039,14 @@ def _sticky_compaction_boundary(
                 return 0
             # And only under the policy that recorded it. A checkpoint boundary is the depth
             # of a RESET, affordable only because the block is rebuilt on every replay;
-            # under `UNSLOTH_CONTEXT_POLICY=rolling` nothing rebuilds it and both
-            # `_fit_context` guards are `checkpoint.enabled()`, so the depth replays with
-            # nothing handed back (18 evicted where rolling picks 6). Refused HERE, not at
-            # the fit: `boundary_messages` is re-recorded every turn, so a rolling turn that
-            # inherited 18 would persist it with no `checkpoint` key and make the
+            # under rolling nothing rebuilds it, so the depth would replay with nothing
+            # handed back (18 evicted where rolling picks 6). The request's context_policy
+            # overrides the process default the same way `_fit_context` does: switching
+            # Studio to a sliding window must not keep the reset-sized cut. Refused HERE,
+            # not at the fit: `boundary_messages` is re-recorded every turn, so a rolling
+            # turn that inherited 18 would persist it with no `checkpoint` key and make the
             # reset-sized window permanent. Let rolling compute its own.
-            if truncation.get("checkpoint") and not checkpoint.enabled():
+            if truncation.get("checkpoint") and not _request_uses_checkpoint(context_policy):
                 return 0
             # Counted against the request's own transcript, which is what it is applied
             # to. `dropped_messages` is the fallback for turns saved before that was
@@ -25159,7 +25169,9 @@ class LlamaCppBackend:
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
-                    sticky_dropped = _sticky_compaction_boundary(thread_id, _before_fit),
+                    sticky_dropped = _sticky_compaction_boundary(
+                        thread_id, _before_fit, context_policy = context_policy
+                    ),
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
                         thread_id,
@@ -25848,7 +25860,9 @@ class LlamaCppBackend:
                         sticky_dropped = (
                             0
                             if _sticky_boundary_applied
-                            else _sticky_compaction_boundary(thread_id, _request_branch)
+                            else _sticky_compaction_boundary(
+                                thread_id, _request_branch, context_policy = context_policy
+                            )
                         ),
                         **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
@@ -27486,7 +27500,9 @@ class LlamaCppBackend:
                     sticky_dropped = (
                         0
                         if _sticky_boundary_applied
-                        else _sticky_compaction_boundary(thread_id, _request_branch)
+                        else _sticky_compaction_boundary(
+                            thread_id, _request_branch, context_policy = context_policy
+                        )
                     ),
                     **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                 )
