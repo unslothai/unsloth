@@ -99,8 +99,7 @@ function ensureActiveModelInStoreList(
 ): void {
   const store = useChatRuntimeStore.getState();
   const caps = {
-    // Adopting a model the backend already had is one of the ways a row is minted
-    // without a catalog entry, and the seed gate reads this off the row.
+    // Adopting a model the backend already had mints a row with no catalog entry behind it.
     isMlx: status.is_mlx ?? false,
     isAudio: status.is_audio ?? false,
     audioType: status.audio_type ?? null,

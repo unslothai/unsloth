@@ -112,7 +112,7 @@ export function getPresetOwnedParams(
     maxTokens: params.maxTokens,
     systemPrompt: params.systemPrompt ?? "",
     systemVariables: params.systemVariables ?? "",
-    // The seed sits with the sampling knobs in the panel, so a preset captures it there too.
+    // Normalised, so a preset saved before the field existed never reads as modified.
     seed: params.seed ?? null,
   };
 }

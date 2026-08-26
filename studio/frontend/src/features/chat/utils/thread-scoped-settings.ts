@@ -109,8 +109,6 @@ const THREAD_SCOPED_NUMBER_BOUNDS = {
   minP: { min: 0, max: 1, integer: false },
   repetitionPenalty: { min: 1, max: 2, integer: false },
   presencePenalty: { min: 0, max: 2, integer: false },
-  // Same ceiling as the panel and the installation copy: llama.cpp keeps 0xFFFFFFFF
-  // for its draw-one sentinel, so a pin stops one below it.
   seed: { min: 0, max: MAX_SAMPLING_SEED, integer: true },
 } as const satisfies Partial<
   Record<

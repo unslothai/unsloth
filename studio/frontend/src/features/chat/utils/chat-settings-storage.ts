@@ -156,7 +156,7 @@ function sanitizeInferenceParams(
   }
   // Bounded here as well as in the panel: this gates the hydration read and the outgoing PUT alike.
   if (value.seed === null) {
-    // null IS the clear, and the server merge only overwrites the keys it receives.
+    // Kept, not dropped: the server merge overwrites the keys it receives and removes none.
     params.seed = null;
   } else if (
     typeof value.seed === "number" &&
