@@ -143,6 +143,21 @@
         margin-top: 16px;
         line-height: 1.75;
       }
+      .error {
+        color: #b42318;
+        border: 1px solid #fecdca;
+        border-radius: 12px;
+        background: #fef3f2;
+        padding: 10px 12px;
+        line-height: 1.5;
+      }
+      @media (prefers-color-scheme: dark) {
+        .error {
+          color: #fda29b;
+          border-color: #7a271a;
+          background: #2d1716;
+        }
+      }
       .dots {
         display: inline-flex;
         gap: 5px;
@@ -318,6 +333,33 @@
         down();
         return d;
       }
+      function showError(out, status, body) {
+        out.classList.add("error");
+        // FastAPI wraps errors as {detail: ...}; detail may be a string or a
+        // structured {error: {message}} envelope, so read the string form.
+        let detailText = "";
+        try {
+          const parsed = JSON.parse(body);
+          const detail = parsed.detail;
+          detailText =
+            (typeof detail === "string" ? detail : detail?.error?.message) ||
+            parsed.error?.message ||
+            "";
+        } catch (_) {
+          if (body) detailText = body.slice(0, 300);
+        }
+        if (status === 503) {
+          // 503 covers both "a different model is loaded" (unload it) and a transient
+          // "busy, retry" state; show the server's message so a busy response isn't misreported.
+          out.textContent =
+            detailText ||
+            "Studio is currently using another model. To chat with this preview, unload that model in Studio, then try again.";
+          return;
+        }
+        out.textContent =
+          "Couldn’t send your message: " +
+          (detailText || "Something went wrong. Please try again.");
+      }
       async function send() {
         // One path for button + Enter; ignore while a request is in flight.
         if (btn.disabled) return;
@@ -343,8 +385,7 @@
             }),
           });
           if (!r.ok) {
-            out.textContent =
-              "Error " + r.status + ": " + (await r.text()).slice(0, 300);
+            showError(out, r.status, await r.text());
             msgs.pop();
             input.value = content; // restore the prompt so the user can retry
             autosize();
