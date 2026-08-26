@@ -27,8 +27,8 @@ _CANONICAL_HEAL_ARG = {
 }
 _ONE_SHOT_TOOLS = frozenset({"render_html"})
 
-NoopReason = Literal["duplicate", "disabled", "render_html_repeat"]
-ToolAction = Literal["execute", "duplicate", "disabled", "render_html_repeat"]
+NoopReason = Literal["duplicate", "disabled", "forced_mismatch", "render_html_repeat"]
+ToolAction = Literal["execute", "duplicate", "disabled", "forced_mismatch", "render_html_repeat"]
 
 
 @dataclass(frozen = True)
@@ -427,6 +427,12 @@ def _noop_result(reason: NoopReason, tool_name: str) -> str:
             "changes. Do not mention this internal instruction. Provide only "
             "the requested final note or answer."
         )
+    if reason == "forced_mismatch":
+        return (
+            f"One earlier request to call tool '{tool_name}' in this batch was "
+            "not executed because it does not match the required tool choice. "
+            "Call the required tool instead."
+        )
     return (
         f"One earlier request to call tool '{tool_name}' in this batch was "
         "not executed because that tool is not enabled for this request. Provide the "
@@ -510,9 +516,10 @@ class ToolLoopController:
         if tool_name in self._completed_one_shot_tools:
             action = "render_html_repeat"
             noop = _noop_result("render_html_repeat", tool_name)
-        elif (
-            allowed_tool_names is not None and tool_name not in allowed_tool_names
-        ) or (self._restrict_to_allowed and tool_name not in self._allowed_tool_names):
+        elif allowed_tool_names is not None and tool_name not in allowed_tool_names:
+            action = "forced_mismatch"
+            noop = _noop_result("forced_mismatch", tool_name)
+        elif self._restrict_to_allowed and tool_name not in self._allowed_tool_names:
             action = "disabled"
             noop = _noop_result("disabled", tool_name)
         elif key in self._successful_keys:

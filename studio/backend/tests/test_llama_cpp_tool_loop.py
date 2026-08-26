@@ -340,18 +340,22 @@ def test_forced_tool_choice_must_exist_in_the_catalog(monkeypatch):
     assert payloads == []
 
 
-def test_forced_tool_choice_rejects_other_structured_calls(monkeypatch):
+def test_forced_tool_choice_retries_after_other_structured_calls(monkeypatch):
+    wrong_code = "print('wrong tool')\n" * 20
     streams = [
-        _structured_tool_call("python", {"code": "print(1)"}, "call_python"),
-        [_sse({"content": "No tool ran."}), _done()],
+        _structured_tool_call("python", {"code": wrong_code}, "call_python"),
+        _structured_tool_call("web_search", {"query": "kernel version"}, "call_search"),
+        [_sse({"content": "The search completed."}), _done()],
     ]
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
+    calls: list[tuple[str, dict]] = []
 
-    def fail_execute_tool(name, arguments, **_kwargs):
-        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "Linux kernel result"
 
-    monkeypatch.setattr("core.inference.tools.execute_tool", fail_execute_tool)
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
 
     events = list(
         backend.generate_chat_completion_with_tools(
@@ -361,13 +365,19 @@ def test_forced_tool_choice_rejects_other_structured_calls(monkeypatch):
                 {"type": "function", "function": {"name": "python"}},
             ],
             tool_choice = {"type": "function", "function": {"name": "web_search"}},
-            max_tool_iterations = 1,
+            max_tool_iterations = 2,
         )
     )
 
     assert payloads[0]["tool_choice"] == "required"
     assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["web_search"]
-    assert not [event for event in events if event.get("type") in {"tool_start", "tool_end"}]
+    assert payloads[1]["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in payloads[1]["tools"]] == ["web_search"]
+    assert payloads[2]["tool_choice"] == "auto"
+    assert calls == [("web_search", {"query": "kernel version"})]
+    assert [
+        event.get("tool_name") for event in events if event.get("type") == "tool_start"
+    ] == ["web_search"]
 
 
 def test_none_tool_choice_never_executes_model_tool_calls(monkeypatch):

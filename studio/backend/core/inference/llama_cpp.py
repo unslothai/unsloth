@@ -26301,7 +26301,7 @@ class LlamaCppBackend:
                                             and any(
                                                 (tool.get("function") or {}).get("name")
                                                 == current_name
-                                                for tool in active_tools
+                                                for tool in safe_tools
                                             )
                                         ):
                                             provisional_started_tool_calls[current_id] = (
