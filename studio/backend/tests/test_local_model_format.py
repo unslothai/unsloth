@@ -276,15 +276,27 @@ def _local(
 def test_windows_cloud_recall_attributes_are_not_local():
     from utils.paths.path_utils import file_contents_available_locally
 
-    for attribute in (0x00001000, 0x00040000, 0x00400000):
+    # Synology Drive exposes an online-only GGUF as 0x400020 through Python's
+    # os.stat(), and as 0x401620 through directory enumeration. Keep the individual
+    # Windows recall flags too so another cloud provider cannot regress unnoticed.
+    for attributes in (
+        0x00400020,
+        0x00401620,
+        0x00001000,
+        0x00040000,
+        0x00400000,
+    ):
         assert not file_contents_available_locally(
-            "unused", types.SimpleNamespace(st_file_attributes = attribute)
+            "unused", types.SimpleNamespace(st_file_attributes = attributes)
         )
 
-    # Unpinned is user intent, not proof that bytes are absent.
-    assert file_contents_available_locally(
-        "unused", types.SimpleNamespace(st_file_attributes = 0x00100000)
-    )
+    # A hydrated Synology file remains a reparse point (0x420), and UNPINNED is
+    # user intent rather than proof that bytes are absent. Both must retain real
+    # architecture, context, and projector reads.
+    for attributes in (0x00000420, 0x00100000):
+        assert file_contents_available_locally(
+            "unused", types.SimpleNamespace(st_file_attributes = attributes)
+        )
 
 
 def test_local_gguf_task_reads_present_header(tmp_path, monkeypatch):
