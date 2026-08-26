@@ -3993,6 +3993,43 @@ _RAG_ROSTER_MAX_BYTES = 2000
 _RAG_ROSTER_NAME_OVERHEAD = 4
 _roster_failure_logged = False
 
+# Every codepoint Unicode classes as a control (Cc) or a format character (Cf), applied to
+# a name before the whitespace pass. These are the invisible half of the problem the quote
+# escape solves, and quoting stops none of them: U+202E and the isolates reorder every
+# character after them, so one file name can rewrite how the rest of the sentence renders
+# (CVE-2021-42574, "Trojan Source"); U+200B and the joiners split a name into pieces that
+# read as one; ESC is a terminal control sequence in any console or log that echoes the
+# prompt. Only linked folders can carry them -- uploads pass an allowlist at
+# routes/rag.py:_sanitize_filename -- but a linked folder indexes a relative path exactly
+# as it came off disk, and every byte except "/" and NUL is legal in one.
+#
+# The whitespace-like controls map to a space instead of being dropped, so that a name
+# broken across lines still reads as separate words rather than one joined word; the
+# `\s+` collapse then folds those runs. Doing it in this order is what lets a single pass
+# handle both, since a control dropped first would join the words either side of it.
+_ROSTER_STRIP_RANGES = (
+    (0x00, 0x1F), (0x7F, 0x9F),  # Cc
+    (0xAD, 0xAD), (0x600, 0x605), (0x61C, 0x61C), (0x6DD, 0x6DD), (0x70F, 0x70F),
+    (0x890, 0x891), (0x8E2, 0x8E2), (0x180E, 0x180E), (0x200B, 0x200F),
+    (0x202A, 0x202E), (0x2060, 0x2064), (0x2066, 0x206F), (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFB), (0x110BD, 0x110BD), (0x110CD, 0x110CD), (0x13430, 0x1343F),
+    (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A), (0xE0001, 0xE0001), (0xE0020, 0xE007F),
+)
+# The controls `\s` already matches, which become a space rather than vanishing.
+_ROSTER_SPACE_LIKE = frozenset(range(0x09, 0x0E)) | frozenset(range(0x1C, 0x20)) | {0x85}
+# A table rather than a unicodedata scan: deriving it at import costs ~90 ms of startup,
+# and this runs twice per document row inside a query that already walks the whole scope.
+# test_roster_strip_table_covers_every_control_and_format_character pins it against the
+# running interpreter's Unicode, so a revision that adds a format character fails a test
+# rather than quietly letting one through. It checks for missing entries only: the table
+# is written for the newest Unicode, and 3.9 and 3.10 ship Unicode 13, which has not yet
+# classified U+0890 or the upper Egyptian hieroglyph controls.
+_ROSTER_STRIP = {
+    c: (" " if c in _ROSTER_SPACE_LIKE else None)
+    for lo, hi in _ROSTER_STRIP_RANGES
+    for c in range(lo, hi + 1)
+}
+
 # Mirrors the SCOPE-level visibility clauses every retrieval query carries
 # (store.search_lexical, search_dense, all_chunks_for_scope): no chunks, a retired scope,
 # or a linked-folder row whose mapping was never installed. It does not mirror
@@ -4011,8 +4048,18 @@ _ROSTER_PREDICATE = (
 # say more exist. Grouping on the raw column only narrows that -- deep linked-folder
 # paths sharing the first _RAG_ROSTER_MAX_NAME_CHARS, or names differing only in a run of
 # whitespace, are distinct rows that become one line. One definition of a name for the
-# list, the limit and the count is the only version with no gap between them. It costs a
-# call per row of the scope, against a query that already sorts every one of them.
+# list, the limit and the count is the only version with no gap between them.
+#
+# It is not free. Grouping on the function means the LIMIT cannot be pushed down (the plan
+# is SEARCH d USING INDEX idx_documents_scope, then USE TEMP B-TREE FOR GROUP BY and again
+# FOR ORDER BY), so every row in the scope is visited and the callback runs twice per row
+# per statement -- four times per document once the list truncates and the count query
+# also runs, which for a large linked folder is always. Measured on a warm server CPU:
+# 1.8 ms at 200 documents, 144 ms at 20k, 360 ms at 50k, roughly 2-3x that on a laptop,
+# paid on every RAG chat completion and every token count. It runs off the event loop, so
+# it is latency on the asking user's own turn rather than a stall for everyone. Nothing
+# here varies per request, so a cache keyed on (scope, COUNT(*), MAX(created_at)) would
+# collapse the repeat path to an index probe if this ever needs to scale.
 _ROSTER_NAMES_SQL = (
     f"SELECT roster_name(d.filename) AS name FROM documents d "
     f"WHERE d.scope = ? AND {_ROSTER_PREDICATE} "
@@ -4041,11 +4088,12 @@ def _roster_scopes(rag_scope: dict) -> list[str]:
 
 
 def _roster_name(raw: object) -> str:
-    """Collapse whitespace, cap length, escape the quote: linked-folder names are raw
-    relative paths off disk, so a newline would forge lines in the system prompt and a
-    bare quote would close the one this list wraps the name in, leaving the rest of the
-    name reading as prose the model was told."""
-    name = _re.sub(r"\s+", " ", str(raw or "")).strip()
+    """Collapse whitespace, drop invisible controls, cap length, escape the quote:
+    linked-folder names are raw relative paths off disk, so a newline would forge lines in
+    the system prompt, a bare quote would close the one this list wraps the name in
+    leaving the rest of the name reading as prose the model was told, and a direction
+    override would reorder the sentence around it."""
+    name = _re.sub(r"\s+", " ", str(raw or "").translate(_ROSTER_STRIP)).strip()
     if len(name) > _RAG_ROSTER_MAX_NAME_CHARS:
         name = name[:_RAG_ROSTER_MAX_NAME_CHARS] + "..."
     # Backslash first: escaping the quote into a name that already ends in one would
@@ -4054,6 +4102,8 @@ def _roster_name(raw: object) -> str:
 
 
 def _read_roster(rag_scope: dict) -> tuple[list[str], int]:
+    import sqlite3 as _sqlite3
+
     from storage import rag_db
 
     scopes = _roster_scopes(rag_scope)
@@ -4064,7 +4114,15 @@ def _read_roster(rag_scope: dict) -> tuple[list[str], int]:
         return [], 0
     conn = rag_db.get_metadata_connection()
     try:
-        conn.create_function("roster_name", 1, _roster_name, deterministic = True)
+        try:
+            conn.create_function("roster_name", 1, _roster_name, deterministic = True)
+        except _sqlite3.NotSupportedError:
+            # Refused below SQLite 3.8.3, and CPython decides that at compile time, so a
+            # Python linked against an old library (RHEL 7 ships 3.7.17) would lose the
+            # roster for the life of the install rather than for one request. The flag
+            # only lets SQLite use the function in an index and hoist constant arguments,
+            # neither of which this query does.
+            conn.create_function("roster_name", 1, _roster_name)
         names: list[str] = []
         seen: set[str] = set()
         budget = _RAG_ROSTER_MAX_BYTES
