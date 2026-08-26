@@ -888,6 +888,8 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
 
             config = manifest.get("config")
             config_digest = config.get("digest", "") if isinstance(config, dict) else ""
+            if not isinstance(config_digest, str):
+                config_digest = ""
             model_type = ""
             file_type = ""
             if config_digest and blobs_dir.is_dir():
