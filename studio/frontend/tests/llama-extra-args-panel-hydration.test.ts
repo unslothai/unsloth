@@ -12,6 +12,24 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import {
+  installLocalStorageFake,
+  registerBundlerResolver,
+} from "./helpers/kit.ts";
+
+registerBundlerResolver();
+installLocalStorageFake();
+
+const {
+  DEFAULT_PER_MODEL_CONFIG,
+  deletePerModelConfig,
+  perModelConfigStorageChanged,
+  resolveInitialConfig,
+  savePerModelConfig,
+} = await import(
+  "../src/features/model-picker/model-config/per-model-config.ts"
+);
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PANEL = readFileSync(
   path.join(
@@ -189,8 +207,53 @@ test("the panel adopts a shared server config without overwriting a live edit", 
   assert.match(PANEL, /setSavedRemember\(true\);/);
 });
 
-test("the hydration write-back merges against current storage", () => {
+test("hydration detects a newer save or forget", () => {
+  const modelId = "unsloth/Hydration-Race-GGUF";
+  const variant = "Q4_K_M";
+  assert.ok(
+    savePerModelConfig(modelId, variant, {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      customContextLength: 2048,
+    }),
+  );
+  const atStart = resolveInitialConfig(modelId, variant);
+
+  assert.ok(
+    savePerModelConfig(modelId, variant, {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      customContextLength: 4096,
+    }),
+  );
+  assert.equal(
+    perModelConfigStorageChanged(
+      atStart,
+      resolveInitialConfig(modelId, variant),
+    ),
+    true,
+  );
+
+  assert.ok(deletePerModelConfig(modelId, variant));
+  assert.equal(
+    perModelConfigStorageChanged(
+      atStart,
+      resolveInitialConfig(modelId, variant),
+    ),
+    true,
+  );
+  assert.equal(
+    perModelConfigStorageChanged(atStart, {
+      config: { ...atStart.config },
+      remembered: atStart.remembered,
+    }),
+    false,
+  );
+});
+
+test("the hydration write-back rejects a stale server response", () => {
   const requestStart = PANEL.indexOf("Promise.all([");
+  const storageSnapshot = PANEL.indexOf(
+    "const storedAtStart = resolveInitialConfig(configId, target.ggufVariant);",
+  );
   const responseStart = PANEL.indexOf(
     ".then(([resolvedOverride, managed]) => {",
     requestStart,
@@ -205,20 +268,18 @@ test("the hydration write-back merges against current storage", () => {
   );
   assert.ok(
     requestStart >= 0 &&
+      storageSnapshot >= 0 &&
+      storageSnapshot < requestStart &&
       responseStart > requestStart &&
       adoptionStart > responseStart &&
       writeBackEnd > adoptionStart,
-    "the storage read must be inside the successful hydration write-back",
+    "the storage snapshot must precede the request and guard its write-back",
   );
-
-  const beforeResponse = PANEL.slice(requestStart, responseStart);
-  assert.doesNotMatch(beforeResponse, /resolveInitialConfig\(/);
-  assert.doesNotMatch(PANEL, /storedAtStart/);
 
   const writeBack = PANEL.slice(adoptionStart, writeBackEnd);
   assert.match(
     writeBack,
-    /const storedConfig = resolveInitialConfig\(\s*configId,\s*target\.ggufVariant,\s*\)\.config;\s*const rememberedConfig = fromApiOverride\(resolvedRow, storedConfig\);[\s\S]*savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
+    /const storedConfig = resolveInitialConfig\(\s*configId,\s*target\.ggufVariant,\s*\);\s*if \(perModelConfigStorageChanged\(storedAtStart, storedConfig\)\) \{\s*return;\s*\}[\s\S]*const rememberedConfig = fromApiOverride\(\s*resolvedRow,\s*storedConfig\.config,\s*\);[\s\S]*savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
   );
 });
 

@@ -118,6 +118,7 @@ import {
   isServedByMlx,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
+  perModelConfigStorageChanged,
   readAdvancedSettingsOpen,
   resolveInitialConfig,
   saveAdvancedSettingsOpen,
@@ -2096,6 +2097,7 @@ export function ModelConfigPage({
     // rewrite live input: typing --agent during the window cleared the box instead
     // of showing the error, and a long paste could be trimmed behind the cursor.
     const configAtStart = configRef.current;
+    const storedAtStart = resolveInitialConfig(configId, target.ggufVariant);
     const rememberAtStart = rememberRef.current;
     const localAtStart = configAtStart.llamaExtraArgs;
     // The denylist, not the catalogue: sanitizing a stored list needs only the flags
@@ -2229,6 +2231,13 @@ export function ModelConfigPage({
           configRef.current === configAtStart &&
           rememberRef.current === rememberAtStart
         ) {
+          const storedConfig = resolveInitialConfig(
+            configId,
+            target.ggufVariant,
+          );
+          if (perModelConfigStorageChanged(storedAtStart, storedConfig)) {
+            return;
+          }
           setExtraArgsLoadable(hydratedIsLoadable);
           setConfig(serverConfig);
           setRemember(true);
@@ -2236,11 +2245,6 @@ export function ModelConfigPage({
           if (hasNonDefaultAdvanced(serverConfig)) {
             setAutoOpenAdvanced(true);
           }
-          // Onto the current stored record, not the shown one: an active model seeds
-          // the panel from loadedConfig, and another tab can save while hydration is
-          // in flight. The row outranks both, so the shared settings still land in
-          // local storage for the load paths that never open this panel.
-          //
           // Unconditionally, because savePerModelConfig says "no settings" by
           // DELETING the entry: a merge that comes out default is a clear that has
           // to travel, not a write to skip. Clearing a model's only remembered
@@ -2248,11 +2252,10 @@ export function ModelConfigPage({
           // case, and skipping it stranded the old flag here for model-selector's
           // quick select to reload without ever opening this panel. Writing when
           // no record exists is already a no-op.
-          const storedConfig = resolveInitialConfig(
-            configId,
-            target.ggufVariant,
-          ).config;
-          const rememberedConfig = fromApiOverride(resolvedRow, storedConfig);
+          const rememberedConfig = fromApiOverride(
+            resolvedRow,
+            storedConfig.config,
+          );
           // Same budget as any other write, so the same clean-up: eviction is silent
           // and still reports success, and a dropped model would keep applying its
           // server row to API loads while the picker showed defaults, with nothing
