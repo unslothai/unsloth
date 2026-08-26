@@ -128,6 +128,11 @@ export type ViewerColumnSelection = {
   source: "auto" | "manual";
 };
 
+export type UnselectedInstructionColumn = {
+  column: string;
+  reason: "empty_first_value" | "unsupported_audio_mapping";
+};
+
 const VIEWER_ROLE_LABELS: Record<string, string> = {
   image: "Image",
   text: "Assistant response",
@@ -179,7 +184,8 @@ export function getViewerColumnSelections(
 export function getUnselectedInstructionColumns(
   data: CheckFormatResponse,
   selections: ViewerColumnSelection[],
-): string[] {
+  isAudio = false,
+): UnselectedInstructionColumn[] {
   const selected = new Set(selections.map(({ column }) => column));
   const instructionNames = new Set([
     "question",
@@ -188,7 +194,10 @@ export function getUnselectedInstructionColumns(
     "instruction",
     "user_prompt",
   ]);
-  return data.columns.filter(
-    (column) => instructionNames.has(column) && !selected.has(column),
-  );
+  return data.columns
+    .filter((column) => instructionNames.has(column) && !selected.has(column))
+    .map((column) => ({
+      column,
+      reason: isAudio ? "unsupported_audio_mapping" : "empty_first_value",
+    }));
 }
