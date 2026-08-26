@@ -61,7 +61,12 @@ const SUPPORTED_LANGUAGE_LIST = Array.from(
 ) as BundledLanguage[];
 const PLAIN_TEXT = "text" as BundledLanguage;
 
-const normalizeLanguage = (language: string): BundledLanguage => {
+/**
+ * The fence tag as Shiki will see it: lower-cased, aliases resolved. Exported so that anything
+ * keying a per-grammar cache uses the same identity `highlight` does -- `py` and `Python` are one
+ * grammar here, and two keys anywhere else means the same grammar is warmed twice.
+ */
+export const normalizeLanguage = (language: string): BundledLanguage => {
   const key = language.trim().toLowerCase();
   const alias = LANGUAGE_ALIAS_OVERRIDES[key] ?? SHIKI_LANGUAGE_ALIASES[key];
   return alias ?? (key as BundledLanguage);
