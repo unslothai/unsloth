@@ -1559,6 +1559,7 @@ _REPO_INFO_HELPERS = frozenset(
         "_repo_gguf_size_bytes",
         "_repo_has_gguf_files",
         "_repo_non_gguf_model_payload",
+        "catalog_classification._repo_gguf_audio_type",
         "getattr",
     }
 )

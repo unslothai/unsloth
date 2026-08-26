@@ -3568,7 +3568,7 @@ def test_hub_local_rows_are_tagged_with_their_task():
     assert "task" in LocalModelInfo.model_fields
     src = inspect.getsource(local_inventory.list_local_models_response)
     assert "_local_model_task" in src
-    assert 'model_copy(update = {"task"' in src
+    assert 'model_copy(update={"task"' in "".join(src.split())
 
 
 def test_pipeline_class_guard_fires_before_any_download():
