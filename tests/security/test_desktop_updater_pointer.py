@@ -15,6 +15,7 @@ because a shim that quietly succeeds turns a broken step into a passing test.
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -30,8 +31,11 @@ SUFFIXES = ("MacOS.dmg", "Linux.AppImage", "Ubuntu.deb", "Windows.exe")
 STABLE_ASSETS = tuple(f"Unsloth-Desktop-{suffix}" for suffix in SUFFIXES)
 
 # A `gh` that keeps state, so a PATCH is observable in the next read and an
-# unmodelled call is a loud failure rather than a silent success.
-FAKE_GH = r"""#!/usr/bin/env python3
+# unmodelled call is a loud failure rather than a silent success. The body is
+# Python because the state it keeps is JSON; it is reached through a /bin/sh
+# shim like every other fake in this directory, because a `python3` shebang does
+# not resolve on a Windows runner, where the interpreter is `python.exe`.
+FAKE_GH_BODY = r"""
 import json, os, pathlib, sys
 
 state_path = pathlib.Path(os.environ["FAKE_STATE"])
@@ -211,8 +215,10 @@ def _run_step(
     tmp_path.mkdir(parents = True, exist_ok = True)
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok = True)
+    body = fake_bin / "fake_gh.py"
+    body.write_text(FAKE_GH_BODY, encoding = "utf-8")
     gh = fake_bin / "gh"
-    gh.write_text(FAKE_GH, encoding = "utf-8")
+    gh.write_text(f'#!/bin/sh\nexec "$FAKE_GH_PYTHON" "{body}" "$@"\n', encoding = "utf-8")
     gh.chmod(0o755)
 
     log = tmp_path / "commands.log"
@@ -223,6 +229,7 @@ def _run_step(
     env.update(
         {
             "COMMAND_LOG": str(log),
+            "FAKE_GH_PYTHON": sys.executable,
             "FAKE_STATE": str(state_path),
             "GITHUB_OUTPUT": str(output),
             "GITHUB_REPOSITORY": REPOSITORY,
