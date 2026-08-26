@@ -172,7 +172,7 @@ def print_studio_access_banner(
                 style("  LAN access is on -- also reachable on your network at:", secondary)
             )
             lines.extend(style(f"    http://{a}:{port}", secondary) for a in lan_addresses)
-            lines.append(style("  Turn it off in Settings > API keys > LAN access.", secondary))
+            lines.append(style("  Turn it off in Settings > Remote & LAN > LAN access.", secondary))
         else:
             lines.extend(
                 [
@@ -182,7 +182,7 @@ def print_studio_access_banner(
                         secondary,
                     ),
                     style(
-                        "  To expose it, turn on Settings > API keys > LAN access, or "
+                        "  To expose it, turn on Settings > Remote & LAN > LAN access, or "
                         f"relaunch with:  unsloth studio -H 0.0.0.0 -p {port}",
                         secondary,
                     ),

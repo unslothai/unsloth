@@ -22,6 +22,7 @@ import math
 import os
 from pathlib import Path
 from typing import Any, Callable, Optional
+from utils.paths.path_utils import drop_appledouble_metadata
 
 # ── the model's grid ─────────────────────────────────────────────────────────
 #
@@ -198,7 +199,9 @@ def discover_clip_caption_pairs(
     if not root.is_dir():
         raise FileNotFoundError(f"data_dir is not a directory: {data_dir}")
 
-    clips = sorted(p for p in root.iterdir() if p.is_file() and p.suffix.lower() in _VIDEO_EXTS)
+    clips = drop_appledouble_metadata(
+        sorted(p for p in root.iterdir() if p.is_file() and p.suffix.lower() in _VIDEO_EXTS)
+    )
 
     meta_caption: dict[str, str] = {}
     for meta_name in ("metadata.jsonl", "captions.jsonl"):

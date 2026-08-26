@@ -41,6 +41,7 @@ function config(overrides: Record<string, unknown> = {}) {
     nBatch: null,
     nUbatch: null,
     tensorParallel: false,
+    disableVision: false,
     chatTemplateOverride: null,
     ...overrides,
   };

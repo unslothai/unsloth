@@ -195,9 +195,21 @@ export function ArtifactSurface({
       className={cn(
         "relative flex min-h-0 flex-col bg-background",
         variant === "panel"
-          ? "artifact-panel-shell mx-2 mt-[90px] mb-8 h-[calc(100%_-_122px)] overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
+          ? "artifact-panel-shell mx-2 mb-8 overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
           : "h-[min(92dvh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
       )}
+      // The chat-model notice is an absolute child of the chat content container, so
+      // it spans this column too, not just the thread pane. Its height is 0 whenever
+      // it is not on screen, which leaves the geometry this panel has always had.
+      // Both edges move, or the panel keeps its height and overflows the bottom.
+      style={
+        variant === "panel"
+          ? {
+              marginTop: "calc(90px + var(--studio-chat-notice-height, 0px))",
+              height: "calc(100% - 122px - var(--studio-chat-notice-height, 0px))",
+            }
+          : undefined
+      }
       aria-label={`${artifact.title} canvas`}
     >
       <header

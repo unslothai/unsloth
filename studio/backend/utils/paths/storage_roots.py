@@ -11,6 +11,8 @@ import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import tempfile
 
+from utils.paths.path_utils import drop_appledouble_metadata
+
 
 def _infer_studio_home_from_venv() -> Path | None:
     """Return parent of sys.prefix as STUDIO_HOME when running from an
@@ -530,6 +532,23 @@ def resolve_tensorboard_dir(path_value: str | None = None) -> Path:
         root = tensorboard_root(),
         strip_prefixes = ("runs", "tensorboard"),
     )
+
+
+def dataset_files_in_dir(directory: Path) -> list[Path]:
+    """Loadable dataset files for *directory*, preferring a ``parquet-files/`` export over the
+    directory's own files. Raises ``ValueError`` when it holds no supported format."""
+    parquet_dir = directory / "parquet-files"
+    if not parquet_dir.exists():
+        parquet_dir = directory
+    parquet = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
+    if parquet:
+        return parquet
+    files: list[Path] = []
+    for ext in (".json", ".jsonl", ".csv", ".parquet"):
+        files.extend(drop_appledouble_metadata(sorted(directory.glob(f"*{ext}"))))
+    if not files:
+        raise ValueError(f"No supported data files in directory: {directory}")
+    return files
 
 
 def resolve_dataset_path(path_value: str) -> Path:

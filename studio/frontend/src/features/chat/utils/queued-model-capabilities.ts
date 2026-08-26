@@ -2,7 +2,12 @@ import type { ChatModelSummary } from "../types/runtime";
 
 export type QueuedModelCapabilities = Pick<
   ChatModelSummary,
-  "isVision" | "isGguf" | "isAudio" | "audioType" | "hasAudioInput"
+  | "isVision"
+  | "isGguf"
+  | "isAudio"
+  | "audioType"
+  | "hasAudioInput"
+  | "hasVideoInput"
 >;
 
 /**

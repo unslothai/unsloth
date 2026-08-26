@@ -2,6 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
+import {
+  clearedServerTuningState,
+  committedServerTuningState,
+  serverTuningLoadPayload,
+} from "./lib/server-tuning-fields";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   thinkEffortAriaLabel,
@@ -31,6 +36,11 @@ import {
   notifyStudioDictationUnavailable,
 } from "@/features/chat/adapters/studio-dictation-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import {
+  COMPOSER_INPUT_SELECTOR,
+  isSurfaceInForeground,
+  useShortcut,
+} from "@/features/settings";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
   AUDIO_ACCEPT,
@@ -38,6 +48,7 @@ import {
   getAudioSizeError,
 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
+import { isVideoFile } from "@/lib/video-utils";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
@@ -71,6 +82,7 @@ import {
   PencilRulerIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
+import { useChatActive } from "./runtime-provider";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
 import {
@@ -91,6 +103,7 @@ import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
+  DEFAULT_PER_MODEL_CONFIG,
   normalizeMaxSeqLength,
   resolveInitialConfig,
   type PerModelConfig,
@@ -134,6 +147,7 @@ import {
   type ReasoningEffort,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
+  resolvePreserveThinkingOnLoad,
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
@@ -148,6 +162,7 @@ import {
 import {
   type CompositionEvent,
   type ClipboardEvent,
+  type DragEvent as ReactDragEvent,
   type FC,
   type KeyboardEvent,
   type MutableRefObject,
@@ -457,7 +472,10 @@ function PendingImageThumb({
   if (!src)
     return <div className="size-14 animate-pulse rounded-[14px] bg-muted" />;
   return (
-    <div className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted">
+    <div
+      data-reload-snapshot-sensitive
+      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted"
+    >
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
       <button
         type="button"
@@ -502,6 +520,13 @@ function PillGlyph({ children }: { children: ReactNode }) {
       <XIcon className="composer-pill-x" />
     </span>
   );
+}
+
+/** True when a drop reached this composer from a portaled child, such as a
+ * dialog and its overlay, which React routes through here but which owns it. */
+function isPortaledDrop(event: ReactDragEvent): boolean {
+  const target = event.target as Element | null;
+  return !target?.closest?.(".chat-composer-surface");
 }
 
 export function SharedComposer({
@@ -592,6 +617,9 @@ export function SharedComposer({
   );
   const lastModelLoadError = useChatRuntimeStore((s) => s.lastModelLoadError);
   const loadedIsMultimodal = useChatRuntimeStore((s) => s.loadedIsMultimodal);
+  const loadedVisionDisabledByUser = useChatRuntimeStore(
+    (s) => s.loadedVisionDisabledByUser,
+  );
   const mmprojFallbackReason = useChatRuntimeStore(
     (s) => s.mmprojFallbackReason,
   );
@@ -674,6 +702,7 @@ export function SharedComposer({
     loadedIsMultimodal,
     modelLoaded,
     loadError: lastModelLoadError,
+    visionDisabledByUser: loadedVisionDisabledByUser,
     mmprojFallbackReason,
   });
   const isCompareMode = Boolean(model1?.id || model2?.id);
@@ -919,6 +948,7 @@ export function SharedComposer({
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
       let audioSizeError: string | null = null;
+      let videoUnsupported = false;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
@@ -935,6 +965,12 @@ export function SharedComposer({
           });
           continue;
         }
+        // video_base64 targets the single loaded GGUF, so at most one side of
+        // a compare could answer. Say that rather than drop the file.
+        if (isVideoFile(file)) {
+          videoUnsupported = true;
+          continue;
+        }
         // Handle image files
         if (!file.type.match(/^image\/(jpeg|png|webp|gif)$/i)) continue;
         if (file.size > MAX_IMAGE_SIZE) continue;
@@ -949,6 +985,11 @@ export function SharedComposer({
       }
       if (audioSizeError) {
         toast.error(audioSizeError);
+      }
+      if (videoUnsupported) {
+        toast.error("Video can't be attached in compare mode", {
+          description: "Open a single chat with a video-capable model instead.",
+        });
       }
       setPendingImages((prev) => [...prev, ...next]);
     },
@@ -1354,6 +1395,18 @@ export function SharedComposer({
           : ownRemembered
             ? ownConfig.tensorParallel
             : fallbackTensorParallel;
+        // The diffusion runner has no projector to skip, so the toggle is inert
+        // there for the same reason tensorParallel is.
+        //
+        // A pane with no saved config gets the per-model DEFAULT, not the store's
+        // current value, which belongs to whichever model is loaded. Where this parts
+        // company with tensorParallel: that one deliberately stands across models,
+        // while an unconfigured model is a model with vision on.
+        const effectiveDisableVision = resolvedIsDiffusion
+          ? false
+          : ownRemembered
+            ? ownConfig.disableVision
+            : DEFAULT_PER_MODEL_CONFIG.disableVision;
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }
@@ -1421,6 +1474,7 @@ export function SharedComposer({
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           tensor_parallel: effectiveTensorParallel,
+          disable_vision: effectiveDisableVision,
           // Scope the validate to the picked GPUs. GGUF-only, like the load
           // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
           ...(targetIsGguf
@@ -1445,6 +1499,7 @@ export function SharedComposer({
                 ...(ownConfig.nUbatch != null
                   ? { n_ubatch: ownConfig.nUbatch }
                   : {}),
+                ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
         });
@@ -1510,6 +1565,7 @@ export function SharedComposer({
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           tensor_parallel: effectiveTensorParallel,
+          disable_vision: effectiveDisableVision,
           force_cancel_active:
             compareStopDecision?.forceCancelActive ?? false,
           ...(targetIsGguf
@@ -1532,6 +1588,7 @@ export function SharedComposer({
                 ...(ownConfig.nUbatch != null
                   ? { n_ubatch: ownConfig.nUbatch }
                   : {}),
+                ...serverTuningLoadPayload(ownConfig),
               }
             : {}),
         });
@@ -1591,6 +1648,7 @@ export function SharedComposer({
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
           ...reasoningCapsFromLoad(resp),
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(resp),
           supportsTools: resp.supports_tools ?? false,
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
@@ -1602,6 +1660,9 @@ export function SharedComposer({
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
           loadedNUbatch: committedNUbatch,
+          ...(targetIsGguf && !(resp.is_diffusion ?? false)
+            ? committedServerTuningState(ownConfig)
+            : clearedServerTuningState()),
           // What this pane's launch is running, for a later rollback: the status
           // applier is held off for the whole load, so nothing else records it, and
           // a switch straight after would snapshot the other model's list.
@@ -1611,6 +1672,11 @@ export function SharedComposer({
               : (ownConfig.llamaExtraArgs ?? null),
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          loadedDisableVision: resp.disable_vision ?? false,
+          // Adopted from the echo like the knob above: this pane loaded its own
+          // model, so the editable value must follow it or Advanced Settings
+          // shows the other pane's Vision state.
+          disableVision: resp.disable_vision ?? false,
           defaultChatTemplate: resp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
@@ -1625,7 +1691,9 @@ export function SharedComposer({
           // GPU fields on every load path so the gate can't read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
-
+          // Set alongside loadedIsMultimodal so the composer can say WHY images
+          // are unavailable in compare mode too.
+          loadedVisionDisabledByUser: resp.vision_disabled_by_user ?? false,
           mmprojFallbackReason: resp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: resp.is_local_model ?? false,
           // Record the context this pane loaded with (like the single-model path)
@@ -1667,6 +1735,7 @@ export function SharedComposer({
           isAudio: Boolean(resp.is_audio),
           audioType: resp.audio_type ?? null,
           hasAudioInput: Boolean(resp.has_audio_input),
+          hasVideoInput: Boolean(resp.has_video_input),
         };
         if (idx === -1) {
           store.setModels([
@@ -1829,6 +1898,56 @@ export function SharedComposer({
     !busy &&
     !isComposing &&
     !isDictating;
+
+  // Compare mode swaps this composer in for the single-chat one, and only one
+  // of the two is ever on screen, so the chords register in both. Both gate on
+  // the chat tab being visible: off-route the pane is hidden, not unmounted.
+  const chatActive = useChatActive();
+  useShortcut(
+    "startDictation",
+    () => {
+      // As in the single-chat composer: a dialog over Chat leaves this
+      // registered, and a microphone opened behind one is neither visible nor
+      // stoppable from where the user is.
+      // Stopping first and ungated, as in the single-chat composer: a recording
+      // stays stoppable wherever the gate would say no.
+      if (isDictating) {
+        stopDictation();
+        return;
+      }
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      startDictation();
+    },
+    { enabled: chatActive },
+  );
+  // Through the existing sendRef: `send` is render-scoped, which the React
+  // compiler will not let a hook outlive.
+  useShortcut(
+    "sendMessage",
+    () => {
+      // As in the single-chat composer: the draft behind a dialog is not what
+      // the user is typing.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      sendRef.current?.();
+    },
+    {
+      enabled: chatActive && canSend,
+      // As in the single-chat composer: a non-modal popover's search box is a
+      // text field the composer is still the foreground behind.
+      skipInTextFields: true,
+      textFieldException: COMPOSER_INPUT_SELECTOR,
+    },
+  );
+  useShortcut(
+    "attachFiles",
+    () => {
+      // As in the single-chat composer, which would otherwise raise the file
+      // chooser from behind a dialog.
+      if (!isSurfaceInForeground(COMPOSER_INPUT_SELECTOR)) return;
+      fileInputRef.current?.click();
+    },
+    { enabled: chatActive },
+  );
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
   // level; the rest fall into the "More" overflow submenu. Core items (photos,
@@ -1995,7 +2114,7 @@ export function SharedComposer({
     <div
       className="chat-composer-surface"
       onDragOver={(e) => {
-        if (isTauri) return;
+        if (isTauri || isPortaledDrop(e)) return;
         e.preventDefault();
         setDragging(true);
       }}
@@ -2003,7 +2122,7 @@ export function SharedComposer({
       onDrop={(e) => {
         // Phase 1 native model drops own Tauri local-path drops. Restore
         // browser attachment drops in Tauri once Phase 1d adds token bridging.
-        if (isTauri) return;
+        if (isTauri || isPortaledDrop(e)) return;
         e.preventDefault();
         setDragging(false);
         addFiles(e.dataTransfer.files);
@@ -2067,7 +2186,9 @@ export function SharedComposer({
           {pendingAudio && (
             <div className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs">
               <HeadphonesIcon className="size-3.5 text-muted-foreground" />
-              <span className="max-w-48 truncate">{pendingAudio.name}</span>
+              <span data-reload-snapshot-sensitive className="max-w-48 truncate">
+                {pendingAudio.name}
+              </span>
               <button
                 type="button"
                 onClick={() => {
@@ -2116,11 +2237,16 @@ export function SharedComposer({
           setCompositionState(false);
         }}
         placeholder="Send to both models..."
-        className="composer-input"
-        rows={1}
         // dir="auto" detects RTL (Arabic/Hebrew/Persian/Urdu) from the first
-        // strong character; no effect on LTR scripts.
+        // strong character; no effect on LTR scripts. Kept next to the
+        // placeholder: the IME smoke reads this pair out of the source.
         dir="auto"
+        // aui-composer-input carries no styling anywhere; it is the name both
+        // composers answer to, so one selector can mean "the composer" whichever
+        // of the two is on screen. Escape's decline exception and the dictation
+        // foreground check both rely on it.
+        className="composer-input aui-composer-input"
+        rows={1}
       />
       <div className="composer-action-wrapper">
         <div
@@ -2642,7 +2768,7 @@ export function SharedComposer({
                       : "Stop dictation"
                   }
                 >
-                  <SquareIcon className="size-3 animate-pulse fill-current" />
+                  <SquareIcon className="aui-composer-cancel-icon size-3 animate-pulse fill-current" />
                 </TooltipIconButton>
               )}
             </>
@@ -2670,7 +2796,7 @@ export function SharedComposer({
               className="ml-1.5 size-9 rounded-full"
               onClick={stop}
             >
-              <SquareIcon className="size-3 fill-current" />
+              <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
             </Button>
           ) : (
             <TooltipIconButton
