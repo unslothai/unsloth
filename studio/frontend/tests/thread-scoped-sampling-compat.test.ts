@@ -18,6 +18,10 @@ import { register } from "node:module";
 import test from "node:test";
 
 import { installLocalStorageFake } from "./helpers/kit.ts";
+import {
+  drainMockedTimers,
+  enableCountedTimers,
+} from "./helpers/mock-timer-drain.ts";
 
 const { store: localStorageFake } = installLocalStorageFake();
 localStorageFake.set("unsloth_chat_settings_imported_to_studio_db", "true");
@@ -121,13 +125,20 @@ async function world(rows: Record<string, Record<string, unknown>> = {}) {
   };
 }
 
-async function settle(tick: (ms: number) => void): Promise<void> {
-  for (let round = 0; round < 3; round += 1) {
-    tick(1000);
-    for (let i = 0; i < 6; i += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-  }
+// Wait out the debounced write each case asserts on. The wait is on the store's own
+// outstanding timers and on the module loader, not on a round count: three rounds passed on
+// a dev box's node 24 and failed on the node 22 CI pins, and every count picked since has
+// been a guess that fails silently in one direction. See tests/helpers/mock-timer-drain.ts.
+async function settle(
+  mod: { awaitStartedThreadScopedSettingsWrites: () => Promise<void> },
+  tick: (ms: number) => void,
+  until?: () => boolean,
+): Promise<void> {
+  await drainMockedTimers(tick, {
+    until,
+    label: "settle",
+    barrier: () => mod.awaitStartedThreadScopedSettingsWrites(),
+  });
 }
 
 function assertUsable(sampling: Record<string, unknown>, where: string): void {
@@ -150,12 +161,12 @@ function assertUsable(sampling: Record<string, unknown>, where: string): void {
 // ---------------------------------------------------------------------------
 
 test("C1: a legacy row opens on the installation sampling, and nothing is zeroed", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world({ L: { ...LEGACY_ROW } });
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   w.open("L");
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   assertUsable(w.sampling(), "legacy open");
   // the installation's values, since the row says nothing about sampling
@@ -174,11 +185,11 @@ test("C1: a legacy row opens on the installation sampling, and nothing is zeroed
 // legacy chat stored no sampling, so it follows the installation defaults and a model load
 // moves those. Nothing chosen is lost, but the second visit shows different numbers.
 test("C1b: a legacy chat follows the installation defaults, which a model load moves", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world({ L: { ...LEGACY_ROW } });
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   w.open("L");
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   const onFirstVisit = w.sampling();
   assert.equal(onFirstVisit.temperature, INSTALLATION.temperature);
 
@@ -192,13 +203,13 @@ test("C1b: a legacy chat follows the installation defaults, which a model load m
     },
     { fromModelDefaults: true },
   );
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   // the chat pinned nothing, so it takes the model's values, as it did before this
   assert.equal(w.store().params.temperature, 0.31);
 
   w.open("Z");
   w.open("L");
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   const onSecondVisit = w.sampling();
   assertUsable(onSecondVisit, "legacy reopen");
   // OBSERVED: the reopened legacy chat shows the model's sampling. It stored none, so the
@@ -210,12 +221,12 @@ test("C1b: a legacy chat follows the installation defaults, which a model load m
 });
 
 test("C1c: a legacy chat that the user then edits pins the WHOLE set, not just the edit", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world({ L: { ...LEGACY_ROW } });
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   w.open("L");
   w.store().setParams({ ...w.store().params, temperature: 1.37 });
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   // The write for a chat that already had a snapshot is a full replacement built from the
   // store, so all seven other keys are pinned too and the chat stops drifting.
@@ -238,7 +249,7 @@ test("C1c: a legacy chat that the user then edits pins the WHOLE set, not just t
     },
     { fromModelDefaults: true },
   );
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.equal(w.store().params.temperature, 1.37);
 });
 
@@ -247,12 +258,12 @@ test("C1c: a legacy chat that the user then edits pins the WHOLE set, not just t
 // ---------------------------------------------------------------------------
 
 test("C2: an empty, null or absent snapshot opens on the installation settings", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   for (const snapshot of [null, {}, undefined]) {
     const w = await world();
-    await settle((ms) => t.mock.timers.tick(ms));
+    await settle(w.mod, (ms) => t.mock.timers.tick(ms));
     w.open("E", snapshot === undefined ? null : snapshot);
-    await settle((ms) => t.mock.timers.tick(ms));
+    await settle(w.mod, (ms) => t.mock.timers.tick(ms));
     const where = `snapshot ${JSON.stringify(snapshot ?? null)}`;
     assertUsable(w.sampling(), where);
     assert.deepEqual(w.sampling(), INSTALLATION, where);
@@ -377,7 +388,7 @@ test("C3c: the sanitizer never throws, whatever it is handed", () => {
 });
 
 test("C3d: a NaN or Infinity in a row cannot reach the store", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world({
     N: {
       ...LEGACY_ROW,
@@ -387,9 +398,9 @@ test("C3d: a NaN or Infinity in a row cannot reach the store", async (t) => {
       systemPrompt: null,
     },
   });
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   w.open("N");
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assertUsable(w.sampling(), "NaN row");
   assert.deepEqual(w.sampling(), INSTALLATION);
 });
@@ -398,18 +409,18 @@ test("C3d: a NaN or Infinity in a row cannot reach the store", async (t) => {
 // 1.2 was brought back to 1.0), but the load path applies a recommendation to the live
 // params unclamped, so a custom model_defaults yaml still reaches this.
 test("C3e: an out-of-range recommendation never reaches a chat that pinned that key", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world();
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   w.open("A");
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   w.store().setParams(
     { ...w.store().params, topP: 1.2, checkpoint: "unsloth/Llasa-3B" },
     { fromModelDefaults: true },
   );
   w.store().setParams({ ...w.store().params, temperature: 1.37 });
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   // A pinned every key when it opened, so it keeps its own in-range value. Pinning on open
   // is what makes this safe: an unpinned chat has nothing to put back.
@@ -420,23 +431,23 @@ test("C3e: an out-of-range recommendation never reaches a chat that pinned that 
 
   w.open("Z");
   w.open("A");
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assertUsable(w.sampling(), "after an out-of-range recommendation");
   assert.equal(w.store().params.temperature, 1.37);
   assert.equal(w.store().params.topP, INSTALLATION.topP);
 });
 
 test("C3f: an out-of-range recommendation taken with no chat open cannot be pinned", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world();
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   // no chat open, so nothing puts an in-range value back
   w.store().setParams(
     { ...w.store().params, topP: 1.2, checkpoint: "unsloth/Llasa-3B" },
     { fromModelDefaults: true },
   );
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   // OBSERVED: the live params run it, and it reaches the installation settings, which
   // have no such bound. Only the per-chat row does.
   assert.equal(w.store().params.topP, 1.2);
@@ -445,7 +456,7 @@ test("C3f: an out-of-range recommendation taken with no chat open cannot be pinn
   // a chat opened on it pins what it can, omitting topP rather than sending a body the
   // PATCH would refuse whole, which would cost the chat all seven other keys
   w.open("A");
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   const row = threadRows.rows.get("A") as Record<string, unknown>;
   assert.equal(row.topP, undefined);
   assert.equal(row.temperature, INSTALLATION.temperature);
@@ -487,14 +498,14 @@ test("C4: the sanitizer keeps every falsy and negative value", () => {
 });
 
 test("C4b: a falsy edit round-trips capture -> persist -> restore", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   for (const topK of [-1, 0]) {
     const edge = { ...FALSY_EDGE, topK };
     const w = await world();
-    await settle((ms) => t.mock.timers.tick(ms));
+    await settle(w.mod, (ms) => t.mock.timers.tick(ms));
     w.open("A");
     w.store().setParams({ ...w.store().params, ...edge });
-    await settle((ms) => t.mock.timers.tick(ms));
+    await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
     // captured onto the chat, whole
     const row = threadRows.rows.get("A") as Record<string, unknown>;
@@ -506,12 +517,12 @@ test("C4b: a falsy edit round-trips capture -> persist -> restore", async (t) =>
 
     // another chat opens on the installation values, untouched by any of it
     w.open("B");
-    await settle((ms) => t.mock.timers.tick(ms));
+    await settle(w.mod, (ms) => t.mock.timers.tick(ms));
     assert.deepEqual(w.sampling(), INSTALLATION, `topK ${topK}: B inherited A`);
 
     // and A gets all of it back
     w.open("A");
-    await settle((ms) => t.mock.timers.tick(ms));
+    await settle(w.mod, (ms) => t.mock.timers.tick(ms));
     assert.deepEqual(
       w.sampling(),
       edge,
@@ -521,12 +532,12 @@ test("C4b: a falsy edit round-trips capture -> persist -> restore", async (t) =>
 });
 
 test("C4c: a falsy pinned value survives a model load and a model switch", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world();
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   w.open("A");
   w.store().setParams({ ...w.store().params, ...FALSY_EDGE });
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   // a load with a full, non-falsy recommendation
   w.store().setParams(
@@ -542,12 +553,12 @@ test("C4c: a falsy pinned value survives a model load and a model switch", async
     },
     { fromModelDefaults: true },
   );
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.deepEqual(w.sampling(), FALSY_EDGE, "the load overwrote a falsy pin");
 
   // and an external switch, which has no load after it to put anything back
   w.store().setCheckpoint("external::anthropic::claude-opus-5", null);
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.deepEqual(
     w.sampling(),
     FALSY_EDGE,
@@ -560,26 +571,26 @@ test("C4c: a falsy pinned value survives a model load and a model switch", async
 });
 
 test("C4d: an empty system prompt is a choice, not an absent one", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const w = await world();
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   // A is given a prompt, B is deliberately cleared
   w.open("A");
   w.store().setParams({ ...w.store().params, systemPrompt: "A's prompt" });
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   w.open("B");
   w.store().setParams({ ...w.store().params, systemPrompt: "" });
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   assert.equal(
     (threadRows.rows.get("B") as Record<string, unknown>).systemPrompt,
     "",
   );
   w.open("A");
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.equal(w.store().params.systemPrompt, "A's prompt");
   w.open("B");
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.equal(
     w.store().params.systemPrompt,
     "",
@@ -592,7 +603,7 @@ test("C4d: an empty system prompt is a choice, not an absent one", async (t) => 
 // ---------------------------------------------------------------------------
 
 test("C5: a one-megabyte system prompt is neither truncated nor fatal", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  enableCountedTimers(t);
   const huge = "x".repeat(1024 * 1024);
   assert.equal(huge.length, 1_048_576);
 
@@ -603,10 +614,10 @@ test("C5: a one-megabyte system prompt is neither truncated nor fatal", async (t
   );
 
   const w = await world();
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   w.open("A");
   w.store().setParams({ ...w.store().params, systemPrompt: huge });
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   const row = threadRows.rows.get("A") as Record<string, unknown>;
   assert.equal((row.systemPrompt as string).length, huge.length);
@@ -614,10 +625,10 @@ test("C5: a one-megabyte system prompt is neither truncated nor fatal", async (t
 
   // and back again after a visit elsewhere
   w.open("B");
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.equal(w.store().params.systemPrompt, INSTALLATION.systemPrompt);
   w.open("A");
-  await settle((ms) => t.mock.timers.tick(ms));
+  await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.equal((w.store().params.systemPrompt as string).length, huge.length);
   // and it stayed the chat's: a megabyte in the installation payload would be sent
   // on every settings write for the rest of the session

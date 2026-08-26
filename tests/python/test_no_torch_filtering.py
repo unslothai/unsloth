@@ -609,6 +609,42 @@ class TestInstallPythonStackSubprocessMock:
             cmds, "triton-kernels.txt"
         ), "triton-kernels.txt should be skipped on macOS even via studio update"
 
+    # -- The harness above must not write the venv it is running in --
+
+    def test_the_harness_never_writes_the_running_venv_root(self):
+        """install_python_stack() drops, marks and rewrites the manifest for real here.
+
+        Only subprocess.run is mocked, so remove_manifest(), set_no_torch_marker() and
+        write_manifest() all execute against Path(sys.prefix), one directory shared by every
+        xdist worker and every subprocess they spawn. A leaked no-torch marker makes every
+        install_python_stack.py subprocess in the run resolve NO_TORCH True at import, which
+        is how the AMD fast-path CLI probe failed on 17 CI runs across 7 branches in one day
+        while passing in isolation. Driven through the real _capture_install, not a rebuilt
+        copy: the property has to hold for the harness that ships in this file.
+        """
+        real_root = Path(sys.prefix)
+        watched = (
+            real_root / ips.install_manifest.MANIFEST_NAME,
+            real_root / ips.install_manifest.NO_TORCH_MARKER,
+        )
+        before = [(p.exists(), p.read_bytes() if p.is_file() else None) for p in watched]
+
+        self._capture_install(no_torch = True, is_macos = False, is_windows = False)
+
+        after = [(p.exists(), p.read_bytes() if p.is_file() else None) for p in watched]
+        assert after == before, (
+            f"the installer harness wrote {real_root}, which every worker in this run "
+            "shares; give install_manifest.venv_root a contained root instead"
+        )
+        # Non-vacuous: the writes must have landed somewhere, or an install that returned
+        # early and wrote nothing at all would pass this too.
+        contained = ips.install_manifest.venv_root()
+        assert contained != real_root, "venv_root was never contained"
+        assert (contained / ips.install_manifest.MANIFEST_NAME).is_file(), (
+            "no manifest reached the contained root, so this run proves nothing about "
+            "where the installer writes"
+        )
+
 
 # ── Overrides skip structural checks ─────────────────────────────────
 

@@ -222,8 +222,14 @@ except (OSError, ValueError):
 if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
+    _MANAGED_LLAMA_CPP_PATH = _STUDIO_ROOT_RESOLVED / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
-        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
+    # A CLI/desktop launcher may already have exported Studio's own install path.
+    # Classify by the canonical value so that inherited default remains editable.
+    from utils.llama_cpp_path_settings import mark_managed_llama_cpp_path
+
+    mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
 
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
@@ -600,7 +606,11 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         start_mlx_autorepair_if_needed()
     except Exception as _mlx_exc:
         import structlog as _structlog
-        _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
+
+        # Warning, not debug: this decides the MLX verdict on every healthy Apple Silicon
+        # boot, so a half-applied update (new mlx_repair.py over older hardware.py) arrives
+        # here and would silently leave Train/Export greyed out for the session.
+        _structlog.get_logger(__name__).warning("mlx autorepair skipped: %s", _mlx_exc)
 
     if _post_warm_retired(generation):
         return
@@ -794,6 +804,7 @@ app = FastAPI(
     redoc_url = None,
     swagger_ui_oauth2_redirect_url = None,
 )
+app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"
 
 # The MCP surface is opt-in: it can start GPU jobs and write model artifacts.
 if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
@@ -1336,6 +1347,10 @@ app.add_middleware(
     max_age = 60,
 )
 
+from utils.keyless_api_access import KeylessToolPolicyMiddleware  # noqa: E402
+
+app.add_middleware(KeylessToolPolicyMiddleware)
+
 from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # noqa: E402
 
 app.add_middleware(RemoteAccessStopResponseMiddleware)
@@ -1574,6 +1589,30 @@ def _torch_warm_in_progress() -> bool:
     return bool(status["started"] and not status["finished"] and status["alive"])
 
 
+# Modules that expose generation_in_flight(). The three engines answer for the render itself;
+# routes.inference answers for the image-persist tail, which outlives the engine's own marker.
+_MEDIA_BACKEND_MODULES = (
+    "core.inference.video",
+    "core.inference.diffusion",
+    "core.inference.sd_cpp_backend",
+    "routes.inference",
+)
+
+
+def _media_generation_active() -> bool:
+    """Check imported media backends without importing, constructing, or locking them."""
+    for module_name in _MEDIA_BACKEND_MODULES:
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        try:
+            if module.generation_in_flight():
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _inference_active() -> bool:
     """True while at least one generation is in flight.
 
@@ -1581,14 +1620,17 @@ def _inference_active() -> bool:
     one that has died: a saturated host can stall the event loop past a probe budget, and
     killing there ends a response the user is still waiting on.
 
-    A len() under a threading.Lock held only for that read, so the route stays cheap.
-    Failures report "not busy", the same answer as before this field existed.
+    A len() under a threading.Lock held only for that read, plus a bool off each resident
+    media backend, so the route stays cheap. Failures report "not busy", the same answer as
+    before this field existed.
     """
     try:
         from state import active_generations
-        return active_generations.count() > 0
+        if active_generations.count() > 0:
+            return True
     except Exception:
-        return False
+        pass
+    return _media_generation_active()
 
 
 @app.get("/api/liveness")
@@ -1686,13 +1728,15 @@ async def health_check(request: Request):
             # Nothing is detecting until a hardware-dependent operation runs; say so instead of making clients poll.
             base["hardware_detection_deferred"] = True
     auth = request.headers.get("authorization", "")
-    if not auth.lower().startswith("bearer "):
-        return base
+    bearer = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else None
     try:
+        from auth.authentication import credentials_for_token
         from auth.authentication import get_current_subject as _gcs
-        from fastapi.security import HTTPAuthorizationCredentials
 
-        creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = auth.split(" ", 1)[1])
+        # resolved rather than built, so a scope covering this route answers it in full
+        creds = await credentials_for_token(request, bearer)
+        if creds is None:
+            return base
         # Must await: a bare coroutine is truthy and would skip the auth check
         subject = await _gcs(creds)
     except HTTPException:

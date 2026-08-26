@@ -724,6 +724,60 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
     assert stash is not None and stash[0] == "unsloth/Idle-GGUF" and stash[1] == "Q4_K_M"
 
 
+def test_a_request_landing_during_the_pin_read_is_not_unloaded_out_from_under(monkeypatch):
+    # A chat may register _pending during the off-loop pin read, invalidating prior idleness.
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_pending", 0)
+    monkeypatch.setattr(kw, "_last_active", time.monotonic() - 3600)
+    monkeypatch.setattr(kw, "_last_unloaded_model", None)
+
+    # Mark the interval after the first idle check and before the guarded pin read.
+    inside_the_unload_block = {"flag": False}
+    landed = []
+
+    def _keep_kv_marks_the_block():
+        inside_the_unload_block["flag"] = True
+        return False
+
+    def _api_only_while_a_request_lands():
+        if inside_the_unload_block["flag"]:
+            inside_the_unload_block["flag"] = False
+            kw._note_pending()
+            landed.append(1)
+        return False
+
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", _keep_kv_marks_the_block)
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", _api_only_while_a_request_lands)
+
+    unloads = []
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    backend.unload_model = lambda: unloads.append(1)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _drive():
+        task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+            if landed or unloads:
+                break
+        await asyncio.sleep(0.1)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_drive())
+    assert landed, "the tick never reached the guard's pin read, so the window was never hit"
+    assert unloads == [], "the loop freed the model out from under a request on the gate"
+
+
 def test_idle_loop_deletes_saved_kv_when_unload_fails(monkeypatch, tmp_path):
     import time
     from core.inference import llama_keepwarm as kw
@@ -1028,6 +1082,46 @@ def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
     empty = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF")
     resp2 = settings_route.update_openai_auto_switch_override(empty, "tester")
     assert "unsloth/B-GGUF" not in resp2.overrides
+
+
+def test_override_route_stores_llama_server_tuning(override_store):
+    """Load mode, draft KV dtype, checkpoints and cache RAM survive the route.
+
+    The picker has a control for each and mirrors all four, and
+    ``model_override_load_kwargs`` already applies them off a stored row, so a
+    payload that drops them leaves the setting reaching a picker load and nothing
+    else -- and the panel, which hydrates from this row, reads it back as unset.
+    """
+    _put(
+        "unsloth/B-GGUF",
+        load_mode = "mmap+mlock",
+        speculative_type = "dspark",
+        spec_draft_cache_type = "q8_0",
+        # Both meaningful at their falsy values: no checkpoints, and no cache limit.
+        ctx_checkpoints = 0,
+        cache_ram = -1,
+    )
+    stored = settings.get_model_override("unsloth/B-GGUF")
+    assert stored["load_mode"] == "mmap+mlock"
+    assert stored["spec_draft_cache_type"] == "q8_0"
+    assert stored["ctx_checkpoints"] == 0
+    assert stored["cache_ram"] == -1
+    # And they reach a load, rather than being stored where nothing reads them.
+    kwargs = settings.model_override_load_kwargs(stored, is_gguf = True)
+    assert kwargs["load_mode"] == "mmap+mlock"
+    assert kwargs["spec_draft_cache_type"] == "q8_0"
+    assert kwargs["ctx_checkpoints"] == 0
+    assert kwargs["cache_ram"] == -1
+
+
+def test_override_route_keeps_a_row_holding_only_tuning(override_store):
+    """One of the four on its own is a saved field, not an empty payload.
+
+    ``is_removal`` counts what the payload carries, so a field it did not declare
+    would read as "nothing set" and delete the model's row instead of writing it.
+    """
+    _put("unsloth/B-GGUF", cache_ram = 0)
+    assert settings.get_model_override("unsloth/B-GGUF") == {"cache_ram": 0}
 
 
 def test_model_override_rejects_zero_max_seq_length():
@@ -3164,11 +3258,13 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         require_vision = False,
         require_image = True,
         modality_label = "image or audio",
+        claim_resident = True,
     ):
         captured.update(
             require_vision = require_vision,
             require_image = require_image,
             modality_label = modality_label,
+            claim_resident = claim_resident,
         )
         raise _Reached()
 
@@ -3182,6 +3278,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         "require_vision": True,
         "require_image": False,
         "modality_label": "audio",
+        "claim_resident": False,
     }
 
     # An image in the same request does need the vision tower.
@@ -3197,6 +3294,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         "require_vision": True,
         "require_image": True,
         "modality_label": "image or audio",
+        "claim_resident": False,
     }
 
 
@@ -3387,8 +3485,9 @@ def test_require_vision_probes_the_quant_the_load_will_open(monkeypatch):
     monkeypatch.setattr(
         inference_route,
         "_target_is_vision",
-        lambda path, variant = None, need_image = True: probed.append((path, variant, need_image))
-        or True,
+        lambda path, variant = None, need_image = True: (
+            probed.append((path, variant, need_image)) or True
+        ),
     )
     asyncio.run(
         inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
@@ -3552,8 +3651,10 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
         subject,
         *,
         require_vision = False,
+        claim_resident = True,
     ):
         captured["require_vision"] = require_vision
+        captured["claim_resident"] = claim_resident
         raise _Reached()
 
     monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p: True)
@@ -3562,6 +3663,7 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
     assert captured["require_vision"] is True
+    assert captured["claim_resident"] is False
 
 
 # ── /chat/count_tokens: what the recount prices ───────────────────
@@ -4673,8 +4775,10 @@ def test_audio_generate_is_reload_only(monkeypatch):
         subject,
         *,
         require_vision = False,
+        claim_resident = True,
     ):
         captured["model"] = model
+        captured["claim_resident"] = claim_resident
         raise _Reached()
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
@@ -4684,6 +4788,7 @@ def test_audio_generate_is_reload_only(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.generate_audio(payload, object(), "tester"))
     assert captured["model"] == inference_route._RELOAD_ONLY_MODEL
+    assert captured["claim_resident"] is False
 
 
 def test_note_model_unloaded_clears_reload_stash(monkeypatch):
@@ -8064,11 +8169,13 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         require_vision = False,
         require_image = True,
         modality_label = "image or audio",
+        claim_resident = True,
     ):
         captured.update(
             require_vision = require_vision,
             require_image = require_image,
             modality_label = modality_label,
+            claim_resident = claim_resident,
         )
         raise _Reached()
 
@@ -8082,4 +8189,73 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         "require_vision": True,
         "require_image": False,
         "modality_label": "video",
+        "claim_resident": False,
     }
+
+
+# Preview ownership regressions.
+
+
+def test_count_tokens_switch_marks_new_model_preview_owned(monkeypatch):
+    backend = _FakeBackend("org/A-GGUF")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("org/B-GGUF", None, "org/B-GGUF"),
+        backend = backend,
+        recorder = recorder,
+    )
+    inference_route._set_preview_resident("org/A-GGUF")
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/B-GGUF", object(), "tester", claim_resident = False
+        )
+    )
+    assert len(recorder.calls) == 1
+    assert inference_route._is_preview_resident("org/B-GGUF")
+    inference_route._set_preview_resident(None)  # cleanup
+
+
+def test_count_tokens_does_not_own_an_independent_load(monkeypatch):
+    state = {"slot": "/outputs/preview-a"}
+    identity_checked = threading.Event()
+    independent_load_done = threading.Event()
+
+    def loaded_identity_satisfies(_requested):
+        identity_checked.set()
+        assert independent_load_done.wait(timeout = 2)
+        return True
+
+    async def no_model_error(*_args, **_kwargs):
+        return 503, "No GGUF model loaded"
+
+    monkeypatch.setattr(inference_route, "_loaded_slot_ident", lambda: state["slot"])
+    monkeypatch.setattr(inference_route, "_loaded_identity_satisfies", loaded_identity_satisfies)
+    monkeypatch.setattr(inference_route, "_no_model_loaded_error", no_model_error)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    monkeypatch.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: types.SimpleNamespace(is_loaded = False),
+    )
+
+    inference_route._set_preview_resident(state["slot"])
+    payload = _anthropic_payload_with_tools(None)
+    request = types.SimpleNamespace(scope = {"path": "/v1/messages/count_tokens"})
+
+    async def drive():
+        task = asyncio.create_task(
+            inference_route.anthropic_count_tokens(payload, request, "tester")
+        )
+        assert await asyncio.to_thread(identity_checked.wait, 2)
+        state["slot"] = "/outputs/studio-b"
+        inference_route._set_preview_resident(None)
+        independent_load_done.set()
+        with pytest.raises(HTTPException) as exc:
+            await task
+        assert exc.value.status_code == 503
+
+    asyncio.run(drive())
+    assert not inference_route._is_preview_resident("/outputs/studio-b")

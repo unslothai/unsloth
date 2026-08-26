@@ -624,10 +624,20 @@ export type ExtraArgsDiagnostic = {
 };
 
 /**
- * Controls in this panel that emit the same flag. Not a denial: the backend appends
- * extras last and reconciles the ones that move its own sizing (`parse_ctx_override`
- * and friends exist for exactly that), and the CLI has always allowed it. The user
- * just deserves to be told which one wins.
+ * Managed flags whose supported replacement is a control in this panel. This stays
+ * available while the async flag catalogue is loading or unavailable: the backend
+ * denies these unconditionally, so they must never fall through to the "wins" note.
+ */
+const MANAGED_CONTROL_FLAGS: Record<string, string> = {
+  "--parallel": "Parallel Slots",
+  "--n-parallel": "Parallel Slots",
+  "-np": "Parallel Slots",
+};
+
+/**
+ * Pass-through flags that a control in this panel also emits. The backend appends
+ * these last and reconciles the ones that affect its sizing, so the mapping explains
+ * which value wins.
  */
 const CONTROL_OWNED_FLAGS: Record<string, string> = {
   "--ctx-size": "Context Length",
@@ -651,6 +661,22 @@ const CONTROL_OWNED_FLAGS: Record<string, string> = {
   "--spec-draft-n-max": "Draft Tokens",
   "--chat-template": "Chat Template",
   "--chat-template-file": "Chat Template",
+  "--load-mode": "Mmap/Mlock",
+  "-lm": "Mmap/Mlock",
+  // Both halves, since the control sets one dtype for the pair, and both
+  // spellings, since which one a build understands is a version question.
+  "--spec-draft-type-k": "Spec Decoding KV Cache Dtype",
+  "-ctkd": "Spec Decoding KV Cache Dtype",
+  "--cache-type-k-draft": "Spec Decoding KV Cache Dtype",
+  "--spec-draft-type-v": "Spec Decoding KV Cache Dtype",
+  "-ctvd": "Spec Decoding KV Cache Dtype",
+  "--cache-type-v-draft": "Spec Decoding KV Cache Dtype",
+  "--ctx-checkpoints": "Checkpoints",
+  "-ctxcp": "Checkpoints",
+  // upstream's older spelling of the same flag
+  "--swa-checkpoints": "Checkpoints",
+  "--cache-ram": "Cache RAM",
+  "-cram": "Cache RAM",
 };
 
 /**
@@ -744,6 +770,14 @@ const VALUE_REQUIRED_FLAGS = new Set([
   "-ctv",
   "--split-mode",
   "-sm",
+  "--load-mode",
+  "-lm",
+  "--spec-draft-type-k",
+  "-ctkd",
+  "--cache-type-k-draft",
+  "--spec-draft-type-v",
+  "-ctvd",
+  "--cache-type-v-draft",
 ]);
 
 /** The pass-through spellings of the batch size the floor above applies to. */
@@ -762,6 +796,12 @@ const INTEGER_VALUE_FLAGS = new Set([
   "-b",
   "--ubatch-size",
   "-ub",
+  "--ctx-checkpoints",
+  "-ctxcp",
+  "--swa-checkpoints",
+  // -1 (no limit) and 0 (disable) are both valid, so only integer-ness is checked
+  "--cache-ram",
+  "-cram",
 ]);
 
 /** Sampling belongs to the conversation, not the launch. */
@@ -1014,6 +1054,9 @@ export function diagnoseExtraArgs(
       continue;
     }
     seen.add(flag);
+    const managedControl = MANAGED_CONTROL_FLAGS[flag];
+    const isManaged =
+      managedControl !== undefined || Boolean(catalog?.managed.has(flag));
 
     if (token !== token.trim()) {
       // The padding is part of the token llama.cpp looks up, so a quoted "--top-k "
@@ -1024,7 +1067,7 @@ export function diagnoseExtraArgs(
         level: "error",
         message: `Remove the spaces around "${token}". llama-server reads them as part of the flag.`,
       });
-    } else if (token.includes("=") && !catalog?.managed.has(flag)) {
+    } else if (token.includes("=") && !isManaged) {
       // Measured on b10342 and b10360: "--top-k=20", "--ctx-size=4096" and
       // "--flash-attn=on" each exit with "error: invalid argument". A managed flag
       // is left to the message below, which names the control that owns it.
@@ -1034,8 +1077,8 @@ export function diagnoseExtraArgs(
       });
     }
 
-    if (catalog?.managed.has(flag)) {
-      const control = CONTROL_OWNED_FLAGS[flag];
+    if (isManaged) {
+      const control = managedControl ?? CONTROL_OWNED_FLAGS[flag];
       out.push({
         level: "error",
         message: control

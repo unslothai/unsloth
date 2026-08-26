@@ -14,7 +14,6 @@ import os
 from pathlib import Path
 from typing import List, NamedTuple, Optional
 
-from fastapi import HTTPException
 from loggers import get_logger
 
 from hub.schemas.inventory import LocalModelInfo, LocalModelListResponse, ModelFormat
@@ -37,6 +36,7 @@ from hub.utils.paths import (
 from hub.services.models import common as model_common
 from hub.services.models.ollama import scan_ollama_dir
 from utils.hidden_models import is_hidden_model
+from utils.paths.path_utils import is_appledouble_metadata
 from utils.paths.scan_folder_health import (
     annotate_scan_folders,
     note_scan_folder_scanned,
@@ -89,9 +89,17 @@ _is_main_gguf_filename = model_common._is_main_gguf_filename
 _is_transformers_bin_weight_file = model_common._is_transformers_bin_weight_file
 _prefer_complete_larger = model_common._prefer_complete_larger
 _gguf_variant_state_summary = model_common._gguf_variant_state_summary
+_is_diffusers_pipeline_dir = model_common._is_diffusers_pipeline_dir
+
+
+def _http_error(status_code: int, detail: str):
+    from fastapi import HTTPException
+    return HTTPException(status_code = status_code, detail = detail)
 
 
 def _is_immediate_model_weight_file(path: Path) -> bool:
+    if is_appledouble_metadata(path):
+        return False
     suffix = path.suffix.lower()
     if suffix == ".safetensors":
         return True
@@ -117,31 +125,6 @@ def _has_immediate_model_weight(
     except OSError:
         return False
     return False
-
-
-def _is_diffusers_pipeline_dir(path: Path) -> bool:
-    """True for a diffusers PIPELINE root: a top-level ``model_index.json`` with the weights in
-    component subdirs (``transformer/``, ``vae/``, ``text_encoder/`` ...).
-
-    Every image and video model downloaded as a pipeline has this shape and NO root
-    ``config.json``, so the root-config-plus-loose-weights test below rejects it. Without this the
-    Images and Video pickers cannot see a pipeline the user already has on disk, and the LM Studio
-    publisher walk descends into it and offers its components (``vae``, ``transformer``, ...) as
-    separate models, none of which any loader can start.
-
-    Either index counts. A Modular Diffusers pipeline carries ``modular_model_index.json`` and no
-    ``model_index.json``, which is the pair the video loader accepts, so recognising only the
-    conventional one hid a valid local root from the picker and left the publisher walk to offer
-    its components separately.
-
-    ``routes.models._local_pipeline_index`` is the same test; the two scanners are separate
-    modules, and only that one had it."""
-    try:
-        return (path / "model_index.json").is_file() or (
-            path / "modular_model_index.json"
-        ).is_file()
-    except OSError:
-        return False
 
 
 def _has_immediate_model_signal(
@@ -225,7 +208,12 @@ def _scan_models_dir(
             break
         try:
             is_dir = child.is_dir()
-            is_gguf_file = not is_dir and child.suffix.lower() == ".gguf" and child.is_file()
+            is_gguf_file = (
+                not is_dir
+                and child.suffix.lower() == ".gguf"
+                and child.is_file()
+                and not is_appledouble_metadata(child)
+            )
             if not is_dir and not is_gguf_file:
                 continue
             has_model_files = is_gguf_file or _has_immediate_model_signal(child)
@@ -488,7 +476,11 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
             break
         try:
             if not child.is_dir():
-                if child.suffix.lower() == ".gguf" and child.is_file():
+                if (
+                    child.suffix.lower() == ".gguf"
+                    and child.is_file()
+                    and not is_appledouble_metadata(child)
+                ):
                     try:
                         updated_at = child.stat().st_mtime
                     except OSError:
@@ -542,7 +534,11 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                                 updated_at = updated_at,
                             )
                         )
-                    elif model_dir.suffix.lower() == ".gguf" and model_dir.is_file():
+                    elif (
+                        model_dir.suffix.lower() == ".gguf"
+                        and model_dir.is_file()
+                        and not is_appledouble_metadata(model_dir)
+                    ):
                         try:
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
@@ -807,11 +803,14 @@ def _scan_custom_folder(
                 selectable.append(model)
         elif detect_gguf_model(model.path, model_root = str(folder_path)) is not None:
             selectable.append(model)
+    remaining = _MAX_MODELS_PER_CUSTOM_FOLDER - len(selectable)
+    if remaining > 0:
+        selectable.extend(scan_ollama_dir(folder_path, limit = remaining))
     return selectable[:_MAX_MODELS_PER_CUSTOM_FOLDER]
 
 
 def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
-    if model.source == "hf_cache":
+    if model.source in {"hf_cache", "ollama"}:
         return model
     return model.model_copy(
         update = {
@@ -913,7 +912,7 @@ async def _scan_local_models_response(
     try:
         models_root = _resolve_allowed_models_dir(models_dir, allowed_roots)
     except ValueError:
-        raise HTTPException(status_code = 403, detail = "Directory not allowed")
+        raise _http_error(status_code = 403, detail = "Directory not allowed")
 
     try:
         local_models = await _collect_models_from_default_sources(
@@ -936,7 +935,7 @@ async def _scan_local_models_response(
         )
     except Exception as e:
         logger.error(f"Error listing local models: {e}", exc_info = True)
-        raise HTTPException(
+        raise _http_error(
             status_code = 500,
             detail = f"Failed to list local models: {str(e)}",
         )
@@ -951,9 +950,11 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         # for a response that is actually about to be served.
         # Classification reads GGUF headers, so keep it off the event loop too.
         try:
-            from routes.models import _local_model_task
+            # Module-qualified for the same reason as _cached_row_task: binding the bare
+            # name re-points a load that resolved to routes.models before the move.
+            from hub.services.models import catalog_classification
             models = [
-                model.model_copy(update = {"task": _local_model_task(model)})
+                model.model_copy(update = {"task": catalog_classification._local_model_task(model)})
                 for model in response.models
             ]
             return response.model_copy(update = {"models": models})
@@ -1020,12 +1021,12 @@ def get_models_folder_response() -> dict:
     try:
         path.mkdir(parents = True, exist_ok = True)
     except OSError as e:
-        raise HTTPException(
+        raise _http_error(
             status_code = 500,
             detail = f"Failed to create models folder: {path}: {e}",
         ) from e
     if not path.is_dir():
-        raise HTTPException(
+        raise _http_error(
             status_code = 500,
             detail = f"Models folder path is not a directory: {path}",
         )
@@ -1044,7 +1045,7 @@ def add_scan_folder_response(path: str) -> dict:
         folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path))
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, path)
-        raise HTTPException(status_code = 400, detail = str(e))
+        raise _http_error(status_code = 400, detail = str(e))
     logger.info("Scan folder added: %s", folder.get("path"))
     if inserted:
         from core.inference.local_model_resolver import invalidate_index, warm_index_soon
