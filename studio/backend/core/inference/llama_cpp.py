@@ -25744,9 +25744,8 @@ class LlamaCppBackend:
         from core.inference.chat_template_helpers import sweep_cache as _sweep_cache
 
         _markup_cache = _sweep_cache()
-        # A forced function applies until something actually runs; the follow-up
-        # must be free to answer in prose (same rule as stream_with_studio_tools).
-        _executed_any = False
+        # A forced function applies until the model produces it; execution or denial resolves it.
+        _forced_choice_resolved = False
         for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -25930,7 +25929,7 @@ class LlamaCppBackend:
                 # so enabled_tools: ["web_search"] plus tool_choice pinning that
                 # name actually calls it (#9730). Default stays auto.
                 requested_choice = "auto" if tool_choice is None else tool_choice
-                if _executed_any and requested_choice not in ("auto", "none"):
+                if _forced_choice_resolved and requested_choice not in ("auto", "none"):
                     requested_choice = "auto"
                 requested_choice = (
                     reconciled_tool_choice(requested_choice, tools, safe_tools) or "auto"
@@ -27064,6 +27063,7 @@ class LlamaCppBackend:
                             yield {"type": "status", "text": decision.status_text}
                         if _decision == "deny":
                             decision_slot = None
+                            _forced_choice_resolved = True
                             resolved_provisional_tool_call_ids.add(decision.tool_call_id)
                             yield {
                                 "type": "tool_end",
@@ -27308,7 +27308,7 @@ class LlamaCppBackend:
                     _last_reprompt_text = ""
                     # A tool ran this turn, so it counts against the caller's budget.
                     _turn_executed_real_tool = True
-                    _executed_any = True
+                    _forced_choice_resolved = True
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
 

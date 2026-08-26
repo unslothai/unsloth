@@ -3391,6 +3391,7 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "run python"}],
             tools = [{"type": "function", "function": {"name": "python"}}],
+            tool_choice = {"type": "function", "function": {"name": "python"}},
             max_tool_iterations = 2,
             confirm_tool_calls = True,
             # Unset defaults to "auto", which would not prompt this safe print(1).
@@ -3404,6 +3405,7 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
     assert len(starts) == 2
     assert [event["result"] for event in ends] == [TOOL_REJECTED_MESSAGE, "OK"]
     assert calls == [("python", {"code": "print(1)"})]
+    assert [payload.get("tool_choice") for payload in payloads] == ["required", "auto", "auto"]
 
 
 def _streamed_structured_tool_call(
