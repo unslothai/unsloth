@@ -20,10 +20,16 @@ const CODE_SHAPES = new Set(["auto", "module", "snippet"]);
 const SNIPPET_PREFIX = "(() => {\n";
 const SNIPPET_SUFFIX = "\n})();\nexport {};\n";
 const OXLINT_SUPPRESSED_RULES = ["no-unused-vars", "no-new-array"];
-// Under the caller's own timeout, so a wedged oxlint is killed here instead of
-// being orphaned when the caller kills this wrapper. SIGKILL because SIGTERM is
-// ignorable and spawnSync then waits for the child regardless of the timeout.
-const OXLINT_TIMEOUT_MS = 20_000;
+// The caller kills only this wrapper, so a wedged oxlint has to be killed from here
+// or it survives as an orphan. Its deadline is therefore the caller's own budget
+// minus whatever this process already spent parsing and writing snippets.
+const PROCESS_START_MS = Date.now();
+const OXLINT_DEFAULT_BUDGET_MS = 30_000;
+// Covers node startup, which precedes the clock above, plus this process's wind-down.
+const OXLINT_BUDGET_MARGIN_MS = 2_000;
+// Below this there is no room left to lint, and starting oxlint would only hand the
+// caller's kill an orphan.
+const OXLINT_MIN_TIMEOUT_MS = 1_000;
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url));
 
 function mapLang(value) {
@@ -49,6 +55,11 @@ function mapMode(value) {
     return normalized;
   }
   return "syntax";
+}
+
+function mapBudgetMs(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : OXLINT_DEFAULT_BUDGET_MS;
 }
 
 function mapCodeShape(value) {
@@ -378,7 +389,7 @@ function fallbackLintResults(entries, message) {
   );
 }
 
-function runLintBatch(entries) {
+function runLintBatch(entries, deadlineMs) {
   if (entries.length === 0) {
     return new Map();
   }
@@ -399,10 +410,15 @@ function runLintBatch(entries) {
       "json",
       tempDir,
     ];
+    const timeoutMs = deadlineMs - Date.now();
+    if (timeoutMs < OXLINT_MIN_TIMEOUT_MS) {
+      return fallbackLintResults(entries, "oxlint skipped: validation budget exhausted");
+    }
     const exec = spawnSync(oxlintBin, oxlintArgs, {
       encoding: "utf8",
       cwd: TOOL_DIR,
-      timeout: OXLINT_TIMEOUT_MS,
+      timeout: timeoutMs,
+      // SIGTERM is ignorable, and spawnSync then waits out the child regardless.
       killSignal: "SIGKILL",
     });
     if (exec.error) {
@@ -502,7 +518,7 @@ function readStdin() {
   });
 }
 
-function runValidation({ codes, lang, mode, codeShape }) {
+function runValidation({ codes, lang, mode, codeShape, oxlintDeadlineMs }) {
   if (mode === "syntax") {
     return codes.map((code, index) =>
       validateSyntaxOne({ code, lang, index, codeShape }).result,
@@ -513,7 +529,7 @@ function runValidation({ codes, lang, mode, codeShape }) {
     const entries = codes.map((code, index) =>
       resolveLintEntry({ code, lang, index, codeShape }),
     );
-    const lintMap = runLintBatch(entries);
+    const lintMap = runLintBatch(entries, oxlintDeadlineMs);
     return entries.map(
       (entry) =>
         lintMap.get(entry.index) ??
@@ -531,7 +547,7 @@ function runValidation({ codes, lang, mode, codeShape }) {
   const lintTargets = syntaxRuns
     .filter((run) => run.result.is_valid === true)
     .map((run) => run.lintEntry);
-  const lintMap = runLintBatch(lintTargets);
+  const lintMap = runLintBatch(lintTargets, oxlintDeadlineMs);
 
   return syntaxRuns.map((run) => {
     if (run.result.is_valid !== true) {
@@ -572,7 +588,9 @@ async function main() {
   const mode = mapMode(payload?.mode);
   const codeShape = mapCodeShape(payload?.code_shape);
   const codes = Array.isArray(payload?.codes) ? payload.codes : [];
-  const out = runValidation({ codes, lang, mode, codeShape });
+  const oxlintDeadlineMs =
+    PROCESS_START_MS + mapBudgetMs(payload?.timeout_ms) - OXLINT_BUDGET_MARGIN_MS;
+  const out = runValidation({ codes, lang, mode, codeShape, oxlintDeadlineMs });
   process.stdout.write(JSON.stringify(out));
 }
 

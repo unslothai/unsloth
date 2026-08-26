@@ -232,6 +232,9 @@ def _run_oxc_batch(
         "mode": validation_mode,
         "code_shape": code_shape,
         "codes": code_values,
+        # The wrapper kills oxlint against this budget. Killing the wrapper from here
+        # would leave oxlint running, since it is a grandchild of this process.
+        "timeout_ms": int(_OXC_TIMEOUT_S * 1000),
     }
     # Resolve a usable Node (system or the isolated install, which is not on the
     # user's PATH); a bare "node" would fail for isolated-Node users.
