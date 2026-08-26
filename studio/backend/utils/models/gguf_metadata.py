@@ -649,13 +649,32 @@ def _normalize_url(url: str) -> Optional[str]:
     return host.lower() + (separator + path if separator else "")
 
 
-def _hf_repo_slug_from_url(url: str) -> Optional[str]:
+def _repo_path_from_url(url: str) -> Optional[str]:
     value = _normalize_url(url)
     if not value:
         return None
+    lower = (url or "").strip().lower()
+    if lower.startswith(("https://", "http://")):
+        _, separator, path = value.partition("/")
+        return path if separator and path else None
+    return value
+
+
+def _same_repo_reference(left: str, right: str) -> bool:
+    left_normalized = _normalize_url(left)
+    right_normalized = _normalize_url(right)
+    if left_normalized == right_normalized:
+        return True
+    left_is_url = (left or "").strip().lower().startswith(("https://", "http://"))
+    right_is_url = (right or "").strip().lower().startswith(("https://", "http://"))
+    return left_is_url != right_is_url and _repo_path_from_url(left) == _repo_path_from_url(right)
+
+
+def _hf_repo_slug_from_url(url: str) -> Optional[str]:
+    value = _repo_path_from_url(url)
+    if not value:
+        return None
     parts = [part for part in value.split("/") if part]
-    if parts and "." in parts[0]:
-        parts = parts[1:]
     if len(parts) < 2:
         return None
     return parts[-1]
@@ -663,6 +682,8 @@ def _hf_repo_slug_from_url(url: str) -> Optional[str]:
 
 def _slug_extends_base(derived: str, base: str) -> bool:
     if derived == base or not derived.startswith(base):
+        return False
+    if derived[len(base)] not in "-_.":
         return False
     suffix = derived[len(base) :].lstrip("-_.").lower()
     if not suffix:
@@ -705,7 +726,7 @@ def pairing_score(
     w_base = weight_meta.get("general.basename")
     p_base = mmproj_meta.get("general.basename")
     if w_url and p_url:
-        if _normalize_url(w_url) == _normalize_url(p_url):
+        if _same_repo_reference(w_url, p_url):
             return 100
         if _weight_url_looks_like_derivative_of_projector(w_url, p_url):
             if not (w_base and p_base):
