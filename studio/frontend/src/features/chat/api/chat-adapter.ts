@@ -5762,15 +5762,25 @@ export function createOpenAIStreamAdapter(
                 ? { fast_mode: true }
                 : {}),
               ...(externalReasoningCaps.supportsReasoning
-                ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
-                  ? externalReasoningEnabled
-                    ? { reasoning_effort: selectedExternalEffort }
-                    : externalReasoningCaps.supportsReasoningOff
-                      ? { reasoning_effort: "none" }
-                      : {
-                          reasoning_effort: fallbackExternalEffort,
-                        }
-                  : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
+                ? externalReasoningCaps.reasoningStyle === "enable_thinking_effort"
+                  ? // GLM-5.2 / Qwen3.8-style: an on/off gate plus an effort
+                    // level. Sends both so a self-hosted server's template can
+                    // render the requested effort; off is a real disable.
+                    externalReasoningEnabled
+                    ? {
+                        enable_thinking: true,
+                        reasoning_effort: selectedExternalEffort,
+                      }
+                    : { enable_thinking: false }
+                  : externalReasoningCaps.reasoningStyle === "reasoning_effort"
+                    ? externalReasoningEnabled
+                      ? { reasoning_effort: selectedExternalEffort }
+                      : externalReasoningCaps.supportsReasoningOff
+                        ? { reasoning_effort: "none" }
+                        : {
+                            reasoning_effort: fallbackExternalEffort,
+                          }
+                    : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
                 : {}),
             };
           }

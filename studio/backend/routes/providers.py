@@ -47,8 +47,10 @@ from core.inference import openai_codex_auth, openai_codex_client
 from models.providers import (
     ProviderCreate,
     ProviderCredentialMigration,
-    ProviderModelsRequest,
     ProviderModelInfo,
+    ProviderModelReasoning,
+    ProviderModelReasoningRequest,
+    ProviderModelsRequest,
     ProviderResponse,
     ProviderRegistryEntry,
     ProviderTestRequest,
@@ -724,6 +726,67 @@ async def test_provider(
 # ── List models from provider ─────────────────────────────────────
 
 
+async def _probe_model_reasoning(
+    client: ExternalProviderClient, provider_type: str, models: list[dict]
+) -> dict[str, ProviderModelReasoning]:
+    """Derive reasoning capabilities from a connected server's chat template.
+
+    Only llama.cpp exposes a Jinja chat template to clients; every other
+    provider returns an empty mapping, leaving the ``reasoning`` field absent.
+    Classification reuses ``detect_reasoning_flags`` -- the same classifier the
+    local GGUF/safetensors load paths run -- so the frontend sees one consistent
+    shape. Best-effort: a probe or classification failure leaves the model
+    unclassified rather than failing the listing.
+    """
+    if provider_type != "llama_cpp":
+        return {}
+    probe = getattr(client, "probe_chat_template", None)
+    if probe is None:
+        return {}
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    out: dict[str, ProviderModelReasoning] = {}
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        model_id = str(model.get("id") or "").strip()
+        if not model_id:
+            continue
+        try:
+            template = await probe(model_id)
+        except Exception:
+            logger.debug(
+                "chat-template probe raised for %s/%s",
+                provider_type,
+                model_id,
+                exc_info = True,
+            )
+            continue
+        if not template:
+            continue
+        try:
+            flags = detect_reasoning_flags(
+                template,
+                model_identifier = model_id,
+                log_source = f"external:{provider_type}",
+            )
+        except Exception:
+            logger.debug(
+                "reasoning classification failed for %s/%s",
+                provider_type,
+                model_id,
+                exc_info = True,
+            )
+            continue
+        out[model_id] = ProviderModelReasoning(
+            supports_reasoning = bool(flags.get("supports_reasoning")),
+            reasoning_style = flags.get("reasoning_style", "enable_thinking"),
+            reasoning_effort_levels = list(flags.get("reasoning_effort_levels") or []),
+            reasoning_always_on = bool(flags.get("reasoning_always_on")),
+        )
+    return out
+
+
 @router.post("/models", response_model = list[ProviderModelInfo])
 async def list_provider_models(
     payload: ProviderModelsRequest,
@@ -826,6 +889,72 @@ async def list_provider_models(
             502,
             f"Failed to list models from {payload.provider_type}.",
             event = "providers.list_models_failed",
+            log = logger,
+        )
+    finally:
+        await client.close()
+
+
+@router.post("/model-reasoning", response_model = Optional[ProviderModelReasoning])
+async def get_provider_model_reasoning(
+    payload: ProviderModelReasoningRequest,
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Probe one connected model's reasoning controls from its chat template.
+
+    On-demand, single-model companion to ``/models``: llama.cpp reports a model's
+    ``chat_template`` only once it is (lazily) loaded, so a catalog-wide probe
+    would force-load every model. The UI probes exactly the model a user selects
+    and caches the result.
+
+    Returns ``null`` when the provider exposes no template endpoint or the probe
+    cannot obtain one.
+    """
+
+    model_id = (payload.model_id or "").strip()
+    if not model_id:
+        raise HTTPException(status_code = 400, detail = "model_id is required.")
+
+    payload = _bind_saved_provider_target(payload)
+    info = get_provider_info(payload.provider_type)
+    if info is None:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Unknown provider type: {payload.provider_type}",
+        )
+
+    api_key = resolve_provider_api_key_or_400(
+        payload.provider_id,
+        payload.encrypted_api_key,
+        allow_saved_key = not via_api_key,
+    )
+
+    base_url = payload.base_url or info["base_url"]
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+    client = ExternalProviderClient(
+        provider_type = payload.provider_type,
+        base_url = base_url,
+        api_key = api_key,
+        timeout = 15.0,
+    )
+    try:
+        by_model = await _probe_model_reasoning(
+            client,
+            payload.provider_type,
+            [{"id": model_id}],
+        )
+        return by_model.get(model_id)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            502,
+            f"Failed to probe model reasoning for {payload.provider_type}.",
+            event = "providers.model_reasoning_failed",
             log = logger,
         )
     finally:

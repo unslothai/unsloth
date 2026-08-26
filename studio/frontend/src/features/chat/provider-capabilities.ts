@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  getProviderModelReasoningCapabilities,
   normalizeProviderMaxOutputTokens,
   providerModelSupportsStudioTools,
 } from "./external-providers";
+import type { ProviderModelReasoning } from "./api/providers-api";
 
 /**
  * Per-provider sampling parameter capability matrix.
@@ -1002,6 +1004,30 @@ function resolveConnectionLevelReasoning(
   return null;
 }
 
+/** Map a backend-probed reasoning payload onto the external capability shape.
+
+ * Derives `supportsReasoningOff` the same way the local load path does
+ * (`reasoningCapsFromLoad`): only the pure `reasoning_effort` style (gpt-oss /
+ * Harmony) is always-on, while `enable_thinking` and `enable_thinking_effort`
+ * both carry an off switch. */
+function reasoningCapsFromProbe(
+  probe: ProviderModelReasoning,
+): ExternalReasoningCapabilities {
+  const style = probe.reasoning_style;
+  const levels = (
+    probe.reasoning_effort_levels && probe.reasoning_effort_levels.length > 0
+      ? probe.reasoning_effort_levels
+      : DEFAULT_EFFORT_LEVELS
+  ) as ExternalReasoningCapabilities["reasoningEffortLevels"];
+  return {
+    supportsReasoning: probe.supports_reasoning,
+    reasoningStyle: style,
+    reasoningAlwaysOn: probe.reasoning_always_on,
+    supportsReasoningOff: style !== "reasoning_effort",
+    reasoningEffortLevels: levels,
+  };
+}
+
 /**
  * Resolve external-model thinking capabilities. Provider-specific matching lives
  * in the per-provider resolvers; others default to no reasoning controls.
@@ -1022,6 +1048,19 @@ export function getExternalReasoningCapabilities(
   }
   if (!normalizedModel) {
     return withEnableThinkingStyle();
+  }
+
+  // Backend-probed capabilities win over the hardcoded tables: the server's
+  // chat template is the ground truth for self-hosted connections (llama.cpp),
+  // and the tables below only ever describe hosted providers whose templates
+  // are not exposed. Only llama.cpp ever carries a probed entry, so this cannot
+  // shadow the OpenAI/Anthropic/Gemini ladders.
+  const probed = getProviderModelReasoningCapabilities(
+    normalizedProvider,
+    normalizedModel,
+  );
+  if (probed) {
+    return reasoningCapsFromProbe(probed);
   }
 
   // Some OpenRouter-routed ids are mandatory-reasoning and must stay on even

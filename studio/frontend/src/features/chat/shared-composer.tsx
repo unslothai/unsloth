@@ -131,6 +131,7 @@ import {
   providerModelSupportsStudioTools,
 } from "./external-providers";
 import { compareModelDisplayName } from "./lib/external-model-label";
+import { DetectReasoningButton } from "./components/detect-reasoning-button";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -2737,7 +2738,17 @@ export function SharedComposer({
                 ) : null}
               </button>
             )
-          ) : null}
+          ) : (
+            <DetectReasoningButton
+              providerType={selectedExternalProvider?.providerType ?? ""}
+              providerId={selectedExternalProvider?.id}
+              modelId={effectiveExternalModelId ?? ""}
+              baseUrl={selectedExternalProvider?.baseUrl ?? null}
+              isReasoningProvider={
+                selectedExternalProvider?.isReasoningModel === true
+              }
+            />
+          )}
           {
             <>
               {!isDictating ? (

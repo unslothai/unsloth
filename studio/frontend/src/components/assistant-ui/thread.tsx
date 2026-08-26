@@ -112,6 +112,7 @@ import {
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
+import { DetectReasoningButton } from "@/features/chat/components/detect-reasoning-button";
 import { ResearchMessage } from "@/features/chat/components/research-message";
 import {
   DeepResearchComposerButton,
@@ -5209,9 +5210,18 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
   };
   const effortLabel = formatEffortLabel(reasoningEffort);
 
-  // Only rendered for models that can reason.
+  // Only rendered for models that can reason; an un-probed connected llama.cpp
+  // model gets a one-shot "Detect reasoning" affordance instead.
   if (!effectiveSupportsReasoning) {
-    return null;
+    return (
+      <DetectReasoningButton
+        providerType={selectedExternalProvider?.providerType ?? ""}
+        providerId={selectedExternalProvider?.id}
+        modelId={effectiveExternalModelId ?? ""}
+        baseUrl={selectedExternalProvider?.baseUrl ?? null}
+        isReasoningProvider={selectedExternalProvider?.isReasoningModel === true}
+      />
+    );
   }
 
   // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort

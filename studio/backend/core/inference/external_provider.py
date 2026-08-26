@@ -14,7 +14,7 @@ import mimetypes
 import re
 import time
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
-from urllib.parse import urlparse, urlsplit, urlunsplit
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 import httpx
 import structlog
@@ -902,6 +902,10 @@ class ExternalProviderClient:
         # Generous per-byte read timeout: reasoning models pause tens of seconds
         # between bytes, but a dead upstream must eventually error, not hang forever.
         self._stream_timeout = httpx.Timeout(timeout, connect = 10.0, read = 300.0)
+        # llama.cpp chat templates are cached per model id on this client: a
+        # single-model server reuses one entry, a router-mode server
+        # (--models-dir / --models-preset) has one per served model.
+        self._probed_llama_cpp_templates: dict[str, Optional[str]] = {}
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
@@ -1149,12 +1153,21 @@ class ExternalProviderClient:
                 body["thinking"] = {"type": "disabled"}
         elif self.provider_type == "mistral":
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
-        elif self.provider_type == "vllm" and enable_thinking is not None:
-            # vLLM gates thinking via chat_template_kwargs.enable_thinking.
+        elif self.provider_type in ("vllm", "llama_cpp") and (
+            enable_thinking is not None or reasoning_effort is not None
+        ):
+            # vLLM and llama-server both apply the model's own chat template on
+            # the way in and accept `chat_template_kwargs` on
+            # /v1/chat/completions, so the resolved reasoning controls render
+            # exactly as they do for an in-process load. llama-server merges
+            # these per key over its load-time defaults.
             tpl_kw = body.get("chat_template_kwargs")
             if not isinstance(tpl_kw, dict):
                 tpl_kw = {}
-            tpl_kw["enable_thinking"] = bool(enable_thinking)
+            if enable_thinking is not None:
+                tpl_kw["enable_thinking"] = bool(enable_thinking)
+            if reasoning_effort is not None:
+                tpl_kw["reasoning_effort"] = reasoning_effort
             body["chat_template_kwargs"] = tpl_kw
 
         # OpenRouter's unified `reasoning` field gates per-model thinking.
@@ -6477,6 +6490,55 @@ class ExternalProviderClient:
             for entry in raw_models
             if isinstance(entry, dict) and entry.get("name", "").strip()
         ]
+
+    async def probe_chat_template(self, model_id: str) -> Optional[str]:
+        """Best-effort Jinja chat template for a connected self-hosted model.
+
+        Only llama.cpp exposes its chat template to clients: ``GET /props``
+        returns the loaded model's ``chat_template`` (the same Jinja template the
+        local GGUF path classifies). In router mode (``--models-dir`` /
+        ``--models-preset``) the server serves several models and ``/props``
+        selects one via ``?model=<id>``, so the result is fetched and cached per
+        model id; a single-model server falls back to the bare ``/props``.
+
+        Every other provider type has no standard Jinja chat-template endpoint
+        and returns ``None`` -- notably Ollama, whose ``/api/show`` ``template``
+        is a Go template with a different variable surface and no
+        ``reasoning_effort`` concept, so it cannot feed the Jinja classifier.
+        Failures also return ``None``: a capability probe must never break the
+        model listing it decorates.
+        """
+        if self.provider_type == "llama_cpp":
+            key = model_id or ""
+            if key not in self._probed_llama_cpp_templates:
+                self._probed_llama_cpp_templates[key] = await self._probe_llama_cpp_chat_template(
+                    key
+                )
+            return self._probed_llama_cpp_templates[key]
+        return None
+
+    async def _probe_llama_cpp_chat_template(self, model_id: str) -> Optional[str]:
+        root = self.base_url.removesuffix("/v1").rstrip("/")
+        # Router mode names each served model, so ask for the specific one first;
+        # a single-model server ignores the query param (or has no matching
+        # entry), so fall back to the bare endpoint, which is what it answers.
+        candidates = [f"{root}/props?model={quote(model_id, safe = '')}"] if model_id else []
+        candidates.append(f"{root}/props")
+        for url in candidates:
+            try:
+                response = await _http_client.get(
+                    url,
+                    headers = self._auth_headers(),
+                    timeout = httpx.Timeout(5.0, connect = 5.0),
+                )
+                response.raise_for_status()
+                data = response.json()
+                template = data.get("chat_template") if isinstance(data, dict) else None
+                if isinstance(template, str) and template:
+                    return template
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.debug("llama_cpp %s chat-template probe failed: %s", url, exc)
+        return None
 
     async def verify_models_endpoint_lightweight(self) -> None:
         """
