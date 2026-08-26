@@ -6,6 +6,7 @@
 import os
 import sys
 import asyncio
+import base64
 import json
 import threading
 import time
@@ -926,6 +927,158 @@ class TestChatCompletionRequestToolFields:
         [entry] = monitor.snapshot()
         assert entry["status"] == "error"
         assert "text-only" in entry["error"]
+        assert monitor.active_count() == 0
+
+    @pytest.mark.parametrize("n_images,expected", [(2, 400), (1, 400), (0, 200)])
+    def test_an_image_with_audio_input_is_refused_not_dropped(
+        self, n_images, expected, monkeypatch
+    ):
+        """The audio-input branch returns before the standard image path, and it
+        passes only the flattened messages plus the audio on, so an attached image
+        is discarded. Refuse instead of answering from the audio and letting the
+        caller think the picture was read. Any count: one image is dropped here as
+        silently as two."""
+        import numpy as np
+
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        calls = []
+
+        class _OmniBackend:
+            active_model_name = "omni-sf"
+            models = {
+                "omni-sf": {
+                    "is_vision": True,
+                    "has_audio_input": True,
+                    "audio_type": "audio_vlm",
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+            generated = calls
+
+            def resize_image(self, image):
+                return image
+
+            def generate_audio_input_response(self, **kwargs):
+                calls.append(kwargs)
+                yield "answered from the audio"
+
+            def generate_chat_response(self, **kwargs):
+                raise AssertionError("audio input should take the audio branch")
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        content = [{"type": "text", "text": "what is this?"}] + [image] * n_images
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": content}],
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == expected
+        assert monitor.active_count() == 0
+        if expected == 400:
+            assert "audio or an image in one message" in resp.text
+            assert calls == []
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "audio or an image in one message" in entry["error"]
+        else:
+            assert len(calls) == 1
+
+    def test_an_image_on_an_earlier_turn_still_allows_a_voice_follow_up(self, monkeypatch):
+        """The count is scoped to the newest user turn, so asking by voice about a
+        picture attached on an earlier turn keeps working."""
+        import numpy as np
+
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        calls = []
+
+        class _OmniBackend:
+            active_model_name = "omni-sf"
+            models = {
+                "omni-sf": {
+                    "is_vision": True,
+                    "has_audio_input": True,
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+
+            def resize_image(self, image):
+                return image
+
+            def generate_audio_input_response(self, **kwargs):
+                calls.append(kwargs)
+                yield "answered from the audio"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "what is this?"}, image],
+                    },
+                    {"role": "assistant", "content": "a square"},
+                    {"role": "user", "content": "and now by voice"},
+                ],
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(calls) == 1
         assert monitor.active_count() == 0
 
     def test_a_failed_image_decode_closes_the_monitor_row(self, monkeypatch):

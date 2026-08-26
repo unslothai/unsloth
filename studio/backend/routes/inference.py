@@ -15994,6 +15994,21 @@ async def openai_chat_completions(
                     status_code = 400,
                     detail = "continue_final_message is not supported with audio input.",
                 )
+            # This branch flattens the messages and passes only the audio on, so any
+            # image attached to the turn is dropped on the floor. Refuse instead of
+            # answering from the audio alone and letting the caller believe the
+            # picture was looked at. Any count, not just several: one image is
+            # discarded here exactly as silently as two. Scoped to the newest turn,
+            # so asking by voice about a picture attached earlier still works.
+            # api_monitor directly rather than _reject, which is not bound this
+            # early in the handler.
+            if _images_in_last_user_message(payload.messages):
+                _audio_image_detail = (
+                    "This model takes audio or an image in one message, not both."
+                    " Send the image on its own turn."
+                )
+                api_monitor.fail(monitor_id, _audio_image_detail)
+                raise HTTPException(status_code = 400, detail = _audio_image_detail)
             try:
                 audio_array = _decode_audio_base64(payload.audio_base64)
                 system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
