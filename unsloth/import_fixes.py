@@ -5540,3 +5540,167 @@ def fix_torchao_nf4tensor_move():
             return
     # Appended, not inserted at 0, so a real module on older torchao wins.
     sys.meta_path.append(_TorchaoNF4AliasFinder())
+
+
+# `datasets` fingerprints through dill, and dill decides whether to pickle a
+# module BY REFERENCE or BY VALUE with `dill._dill._is_builtin_module`, which
+# answers yes only if the module's `__file__` starts with a sys prefix, ends
+# with an extension suffix, or contains the literal string `site-packages`.
+#
+# An install that satisfies none of the three -- `pip install --target <dir>`,
+# a PYTHONPATH overlay, a Lambda-style layer, a vendored tree -- therefore gets
+# every one of its packages pickled BY VALUE. `Dataset.from_dict` then walks
+# `datasets/utils/_dill.py:_save_arrowTable` -> `create_arrowTable` -> that
+# function's globals -> the pyarrow MODULE, and dies on pyarrow's Cython
+# `MonthDayNano`, whose `__module__` is `builtins`:
+#
+#     PicklingError: Can't pickle <class 'MonthDayNano'>:
+#         it's not found as builtins.MonthDayNano
+#
+# from a two-line `Dataset.from_dict` on a dict of strings. Nothing in the
+# traceback names the install layout, and every unsloth training path builds a
+# dataset, so the first thing such a user sees is an unreadable pickling error.
+#
+# Reproduced on CPU against a byte-identical package tree with the DIRECTORY
+# NAME as the only variable: the plain `--target` directory raised, the copy
+# named `site-packages` returned a fingerprint.
+_DILL_FIX_SENTINEL = "_unsloth_dill_by_reference_fix"
+_DILL_FIX_ENV = "UNSLOTH_DISABLE_DILL_FIX"
+
+# Never widened for these: dill's whole by-value contract is about the module
+# the user is working IN, and `python -m pkg` gives `__main__` a real `__spec__`
+# that would otherwise satisfy the rule below.
+_DILL_NEVER_BY_REFERENCE = frozenset(("__main__", "__mp_main__"))
+
+
+def _dill_path_pickles_by_value(origin):
+    """dill's rule, applied to a path, WITHOUT importing dill.
+
+    Only a gate: a false positive here costs one `import dill`, because the
+    real `_is_builtin_module` is consulted again before anything is patched.
+    """
+    if not origin:
+        return False
+    try:
+        real = os.path.realpath(origin)
+    except Exception:
+        return False
+    if "site-packages" in origin or "site-packages" in real:
+        return False
+    for name in ("base_prefix", "base_exec_prefix", "exec_prefix", "prefix", "real_prefix"):
+        prefix = getattr(sys, name, None)
+        if not prefix:
+            continue
+        try:
+            if origin.startswith(prefix) or real.startswith(os.path.realpath(prefix)):
+                return False
+        except Exception:
+            continue
+    return True
+
+
+def _dill_environment_is_affected():
+    """True only when a package on the `datasets` fingerprint path lives
+    somewhere dill would pickle by value. An ordinary install answers False and
+    the patch below is never installed at all."""
+    for name in ("datasets", "pyarrow"):
+        try:
+            spec = importlib.util.find_spec(name)
+        except Exception:
+            continue
+        if spec is None:
+            continue
+        if _dill_path_pickles_by_value(getattr(spec, "origin", None)):
+            return True
+    return False
+
+
+def _dill_module_is_importable_by_name(module):
+    """Whether pickling `module` BY REFERENCE is valid.
+
+    It is valid exactly when an unpickler can get the same object back with
+    `import <name>`, which is what an ordinary site-packages install already
+    does for every one of these modules. Deliberately narrow: the module must
+    be the live entry in `sys.modules` under its own name and be file-backed,
+    so an interactive namespace, a synthesised module or a shadowed name keeps
+    dill's existing by-value behaviour.
+    """
+    name = getattr(module, "__name__", None)
+    if not name or name in _DILL_NEVER_BY_REFERENCE:
+        return False
+    if sys.modules.get(name) is not module:
+        return False
+    spec = getattr(module, "__spec__", None)
+    if spec is None or getattr(spec, "name", None) != name:
+        return False
+    return bool(getattr(spec, "origin", None))
+
+
+def fix_dill_module_by_value_pickling():
+    """Let dill pickle importable modules by reference on an off-prefix install.
+
+    No-op unless the environment is one dill would otherwise choke on, so a
+    normal install keeps dill's behaviour byte for byte, fingerprints included.
+    """
+    if os.environ.get(_DILL_FIX_ENV, "0") in ("1", "True", "true"):
+        return False
+    if not _dill_environment_is_affected():
+        return False
+    try:
+        import dill._dill as _dill_module
+    except Exception:
+        return False
+
+    original = getattr(_dill_module, "_is_builtin_module", None)
+    if original is None or getattr(original, _DILL_FIX_SENTINEL, False):
+        return False
+
+    # Ask dill itself before touching anything: the gate above is a copy of
+    # dill's rule and a copy can go stale. If the real predicate is happy with
+    # this install, there is nothing to fix.
+    probe = None
+    for name in ("datasets", "pyarrow"):
+        candidate = sys.modules.get(name)
+        if candidate is None:
+            try:
+                spec = importlib.util.find_spec(name)
+            except Exception:
+                spec = None
+            if spec is None or not getattr(spec, "origin", None):
+                continue
+            candidate = importlib.util.module_from_spec(spec)
+        try:
+            if not original(candidate):
+                probe = candidate
+                break
+        except Exception:
+            continue
+    if probe is None:
+        return False
+
+    @functools.wraps(original)
+    def _is_builtin_module(module, _original = original):
+        try:
+            if _original(module):
+                return True
+        except Exception:
+            return False
+        try:
+            return _dill_module_is_importable_by_name(module)
+        except Exception:
+            return False
+
+    setattr(_is_builtin_module, _DILL_FIX_SENTINEL, True)
+    _dill_module._is_builtin_module = _is_builtin_module
+    # `dill.session` binds the name at import time, so patching the defining
+    # module alone leaves that copy on the old function.
+    session = sys.modules.get("dill.session")
+    if session is not None and getattr(session, "_is_builtin_module", None) is original:
+        session._is_builtin_module = _is_builtin_module
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            "Unsloth: patched dill to pickle importable modules by reference; "
+            f"{getattr(probe, '__name__', '?')} is installed outside a "
+            "site-packages tree."
+        )
+    return True
