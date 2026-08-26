@@ -1393,10 +1393,13 @@ def test_history_hydration_keeps_saved_usage_it_restored(
     ), "the completion half of an exact total must survive hydration"
 
 
-def test_deep_research_declines_the_recount():
-    """With Deep Research on, the next send creates a server-side research run instead of posting
-    this history, and the research reply carries no usage to correct a guess with. Counting would
-    put a total on the bar describing a request that is never made, and leave it there."""
+def test_deep_research_recounts_before_the_model_decides():
+    """Arming Deep Research no longer guarantees a server-side research run.
+
+    The model first receives the ordinary chat turn and may answer directly, so the bar must price
+    that request just like any other send. A later tool handoff replaces the reply with research
+    state, but cannot justify hiding the context estimate before the model decides.
+    """
     out = _run(
         textwrap.dedent(
             f"""
@@ -1412,8 +1415,8 @@ def test_deep_research_declines_the_recount():
             """
         )
     )
-    assert out["counts"] == 0, "a research turn must not be priced as a chat completion"
-    assert out["contextUsage"] is None
+    assert out["counts"] == 1, "the model-decision turn must be priced before it can hand off"
+    assert out["contextUsage"] is not None
 
 
 def test_an_image_branch_is_declined_before_it_is_sent():

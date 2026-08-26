@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Run two Studio builds against each other INSIDE ONE SESSION.
+"""Run two Unsloth builds against each other INSIDE ONE SESSION.
 
 WHY THIS CANNOT BE TWO RUNS. Cross-session drift on this app measured 8%, which is larger than
 most of the wins anybody argues about. `scoring.ab.assert_comparable` refuses two different
@@ -33,7 +33,7 @@ from .types import Cell
 
 @dataclass
 class Target:
-    """One side of the comparison: a Studio to drive and everything needed to drive it."""
+    """One side of the comparison: an Unsloth to drive and everything needed to drive it."""
 
     label: str  # "base" or "treatment"
     ref: str  # the git ref, for the report
@@ -92,7 +92,7 @@ def browser_origin(url: str) -> str:
 
 
 def origin_scoped(base_url: str, script: str) -> str:
-    """Run `script` only on its own Studio's origin.
+    """Run `script` only on its own Unsloth's origin.
 
     `add_init_script` fires on every document in the context, and localStorage is per-origin under
     the SAME KEY NAMES on both builds. Seeding both unconditionally means whichever script runs
@@ -517,7 +517,7 @@ def make_target(
     username: str,
     password: str,
 ) -> Target:
-    """Authenticate against one Studio, register the shared pacer on it, and bind a runner.
+    """Authenticate against one Unsloth, register the shared pacer on it, and bind a runner.
 
     Both sides talk to the SAME pacer, so the bytes on the wire are identical by construction
     rather than by two configurations that are meant to match.

@@ -469,7 +469,7 @@ class TestContextBufferLayerSplit:
 
     def test_kimi_k3_1m_four_gpu_reserve(self):
         # The reported case: Kimi-K3 UD-IQ1_M, 1M ctx, 4 GPUs, ub 512. llama.cpp
-        # allocated 4.0 GiB per device; Studio reserved 1.5 GiB.
+        # allocated 4.0 GiB per device; Unsloth reserved 1.5 GiB.
         b = _backend(embd = 7168, mla = 576)
         gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16", layer_split = True) / (
             1024**3
@@ -741,7 +741,7 @@ class TestPipelineParallelPredicate:
 
     @pytest.mark.parametrize("flag", ["-ngl", "--gpu-layers", "--n-gpu-layers"])
     def test_finite_gpu_layers_below_the_count_disables(self, flag):
-        # User extras land after Studio's -ngl -1, so this last-wins.
+        # User extras land after Unsloth's -ngl -1, so this last-wins.
         assert self._off([flag, "1"], n_layers = 93) is True
         assert self._off([f"{flag}=1"], n_layers = 93) is True
 
@@ -1257,7 +1257,7 @@ class TestSplitRateRecheckAfterSelection:
 
 # ── The scratch rate keys off the LIGHTER axis ───────────────────────────────
 #
-# Since ggml-org/llama.cpp#23792 Studio no longer rewrites the requested type for the
+# Since ggml-org/llama.cpp#23792 Unsloth no longer rewrites the requested type for the
 # tensor attempt, so an asymmetric pair is reachable in the one mode with no --fit
 # valve. The budget resolves ONE scalar, the heavier axis, for KV bytes; handing that
 # to _compute_buffer_ctx_bytes prices a q4_0 K cache as if nothing were quantized,
@@ -1288,7 +1288,7 @@ class TestScratchTakesTheLighterAxis:
         assert (heavier != expected) == (_kv_bytes_per_elem(k) != _kv_bytes_per_elem(v))
 
     def test_a_managed_symmetric_request_leaves_both_terms_equal(self):
-        """Studio emits one type on both axes, so nothing changes for the common
+        """Unsloth emits one type on both axes, so nothing changes for the common
         case -- this fix must not move the fit for a plain q8_0 load."""
         for kv in ("f16", "q8_0", "q4_0", "iq4_nl"):
             assert _planned_scratch_cache_type(kv, None) == kv

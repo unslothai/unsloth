@@ -60,6 +60,7 @@ import {
 import {
   DeferredFenceShell,
   fenceMode,
+  trimmedLength,
   trimTrailingNewlines,
   useFenceReached,
 } from "./code-fence-defer";
@@ -562,6 +563,7 @@ function FenceBlock({
     mode !== "off",
     Boolean(isIncomplete),
     languageToken,
+    trimmedLength(source),
     warm,
   );
 
@@ -616,7 +618,7 @@ function FenceBlock({
  * Every block is rendered inside a boundary. Streamdown fetches the code
  * highlighter and the Mermaid renderer with `React.lazy` the first time a reply
  * needs them, and a rejected import rethrows during render; without this the
- * nearest catcher is the ROUTER's, which replaces all of Studio and takes the
+ * nearest catcher is the ROUTER's, which replaces all of Unsloth and takes the
  * reply and its runtime with it. Per block, so one fence losing its colours
  * costs only that fence.
  */

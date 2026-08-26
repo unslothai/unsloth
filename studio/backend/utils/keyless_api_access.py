@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fail-closed admission policy for serving Studio without an API key.
+"""Fail-closed admission policy for serving Unsloth without an API key.
 
 Off by default. When an admin turns it on, a request that sends no usable
 credential authenticates as the local admin, so ``curl`` and the OpenAI SDKs reach
@@ -398,7 +398,7 @@ def asgi_request_is_keyless(asgi_scope) -> bool:
     """Whether this ASGI request is admitted by the setting rather than by a credential.
 
     Middleware-side twin of ``auth.authentication.admitted_without_credential``, reading
-    the raw scope because it runs before the request object exists. A Studio session and
+    the raw scope because it runs before the request object exists. An Unsloth session and
     a working API key both authenticate as themselves, so neither is keyless: applying
     the tool restriction to an existing API client would take away tools it already had.
     """

@@ -855,9 +855,9 @@ export const it = {
           "Tutto quello che vedi qui è calcolato dalla tua cronologia. Nessun dato viene raccolto o inviato a Unsloth.",
         retry: "Riprova",
         privacyNote:
-          "Le statistiche sono calcolate dalla cronologia di chat e addestramenti presente nella tua installazione di Unsloth. Nessun dato viene raccolto né inviato a Unsloth o a terze parti.",
+          "Le statistiche sono calcolate dalla cronologia locale di chat, utilizzo API e addestramenti della tua installazione di Unsloth. Prompt, risposte e chiavi API non vengono mai salvati per le statistiche. Nulla viene inviato a Unsloth o a terze parti.",
         emptyChats:
-          "Nessuna chat. Inizia una conversazione e le tue statistiche compariranno qui.",
+          "Nessun utilizzo della chat o dell'API. Inizia una conversazione o invia una richiesta autenticata all'API locale.",
         lifetimeTokens: "Token totali",
         peakTokens: "Giorno record",
         longestChat: "Chat più lunga",
@@ -879,6 +879,9 @@ export const it = {
         totalMessages: "Messaggi totali",
         tokensIn: "Token inviati",
         tokensOut: "Token generati",
+        totalTokens: "Token totali",
+        studioChatTokens: "Token di Unsloth Chat",
+        apiTokens: "Token API",
         cachedTokens: "Token in cache",
         cachedValue: "{tokens} ({percent}% dell'input)",
         avgTokensPerChat: "Token medi per chat",
@@ -1210,6 +1213,15 @@ export const it = {
       docs: "Documentazione",
       agentDocs: "Apri la documentazione di configurazione di {agent}",
       copyGeneratedCommand: "Copia il comando generato",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex richiede un modello GGUF servito da llama-server. Gli altri agenti possono usare anche modelli basati su transformer; rimuovi --model per usare il modello già caricato in Unsloth.",
       subagent: {
@@ -1337,7 +1349,7 @@ export const it = {
         title: "Ricerca web",
         images: "Mostra immagini dalla ricerca web",
         imagesDescription:
-          "Consente alla ricerca web di restituire immagini e ne recupera una per ogni elemento elencato in una risposta. Le miniature vengono scaricate e ridimensionate da Studio, quindi il browser non contatta mai gli host delle immagini.",
+          "Consente alla ricerca web di restituire immagini e ne recupera una per ogni elemento elencato in una risposta. Le miniature vengono scaricate e ridimensionate da Unsloth, quindi il browser non contatta mai gli host delle immagini.",
       },
       artifacts: {
         title: "Canvas",
@@ -1358,7 +1370,7 @@ export const it = {
       exportingAction: "Esportazione...",
       exportConversations: "Esporta Recenti e Progetti",
       exportConversationsDescription:
-        "Scarica i Recenti, oppure i Recenti più le chat dei progetti, in JSONL grezzo, CSV o JSONL ShareGPT, in un unico file o uno per chat.",
+        "Scarica i Recenti, oppure i Recenti più le chat dei progetti, in Training JSONL, CSV o JSONL ShareGPT, in un unico file o uno per chat. Message JSONL è disponibile solo per singola chat.",
       exportConversationsAction: "Esporta",
       exportScopeRecents: "Recenti",
       exportScopeAll: "Recenti + Progetti",

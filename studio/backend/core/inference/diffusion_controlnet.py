@@ -78,7 +78,7 @@ _CURATED: tuple[ControlNetCatalogEntry, ...] = (
 
 
 def controlnets_dir() -> Path:
-    """Local directory Studio scans for user-provided ControlNet model folders."""
+    """Local directory Unsloth scans for user-provided ControlNet model folders."""
     d = studio_root() / "controlnets" / "diffusion"
     d.mkdir(parents = True, exist_ok = True)
     return d

@@ -236,7 +236,7 @@ def test_a_bare_positional_is_rejected():
         # Startup output is how a bad GGUF is told from an OOM from a rejected flag.
         "--log-file",
         "--log-disable",
-        # Slot-state dir: Studio owns it for KV persistence across idle unload.
+        # Slot-state dir: Unsloth owns it for KV persistence across idle unload.
         "--slot-save-path",
         # These print and exit instead of serving.
         "-h",
@@ -1128,7 +1128,7 @@ def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
     # pairs that mattered, so a name dropped from the denylist, or a twin dropped
     # from the scrub, is a red test rather than a back door found later.
     #
-    # llama.cpp applies the environment BEFORE argv, so the ones Studio always emits
+    # llama.cpp applies the environment BEFORE argv, so the ones Unsloth always emits
     # are overridden anyway; the rest are the reason this exists.
     for env_var, flag in (
         ("LLAMA_ARG_UI_MCP_PROXY", "--ui-mcp-proxy"),
@@ -1159,7 +1159,7 @@ def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
     for kept in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
         assert kept not in _lsa.DENIED_ENV_VARS, kept
     # HF_TOKEN is deliberately not here: it is the standard Hugging Face credential
-    # Studio's own downloads use, not a llama-server behaviour switch, and the child
+    # Unsloth's own downloads use, not a llama-server behaviour switch, and the child
     # is always given a local -m path rather than a repo to fetch.
     assert "HF_TOKEN" not in _lsa.DENIED_ENV_VARS
     _lsa.scrub_denied_env(env)
@@ -1217,3 +1217,37 @@ def test_the_projector_env_twins_survive_the_scrub():
 )
 def test_memory_env_selects_load_mode(env, expected):
     assert _lsa.memory_env_selects_load_mode(env) is expected
+
+
+# --- the shared "is this ctx flag the user's opt-in?" test ----------------------
+# Both stripping paths (model_override_load_kwargs on the API auto-switch, and
+# _resolve_inherited_extra_args on /load) ask this one function, so a value that
+# survives one reload survives the other.
+
+
+def test_matching_ctx_override_confirms_only_an_exact_positive_int():
+    assert _lsa.matches_explicit_ctx_override(["--ctx-size", "100352"], 100352)
+    assert _lsa.matches_explicit_ctx_override(["-c", "100352"], 100352)
+    # llama.cpp folds the underscore spelling, and so does the matcher.
+    assert _lsa.matches_explicit_ctx_override(["--ctx_size", "100352"], 100352)
+    # Last-wins, exactly as the launch parses it.
+    assert _lsa.matches_explicit_ctx_override(
+        ["--ctx-size", "8192", "--ctx-size", "100352"], 100352
+    )
+    assert not _lsa.matches_explicit_ctx_override(
+        ["--ctx-size", "100352", "--ctx-size", "8192"], 100352
+    )
+    # A different value is a stale shadow, not an opt-in.
+    assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "8192"], 100352)
+    assert not _lsa.matches_explicit_ctx_override(["--top-k", "40"], 100352)
+    assert not _lsa.matches_explicit_ctx_override(None, 100352)
+
+
+def test_matching_ctx_override_is_total_over_stored_junk():
+    # Override rows are coerced on write but returned verbatim on read, so this is
+    # reached with whatever JSON an older build, the API or a hand edit left behind.
+    # None of it may raise inside a load, and none of it counts as confirmed.
+    for n_ctx in (None, 0, -1, "100352", "", "x", 100352.0, True, False, [100352], {"v": 1}):
+        assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "100352"], n_ctx), n_ctx
+    # A malformed flag raises in parse_ctx_override; the matcher answers False.
+    assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "--top-k"], 100352)

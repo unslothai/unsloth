@@ -365,11 +365,11 @@ def port_busy() -> bool:
 
 
 def studio_backend_pids() -> list[int]:
-    """PIDs listening on a Studio port that are ours, and only those.
+    """PIDs listening on an Unsloth port that are ours, and only those.
 
     ONE rule, shared by everything that asks the question, so the gate that refuses to run
     and the cleanup that kills cannot disagree about what counts as ours. They did: the
-    gate keyed on "is any Studio port busy" while the cleanup keyed on attribution, so an
+    gate keyed on "is any Unsloth port busy" while the cleanup keyed on attribution, so an
     unrelated Jupyter on 8888 made the gate refuse to start a run in which the cleanup
     would have refused to touch it.
 
@@ -432,7 +432,7 @@ def wait_for_leftover_backend_to_stop(timeout = 30):
             return True
         time.sleep(1)
     print(
-        "    an Unsloth backend is still holding a Studio port and did not stop. Close "
+        "    an Unsloth backend is still holding an Unsloth port and did not stop. Close "
         "whatever is still running, or this candidate will have nothing to measure.",
         flush = True,
     )
@@ -954,8 +954,8 @@ def confirm_stop_running_studio() -> bool:
     """A backend is already answering before the first candidate. Ask before touching it.
 
     `stop_leftover_backend()` cannot tell a backend orphaned by a previous run from the one
-    serving the Unsloth the reporter has open right now: both are Studio processes on a
-    Studio port. Running into it unasked SIGTERMs a live session, interrupting whatever it
+    serving the Unsloth the reporter has open right now: both are Unsloth processes on an
+    Unsloth port. Running into it unasked SIGTERMs a live session, interrupting whatever it
     was doing, to gather a report about a freeze. Printing a note and carrying on is not
     consent, so require an answer, and refuse rather than guess when there is nobody to ask.
     """
@@ -1021,7 +1021,7 @@ def main() -> int:
     # touch. An unrelated listener needs nothing done: _resolve_port() in
     # studio/backend/run.py walks on to the next free port in the range.
     if studio_backend_pids():
-        print("An Unsloth backend is already listening on a Studio port. That is either")
+        print("An Unsloth backend is already listening on an Unsloth port. That is either")
         print("Unsloth running right now, or a backend left behind by an earlier run, and")
         print("this script cannot tell them apart: continuing STOPS it, which interrupts")
         print("whatever that Unsloth is doing.\n")
@@ -1032,7 +1032,7 @@ def main() -> int:
             return 2
         print()
     elif port_busy():
-        print("Something that is not Unsloth is listening on a Studio port. Nothing needs")
+        print("Something that is not Unsloth is listening on an Unsloth port. Nothing needs")
         print("to be done about it: the backend falls back to the next free port, and this")
         print("script only ever stops a process it can attribute to Unsloth.\n")
 
@@ -1055,7 +1055,7 @@ def main() -> int:
     finally:
         # The last candidate's backend is cleaned up by the NEXT candidate, and there is no
         # next one. Closing the app does not stop the backend it started, so without this
-        # the script exits leaving Studio quietly serving: the reporter's next real launch
+        # the script exits leaving Unsloth quietly serving: the reporter's next real launch
         # attaches to a backend nothing is recording, which this script's own docstring
         # calls the worst possible state to be in, and a second run of it would refuse to
         # start against a port it cannot explain.

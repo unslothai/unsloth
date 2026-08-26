@@ -355,7 +355,7 @@ def test_busy_port_is_not_taken_as_permission_to_stop_a_live_studio(monkeypatch)
 
 
 def test_main_aborts_instead_of_killing_a_running_studio(monkeypatch, capsys, tmp_path):
-    """The end to end shape of the above: a Studio backend already answering, with nobody
+    """The end to end shape of the above: an Unsloth backend already answering, with nobody
     to ask, must reach no candidate at all, so nothing is ever killed."""
     launched = []
     monkeypatch.setattr(freeze, "studio_backend_pids", lambda: [4321])

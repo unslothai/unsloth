@@ -233,7 +233,7 @@ def test_the_cap_is_read_without_needing_accelerate_importable():
     the cap conditional on an import that runs while placement is still being decided: on an
     install without accelerate, or one that moves the symbol, every budget came back
     unreadable and the caller's cap was dropped in silence. Found by the cross-platform run,
-    whose runners carry pytest and the Studio requirements but no accelerate."""
+    whose runners carry pytest and the Unsloth requirements but no accelerate."""
     import builtins
 
     as_bytes = _build()["_as_bytes"]

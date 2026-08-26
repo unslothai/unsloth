@@ -1089,7 +1089,7 @@ class TestVulkanAdvice:
       ``install_llama_prebuilt.py`` (``_route_to_vulkan_prebuilt``,
       ``install_prebuilt``, ``main``): it chooses which llama.cpp bundle gets
       downloaded, at install time. A user who exports it and merely relaunches
-      Studio sees no change and concludes the advice was wrong -- which is
+      Unsloth sees no change and concludes the advice was wrong -- which is
       exactly what happened in #8458. Advice that omits the timing is worse than
       no advice, so a message naming the variable must also name the moment.
     """

@@ -298,7 +298,7 @@ test("community ASR only offers checkpoints the Transformers Whisper sidecar can
   );
   // Llasa was in this list and should not have been. It speaks XCodec2, which
   // AudioCodecManager cannot decode and _AUDIO_TOKEN_PATTERNS cannot even recognise, so
-  // probing a running Studio reports unsloth/Llasa-1B as is_audio=false. Admitting the row
+  // probing a running Unsloth reports unsloth/Llasa-1B as is_audio=false. Admitting the row
   // produced a model that loaded and then failed at generation.
   assert.equal(
     communityAudioRowIsRunnable({

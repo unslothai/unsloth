@@ -489,6 +489,7 @@ def _upstream_message(
     content,
     tool_calls = None,
     finish_reason = "stop",
+    usage = None,
 ):
     message = {"role": "assistant", "content": content}
     if tool_calls is not None:
@@ -499,7 +500,7 @@ def _upstream_message(
         "created": 1,
         "model": "gguf",
         "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
-        "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+        "usage": usage or {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
     }
 
 
@@ -804,6 +805,49 @@ class TestNudgeRetryOpenai:
 
         asyncio.run(_run())
 
+    def test_retry_usage_includes_both_generation_attempts(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            first = _upstream_message(
+                GARBAGE_SIGNAL,
+                usage = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+            )
+            retry = _upstream_message(
+                LOOKUP_XML,
+                usage = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+            )
+            client = ScriptedClient([first, retry])
+            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+
+            response = await _openai_passthrough_non_streaming(
+                _llama_backend(),
+                _payload(nudge_tool_calls = True),
+                "gguf",
+                monitor_id = monitor_id,
+            )
+            data = json.loads(response.body)
+
+            assert data["usage"] == {
+                "prompt_tokens": 20,
+                "completion_tokens": 8,
+                "total_tokens": 28,
+            }
+            [entry] = monitor.snapshot()
+            assert entry["prompt_tokens"] == 20
+            assert entry["completion_tokens"] == 8
+            assert entry["total_tokens"] == 28
+
+        asyncio.run(_run())
+
     def test_retry_still_garbage_returns_original(self, monkeypatch):
         async def _run():
             client, data = await _drive_non_streaming(
@@ -898,6 +942,29 @@ class TestNudgeRetryAnthropic:
             (block,) = [b for b in data["content"] if b["type"] == "tool_use"]
             assert block["name"] == "lookup"
             assert data["stop_reason"] == "tool_use"
+
+        asyncio.run(_run())
+
+    def test_discarded_retry_usage_still_counts_generated_tokens(self, monkeypatch):
+        async def _run():
+            first = _upstream_message(
+                GARBAGE_SIGNAL,
+                usage = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+            )
+            retry = _upstream_message(
+                GARBAGE_SIGNAL + "2",
+                usage = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+            )
+            client, data = await self._drive(
+                monkeypatch,
+                [first, retry],
+                nudge = True,
+            )
+
+            assert len(client.posts) == 2
+            assert data["content"][0]["text"] == GARBAGE_SIGNAL
+            assert data["usage"]["input_tokens"] == 20
+            assert data["usage"]["output_tokens"] == 8
 
         asyncio.run(_run())
 

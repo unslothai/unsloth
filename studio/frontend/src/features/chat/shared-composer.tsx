@@ -89,6 +89,7 @@ import {
   PromptStorageDialog,
   exportConversationShareGPT,
   exportConversationRawJsonl,
+  exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
 } from "./prompt-storage/prompt-storage-dialog";
@@ -1732,6 +1733,7 @@ export function SharedComposer({
         const synced = {
           isVision: Boolean(resp.is_vision),
           isGguf: Boolean(resp.is_gguf),
+          isMlx: Boolean(resp.is_mlx),
           isAudio: Boolean(resp.is_audio),
           audioType: resp.audio_type ?? null,
           hasAudioInput: Boolean(resp.has_audio_input),
@@ -2031,7 +2033,8 @@ export function SharedComposer({
           className="unsloth-plus-menu w-[208px]"
         >
           {[
-            { label: "Raw JSONL", fn: exportConversationRawJsonl },
+            { label: "Training JSONL", fn: exportConversationRawJsonl },
+            { label: "Message JSONL", fn: exportConversationMessagesJsonl },
             { label: "CSV", fn: exportConversationCsv },
             { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
             {
