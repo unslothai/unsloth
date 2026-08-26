@@ -309,12 +309,11 @@ def _full_scope_transport_allowed(request: Any, app_state: Any) -> bool:
 def _repeated_header(request: Any, name: bytes) -> bool:
     """Whether the raw ASGI headers carry ``name`` more than once.
 
-    ``Headers.get()`` returns the first of a repeated header, so a predicate built on it
-    decides on one value while an intermediary may have acted on another. `Host` and
-    `Sec-Fetch-Site` are both security relevant here, so an ambiguous request is refused
-    rather than resolved -- the same rule `asgi_request_is_keyless` already applies to a
-    repeated `Authorization`. h11 rejects a repeated `Host` itself, httptools does not,
-    and neither rejects a repeated `Sec-Fetch-Site`, so this cannot be left to the parser.
+    ``Headers.get()`` returns the first of a repeated header, so a predicate built on it may
+    decide on a different value than an intermediary acted on. An ambiguous request is
+    refused rather than resolved, as `asgi_request_is_keyless` already does for a repeated
+    `Authorization`. h11 rejects a repeated `Host`, httptools does not, and neither rejects a
+    repeated `Sec-Fetch-Site`, so this cannot be left to the parser.
     """
     try:
         headers = request.scope.get("headers") or ()
@@ -326,28 +325,22 @@ def _repeated_header(request: Any, name: bytes) -> bool:
 def _browser_initiated_elsewhere(request: Any) -> bool:
     """Whether a page on another site made this request, as the browser reports it.
 
-    ``Origin`` cannot say: no browser attaches it to a same-origin GET or to a
-    cross-site GET in ``no-cors`` mode, and such a fetch at
-    ``http://127.0.0.1:<port>`` does arrive, since Chromium's Local Network Access
-    (Chrome 141, enforced from 142, replacing the earlier Private Network Access) is the
-    only thing holding it back and Firefox and Safari have shipped no equivalent.
-    ``Sec-Fetch-Site`` is set on every request to a URL the browser considers
-    *potentially trustworthy*, and the ``Sec-`` prefix makes it a forbidden header name,
-    so a page cannot forge it. Absence stays admitted: curl, the OpenAI SDKs and Safari
-    before 16.4 send nothing, and serving them is the point of the setting.
+    ``Origin`` cannot say: no browser attaches it to a same-origin GET or to a cross-site
+    ``no-cors`` GET, and such a fetch at ``http://127.0.0.1:<port>`` does arrive. Only
+    Chromium's Local Network Access (141, enforced from 142, replacing Private Network
+    Access) holds it back; Firefox and Safari ship no equivalent. ``Sec-Fetch-Site`` is set
+    on every request to a URL the browser considers *potentially trustworthy*, and the
+    ``Sec-`` prefix makes it unforgeable. Absence stays admitted: curl, the OpenAI SDKs and
+    Safari before 16.4 send nothing, and serving them is the point of the setting.
 
-    Two limits are worth stating, because the header is weaker than it first appears:
+    Two limits, because the header is weaker than it first appears:
 
-    * Absence only *means* "not a browser" where the URL is potentially trustworthy.
-      `_host_authority_is_direct` is what keeps the authority inside that set; on the
-      plain-HTTP private-LAN limb no such URL exists, so this predicate is structurally
-      inert there and the `Origin` check above is the only browser signal left.
-    * ``none`` is not admitted. The comment it used to carry -- "the user typing the URL,
-      which no page can cause" -- is true of a page and false of a server: ``none`` is
-      computed before the redirect chain is walked, so an attacker-controlled 302 from a
-      user-initiated navigation lands here still saying ``none``. Measured live: Firefox
-      153 and WebKit 26.5 both deliver it. Nobody types an API route into an address bar,
-      so refusing it costs nothing.
+    * Absence only *means* "not a browser" where the URL is potentially trustworthy, which
+      is what `_host_authority_is_direct` enforces. On the plain-HTTP private-LAN limb no
+      such URL exists, so this predicate is inert there and `Origin` is the only signal left.
+    * ``none`` is refused. It is computed before the redirect chain is walked, so an
+      attacker-controlled 302 from a user-initiated navigation still arrives saying ``none``
+      (measured: Firefox 153, WebKit 26.5). Nobody types an API route into an address bar.
     """
     if _repeated_header(request, b"sec-fetch-site"):
         return True
@@ -368,41 +361,36 @@ def _port_suffix_is_numeric(suffix: str) -> bool:
 def _host_authority_is_direct(request: Any, scope: str) -> bool:
     """Whether the caller addressed this server directly rather than through a name.
 
-    Guards DNS rebinding, which the socket checks cannot see: a page on
-    ``evil.example`` re-pointed at ``127.0.0.1`` keeps its own origin, so every
-    signal above reads as a local client and the response is readable by the page.
-    ``Host`` still differs, being the name the page was served from. A direct client
-    sends the literal address or ``localhost``; anything else is a name, whether a
-    rebound domain or a legitimate mDNS / internal-DNS / reverse-proxy alias -- keyless
-    declines both, matching `lan_access_settings`, which likewise never trusts a name.
+    Guards DNS rebinding, which the socket checks cannot see: a page on ``evil.example``
+    re-pointed at ``127.0.0.1`` keeps its own origin, so every signal above reads as a local
+    client and the response is readable by the page. ``Host`` still names the site the page
+    was served from. A direct client sends the literal address or ``localhost``; anything
+    else is a name, whether rebound or a legitimate mDNS / internal-DNS / reverse-proxy
+    alias -- keyless declines both, as `lan_access_settings` also never trusts a name.
     Absent stays admitted: HTTP/1.0 callers send none and no browser omits it.
 
-    The literal is matched as written rather than canonicalised, because this predicate
-    and the browser have to agree on what "loopback" spells. Two families are refused
-    for exactly that reason, both measured reaching a ``127.0.0.1`` listener while the
-    browser sent no ``Sec-Fetch-*`` at all, since neither is inside the potentially
-    trustworthy set (``127.0.0.0/8`` and ``::1/128``):
+    The literal is matched as written rather than canonicalised, because this predicate and
+    the browser must agree on how "loopback" is spelled. Two families are refused for that
+    reason, both measured reaching a ``127.0.0.1`` listener while the browser sent no
+    ``Sec-Fetch-*`` at all, neither being potentially trustworthy (``127.0.0.0/8``, ``::1/128``):
 
-    * IPv4-mapped IPv6 -- ``[::ffff:127.0.0.1]``, ``[::ffff:7f00:1]``. Chromium 151,
-      Firefox 153 and WebKit 26.5 all sent the request with no Fetch Metadata.
-    * the unspecified addresses ``0.0.0.0`` and ``[::]``, which connect to loopback on
-      Linux. Chromium sent these with no Fetch Metadata too.
+    * IPv4-mapped IPv6 -- ``[::ffff:127.0.0.1]``, ``[::ffff:7f00:1]`` -- on Chromium 151,
+      Firefox 153 and WebKit 26.5.
+    * the unspecified ``0.0.0.0`` and ``[::]``, which connect to loopback on Linux.
 
-    Canonicalising them, as a general purpose address normaliser would, is what turned
-    absence-means-not-a-browser into a bypass, so the parsing is done here rather than
-    through `lan_access_settings._normalized_ip`, whose leniency is correct for the
-    socket addresses it was written for and wrong for an authority off the wire.
+    Canonicalising them, as a general purpose normaliser would, is what turned
+    absence-means-not-a-browser into a bypass, so parsing happens here rather than through
+    `lan_access_settings._normalized_ip`, whose leniency suits the socket addresses it was
+    written for and not an authority off the wire.
 
-    The literal must also be one the scope could legitimately be reached at. Being an
-    address rather than a name is not enough: the socket checks see only the hop that
-    connected, so an SSH forward or a reverse proxy in front of a loopback bind makes
-    both ASGI endpoints loopback while the browser's own origin, and therefore ``Host``,
-    is the public address the page was served from. ``full`` is loopback-only by
-    construction (`_full_scope_transport_allowed` demands a loopback bind and a loopback
-    peer), so its authority must be loopback too; ``inference`` may additionally be
-    reached across the private LAN, so it takes the same private networks
-    `lan_access_settings` admits. Note this cannot be spelled with `is_private`, which
-    means "not globally reachable" and so counts the documentation ranges in as well.
+    The literal must also be one ``scope`` could legitimately be reached at. The socket
+    checks see only the hop that connected, so an SSH forward or a reverse proxy in front of
+    a loopback bind makes both ASGI endpoints loopback while ``Host`` is the public address
+    the page came from. ``full`` is loopback-only by construction
+    (`_full_scope_transport_allowed` demands a loopback bind and peer), so its authority must
+    be loopback too; ``inference`` may also be reached across the private LAN. This cannot be
+    spelled with `is_private`, which means "not globally reachable" and counts the
+    documentation ranges in as well.
     """
     import ipaddress
 
@@ -433,12 +421,11 @@ def _host_authority_is_direct(request: Any, scope: str) -> bool:
         if separator and not _port_suffix_is_numeric(":" + suffix):
             return False
         literal = literal.lower()
-        # Exactly `localhost`, with no trailing root-label dot. Secure Contexts lists
-        # `localhost.` as trustworthy, but WebKit's check is a plain string compare with
-        # no trailing-dot handling, and measured on WebKit 26.5 a page dialling
-        # `http://localhost.:<port>` sends no `Sec-Fetch-*` at all while Chromium 151 and
-        # Firefox 153 both send `cross-site`. Admitting the dotted form would reopen the
-        # same absence-means-not-a-browser gap on Safari alone. No client spells it.
+        # Exactly `localhost`, no trailing root-label dot. Secure Contexts lists
+        # `localhost.` as trustworthy, but WebKit's check is a plain string compare: measured
+        # on WebKit 26.5 a page dialling `http://localhost.:<port>` sends no `Sec-Fetch-*`
+        # while Chromium 151 and Firefox 153 send `cross-site`, so admitting the dotted form
+        # would reopen the absence gap on Safari alone. No client spells it.
         if literal == "localhost":
             return True
         try:
@@ -452,14 +439,12 @@ def _host_authority_is_direct(request: Any, scope: str) -> bool:
 def keyless_authority_address_allowed(address: Any, scope: str) -> bool:
     """Whether a parsed authority literal is one ``scope`` could be reached at.
 
-    The single place this question is answered, so the admission rule and anything that
-    advertises an address to the user cannot drift apart -- `lan_access_settings`
-    reported a keyless-eligible LAN URL for an IPv4-mapped literal that admission
-    refuses, because it had its own copy of the test.
+    The single place this is answered, so admission and anything that advertises an address
+    to the user cannot drift apart -- `lan_access_settings` reported a keyless-eligible LAN
+    URL for an IPv4-mapped literal admission refuses, having kept its own copy of the test.
 
-    Takes an already-parsed address so the caller keeps responsibility for parsing the
-    spelling faithfully. It must NOT have been canonicalised: the mapped form is refused
-    precisely because the browser does not treat it as loopback, so un-mapping it first
+    Takes an already-parsed address, which must NOT have been canonicalised: the mapped form
+    is refused precisely because the browser does not treat it as loopback, so un-mapping it
     erases the distinction being tested.
     """
     from utils.lan_access_settings import _private_non_loopback
@@ -591,13 +576,12 @@ def asgi_request_is_keyless(asgi_scope) -> bool:
         return True
     if len(authorization) != 1:
         return False
-    # The same parser the dependency uses, rather than a second hand-rolled split. They
-    # disagreed on `Authorization: bearer  not-needed`: `partition(" ")` leaves the token
-    # as " not-needed" and reported not-keyless, while the dependency collapsed the extra
-    # space, admitted the dummy, and returned KeylessBearer. The request was therefore
-    # keyless to every route and not-keyless to `KeylessToolPolicyMiddleware`, which is
-    # what decides whether to clamp the tool grant -- so that one shape reached keyless
-    # admission carrying an unclamped tool policy. Sharing the parser removes the class.
+    # The same parser the dependency uses, not a second hand-rolled split. They disagreed on
+    # `Authorization: bearer  not-needed`: `partition(" ")` left the token as " not-needed"
+    # and reported not-keyless, while the dependency collapsed the space and admitted the
+    # dummy. That shape was therefore keyless to every route but not-keyless to
+    # `KeylessToolPolicyMiddleware`, which decides whether to clamp the tool grant, so it
+    # reached keyless admission with an unclamped tool policy.
     from fastapi.security.utils import get_authorization_scheme_param
 
     scheme, token = get_authorization_scheme_param(authorization[0])

@@ -311,15 +311,15 @@ def test_traversal_shaped_paths_never_borrow_an_allowlisted_route():
 def test_no_v1_get_route_but_model_retrieval_matches_a_traversal_suffix():
     """`scope_covers` admits every non-empty `GET /v1/models/...` suffix, not an exact pair.
 
-    That is broader than the "exact HTTP method + normalized path allowlist" the PR
-    describes, so the safety argument rests entirely on route topology: nothing but
-    `openai_retrieve_model` can match those paths. Pin the topology, because the day
-    another `GET /models/...` route is registered the allowlist silently grows with it.
+    Broader than the "exact HTTP method + normalized path allowlist" the PR describes, so the
+    safety argument rests on route topology: nothing but `openai_retrieve_model` can match
+    those paths. Pin the topology, because the day another `GET /models/...` route is
+    registered the allowlist silently grows with it.
 
     Deliberately does NOT assert what `scope_covers` returns for a traversal string. An
-    earlier version did, which made this the one test in the file that failed when
-    `scope_covers` was made stricter -- a change detector pointing the wrong way, since
-    the fix for a red build would have been to loosen the code back.
+    earlier version did, making this the one test that failed when `scope_covers` was made
+    stricter -- a change detector pointing the wrong way, since the fix for a red build would
+    have been to loosen the code back.
     """
     from starlette.routing import Match
 
@@ -430,16 +430,14 @@ def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
 def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
     """`Origin` alone does not identify a browser.
 
-    No engine attaches it to a same-origin GET or to a cross-site GET made in
-    `no-cors` mode, and only Chromium withholds such a fetch from
-    `http://127.0.0.1:<port>` (Local Network Access, Chrome 141/142). Firefox and
-    Safari send it. `Sec-Fetch-Site` is what actually says who initiated the request,
-    and a page cannot forge it -- the `Sec-` prefix makes it a forbidden header name.
-    Verified against Chromium 151, Firefox 153 and WebKit 26.5: every shape a page can
-    emit at a loopback URL -- no-cors and cors `fetch`, POST, `<img>`, `<script>`,
-    `<link rel=prefetch>`, `<iframe>`, form GET and POST, `sendBeacon`, `EventSource`,
-    `WebSocket` -- arrived as `cross-site`, or `same-site` on WebKit, which is why
-    `same-site` is in the refusal set.
+    No engine attaches it to a same-origin GET or a cross-site `no-cors` GET, and only
+    Chromium withholds such a fetch from `http://127.0.0.1:<port>` (Local Network Access,
+    Chrome 141/142). `Sec-Fetch-Site` is what says who initiated the request, and the `Sec-`
+    prefix makes it unforgeable. Verified on Chromium 151, Firefox 153 and WebKit 26.5: every
+    shape a page can emit at a loopback URL -- no-cors and cors `fetch`, POST, `<img>`,
+    `<script>`, `<link rel=prefetch>`, `<iframe>`, form GET and POST, `sendBeacon`,
+    `EventSource`, `WebSocket` -- arrived as `cross-site`, or `same-site` on WebKit, which is
+    why `same-site` is refused too.
     """
     seed_user()
     for scope_name in ("inference", "full"):
@@ -501,19 +499,18 @@ def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
 def test_a_loopback_spelling_the_browser_will_not_vouch_for_is_refused():
     """Absence of `Sec-Fetch-Site` only means "not a browser" for a trustworthy URL.
 
-    Fetch Metadata is attached only to a potentially trustworthy URL, and Secure
-    Contexts spells that set as `127.0.0.0/8` and `::1/128`. Two families sit outside
-    it while still reaching a `127.0.0.1` listener, so a page can dial them and arrive
-    with no Fetch Metadata at all -- which the absent-is-admitted rule would then read
-    as a non-browser client:
+    Fetch Metadata is attached only to a potentially trustworthy URL, which Secure Contexts
+    spells `127.0.0.0/8` and `::1/128`. Two families sit outside it while still reaching a
+    `127.0.0.1` listener, so a page can dial them and arrive with no Fetch Metadata, which
+    the absent-is-admitted rule would read as a non-browser client:
 
-    * IPv4-mapped IPv6. Measured sending no `Sec-Fetch-*` in Chromium 151, Firefox 153
-      and WebKit 26.5 alike; all three normalise the authority to `[::ffff:7f00:1]`.
-    * the unspecified addresses, which connect to loopback on Linux. Chromium sends
+    * IPv4-mapped IPv6. No `Sec-Fetch-*` in Chromium 151, Firefox 153 or WebKit 26.5; all
+      three normalise the authority to `[::ffff:7f00:1]`.
+    * the unspecified addresses, which reach loopback on Linux. Chromium sends
       `Host: 0.0.0.0` with no Fetch Metadata; Firefox and WebKit refuse the fetch.
 
-    A general purpose address normaliser undoes exactly the distinction that matters
-    here, so the authority is matched as written.
+    A general purpose normaliser undoes the distinction that matters here, so the authority
+    is matched as written.
     """
     seed_user()
     for scope_name in ("inference", "full"):
@@ -587,17 +584,16 @@ def test_what_the_ui_advertises_matches_what_admission_accepts():
 def test_an_authority_the_scope_cannot_be_reached_at_is_refused():
     """Being an address rather than a name is not enough; it has to be a local one.
 
-    The socket checks see only the hop that connected, so an SSH forward or a reverse
-    proxy in front of a loopback bind makes both ASGI endpoints loopback while the
-    page's own origin, and so `Host`, is the public address it was served from. Before
-    this, `full` admitted `Host: 8.8.8.8` on a loopback transport and served management
-    responses to a page that could read them.
+    The socket checks see only the hop that connected, so an SSH forward or reverse proxy in
+    front of a loopback bind makes both ASGI endpoints loopback while `Host` is the public
+    address the page was served from. Before this, `full` admitted `Host: 8.8.8.8` on a
+    loopback transport and served management responses to a page that could read them.
 
-    `full` is loopback-only by construction, so its authority must be loopback.
-    `inference` may also be reached across the private LAN, so it takes the same
-    networks `lan_access_settings` admits and nothing wider -- CGNAT and the
-    documentation ranges are outside them, which `is_private` would not have caught
-    since that means "not globally reachable" rather than RFC 1918.
+    `full` is loopback-only by construction, so its authority must be loopback. `inference`
+    may also be reached across the private LAN, so it takes the networks
+    `lan_access_settings` admits and nothing wider -- CGNAT and the documentation ranges sit
+    outside them, which `is_private` would not have caught, meaning "not globally reachable"
+    rather than RFC 1918.
     """
     seed_user()
     for scope_name, path in (("full", "/api/chat/threads"), ("inference", "/v1/models")):
@@ -696,16 +692,15 @@ def test_an_authority_that_is_not_a_bare_host_and_port_is_refused():
 def test_a_plain_http_lan_browser_request_is_not_covered_by_fetch_metadata():
     """Pins the documented residual, so a later reader does not assume coverage.
 
-    On the private-LAN limb the URL is plain-HTTP `http://192.168.x.y:<port>`, which is
-    never potentially trustworthy, so no engine sends `Sec-Fetch-*` there and
-    `_browser_initiated_elsewhere` can never fire. A cross-site no-cors GET from a page
-    open in a LAN browser therefore still reaches keyless `inference`, exactly as it did
-    before this rule existed. `Origin` remains the only browser signal on that limb, and
-    the rebinding guard still refuses the name a rebound page would send.
+    On the private-LAN limb the URL is plain-HTTP `http://192.168.x.y:<port>`, never
+    potentially trustworthy, so no engine sends `Sec-Fetch-*` and
+    `_browser_initiated_elsewhere` can never fire. A cross-site no-cors GET from a LAN
+    browser therefore still reaches keyless `inference`, as it did before this rule. `Origin`
+    remains the only browser signal there, and the rebinding guard still refuses the name a
+    rebound page would send.
 
-    This is unchanged behaviour, not a regression, and narrowing it would take away the
-    private-LAN inference the setting exists to provide. It is asserted so that a change
-    in either direction is visible.
+    Unchanged behaviour, not a regression: narrowing it would take away the private-LAN
+    inference the setting exists to provide. Asserted so a change either way is visible.
     """
     seed_user()
     set_keyless_api_access("inference")

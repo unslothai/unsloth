@@ -5,11 +5,11 @@
  * Whether a base URL is one the keyless usage example may be printed for.
  *
  * Mirror of `keyless_api_access.keyless_authority_address_allowed`: loopback always,
- * private LAN under `inference`, and nothing else. If the panel says yes where admission
- * says no, it renders a copy-paste `Bearer not-needed` command that answers 401.
+ * private LAN under `inference`, nothing else. If the panel says yes where admission says
+ * no, it renders a copy-paste `Bearer not-needed` command that answers 401.
  *
- * Its own module, free of the component's react/shiki graph, so the table can be pinned
- * by a unit test instead of by scraping the source.
+ * Its own module, free of the component's react/shiki graph, so a unit test can pin the
+ * table instead of scraping the source.
  */
 
 import type {
@@ -21,9 +21,9 @@ import { isLoopbackHost, normalizeHost } from "./agent-command.ts";
 // Same networks as the backend's _PRIVATE_LAN_NETWORKS.
 export function isPrivateLanHost(hostname: string): boolean {
   const host = normalizeHost(hostname).toLowerCase();
-  // No IPv4-mapped unwrapping. Admission refuses the mapped form precisely because
-  // unwrapping is what the browser will not do, so a helper that unwraps answers the
-  // wrong question -- that is how the panel came to advertise a mapped literal.
+  // No IPv4-mapped unwrapping: admission refuses that form precisely because the browser
+  // will not unwrap it, so a helper that does answers the wrong question. That is how the
+  // panel came to advertise a mapped literal.
   const ipv4 = host.split(".").map(Number);
   if (
     ipv4.length === 4 &&
@@ -62,9 +62,9 @@ function isIpv4MappedHost(host: string): boolean {
 }
 
 /**
- * Syntax is not the question. `[::ffff:192.168.1.24]`, `[::]` and `8.8.8.8` are all well
- * formed literals that admission refuses, and checking only that a base LOOKS like an
- * address is what left the panel advertising `Bearer not-needed` for each of them.
+ * Syntax is not the question: `[::ffff:192.168.1.24]`, `[::]` and `8.8.8.8` are all well
+ * formed literals admission refuses. Checking only that a base LOOKS like an address is what
+ * left the panel advertising `Bearer not-needed` for each of them.
  */
 export function isKeylessAllowedAuthority(hostname: string): boolean {
   const host = normalizeHost(hostname).toLowerCase();

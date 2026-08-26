@@ -5,21 +5,19 @@
  * The keyless usage example must only be offered for a base admission can accept.
  *
  * `keyless_api_access.keyless_authority_address_allowed` decides that on the backend:
- * loopback always, private LAN under `inference`, and nothing else -- no hostname, no
- * IPv4-mapped literal, no unspecified address, no public address. The panel has to give
- * the same answer or it prints a copy-paste `Bearer not-needed` command that answers 401.
+ * loopback always, private LAN under `inference`, nothing else -- no hostname, no
+ * IPv4-mapped literal, no unspecified or public address. The panel must give the same
+ * answer or it prints a copy-paste `Bearer not-needed` command that answers 401.
  *
- * It has been wrong three ways, each time because the guard tested something adjacent to
- * the real question:
- *   1. `exposure === "private_lan"` short-circuited the host test entirely, so
+ * It has been wrong three ways, each time by testing something adjacent to the real question:
+ *   1. `exposure === "private_lan"` short-circuited the host test, so
  *      `unsloth studio -H box.local` advertised keyless for a hostname.
  *   2. the replacement tested literal SYNTAX, so `[::ffff:192.168.1.24]`, `[::]` and
- *      `8.8.8.8` are all well formed and all sailed through.
- *   3. `isPrivateLanHost` unwrapped `::ffff:`, which is the one thing admission refuses
- *      the mapped form for.
+ *      `8.8.8.8` all sailed through.
+ *   3. `isPrivateLanHost` unwrapped `::ffff:`, the one thing that form is refused for.
  *
- * So this pins the verdict table itself, not the presence of a guard. The expectations
- * below mirror `test_what_the_ui_advertises_matches_what_admission_accepts` in
+ * So this pins the verdict table itself, not the presence of a guard, mirroring
+ * `test_what_the_ui_advertises_matches_what_admission_accepts` in
  * studio/backend/tests/test_keyless_api_access_adversarial.py -- change both together.
  */
 
