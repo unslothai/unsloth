@@ -289,6 +289,10 @@ test("the seed belongs to the chat, not the installation", () => {
 
 test("a chat stores a cleared seed rather than dropping the key", () => {
   assert.deepEqual(sanitizeThreadScopedSettings({ seed: null }), { seed: null });
+  // The other half of that: a snapshot written before the field existed carries no seed,
+  // and the thread response now says so rather than spelling it null, so the chat falls
+  // through to the pin it inherits instead of reading as one that cleared it.
+  assert.deepEqual(sanitizeThreadScopedSettings({ topK: 40 }), { topK: 40 });
   assert.deepEqual(sanitizeThreadScopedSettings({ seed: 3407 }), { seed: 3407 });
   // The bound the panel and the installation copy already share, applied to the snapshot
   // a chat writes: a row from another client meets only this.

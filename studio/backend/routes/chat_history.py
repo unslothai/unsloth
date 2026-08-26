@@ -13,7 +13,14 @@ import sqlite3
 from typing import Annotated, Any, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_serializer,
+    field_validator,
+)
 
 from auth.authentication import get_current_subject
 from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
@@ -154,6 +161,21 @@ class ChatThread(BaseModel):
     forkedFromThreadId: Optional[str] = None
     forkedFromMessageId: Optional[str] = None
     settings: Optional[ChatThreadSettings] = None
+
+    @field_serializer("settings")
+    def _only_the_keys_the_snapshot_stored(
+        self, settings: Optional[ChatThreadSettings]
+    ) -> Optional[dict]:
+        """Report a key the snapshot never held as absent rather than as null.
+
+        `seed` is the one setting whose null is a value: it means this chat draws its own
+        rather than taking the pinned one. Spelling every unset field as null, which is
+        what the default dump does, would make a snapshot written before the field existed
+        read as a chat that had cleared it.
+        """
+        if settings is None:
+            return None
+        return settings.model_dump(exclude_unset = True)
 
 
 def thread_from_row(row: dict) -> ChatThread:

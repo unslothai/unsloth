@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 _BACKEND = Path(__file__).resolve().parents[1]
@@ -701,3 +703,31 @@ def test_a_cleared_seed_stays_in_the_stored_snapshot():
     come back for the one chat the user deliberately unpinned."""
     assert readable_thread_settings({"seed": None}) == {"seed": None}
     assert ChatThreadSettings.model_validate({"seed": None}).seed is None
+
+
+def _thread_row(settings):
+    row = {"id": "thread-1", "modelType": "base", "createdAt": 0}
+    return row if settings is None else {**row, "settings": settings}
+
+
+@pytest.mark.parametrize(
+    "stored, expected",
+    [
+        # Written before the seed existed. Absent, so the chat takes the pin it inherits.
+        ({"temperature": 0.3}, {"temperature": 0.3}),
+        # Written by a build that has it, with the pin cleared. null is the chat's choice.
+        ({"temperature": 0.3, "seed": None}, {"temperature": 0.3, "seed": None}),
+        ({"temperature": 0.3, "seed": 3407}, {"temperature": 0.3, "seed": 3407}),
+    ],
+)
+def test_the_response_says_absent_for_a_key_the_snapshot_never_held(stored, expected):
+    """The default dump spells every unset field as null, and the client drops those, so
+    a pre-seed snapshot would read as a chat that had cleared the pin."""
+    app = FastAPI()
+
+    @app.get("/thread", response_model = ChatThread)
+    def _read():
+        return thread_from_row(_thread_row(stored))
+
+    with TestClient(app) as client:
+        assert client.get("/thread").json()["settings"] == expected
