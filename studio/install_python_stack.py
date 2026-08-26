@@ -4734,9 +4734,33 @@ _PIP_CONFIG_KEYS = ("require-hashes", "only-binary", "no-binary", "uploaded-prio
 _OFF_VALUES = ("", "n", "no", "f", "false", "off", "0", "none", ":none:")
 
 
-def _config_value_is_on(value: str) -> bool:
-    """A config/env value that turns a policy ON rather than off or empty."""
-    return value.strip().lower() not in _OFF_VALUES
+# The only two controls whose value is a BOOLEAN. The rest take a package list, a scoped
+# map or a date, where pip documents `:none:` as the way to clear the set and every other
+# value names something real: `PIP_ONLY_BINARY=no` restricts a distribution called "no",
+# and reading it as a disabled flag dropped an artifact rule that was fully in force.
+_BOOLEAN_POLICY_KEYS = ("require-hashes", "no-build")
+
+# What clears a control of either kind.
+_EMPTY_POLICY_VALUES = ("", ":none:")
+
+
+def _policy_key_spelling(key: str) -> str:
+    """A policy key as its config-file spelling, whichever form it arrived in."""
+    return _env_policy_key(key) if key.isupper() else key.lower()
+
+
+def _config_value_is_on(value: str, key: "str | None" = None) -> bool:
+    """A config/env value that turns a policy ON rather than off or empty.
+
+    `key` selects the reading: without one the value is treated as a boolean, which is
+    right for the plain flags this also parses (UV_NO_CONFIG and friends).
+    """
+    text = value.strip().lower()
+    if text in _EMPTY_POLICY_VALUES:
+        return False
+    if key is not None and _policy_key_spelling(key) not in _BOOLEAN_POLICY_KEYS:
+        return True
+    return text not in _OFF_VALUES
 
 
 def _toml_value_is_on(value: object) -> bool:
@@ -4763,7 +4787,10 @@ def _toml_value_text(value: object) -> str:
     package-scoped controls and the form the pip translation re-splits.
     """
     if isinstance(value, bool):
-        return "1" if value else "0"
+        # Empty for False, so a TOML boolean stays off whatever the key's type is. A
+        # list-valued control reads any other value as a package name, and "0" would be
+        # one: this is the one place the type is still known, so it is settled here.
+        return "1" if value else ""
     if isinstance(value, (list, tuple)):
         return " ".join(str(item).strip() for item in value if str(item).strip())
     if isinstance(value, dict):
@@ -4918,7 +4945,7 @@ def _hardened_keys_in_toml(text: str, tables: "tuple[tuple[str, ...], ...]") -> 
     return [
         key
         for key, value in _hardened_settings_in_toml(text, tables).items()
-        if _config_value_is_on(value)
+        if _config_value_is_on(value, key)
     ]
 
 
@@ -4933,6 +4960,47 @@ def _existing_files(candidates: "list[str]") -> "list[str]":
             # simply not a config file we can report on.
             continue
     return found
+
+
+def _explicit_uv_config_path() -> str:
+    """UV_CONFIG_FILE as uv resolves it, or "" when it is not set.
+
+    Shared so the schema decision downstream compares the SAME path this returns: it
+    used to test the raw environment value, so a relative explicit file resolved through
+    UV_WORKING_DIR stopped matching and an explicit `pyproject.toml` was then read with
+    the discovered-project schema instead of the standalone one.
+    """
+    explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
+    if not explicit:
+        return ""
+    working = os.environ.get("UV_WORKING_DIR", "").strip()
+    if working and not os.path.isabs(explicit):
+        # --directory changes directory BEFORE running, so a relative config path is
+        # resolved there and not against the directory the installer started in.
+        return os.path.join(working, explicit)
+    return explicit
+
+
+def _declares_uv_workspace(path: str) -> bool:
+    """True when this pyproject.toml declares a uv workspace.
+
+    Only the declaration matters here, not whether the member the walk stopped at is
+    listed in it: matching uv's member globs is more machinery than a best-effort notice
+    warrants, and an ancestor that declares a workspace over a project beneath it is
+    overwhelmingly that project's root.
+    """
+    text = _read_text(path)
+    if text is None:
+        return False
+    if _tomllib is not None:
+        try:
+            data = _tomllib.loads(text)
+        except Exception:
+            return False
+        node = data.get("tool") if isinstance(data, dict) else None
+        node = node.get("uv") if isinstance(node, dict) else None
+        return isinstance(node, dict) and "workspace" in node
+    return bool(re.search(r"^\s*\[tool\.uv\.workspace[\].]", text, re.MULTILINE))
 
 
 def _uv_project_config() -> "list[str]":
@@ -4952,21 +5020,36 @@ def _uv_project_config() -> "list[str]":
     # Measured on the pinned uv 0.12.1, a `[tool.uv.pip] require-hashes = true` in a
     # project named by either variable is enforced from an unrelated cwd, so walking
     # from getcwd() alone scanned the wrong tree and missed live policy.
-    root = os.environ.get("UV_PROJECT", "").strip() or os.environ.get("UV_WORKING_DIR", "").strip()
+    working = os.environ.get("UV_WORKING_DIR", "").strip()
+    root = os.environ.get("UV_PROJECT", "").strip()
+    if root and working and not os.path.isabs(root):
+        # --directory takes effect first, so a relative --project resolves against it.
+        root = os.path.join(working, root)
     try:
         # A deleted working directory raises here rather than returning anything.
-        current = os.path.abspath(root or os.getcwd())
+        current = os.path.abspath(root or working or os.getcwd())
     except OSError:
         return []
+    found = ""
     while True:
         if _existing_files([os.path.join(current, "pyproject.toml")]):
-            local = _existing_files([os.path.join(current, "uv.toml")])
-            return local or [os.path.join(current, "pyproject.toml")]
+            if not found:
+                found = current
+            elif _declares_uv_workspace(os.path.join(current, "pyproject.toml")):
+                # A workspace ROOT outranks the member the walk stopped at: measured on
+                # the pinned uv 0.12.1, from root/member/sub it logs "Found workspace
+                # configuration at root/pyproject.toml" and enforces the root's policy.
+                found = current
+                break
         parent = os.path.dirname(current)
         if parent == current:
             # The root is its own parent, which is how this walk terminates.
-            return []
+            break
         current = parent
+    if not found:
+        return []
+    local = _existing_files([os.path.join(found, "uv.toml")])
+    return local or [os.path.join(found, "pyproject.toml")]
 
 
 def _hardened_uv_config_paths() -> "list[str]":
@@ -4978,17 +5061,12 @@ def _hardened_uv_config_paths() -> "list[str]":
     the order matters because the caller resolves last-wins, and a project config
     switching a control off is uv's answer even when the user config switched it on.
     """
-    explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
+    explicit = _explicit_uv_config_path()
     if explicit:
         # --config-file is used "in place of any discovered configuration files", so the
         # discovered set is not merely outranked, it is not read at all. Checked BEFORE
         # --no-config: measured on the pinned uv 0.12.1, an explicit file is read with
         # UV_NO_CONFIG=1 set as well, so returning nothing there dropped live policy.
-        working = os.environ.get("UV_WORKING_DIR", "").strip()
-        if working and not os.path.isabs(explicit):
-            # --directory changes directory BEFORE running, so a relative config path is
-            # resolved there and not against the directory the installer started in.
-            explicit = os.path.join(working, explicit)
         return _existing_files([explicit])
     if _config_value_is_on(os.environ.get("UV_NO_CONFIG", "")):
         # --no-config: uv discovers nothing, so nothing here is policy.
@@ -5151,7 +5229,7 @@ def _combine_pip_commands(
         for key, entry in per_command.get(command, {}).items():
             # An enabled value anywhere among the three wins; otherwise keep a disabled
             # one so it can still cancel a lower-precedence file.
-            if key not in combined or _config_value_is_on(entry[1]):
+            if key not in combined or _config_value_is_on(entry[1], key):
                 combined[key] = entry
     return combined
 
@@ -5195,7 +5273,9 @@ def _hardened_settings_in_ini(text: str) -> "dict[str, str]":
 def _hardened_keys_in_ini(text: str) -> "list[str]":
     """Hardened keys switched ON in a single pip.conf."""
     return [
-        key for key, value in _hardened_settings_in_ini(text).items() if _config_value_is_on(value)
+        key
+        for key, value in _hardened_settings_in_ini(text).items()
+        if _config_value_is_on(value, key)
     ]
 
 
@@ -5267,7 +5347,7 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
         canonical = _canonical_policy_key(key)
         for slot in slots:
             configured[slot].add(canonical)
-        if _config_value_is_on(value):
+        if _config_value_is_on(value, key):
             on.append((tool, source, key))
         elif source == "env":
             # pip's environment beats every config file, so an explicitly disabled
@@ -5370,7 +5450,7 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
     # slot let a `no-build-package = []` erase a `no-build = true` sitting beside it in
     # the same file. Canonicalising is for comparing controls, not for storing them.
     uv_settings: "dict[str, tuple[str, str]]" = {}
-    explicit_uv = os.environ.get("UV_CONFIG_FILE", "").strip()
+    explicit_uv = _explicit_uv_config_path()
     for path in _hardened_uv_config_paths():
         text = _read_text(path)
         if text is None:
@@ -5501,7 +5581,7 @@ def _refuse_unenforceable_policy(cmd: "list[str]", missing: "list[str]") -> None
     sys.exit(1)
 
 
-def _preflight_policy_gap() -> None:
+def _preflight_policy_gap(use_uv: bool) -> None:
     """Refuse a cross-manager gap BEFORE the install mutates anything.
 
     The refusal is right, but its timing was not: `install_python_stack()` removes the
@@ -5509,14 +5589,19 @@ def _preflight_policy_gap() -> None:
     venv that had not been touched marked as a half-built install, and `verify_install()`
     and the Desktop preflight then rejected a working environment.
 
-    Both managers are probed, because this installer drives both and a control only one
-    of them can see is exactly what the opt-out asks to be stopped for. Nothing is
-    reported unless the opt-out is set, so an ordinary install never reaches the check.
+    Only the manager that will actually run the dependency installs is probed. Probing
+    both refused a pip-only policy on a host with no usable uv, where every real command
+    would have kept that policy: `_bootstrap_uv()` had not run yet, so the synthetic uv
+    probe described a manager the install was never going to use. Nothing is reported
+    unless the opt-out is set, so an ordinary install never reaches the check.
+
+    The refusal at the uv-to-pip fallback still covers the other direction, where uv is
+    used, fails, and pip would then be asked to do what uv refused.
     """
-    for probe in (["uv", "pip", "install"], [sys.executable, "-m", "pip", "install"]):
-        missing = _unenforceable_policy(probe)
-        if missing:
-            _refuse_unenforceable_policy(probe, missing)
+    probe = ["uv", "pip", "install"] if use_uv else [sys.executable, "-m", "pip", "install"]
+    missing = _unenforceable_policy(probe)
+    if missing:
+        _refuse_unenforceable_policy(probe, missing)
 
 
 def _announce_pm_policy() -> None:
@@ -6152,10 +6237,18 @@ def install_python_stack() -> int:
     # shell-installer handoff skips that slot only while base.txt has no work.
     _TOTAL = base_total - int(skip_base and base_requirements is None)
 
+    # uv selection first: it only runs dry-run probes, and the preflight below has to
+    # know which manager the dependency installs will use before it can say whether a
+    # control is out of that manager's reach.
+    #
+    # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
+    #    include pip by default).
+    USE_UV = _bootstrap_uv()
+
     # Before the manifest goes away, so a refusal cannot leave an untouched venv marked
-    # half-built. Silent unless the opt-out is set AND a control exists that one of the
-    # two managers cannot see.
-    _preflight_policy_gap()
+    # half-built. Silent unless the opt-out is set AND the manager that will run the
+    # installs cannot see a control the operator configured.
+    _preflight_policy_gap(USE_UV)
 
     # Drop it up front: a missing manifest is what tells the CLI, setup.sh and
     # the preflight that an interrupted run left the venv half-built. Stop if it
@@ -6181,10 +6274,6 @@ def install_python_stack() -> int:
         _announce_pm_policy()
     except Exception:
         pass
-
-    # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
-    #    include pip by default).
-    USE_UV = _bootstrap_uv()
 
     # 2. Ensure pip is available (uv venvs from install.sh omit pip).
     _progress("pip bootstrap")

@@ -1588,6 +1588,18 @@ class TestDetectionMatchesWhatTheManagersActuallyEnforce:
         """The refusal was right and its timing was not: the manifest is removed up
         front, so refusing at the first resolving command left an untouched venv marked
         half-built and the Desktop preflight then rejected a working environment."""
+        # uv will run the installs, and the only policy is pip's, which uv cannot see.
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"UNSLOTH_RESPECT_PM_POLICY": "1", "PIP_REQUIRE_HASHES": "1"},
+                clear = True,
+            ),
+            pytest.raises(SystemExit),
+        ):
+            ips._preflight_policy_gap(use_uv = True)
+        # And the other way round, on a host with no usable uv.
+        ips._policy_scan.cache_clear()
         with (
             mock.patch.dict(
                 os.environ,
@@ -1596,14 +1608,33 @@ class TestDetectionMatchesWhatTheManagersActuallyEnforce:
             ),
             pytest.raises(SystemExit),
         ):
-            ips._preflight_policy_gap()
+            ips._preflight_policy_gap(use_uv = False)
+
+    def test_the_preflight_probes_only_the_manager_that_will_run(self):
+        """A pip-only rule on a host with no usable uv is not a gap: every real command
+        keeps it. Probing both refused an install that would have honoured the policy
+        in full, because _bootstrap_uv() had not run and the uv probe described a
+        manager the install was never going to use."""
+        with mock.patch.dict(
+            os.environ,
+            {"UNSLOTH_RESPECT_PM_POLICY": "1", "PIP_ONLY_BINARY": ":all:"},
+            clear = True,
+        ):
+            ips._preflight_policy_gap(use_uv = False)
+        ips._policy_scan.cache_clear()
+        with mock.patch.dict(
+            os.environ,
+            {"UNSLOTH_RESPECT_PM_POLICY": "1", "UV_REQUIRE_HASHES": "1"},
+            clear = True,
+        ):
+            ips._preflight_policy_gap(use_uv = True)
 
     def test_the_preflight_is_silent_without_the_opt_out(self):
         """An ordinary install must never reach the check, whatever the host has set."""
         with mock.patch.dict(
             os.environ, {"UV_REQUIRE_HASHES": "1", "PIP_ONLY_BINARY": ":all:"}, clear = True
         ):
-            ips._preflight_policy_gap()
+            ips._preflight_policy_gap(use_uv = True)
 
     def test_the_preflight_is_silent_when_both_managers_are_configured(self):
         with mock.patch.dict(
@@ -1615,7 +1646,81 @@ class TestDetectionMatchesWhatTheManagersActuallyEnforce:
             },
             clear = True,
         ):
-            ips._preflight_policy_gap()
+            ips._preflight_policy_gap(use_uv = True)
+
+    def test_a_relative_uv_project_resolves_against_uvs_directory(self, tmp_path):
+        """--directory takes effect first, so a relative --project is resolved there.
+        Measured: UV_WORKING_DIR=work UV_PROJECT=proj enforces work/proj's policy."""
+        work = tmp_path / "work"
+        (work / "proj").mkdir(parents = True)
+        (work / "proj" / "pyproject.toml").write_text('[project]\nname = "p"\n',
+                                                      encoding = "utf-8")
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"UV_WORKING_DIR": str(work), "UV_PROJECT": "proj"},
+                clear = True,
+            ),
+            mock.patch.object(os, "getcwd", lambda: str(tmp_path)),
+        ):
+            assert ips._uv_project_config() == [str(work / "proj" / "pyproject.toml")]
+
+    def test_the_workspace_root_outranks_the_member_the_walk_stops_at(self, tmp_path):
+        """Measured on the pinned uv 0.12.1: from root/member/sub it logs "Found
+        workspace configuration at root/pyproject.toml" and enforces the ROOT's
+        require-hashes, not the member's absence of one."""
+        root = tmp_path / "ws"
+        (root / "member" / "sub").mkdir(parents = True)
+        (root / "pyproject.toml").write_text(
+            '[project]\nname = "root"\n[tool.uv.workspace]\nmembers = ["member"]\n',
+            encoding = "utf-8",
+        )
+        (root / "member" / "pyproject.toml").write_text('[project]\nname = "m"\n',
+                                                        encoding = "utf-8")
+        with mock.patch.object(os, "getcwd", lambda: str(root / "member" / "sub")):
+            assert ips._uv_project_config() == [str(root / "pyproject.toml")]
+        # A plain parent project with no workspace declaration still wins nothing: the
+        # nearest pyproject is uv's answer there.
+        (root / "pyproject.toml").write_text('[project]\nname = "root"\n',
+                                             encoding = "utf-8")
+        with mock.patch.object(os, "getcwd", lambda: str(root / "member" / "sub")):
+            assert ips._uv_project_config() == [str(root / "member" / "pyproject.toml")]
+
+    def test_a_resolved_explicit_config_keeps_the_standalone_schema(self, tmp_path):
+        """The schema decision compared the RAW environment value, so a relative
+        explicit file resolved through UV_WORKING_DIR stopped matching and an explicit
+        pyproject.toml was read with the discovered-project schema instead."""
+        work = tmp_path / "work"
+        work.mkdir()
+        (work / "pyproject.toml").write_text("no-build = true\n", encoding = "utf-8")
+        assert ips._explicit_uv_config_path.__doc__  # documented, not incidental
+        with mock.patch.dict(
+            os.environ,
+            {"UV_CONFIG_FILE": "pyproject.toml", "UV_WORKING_DIR": str(work)},
+            clear = True,
+        ):
+            assert ips._explicit_uv_config_path() == str(work / "pyproject.toml")
+            assert ips._hardened_uv_config_paths() == [str(work / "pyproject.toml")]
+        assert self._names(
+            {"UV_CONFIG_FILE": "pyproject.toml", "UV_WORKING_DIR": str(work)},
+            uv_files = [str(work / "pyproject.toml")],
+        ) == ("pyproject.toml no-build",)
+
+    @pytest.mark.parametrize("value", ["none", "no", "false", "off", "0"])
+    def test_an_artifact_list_value_is_a_package_name_not_a_boolean(self, value):
+        """pip documents `:none:` as the way to clear --only-binary, and everything else
+        as package names, so PIP_ONLY_BINARY=no restricts a distribution called "no".
+        Reading it as a disabled flag dropped an artifact rule that was in force."""
+        assert self._names({"PIP_ONLY_BINARY": value}) == ("PIP_ONLY_BINARY",)
+        # The two spellings that really do clear it.
+        assert self._names({"PIP_ONLY_BINARY": ":none:"}) == ()
+        assert self._names({"PIP_ONLY_BINARY": ""}) == ()
+
+    @pytest.mark.parametrize("value", ["no", "false", "off", "0"])
+    def test_a_boolean_control_still_reads_pips_false_spellings(self, value):
+        """require-hashes and no-build are the two that ARE booleans."""
+        assert self._names({"PIP_REQUIRE_HASHES": value}) == ()
+        assert self._names({"PIP_REQUIRE_HASHES": "1"}) == ("PIP_REQUIRE_HASHES",)
 
     def test_an_inline_comment_is_not_part_of_the_value(self):
         """The pre-3.11 fallback had already stripped the comment and then appended the
