@@ -858,7 +858,9 @@ def test_a_cached_alias_names_the_namespace_it_is_filed_under(client, monkeypatc
     (snapshot / "model.safetensors").write_bytes(b"ST")
     import utils.utils as utils
 
-    _snapshot_of = lambda repo: snapshot if repo == "sentence-transformers/all-MiniLM-L6-v2" else None
+    _snapshot_of = (
+        lambda repo: snapshot if repo == "sentence-transformers/all-MiniLM-L6-v2" else None
+    )
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", _snapshot_of)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", _snapshot_of)
     monkeypatch.setattr(settings, "_st_backend_available", lambda: True)
@@ -893,7 +895,9 @@ def test_a_stale_literal_cache_does_not_hide_a_complete_alias_snapshot(
     import utils.utils as utils
 
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
-    _snapshot_of = lambda repo: alias if repo == "sentence-transformers/all-MiniLM-L6-v2" else literal
+    _snapshot_of = (
+        lambda repo: alias if repo == "sentence-transformers/all-MiniLM-L6-v2" else literal
+    )
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", _snapshot_of)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", _snapshot_of)
     # The generic check answers about the stale literal entry.
@@ -1054,8 +1058,7 @@ def test_a_declared_module_the_directory_lacks_is_not_present(client, monkeypatc
     (partial / "config.json").write_text("{}")
     (partial / "model.safetensors").write_bytes(b"ST")
     (partial / "modules.json").write_text(
-        '[{"idx": 0, "name": "0", "path": ""},'
-        ' {"idx": 1, "name": "1", "path": "1_Pooling"}]'
+        '[{"idx": 0, "name": "0", "path": ""}, {"idx": 1, "name": "1", "path": "1_Pooling"}]'
     )
 
     assert settings._local_sentence_transformer_is_present(str(partial)) is False
