@@ -16000,26 +16000,32 @@ async def openai_chat_completions(
             # picture was looked at. Any count, not just several: one image is
             # discarded here exactly as silently as two.
             #
-            # The legacy top-level field only counts when the thread carries no
-            # image parts at all. On its own it is a client attaching an image to
-            # THIS request, which this branch would drop. But Studio also fills it
-            # from anywhere in the thread (findLatestUserImageBase64 walks the whole
-            # history), so treating it as a per-turn signal would refuse every voice
-            # follow-up in a chat that once held an image. Message parts carry the
-            # turn, so when they exist they decide alone.
+            # The legacy top-level field counts only when it carries an image the
+            # thread does not already hold. Studio fills that field FROM the thread
+            # (findLatestUserImageBase64 walks the whole history without stopping at
+            # the newest turn), and it copies the same string the content part was
+            # built from, so a derived value is byte-equal to one of the payloads
+            # below. Anything else is an image the caller attached to THIS request
+            # and this branch would drop. Comparing the payload, rather than merely
+            # asking whether any part exists, is what separates Studio's echo from a
+            # direct client attaching a new image to a thread that already has one.
             #
             # An image on an EARLIER turn is deliberately not refused: this branch
             # never forwarded history images, and turning that into a hard error
             # would break asking by voice about a picture attached before.
             # api_monitor directly rather than _reject, which is not bound this
             # early in the handler.
-            _thread_has_image_part = any(
-                isinstance(_m.content, list) and any(_p.type == "image_url" for _p in _m.content)
-                for _m in payload.messages
-            )
-            if _images_in_last_user_message(payload.messages) or (
-                payload.image_base64 and not _thread_has_image_part
-            ):
+            _legacy_image_is_new = False
+            if payload.image_base64:
+                _thread_image_payloads = {
+                    _p.image_url.url.partition(",")[2] or _p.image_url.url
+                    for _m in payload.messages
+                    if isinstance(_m.content, list)
+                    for _p in _m.content
+                    if _p.type == "image_url"
+                }
+                _legacy_image_is_new = payload.image_base64 not in _thread_image_payloads
+            if _images_in_last_user_message(payload.messages) or _legacy_image_is_new:
                 _audio_image_detail = (
                     "This model takes audio or an image in one message, not both."
                     " Send the image on its own turn."
