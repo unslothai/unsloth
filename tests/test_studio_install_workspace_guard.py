@@ -685,17 +685,55 @@ def test_install_sh_publishes_the_id_without_clobbering():
     assert (
         'ln "$_css_id_tmp" "$_css_id_file"' in block
     ), "install.sh must publish the id with ln (EEXIST on a race), not a clobbering mv"
-    _guarded_mv = 'if [ -z "$_css_studio_root_id" ] && mv "$_css_id_tmp" "$_css_id_file"; then'
+    _guarded_mv = 'mv "$_css_id_tmp" "$_css_id_file" 2>/dev/null || true'
     assert 'mv "$_css_id_tmp" "$_css_id_file"' not in block.replace(
         _guarded_mv, ""
     ), "the only remaining mv must be the no-hard-link fallback, guarded on the destination"
     assert (
-        _guarded_mv in block
-    ), "the mv branch must refuse to replace a usable (valid) incumbent id"
+        'if [ -z "$(_css_read_valid_install_id "$_css_id_file")" ] \\\n'
+        '                    && [ ! -d "$_css_id_file" ]; then' in block
+    ), "the mv branch must refuse to replace a usable (valid) incumbent, or a directory"
+    assert _guarded_mv in block, "the fallback mv must not abort the installer under set -e"
     assert (
         'rm -f "$_css_id_file"' not in block
     ), "never unlink the id: an unlink opens a window where a valid id is deleted"
     assert 'rm -f "$_css_id_tmp"' in block, "the temp sibling must not be left behind"
+
+
+def test_install_sh_bakes_the_id_that_is_actually_on_disk(tmp_path):
+    """The launcher must hold what the id file holds, not what we tried to write.
+
+    The backend reports the file's content from /api/health, so any path where
+    publication silently did something else (destination is a directory, so
+    `ln` links the temp INSIDE it; another writer won; the share dir is not
+    writable) must resolve to the on-disk value or to no launcher at all.
+    """
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    fn_start = src.index('_css_id_dir="$STUDIO_HOME/share"')
+    block = src[fn_start : fn_start + 3000]
+    read_back = '_css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")'
+    assert block.count(read_back) >= 2, "the id must be re-read after publication"
+    assert block.rindex(read_back) > block.index(
+        'rm -f "$_css_id_tmp"'
+    ), "the value baked into the launcher must be read back after the publish step"
+
+    # Behavioural: a directory at the id path must not yield a launcher.
+    studio_home = tmp_path / "studio"
+    (studio_home / "share" / "studio_install_id").mkdir(parents = True)
+    probe = (
+        _install_id_helpers()
+        + f'_css_id_file="{studio_home}/share/studio_install_id"\n'
+        'printf "%s" "' + "d" * 64 + '" > "$_css_id_file.tmp"\n'
+        'ln "$_css_id_file.tmp" "$_css_id_file" 2>/dev/null || true\n'
+        'rm -f "$_css_id_file.tmp"\n'
+        'printf "ID=[%s]\\n" "$(_css_read_valid_install_id "$_css_id_file")"\n'
+    )
+    res = subprocess.run(["sh", "-c", probe], text = True, capture_output = True)
+    assert res.returncode == 0, res.stderr
+    assert "ID=[]" in res.stdout, (
+        "a directory at the id path must read back as no id, so the launcher is "
+        f"not generated; got {res.stdout!r}"
+    )
 
 
 def test_install_sh_id_publish_adopts_the_winner_of_a_race(tmp_path):

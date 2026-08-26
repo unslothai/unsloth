@@ -1118,22 +1118,29 @@ create_studio_shortcuts() {
         # $$ is the parent's pid inside a subshell in some shells.
         _css_id_tmp="$_css_id_file.$$.$(printf '%.8s' "$_css_new_id").tmp"
         if printf '%s' "$_css_new_id" > "$_css_id_tmp"; then
-            if ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then
-                _css_studio_root_id="$_css_new_id"
-            else
+            if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then
                 # A usable incumbent always wins -- but only a valid one. A
                 # zero-length or malformed file is an interrupted write or a
                 # pre-planted value, so replace it with one rename (no unlink,
                 # so the path never vanishes). This branch also covers
-                # filesystems without hard links (exFAT/FAT32).
-                _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")
-                if [ -z "$_css_studio_root_id" ] && mv "$_css_id_tmp" "$_css_id_file"; then
-                    _css_studio_root_id="$_css_new_id"
+                # filesystems without hard links (exFAT/FAT32). The -d test is
+                # there because renaming onto a directory moves the temp file
+                # inside it instead of replacing it.
+                if [ -z "$(_css_read_valid_install_id "$_css_id_file")" ] \
+                    && [ ! -d "$_css_id_file" ]; then
+                    mv "$_css_id_tmp" "$_css_id_file" 2>/dev/null || true
                 fi
             fi
         fi
         rm -f "$_css_id_tmp"
-        chmod 600 "$_css_id_file" 2>/dev/null || true
+        if [ -f "$_css_id_file" ]; then
+            chmod 600 "$_css_id_file" 2>/dev/null || true
+        fi
+        # Bake what is on disk, not what we hoped to write: that is the byte
+        # string the backend will report from /api/health, whoever won the
+        # race. An unwritable or non-regular path leaves this empty and the
+        # launcher is not generated at all.
+        _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")
         unset _css_new_id _css_id_tmp
     fi
     if [ -z "$_css_studio_root_id" ]; then
