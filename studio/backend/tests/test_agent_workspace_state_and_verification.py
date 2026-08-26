@@ -109,7 +109,9 @@ def _record_verification(
     )
 
 
-def test_verification_persists_bounded_evidence_and_detects_staleness(tmp_path):
+def test_verification_persists_bounded_evidence_and_detects_staleness(
+    tmp_path, local_verification_execution_boundary
+):
     _folder_project(tmp_path)
     (tmp_path / "source.txt").write_text("one", encoding = "utf-8")
     checks = [
@@ -625,7 +627,9 @@ def test_goal_completion_gate_rejects_incomplete_fingerprint_evidence(tmp_path):
         require_goal_completion_verification("project")
 
 
-def test_verification_timeout_cancels_process_and_bounds_output(tmp_path):
+def test_verification_timeout_cancels_process_and_bounds_output(
+    tmp_path, local_verification_execution_boundary
+):
     cancel = threading.Event()
     timer = threading.Timer(0.15, cancel.set)
     timer.start()
@@ -690,7 +694,9 @@ def test_verification_cancelled_while_waiting_for_workspace_slot(tmp_path, monke
     assert boundary.closed is True
 
 
-def test_verification_is_stale_when_workspace_changes_during_run(tmp_path):
+def test_verification_is_stale_when_workspace_changes_during_run(
+    tmp_path, local_verification_execution_boundary
+):
     _folder_project(tmp_path)
     (tmp_path / "source.txt").write_text("before", encoding = "utf-8")
     set_verification_config(
@@ -733,7 +739,9 @@ def test_non_git_fingerprint_hashes_content_when_size_and_mtime_are_restored(tmp
     assert after != before
 
 
-def test_large_untracked_content_marks_verification_evidence_unverifiable(tmp_path):
+def test_large_untracked_content_marks_verification_evidence_unverifiable(
+    tmp_path, local_verification_execution_boundary
+):
     code, output, _ = run_bounded(["git", "init", "-q"], cwd = tmp_path)
     assert code == 0, output
     (tmp_path / "large.bin").write_bytes(b"x" * (4 * 1024 * 1024 + 1))
@@ -920,7 +928,9 @@ def test_project_deletion_fence_rejects_new_foreground_verification(tmp_path):
         verification_module.finish_project_deletion("project")
 
 
-def test_verification_child_environment_excludes_backend_credentials(tmp_path, monkeypatch):
+def test_verification_child_environment_excludes_backend_credentials(
+    tmp_path, monkeypatch, local_verification_execution_boundary
+):
     real_home = str(tmp_path / "real-home")
     secrets = {
         "OPENAI_API_KEY": "openai-secret",

@@ -895,7 +895,9 @@ def test_review_redaction_masks_token_shapes_bearer_values_and_local_paths(tmp_p
     assert "<sensitive_path>" in rendered
 
 
-def test_background_verification_runs_in_owned_worktree(tmp_path, monkeypatch):
+def test_background_verification_runs_in_owned_worktree(
+    tmp_path, monkeypatch, local_verification_execution_boundary
+):
     repository = tmp_path / "repo"
     repository.mkdir()
     _repository(repository)

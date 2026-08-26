@@ -26,6 +26,7 @@ from core.agent_workspace.common import (
     project_workspace,
     workspace_fingerprint,
 )
+from core.agent_workspace.execution import execution_boundary_status
 from core.agent_workspace.state import (
     begin_verification_run,
     finish_verification_run,
@@ -539,8 +540,13 @@ def test_folder_project_terminal_cannot_escape_even_in_full_access(tmp_path):
 
     assert not relative_escape.exists()
     assert not absolute_escape.exists()
-    assert (folder / "inside.txt").read_text(encoding = "utf-8") == "confined"
-    assert "Execution error" not in result
+    status = execution_boundary_status()
+    if not status.available:
+        assert result.startswith("Execution error:")
+        assert not (folder / "inside.txt").exists()
+    else:
+        assert (folder / "inside.txt").read_text(encoding = "utf-8") == "confined"
+        assert "Execution error" not in result
 
 
 def test_folder_project_python_cannot_escape_even_in_full_access(tmp_path):
@@ -564,8 +570,13 @@ def test_folder_project_python_cannot_escape_even_in_full_access(tmp_path):
     )
 
     assert not outside.exists()
-    assert (folder / "inside-python.txt").read_text(encoding = "utf-8") == "confined"
-    assert "Execution error" not in result
+    status = execution_boundary_status()
+    if not status.available:
+        assert result.startswith("Execution error:")
+        assert not (folder / "inside-python.txt").exists()
+    else:
+        assert (folder / "inside-python.txt").read_text(encoding = "utf-8") == "confined"
+        assert "Execution error" not in result
 
 
 @pytest.mark.parametrize("disable_sandbox", [False, True], ids = ["sandboxed", "bypass"])

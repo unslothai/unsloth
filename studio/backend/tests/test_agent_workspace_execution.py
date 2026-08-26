@@ -173,14 +173,23 @@ def test_linux_runtime_socket_trees_are_masked_as_one_private_root(tmp_path):
 
     masked = execution._linux_masked_roots(home.resolve(), temp.resolve())
 
-    assert home.resolve() in masked
-    assert temp.resolve() in masked
-    if Path("/run").is_dir():
-        assert Path("/run").resolve() in masked
-        assert Path("/var/run").resolve() not in masked or (
-            Path("/var/run").resolve() != Path("/run").resolve()
+    for requested in (home.resolve(), temp.resolve()):
+        assert any(
+            requested == hidden or requested.is_relative_to(hidden) for hidden in masked
         )
-        assert not any(path == Path("/run/media") for path in masked)
+    assert not any(
+        child != parent and child.is_relative_to(parent)
+        for child in masked
+        for parent in masked
+    )
+    if Path("/run").is_dir():
+        run_root = Path("/run").resolve()
+        var_run_root = Path("/var/run").resolve()
+        assert run_root in masked
+        assert masked.count(run_root) == 1
+        if var_run_root != run_root:
+            assert var_run_root not in masked
+        assert not any(path == run_root / "media" for path in masked)
 
 
 def _writable_linux_runtime_directory() -> Path | None:
