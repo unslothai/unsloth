@@ -2733,10 +2733,7 @@ class TestAnthropicMessagesToolRouting:
 
         call_kind, kwargs = backend.calls[0]
         assert call_kind == "tools"
-        assert kwargs["tool_choice"] == {
-            "type": "function",
-            "function": {"name": "web_search"},
-        }
+        assert kwargs["tool_choice"] == {"type": "function", "function": {"name": "web_search"}}
         assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["web_search"]
 
     def test_server_tool_choice_must_be_in_the_selected_catalog(self, monkeypatch):

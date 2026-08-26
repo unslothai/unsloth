@@ -1078,9 +1078,7 @@ def test_a_reconciliation_still_strips_a_non_layer_split_mode_env():
     assert 'if_inherited_smand_inherited_sm!="layer":' in compact
     assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)' in compact
     # The paired -ts goes with it, which is what the test below relies on.
-    assert (
-        'env.pop("LLAMA_ARG_SPLIT_MODE",None)env.pop("LLAMA_ARG_TENSOR_SPLIT",None)' in compact
-    )
+    assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)env.pop("LLAMA_ARG_TENSOR_SPLIT",None)' in compact
 
 
 def test_an_inherited_tensor_split_scrubbed_with_its_mode_is_not_planned_against():
@@ -1272,9 +1270,7 @@ def test_the_seam_passes_the_flash_state_and_cache_type_to_the_kv_vector():
 
     for call in calls:
         passed = {
-            kw.arg: kw.value
-            for kw in call.keywords
-            if kw.arg and isinstance(kw.value, ast.Name)
+            kw.arg: kw.value for kw in call.keywords if kw.arg and isinstance(kw.value, ast.Name)
         }
         assert getattr(passed.get("flash_attn"), "id", None) == "planned_flash_attn"
         assert getattr(passed.get("cache_type_kv"), "id", None) == "cache_type_kv"
