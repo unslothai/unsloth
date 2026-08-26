@@ -28,6 +28,8 @@ import {
 import {
   type ModelMemorySegments,
   computeModelMemory,
+  estimateCacheKey,
+  estimateIsUnsized,
 } from "@/lib/model-memory";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
@@ -68,7 +70,9 @@ const FAILURE_TTL_MS = 30_000;
 const failedAt = new Map<string, number>();
 
 function remember(cacheKey: string, estimate: Estimate, failed: boolean): void {
-  if (CACHE.size >= CACHE_LIMIT) {
+  // Only a new key grows the map, so re-pricing an existing one must not evict
+  // an unrelated row to make room it does not need.
+  if (CACHE.size >= CACHE_LIMIT && !CACHE.has(cacheKey)) {
     const oldest = CACHE.keys().next().value;
     if (oldest !== undefined) {
       CACHE.delete(oldest);
@@ -99,16 +103,36 @@ const MISS: Estimate = {
   nCtx: 0,
 };
 
-/** Re-read saved configs whenever any model's settings are written. */
+/**
+ * Re-read saved settings whenever any of them are written.
+ *
+ * Two sources, because a model with no override follows the standing
+ * preference: the per-model configs, which announce themselves, and the
+ * standing GPU-memory mode and speculative type, which live in localStorage and
+ * so raise no same-tab event of their own. The runtime store changes in lockstep
+ * with those writes in-session, so it stands in as their notification.
+ */
 function subscribeToConfigChanges(onChange: () => void): () => void {
   if (typeof window === "undefined") return () => {};
-  window.addEventListener(PER_MODEL_CONFIG_UPDATED_EVENT, onChange);
-  return () =>
-    window.removeEventListener(PER_MODEL_CONFIG_UPDATED_EVENT, onChange);
+  const onConfigWrite = () => {
+    configsDirty = true;
+    onChange();
+  };
+  window.addEventListener(PER_MODEL_CONFIG_UPDATED_EVENT, onConfigWrite);
+  const unsubscribeStore = useChatRuntimeStore.subscribe(onChange);
+  return () => {
+    window.removeEventListener(PER_MODEL_CONFIG_UPDATED_EVENT, onConfigWrite);
+    unsubscribeStore();
+  };
 }
 
 let configEpoch = 0;
 let lastConfigSignature = "";
+let lastPrefSignature = "";
+// Serialising every saved config is the expensive half, and only a config write
+// can change it. The store ticks on every streamed token, so doing that work on
+// each tick would put an O(all configs) stringify in the render path.
+let configsDirty = true;
 
 /**
  * A value that changes whenever any saved config does, so the estimate can be
@@ -116,10 +140,24 @@ let lastConfigSignature = "";
  * this a context change leaves the bar showing the old KV segment.
  */
 function readConfigEpoch(): number {
-  const signature = JSON.stringify(listPerModelConfigs());
-  if (signature !== lastConfigSignature) {
-    lastConfigSignature = signature;
+  // The standing GPU-memory mode and speculative type matter as much as the
+  // saved configs: a model with no override follows them. Without them,
+  // switching the global mode to Manual left every mounted bar drawn against a
+  // budget the load would no longer use, and turning MTP on globally left the
+  // draft reserve missing, until the row happened to remount. Both are two
+  // short strings, so they are cheap to check on every read.
+  const prefSignature = `${readPersistedGpuMemoryMode()} ${readPersistedSpeculativeType()}`;
+  if (prefSignature !== lastPrefSignature) {
+    lastPrefSignature = prefSignature;
     configEpoch += 1;
+  }
+  if (configsDirty) {
+    configsDirty = false;
+    const signature = JSON.stringify(listPerModelConfigs());
+    if (signature !== lastConfigSignature) {
+      lastConfigSignature = signature;
+      configEpoch += 1;
+    }
   }
   return configEpoch;
 }
@@ -209,7 +247,10 @@ async function fetchEstimate(
         specBytes: r.spec_bytes,
         nCtx: r.n_ctx ?? 0,
       };
-      remember(cacheKey, estimate, false);
+      // A 200 that could size nothing arrives down the success path, so
+      // remembering it as a success pinned the row blank for the rest of the
+      // session, which is exactly what FAILURE_TTL_MS exists to stop.
+      remember(cacheKey, estimate, estimateIsUnsized(estimate));
       return estimate;
     })
     // A model we can't size still draws its weights. The miss is remembered
@@ -257,17 +298,15 @@ export function useModelMemory(
     if (!enabled || !repoId || !quant) return null;
     const config = configFor({ repoId, quant });
     const nCtx = pinnedContext(config);
-    const cacheKey = [
+    const cacheKey = estimateCacheKey({
       repoId,
       quant,
-      // A re-download can change the file under a stable quant name, and the
-      // cached weights would otherwise outrank the row's fresh size.
-      sizeBytes ?? "",
-      nCtx ?? "native",
-      config?.kvCacheDtype ?? "",
-      effectiveSpeculativeType(config) ?? "",
-      config?.nParallel ?? 1,
-    ].join(" ");
+      sizeBytes,
+      nCtx,
+      kvCacheDtype: config?.kvCacheDtype,
+      speculativeType: effectiveSpeculativeType(config),
+      nParallel: config?.nParallel,
+    });
     return {
       source: { repoId, quant },
       config,
