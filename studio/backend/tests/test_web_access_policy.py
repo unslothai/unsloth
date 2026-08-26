@@ -352,7 +352,7 @@ def _raise_if_search_backend(monkeypatch):
     ],
 )
 def test_web_search_empty_arguments_are_a_recoverable_error(monkeypatch, arguments):
-    # Schema allows {}, and local models emit it; that used to become "No query provided."
+    # schema allows {}, and local models emit it; that used to become "No query provided."
     _raise_if_search_backend(monkeypatch)
     result = tools.execute_tool("web_search", arguments)
     assert result == "No query provided."
@@ -361,6 +361,14 @@ def test_web_search_empty_arguments_are_a_recoverable_error(monkeypatch, argumen
         "Never call web_search with empty arguments"
         in tools.WEB_SEARCH_TOOL["function"]["description"]
     )
+
+
+@pytest.mark.parametrize("key", ["query", "url"])
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_web_search_rejects_non_string_arguments(monkeypatch, key, value):
+    _raise_if_search_backend(monkeypatch)
+    result = tools.execute_tool("web_search", {key: value})
+    assert result == "No query provided."
 
 
 def test_web_search_heals_query_aliases(monkeypatch):
@@ -384,6 +392,7 @@ def test_web_search_heals_query_aliases(monkeypatch):
         {"search_query": "unsloth studio"},
         {"search": "unsloth studio"},
         {"text": "unsloth studio"},
+        {"query": {}, "q": "unsloth studio"},
     ):
         queries.clear()
         result = tools.execute_tool("web_search", arguments)
@@ -403,10 +412,11 @@ def test_web_search_heals_url_aliases(monkeypatch):
         {"uri": "https://example.com/a"},
         {"href": "https://example.com/b"},
         {"link": "https://example.com/c"},
+        {"url": [], "href": "https://example.com/d"},
     ):
         fetched.clear()
         result = tools.execute_tool("web_search", arguments)
-        assert fetched == [next(iter(arguments.values()))]
+        assert fetched == [next(value for value in arguments.values() if isinstance(value, str))]
         assert result.startswith("PAGE:")
 
 

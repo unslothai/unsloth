@@ -9020,7 +9020,7 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         return False
 
 
-# Local models often emit q/search_query instead of query, or uri/href instead of url.
+# local models often emit q/search_query instead of query, or uri/href instead of url.
 _WEB_SEARCH_QUERY_ALIASES = ("query", "q", "search_query", "search", "text")
 _WEB_SEARCH_URL_ALIASES = ("url", "uri", "href", "link")
 # edit_file
@@ -9517,9 +9517,9 @@ def _first_nonempty_arg(arguments: dict, keys: tuple[str, ...]) -> str:
         if key not in arguments:
             continue
         value = arguments.get(key)
-        if value is None:
+        if not isinstance(value, str):
             continue
-        text = str(value).strip()
+        text = value.strip()
         if text:
             return text
     return ""
