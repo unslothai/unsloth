@@ -14388,8 +14388,8 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
 def _images_in_last_user_message(messages: list) -> int:
     """Image parts on the newest user turn.
 
-    Per message, not per thread: earlier turns keep their own images, and only
-    the turn being answered decides whether one call carries several.
+    Per message, not per thread: only the turn being answered decides whether one
+    call carries several.
     """
     for msg in reversed(messages):
         if msg.role != "user":
@@ -14403,22 +14403,12 @@ def _images_in_last_user_message(messages: list) -> int:
 def _legacy_image_is_distinct(payload) -> bool:
     """Whether the top-level ``image_base64`` holds an image the messages do not.
 
-    Studio fills that field FROM the thread rather than from the turn:
-    ``findLatestUserImageBase64`` walks the whole history, and it copies the same
-    string ``collectImageParts`` built the content part from, so an echoed value
-    is byte-equal to one of the part payloads here. A value matching none of them
-    was attached by the caller to this request, and a single-image path would drop
-    it unannounced. Comparing the payload, rather than asking whether any part
-    exists, is what separates Studio's echo from a client attaching a new image to
-    a thread that already carries one.
-
-    Mirror the echo exactly, or the comparison hides a real attachment: compute
-    the one value the frontend could have sent and compare against that alone.
-    ``findLatestUserImageBase64`` scans newest turn first, considers only USER
-    turns, and returns the first image it meets, so any OTHER image in the thread
-    is not a value that field could carry. Accepting a match anywhere let a client
-    resend an older image, or an assistant's, while the newest turn supplied its
-    own, and the extra one was then dropped unmentioned.
+    Studio fills that field from the thread, copying the same string the content
+    part was built from, so an echo is byte-equal to the one value
+    ``findLatestUserImageBase64`` could have sent. Anything else was attached to
+    this request and a single-image path would drop it unannounced. Compare
+    against that one value alone: matching any image in the thread let a client
+    resend an older image, or an assistant's, and hid a real attachment.
     """
     if not payload.image_base64:
         return False
@@ -14428,15 +14418,10 @@ def _legacy_image_is_distinct(payload) -> bool:
 def _latest_user_image_payload(messages: list) -> "Optional[str]":
     """The value ``findLatestUserImageBase64`` would put in ``image_base64``.
 
-    Its scan order, kept in step with the frontend: newest turn first, user turns
-    only, first image part in the turn. ``extractImageBase64`` strips the prefix of
-    a ``data:`` URL and returns anything else unchanged, which is also how
-    :func:`_extract_content_parts` decides a part carries an inline payload.
-
-    An image part that yields nothing does not end the scan: the frontend walks on
-    past a falsy result (`if (encoded) return encoded`). Stopping on one read a
-    payloadless newest part as the echoed value, so Studio resending a valid
-    earlier image looked like a second attachment and was refused.
+    Its scan order: newest turn first, user turns only, first image part, ``data:``
+    prefix stripped the way :func:`_extract_content_parts` strips it. A part that
+    yields nothing does not end the scan, since the frontend walks on past a falsy
+    read; stopping on one refused Studio's echo of a valid earlier image.
     """
     for msg in reversed(messages):
         if msg.role != "user" or not isinstance(msg.content, list):
@@ -16241,11 +16226,9 @@ async def openai_chat_completions(
                     "request to a text model to use guided decoding.",
                 )
             _reject_audio_output_continuation(payload)
-            # Same reason as the non-GGUF audio branch below: this returns before
-            # every image check, and the waveform is spoken from the newest user
-            # TEXT, so an attached image would go unread and unmentioned. Nothing
-            # is running yet (monitor_id is still None, and _monitored_generate_audio
-            # opens its own row), so a bare raise leaves nothing open.
+            # Returns before every image check and speaks the newest user TEXT, so
+            # an attached image would go unread. Nothing is running yet, so a bare
+            # raise leaves nothing open.
             if _images_in_last_user_message(payload.messages) or _legacy_image_is_distinct(payload):
                 raise HTTPException(
                     status_code = 400,
@@ -16288,12 +16271,9 @@ async def openai_chat_completions(
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("non-GGUF audio chat completions")
             _reject_audio_output_continuation(payload)
-            # generate_audio speaks the newest user TEXT, so an attached image is
-            # dropped without a word. Refuse here: this early return is the reason
-            # the text-only check further down never sees such a request. No
-            # monitor row is open yet (monitor_id is still None, and
-            # _monitored_generate_audio opens its own), so a bare raise leaves
-            # nothing running.
+            # Same as the GGUF branch above: generate_audio speaks the newest user
+            # TEXT, so an attached image is dropped without a word, and this early
+            # return is why the text-only check below never sees it. No row open yet.
             if _images_in_last_user_message(payload.messages) or _legacy_image_is_distinct(payload):
                 raise HTTPException(
                     status_code = 400,
@@ -16333,20 +16313,11 @@ async def openai_chat_completions(
                     status_code = 400,
                     detail = "continue_final_message is not supported with audio input.",
                 )
-            # This branch flattens the messages and passes only the audio on, so any
-            # image attached to the turn is dropped on the floor. Refuse instead of
-            # answering from the audio alone and letting the caller believe the
-            # picture was looked at. Any count, not just several: one image is
-            # discarded here exactly as silently as two.
-            #
-            # The legacy top-level field counts only when it carries an image the
-            # thread does not already hold; see _legacy_image_is_distinct.
-            #
-            # An image on an EARLIER turn is deliberately not refused: this branch
-            # never forwarded history images, and turning that into a hard error
-            # would break asking by voice about a picture attached before.
-            # api_monitor directly rather than _reject, which is not bound this
-            # early in the handler.
+            # Only the audio is forwarded, so an image on the turn is dropped on the
+            # floor; one is discarded as silently as two. An image on an EARLIER turn
+            # is deliberately allowed, since history images were never forwarded and
+            # refusing would break asking by voice about a picture attached before.
+            # api_monitor directly: _reject is not bound this early in the handler.
             if _images_in_last_user_message(payload.messages) or _legacy_image_is_distinct(payload):
                 _audio_image_detail = (
                     "This model takes audio or an image in one message, not both."
@@ -18424,35 +18395,28 @@ async def openai_chat_completions(
     # Decode image (from content parts OR legacy field)
     image_b64 = extracted_image_b64 or payload.image_base64
     image = None
-    # Count the image PARTS the turn carries, not the ones extraction could decode.
-    # _extract_content_parts only yields base64 for a data URL, so a message holding
-    # several remote or empty image URLs has no image_b64 at all; counting decoded
-    # images would let exactly those slip past the refusal below and be flattened
-    # away as silently as before. A single undecodable image is left alone: it is
-    # not a multi-image call, and rejecting it would break clients that pass a
-    # remote URL today and get a text answer.
+    # Image PARTS, not the ones extraction could decode: only a data URL yields
+    # base64, so a turn holding several remote or empty image URLs has no image_b64
+    # at all, and counting decoded images would let exactly those slip past. One
+    # undecodable image is left alone, since it is not a multi-image call.
     images_on_turn = _images_in_last_user_message(payload.messages)
 
     if image_b64 or images_on_turn > 1:
         try:
             model_info = backend.models.get(backend.active_model_name, {})
             if not model_info.get("is_vision"):
-                # Through _reject rather than a bare raise, like every rejection
-                # below it: the monitor row is open by here, and one left running
-                # keeps Studio reporting the backend as generating after the
-                # request has already been answered with a 400.
+                # _reject, not a bare raise: the monitor row is open by here, and one
+                # left running keeps Studio reporting the backend as generating after
+                # the request has already been answered with a 400.
                 raise _reject(
                     400,
                     "Image provided but current model is text-only. Load a vision model.",
                 )
 
             # A distinct legacy image is a second image the caller supplied, so it
-            # joins the structural count: one image part the extractor could not read
-            # (a remote or payloadless URL) plus a distinct top-level image is still
-            # two images with one of them dropped. The second clause covers the case
-            # the count alone misses, where the turn carries no part but an earlier
-            # one does: the selection below is `extracted_image_b64 or image_base64`,
-            # so the extracted image wins and the top-level one goes unmentioned.
+            # joins the structural count. The second clause covers what the count
+            # misses, a turn with no part while an earlier one has: selection is
+            # `extracted_image_b64 or image_base64`, so the legacy one goes unread.
             _legacy_is_distinct = _legacy_image_is_distinct(payload)
             if images_on_turn + int(_legacy_is_distinct) > 1 or (
                 extracted_image_b64 and _legacy_is_distinct
@@ -18475,9 +18439,8 @@ async def openai_chat_completions(
         except HTTPException:
             raise
         except Exception as e:
-            # log_and_http_error keeps the exception text server-side, but knows
-            # nothing about the monitor row; hand its public detail to _reject so
-            # a failed decode closes the row like the refusals above.
+            # log_and_http_error knows nothing about the monitor row, so hand its
+            # public detail to _reject and close the row like the refusals above.
             decode_error = log_and_http_error(
                 e,
                 400,

@@ -850,10 +850,9 @@ class TestChatCompletionRequestToolFields:
     def test_several_undecodable_images_on_one_message_are_still_refused(self, monkeypatch):
         """The count is of image PARTS, not of images extraction could decode.
 
-        Only a data URL becomes base64, so a message carrying several remote
-        image URLs has no decoded image at all. Gating the refusal on a decoded
-        image would let exactly those through to be flattened away unannounced,
-        which is the silent drop this guard exists to stop."""
+        Only a data URL becomes base64, so several remote image URLs decode to
+        nothing; gating on a decoded image would let exactly those be flattened
+        away unannounced, which is the silent drop this guard exists to stop."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         remote = {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}
@@ -884,10 +883,9 @@ class TestChatCompletionRequestToolFields:
         ids = ["distinct_legacy_image_is_a_second_image", "echoed_legacy_image_is_the_same_one"],
     )
     def test_a_distinct_legacy_image_beside_a_message_image(self, legacy, expected, monkeypatch):
-        """`extracted_image_b64 or image_base64` always picks the message image, so
-        a DIFFERENT top-level image is a second image the caller supplied and would
-        never hear about. Studio's field is echoed from the thread and byte-matches
-        the part, so it must not be counted twice."""
+        """`extracted_image_b64 or image_base64` always picks the message image, so a
+        DIFFERENT top-level image is a second one the caller never hears about.
+        Studio's echo byte-matches the part, so it must not be counted twice."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         resp = client.post(
@@ -1045,10 +1043,9 @@ class TestChatCompletionRequestToolFields:
     def test_only_the_newest_user_image_counts_as_the_echo(
         self, legacy_is_newest, expected, monkeypatch
     ):
-        """findLatestUserImageBase64 scans newest turn first and returns the first
-        image it meets, so that one value is the only thing the field could carry.
-        Accepting a match anywhere let a client resend an older image while the
-        newest turn supplied its own, and the extra one was dropped unmentioned."""
+        """findLatestUserImageBase64 returns the first image on the newest user turn,
+        so that one value is all the field could carry. Matching anywhere let a
+        client resend an older image while the newest turn supplied its own."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         older = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_RED_PNG_B64}"}}
@@ -1108,10 +1105,9 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_a_payloadless_newest_image_does_not_end_the_echo_scan(self, monkeypatch):
-        """findLatestUserImageBase64 walks on past a falsy read (`if (encoded) return
-        encoded`), so an empty newest part is not the value the field carries. Stopping
-        on it made Studio's echo of a valid earlier image look like a second attachment
-        and refused a legitimate one-image request."""
+        """findLatestUserImageBase64 walks on past a falsy read, so an empty newest
+        part is not the value the field carries. Stopping on it refused Studio's
+        echo of a valid earlier image as a second attachment."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         older = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_RED_PNG_B64}"}}
@@ -1266,11 +1262,9 @@ class TestChatCompletionRequestToolFields:
     def test_an_image_with_audio_input_is_refused_not_dropped(
         self, n_images, expected, monkeypatch
     ):
-        """The audio-input branch returns before the standard image path, and it
-        passes only the flattened messages plus the audio on, so an attached image
-        is discarded. Refuse instead of answering from the audio and letting the
-        caller think the picture was read. Any count: one image is dropped here as
-        silently as two."""
+        """The audio-input branch returns before the standard image path and forwards
+        only the flattened messages plus the audio, so an attached image is
+        discarded. Any count: one is dropped here as silently as two."""
         import numpy as np
 
         import routes.inference as inference_route
@@ -1410,10 +1404,9 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_a_derived_legacy_image_field_does_not_block_a_voice_follow_up(self, monkeypatch):
-        """Studio fills image_base64 from anywhere in the thread
-        (findLatestUserImageBase64 walks the whole history), so it is not a
-        per-turn signal. When message parts carry the image on an earlier turn,
-        they decide, and the voice follow-up must still be answered."""
+        """Studio fills image_base64 from anywhere in the thread, so it is not a
+        per-turn signal. When an earlier turn carries the image the parts decide,
+        and the voice follow-up must still be answered."""
         import numpy as np
 
         import routes.inference as inference_route
@@ -1483,11 +1476,9 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_a_new_legacy_image_is_refused_even_with_image_bearing_history(self, monkeypatch):
-        """A direct client can attach a NEW image through the legacy field while
-        the newest turn stays text-only, on a thread that already holds an image.
-        Studio's own field is copied out of the thread and so byte-matches a part
-        payload; one that matches nothing was attached to this request, and this
-        branch would drop it."""
+        """A direct client can attach a NEW image through the legacy field while the
+        newest turn stays text-only. Studio's own field is copied out of the thread
+        and byte-matches a part; one matching nothing came with this request."""
         import numpy as np
 
         import routes.inference as inference_route
