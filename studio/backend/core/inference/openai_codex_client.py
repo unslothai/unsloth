@@ -606,8 +606,11 @@ async def _upstream_error_code(response: httpx.Response) -> str | None:
     """The structured error's code or type. _upstream_error_detail prefers the display message
     and drops these, which hides a terminal code behind a generic "slow down" sentence."""
     try:
+        # Same read-then-parse as the sibling above, so this does not depend on being called
+        # after it. A body whose read already failed raises StreamError, not HTTPError.
+        await response.aread()
         payload = response.json()
-    except (ValueError, json.JSONDecodeError, httpx.HTTPError, AttributeError):
+    except (ValueError, json.JSONDecodeError, httpx.HTTPError, httpx.StreamError, AttributeError):
         return None
     error = payload.get("error") if isinstance(payload, dict) else None
     if not isinstance(error, dict):

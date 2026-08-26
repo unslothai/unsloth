@@ -2941,6 +2941,30 @@ def test_a_transient_code_behind_a_generic_message_stays_retryable(monkeypatch):
     assert "terminal" not in throttled.metadata
 
 
+def test_upstream_error_code_survives_a_body_that_cannot_be_read():
+    """Parsing a body whose read failed raises StreamError, which is not an HTTPError. The
+    classification runs after a failed read, so an uncaught one would replace the quota error
+    the caller is supposed to see."""
+    from core.inference import openai_codex_client as codex_client
+
+    class _FailingStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            raise httpx.ReadTimeout("body read died mid-flight")
+            yield b""
+
+    request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
+
+    async def _both():
+        response = httpx.Response(429, stream = _FailingStream(), request = request)
+        # The order the send loop uses: the message first, then the code off the same response.
+        return (
+            await codex_client._upstream_error_detail(response),
+            await codex_client._upstream_error_code(response),
+        )
+
+    assert asyncio.run(_both()) == (None, None)
+
+
 def test_upstream_error_code_reads_code_then_type():
     from core.inference import openai_codex_client as codex_client
 
