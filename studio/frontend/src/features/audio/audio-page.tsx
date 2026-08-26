@@ -437,8 +437,6 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
-  /** Drop the transcript with the name and the error that belong to it, so no part
-   *  of a result can be left on screen describing another one. */
   const clearTranscript = useCallback(() => {
     setTranscript("");
     setTranscribedName(null);
@@ -501,12 +499,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         repoIdForSidecarKey: sttRepoIdForSidecarKey,
         engineForRepo: sttEngineForRepoId,
       });
-      // The sidecar is shared, so this resync can adopt another surface's model. The
-      // transcript on screen was made by the pick being replaced, and leaving it up
-      // shows it under the model that now sits in the picker. A selection merely going
-      // away misattributes nothing, so the 5-minute idle unload -- which fires while
-      // the user is on another tab, with no action of theirs -- keeps the text they
-      // came back to copy.
+      // Shared sidecar: an adopted model strands the previous pick's transcript
+      // under it. null is the 5-minute idle unload, which must not delete it.
       if (reconciled !== null && reconciled !== selectedSttRepoRef.current)
         clearTranscript();
       selectedSttRepoRef.current = reconciled;
@@ -1575,8 +1569,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       const controller = new AbortController();
       transcriptionAbort.current = controller;
       setBusy("transcribing");
-      // A run owns the pane from the moment it starts: leaving the previous result up
-      // let a failure read as this file's transcript, and exported it under this name.
+      // Or a failure reads as this file's transcript, exported under its name.
       clearTranscript();
       setTranscribedName(name);
       try {
