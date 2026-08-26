@@ -26,3 +26,21 @@ def test_vlm_without_instruction_column_reports_none():
 def test_detects_alternate_explicit_instruction_column():
     result = check_dataset_format([_vlm_row(prompt = "Describe it")], is_vlm = True)
     assert result["detected_instruction_column"] == "prompt"
+
+
+def test_audio_dataset_does_not_detect_an_instruction_for_an_audio_vlm():
+    result = check_dataset_format(
+        [
+            {
+                "audio": {"array": [0.0], "sampling_rate": 16000},
+                "text": "A transcript",
+                "instruction": "Translate this audio.",
+            }
+        ],
+        is_vlm = True,
+    )
+
+    assert result["detected_format"] == "audio"
+    assert result["detected_instruction_column"] is None
+    assert result["detected_audio_column"] == "audio"
+    assert result["detected_text_column"] == "text"

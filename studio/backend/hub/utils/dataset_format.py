@@ -626,6 +626,26 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         "detected_speaker_column": multimodal_info.get("detected_speaker_column"),
     }
 
+    # Audio datasets use a fixed audio/text mapping. Check them before the VLM
+    # branch so an audio-capable vision model cannot mistake an unrelated
+    # `instruction` field for a per-sample visual prompt.
+    if is_audio:
+        detected_audio = multimodal_info.get("detected_audio_column")
+        detected_text = multimodal_info.get("detected_text_column")
+        return {
+            "requires_manual_mapping": not detected_audio or not detected_text,
+            "detected_format": "audio",
+            "columns": columns,
+            "suggested_mapping": None,
+            "detected_image_column": None,
+            "detected_text_column": detected_text,
+            "detected_instruction_column": None,
+            "chat_column": None,
+            "is_image": False,
+            "multimodal_columns": multimodal_info.get("audio_columns"),
+            **audio_fields,
+        }
+
     if is_vlm:
         vlm_structure = detect_vlm_dataset_structure(dataset)
         instruction_column = detect_vlm_instruction_column(sample)
@@ -654,23 +674,6 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
             "is_image": multimodal_info["is_image"],
             "multimodal_columns": multimodal_info.get("multimodal_columns"),
             "warning": warning,
-            **audio_fields,
-        }
-
-    if is_audio:
-        detected_audio = multimodal_info.get("detected_audio_column")
-        detected_text = multimodal_info.get("detected_text_column")
-        return {
-            "requires_manual_mapping": not detected_audio or not detected_text,
-            "detected_format": "audio",
-            "columns": columns,
-            "suggested_mapping": None,
-            "detected_image_column": None,
-            "detected_text_column": detected_text,
-            "detected_instruction_column": None,
-            "chat_column": None,
-            "is_image": False,
-            "multimodal_columns": multimodal_info.get("audio_columns"),
             **audio_fields,
         }
 

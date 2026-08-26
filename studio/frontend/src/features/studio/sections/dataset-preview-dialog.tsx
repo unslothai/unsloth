@@ -191,7 +191,7 @@ export function DatasetPreviewDialog({
 
   // Treat backend-reported image data as VLM even if the prop hasn't caught up.
   const effectiveIsAudio = !!data?.is_audio;
-  const effectiveIsVlm = isVlm || !!data?.is_image;
+  const effectiveIsVlm = !effectiveIsAudio && (isVlm || !!data?.is_image);
 
   const isRawFormat = isRawTextDatasetFormat(datasetFormat);
   const hasHeuristicMapping =
