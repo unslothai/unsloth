@@ -922,9 +922,7 @@ def test_a_remote_gguf_repo_is_served_by_llama_server_on_an_st_host(monkeypatch)
     assert rag_embeddings._resolve_auto_for_model("unsloth/bge-m3") == "sentence-transformers"
 
 
-def test_a_local_directory_named_gguf_is_still_a_sentence_transformers_model(
-    monkeypatch, tmp_path
-):
+def test_a_local_directory_named_gguf_is_still_a_sentence_transformers_model(monkeypatch, tmp_path):
     """The remote rule is a name test, and a directory may be named anything. Only
     the filesystem can say what ``~/models/my-gguf`` holds, and here it holds
     safetensors."""

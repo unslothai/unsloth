@@ -51,9 +51,7 @@ _lock = threading.Lock()
 # Per-model, process-local: the last (gguf_repo, backend, download_pending, files)
 # seen for each model. The one stored record belongs to whichever model was saved
 # last; see remembered_gguf_repo.
-_resolved_gguf_memo: dict[
-    str, tuple[Optional[str], Optional[str], bool, Optional[list]]
-] = {}
+_resolved_gguf_memo: dict[str, tuple[Optional[str], Optional[str], bool, Optional[list]]] = {}
 
 
 def _invalidate_cache() -> None:
@@ -221,9 +219,7 @@ def clear_stored_download_pending(model: str) -> bool:
         return False
     # Retire the memo with the record, or a pinned job keeps reading pending=True
     # and stays cache-only after the download landed.
-    _remember_resolution(
-        model, (stored[0], stored[1], stored[2], stored[3], False, stored[5])
-    )
+    _remember_resolution(model, (stored[0], stored[1], stored[2], stored[3], False, stored[5]))
     _invalidate_cache()
     return True
 
