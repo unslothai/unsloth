@@ -3248,9 +3248,7 @@ def _ctrl_resolve(expr, scopes, aliases, module, seen):
             bindings = _ctrl_bindings(scope)
             if expr.id in bindings:
                 for value in bindings[expr.id]:
-                    ok, why = _ctrl_resolve(
-                        value, scopes, aliases, module, seen | {expr.id}
-                    )
+                    ok, why = _ctrl_resolve(value, scopes, aliases, module, seen | {expr.id})
                     if not ok:
                         return False, f"{expr.id} -> {why}"
                 return True, f"{expr.id} is sanitized"
@@ -3354,9 +3352,9 @@ def test_every_catalog_producer_returns_a_swept_catalog():
         raw = node.args.args[0].arg
         for statement in ast.walk(node):
             if isinstance(statement, ast.Return) and isinstance(statement.value, ast.Name):
-                assert statement.value.id != raw, (
-                    f"{producer}:{statement.lineno} returns its unswept {raw} argument"
-                )
+                assert (
+                    statement.value.id != raw
+                ), f"{producer}:{statement.lineno} returns its unswept {raw} argument"
 
 
 @pytest.mark.parametrize("role", ["user", "system", "tool", "ipython"])
