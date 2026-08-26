@@ -566,6 +566,7 @@ def fit_rolling_context(
     # Phase two, only if what is left still does not fit: move the boundary, taking a
     # chunk out rather than skimming to the brim so it can stay put for a while.
     trim_target = prompt_target
+    headroom = 0
     if current_tokens > prompt_target:
         # Summed, not max()'d: the reserve is spent immediately on recalled passages, so
         # counting it as headroom would hand back room that is already taken.
@@ -583,7 +584,9 @@ def fit_rolling_context(
         trim_target = max(1, prompt_target - reserve_tokens - headroom)
 
     while current_tokens > trim_target:
-        keep_ratio = min(0.95, trim_target / max(1, current_tokens))
+        keep_ratio = trim_target / max(1, current_tokens)
+        if headroom > 0:
+            keep_ratio = min(0.95, keep_ratio)
         candidate, dropped = truncate_oldest_messages(
             fitted,
             keep_ratio,
