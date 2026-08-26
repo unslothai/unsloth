@@ -2354,7 +2354,10 @@ def _send_attempts(
 
     monkeypatch.setattr(asyncio, "sleep", _sleep)
     monkeypatch.setattr(httpx.AsyncClient, "send", _send)
-    monkeypatch.setattr(research_runs.auth_storage, "create_api_key", lambda **k: ("t", "k"))
+    monkeypatch.setattr(
+        research_runs.auth_storage, "create_api_key", lambda **k: ("token", {"id": 1})
+    )
+    monkeypatch.setattr(research_runs.auth_storage, "revoke_internal_api_key", lambda key_id: None)
     supervisor._note_phase = lambda *a, **k: real_sleep(0)
     supervisor._check_active = _check_active
     supervisor._cancel_event = lambda run_id: SimpleNamespace(is_set = lambda: False)
@@ -2481,6 +2484,25 @@ def test_a_rate_limit_wait_cannot_outlive_the_internal_key(monkeypatch):
     # 100 less the 5s reserve: not the 3000s asked for, and not the standing ceiling.
     assert len(waits) == 2
     assert all(93.0 < wait <= 95.0 for wait in waits), waits
+
+
+def test_a_blank_first_line_survives_the_peek_and_replay():
+    """A blank SSE separator is a line. Peeled off to be inspected and put back, it has to
+    round-trip verbatim through the whole path, or every line after it shifts up one."""
+
+    async def _stream():
+        for line in ("", "data: one", "data: [DONE]"):
+            yield line
+
+    async def _peek_then_replay():
+        lines = _stream()
+        head = await research_runs._peek_stream_head(lines)
+        assert research_runs._stream_rate_limit_delay(head) is None
+        return head, [line async for line in research_runs._with_head(head, lines)]
+
+    head, replayed = asyncio.run(_peek_then_replay())
+    assert head == ""
+    assert replayed == ["", "data: one", "data: [DONE]"]
 
 
 def test_another_in_band_provider_error_is_not_retried(monkeypatch):

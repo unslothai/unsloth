@@ -492,50 +492,50 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
     return _retry_after_delay(response.headers.get("Retry-After"))
 
 
-async def _peek_stream_head(lines: AsyncIterator[str]) -> list[str]:
-    """The stream's first line, or nothing when it ends without one.
+async def _peek_stream_head(lines: AsyncIterator[str]) -> str | None:
+    """The stream's first line, or None when it ends without one.
 
     One line only: a queue notice belongs to the loop that refreshes the admission bound, and the
     refusal below is always a stream's first line."""
     async for line in lines:
-        return [line]
-    return []
+        return line
+    return None
 
 
-def _stream_rate_limit_delay(head: list[str]) -> float | None:
+def _stream_rate_limit_delay(head: str | None) -> float | None:
     """The delay a proxied provider rate-limit refusal asks for: None when the stream does not
     open with one, 0.0 when it names no delay.
 
     core.inference.external_provider turns an upstream non-200 into a 200 stream carrying one
     OpenAI-shaped error line, so a 429 survives only there: as ``code`` (``type`` for the ChatGPT
     connection) plus the forwarded Retry-After."""
-    for line in head:
-        if not line.startswith("data:"):
-            continue
-        try:
-            chunk = json.loads(line[5:].strip())
-        except (TypeError, ValueError):
-            return None
-        error = chunk.get("error") if isinstance(chunk, dict) else None
-        if not isinstance(error, dict):
-            return None
-        if str(error.get("code")) != "429" and error.get("type") != "rate_limit_error":
-            return None
-        metadata = error.get("metadata")
-        if isinstance(metadata, dict) and metadata.get("terminal"):
-            # Quota exhausted rather than throttled: no wait clears it, so surface it now.
-            return None
-        requested = error.get("retry_after")
-        if requested is None and isinstance(metadata, dict):
-            requested = metadata.get("retry_after")
-        return _retry_after_delay(requested) or 0.0
-    return None
+    if head is None or not head.startswith("data:"):
+        return None
+    try:
+        chunk = json.loads(head[5:].strip())
+    except (TypeError, ValueError):
+        return None
+    error = chunk.get("error") if isinstance(chunk, dict) else None
+    if not isinstance(error, dict):
+        return None
+    if str(error.get("code")) != "429" and error.get("type") != "rate_limit_error":
+        return None
+    metadata = error.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("terminal"):
+        # Quota exhausted rather than throttled: no wait clears it, so surface it now.
+        return None
+    requested = error.get("retry_after")
+    if requested is None and isinstance(metadata, dict):
+        requested = metadata.get("retry_after")
+    return _retry_after_delay(requested) or 0.0
 
 
-async def _with_head(head: list[str], rest: AsyncIterator[str]) -> AsyncIterator[str]:
-    """``rest`` with the lines already read off it put back in front."""
-    for line in head:
-        yield line
+async def _with_head(head: str | None, rest: AsyncIterator[str]) -> AsyncIterator[str]:
+    """``rest`` with the line already read off it put back in front.
+
+    Explicitly against None, not truthiness: a blank SSE separator line is a line."""
+    if head is not None:
+        yield head
     async for line in rest:
         yield line
 
