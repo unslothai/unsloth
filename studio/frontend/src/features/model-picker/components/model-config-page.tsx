@@ -1003,12 +1003,15 @@ function LoadModeRow({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>Mmap/Mlock</span>
           <InfoHint>
-            How the weights are read off disk (--load-mode). Auto memory-maps
-            unless a device cannot, which is the default. mmap forces the
-            mapping, mlock keeps the model in RAM rather than letting it swap or
-            compress, mmap+mlock does both, DirectIO streams the file where the
-            platform supports it, and None asks for no special mode. Model
-            Memory, in Settings, owns this when either of its toggles is on.
+            How the weights are read off disk (--load-mode). Auto is the
+            default: Unsloth picks None when it can prove the model fits without
+            paging, since a mapped read is slower, and otherwise leaves the
+            choice to llama.cpp, which memory-maps unless a device cannot. mmap
+            forces the mapping, mlock keeps the model in RAM rather than letting
+            it swap or compress, mmap+mlock does both, DirectIO streams the file
+            where the platform supports it, and None asks for no special mode.
+            Model Memory, in Settings, owns this when either of its toggles is
+            on.
           </InfoHint>
         </div>
         <Select
