@@ -113,6 +113,32 @@ export function nativeImportSource(handle: {
 
 // role:"tool" results are absorbed into the preceding assistant tool-call
 // part's `result` field rather than becoming separate records.
+function oaiContentToParts(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) {
+    return typeof raw === "string" && raw.trim()
+      ? [{ type: "text", text: raw }]
+      : [];
+  }
+
+  return raw.flatMap((value): unknown[] => {
+    if (typeof value !== "object" || value === null) return [];
+    const part = value as Record<string, unknown>;
+    if (part.type === "text" && typeof part.text === "string") {
+      return [{ type: "text", text: part.text }];
+    }
+    if (part.type === "image_url") {
+      const imageUrl =
+        typeof part.image_url === "object" && part.image_url !== null
+          ? (part.image_url as Record<string, unknown>).url
+          : undefined;
+      return typeof imageUrl === "string" && imageUrl
+        ? [{ type: "image", image: imageUrl }]
+        : [];
+    }
+    return [];
+  });
+}
+
 function oaiMessagesToRecords(
   oaiMsgs: unknown[],
   threadId: string,
@@ -140,10 +166,7 @@ function oaiMessagesToRecords(
     let content: unknown[];
 
     if (role === "assistant") {
-      const parts: unknown[] = [];
-      if (typeof msg.content === "string" && msg.content.trim()) {
-        parts.push({ type: "text", text: msg.content });
-      }
+      const parts = oaiContentToParts(msg.content);
       if (Array.isArray(msg.tool_calls)) {
         for (const tc of msg.tool_calls) {
           const tcObj = tc as Record<string, unknown>;
@@ -168,22 +191,7 @@ function oaiMessagesToRecords(
       }
       content = parts;
     } else {
-      const raw = msg.content;
-      if (Array.isArray(raw)) {
-        content = raw.flatMap((p): unknown[] => {
-          const part = p as Record<string, unknown>;
-          if (part.type === "text" && typeof part.text === "string") {
-            return [{ type: "text", text: part.text }];
-          }
-          if (part.type === "image_url") {
-            const iu = (part.image_url as Record<string, unknown>) ?? {};
-            return [{ type: "image", image: typeof iu.url === "string" ? iu.url : "" }];
-          }
-          return [];
-        });
-      } else {
-        content = typeof raw === "string" && raw.trim() ? [{ type: "text", text: raw }] : [];
-      }
+      content = oaiContentToParts(msg.content);
     }
 
     if (content.length === 0) continue;
@@ -192,7 +200,7 @@ function oaiMessagesToRecords(
       id,
       threadId,
       parentId: prevId,
-      role: role as MessageRecord["role"],
+      role: (role === "developer" ? "system" : role) as MessageRecord["role"],
       content: content as MessageRecord["content"],
       createdAt: baseTs + idx,
     });

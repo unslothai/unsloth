@@ -7,7 +7,17 @@ export function canMergeConversationExport(format: string): boolean {
   return format !== "jsonl-messages";
 }
 
-const OPENAI_MESSAGE_ROLES = new Set(["system", "user", "assistant", "tool"]);
+export function exportFormatIncludesSiblings(format: string): boolean {
+  return format !== "jsonl-raw" && format !== "jsonl-messages";
+}
+
+const OPENAI_MESSAGE_ROLES = new Set([
+  "system",
+  "developer",
+  "user",
+  "assistant",
+  "tool",
+]);
 
 export function isOpenAIMessageRecord(
   record: unknown,

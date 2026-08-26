@@ -68,6 +68,7 @@ import { parseCsv } from "../utils/csv-parse";
 import {
   canMergeConversationExport,
   conversationJsonlBody,
+  exportFormatIncludesSiblings,
   type ConversationJsonlLayout,
 } from "../utils/ndjson";
 import { orderByParentChain } from "../utils/message-order";
@@ -324,6 +325,8 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
       } else if (p.type === "reasoning" || p.type === "thinking") {
         const t = typeof p.thinking === "string" ? p.thinking : typeof p.text === "string" ? p.text : "";
         if (t) textParts.push(`<thinking>\n${t}\n</thinking>`);
+      } else if (p.type === "image" && typeof p.image === "string" && p.image) {
+        textParts.push("[image attachment]");
       } else if (p.type === "tool-call") {
         const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${toolCalls.length}`;
         const name = typeof p.toolName === "string" ? p.toolName : "unknown";
@@ -406,7 +409,9 @@ async function exportConversationJsonl(
   layout: ConversationJsonlLayout,
 ): Promise<void> {
   const messages = await loadConversationMessages(threadId, {
-    includeSiblings: layout !== "training",
+    includeSiblings: exportFormatIncludesSiblings(
+      layout === "training" ? "jsonl-raw" : "jsonl-messages",
+    ),
   });
   if (!messages) return;
 
@@ -553,7 +558,7 @@ async function buildThreadContent(
   format: ConvExportFormat,
 ): Promise<string | null> {
   const messages = await loadConversationMessages(threadId, {
-    includeSiblings: format !== "jsonl-raw",
+    includeSiblings: exportFormatIncludesSiblings(format),
   });
   if (!messages) return null;
 
