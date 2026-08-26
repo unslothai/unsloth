@@ -355,6 +355,21 @@ export async function isBinaryPropertyList(file: File): Promise<boolean> {
   return header.length === 8 && String.fromCharCode(...header) === "bplist00";
 }
 
+/** VobSub `.sub` files are MPEG program streams containing bitmap subtitles. */
+export async function isBinaryVobSubSubtitle(file: File): Promise<boolean> {
+  if (!file.name.toLowerCase().endsWith(".sub")) {
+    return false;
+  }
+  const header = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  return (
+    header.length === 4 &&
+    header[0] === 0x00 &&
+    header[1] === 0x00 &&
+    header[2] === 0x01 &&
+    header[3] === 0xba
+  );
+}
+
 /** Decode editor text, including the BOM emitted by Windows Registry Editor. */
 export async function readTextAttachment(file: File): Promise<string> {
   const bytes = new Uint8Array(await file.arrayBuffer());

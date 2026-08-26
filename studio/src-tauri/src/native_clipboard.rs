@@ -96,6 +96,8 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "caf" => "audio/x-caf",
         "wma" => "audio/x-ms-wma",
         "amr" => "audio/amr",
+        // Provisional until the BMFF handlers can be inspected after reading.
+        "3gp" => "video/3gpp",
         "vtt" => "text/vtt",
         "srt" => "application/x-subrip",
         // .txt is a RAG type, so it is absent from TEXT_ATTACHMENT_EXTS and
@@ -159,7 +161,18 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
         let Ok(metadata) = source.metadata() else {
             continue;
         };
-        let limit = clipboard_file_max_bytes(mime_type).min(remaining);
+        let is_3gp = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("3gp"));
+        // A 3GP recording cannot use its final size limit until its BMFF
+        // handlers have been read and classified as audio-only or video.
+        let provisional_limit = if is_3gp {
+            MAX_CLIPBOARD_AUDIO_BYTES
+        } else {
+            clipboard_file_max_bytes(mime_type)
+        };
+        let limit = provisional_limit.min(remaining);
         if !metadata.is_file() || metadata.len() == 0 || metadata.len() > limit {
             continue;
         }
@@ -171,6 +184,14 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
             continue;
         }
         if crate::native_path_policy::is_binary_property_list(&path, &bytes) {
+            continue;
+        }
+        let mime_type = if is_3gp && crate::native_intents::is_audio_only_3gp(&bytes) {
+            "audio/3gpp"
+        } else {
+            mime_type
+        };
+        if bytes.len() as u64 > clipboard_file_max_bytes(mime_type).min(remaining) {
             continue;
         }
         remaining -= bytes.len() as u64;
@@ -372,6 +393,21 @@ pub async fn read_native_clipboard_png(
 mod tests {
     use super::*;
 
+    fn bmff_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut boxed = Vec::with_capacity(payload.len() + 8);
+        boxed.extend_from_slice(&((payload.len() + 8) as u32).to_be_bytes());
+        boxed.extend_from_slice(kind);
+        boxed.extend_from_slice(payload);
+        boxed
+    }
+
+    fn three_gp_with_handler(handler: &[u8; 4]) -> Vec<u8> {
+        let mut hdlr_payload = vec![0; 8];
+        hdlr_payload.extend_from_slice(handler);
+        let mdia = bmff_box(b"mdia", &bmff_box(b"hdlr", &hdlr_payload));
+        bmff_box(b"moov", &bmff_box(b"trak", &mdia))
+    }
+
     #[test]
     fn clipboard_dimensions_are_bounded() {
         assert!(validate_dimensions(3840, 2160).is_ok());
@@ -449,8 +485,26 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_3gp_uses_its_bmff_track_type() {
+        let directory = tempfile::tempdir().unwrap();
+        let audio = directory.path().join("recording.3gp");
+        std::fs::write(&audio, three_gp_with_handler(b"soun")).unwrap();
+        let video = directory.path().join("video.3gp");
+        std::fs::write(&video, three_gp_with_handler(b"vide")).unwrap();
+
+        let files = read_clipboard_files(vec![audio, video]).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].mime_type, "audio/3gpp");
+        assert_eq!(files[1].mime_type, "video/3gpp");
+    }
+
+    #[test]
     fn clipboard_audio_uses_the_chat_upload_boundary() {
         assert_eq!(clipboard_file_max_bytes("audio/mpeg"), 25 * 1024 * 1024);
+        assert_eq!(
+            clipboard_file_max_bytes("video/3gpp"),
+            MAX_CLIPBOARD_SOURCE_BYTES
+        );
         assert_eq!(
             clipboard_file_max_bytes("text/markdown"),
             MAX_CLIPBOARD_SOURCE_BYTES

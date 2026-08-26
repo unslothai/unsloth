@@ -14,6 +14,7 @@ import {
   TEXT_ATTACHMENT_BASENAMES,
   TEXT_ATTACHMENT_EXTENSIONS,
   isBinaryPropertyList,
+  isBinaryVobSubSubtitle,
   pickerAcceptForTextBasenames,
   readTextAttachment,
 } from "../src/features/chat/text-attachment-accept.ts";
@@ -734,6 +735,25 @@ test("binary plists are distinguished from XML plists", async () => {
   );
   assert.equal(
     await isBinaryPropertyList(new File(["bplist00payload"], "settings.txt")),
+    false,
+  );
+});
+
+test("binary VobSub files are distinguished from text subtitles", async () => {
+  assert.equal(
+    await isBinaryVobSubSubtitle(
+      new File([new Uint8Array([0x00, 0x00, 0x01, 0xba, 0x44])], "movie.sub"),
+    ),
+    true,
+  );
+  assert.equal(
+    await isBinaryVobSubSubtitle(new File(["{1}{25}Hello|world"], "movie.sub")),
+    false,
+  );
+  assert.equal(
+    await isBinaryVobSubSubtitle(
+      new File([new Uint8Array([0x00, 0x00, 0x01, 0xba])], "movie.bin"),
+    ),
     false,
   );
 });

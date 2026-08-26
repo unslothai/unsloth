@@ -17396,6 +17396,10 @@ _WAV_HEADER_BYTES = 44
 _MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
 
 
+class _DecodedAudioTooLongError(ValueError):
+    """Decoded audio crossed the duration cap before it could be buffered."""
+
+
 def _sniff_audio_container(raw: bytes) -> Optional[str]:
     """Return 'wav' or 'mp3' if the bytes are a container llama-server accepts
     directly (so we can forward them untouched), else None (needs transcoding)."""
@@ -17504,7 +17508,19 @@ def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
 
     chunks = []
     sample_rate = 0
+    sample_count = 0
     resampler = None
+
+    def append_resampled(resampled) -> None:
+        nonlocal sample_count
+        block = resampled.to_ndarray().reshape(-1)
+        sample_count += block.size
+        if sample_count > sample_rate * _MAX_AUDIO_SECONDS:
+            raise _DecodedAudioTooLongError(
+                f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+            )
+        chunks.append(block)
+
     with av.open(io.BytesIO(raw), mode = "r", metadata_errors = "ignore") as container:
         if not container.streams.audio:
             raise ValueError("audio container has no audio stream")
@@ -17519,10 +17535,10 @@ def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
                     rate = sample_rate,
                 )
             for resampled in resampler.resample(frame):
-                chunks.append(resampled.to_ndarray().reshape(-1))
+                append_resampled(resampled)
         if resampler is not None:
             for resampled in resampler.resample(None):
-                chunks.append(resampled.to_ndarray().reshape(-1))
+                append_resampled(resampled)
     if not chunks:
         raise ValueError("audio container decoded to no samples")
     return np.concatenate(chunks).astype(np.float32, copy = False), sample_rate
@@ -17544,6 +17560,8 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
     except Exception:
         try:
             arr, sr = _decode_audio_mono_with_av(raw)
+        except _DecodedAudioTooLongError:
+            raise
         except Exception as av_error:
             try:
                 import librosa
@@ -17570,7 +17588,9 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
     if arr.ndim > 1:
         arr = arr.mean(axis = 1)
     if sr > 0 and len(arr) > sr * _MAX_AUDIO_SECONDS:
-        raise ValueError(f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit")
+        raise _DecodedAudioTooLongError(
+            f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+        )
     return arr, sr
 
 

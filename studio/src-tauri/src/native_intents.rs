@@ -711,7 +711,7 @@ fn bmff_box_payloads<'a>(data: &'a [u8], wanted: &[u8; 4]) -> Vec<&'a [u8]> {
 /// 3GP is an ISO BMFF container shared by audio recordings and videos. Prefer
 /// video when any video track exists; an audio-only file belongs to the audio
 /// adapter registered ahead of video in the composer.
-fn is_audio_only_3gp(raw: &[u8]) -> bool {
+pub(crate) fn is_audio_only_3gp(raw: &[u8]) -> bool {
     let mut has_audio = false;
     let mut has_video = false;
     for moov in bmff_box_payloads(raw, b"moov") {

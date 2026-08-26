@@ -59,6 +59,7 @@ import {
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
   isBinaryPropertyList,
+  isBinaryVobSubSubtitle,
   readTextAttachment,
 } from "./text-attachment-accept";
 import {
@@ -369,6 +370,12 @@ class TextAttachmentAdapter implements AttachmentAdapter {
     if (await isBinaryPropertyList(file)) {
       const reason =
         "Binary property lists aren't supported. Export the .plist as XML before attaching it.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    if (await isBinaryVobSubSubtitle(file)) {
+      const reason =
+        "VobSub bitmap subtitles aren't supported. Convert the .sub file to SRT or VTT before attaching it.";
       toast.error(reason);
       throw new Error(reason);
     }
