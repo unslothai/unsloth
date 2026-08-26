@@ -1186,6 +1186,7 @@ export const ko = {
         processMemory: "프로세스 메모리",
         notInstalled: "설치되지 않음",
         unknown: "알 수 없음",
+        vramWithShared: "{vram} VRAM + {shared} 공유 메모리",
       },
     },
     agents: {

@@ -1184,6 +1184,7 @@ export const it = {
         processMemory: "Memoria del processo",
         notInstalled: "Non installato",
         unknown: "Sconosciuto",
+        vramWithShared: "{vram} di VRAM + {shared} di memoria condivisa",
       },
     },
     agents: {
