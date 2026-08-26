@@ -562,9 +562,7 @@ def _wrap_mamba2_fused_call(
     def fused_fn(*args, **kwargs):
         varlen = varlen_slot[0] if varlen_slot else None
         if varlen is None:
-            donors = [
-                m for m in mixers if getattr(m, "_unsloth_varlen", None) is not None
-            ]
+            donors = [m for m in mixers if getattr(m, "_unsloth_varlen", None) is not None]
             if donors:
                 varlen = donors[0]._unsloth_varlen
         if varlen is not None:
@@ -834,9 +832,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             return None
         wrapped = wrapped_fused.get(id(fn))
         if wrapped is None:
-            wrapped = _wrap_mamba2_fused_call(
-                fn, mamba2_modules, varlen_slot = varlen_slot
-            )
+            wrapped = _wrap_mamba2_fused_call(fn, mamba2_modules, varlen_slot = varlen_slot)
             wrapped_fused[id(fn)] = wrapped
             _rebind_mamba2_fused_aliases(fn, wrapped)
             _rebind_dict_referrers(fn, wrapped)
