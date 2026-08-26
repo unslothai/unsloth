@@ -3357,6 +3357,50 @@ def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
     assert events
 
 
+def test_rag_autoinject_only_resolves_matching_forced_choices(monkeypatch):
+    monkeypatch.setattr(
+        "core.inference.tools.build_rag_autoinject",
+        lambda *_a, **_k: {
+            "events": [],
+            "messages": [{"role": "user", "content": "Retrieved passage: Tokyo."}],
+        },
+    )
+    tools = [
+        {"type": "function", "function": {"name": "search_knowledge_base"}},
+        {"type": "function", "function": {"name": "web_search"}},
+    ]
+
+    def first_payload(tool_choice):
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [[_sse({"content": "The passage describes Tokyo."}), _done()]],
+            payloads,
+        )
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "summarize the docs"}],
+                tools = tools,
+                tool_choice = tool_choice,
+                max_tool_iterations = 1,
+                nudge_tool_calls = False,
+                rag_scope = {"thread_id": "t1"},
+            )
+        )
+        return payloads[0]
+
+    matching = first_payload(
+        {"type": "function", "function": {"name": "search_knowledge_base"}}
+    )
+    required = first_payload("required")
+    unrelated = first_payload({"type": "function", "function": {"name": "web_search"}})
+
+    assert matching["tool_choice"] == "auto"
+    assert required["tool_choice"] == "auto"
+    assert unrelated["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in unrelated["tools"]] == ["web_search"]
+
+
 def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypatch):
     same_call = _structured_tool_call("python", {"code": "print(1)"}, "call_py")
     streams = [

@@ -25545,7 +25545,7 @@ class LlamaCppBackend:
         # retrieval call would actually prompt (ask mode); auto never gates the
         # safe search_knowledge_base tool, so retrieval must still run there.
         # off never prompts either, so it also keeps first-pass retrieval.
-        from core.inference.chat_template_helpers import trailing_assistant_text
+        from core.inference.chat_template_helpers import forced_tool_name, trailing_assistant_text
 
         # A resumed turn must keep the partial trailing: autoinject appends a tool call
         # plus its result, moving the boundary so the model opens a fresh answer.
@@ -25557,6 +25557,10 @@ class LlamaCppBackend:
             for _ev in _auto["events"]:
                 yield _ev
             conversation.extend(_auto["messages"])
+        _auto_satisfies_forced_choice = bool(_auto) and (
+            tool_choice == "required"
+            or forced_tool_name(tool_choice) == "search_knowledge_base"
+        )
 
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0
@@ -25745,7 +25749,7 @@ class LlamaCppBackend:
 
         _markup_cache = _sweep_cache()
         # A forced function applies until the model produces it; execution or denial resolves it.
-        _forced_choice_resolved = False
+        _forced_choice_resolved = _auto_satisfies_forced_choice
         for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -25778,7 +25782,6 @@ class LlamaCppBackend:
             # in the first 1-2 chunks without a non-streaming penalty.
             from core.inference.chat_template_helpers import (
                 append_assistant_turn,
-                forced_tool_name,
                 neutralize_control_markup,
                 neutralize_control_markup_in_messages,
                 reconciled_tool_choice,
