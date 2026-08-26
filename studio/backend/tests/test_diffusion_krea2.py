@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -88,8 +90,13 @@ def test_load_model_index_accepts_utf8_bom(tmp_path):
     assert _load_model_index(str(tmp_path)) == {"patch_size": 2}
 
 
-def test_load_model_index_rejects_non_object_json(tmp_path):
-    (tmp_path / "model_index.json").write_text("[]", encoding = "utf-8")
+@pytest.mark.parametrize(
+    "payload", ["[]", "null", "3", "2.5", '"str"', "true", "false", '[{"a": 1}]']
+)
+def test_load_model_index_rejects_non_object_json(tmp_path, payload):
+    # Every one of these parsed fine before and was handed to the caller, which then died on
+    # ``.get`` one frame away; the type is what makes an index unusable, not just the syntax.
+    (tmp_path / "model_index.json").write_text(payload, encoding = "utf-8")
 
     with pytest.raises(
         ValueError, match = r"model_index\.json.*must contain a JSON object"
@@ -97,6 +104,43 @@ def test_load_model_index_rejects_non_object_json(tmp_path):
         _load_model_index(str(tmp_path))
 
     assert exc_info.value.__cause__ is None
+
+
+def test_load_model_index_wraps_unreadable_local_file(monkeypatch, tmp_path):
+    # The file passes is_file() and fails in the read: a 0600 checkpoint copied between users, an
+    # EIO disk, a Windows file held open by an AV scanner. That OSError used to be swallowed and
+    # re-reported as "not found", which sends the user looking for a file that is right there.
+    # chmod cannot stage this (CI and containers run as root), so the read itself is faulted.
+    (tmp_path / "model_index.json").write_text('{"patch_size": 2}', encoding = "utf-8")
+    original = Path.read_text
+
+    def _deny(self, *args, **kwargs):
+        if self.name == "model_index.json":
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _deny)
+
+    with pytest.raises(ValueError, match = r"model_index\.json.*local model directory") as exc_info:
+        _load_model_index(str(tmp_path))
+
+    assert isinstance(exc_info.value.__cause__, PermissionError)
+
+
+def test_load_model_index_wraps_a_nesting_bomb(monkeypatch, tmp_path):
+    # Valid JSON, valid UTF-8, and neither guard above sees it: on a deep enough index the parser
+    # blows the stack first, and RecursionError is not a ValueError. The depth that triggers it is
+    # not portable -- 3.10-3.13 raise on ~50k nested objects, 3.14's scanner parses the same
+    # payload -- so the parser is faulted directly and the guard, not the interpreter, is asserted.
+    (tmp_path / "model_index.json").write_text('{"a": 1}', encoding = "utf-8")
+    monkeypatch.setattr(
+        json, "loads", lambda *args, **kwargs: (_ for _ in ()).throw(RecursionError("too deep"))
+    )
+
+    with pytest.raises(ValueError, match = r"model_index\.json.*local model directory") as exc_info:
+        _load_model_index(str(tmp_path))
+
+    assert isinstance(exc_info.value.__cause__, RecursionError)
 
 
 def test_load_model_index_missing_local_file(tmp_path):
@@ -179,6 +223,47 @@ def test_load_krea2_pipeline_threads_init_config(monkeypatch, tmp_path):
     prebuilt = SimpleNamespace(tag = "prebuilt")
     pipe = load_krea2_pipeline(str(tmp_path), "bf16", transformer = prebuilt)
     assert pipe.transformer is prebuilt
+
+
+def test_a_corrupt_index_is_rejected_before_any_component_is_built(monkeypatch, tmp_path):
+    """The index is a few KB and the components it configures are ~35 GB, so it has to be read
+    first. Read last, a clear message still costs a full load to reach, which is most of what the
+    opaque traceback cost in the first place."""
+    (tmp_path / "model_index.json").write_text('{"_class_name": "Krea2Pipe', encoding = "utf-8")
+
+    built: list = []
+
+    class _Records:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def from_pretrained(self, repo_id, **kwargs):
+            built.append(self.tag)
+            return SimpleNamespace(tag = self.tag)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers",
+        SimpleNamespace(
+            FlowMatchEulerDiscreteScheduler = _Records("scheduler"),
+            AutoencoderKLQwenImage = _Records("vae"),
+            Krea2Transformer2DModel = _Records("transformer"),
+            Krea2Pipeline = lambda **kwargs: SimpleNamespace(**kwargs),
+        ),
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion_krea2.load_krea2_tokenizer",
+        lambda repo_id, hf_token = None, local_files_only = False: built.append("tokenizer"),
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion_krea2.load_krea2_text_encoder",
+        lambda repo_id, dtype, hf_token = None, local_files_only = False: built.append("text_encoder"),
+    )
+
+    with pytest.raises(ValueError, match = r"model_index\.json"):
+        load_krea2_pipeline(str(tmp_path), "bf16")
+
+    assert built == []
 
 
 # ── registry / trust / int8 exclusion wiring ─────────────────────────────────

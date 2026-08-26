@@ -107,7 +107,10 @@ def load_krea2_text_encoder(
 def _read_model_index(path: Path, source: str) -> dict[str, Any]:
     try:
         model_index = json.loads(path.read_text(encoding = "utf-8-sig"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    # RecursionError is a nesting bomb rather than a ValueError, so it needs naming separately or
+    # it stays the one raw traceback left; diffusion_families.pipeline_class_from_index catches the
+    # same set for the same reason.
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ValueError(
             f"Unable to read valid model_index.json from {source} at {path}: {exc}"
         ) from exc
@@ -183,6 +186,10 @@ def load_krea2_pipeline(
 
     token = hf_token or None
     cache_dir = _live_cache_dir()
+    # Read the few-KB index BEFORE the components. It used to be read last, so a corrupt index
+    # only reported itself after the tokenizer, the 8.88 GB encoder, the VAE and the 26 GB
+    # transformer had already been built -- a clear message that costs a full load to reach.
+    model_index = _load_model_index(repo_id, hf_token = token, local_files_only = local_files_only)
     tokenizer = load_krea2_tokenizer(repo_id, hf_token = token, local_files_only = local_files_only)
     if text_encoder is None:
         text_encoder = load_krea2_text_encoder(
@@ -212,7 +219,6 @@ def load_krea2_pipeline(
             local_files_only = local_files_only,
             cache_dir = cache_dir,
         )
-    model_index = _load_model_index(repo_id, hf_token = token, local_files_only = local_files_only)
     return diffusers.Krea2Pipeline(
         scheduler = scheduler,
         vae = vae,
