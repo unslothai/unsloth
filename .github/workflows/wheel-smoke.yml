@@ -98,6 +98,11 @@ jobs:
               checks = {
                 "lockfile shipped":      any(s.endswith("studio/frontend/package-lock.json") for s in n),
                 "frontend dist shipped": any(s.endswith("studio/frontend/dist/index.html")    for s in n),
+                # The launcher refresh falls back to these when the fetch of main does not
+                # land. Drop them and an offline update silently stops refreshing launchers,
+                # and UNSLOTH_NO_REMOTE_INSTALLER=1 has nothing to pin to.
+                "install.sh shipped":    any(s.endswith("data/share/unsloth/install.sh")      for s in n),
+                "install.ps1 shipped":   any(s.endswith("data/share/unsloth/install.ps1")     for s in n),
                 "no node_modules":       not any("studio/frontend/node_modules/" in s for s in n),
                 "no bun.lock":           not any(s.endswith("studio/frontend/bun.lock")       for s in n),
               }

@@ -14,9 +14,11 @@ import re
 import secrets
 import shlex
 import shutil
+import site
 import sqlite3
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 import types
@@ -3606,13 +3608,20 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(returncode)
 
 
-# The refresh re-runs the installer with --shortcuts-only, fetched rather than shipped
-# so a launcher fix reaches users without waiting for a release.
-_INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
-_INSTALLER_URL_PWSH = "https://unsloth.ai/install.ps1"
-# unsloth.ai 301s to raw.githubusercontent.com, so both are in the chain. Anywhere
-# else, or plain http, is refused rather than followed.
-_INSTALLER_FETCH_HOSTS = frozenset({"unsloth.ai", "raw.githubusercontent.com"})
+# The refresh re-runs the installer with --shortcuts-only. It fetches main in preference to
+# the copy shipped alongside the wheel so a launcher fix reaches users without waiting for a
+# release; the shipped copy is the fallback for when this does not land.
+#
+# Straight to the origin, not through https://unsloth.ai/install.sh. That URL was only ever
+# a Cloudflare 301 to this exact path, so the bytes always came from the repo, but the hop
+# put the unsloth.ai DNS and CDN control plane in the path of code execution on every
+# updating machine. Going to the origin removes a whole trust anchor without changing what
+# runs. The bundled copy below covers what the hop was worth: reachability.
+_INSTALLER_URL_BASH = "https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh"
+_INSTALLER_URL_PWSH = "https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1"
+# The only host the fetch will talk to. Anywhere else, including unsloth.ai, and plain
+# http, is refused rather than followed.
+_INSTALLER_FETCH_HOSTS = frozenset({"raw.githubusercontent.com"})
 _INSTALLER_FETCH_TIMEOUT = 30
 # install.sh is ~250KB; the cap just stops an unbounded body from being buffered.
 _INSTALLER_MAX_BYTES = 8 * 1024 * 1024
@@ -3729,6 +3738,32 @@ def _installer_script_candidates(installer_name: str) -> List[Path]:
     return candidates
 
 
+def _bundled_installer_roots() -> List[Path]:
+    """`<data>/share/unsloth` dirs holding the installer that shipped with the wheel.
+
+    pyproject data-files put install.sh / install.ps1 there, and pip and uv both resolve
+    <data> to the venv root. This is the release-matched copy: it is used when the fetch of
+    main does not land, and it is what UNSLOTH_NO_REMOTE_INSTALLER=1 pins to.
+
+    The managed venv leads deliberately. A pip-installed CLI can drive an update into
+    STUDIO_HOME/unsloth_studio (_studio_deps.running_outside_managed_venv), where setup has
+    just written the new data files; searching the running interpreter's own prefixes first
+    would run that foreign CLI's older bundled installer instead. Running inside the managed
+    venv it is sys.prefix again and the dedup below drops the repeat, so this only reorders
+    the case it is for.
+    """
+    roots: List[Path] = [STUDIO_HOME / "unsloth_studio", Path(sys.prefix)]
+    for path in (sysconfig.get_path("data"), getattr(site, "USER_BASE", None)):
+        if path:
+            roots.append(Path(path))
+    found: List[Path] = []
+    for root in roots:
+        candidate = root / "share" / "unsloth"
+        if candidate not in found:
+            found.append(candidate)
+    return found
+
+
 def _installers_on_disk(candidates: Sequence[Path]) -> List[Path]:
     """Every candidate that exists, not just the first.
 
@@ -3747,7 +3782,19 @@ def _installers_on_disk(candidates: Sequence[Path]) -> List[Path]:
 
 
 def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
-    """Re-run installer with --shortcuts-only to refresh launchers post-update."""
+    """Re-run installer with --shortcuts-only to refresh launchers post-update.
+
+    Source order: a source checkout, so `update --local` tests its own installer rather
+    than main's; then main, so a launcher fix reaches users without waiting for a release;
+    then the copy that shipped with this release under <data>/share/unsloth, so an offline
+    machine, an unreachable origin, or a main that exits non-zero still gets a refresh
+    instead of silently skipping one. UNSLOTH_NO_REMOTE_INSTALLER=1 drops the middle step.
+
+    Whatever runs, runs the same --shortcuts-only branch, which regenerates the same
+    launcher at the same destination every time. The refresh is best-effort by design: it
+    happens after the package update has already succeeded, so every failure here is
+    reported and skipped rather than allowed to abort the command.
+    """
     env = {**os.environ}
     if verbose:
         env["UNSLOTH_VERBOSE"] = "1"
@@ -3760,6 +3807,9 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         args.append("--verbose")
 
     checkouts = _installers_on_disk(_installer_script_candidates(installer_name))
+    # Pins the refresh to the copy that shipped with the release, for air-gapped machines
+    # and for anyone who would rather their update never ran a freshly fetched script.
+    no_remote = os.environ.get("UNSLOTH_NO_REMOTE_INSTALLER") == "1"
 
     if is_windows:
         ps_argv: List[str] = [_studio_runtime_gate.resolve_windows_powershell()]
@@ -3772,16 +3822,35 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         # Stops at the first candidate that launched; only an unlaunchable one moves on.
         if any(_run_installer_ps1(script, args, ps_argv, env) for script in checkouts):
             return
-        fetched = _fetch_installer(installer_name, verbose = verbose)
-        if fetched is not None:
-            _run_fetched_installer_ps1(fetched, args, ps_argv, env)
+        if not no_remote:
+            fetched = _fetch_installer(installer_name, verbose = verbose)
+            if fetched is not None and _run_fetched_installer_ps1(fetched, args, ps_argv, env):
+                return
+        bundled = _installers_on_disk(
+            [root / installer_name for root in _bundled_installer_roots()]
+        )
+        if any(_run_installer_ps1(script, args, ps_argv, env) for script in bundled):
+            return
+        _skip_launcher_refresh(installer_name)
         return
 
     if any(_run_installer_bash(script, args, env) for script in checkouts):
         return
-    fetched = _fetch_installer(installer_name, verbose = verbose)
-    if fetched is not None:
-        _run_fetched_installer_bash(fetched, args, env)
+    if not no_remote:
+        fetched = _fetch_installer(installer_name, verbose = verbose)
+        if fetched is not None and _run_fetched_installer_bash(fetched, args, env):
+            return
+    bundled = _installers_on_disk(
+        [root / installer_name for root in _bundled_installer_roots()]
+    )
+    if any(_run_installer_bash(script, args, env) for script in bundled):
+        return
+    _skip_launcher_refresh(installer_name)
+
+
+def _skip_launcher_refresh(installer_name: str) -> None:
+    """Nothing usable to run. The update itself already succeeded, so say so and move on."""
+    typer.echo(f"  refresh-launcher  skipped: no usable {installer_name}")
 
 
 def _run_installer_bash(script: Path, args: Sequence[str], env: dict) -> bool:
@@ -3801,14 +3870,20 @@ def _run_installer_bash(script: Path, args: Sequence[str], env: dict) -> bool:
     return True
 
 
-def _run_fetched_installer_bash(installer: bytes, args: Sequence[str], env: dict) -> None:
+def _run_fetched_installer_bash(installer: bytes, args: Sequence[str], env: dict) -> bool:
+    """False when the fetched installer did not refresh the launcher, so the caller can fall
+    back to the copy that shipped with the release. A main that is temporarily broken, or
+    incompatible with the installed version, must not consume that fallback.
+    """
     try:
         result = subprocess.run(["bash", "-s", "--", *args], input = installer, env = env, check = False)
     except OSError as exc:
         typer.echo(f"  refresh-launcher  skipped: bash exec failed ({exc})")
-        return
+        return False
     if result.returncode != 0:
         typer.echo(f"  refresh-launcher  fetched install.sh exited {result.returncode}")
+        return False
+    return True
 
 
 def _run_installer_ps1(
@@ -3829,8 +3904,9 @@ def _run_installer_ps1(
 
 def _run_fetched_installer_ps1(
     installer: bytes, args: Sequence[str], ps_argv: Sequence[str], env: dict
-) -> None:
-    """Run a fetched install.ps1 from a tempfile.
+) -> bool:
+    """Run a fetched install.ps1 from a tempfile. See _run_fetched_installer_bash for why
+    this reports failure rather than swallowing it.
 
     -File rather than `-Command -`: stdin is decoded with [Console]::InputEncoding
     (CP1252/OEM on most Windows boxes), which mangles install.ps1's box-drawing chars,
@@ -3848,14 +3924,14 @@ def _run_fetched_installer_ps1(
         ps1_fd, ps1_path = tempfile.mkstemp(prefix = "unsloth-studio-refresh-", suffix = ".ps1")
     except OSError as exc:
         typer.echo(f"  refresh-launcher  skipped: could not create a temp script ({exc})")
-        return
+        return False
     try:
         try:
             with os.fdopen(ps1_fd, "wb") as fh:
                 fh.write(b"\xef\xbb\xbf" + installer)
         except OSError as exc:
             typer.echo(f"  refresh-launcher  skipped: could not write the temp script ({exc})")
-            return
+            return False
         argv = list(ps_argv)
         argv.extend(["-ExecutionPolicy", "Bypass", "-File", ps1_path, *args])
         try:
@@ -3864,9 +3940,11 @@ def _run_fetched_installer_ps1(
             )
         except OSError as exc:
             typer.echo(f"  refresh-launcher  skipped: powershell exec failed ({exc})")
-            return
+            return False
         if result.returncode != 0:
             typer.echo(f"  refresh-launcher  fetched install.ps1 exited {result.returncode}")
+            return False
+        return True
     finally:
         try:
             os.unlink(ps1_path)

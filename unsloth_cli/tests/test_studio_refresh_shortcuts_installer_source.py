@@ -1,15 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The launcher refresh fetches install.sh / install.ps1 from unsloth.ai and runs it.
+"""Where the launcher refresh gets install.sh / install.ps1, and what it refuses to run.
 
-`unsloth studio update` re-runs the installer with --shortcuts-only. Fetching, rather
-than shipping a copy in the wheel, is deliberate: a launcher fix then reaches users
-without waiting for a release. unsloth.ai and the unslothai/unsloth repo it redirects to
-are trusted, so what is left to get right is everything around the fetch, namely that a
-transport error cannot abort an update that already succeeded, that a response which is
-not an installer is not piped into bash, and that a source checkout still outranks the
-network so `update --local` tests its own installer.
+`unsloth studio update` re-runs the installer with --shortcuts-only. It looks in a source
+checkout first, so `update --local` tests its own installer; then at
+raw.githubusercontent.com/unslothai/unsloth/main, so a launcher fix reaches users without
+waiting for a release; then at the copy that shipped with this release under
+<data>/share/unsloth.
+
+The fetch goes to the origin rather than through https://unsloth.ai/install.sh, which was
+only ever a 301 to that same URL: the hop added the unsloth.ai DNS and CDN control plane to
+the set of things that can execute code on an updating machine, and the bundled copy covers
+what the hop was worth. So these tests pin the source order, the single allowed host, the
+UNSLOTH_NO_REMOTE_INSTALLER=1 opt-out, and everything around the fetch: a transport error
+cannot abort an update that already succeeded, a response that is not an installer is not
+piped into bash, and a fetch that does not land falls through to disk rather than skipping.
 """
 
 from __future__ import annotations
@@ -37,38 +43,53 @@ class _Result:
     returncode = 0
 
 
-def _posix(monkeypatch, tmp_path):
+def _posix(monkeypatch, tmp_path, bundled = ()):
     """POSIX refresh with no checkout in sight, the shape of a wheel install. The tests run
-    from a clone, so _PACKAGE_ROOT would otherwise short-circuit every fetch.
+    from a clone, so _PACKAGE_ROOT would otherwise short-circuit every fetch, and the
+    interpreter running them may have a real <data>/share/unsloth to fall through to.
     """
     studio = _studio()
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
     monkeypatch.setattr(studio, "_PACKAGE_ROOT", tmp_path / "no-checkout-here")
     monkeypatch.delenv("STUDIO_LOCAL_REPO", raising = False)
+    monkeypatch.delenv("UNSLOTH_NO_REMOTE_INSTALLER", raising = False)
+    monkeypatch.setattr(studio, "_bundled_installer_roots", lambda: list(bundled))
     return studio
+
+
+def _bundled_root(tmp_path, name = "install.sh"):
+    """A <data>/share/unsloth holding the installer that shipped with the release."""
+    root = tmp_path / "venv" / "share" / "unsloth"
+    root.mkdir(parents = True, exist_ok = True)
+    (root / name).write_bytes(_SH)
+    return root
 
 
 # ── where the installer comes from ─────────────────────────────────────────────────
 
 
-def test_the_installer_is_fetched_from_unsloth_ai():
+def test_the_installer_is_fetched_from_the_repo_origin():
+    """Not through https://unsloth.ai/install.sh, which was a 301 to exactly these URLs.
+
+    The bytes were always the repo's, but the hop put the unsloth.ai DNS and CDN control
+    plane in the path of code execution on every updating machine.
+    """
     studio = _studio()
-    assert studio._INSTALLER_URL_BASH == "https://unsloth.ai/install.sh"
-    assert studio._INSTALLER_URL_PWSH == "https://unsloth.ai/install.ps1"
+    base = "https://raw.githubusercontent.com/unslothai/unsloth/main"
+    assert studio._INSTALLER_URL_BASH == f"{base}/install.sh"
+    assert studio._INSTALLER_URL_PWSH == f"{base}/install.ps1"
 
 
-def test_the_redirect_chain_is_allowed_and_nothing_else():
-    """unsloth.ai 301s to raw.githubusercontent, so both are in the chain."""
+def test_only_the_origin_host_is_allowed():
+    """unsloth.ai is refused too: it is no longer in the path and must not be redirected to."""
     studio = _studio()
-    for good in (
-        "https://unsloth.ai/install.sh",
-        "https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh",
-    ):
-        assert studio._is_allowed_installer_url(good), good
+    good = "https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh"
+    assert studio._is_allowed_installer_url(good), good
     for bad in (
+        "https://unsloth.ai/install.sh",
         "https://evil.example/install.sh",
-        "http://unsloth.ai/install.sh",
-        "https://unsloth.ai.evil.example/install.sh",
+        "http://raw.githubusercontent.com/unslothai/unsloth/main/install.sh",
+        "https://raw.githubusercontent.com.evil.example/install.sh",
     ):
         assert not studio._is_allowed_installer_url(bad), bad
 
@@ -115,10 +136,74 @@ def test_a_wheel_install_fetches_and_pipes_to_bash(monkeypatch, tmp_path):
     assert runs == [(["bash", "-s", "--", "--shortcuts-only"], b"FETCHED")]
 
 
-# ── what a bad response must not do ────────────────────────────────────────────────
+# ── the copy that shipped with the release ─────────────────────────────────────────
 
 
-def test_a_failed_fetch_skips_instead_of_executing(monkeypatch, tmp_path, capsys):
+def test_an_unreachable_origin_falls_back_to_the_bundled_installer(monkeypatch, tmp_path):
+    """An offline machine refreshes its launcher instead of silently skipping one."""
+    root = _bundled_root(tmp_path)
+    studio = _posix(monkeypatch, tmp_path, bundled = [root])
+    monkeypatch.setattr(studio, "_fetch_installer", lambda *a, **k: None)
+    runs = []
+    monkeypatch.setattr(studio.subprocess, "run", lambda argv, **kw: runs.append(list(argv)) or _Result())
+    studio._refresh_desktop_shortcuts()
+    assert runs == [["bash", str(root / "install.sh"), "--shortcuts-only"]]
+
+
+def test_a_fetched_installer_that_fails_falls_back_to_the_bundled_one(monkeypatch, tmp_path):
+    """A main that is broken, or incompatible with the installed release, must not consume
+    the fallback: a release-matched copy is sitting on disk."""
+    root = _bundled_root(tmp_path)
+    studio = _posix(monkeypatch, tmp_path, bundled = [root])
+    monkeypatch.setattr(studio, "_fetch_installer", lambda *a, **k: _SH)
+
+    runs = []
+
+    def _run(argv, **kwargs):
+        runs.append(list(argv))
+
+        class _R:
+            returncode = 1 if list(argv)[:3] == ["bash", "-s", "--"] else 0
+
+        return _R()
+
+    monkeypatch.setattr(studio.subprocess, "run", _run)
+    studio._refresh_desktop_shortcuts()
+    assert len(runs) == 2, runs
+    assert runs[0][:3] == ["bash", "-s", "--"], runs[0]
+    assert runs[1] == ["bash", str(root / "install.sh"), "--shortcuts-only"]
+
+
+def test_no_remote_installer_pins_the_refresh_to_the_bundled_copy(monkeypatch, tmp_path):
+    """The opt-out for air-gapped machines, and for anyone who would rather an update
+    never ran a freshly fetched script."""
+    root = _bundled_root(tmp_path)
+    studio = _posix(monkeypatch, tmp_path, bundled = [root])
+    monkeypatch.setenv("UNSLOTH_NO_REMOTE_INSTALLER", "1")
+    monkeypatch.setattr(
+        studio,
+        "_fetch_installer",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("the opt-out must not fetch")),
+    )
+    runs = []
+    monkeypatch.setattr(studio.subprocess, "run", lambda argv, **kw: runs.append(list(argv)) or _Result())
+    studio._refresh_desktop_shortcuts()
+    assert runs == [["bash", str(root / "install.sh"), "--shortcuts-only"]]
+
+
+def test_the_managed_venv_leads_the_bundled_lookup(monkeypatch, tmp_path):
+    """A pip-installed CLI can drive an update into STUDIO_HOME/unsloth_studio, where setup
+    has just written the new data files. Searching its own prefixes first would run that
+    foreign CLI's older bundled installer instead."""
+    studio = _studio()
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path / "studio-home")
+    roots = studio._bundled_installer_roots()
+    assert roots[0] == tmp_path / "studio-home" / "unsloth_studio" / "share" / "unsloth"
+    assert len(roots) == len(set(roots)), roots
+    assert all(root.name == "unsloth" and root.parent.name == "share" for root in roots)
+
+
+def test_neither_the_network_nor_a_bundled_copy_executes_nothing(monkeypatch, tmp_path, capsys):
     studio = _posix(monkeypatch, tmp_path)
     monkeypatch.setattr(studio, "_fetch_installer", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -127,7 +212,22 @@ def test_a_failed_fetch_skips_instead_of_executing(monkeypatch, tmp_path, capsys
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("nothing to execute")),
     )
     studio._refresh_desktop_shortcuts()
-    assert capsys.readouterr().out == ""
+    assert "skipped: no usable install.sh" in capsys.readouterr().out
+
+
+# ── what a bad response must not do ────────────────────────────────────────────────
+
+
+def test_a_failed_fetch_skips_instead_of_executing(monkeypatch, tmp_path):
+    """A transport failure must not raise out of an update that already succeeded."""
+    studio = _posix(monkeypatch, tmp_path)
+    monkeypatch.setattr(studio, "_fetch_installer", lambda *a, **k: None)
+    monkeypatch.setattr(
+        studio.subprocess,
+        "run",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("nothing to execute")),
+    )
+    studio._refresh_desktop_shortcuts()
 
 
 def test_non_installer_responses_are_not_executed():
