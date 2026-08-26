@@ -12,10 +12,14 @@ what came back rather than what was printed.
 The two that carry the most weight, because each closes a hole the other
 leaves:
 
-**VRAM growth across the launch.** A GGUF server that fell back to the CPU
+**GPU residency across the launch.** A GGUF server that fell back to the CPU
 serves text perfectly well, so "it answered" is not evidence it reached the
-card. The delta is only this launch's because the assertion runs LAST, after
-the chat-UI phase has stopped the server and emptied the card.
+card. The measurement is PER-PROCESS rather than a device total: under
+--studio-concurrent a training leg shares the card, and on kernel
+unsloth-probe-full-concurrent-417238 the device delta read -182.0 MiB while
+the same report showed this launch holding 2628 MiB. A shared counter cannot
+attribute. `cli_run_gpu_failure` is a pure function precisely so the rules
+below can DRIVE it with those numbers rather than describe it.
 
 **A corrupted key must be REFUSED.** Without it, a server that ignores the
 Authorization header entirely satisfies "the minted key authenticated".
@@ -101,8 +105,14 @@ def test_gpu_use_is_measured_and_an_unmeasurable_reading_is_a_failure():
     body = _body()
     assert "baseline = nvidia_used_mib()" in body
     assert "settled = nvidia_used_mib()" in body
-    assert "if baseline is None or settled is None:" in body
-    assert "delta < 200.0" in body
+    # The verdict itself moved into `cli_run_gpu_failure` when the device delta
+    # stopped being a valid ruler under --studio-concurrent, so it is DRIVEN
+    # rather than grepped -- see the rules at the end of this file. What stays
+    # here is that the assertion consults it and reports what it says.
+    assert "cli_run_gpu_failure(" in body
+    assert "failures.append(failure)" in body
+    verdict = _verdict()
+    assert verdict(None, None, None, None)[0], "an unmeasurable reading passed"
 
 
 def test_a_corrupted_key_must_be_refused():
@@ -148,3 +158,64 @@ def test_the_vram_sample_comes_AFTER_a_served_completion():
         "VRAM is sampled before a completion has been served, so a slow load "
         "reads as a CPU fallback"
     )
+
+
+def _verdict():
+    """The real function, loaded by path rather than reimplemented."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_studio_payload_cli", PAYLOAD)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.cli_run_gpu_failure
+
+
+def test_a_co_tenant_freeing_memory_does_not_read_as_a_CPU_fallback():
+    """The exact numbers from unsloth-probe-full-concurrent-417238.
+
+    Device VRAM 2816 -> 2634, a delta of -182.0, while `nvidia-smi` shows this
+    launch's own pid holding 2628 MiB. Under the old device-delta rule that was
+    a failure saying `unsloth run` served from the CPU; the model was on the
+    card the whole time and a training leg on the same card freed memory inside
+    the window. This is the regression guard for that reading.
+    """
+    failure, detail = _verdict()({}, {6841: 2628}, 2816.0, 2634.0)
+    assert failure is None, failure
+    assert detail["process_vram_mib"] == 2628
+    # The device delta is still RECORDED -- it is evidence, it is just not the
+    # verdict -- and it is still the number that misled.
+    assert detail["vram_delta_mib"] == -182.0
+
+
+def test_a_co_tenant_ALREADY_on_the_card_cannot_satisfy_the_claim():
+    """Counting every process would pass on a card a training leg is using and
+    a server that never left the CPU. Only pids that APPEARED count."""
+    failure, detail = _verdict()({99: 12000}, {99: 12000}, 100.0, 100.0)
+    assert failure and "served from the CPU" in failure
+    assert detail["process_vram_mib"] == 0
+
+
+def test_a_real_cpu_fallback_still_fails():
+    """The case the assertion exists for: the launch answered, and no process
+    of its own ever appeared on the GPU."""
+    failure, _ = _verdict()({99: 12000}, {99: 12000, 4242: 3}, 100.0, 101.0)
+    assert failure and "served from the CPU" in failure
+
+
+def test_the_device_delta_is_the_fallback_only_when_processes_are_unreadable():
+    """An nvidia-smi that answers a total but cannot enumerate apps still gets a
+    verdict rather than a silent pass."""
+    verdict = _verdict()
+    assert verdict(None, None, 100.0, 4000.0)[0] is None
+    failure, _ = verdict(None, None, 100.0, 110.0)
+    assert failure and "could not enumerate processes" in failure
+    assert verdict(None, None, None, None)[0] == (
+        "nvidia-smi did not answer, so GPU use is unmeasured"
+    )
+
+
+def test_the_before_sample_is_taken_before_the_launch():
+    """An `apps_before` read after the server started would contain the server,
+    so nothing would ever have `appeared` and every run would fail."""
+    body = _body()
+    assert body.index("apps_before = nvidia_compute_apps()") < body.index("subprocess.Popen")

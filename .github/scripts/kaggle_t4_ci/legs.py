@@ -953,7 +953,31 @@ KERNELS: tuple[tuple[str, ...], ...] = (
 # supposed to catch it compared against DEFAULT_MODEL and so agreed with the
 # bug; it now knows about the redirect.
 PREFETCH_REPOS: tuple[str, ...] = (
+    # CRITICAL PATH FIRST, and that is a reversal of the original order.
+    #
+    # The earlier argument was gpt-oss first for MARGIN, because D -- how long
+    # 12.5 GB takes -- was unknown and gptoss was the leg the schedule was built
+    # around. D is now measured at 61.7s on kernel
+    # unsloth-probe-prefetch-verify-9568-7a0bdd (~203 MB/s once the symlinked
+    # blob double-count is removed), so every repo here lands inside ~90s
+    # whatever the order, and the leg that needs one EARLIEST should not be the
+    # one waiting.
+    #
+    # vision_fla_compile is that leg: it starts at t~21 and it sets the
+    # makespan, so its 4.58 GB checkpoint is what a background lane should be
+    # fetching while the legs are still installing.
+    "unsloth/Qwen3.5-2B",
+    # Default's model and the 4bit sibling `load_in_4bit=True` actually
+    # resolves to. Both, because FLOAT_TO_INT_MAPPER redirects at load time and
+    # warming only the name that appears in the args warms a cache the leg
+    # never reads -- which downloads happily and saves nothing.
+    "unsloth/Qwen3-0.6B",
+    "unsloth/qwen3-0.6b-unsloth-bnb-4bit",
+    # canary and control, which take the payload default.
     "unsloth/Qwen2.5-0.5B-Instruct",
+    # Last now rather than first: gptoss is admitted only once a card empties,
+    # around t~500 on the measured schedule, so it has the most slack of
+    # anything here.
     "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
 )
 
@@ -961,6 +985,15 @@ PREFETCH_REPOS: tuple[str, ...] = (
 # list it corrects so the two cannot drift apart silently.
 LOAD_REDIRECTS: dict[str, str] = {
     "unsloth/gpt-oss-20b": "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
+    # CASE MATTERS HERE, and it is not a typo. Two runs report
+    # `resolved_checkpoint: unsloth/qwen3-0.6b-unsloth-bnb-4bit` in lower case
+    # (all5-kernel-e28818 and defaultleg-s20-002d25), while gpt-oss above
+    # resolves with its capitals intact. The HF cache keys on the literal
+    # string -- `models--unsloth--qwen3-0.6b-unsloth-bnb-4bit` is a different
+    # directory from `models--unsloth--Qwen3-0.6B-unsloth-bnb-4bit` -- so
+    # prefetching the pretty spelling warms a directory the leg never reads and
+    # the download happens twice. Copied from the report rather than typed.
+    "unsloth/Qwen3-0.6B": "unsloth/qwen3-0.6b-unsloth-bnb-4bit",
 }
 
 

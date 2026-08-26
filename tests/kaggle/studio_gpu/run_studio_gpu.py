@@ -195,6 +195,65 @@ def nvidia_used_mib() -> float | None:
     return total if seen else None
 
 
+def cli_run_gpu_failure(
+    apps_before: dict[int, int] | None,
+    apps_after: dict[int, int] | None,
+    baseline: float | None,
+    settled: float | None,
+) -> tuple[str | None, dict]:
+    """Did a model actually reach the card? Returns (failure or None, detail).
+
+    WHICH RULER, and this one has now been wrong in both directions.
+
+    The device total is a SHARED reading. On kernel
+    unsloth-probe-studio-full2-815a0c it was sampled too early and read 0.0 MiB
+    on a server that did have the weights; the fix was to sample after a served
+    completion. On unsloth-probe-full-concurrent-417238 it read **-182.0 MiB**
+    -- and the same report carried `compute_apps {"6841": 2628}`, so the model
+    was on the card and 2.6 GB of it. That run was the first with
+    --studio-concurrent, so a training leg shared the card and freed memory
+    inside the window. A shared counter cannot attribute, and subtracting two of
+    its samples is not a measurement of THIS process.
+
+    So the verdict comes off the pids that APPEARED during the window, which is
+    per-process and immune to a co-tenant. A pid already on the card before the
+    launch is excluded, or a co-tenant holding gigabytes would satisfy the claim
+    on its own -- which is the same failure in a new costume.
+
+    The device delta is still recorded, and is still the fallback for an
+    nvidia-smi that answers a total but cannot enumerate processes.
+    """
+    detail: dict = {}
+    if baseline is not None and settled is not None:
+        detail["vram_delta_mib"] = round(settled - baseline, 1)
+
+    if apps_after is None:
+        if baseline is None or settled is None:
+            return "nvidia-smi did not answer, so GPU use is unmeasured", detail
+        if settled - baseline < 200.0:
+            return (
+                f"device VRAM grew by {settled - baseline:.1f} MiB across the "
+                f"launch and a served completion, and nvidia-smi could not "
+                f"enumerate processes to attribute it -- `unsloth run` served "
+                f"from the CPU"
+            ), detail
+        return None, detail
+
+    before = apps_before or {}
+    appeared = {pid: mib for pid, mib in apps_after.items() if pid not in before}
+    detail["compute_apps_appeared"] = appeared
+    grew = sum(appeared.values())
+    detail["process_vram_mib"] = grew
+    if grew < 200.0:
+        return (
+            f"no process appeared on the GPU holding more than {grew} MiB "
+            f"across the launch and a served completion (before "
+            f"{sorted(before)}, after {sorted(apps_after)}) -- `unsloth run` "
+            f"served from the CPU"
+        ), detail
+    return None, detail
+
+
 def nvidia_compute_apps() -> dict[int, int] | None:
     proc = run(
         ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory", "--format=csv,noheader,nounits"],
@@ -2141,6 +2200,11 @@ class Payload:
 
         baseline = nvidia_used_mib()
         detail["vram_before_mib"] = baseline
+        # The per-process reading is taken alongside the device one because the
+        # device one is only valid when this payload owns the card, and under
+        # --studio-concurrent it does not. See the verdict below.
+        apps_before = nvidia_compute_apps() or {}
+        detail["compute_apps_before"] = apps_before
 
         head = self.studio_command()[:1] or [sys.executable]
         if head[0] == sys.executable:
@@ -2263,18 +2327,14 @@ class Payload:
             # after it.
             settled = nvidia_used_mib()
             detail["vram_after_mib"] = settled
-            detail["compute_apps"] = nvidia_compute_apps()
-            if baseline is None or settled is None:
-                failures.append("nvidia-smi did not answer, so GPU use is unmeasured")
-            else:
-                delta = settled - baseline
-                detail["vram_delta_mib"] = round(delta, 1)
-                if delta < 200.0:
-                    failures.append(
-                        f"device VRAM grew by {delta:.1f} MiB across the launch "
-                        f"and a served completion, which is not a model on the "
-                        f"card -- `unsloth run` served from the CPU"
-                    )
+            apps_after = nvidia_compute_apps()
+            detail["compute_apps"] = apps_after
+            failure, measured = cli_run_gpu_failure(
+                apps_before, apps_after, baseline, settled,
+            )
+            detail.update(measured)
+            if failure:
+                failures.append(failure)
         except BaseException as exc:  # noqa: BLE001
             failures.append(f"driving `unsloth run` raised: {type(exc).__name__}: {exc}"[:300])
         finally:
