@@ -417,6 +417,12 @@ def test_a_windows_downloads_folder_is_dropped_on_plain_linux(fake_home):
     assert storage_roots.lmstudio_model_dirs() == []
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    # The property under test is POSIX-only: on Windows this name cannot be created,
+    # mkdir reads the backslash as a separator and the parent does not exist.
+    reason = "a backslash cannot be part of a filename on Windows",
+)
 def test_a_posix_folder_with_a_backslash_survives_discovery(fake_home):
     """End-to-end form of the normalizer guard above; legal on Linux and macOS."""
     downloads = fake_home / "models\\backup"
