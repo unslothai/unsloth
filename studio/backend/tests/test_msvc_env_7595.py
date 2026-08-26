@@ -244,6 +244,22 @@ def test_rocm_clang_cl_present_probes_the_platlib_path(tmp_path, monkeypatch):
 # ── gate_torch_compile_on_windows: the arm the workers actually call ──
 
 
+def test_gate_survives_a_probe_that_raises(monkeypatch):
+    """The probe runs at worker startup, so an exception out of it kills the worker. This gate
+    exists to stop a crash; it must not become one. Leave torch.compile alone and carry on."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("TORCHDYNAMO_DISABLE", "")
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE")
+    monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
+
+    def boom():
+        raise RuntimeError("sysconfig has no platlib on this scheme")
+
+    monkeypatch.setattr(_msvc_env, "crt_headers_reachable", boom)
+    _msvc_env.gate_torch_compile_on_windows(logging.getLogger("test_gate_7595"))
+    assert "TORCHDYNAMO_DISABLE" not in os.environ
+
+
 def _gate(monkeypatch, *, triton_importable, headers_ok):
     """Drive the gate with a stubbed triton + header outcome; return the log."""
     monkeypatch.setattr(sys, "platform", "win32")
