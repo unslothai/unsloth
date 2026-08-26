@@ -33,6 +33,7 @@ export interface ManagedDownload {
   /** Seconds remaining, from the same estimator as {@link bytesPerSec}; 0 hides it. */
   etaSeconds: number;
   error: string | null;
+  /** Epoch milliseconds, from Date.now() at every write site. */
   startedAt: number;
   serverGeneration?: number;
   /** Files a scoped job is fetching, when known. Every file set of one repo rides the same scope slot (see `scopedVariant`), so this separates "my transfer is already running" from "a different quant of this repo is running": adopting the latter would report ready for files nobody fetched. Unknown stays adoptable only for an UNSCOPED job. */

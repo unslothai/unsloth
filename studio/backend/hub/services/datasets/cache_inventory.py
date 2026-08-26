@@ -81,6 +81,43 @@ def _directory_size(path: Path) -> int:
     return total
 
 
+def _safe_mtime(path: Path) -> float:
+    """Directory mtime as POSIX seconds, or 0.0 when unreadable.
+
+    mtime only, so it is portable across Windows, macOS and Linux. A broken
+    symlink or a share with no clock lands on 0.0, which callers drop.
+    """
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return 0.0
+    return float(mtime) if isinstance(mtime, (int, float)) and mtime > 0 else 0.0
+
+
+def _dataset_last_modified(candidate, *paths: Optional[Path]) -> float:
+    """Newest change time for a cached dataset row, as POSIX seconds.
+
+    Prefers huggingface_hub's own value, else stat()s the cache dirs. Same unit
+    as the cached-model scan.
+    """
+    newest = float(candidate) if isinstance(candidate, (int, float)) and candidate > 0 else 0.0
+    for path in paths:
+        if path is None:
+            continue
+        newest = max(newest, _safe_mtime(path))
+    return newest
+
+
+def _merge_last_modified(existing: dict, row: dict) -> None:
+    """Keep the newer of two timestamps when two scans describe one dataset."""
+    newest = max(
+        float(existing.get("last_modified") or 0.0),
+        float(row.get("last_modified") or 0.0),
+    )
+    if newest > 0:
+        existing["last_modified"] = newest
+
+
 def _prefer_dataset_cache_row(candidate: dict, existing: Optional[dict]) -> bool:
     if existing is None:
         return True
@@ -294,6 +331,7 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
                 or hf_cache_scan.is_snapshot_partial("dataset", repo_id, entry)
                 or not _raw_dataset_cache_has_data(repo_id, entry)
             )
+            last_modified = _dataset_last_modified(None, entry / "snapshots", entry)
             row = {
                 "repo_id": repo_id,
                 "size_bytes": size_bytes,
@@ -319,6 +357,8 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
                     else False
                 ),
             }
+            if last_modified > 0:
+                row["last_modified"] = last_modified
             if _prefer_dataset_cache_row(row, existing):
                 seen_lower[key] = row
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
@@ -389,13 +429,17 @@ def _scan_processed_dataset_caches() -> list[dict]:
             key = repo_id.lower()
             existing = seen_lower.get(key)
             if existing is None or size_bytes > existing["size_bytes"]:
-                seen_lower[key] = {
+                processed_row = {
                     "repo_id": repo_id,
                     "size_bytes": size_bytes,
                     "cache_path": str(entry.resolve()),
                     "processed_cache": True,
                     "partial": False,
                 }
+                processed_mtime = _dataset_last_modified(None, entry)
+                if processed_mtime > 0:
+                    processed_row["last_modified"] = processed_mtime
+                seen_lower[key] = processed_row
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
 
@@ -409,7 +453,7 @@ def _scan_app_processed_dataset_caches() -> list[dict]:
         )
         existing = grouped.get(key)
         if existing is None:
-            grouped[key] = {
+            app_row = {
                 "repo_id": entry.repo_id,
                 "size_bytes": size_bytes,
                 "cache_path": str(entry.path),
@@ -418,8 +462,13 @@ def _scan_app_processed_dataset_caches() -> list[dict]:
                 "app_processed_hub_cache": str(entry.hub_cache),
                 "partial": True,
             }
+            app_mtime = _dataset_last_modified(None, entry.path)
+            if app_mtime > 0:
+                app_row["last_modified"] = app_mtime
+            grouped[key] = app_row
         else:
             existing["size_bytes"] += size_bytes
+            _merge_last_modified(existing, {"last_modified": _dataset_last_modified(None, entry.path)})
     return sorted(
         grouped.values(),
         key = lambda row: (row["repo_id"].casefold(), row["app_processed_hub_cache"]),
@@ -456,6 +505,11 @@ def _scan_hf_dataset_caches() -> list[dict]:
                     repo_info.repo_id,
                     cache_dir,
                 ) or not _raw_dataset_cache_has_data(repo_info.repo_id, cache_dir)
+                repo_last_modified = _dataset_last_modified(
+                    getattr(repo_info, "last_modified", None),
+                    cache_dir / "snapshots",
+                    cache_dir,
+                )
                 row = {
                     "repo_id": repo_info.repo_id,
                     "size_bytes": total_size,
@@ -480,6 +534,8 @@ def _scan_hf_dataset_caches() -> list[dict]:
                         else False
                     ),
                 }
+                if repo_last_modified > 0:
+                    row["last_modified"] = repo_last_modified
                 if _prefer_dataset_cache_row(row, existing):
                     seen_lower[key] = row
             except Exception as exc:
@@ -492,6 +548,7 @@ def _scan_hf_dataset_caches() -> list[dict]:
             seen_lower[key] = row
         elif existing is not None and bool(existing.get("partial")) == bool(row.get("partial")):
             existing["size_bytes"] = max(existing["size_bytes"], row["size_bytes"])
+            _merge_last_modified(existing, row)
             existing["cache_path"] = existing.get("cache_path") or row.get("cache_path")
             if (
                 existing.get("partial")
@@ -508,6 +565,7 @@ def _scan_hf_dataset_caches() -> list[dict]:
             seen_lower[key] = row
             continue
         existing["size_bytes"] = max(existing["size_bytes"], row["size_bytes"])
+        _merge_last_modified(existing, row)
         # Preserve the raw path for scoped deletion and expose the processed Arrow path separately.
         if row.get("processed_cache"):
             existing["processed_cache"] = True
@@ -532,6 +590,7 @@ def _scan_hf_dataset_caches() -> list[dict]:
             existing["size_bytes"] = int(existing.get("size_bytes") or 0) + int(
                 row.get("size_bytes") or 0
             )
+            _merge_last_modified(existing, row)
             existing["processed_cache"] = True
             existing["app_processed_cache"] = True
     logger.info(

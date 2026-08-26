@@ -13,6 +13,9 @@ export type InventoryHintRow = {
   size_bytes: number;
   partial?: boolean;
   optimistic?: boolean;
+  /** Epoch seconds from a server row, milliseconds from optimisticRow below.
+   * buildCachedInventoryRow normalizes either. */
+  last_modified?: number | null;
 };
 
 export type InventoryHintReconciliation = {
@@ -43,6 +46,12 @@ function optimisticRow(hint: InventoryHint): InventoryHintRow {
     size_bytes: hint.bytes ?? 0,
     partial: false,
     optimistic: true,
+    // A finished download drops its live row, so until the next scan this is the
+    // only timestamp Recent has. Undated would sort it last, burying the model
+    // that just arrived for the whole hint TTL.
+    ...(hint.createdAt && hint.createdAt > 0
+      ? { last_modified: hint.createdAt }
+      : {}),
   };
 }
 
