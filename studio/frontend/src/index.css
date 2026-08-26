@@ -2559,7 +2559,7 @@ html[data-chat-font] .aui-root {
 	 *    #8977 disproves. It is kept for the flicker alone. Do not reach
 	 *    back for `content-visibility: auto` here: WebKit below Safari 26
 	 *    cannot find skipped content with find-in-page (webkit.org/b/283846)
-	 *    and Studio has no in-thread search to fall back on. Containment on
+	 *    and Unsloth has no in-thread search to fall back on. Containment on
 	 *    the message roots was measured as no help either; what grows with
 	 *    thread length is inherited-property style recalc, not layout.
 	 *

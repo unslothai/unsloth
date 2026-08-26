@@ -65,6 +65,13 @@ import {
   createConversationMarkdownExporter,
 } from "../utils/conversation-markdown-export";
 import { parseCsv } from "../utils/csv-parse";
+import {
+  canMergeConversationExport,
+  conversationJsonlBody,
+  exportFormatIncludesSiblings,
+  type ConversationJsonlLayout,
+} from "../utils/ndjson";
+import { orderByParentChain } from "../utils/message-order";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
   buildConversationMarkdown,
@@ -198,52 +205,17 @@ function contentBlocksToText(content: unknown): string {
     return parts.join("\n\n");
   }
 
-// Order via parentId chain: createdAt misorders turns (GPT response slots
-// predate the user's next message); the parent chain is timestamp-independent.
-type _Msg = { id: string; parentId?: string | null; createdAt?: number };
-
-function orderByParentChain<T extends _Msg>(
-  messages: T[],
-  options: {
-    /** Append messages off the selected chain (abandoned branches) at the
-     *  end. Full exports keep everything; fine-tune conversion must not,
-     *  since alternate replies would merge into one conversation. */
-    includeSiblings?: boolean;
-  } = {},
-): T[] {
-  const { includeSiblings = true } = options;
-  const byId = new Map<string, T>(messages.map((m) => [m.id, m]));
-  const childrenOf = new Map<string | null, T[]>();
-  for (const m of messages) {
-    const pid = m.parentId ?? null;
-    if (!childrenOf.has(pid)) childrenOf.set(pid, []);
-    childrenOf.get(pid)!.push(m);
-  }
-
-  const result: T[] = [];
-  let cur: string | null = null;
-  while (childrenOf.has(cur)) {
-    const children: T[] = childrenOf.get(cur)!;
-    const next: T = children.reduce((a: T, b: T) =>
-      (a.createdAt ?? 0) >= (b.createdAt ?? 0) ? a : b,
-    );
-    result.push(next);
-    cur = next.id;
-    byId.delete(next.id);
-  }
-
-  if (includeSiblings) {
-    for (const [, m] of byId) result.push(m);
-  }
-  return result;
-}
-
 async function loadConversationMessages(
   threadId: string,
-  // Every other caller here is an export; the project-sources save is not, and
-  // reporting an export to someone who never asked for one is confusing.
-  emptyMessage = "No messages in this conversation to export.",
+  options: {
+    emptyMessage?: string;
+    includeSiblings?: boolean;
+  } = {},
 ) {
+  const {
+    emptyMessage = "No messages in this conversation to export.",
+    includeSiblings = true,
+  } = options;
   const raw = await listStoredChatMessages(threadId);
   if (raw.length === 0) {
     toast.info(emptyMessage);
@@ -253,7 +225,7 @@ async function loadConversationMessages(
   // chain would invert order, so keep raw order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return raw;
-  return orderByParentChain(raw) as typeof raw;
+  return orderByParentChain(raw, { includeSiblings }) as typeof raw;
 }
 
 function exportTs(): string {
@@ -353,6 +325,8 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
       } else if (p.type === "reasoning" || p.type === "thinking") {
         const t = typeof p.thinking === "string" ? p.thinking : typeof p.text === "string" ? p.text : "";
         if (t) textParts.push(`<thinking>\n${t}\n</thinking>`);
+      } else if (p.type === "image" && typeof p.image === "string" && p.image) {
+        textParts.push("[image attachment]");
       } else if (p.type === "tool-call") {
         const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${toolCalls.length}`;
         const name = typeof p.toolName === "string" ? p.toolName : "unknown";
@@ -423,14 +397,29 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
 // OpenAI/ChatML JSONL: {"messages": [{"role","content"}, ...]} per conversation;
 // Unsloth reads this as a ChatML dataset.
 export async function exportConversationRawJsonl(threadId: string): Promise<void> {
-  const messages = await loadConversationMessages(threadId);
+  return exportConversationJsonl(threadId, "training");
+}
+
+export async function exportConversationMessagesJsonl(threadId: string): Promise<void> {
+  return exportConversationJsonl(threadId, "messages");
+}
+
+async function exportConversationJsonl(
+  threadId: string,
+  layout: ConversationJsonlLayout,
+): Promise<void> {
+  const messages = await loadConversationMessages(threadId, {
+    includeSiblings: exportFormatIncludesSiblings(
+      layout === "training" ? "jsonl-raw" : "jsonl-messages",
+    ),
+  });
   if (!messages) return;
 
   const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
   if (oaiMsgs.length === 0) { toast.info("No exportable content."); return; }
   await downloadBlob(
-    JSON.stringify({ messages: oaiMsgs }),
-    "conversation-" + exportTs() + ".jsonl",
+    conversationJsonlBody(oaiMsgs, layout),
+    `conversation${layout === "messages" ? "-messages" : ""}-${exportTs()}.jsonl`,
     "application/x-ndjson",
   );
 }
@@ -479,10 +468,9 @@ async function saveConversationAsProjectSource(
   projectId: string,
   title: string,
 ): Promise<SaveSourceOutcome> {
-  const messages = await loadConversationMessages(
-    threadId,
-    "No messages in this conversation to save.",
-  );
+  const messages = await loadConversationMessages(threadId, {
+    emptyMessage: "No messages in this conversation to save.",
+  });
   if (!messages) return "skipped";
   const markdown = buildConversationMarkdown(
     messages.map((msg) => ({
@@ -548,10 +536,11 @@ export async function buildChatItemMarkdown(item: {
   );
 }
 
-export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
+export type ConvExportFormat = "jsonl-raw" | "jsonl-messages" | "csv" | "sharegpt";
 
 const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
-  "jsonl-raw": "Raw JSONL",
+  "jsonl-raw": "Training JSONL",
+  "jsonl-messages": "Message JSONL",
   csv: "CSV",
   sharegpt: "ShareGPT JSONL",
 };
@@ -560,18 +549,26 @@ export const EXPORT_FORMATS_LIST = (
   Object.keys(EXPORT_FORMAT_LABELS) as ConvExportFormat[]
 ).map((fmt) => ({ fmt, label: EXPORT_FORMAT_LABELS[fmt] }));
 
+export const COMBINED_EXPORT_FORMATS_LIST = EXPORT_FORMATS_LIST.filter(
+  ({ fmt }) => canMergeConversationExport(fmt),
+);
+
 async function buildThreadContent(
   threadId: string,
   format: ConvExportFormat,
 ): Promise<string | null> {
-  const messages = await loadConversationMessages(threadId);
+  const messages = await loadConversationMessages(threadId, {
+    includeSiblings: exportFormatIncludesSiblings(format),
+  });
   if (!messages) return null;
 
-  if (format === "jsonl-raw") {
-    // OpenAI/ChatML: Unsloth reads the "messages" key as ChatML.
+  if (format === "jsonl-raw" || format === "jsonl-messages") {
     const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
     if (oaiMsgs.length === 0) return null;
-    return JSON.stringify({ messages: oaiMsgs });
+    return conversationJsonlBody(
+      oaiMsgs,
+      format === "jsonl-messages" ? "messages" : "training",
+    );
   }
 
   if (format === "sharegpt") {
@@ -612,6 +609,10 @@ export async function exportBulkConversationsMerged(
   basename: string,
 ): Promise<void> {
   if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
+  if (!canMergeConversationExport(format) && threadIds.length > 1) {
+    toast.info("Message JSONL is available per chat.");
+    return;
+  }
 
   const parts: string[] = [];
   const header = csvHeader(format);

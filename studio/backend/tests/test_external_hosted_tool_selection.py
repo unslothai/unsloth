@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hosted tools that survive a turn the Studio loop runs.
+"""Hosted tools that survive a turn the Unsloth loop runs.
 
 Images and Fetch have their own pills, no local implementation, and no
 relationship to Search / Code / RAG. So a request can legitimately mix them with
-a Studio tool, and the loop has to forward those names to the provider instead
+an Unsloth tool, and the loop has to forward those names to the provider instead
 of withholding the whole hosted surface: the alternative is a lit toggle for a
 tool the model is never offered.
 
-Search and code execution are the opposite case. Studio runs those itself once
+Search and code execution are the opposite case. Unsloth runs those itself once
 the loop is up, so forwarding them too would run both sides of one tool and bill
 the provider for its half.
 """
@@ -129,7 +129,7 @@ def _clean_policy():
     [
         (["python", "terminal", "image_generation"], ["image_generation"]),
         (["search_knowledge_base", "image_generation"], ["image_generation"]),
-        # web_search is Studio's own once the loop runs, so it never rides along.
+        # web_search is Unsloth's own once the loop runs, so it never rides along.
         (["web_search", "python", "image_generation"], ["image_generation"]),
         (["python", "terminal"], []),
         (["web_search"], []),
@@ -169,7 +169,7 @@ def test_an_absent_or_malformed_selection_is_not_a_crash():
 
 @pytest.mark.parametrize("provider_type", ["openai", "gemini"])
 def test_images_plus_a_studio_tool_still_reaches_the_provider(monkeypatch, provider_type):
-    """The regression in one line: Images plus Code took the Studio loop, and the
+    """The regression in one line: Images plus Code took the Unsloth loop, and the
     loop used to withhold every hosted name, so image_generation vanished while
     its toggle stayed on."""
     transport = _loop_transport(
@@ -194,7 +194,7 @@ def test_automatic_rag_does_not_cost_the_user_their_image_tool(monkeypatch):
 
 
 def test_the_loop_keeps_its_own_search(monkeypatch):
-    """Studio's web_search is running locally this turn, so the provider must not
+    """Unsloth's web_search is running locally this turn, so the provider must not
     be asked to run its own as well."""
     transport = _loop_transport(monkeypatch, "openai", ["web_search", "python"])
     assert transport._request_kwargs["enabled_tools"] is None

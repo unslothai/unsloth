@@ -112,7 +112,7 @@ def _health_is_forced(health) -> bool:
 def _memory_pressure_reason() -> Optional[str]:
     """Free-RAM verdict for an API caller that sends "auto".
 
-    The Studio UI never reaches here: it resolves Auto through the capabilities probe and submits
+    The Unsloth UI never reaches here: it resolves Auto through the capabilities probe and submits
     the concrete xet/http, so that probe applies the same rule. Shared helper, so the two agree."""
     try:
         from utils.hf_xet_fallback import free_ram_pressure_reason
@@ -192,7 +192,7 @@ def spawn_worker(
         # natively at import, so the worker's env has to be sized here. unsloth_zoo decides, so
         # there is one rule and not two: it sizes from RAM/cores/disk and honours a user-set
         # high-performance flag (standing its own sizing down, since xet-core voids it anyway).
-        # UNSLOTH_XET_FORCE_CAPS=1 bounds the machine regardless. Studio hand-rolled this, and the
+        # UNSLOTH_XET_FORCE_CAPS=1 bounds the machine regardless. Unsloth hand-rolled this, and the
         # copies drifted: on a 2TB host the worker got a 24GB laptop's buffer and ran 3.4x slower.
         from utils import hf_xet_fallback
 

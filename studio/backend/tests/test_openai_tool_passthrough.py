@@ -2702,6 +2702,107 @@ class TestGgufVisionToolRouting:
 
         assert captured["kwargs"]["disable_parallel_tool_use"] is True
 
+    def test_enabled_tools_web_search_only_enters_gguf_tool_loop(self, monkeypatch):
+        """#9730: enable_tools + enabled_tools: ["web_search"] on a local GGUF
+        must enter Studio's loop with that catalog, not answer from memory."""
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+        captured = {}
+
+        def _plain(**kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**kwargs):
+            captured["kwargs"] = kwargs
+            yield {"type": "content", "text": "The current version of the Linux kernel is 6.10."}
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "Qwen3.5-2B-MTP-GGUF",
+            context_length = 4096,
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {
+                    "role": "user",
+                    "content": (
+                        "Search the web for the current version of the Linux kernel, "
+                        "then answer in one sentence."
+                    ),
+                }
+            ],
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            permission_mode = "off",
+            tool_choice = {"type": "function", "function": {"name": "web_search"}},
+            max_tokens = 512,
+            temperature = 0.0,
+            stream = True,
+        )
+
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        self._consume_response(response)
+
+        assert "kwargs" in captured
+        assert [t["function"]["name"] for t in captured["kwargs"]["tools"]] == ["web_search"]
+        assert captured["kwargs"]["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "web_search"},
+        }
+        assert captured["kwargs"]["permission_mode"] == "off"
+
+    def test_forced_tool_choice_must_be_in_the_selected_gguf_catalog(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+
+        def _tools(**_kwargs):
+            raise AssertionError("invalid forced choice must not start generation")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "run python"}],
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            permission_mode = "off",
+            tool_choice = {"type": "function", "function": {"name": "python"}},
+            stream = True,
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            self._drive(
+                openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+            )
+
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["param"] == "tool_choice"
+
     def test_confirm_tool_calls_requires_streaming_for_gguf_tools(self, monkeypatch):
         import routes.inference as inf_mod
 

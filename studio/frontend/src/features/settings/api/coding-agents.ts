@@ -16,7 +16,7 @@ type ApiCodingAgentsInfo = {
   detected: string[];
 };
 
-// Agents the CLI still supports but Studio does not list. Filtered here so
+// Agents the CLI still supports but Unsloth does not list. Filtered here so
 // every consumer of this endpoint sees the same set.
 const HIDDEN_AGENTS = new Set(["pi"]);
 

@@ -301,7 +301,7 @@ _INSTALL_ATTEMPTED: set[str] = set()
 # to pip as a name. Only DETERMINISTIC answers are memoised (a URL, or a refusal that
 # depends purely on the resident torch, which cannot change under a running interpreter).
 # A probe timeout is transient and is deliberately NOT cached: caching it would turn one
-# loaded-machine hiccup into "no xFormers for the rest of this Studio session".
+# loaded-machine hiccup into "no xFormers for the rest of this Unsloth session".
 _MATCHED_WHEEL_BACKENDS = frozenset({"xformers"})
 _XFORMERS_WHEEL_TARGET: Optional[tuple[Optional[str], Optional[str]]] = None
 _XFORMERS_WHEEL_LOCK = threading.Lock()
@@ -482,7 +482,7 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
             # 100 MB download would block unload and cancel. install.ps1 is where the
             # repair belongs -- it compares cpp_lib.json against the resident torch and
             # passes --reinstall-package, outside any request. What this branch prevents
-            # is Studio CREATING the mismatch, which is how it got made in the first place.
+            # is Unsloth CREATING the mismatch, which is how it got made in the first place.
             return None
     except Exception:  # noqa: BLE001 — a broken install probes as missing; try the install
         pass

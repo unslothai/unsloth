@@ -880,7 +880,7 @@ export const it = {
         tokensIn: "Token inviati",
         tokensOut: "Token generati",
         totalTokens: "Token totali",
-        studioChatTokens: "Token di Studio Chat",
+        studioChatTokens: "Token di Unsloth Chat",
         apiTokens: "Token API",
         cachedTokens: "Token in cache",
         cachedValue: "{tokens} ({percent}% dell'input)",
@@ -1340,7 +1340,7 @@ export const it = {
         title: "Ricerca web",
         images: "Mostra immagini dalla ricerca web",
         imagesDescription:
-          "Consente alla ricerca web di restituire immagini e ne recupera una per ogni elemento elencato in una risposta. Le miniature vengono scaricate e ridimensionate da Studio, quindi il browser non contatta mai gli host delle immagini.",
+          "Consente alla ricerca web di restituire immagini e ne recupera una per ogni elemento elencato in una risposta. Le miniature vengono scaricate e ridimensionate da Unsloth, quindi il browser non contatta mai gli host delle immagini.",
       },
       artifacts: {
         title: "Canvas",
@@ -1361,7 +1361,7 @@ export const it = {
       exportingAction: "Esportazione...",
       exportConversations: "Esporta Recenti e Progetti",
       exportConversationsDescription:
-        "Scarica i Recenti, oppure i Recenti più le chat dei progetti, in JSONL grezzo, CSV o JSONL ShareGPT, in un unico file o uno per chat.",
+        "Scarica i Recenti, oppure i Recenti più le chat dei progetti, in Training JSONL, CSV o JSONL ShareGPT, in un unico file o uno per chat. Message JSONL è disponibile solo per singola chat.",
       exportConversationsAction: "Esporta",
       exportScopeRecents: "Recenti",
       exportScopeAll: "Recenti + Progetti",
