@@ -11,6 +11,7 @@ export function DownloadSection({
   isDownloaded,
   isPartial = false,
   partialTransport = null,
+  partialResumable = false,
   modelFormat,
   canRun = true,
   isActive,
@@ -34,6 +35,7 @@ export function DownloadSection({
   isDownloaded: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  partialResumable?: boolean;
   modelFormat?: ModelInventoryFormat | null;
   canRun?: boolean;
   isActive: boolean;
@@ -79,6 +81,7 @@ export function DownloadSection({
       isDownloaded={isDownloaded}
       isPartial={isPartial}
       partialTransport={partialTransport}
+      partialResumable={partialResumable}
       modelFormat={modelFormat}
       canRun={canRun}
       isActive={isActive}

@@ -34,7 +34,7 @@ def resolve_tool_policy(
     every request. With no flag the result is None: tools still default on for
     every bind (the backend installs that default in `_apply_cli_tool_policy`),
     but as a default rather than an override, so a request's own
-    `enable_tools: false` is honored -- which is what the Studio UI sends with
+    `enable_tools: false` is honored -- which is what the Unsloth UI sends with
     its tool pills off. `host`, `yes`, `silent`, `prompt` are kept for signature
     compatibility; no bind prompts."""
     return flag

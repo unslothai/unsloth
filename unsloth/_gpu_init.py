@@ -148,7 +148,7 @@ from importlib.metadata import PackageNotFoundError
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2026.5.2"):
+    if Version(unsloth_zoo_version) < Version("2026.8.15"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
@@ -194,6 +194,7 @@ from unsloth_zoo.device_type import (
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
     fix_xformers_performance_issue,
+    fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
     fix_vllm_lora_tokenizer_module,
     fix_torchao_nf4tensor_move,
@@ -228,6 +229,9 @@ from .import_fixes import (
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()
 fix_xformers_performance_issue()
+# Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk, so it
+# must precede any xformers import) and BEFORE models/_utils.py imports xformers.ops.
+fix_flash_attn_4_namespace_shadow()
 fix_vllm_aimv2_issue()
 fix_vllm_lora_tokenizer_module()
 # torchao 0.18.0 moved nf4tensor; torchtune (via xcodec2) still imports the
@@ -272,6 +276,7 @@ patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
 del fix_xformers_performance_issue
+del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue
 del fix_vllm_lora_tokenizer_module
 del fix_torchao_nf4tensor_move

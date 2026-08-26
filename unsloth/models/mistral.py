@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .loader_utils import DEFAULT_DEVICE_MAP
 from .llama import *
 import os
 from ._utils import __version__
@@ -19,6 +20,7 @@ from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import (
     get_packed_info_from_kwargs,
+    mask_packed_boundary_labels,
     mask_packed_sequence_boundaries,
 )
 from ..utils.attention_dispatch import (
@@ -334,6 +336,13 @@ def MistralForCausalLM_fast_forward(
                 n_items = kwargs.get("n_items", None)
             logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
 
+            # Packed-boundary guard, see llama.py. This branch returns, so
+            # mask_packed_sequence_boundaries() below is never reached.
+            labels = mask_packed_boundary_labels(
+                labels,
+                kwargs.get("packed_seq_lengths"),
+            )
+
             # loss = fused_linear_cross_entropy(
             #     hidden_states = hidden_states,
             #     lm_weight = lm_head,
@@ -467,7 +476,7 @@ class FastMistralModel(FastLlamaModel):
         dtype = None,
         load_in_4bit = True,
         token = None,
-        device_map = "sequential",
+        device_map = DEFAULT_DEVICE_MAP,
         rope_scaling = None,  # Mistral does not support RoPE scaling
         fix_tokenizer = True,
         model_patcher = None,

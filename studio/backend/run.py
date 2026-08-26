@@ -162,7 +162,7 @@ def public_check_disabled() -> bool:
     """True when the operator has turned off the third-party startup lookups.
 
     On a wildcard bind Unsloth asks ifconfig.me for the public IP and check-host.net
-    whether the port is reachable. Both are useful for sharing a Studio but both tell
+    whether the port is reachable. Both are useful for sharing an Unsloth but both tell
     an outside service this machine is running one, which lab and privacy-sensitive
     deployments do not want (#7307 Problem 8). Set the var to opt out.
     """
@@ -352,7 +352,7 @@ def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
 
     print(
         f"{warn_c}  Warning: localhost resolves to IPv6 (::1), but Unsloth "
-        f"Studio is listening on 127.0.0.1 only. Open {local_url} instead of "
+        f"Unsloth is listening on 127.0.0.1 only. Open {local_url} instead of "
         f"http://localhost:{port}.{reset}",
         flush = True,
     )
@@ -539,9 +539,9 @@ def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]")
         return "Server-side tools are DISABLED (--disable-tools)."
     if enable_tools is None:
         # This launcher installs no tools-on default (that is `unsloth studio
-        # run`), so the request decides and the Studio UI sends its pills.
+        # run`), so the request decides and the Unsloth UI sends its pills.
         return (
-            "Server-side tools follow each request's enable_tools; the Studio UI's "
+            "Server-side tools follow each request's enable_tools; the Unsloth UI's "
             "tool toggles decide. Pass --enable-tools to force them on for every "
             "request."
         )
@@ -585,9 +585,14 @@ def _emit_startup_output(
     display_host: str,
     secure: bool = False,
     enable_tools: "Optional[bool]" = None,
+    lan_addresses: "tuple[str, ...]" = (),
 ) -> None:
     """Print the access banner, post-startup warnings, the tool-policy notice,
-    then a single stop hint. Extracted from ``_run`` so the wiring is testable."""
+    then a single stop hint. Extracted from ``_run`` so the wiring is testable.
+
+    ``lan_addresses`` are the addresses a persisted Settings > LAN access
+    auto-start has already bound. A loopback launch carrying them is network
+    reachable, so both the banner and the tool-policy notice must say so."""
     if secure:
         _emit_secure_startup_output(port, enable_tools)
         return
@@ -598,13 +603,14 @@ def _emit_startup_output(
         bind_host = host,
         display_host = display_host,
         include_stop_hint = False,
+        lan_addresses = lan_addresses,
     )
     if localhost_mismatch_url:
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
     elif wildcard_bind:
         _verify_global_reachability(display_host, port)
         _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
-    _emit_tool_policy_notice(host, False, enable_tools)
+    _emit_tool_policy_notice(lan_addresses[0] if lan_addresses else host, False, enable_tools)
     print_studio_stop_hint()
 
 
@@ -1213,7 +1219,7 @@ def _live_sibling(records: "list", me: int, timed: "list") -> "int | None":
 
 
 def live_sibling_backend() -> "int | None":
-    """PID of another live Studio backend of this install, or None.
+    """PID of another live Unsloth backend of this install, or None.
 
     Two of ours at once is a supported configuration: `_resolve_port` refuses
     only the port one of ours already holds, and `_abort_already_running` tells
@@ -1286,8 +1292,14 @@ except (OSError, ValueError):
 if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
+    _MANAGED_LLAMA_CPP_PATH = _STUDIO_ROOT_RESOLVED / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
-        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
+    # The CLI and generated launchers can export this path before run.py starts.
+    # Preserve its managed provenance while leaving every other env pin explicit.
+    from utils.llama_cpp_path_settings import mark_managed_llama_cpp_path
+
+    mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
 
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth`
 # does) so its lazy submodule imports (export, hardware, mlx) and the
@@ -1480,6 +1492,13 @@ def _graceful_shutdown(server = None):
     Windows where atexit handlers are unreliable after Ctrl+C.
     """
     logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
+
+    # 0. Drop the LAN listener first: it shares the loop uvicorn is about to stop.
+    try:
+        from lan_access import close_lan_listener_lifecycle
+        close_lan_listener_lifecycle()
+    except Exception as e:
+        logger.warning("Error stopping the LAN listener: %s", e)
 
     # 1. Shut down uvicorn (releases the listening socket).
     if server is not None:
@@ -1697,15 +1716,75 @@ class _TeeStream:
     Console behavior is unchanged (writes/returns delegate to the original
     stream; Tauri's structured-stdout protocol and isatty probes see exactly
     what they saw before). The file copy is best-effort: a full disk or a
-    closed handle must never break the console."""
+    closed handle must never break the console.
+
+    The file copy also collapses carriage-return progress frames: a tqdm bar redraws
+    "\\r<frame>" hundreds of times and a file keeps every one (5 KB for one "Loading
+    weights" bar). Only frames are ever withheld -- a partial line with no "\\r" (a
+    prompt, a traceback torn by a hang) is written on arrival, and a held frame is
+    closed off on its own line before the next record, never prefixed onto it.
+
+    Frames are picked exactly as the desktop reader picks them, so the session log and
+    tauri.log stay interchangeable: strip the terminator (trim_line_endings), then take
+    the last non-blank "\\r"-separated frame (collapse_progress_frames), both in
+    src-tauri/src/process.rs. Reading the "\\r" of a CRLF as a redraw instead keeps the
+    empty text after it and drops the line, which on Windows is every relayed child
+    line there is."""
 
     def __init__(self, stream, log_fh):
         self._stream = stream
         self._log_fh = log_fh
+        # Last frame seen with no newline yet; superseded by the next frame, flushed
+        # ahead of the next real line.
+        self._pending_frame = ""
+
+    @staticmethod
+    def _last_frame(line):
+        # A trailing "\r" terminates the line (CRLF, or tqdm's own sign-off); it does not
+        # open an empty redraw. Strip it first, as trim_line_endings does on the desktop side.
+        line = line.rstrip("\r")
+        if "\r" not in line:
+            return line
+        for frame in reversed(line.split("\r")):
+            if frame.strip():
+                return frame
+        # All frames blank, so the line is blank. Return a frame, not the whole text: a
+        # "\r" reaching the file lands as "\r\r\n" once the handle adds its own terminator.
+        return line.rsplit("\r", 1)[-1]
+
+    def _write_file(self, data):
+        # Not a continuation of a held frame: that would flush it unterminated and glue
+        # the next record on. print("", end = "") is enough to get here.
+        if not data:
+            return
+        # Overwhelmingly the common case, and the one that must stay cheap.
+        if "\r" not in data and not self._pending_frame:
+            self._log_fh.write(data)
+            return
+
+        if self._pending_frame and data[:1] not in ("\r", "\n"):
+            # Not a redraw of the held frame nor its terminator, so it is the next record.
+            # Close the frame off on its own line; concatenating costs a reader the JSON.
+            self._log_fh.write(self._pending_frame + "\n")
+            self._pending_frame = ""
+
+        buf = self._pending_frame + data
+        self._pending_frame = ""
+        head, newline, tail = buf.rpartition("\n")
+        if newline:
+            complete = head + newline
+            self._log_fh.write("\n".join(self._last_frame(line) for line in complete.split("\n")))
+        if tail:
+            # Unterminated remainder: hold it only if it is a redraw, else write it now
+            # so a hang cannot swallow real output.
+            if "\r" in tail:
+                self._pending_frame = self._last_frame(tail)
+            else:
+                self._log_fh.write(tail)
 
     def write(self, data):
         try:
-            self._log_fh.write(data)
+            self._write_file(data)
         except Exception:
             pass
         if self._stream is None:
@@ -1730,7 +1809,11 @@ class _TeeStream:
         # Flush the log copy, then forward close() to the wrapped stream
         # best-effort: on Colab that stream is an ipykernel OutStream whose
         # close() can raise (see _harden_console_close / ipython/ipykernel#867).
+        # A frame still held here has nothing left to supersede it, so land it.
         try:
+            if self._pending_frame:
+                self._log_fh.write(self._pending_frame + "\n")
+                self._pending_frame = ""
             self._log_fh.flush()
         except Exception:
             pass
@@ -1763,7 +1846,7 @@ def _is_missing_watch_fd_thread(exc):
 
 
 def _harden_console_close(stream):
-    """Stop a displaced console stream's close() from aborting Studio startup.
+    """Stop a displaced console stream's close() from aborting Unsloth startup.
 
     ``_setup_server_disk_logging`` replaces ``sys.stdout``/``sys.stderr`` with a
     tee. That changes the object identity of the console stream, so a third-party
@@ -1864,11 +1947,12 @@ def _setup_server_disk_logging():
     sys.stdout = _TeeStream(sys.stdout, log_fh)
     sys.stderr = _TeeStream(sys.stderr, log_fh)
 
-    # Best-effort retention: keep the newest 20 session logs.
+    # Best-effort retention: keep the newest 20 session logs. `protect` says so explicitly
+    # rather than trusting the new file to sort newest, which two starts in the same
+    # second do not guarantee.
     try:
-        logs = sorted(log_dir.glob("server-*.log"), key = lambda p: p.stat().st_mtime)
-        for old in logs[:-20]:
-            old.unlink(missing_ok = True)
+        from utils.log_retention import prune_log_dir
+        prune_log_dir(log_dir, "server-*.log", protect = log_path)
     except Exception:
         pass
     return log_path
@@ -2224,6 +2308,53 @@ def run_server(
     global _server, _server_thread, _shutdown_event
 
     boot_started = time.perf_counter()
+
+    # --secure exposes ONLY the Cloudflare link, so --secure --no-cloudflare contradicts
+    # itself. Reject it before anything below touches a process global: the tee further
+    # down replaces sys.stdout/sys.stderr, and an embedder that catches this SystemExit
+    # would keep it, the log handle open, and nest another tee on its next call.
+    if secure and cloudflare is False:
+        raise SystemExit(
+            "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare."
+        )
+
+    # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8. Before the tee, so
+    # it reaches the console stream rather than the wrapper.
+    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
+        except Exception:
+            pass
+
+    # Persist a session log + native-crash stacks BEFORE anything else, so even
+    # import-time failures leave evidence on disk. Field report: Unsloth "terminates
+    # without a warning" -- a native crash in the GPU runtime kills the process with no
+    # traceback, and a desktop-shortcut console closes before anything can be read.
+    _session_log = _setup_server_disk_logging()
+    if _session_log is not None and not silent:
+        print(f"Session log: {_session_log}")
+
+    # Configure structlog only now, after the tee: PrintLoggerFactory captures sys.stdout
+    # at configure() time and cache_logger_on_first_use freezes it into any logger that
+    # has already emitted, so configuring first pins this module's logger to the console
+    # and keeps its lines out of the file just opened above.
+    #
+    # main.py configures too, but on import, which lands seconds later -- after the
+    # "startup begin" line below. That line used to render through structlog's defaults
+    # (ConsoleRenderer, local time) and everything after it as JSON in UTC, so the clock
+    # appeared to jump hours between line one and line two. Repeating configure() is safe;
+    # main.py's call still wins for its own service name.
+    #
+    # Imported here, not at module scope: `loggers` must be a real package to resolve
+    # `loggers.config`, and run.py is loaded by tests that stand a bare ModuleType in for
+    # it (tests/studio/install/test_selection_logic.py:84), which never reach this call.
+    from loggers.config import LogConfig
+
+    LogConfig.setup_logging(
+        service_name = "unsloth-studio-backend",
+        env = os.getenv("ENVIRONMENT_TYPE", "production"),
+    )
+
     logger.info("run_server startup begin api_only=%s host=%s port=%s", api_only, host, port)
     cloudflare_intent = _consume_cloudflare_intent(cloudflare, secure)
 
@@ -2232,47 +2363,27 @@ def run_server(
     from utils.process_lifetime import initialize_parent_lifetime, reap_recorded_children
 
     initialize_parent_lifetime()
-    # macOS has neither PR_SET_PDEATHSIG nor job objects, so a Studio that
+    # macOS has neither PR_SET_PDEATHSIG nor job objects, so an Unsloth that
     # crashed left its sidecars running. Sweep before spawning anything: a
     # leftover holds VRAM, a port, and the files an update has to replace.
     try:
         reaped = reap_recorded_children()
         if reaped:
-            logger.warning("Reaped %d orphan(s) from a previous Studio: %s", len(reaped), reaped)
+            logger.warning("Reaped %d orphan(s) from a previous Unsloth: %s", len(reaped), reaped)
     except Exception as e:
         logger.warning("Could not sweep orphans from a previous run: %s", e)
 
-    # --secure exposes ONLY the Cloudflare link: reject --secure --no-cloudflare,
-    # then force a loopback bind so the raw port is never public (even -H 0.0.0.0).
-    # Otherwise keep the tri-state so the banner distinguishes "off by default"
-    # from an explicit --no-cloudflare.
+    # --secure exposes ONLY the Cloudflare link, so force a loopback bind and the raw
+    # port is never public (even -H 0.0.0.0). The --no-cloudflare contradiction was
+    # already rejected at the top of this function, before the tee went in. Otherwise
+    # keep the tri-state so the banner distinguishes "off by default" from an explicit
+    # --no-cloudflare.
     if secure:
-        if cloudflare is False:
-            raise SystemExit(
-                "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare."
-            )
         cloudflare = True
         host = "127.0.0.1"
 
     # `unsloth studio run` installs its own resolved policy and passes None here.
     _apply_cli_tool_policy(enable_tools)
-
-    # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8.
-    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
-        try:
-            sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
-        except Exception:
-            pass
-
-    # Persist a session log + native-crash stacks BEFORE importing main, so
-    # even import-time failures leave evidence on disk. Field report: Unsloth
-    # "terminates without a warning" -- a native crash in the GPU runtime
-    # kills the process with no Python traceback, and a desktop-shortcut
-    # console closes before anything can be read. Console-only logging made
-    # that undiagnosable.
-    _session_log = _setup_server_disk_logging()
-    if _session_log is not None and not silent:
-        print(f"Session log: {_session_log}")
 
     # Set env vars BEFORE importing main so CORS middleware picks them up.
     # secure api-only is a remote server behind Cloudflare, so it keeps the
@@ -2388,12 +2499,12 @@ def run_server(
         desktop_owned = _desktop_owner() is not None,
     )
 
-    # A desktop-owned API-only backend mounts the packaged SPA behind a
-    # Cloudflare-only request gate so Remote access can serve the WebUI without
-    # changing the direct local API-only surface.
+    # desktop api-only serves its packaged SPA to remote callers only: tunnel or LAN, not loopback
+    _frontend_mounted = False
     if frontend_path and _serve_frontend:
         chosen, attempted = _resolve_frontend_path(Path(frontend_path))
         if chosen is not None and setup_frontend(app, chosen, tunnel_only = _tunnel_only_frontend):
+            _frontend_mounted = True
             if not silent:
                 # Resolve so logs show an absolute path for support.
                 try:
@@ -2405,7 +2516,8 @@ def run_server(
             # Remote access serves nothing; the local API the desktop asked for
             # still comes up. The tunnel gate already 404s every other request.
             logger.warning(
-                "No frontend build found, so Remote access will not serve the web UI. Tried: %s",
+                "No frontend build found, so Remote and LAN access will not serve the web UI. "
+                "Tried: %s",
                 ", ".join(str(p) for p in attempted) or "(none)",
             )
         else:
@@ -2508,6 +2620,8 @@ def run_server(
         app.state.server_url = f"http://{_url_host(_direct_host)}:{port}"
     else:
         app.state.server_url = None
+    # raw bind address: the keyless exposure warning must tell loopback from a wildcard bind
+    app.state.bind_host = host
     app.state.secure = secure
     app.state.llama_parallel_slots = llama_parallel_slots
 
@@ -2530,6 +2644,17 @@ def run_server(
         intent = cloudflare_intent,
         is_colab = _IS_COLAB,
         launch_managed = _launch_tunnel_managed,
+    )
+
+    from utils.lan_access_settings import configure_lan_access
+
+    configure_lan_access(
+        app.state,
+        port = port,
+        bind_host = host,
+        secure = secure,
+        is_colab = _IS_COLAB,
+        frontend_served = _serve_frontend and _frontend_mounted,
     )
 
     # Expose a shutdown callable before the server accepts requests so
@@ -2583,6 +2708,8 @@ def run_server(
     def _run():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        # settings > LAN access adds its listener to this loop from a request thread
+        app.state.lan_access_loop = loop
         try:
             loop.run_until_complete(_server.serve())
         except BaseException as exc:
@@ -2600,6 +2727,11 @@ def run_server(
             # which is why the marker goes here rather than in _remove_pid_file.
             _remove_startup_marker()
             _remove_pid_file()
+            # the loop is closed above, so this is what an embedded host that calls
+            # run_server again needs to stop seeing the previous listener as live
+            from lan_access import close_lan_listener_lifecycle as _close_lan_listener
+
+            _close_lan_listener()
 
     thread = Thread(target = _run, daemon = True)
     _server_thread = thread
@@ -2630,6 +2762,7 @@ def run_server(
     app.state.server_port = port
     app.state.server_url = f"http://{_url_host(_display_host_for_bind(host))}:{port}"
     app.state.remote_access_port = port
+    app.state.lan_access_port = port
 
     _write_pid_file(port, host)
     import atexit
@@ -2665,6 +2798,7 @@ def run_server(
     set_studio_tunnel_runtime_callback(set_remote_connector_active)
     set_studio_tunnel_url_callback(lambda url: _publish_cloudflare_url(app.state, url))
     app.state.remote_access_ready = True
+    app.state.lan_access_ready = True
 
     # Free trycloudflare.com tunnel for wildcard binds (the raw ip:port is often
     # unreachable). Started pre-banner and even when silent so the CLI banner can
@@ -2737,8 +2871,22 @@ def run_server(
     if maybe_auto_start_remote_access(app.state):
         logger.info("Remote access auto-start scheduled")
 
+    from lan_access import close_lan_listener_lifecycle, lan_listener_status
+    from utils.lan_access_settings import maybe_auto_start_lan_access
+
+    atexit.register(close_lan_listener_lifecycle)
+    if maybe_auto_start_lan_access(app):
+        logger.info("LAN access auto-started")
+
     if not silent:
-        _emit_startup_output(host, port, display_host, secure = secure, enable_tools = enable_tools)
+        _emit_startup_output(
+            host,
+            port,
+            display_host,
+            secure = secure,
+            enable_tools = enable_tools,
+            lan_addresses = tuple(lan_listener_status()["addresses"]),
+        )
 
     return app
 
@@ -2845,7 +2993,7 @@ def _build_arg_parser():
         default = _PARALLEL_DEFAULT_PLAIN,
         help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
-            f"Default {_PARALLEL_DEFAULT_PLAIN}. The Studio run settings "
+            f"Default {_PARALLEL_DEFAULT_PLAIN}. The Unsloth run settings "
             "(Parallel Slots) override it per load."
         ),
     )

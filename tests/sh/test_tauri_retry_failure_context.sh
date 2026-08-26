@@ -16,6 +16,12 @@ _FUNC_FILE=$(mktemp)
     sed -n '/^tauri_log()/,/^}/p' "$INSTALL_SH"
     sed -n '/^tauri_stream_log()/,/^}/p' "$INSTALL_SH"
     sed -n '/^tauri_clear_install_error()/,/^}/p' "$INSTALL_SH"
+    # #8805 put _uv_download_markers in the middle of run_install_cmd's pipeline.
+    # Taken from install.sh rather than stubbed, so this still exercises the real
+    # pipe the installer runs. Without it the last stage of that pipeline is
+    # "command not found", every wrapped command looks like it exited 127, and
+    # `set -e` ends this file with no output at all.
+    sed -n '/^_uv_download_markers()/,/^}/p' "$INSTALL_SH"
 } > "$_FUNC_FILE"
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
@@ -44,20 +50,32 @@ _redact_install_output() {
 echo "=== run_install_cmd_retry Tauri failure context ==="
 
 TAURI_MODE=true
-_test_attempt=0
+# The attempt counter lives in a file, not a shell variable. #8805 put the wrapped
+# command inside `{ ...; } | _uv_download_markers ...`, so it now runs in a subshell
+# and an assignment to a parent variable is discarded. That made this command fail on
+# every attempt instead of succeeding on the second, which is the retry path this
+# whole block is here to check.
+_test_attempt_file=$(mktemp)
+printf '0\n' > "$_test_attempt_file"
 _test_command() {
-    _test_attempt=$((_test_attempt + 1))
-    [ "$_test_attempt" -eq 2 ]
+    _attempt=$(($(cat "$_test_attempt_file") + 1))
+    printf '%s\n' "$_attempt" > "$_test_attempt_file"
+    [ "$_attempt" -eq 2 ]
 }
 
 UNSLOTH_INSTALL_RETRIES=3
 UNSLOTH_INSTALL_RETRY_DELAY=0
 _stdout_file=$(mktemp)
 _stderr_file=$(mktemp)
-trap 'rm -f "$_stdout_file" "$_stderr_file"' EXIT
-run_install_cmd_retry "install PyTorch" _test_command >"$_stdout_file" 2>"$_stderr_file"
-_stdout_clear_count=$(grep -c '^\[TAURI:ERROR_CLEAR\] install PyTorch recovered$' "$_stdout_file")
-_stderr_clear_count=$(grep -c '^\[TAURI:ERROR_CLEAR\] install PyTorch recovered$' "$_stderr_file")
+trap 'rm -f "$_stdout_file" "$_stderr_file" "$_test_attempt_file"' EXIT
+if ! run_install_cmd_retry "install PyTorch" _test_command >"$_stdout_file" 2>"$_stderr_file"; then
+    echo "  FAIL: recovered retry returned non-zero; it never recovered"
+    exit 1
+fi
+# `|| true`: grep -c reports 0 with status 1, and under set -e that aborts here with
+# no output, which is how a missing helper in the block above reads as silence.
+_stdout_clear_count=$(grep -c '^\[TAURI:ERROR_CLEAR\] install PyTorch recovered$' "$_stdout_file" || true)
+_stderr_clear_count=$(grep -c '^\[TAURI:ERROR_CLEAR\] install PyTorch recovered$' "$_stderr_file" || true)
 if [ "$_stdout_clear_count" -ne 1 ] || [ "$_stderr_clear_count" -ne 1 ]; then
     echo "  FAIL: recovered retry emitted $_stdout_clear_count stdout and $_stderr_clear_count stderr clear markers"
     exit 1
@@ -101,7 +119,10 @@ fi
 _test_command() {
     return 0
 }
-run_install_cmd_retry "fallback PyTorch build" _test_command >"$_stdout_file" 2>"$_stderr_file"
+if ! run_install_cmd_retry "fallback PyTorch build" _test_command >"$_stdout_file" 2>"$_stderr_file"; then
+    echo "  FAIL: fallback build returned non-zero"
+    exit 1
+fi
 if ! grep -q '^\[TAURI:ERROR_CLEAR\] fallback PyTorch build recovered$' "$_stdout_file" ||
     ! grep -q '^\[TAURI:ERROR_CLEAR\] fallback PyTorch build recovered$' "$_stderr_file"; then
     echo "  FAIL: successful fallback retained the preferred build failure"
@@ -112,7 +133,10 @@ echo "  PASS: successful fallback clears an exhausted preferred failure"
 _test_command() {
     return 0
 }
-run_install_cmd "successful unstructured fallback" _test_command >"$_stdout_file" 2>"$_stderr_file"
+if ! run_install_cmd "successful unstructured fallback" _test_command >"$_stdout_file" 2>"$_stderr_file"; then
+    echo "  FAIL: unstructured fallback returned non-zero"
+    exit 1
+fi
 if ! grep -q '^\[TAURI:ERROR_CLEAR\] successful unstructured fallback recovered$' "$_stdout_file" ||
     ! grep -q '^\[TAURI:ERROR_CLEAR\] successful unstructured fallback recovered$' "$_stderr_file"; then
     echo "  FAIL: initial success did not clear unstructured failure context"
@@ -151,7 +175,10 @@ _test_command() {
     _cmd_rc=9
     return 0
 }
-run_install_cmd "verbose clobbering success" _test_command >"$_stdout_file" 2>"$_stderr_file"
+if ! run_install_cmd "verbose clobbering success" _test_command >"$_stdout_file" 2>"$_stderr_file"; then
+    echo "  FAIL: verbose success returned non-zero"
+    exit 1
+fi
 if ! grep -q '^\[TAURI:ERROR_CLEAR\] verbose clobbering success recovered$' "$_stdout_file"; then
     echo "  FAIL: verbose success inherited a status variable written by the wrapped function"
     exit 1
@@ -213,7 +240,7 @@ if [ "$_exit_code" -ne 7 ] || [ -s "$_stdout_file" ] || [ -s "$_stderr_file" ]; 
 fi
 echo "  PASS: setup failures emit explicit context only in Tauri mode"
 
-_setup_mode_count=$(grep -c 'UNSLOTH_TAURI_MODE="$TAURI_MODE"' "$INSTALL_SH")
+_setup_mode_count=$(grep -c 'UNSLOTH_TAURI_MODE="$TAURI_MODE"' "$INSTALL_SH" || true)
 if [ "$_setup_mode_count" -ne 2 ]; then
     echo "  FAIL: Unix installer does not pass Tauri mode to both setup invocations"
     exit 1
@@ -252,7 +279,7 @@ echo "  PASS: Unix setup routes explicit exits through setup_fail"
 # Prove the exception behaves as claimed: a stubbed pinned-uv install, interrupted for real in
 # Tauri mode, must report 128+signal, leave no temporaries behind, and print no cancel failure.
 _signal_dir=$(mktemp -d)
-trap 'rm -f "$_stdout_file" "$_stderr_file"; rm -rf "$_signal_dir"' EXIT
+trap 'rm -f "$_stdout_file" "$_stderr_file" "$_test_attempt_file"; rm -rf "$_signal_dir"' EXIT
 {
     sed -n '/^_setup_uv_cleanup_temporaries()/,/^}/p' "$SETUP_SH"
     sed -n '/^_setup_uv_on_signal()/,/^}/p' "$SETUP_SH"
@@ -308,7 +335,7 @@ _rollback_block=$(sed -n \
     '/^_restore_studio_venv_replacement()/,/^}/p' \
     "$INSTALL_SH")
 _rollback_progress_count=$(printf '%s\n' "$_rollback_block" |
-    grep -c 'rollback_substep')
+    grep -c 'rollback_substep' || true)
 if [ "$_rollback_progress_count" -ne 2 ]; then
     echo "  FAIL: successful Unix rollback output can replace failure context"
     exit 1
@@ -350,7 +377,7 @@ if ! grep -q '\$env:UNSLOTH_TAURI_MODE = if (\$TauriMode)' "$INSTALL_PS1"; then
     exit 1
 fi
 
-_ps_setup_exit_count=$(grep -Ec '^[[:space:]]*exit[[:space:]]+' "$SETUP_PS1")
+_ps_setup_exit_count=$(grep -Ec '^[[:space:]]*exit[[:space:]]+' "$SETUP_PS1" || true)
 if [ "$_ps_setup_exit_count" -ne 1 ] ||
     ! grep -q '^[[:space:]]*exit \$Code$' "$SETUP_PS1"; then
     echo "  FAIL: Windows setup has explicit exits outside Exit-SetupFailure"

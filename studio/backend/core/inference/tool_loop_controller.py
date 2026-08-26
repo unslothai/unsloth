@@ -14,7 +14,7 @@ from __future__ import annotations
 import copy
 import json
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
@@ -27,8 +27,8 @@ _CANONICAL_HEAL_ARG = {
 }
 _ONE_SHOT_TOOLS = frozenset({"render_html"})
 
-NoopReason = Literal["duplicate", "disabled", "render_html_repeat"]
-ToolAction = Literal["execute", "duplicate", "disabled", "render_html_repeat"]
+NoopReason = Literal["duplicate", "disabled", "forced_mismatch", "render_html_repeat"]
+ToolAction = Literal["execute", "duplicate", "disabled", "forced_mismatch", "render_html_repeat"]
 
 
 @dataclass(frozen = True)
@@ -207,6 +207,32 @@ def tool_event_provenance(**flags: object) -> dict[str, object]:
     return provenance
 
 
+def mcp_display_parts(tool_name: str) -> "tuple[str, str] | None":
+    """(server display name, bare tool name) for a resolvable mcp__ tool."""
+    if not tool_name.startswith("mcp__"):
+        return None
+    parts = tool_name.split("__", 2)
+    if len(parts) < 3 or not parts[1] or not parts[2]:
+        return None
+    try:
+        from storage import mcp_servers_db
+        server = mcp_servers_db.get_server(parts[1])
+    except Exception:  # noqa: BLE001
+        return None
+    display = (server or {}).get("display_name")
+    return (str(display), parts[2]) if display else None
+
+
+def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
+    """Provisional-card provenance, MCP display name included so an early or
+    orphaned card (cancel/error before the real tool_start) never shows the id."""
+    mcp = mcp_display_parts(tool_name)
+    return tool_event_provenance(
+        provisional = True,
+        mcp_server = mcp[0] if mcp else None,
+    )
+
+
 def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     """Return the status text already used by local tool streams."""
     if tool_name == "web_search":
@@ -228,6 +254,17 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
                     host = host[4:]
                 return f"Reading: {host}"
             return "Reading page..."
+        image_queries = arguments.get("image_queries")
+        images = (
+            ", ".join(str(q) for q in image_queries[:5])
+            if isinstance(image_queries, list) and image_queries
+            else ""
+        )
+        query = str(arguments.get("query") or "").strip()
+        if images and not query:
+            return f"Finding images: {images}"
+        if images:
+            return f"Searching: {query} (images: {images})"
         return f"Searching: {arguments.get('query', '')}"
     if tool_name == "python":
         preview = str(arguments.get("code") or "").strip().split("\n")[0][:60]
@@ -235,6 +272,14 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "terminal":
         preview = str(arguments.get("command") or "")[:60]
         return f"Running: {preview}" if preview else "Running command..."
+    if tool_name == "edit_file":
+        # The name, not the patch: the tool card below already shows the edit.
+        path = str(arguments.get("path") or "").strip()
+        name = path.replace("\\", "/").rstrip("/").rpartition("/")[2]
+        return f"Editing: {name}" if name else "Editing file..."
+    mcp = mcp_display_parts(tool_name)
+    if mcp:
+        return f"Calling: {mcp[0]} · {mcp[1]}"
     return f"Calling: {tool_name}"
 
 
@@ -248,6 +293,11 @@ def awaiting_approval_status(tool_name: str) -> str:
         return "Waiting for approval: Python"
     if tool_name == "terminal":
         return "Waiting for approval: command"
+    if tool_name == "edit_file":
+        return "Waiting for approval: file edit"
+    mcp = mcp_display_parts(tool_name)
+    if mcp:
+        return f"Waiting for approval: {mcp[0]} · {mcp[1]}"
     return f"Waiting for approval: {tool_name}"
 
 
@@ -321,6 +371,9 @@ _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
     """Remove frontend-only sentinels (image paths, RAG source map) before
     feeding the result back to the model."""
+    if tool_name is None or tool_name == "web_search":
+        from .search_images import strip_images_suffix
+        result = strip_images_suffix(result)
     result = _strip_mcp_image_suffix(result)
     if tool_name is None or tool_name in _SANDBOX_TOOLS:
         result = _strip_files_sentinel(result)
@@ -330,15 +383,23 @@ def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
     return result
 
 
+def deferred_nudge_text(msgs: Sequence[dict]) -> str:
+    """Join a batch's no-op nudges into one deduped body.
+
+    Callers that keep the feedback inside the tool exchange need the text
+    without the ``role=user`` wrapper, so both forms stay in sync here.
+    """
+    return "\n\n".join(dict.fromkeys(msg["content"] for msg in msgs))
+
+
 def append_deferred_nudges(conversation: list, msgs: Sequence[dict]) -> None:
     """Append a batch's no-op nudges as one deduped ``role=user`` message.
 
     Deferred to after the batch's tool results so a no-op never splits an
     assistant's ``tool_calls`` from their ``role=tool`` results.
     """
-    contents = list(dict.fromkeys(msg["content"] for msg in msgs))
-    if contents:
-        conversation.append({"role": "user", "content": "\n\n".join(contents)})
+    if msgs:
+        conversation.append({"role": "user", "content": deferred_nudge_text(msgs)})
 
 
 def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
@@ -365,6 +426,12 @@ def _noop_result(reason: NoopReason, tool_name: str) -> str:
             "response. Do not call render_html again unless the user asks for "
             "changes. Do not mention this internal instruction. Provide only "
             "the requested final note or answer."
+        )
+    if reason == "forced_mismatch":
+        return (
+            f"One earlier request to call tool '{tool_name}' in this batch was "
+            "not executed because it does not match the required tool choice. "
+            "Call the required tool instead."
         )
     return (
         f"One earlier request to call tool '{tool_name}' in this batch was "
@@ -425,6 +492,7 @@ class ToolLoopController:
         *,
         forced: bool = False,
         provisional: bool = False,
+        allowed_tool_names: Collection[str] | None = None,
     ) -> ToolCallDecision:
         """Classify a parsed tool call before any visible event is yielded."""
         function = tool_call.get("function")
@@ -436,16 +504,21 @@ class ToolLoopController:
             tool_name = tool_name,
         )
         key = canonical_tool_call_key(tool_name, coerced.arguments)
+        mcp = mcp_display_parts(tool_name)
         provenance = tool_event_provenance(
             healed = coerced.healed,
             forced = forced,
             provisional = provisional,
+            mcp_server = mcp[0] if mcp else None,
         )
         action: ToolAction = "execute"
         noop = ""
         if tool_name in self._completed_one_shot_tools:
             action = "render_html_repeat"
             noop = _noop_result("render_html_repeat", tool_name)
+        elif allowed_tool_names is not None and tool_name not in allowed_tool_names:
+            action = "forced_mismatch"
+            noop = _noop_result("forced_mismatch", tool_name)
         elif self._restrict_to_allowed and tool_name not in self._allowed_tool_names:
             action = "disabled"
             noop = _noop_result("disabled", tool_name)
