@@ -18,7 +18,7 @@ const MAX_SERIALISED_LENGTH = 100_000;
  * Arguments reach a card as parsed JSON, so a prop declared `string` is a
  * request to the model, not a guarantee from it. `{"code": 42}` used to reach
  * `code.split("\n")` during render, and a throw in a card has no boundary above
- * it: the router catches it and replaces all of Studio with "Something went
+ * it: the router catches it and replaces all of Unsloth with "Something went
  * wrong!" (markdown-block-boundary.tsx measures the same failure). The message
  * is persisted, so reopening the thread reproduces it.
  */

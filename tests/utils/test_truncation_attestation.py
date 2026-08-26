@@ -4,7 +4,7 @@
 """A split that truncates its own rows may say so instead of being scanned.
 
 `pretokenized_within_cap` checks `max_length` by reading every row. On a
-lazily-tokenizing `with_transform` view -- what Studio's online tokenization
+lazily-tokenizing `with_transform` view -- what Unsloth's online tokenization
 produces -- reading a row is tokenizing it, so the scan runs the whole eager pass
 the view exists to avoid, inside `__init__` where nothing overlaps it.
 

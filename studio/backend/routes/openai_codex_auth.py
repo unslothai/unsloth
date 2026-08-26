@@ -181,7 +181,7 @@ async def list_subscription_models(
     except (codex_auth.CodexAuthError, codex_client.CodexReauthorizationError) as exc:
         # resolve_access has already marked the connection as needing reauthorization, so
         # say so in the answer rather than through a 401: the client's authFetch reads
-        # every 401 as an expired Studio session, refreshes it and retries, and the retry
+        # every 401 as an expired Unsloth session, refreshes it and retries, and the retry
         # would come back as a plain curated list with the connection looking healthy.
         # A source the picker does not treat as authoritative carries the signal instead.
         logger.info(

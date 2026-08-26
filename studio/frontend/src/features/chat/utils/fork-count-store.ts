@@ -12,7 +12,7 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   getThreadForkCounts,
 } from "../api/chat-api";
-import { isAssistantLocalThreadId } from "./thread-ids";
+import { isThreadIncognito } from "./chat-history-storage";
 
 // Same reasoning as the sidebar's refresh: each quiet window costs one fetch.
 export const FORK_COUNT_REFRESH_DEBOUNCE_MS = 300;
@@ -52,16 +52,14 @@ let listening = false;
 async function refresh(threadId: string): Promise<void> {
   const entry = entries.get(threadId);
   if (!entry) return;
-  // A thread the server has never seen cannot have forks, so this request can only
-  // ever 404 -- and getThreadForkCounts already maps that to an empty map, which is
-  // what the entry starts as. It is a round trip whose answer is known.
+  // A temporary chat is the one thread whose forks cannot exist: ensureThreadRecord marks it
+  // and returns without a row. The row decides that, not the id -- a `__LOCALID_` prefix
+  // belongs to every chat the app creates, saved ones included.
   //
-  // Not a rounding error: a new chat is in exactly this state, and this store
-  // refreshes on CHAT_HISTORY_UPDATED_EVENT, which fires once per streaming chunk.
-  // So the first reply in a new chat pays one guaranteed-useless request per debounce
-  // window for as long as it streams. The heavy-thread smoke is what noticed --
-  // it counts requests issued inside a measured interaction, and these landed there.
-  if (isAssistantLocalThreadId(threadId)) return;
+  // Skipped because the answer is already the empty map the entry holds, not to dodge a
+  // failure: fork_counts_for_thread GROUPs chat_threads without looking the source up, so an
+  // unknown thread gets 200 and an empty map. Only GET /threads/{id} 404s.
+  if (isThreadIncognito(threadId)) return;
   const seq = ++entry.seq;
   let counts: Counts;
   try {

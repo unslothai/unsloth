@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Install, launch and authenticate a real Studio. VENDORED from `studio_test_kit`.
+"""Install, launch and authenticate a real Unsloth. VENDORED from `studio_test_kit`.
 
 Vendored on purpose. The shipped artifact is a single `studiobench.pyz` a tester runs on a machine
-that has a Studio and nothing else, so it cannot import a module that lives elsewhere in this
+that has an Unsloth and nothing else, so it cannot import a module that lives elsewhere in this
 repository. The logic is `studio_test_kit.lifecycle` plus `studio_test_kit.auth`, with two
 deliberate changes:
 
 - **stdlib only.** `studio_test_kit.auth` uses `httpx`; this uses `urllib.request`, so `--doctor`
   and `--attach` work on a machine with nothing pip-installed but Playwright.
-- **The password-change gate is handled.** A current Studio mints a bootstrap password and sets
+- **The password-change gate is handled.** A current Unsloth mints a bootstrap password and sets
   `must_change_password`, and until it is cleared EVERY authenticated route answers
   `403 Password change required` while `/healthz` answers 200 and login itself succeeds. That
   failure is silent one request too late, and it is what stops a thread from being seeded at all.
@@ -155,7 +155,7 @@ class StudioAuth:
         A FRESH TOKEN THAT IS ALREADY INSIDE THE MARGIN TURNS THE PROACTIVE HALF OFF, and this is
         the guard against the one way "refresh before `exp`" can run away. `needs_refresh` compares
         the server's `exp` against THIS PROCESS'S clock, and the two are not required to agree: a
-        Studio running 45 minutes behind, or a deployment that shortens
+        Unsloth running 45 minutes behind, or a deployment that shortens
         `ACCESS_TOKEN_EXPIRE_MINUTES` below the margin, makes every token ever issued look like it
         is about to expire. Without this, every single request would log in again and append
         another init script to the browser context for the rest of the run. So the condition is
@@ -197,7 +197,7 @@ def auth_request_json(
 
     Both halves are needed. The proactive half is what keeps a 900 second seeding PUT from dying
     half way through a request that was valid when it started. The reactive half covers what this
-    process cannot compute: a clock offset against the server, a Studio restarted underneath the
+    process cannot compute: a clock offset against the server, an Unsloth restarted underneath the
     run, or a token invalidated by something else. One retry only -- a 401 that survives a fresh
     login is a real refusal and must be raised, not looped on.
 
@@ -513,7 +513,7 @@ PID_DISCOVERY_TIMEOUT_S = 15.0
 
 
 def _discover_pid(port: int, timeout_s: Optional[float] = None) -> Optional[int]:
-    """The pid of the Studio serving `port`, or None. Polls, because it appears asynchronously.
+    """The pid of the Unsloth serving `port`, or None. Polls, because it appears asynchronously.
 
     THE PROCESS WE LAUNCHED IS NOT THE PROCESS WE SPAWNED. `launch_studio` runs the server under
     `setsid -f`, which always forks and lets the parent exit without waiting, so the pid `Popen`
@@ -567,7 +567,7 @@ def launch_studio(
     password_timeout_s: int = 30,
 ) -> StudioInstall:
     # AN OCCUPIED PORT IS REFUSED BEFORE ANYTHING IS LAUNCHED, and this is the half of the
-    # abandoned-server failure that no cleanup can reach. `--keep-studio` asks for a Studio to be
+    # abandoned-server failure that no cleanup can reach. `--keep-studio` asks for an Unsloth to be
     # LEFT RUNNING on this port, so the next run's `unsloth studio -p <port>` finds one of our own
     # servers there and aborts rather than binding (`studio/backend/run.py`, `_resolve_port` with
     # `avoid_own_studio`); when the pid record is not readable it falls back to the NEXT port
@@ -576,7 +576,7 @@ def launch_studio(
     # Everything downstream then agrees that the launch worked. `_discover_pid` pgreps for
     # `unsloth studio.*-p <port>` and finds the OLD process; `wait_for_healthz` takes its 200 from
     # it; and `authenticate` retries with `BENCH_PASSWORD`, which a previous studiobench run has
-    # already rotated that Studio to, so the login succeeds as well. The run then measures the
+    # already rotated that Unsloth to, so the login succeeds as well. The run then measures the
     # build the PREVIOUS invocation installed while `run_meta` records the ref this one asked for,
     # and `stop_studio` kills the server the caller asked to keep. There is no reading anywhere
     # that says which build answered, so this is refused rather than reported.
@@ -584,10 +584,10 @@ def launch_studio(
         holder = _discover_pid(port, 0.0)
         raise RuntimeError(
             f"port {port} is already in use"
-            + (f" by Studio pid {holder}" if holder else "")
-            + ". A Studio launched here would abort or land on another port while this harness "
+            + (f" by Unsloth pid {holder}" if holder else "")
+            + ". An Unsloth launched here would abort or land on another port while this harness "
             "measured whatever is already answering. Stop it (`unsloth studio stop`, or the "
-            "Studio a previous --keep-studio run left behind) or pass --port."
+            "Unsloth a previous --keep-studio run left behind) or pass --port."
         )
     log_path = Path(log_path).resolve()
     log_path.parent.mkdir(parents = True, exist_ok = True)
@@ -615,7 +615,7 @@ def launch_studio(
     install.bootstrap_password = _read_bootstrap_password(
         install.home, log_path, time.time() + password_timeout_s
     )
-    # BEFORE the health check, not after it. A Studio that starts and stays unhealthy used to raise
+    # BEFORE the health check, not after it. An Unsloth that starts and stays unhealthy used to raise
     # here with `install.pid` still None, and `stop_studio` has nothing to kill without it -- so the
     # detached server was left running on the requested port while the CLI unwound. It is not idle
     # there: the next attempt's `unsloth studio -p <port>` finds one of our own servers on the port
@@ -631,7 +631,7 @@ def launch_studio(
         install.pid = _discover_pid(port, 0.0)
     if not healthy:
         stop_studio(install)
-        raise TimeoutError(f"Studio on :{port} did not pass /healthz within {healthz_timeout_s}s")
+        raise TimeoutError(f"Unsloth on :{port} did not pass /healthz within {healthz_timeout_s}s")
     return install
 
 
@@ -678,7 +678,7 @@ def authenticate(
     the run simply fails to seed a thread and reports an empty one. So the gate is read from
     `/api/auth/status` up front and cleared through the one endpoint that accepts the gated token.
     """
-    # Try the supplied password, then the one a PREVIOUS studiobench run rotated to. Studio mints
+    # Try the supplied password, then the one a PREVIOUS studiobench run rotated to. Unsloth mints
     # a bootstrap password and demands it be changed; this function is what changes it, so the
     # second run against the same home is handed a bootstrap password that no longer exists and
     # gets a 401 whose message sends you to `reset-password`. Measured on the second run against

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio-owned tool execution loop for the ChatGPT Codex subscription transport.
+"""Unsloth-owned tool execution loop for the ChatGPT Codex subscription transport.
 
 The loop itself now lives in ``core.inference.studio_tool_loop`` and is shared
 with every other external provider. What stays here is the Codex transport: the
@@ -93,7 +93,7 @@ def stream_codex_with_studio_tools(
     policy: CodexToolPolicy,
     cancel_event: threading.Event,
 ) -> AsyncIterator[str]:
-    """Stream Codex, execute requested Studio tools, and continue until a final answer."""
+    """Stream Codex, execute requested Unsloth tools, and continue until a final answer."""
     return stream_with_studio_tools(
         CodexTransport(client, run),
         run = ToolLoopRun(
