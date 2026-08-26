@@ -9,8 +9,11 @@
 //      gets "Couldn't copy the link" -- no await may precede copyToClipboard.
 //   2. Prefetching the text without keying it to what is on screen. The run bar keeps
 //      one QuantOptionsMenu mounted and swaps repoId/quant under it, so an unkeyed
-//      cache silently copies the previously selected quant's path, and the preview
-//      link goes stale the moment the tunnel URL changes.
+//      cache silently copies the previously selected quant's path.
+//   3. Prefetching once and never again. The launch tunnel resolves while the server is
+//      already serving, so the first /api/health of a session can answer
+//      cloudflare_url null; a single read leaves the store null for the rest of it and
+//      the button copies a link only this machine can open.
 //
 // Read from the source: the node suite has no DOM to click in.
 
@@ -91,6 +94,36 @@ test("the prefetched model path is keyed to the model it was fetched for", () =>
     "the prefetch guard must miss when the menu now points at another model",
   );
   assert.ok(PREFETCH_PATH.includes("{ key: pathKey, path }"));
+});
+
+test("the link base keeps being re-read until the tunnel URL lands", () => {
+  assert.match(
+    HISTORY,
+    /if \(cloudflareUrl !== null\) \{\s*return;/,
+    "the retry must stop once a tunnel URL is in the store",
+  );
+  assert.ok(
+    /LINK_BASE_RETRIES/.test(HISTORY) && /LINK_BASE_RETRY_MS/.test(HISTORY),
+    "the retry must be bounded: a Studio launched without a tunnel never gets one",
+  );
+  assert.ok(
+    !COPY_PREVIEW.includes("setInterval"),
+    "the retry belongs outside the click",
+  );
+});
+
+test("the model path starts resolving before the menu item is reachable", () => {
+  const open = GGUF.indexOf("<DropdownMenuTrigger");
+  assert.notEqual(open, -1, "no DropdownMenuTrigger");
+  const trigger = GGUF.slice(
+    open,
+    GGUF.indexOf("</DropdownMenuTrigger>", open),
+  );
+  assert.ok(
+    trigger.includes("onPointerEnter={prefetchCachedPath}"),
+    "waiting for the menu to open leaves the copy click awaiting the fetch",
+  );
+  assert.ok(trigger.includes("onFocus={prefetchCachedPath}"));
 });
 
 test("copy path never serves another model's cached path", () => {

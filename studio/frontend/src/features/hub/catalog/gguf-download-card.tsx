@@ -344,6 +344,11 @@ export function QuantOptionsMenu({
         <button
           type="button"
           onClick={(e) => e.stopPropagation()}
+          // Reaching the menu item means passing over its trigger first, so start the
+          // path here rather than on open: the copy has to have it in hand, or the
+          // click awaits the fetch and Safari drops the clipboard permission again.
+          onPointerEnter={prefetchCachedPath}
+          onFocus={prefetchCachedPath}
           aria-label={`More options for ${label}`}
           className={cn(
             "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full",

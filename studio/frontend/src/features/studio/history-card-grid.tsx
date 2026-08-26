@@ -56,6 +56,13 @@ type StudioT = ReturnType<typeof useT>;
 
 const PAGE_SIZE = 12;
 const RUNNING_POLL_INTERVAL_MS = 5000;
+// How the copy-link base recovers when the grid mounts inside the tunnel's startup
+// window. start_studio_tunnel waits up to 15s for a URL AFTER the port is bound, so
+// the first /api/health of a session can answer cloudflare_url null; these cover that
+// window and then stop, because a Studio launched without a tunnel never gets one and
+// must not be polled for the rest of the session.
+const LINK_BASE_RETRY_MS = 3000;
+const LINK_BASE_RETRIES = 10;
 
 const statusBadge: Record<string, { className: string }> = {
   completed: {
@@ -253,11 +260,11 @@ export function HistoryCardGrid({
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
   const { resumeTrainingRunFromHistory, startBlocked, stopRequested } =
     useTrainingActions();
-  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The launch tunnel
-  // resolves while the server is already serving, and nothing re-reads /api/health
-  // once the platform verdict settles, so a page loaded during that window keeps a
-  // null tunnel URL and copies a link only this machine can open. Refresh here and
+  const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
+  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. Nothing else re-reads
+  // /api/health once the platform verdict settles, so the base is refreshed here and
   // never in the click, where Safari drops the clipboard permission across an await.
+  // The focus listener is for a tunnel started or stopped somewhere else since.
   useEffect(() => {
     const refreshLinkBase = () => {
       void fetchDeviceType({ force: true });
@@ -266,6 +273,27 @@ export function HistoryCardGrid({
     window.addEventListener("focus", refreshLinkBase);
     return () => window.removeEventListener("focus", refreshLinkBase);
   }, []);
+
+  // The one read above is not enough on its own: a grid that mounted while the launch
+  // tunnel was still resolving gets cloudflare_url null, and this tab is already
+  // focused, so no focus event is coming to correct it. Without this the button copies
+  // a link only this machine can open for the rest of the session. Bounded, and torn
+  // down by the re-run a landed URL triggers.
+  useEffect(() => {
+    if (cloudflareUrl !== null) {
+      return;
+    }
+    let left = LINK_BASE_RETRIES;
+    const id = window.setInterval(() => {
+      if (left <= 0) {
+        window.clearInterval(id);
+        return;
+      }
+      left -= 1;
+      void fetchDeviceType({ force: true });
+    }, LINK_BASE_RETRY_MS);
+    return () => window.clearInterval(id);
+  }, [cloudflareUrl]);
 
   const userControllerRef = useRef<AbortController | null>(null);
   const pollControllerRef = useRef<AbortController | null>(null);
