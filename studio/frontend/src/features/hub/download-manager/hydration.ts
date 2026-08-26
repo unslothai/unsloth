@@ -9,7 +9,11 @@ import {
   type DownloadJobState,
 } from "./api";
 import { DOWNLOAD_KIND, isResolvedTransport } from "./constants";
-import { ACTIVE_STATES, POLL_REQUEST_TIMEOUT_MS } from "./download-manager-config";
+import {
+  ACTIVE_STATES,
+  POLL_REQUEST_TIMEOUT_MS,
+  RESUMABLE_STATES,
+} from "./download-manager-config";
 import {
   apiGetProgress,
   apiGetStatus,
@@ -298,6 +302,10 @@ export function hydrateDownloadManager(): void {
   for (const job of jobs) {
     // External jobs are live in memory and have no hub job to probe.
     if (job.external) continue;
+    // Failed and cancelled rows stay in Downloads so they can be resumed
+    // after a restart. Complete jobs are not persisted, and anything else
+    // is not a card the list should keep.
+    if (RESUMABLE_STATES.has(job.state)) continue;
     if (!ACTIVE_STATES.has(job.state)) {
       removeJob(job.key);
       continue;

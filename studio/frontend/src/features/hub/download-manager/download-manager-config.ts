@@ -19,10 +19,13 @@ export const MAX_PROGRESS_FRACTION = 0.99;
 export const CANCEL_WATCHDOG_MS = 20_000;
 export const IDLE_EVICT_GRACE_MS = 60_000;
 export const COMPLETE_LINGER_MS = 6_000;
-export const CANCELLED_LINGER_MS = 6_000;
-export const ERROR_LINGER_MS = 12_000;
 export const INVENTORY_BUMP_DEBOUNCE_MS = 250;
 export const TRANSPORT_STATUS_RETRY_DELAY_MS = 300;
+
+/** Shown when a transfer dies with partial files still on disk, so the
+ * Downloads list can offer Resume instead of vanishing. */
+export const INTERRUPTED_DOWNLOAD_MESSAGE =
+  "Download interrupted. Resume from Downloads to continue.";
 
 export const ACTIVE_STATES: ReadonlySet<DownloadJobState> = new Set([
   "running",
@@ -34,3 +37,15 @@ export const TERMINAL_DISPLAY_STATES: ReadonlySet<DownloadJobState> = new Set([
   "error",
   "cancelled",
 ]);
+
+/** Failed or stopped jobs the Downloads list keeps until the user dismisses
+ * them, so a mid-transfer failure can be resumed without searching the model
+ * again. Complete jobs still linger briefly and are not persisted. */
+export const RESUMABLE_STATES: ReadonlySet<DownloadJobState> = new Set([
+  "error",
+  "cancelled",
+]);
+
+export function isPersistedJobState(state: DownloadJobState): boolean {
+  return ACTIVE_STATES.has(state) || RESUMABLE_STATES.has(state);
+}
