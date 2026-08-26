@@ -870,9 +870,9 @@ export const hi = {
           "नीचे सब कुछ आपके अपने इतिहास से गिना जाता है। कुछ भी इकट्ठा नहीं किया जाता और न ही Unsloth को भेजा जाता है।",
         retry: "फिर कोशिश करें",
         privacyNote:
-          "आँकड़े आपके Unsloth इंस्टॉल में मौजूद चैट और ट्रेनिंग इतिहास से गिने जाते हैं। कुछ भी इकट्ठा नहीं किया जाता, और Unsloth या किसी तीसरे पक्ष को कुछ नहीं भेजा जाता।",
+          "आँकड़े आपके Unsloth इंस्टॉल के स्थानीय चैट, API उपयोग और ट्रेनिंग इतिहास से गिने जाते हैं। आँकड़ों के लिए API प्रॉम्प्ट, जवाब या कुंजियाँ कभी संग्रहीत नहीं होतीं। Unsloth या किसी तीसरे पक्ष को कुछ नहीं भेजा जाता।",
         emptyChats:
-          "अभी तक कोई चैट नहीं। बातचीत शुरू करें और आपके आँकड़े यहाँ दिखने लगेंगे।",
+          "अभी तक चैट या API उपयोग नहीं है। बातचीत शुरू करें या प्रमाणित स्थानीय API अनुरोध करें।",
         lifetimeTokens: "अब तक के कुल टोकन",
         peakTokens: "सबसे व्यस्त दिन",
         longestChat: "सबसे लंबी चैट",
@@ -894,6 +894,9 @@ export const hi = {
         totalMessages: "कुल संदेश",
         tokensIn: "भेजे गए टोकन",
         tokensOut: "बनाए गए टोकन",
+        totalTokens: "कुल टोकन",
+        studioChatTokens: "Studio Chat टोकन",
+        apiTokens: "API टोकन",
         cachedTokens: "कैश किए गए टोकन",
         cachedValue: "{tokens} (इनपुट का {percent}%)",
         avgTokensPerChat: "प्रति चैट औसत टोकन",
@@ -1363,7 +1366,7 @@ export const hi = {
       exportingAction: "एक्सपोर्ट हो रहा है...",
       exportConversations: "हाल के और प्रोजेक्ट एक्सपोर्ट करें",
       exportConversationsDescription:
-        "हाल के या हाल के और प्रोजेक्ट चैट को Raw JSONL, CSV या ShareGPT JSONL के रूप में डाउनलोड करें, एक संयुक्त फ़ाइल में या हर चैट के लिए अलग-अलग।",
+        "हाल के या हाल के और प्रोजेक्ट चैट को Training JSONL, CSV या ShareGPT JSONL के रूप में डाउनलोड करें, एक संयुक्त फ़ाइल में या हर चैट के लिए अलग-अलग। Message JSONL केवल हर चैट के लिए अलग फ़ाइल में उपलब्ध है।",
       exportConversationsAction: "एक्सपोर्ट करें",
       exportScopeRecents: "हाल के",
       exportScopeAll: "हाल के + प्रोजेक्ट",

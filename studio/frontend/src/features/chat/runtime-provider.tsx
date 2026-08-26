@@ -698,6 +698,7 @@ export async function ensureThreadRecord({
   projectId,
   incognito,
   modelId,
+  modelGgufVariant,
   createdAt,
 }: {
   threadId: string;
@@ -708,6 +709,7 @@ export async function ensureThreadRecord({
   incognito?: boolean;
   /** Snapshot from the send this row belongs to, so retries cannot adopt a later checkpoint. */
   modelId?: string;
+  modelGgufVariant?: string | null;
   /** Snapshot from the send this row belongs to, so retries retain its original creation time. */
   createdAt?: number;
 }): Promise<void> {
@@ -720,6 +722,10 @@ export async function ensureThreadRecord({
   const runtimeStateAtInit = useChatRuntimeStore.getState();
   const incognitoAtInit = incognito ?? runtimeStateAtInit.incognito;
   const modelIdAtInit = modelId ?? runtimeStateAtInit.params.checkpoint ?? "";
+  const modelGgufVariantAtInit =
+    modelGgufVariant !== undefined
+      ? modelGgufVariant
+      : runtimeStateAtInit.activeGgufVariant;
   const createdAtInit = createdAt ?? Date.now();
   // Fresh assistant-ui threads are local ids. Temporary chats can skip the
   // history list entirely so a storage outage cannot block the first send.
@@ -745,6 +751,7 @@ export async function ensureThreadRecord({
     title: "New Chat",
     modelType,
     modelId: modelIdAtInit,
+    modelGgufVariant: modelGgufVariantAtInit,
     pairId,
     projectId: projectId ?? null,
     archived: false,
@@ -831,6 +838,9 @@ function createStudioDbAdapter(
       const modelIdAtInit = claim
         ? claim.modelId
         : (runtimeStateAtInit.params.checkpoint ?? "");
+      const modelGgufVariantAtInit = claim
+        ? claim.modelGgufVariant
+        : runtimeStateAtInit.activeGgufVariant;
       const createdAtInit = claim ? claim.createdAt : Date.now();
       const projectIdAtInit = claim ? claim.projectId : projectId;
       trackStoredChatThreadRecord(threadId, () =>
@@ -841,6 +851,7 @@ function createStudioDbAdapter(
           projectId: projectIdAtInit,
           incognito: incognitoAtInit,
           modelId: modelIdAtInit,
+          modelGgufVariant: modelGgufVariantAtInit,
           createdAt: createdAtInit,
         }),
       );

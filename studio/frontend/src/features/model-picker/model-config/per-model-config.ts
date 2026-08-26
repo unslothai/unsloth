@@ -983,6 +983,41 @@ function loadPerModelConfig(
   return normalize(map[key]);
 }
 
+export function resolveOnlyRememberedGgufVariant(
+  modelId: string,
+): { ggufVariant: string; config: PerModelConfig } | null {
+  const map = readMap();
+  const variants = new Map<string, string>();
+  const normalizedModelId = normalizeModelIdentity(modelId);
+  for (const key of Object.keys(map)) {
+    const storedModelId = modelIdFromStorageKey(key);
+    const ggufVariant = ggufVariantFromStorageKey(key);
+    if (
+      !storedModelId ||
+      !ggufVariant ||
+      normalizeModelIdentity(storedModelId) !== normalizedModelId
+    ) {
+      continue;
+    }
+    const normalizedVariant = normalizeGgufVariantIdentity(ggufVariant);
+    if (normalizedVariant) {
+      variants.set(normalizedVariant, ggufVariant);
+    }
+  }
+  if (variants.size !== 1) {
+    return null;
+  }
+  const ggufVariant = variants.values().next().value;
+  if (!ggufVariant) {
+    return null;
+  }
+  const key = findConfigKeyForModelVariant(map, modelId, ggufVariant);
+  if (!key || storedConfigVersion(map[key]) > STORAGE_SCHEMA_VERSION) {
+    return null;
+  }
+  return { ggufVariant, config: normalize(map[key]) };
+}
+
 export function isDefaultConfig(config: PerModelConfig): boolean {
   return (
     config.customContextLength == null &&
@@ -1179,10 +1214,26 @@ export function adoptLegacyConfigKey(
   return writeMap(map);
 }
 
+export interface ResolvedPerModelConfig {
+  config: PerModelConfig;
+  remembered: boolean;
+}
+
+export function perModelConfigStorageChanged(
+  atStart: ResolvedPerModelConfig,
+  current: ResolvedPerModelConfig,
+): boolean {
+  return (
+    atStart.remembered !== current.remembered ||
+    JSON.stringify(toStoredConfig(atStart.config)) !==
+      JSON.stringify(toStoredConfig(current.config))
+  );
+}
+
 export function resolveInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
-): { config: PerModelConfig; remembered: boolean } {
+): ResolvedPerModelConfig {
   const saved = loadPerModelConfig(modelId, ggufVariant);
   if (saved) {
     return { config: saved, remembered: true };
@@ -1202,7 +1253,7 @@ export function resolveInitialConfig(
 export function resolveResidentInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
-): { config: PerModelConfig; remembered: boolean } {
+): ResolvedPerModelConfig {
   const direct = resolveInitialConfig(modelId, ggufVariant);
   if (direct.remembered) {
     return direct;
