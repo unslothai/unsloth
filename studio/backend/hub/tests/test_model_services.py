@@ -7381,6 +7381,49 @@ def test_cached_gguf_task_describes_the_revision_the_load_id_resolves_to(tmp_pat
     assert row["task"] == "text-generation"
 
 
+def test_cached_community_orpheus_gguf_is_not_chat_loadable(tmp_path):
+    hub_cache = tmp_path / "hub"
+    repo_path = hub_cache / "models--QuantFactory--orpheus-3b-0.1-ft-GGUF"
+    snapshot = repo_path / "snapshots" / "revision"
+    gguf = snapshot / "orpheus-3b-0.1-ft-Q4_K_M.gguf"
+    _gguf_with_architecture(gguf, "llama")
+    (repo_path / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_path / "refs" / "main").write_text("revision")
+
+    revision = SimpleNamespace(
+        snapshot_path = snapshot,
+        files = [
+            SimpleNamespace(
+                file_name = gguf.name,
+                size_on_disk = 64,
+                file_path = gguf,
+                blob_path = gguf,
+            )
+        ],
+        refs = {"main"},
+        commit_hash = "revision",
+        last_modified = 1.0,
+        size_on_disk = 64,
+    )
+    repo_info = SimpleNamespace(
+        repo_id = "QuantFactory/orpheus-3b-0.1-ft-GGUF",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [revision],
+        size_on_disk = 64,
+        last_accessed = 1.0,
+        last_modified = 1.0,
+        nb_files = 1,
+    )
+
+    rows = cache_inventory._scan_cached_gguf(
+        cache_scans = [SimpleNamespace(repos = [repo_info])], active_hub_cache = hub_cache
+    )
+    row = next(row for row in rows if row["repo_id"] == repo_info.repo_id)
+    assert row["task"] == "text-to-speech"
+    assert row["capabilities"]["can_chat"] is False
+
+
 def test_every_row_key_the_scanner_emits_survives_the_response_schema():
     """``response_model`` silently DROPS any key the schema does not declare.
 

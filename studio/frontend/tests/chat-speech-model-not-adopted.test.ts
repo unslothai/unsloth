@@ -107,6 +107,14 @@ test("a TTS load announces its own runtime so chat re-reads the slot", () => {
   assert.doesNotMatch(hook, /runtime === "tts"\) return;/);
 });
 
+test("chat re-reads status when a different tab returns to the foreground", () => {
+  const hook = readSource(
+    "../src/features/chat/hooks/use-chat-model-runtime.ts",
+  );
+  assert.match(hook, /subscribeResidentStatusRefresh\(\(\) => \{/);
+  assert.match(hook, /void refresh\(\{ includeLoras: false \}\);/);
+});
+
 // tryAdoptServerActiveModel is not the only door into params.checkpoint: these two call
 // sites resolve a resident model into the chat store on their own.
 

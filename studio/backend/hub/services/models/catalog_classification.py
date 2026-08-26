@@ -43,6 +43,10 @@ _QWEN3_ASR_HINT = re.compile(
     r"(?<![a-z0-9])qwen3[-_. ]*asr[-_. ]*(?:0[._]6|1[._]7)b(?![a-z0-9])",
     re.IGNORECASE,
 )
+_ORPHEUS_GGUF_HINT = re.compile(
+    r"(?<![a-z0-9])orpheus[-_. ]*3b(?![a-z0-9])",
+    re.IGNORECASE,
+)
 
 
 def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
@@ -96,6 +100,10 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
         _QWEN3_ASR_HINT.search(str(hint)) for hint in name_hints if hint
     ):
         return "automatic-speech-recognition"
+    if normalized == "llama" and any(
+        _ORPHEUS_GGUF_HINT.search(str(hint)) for hint in name_hints if hint
+    ):
+        return _SPEECH_TASK
     if normalized in _PLACEHOLDER_DIFFUSION_GGUF_ARCHS:
         from core.inference.video_families import detect_video_family
 

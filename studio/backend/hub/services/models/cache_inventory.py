@@ -611,15 +611,16 @@ def _scan_cached_gguf(
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
                 last_modified = _repo_gguf_last_modified(repo_info)
+                row_task = _cached_row_task(
+                    repo_info,
+                    gguf = True,
+                    selected = gguf_identity.load_snapshot or gguf_snapshot,
+                )
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": max(total_size, variant_state_size),
                     "cache_path": str(repo_info.repo_path),
-                    "task": _cached_row_task(
-                        repo_info,
-                        gguf = True,
-                        selected = gguf_identity.load_snapshot or gguf_snapshot,
-                    ),
+                    "task": row_task,
                     "partial": partial,
                     # A marker-only sibling moves neither size nor mtime.
                     "has_variant_state": has_variant_state,
@@ -648,6 +649,7 @@ def _scan_cached_gguf(
                         repo_info = repo_info,
                         # Visible infra variants remain management-only.
                         hidden_infra = is_hidden_infra,
+                        tts_only = row_task == "text-to-speech",
                     )
                 )
                 # Only the winning cache root loads, so the loser's vision flag must not carry over.

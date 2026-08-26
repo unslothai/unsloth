@@ -32,6 +32,8 @@ import {
 import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { ModelLoadDescription } from "../components/model-load-status";
 import {
@@ -627,6 +629,14 @@ export function useChatModelRuntime() {
         // image or video load POST, before the download starts, so waiting for
         // the load to finish left the picker and the header naming a model that
         // had already gone and that 400s on send, for the whole download.
+        void refresh({ includeLoras: false });
+      }),
+    [refresh],
+  );
+
+  useEffect(
+    () =>
+      subscribeResidentStatusRefresh(() => {
         void refresh({ includeLoras: false });
       }),
     [refresh],
