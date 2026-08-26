@@ -721,8 +721,7 @@ def test_install_sh_bakes_the_id_that_is_actually_on_disk(tmp_path):
     studio_home = tmp_path / "studio"
     (studio_home / "share" / "studio_install_id").mkdir(parents = True)
     probe = (
-        _install_id_helpers()
-        + f'_css_id_file="{studio_home}/share/studio_install_id"\n'
+        _install_id_helpers() + f'_css_id_file="{studio_home}/share/studio_install_id"\n'
         'printf "%s" "' + "d" * 64 + '" > "$_css_id_file.tmp"\n'
         'ln "$_css_id_file.tmp" "$_css_id_file" 2>/dev/null || true\n'
         'rm -f "$_css_id_file.tmp"\n'
@@ -815,7 +814,10 @@ def test_install_sh_trims_only_surrounding_whitespace_in_an_existing_id(tmp_path
     ), "install.sh must trim only the surrounding whitespace, as the backend does"
 
     id_file = tmp_path / "studio_install_id"
-    probe = _install_id_helpers() + f'printf "OUT=[%s]\\n" "$(_css_read_valid_install_id "{id_file}")"\n'
+    probe = (
+        _install_id_helpers()
+        + f'printf "OUT=[%s]\\n" "$(_css_read_valid_install_id "{id_file}")"\n'
+    )
     for content, expect_reuse in [
         ("a" * 32 + "\n" + "a" * 32, False),
         ("a" * 32 + " " + "a" * 32, False),
@@ -845,7 +847,10 @@ def test_install_sh_rejects_an_id_holding_a_nul_byte(tmp_path):
     ), "install.sh must detect NUL bytes before reading the id into a variable"
 
     id_file = tmp_path / "studio_install_id"
-    probe = _install_id_helpers() + f'printf "OUT=[%s]\\n" "$(_css_read_valid_install_id "{id_file}")"\n'
+    probe = (
+        _install_id_helpers()
+        + f'printf "OUT=[%s]\\n" "$(_css_read_valid_install_id "{id_file}")"\n'
+    )
     for content in [
         b"a" * 32 + b"\x00" + b"a" * 32,
         b"b" * 64 + b"\x00",
@@ -886,8 +891,7 @@ def test_install_sh_reports_a_failed_read_instead_of_regenerating(tmp_path):
     fake_cat.chmod(0o755)
 
     probe = (
-        _install_id_helpers()
-        + f'if out=$(_css_read_valid_install_id "{id_file}"); then\n'
+        _install_id_helpers() + f'if out=$(_css_read_valid_install_id "{id_file}"); then\n'
         '    printf "READ_OK=[%s]\\n" "$out"\n'
         "else\n"
         '    printf "READ_FAILED\\n"\n'
@@ -915,8 +919,7 @@ def test_install_sh_refuses_an_unreadable_existing_id(tmp_path):
     fn_start = src.index('_css_id_dir="$STUDIO_HOME/share"')
     block = src[fn_start : fn_start + 4200]
     assert (
-        'if ! _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file"); then'
-        in block
+        'if ! _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file"); then' in block
     ), "install.sh must separate an unreadable id from a malformed one"
     assert (
         "[WARN] Cannot create launcher: cannot read" in block
@@ -929,11 +932,10 @@ def test_install_sh_refuses_an_unreadable_existing_id(tmp_path):
     id_file.chmod(0o000)
     try:
         probe = (
-            _install_id_helpers()
-            + f'_css_id_file="{id_file}"\n'
+            _install_id_helpers() + f'_css_id_file="{id_file}"\n'
             'if ! _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file"); then\n'
-            '    echo REFUSED; exit 0\n'
-            'fi\n'
+            "    echo REFUSED; exit 0\n"
+            "fi\n"
             'echo "REUSED=$_css_studio_root_id"\n'
         )
         res = subprocess.run(["sh", "-c", probe], text = True, capture_output = True)
@@ -952,13 +954,14 @@ def test_install_sh_never_reads_a_non_regular_id_path(tmp_path):
     or custom root hangs the install forever.
     """
     src = INSTALL_SH.read_text(encoding = "utf-8")
-    assert (
-        '[ -f "$1" ] || return 0' in src
-    ), "install.sh must read the id only from a regular file"
+    assert '[ -f "$1" ] || return 0' in src, "install.sh must read the id only from a regular file"
 
     id_file = tmp_path / "studio_install_id"
     os.mkfifo(id_file)
-    probe = _install_id_helpers() + f'printf "OUT=[%s]\\n" "$(_css_read_valid_install_id "{id_file}")"\n'
+    probe = (
+        _install_id_helpers()
+        + f'printf "OUT=[%s]\\n" "$(_css_read_valid_install_id "{id_file}")"\n'
+    )
     res = subprocess.run(["sh", "-c", probe], text = True, capture_output = True, timeout = 20)
     assert res.returncode == 0, res.stderr
     assert "OUT=[]" in res.stdout, f"a FIFO must read as no id, got {res.stdout!r}"
