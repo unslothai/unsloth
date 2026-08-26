@@ -662,12 +662,11 @@ def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monk
 # The list never claims to be complete when it is not
 # --------------------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("thread_names", [0, 1, 39, 40, 41])
 @pytest.mark.parametrize("overlap", [0, 1, 39, 40])
 @pytest.mark.parametrize("project_only", [0, 1, 60])
-def test_an_omitted_document_always_earns_and_n_more(
-    rag_conn, thread_names, overlap, project_only
-):
+def test_an_omitted_document_always_earns_and_n_more(rag_conn, thread_names, overlap, project_only):
     """Each scope is limited separately and the dedupe is shared, so the worry is that a
     scope clipped by its own LIMIT contributes only duplicates, leaves `truncated` false,
     and returns a list that reads as the whole set while documents sit behind it.
