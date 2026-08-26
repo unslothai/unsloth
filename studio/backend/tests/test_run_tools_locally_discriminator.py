@@ -190,3 +190,25 @@ def test_the_field_defaults_to_absent_not_false():
     payload = _payload(enabled_tools = ["web_search"])
     dumped = payload.model_dump(exclude_unset = True)
     assert "run_tools_locally" not in dumped
+
+
+def test_local_gguf_search_only_is_not_a_hosted_request():
+    """#9730: a loaded GGUF has no provider_type; web_search is Studio's tool."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _select_request_tools, _selects_only_provider_hosted_tools
+
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "Search the web for the Linux kernel version."}],
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+        permission_mode = "off",
+        tool_choice = {"type": "function", "function": {"name": "web_search"}},
+    )
+    assert payload.provider_type is None
+    assert payload.provider_id is None
+    assert _selects_only_provider_hosted_tools(payload, None) is False
+    names = [
+        t["function"]["name"]
+        for t in _drive(_select_request_tools(payload, tools_on = True, mcp_allowed = False))
+    ]
+    assert names == ["web_search"]

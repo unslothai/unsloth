@@ -25440,6 +25440,7 @@ class LlamaCppBackend:
         perf_callback: Optional[Callable[[dict], None]] = None,
         reasoning_provenance: Optional[dict] = None,
         context_overflow: Optional[str] = None,
+        tool_choice: Any = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -25738,6 +25739,9 @@ class LlamaCppBackend:
         from core.inference.chat_template_helpers import sweep_cache as _sweep_cache
 
         _markup_cache = _sweep_cache()
+        # A forced function applies until something actually runs; the follow-up
+        # must be free to answer in prose (same rule as stream_with_studio_tools).
+        _executed_any = False
         for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -25772,6 +25776,7 @@ class LlamaCppBackend:
                 append_assistant_turn,
                 neutralize_control_markup,
                 neutralize_control_markup_in_messages,
+                reconciled_tool_choice,
             )
 
             _reasoning_kw = self._request_reasoning_kwargs(
@@ -25916,7 +25921,15 @@ class LlamaCppBackend:
             # now empty, and "tools": [] would still advertise tool use.
             if safe_tools:
                 payload["tools"] = safe_tools
-                payload["tool_choice"] = "auto"
+                # Local GGUF owns Studio's web_search; honour a forced function
+                # so enabled_tools: ["web_search"] plus tool_choice pinning that
+                # name actually calls it (#9730). Default stays auto.
+                requested_choice = "auto" if tool_choice is None else tool_choice
+                if _executed_any and requested_choice not in ("auto", "none"):
+                    requested_choice = "auto"
+                payload["tool_choice"] = (
+                    reconciled_tool_choice(requested_choice, tools, safe_tools) or "auto"
+                )
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
             # Re-checked per iteration: once a tool result is appended the partial is
@@ -27278,6 +27291,7 @@ class LlamaCppBackend:
                     _last_reprompt_text = ""
                     # A tool ran this turn, so it counts against the caller's budget.
                     _turn_executed_real_tool = True
+                    _executed_any = True
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
 

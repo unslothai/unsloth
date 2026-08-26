@@ -3215,6 +3215,10 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     Anything that names a Studio-only tool (python, terminal,
     search_knowledge_base) or asks for MCP is unambiguous and keeps the loop, and
     so does every self-hosted provider, which declares no hosted tools at all.
+
+    A local GGUF/safetensors request has no provider_type, so this is False
+    even when ``enabled_tools`` is only ``web_search`` -- that name is Studio's
+    own tool there (#9730).
     """
     if getattr(payload, "mcp_enabled", False):
         return False
@@ -16652,6 +16656,7 @@ async def openai_chat_completions(
                     continue_final_message = _continue_final_message(payload),
                     auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                     nudge_tool_calls = payload.nudge_tool_calls,
+                    tool_choice = payload.tool_choice,
                     max_tool_iterations = payload.max_tool_calls_per_message
                     if payload.max_tool_calls_per_message is not None
                     else 25,
@@ -23449,6 +23454,7 @@ async def anthropic_messages(
                 max_tool_iterations = 25,
                 auto_heal_tool_calls = True,
                 nudge_tool_calls = payload.nudge_tool_calls,
+                tool_choice = openai_tool_choice,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
                 thread_id = payload.thread_id,

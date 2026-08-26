@@ -263,6 +263,59 @@ def _structured_tool_call(tool_name: str, arguments: dict, call_id: str) -> list
     ]
 
 
+def test_forced_web_search_tool_choice_is_sent_until_a_tool_runs(monkeypatch):
+    """#9730: a forced web_search must reach llama-server on the first turn.
+
+    After the call executes, the follow-up is auto so the model can answer.
+    """
+    first_stream = _structured_tool_call(
+        "web_search", {"query": "current Linux kernel version"}, "call_search"
+    )
+    second_stream = [_sse({"content": "The current version of the Linux kernel is 6.10."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, second_stream], payloads)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: "Linux kernel 6.10",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {
+                    "role": "user",
+                    "content": (
+                        "Search the web for the current version of the Linux kernel, "
+                        "then answer in one sentence."
+                    ),
+                }
+            ],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            tool_choice = {"type": "function", "function": {"name": "web_search"}},
+            max_tool_iterations = 5,
+            permission_mode = "off",
+        )
+    )
+
+    assert payloads[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "web_search"},
+    }
+    assert payloads[1]["tool_choice"] == "auto"
+    assert any(
+        event.get("type") == "tool_start" and event.get("tool_name") == "web_search"
+        for event in events
+    )
+
+
 def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     """llama-server may emit content first and then native delta.tool_calls.
 
