@@ -28,8 +28,22 @@ test("MLX base substitution resets progress to the downloaded repository", () =>
     /progressModelId = validation\.mlx_loads_base_model;/,
   );
   assert.match(VALIDATION, /downloadComplete = false;/);
-  assert.match(DOWNLOAD_POLL, /getDownloadProgress\(progressModelId\)/);
+  assert.match(
+    DOWNLOAD_POLL,
+    /getDownloadProgress\(progressModelIdAtRequest\)/,
+  );
   assert.doesNotMatch(DOWNLOAD_POLL, /getDownloadProgress\(modelId\)/);
+});
+
+test("a pre-substitution progress response cannot complete the base download", () => {
+  assert.match(
+    DOWNLOAD_POLL,
+    /const progressModelIdAtRequest = progressModelId;/,
+  );
+  assert.match(
+    DOWNLOAD_POLL,
+    /if \(progressModelIdAtRequest !== progressModelId\) return;/,
+  );
 });
 
 test("a cached substituted base advances directly to model startup", () => {

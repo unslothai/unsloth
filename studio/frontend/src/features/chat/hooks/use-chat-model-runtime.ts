@@ -2183,11 +2183,13 @@ export function useChatModelRuntime() {
             return;
           }
           try {
+            const progressModelIdAtRequest = progressModelId;
             const prog =
               ggufVariant && expectedBytes > 0
                 ? await getGgufDownloadProgress(modelId, ggufVariant, expectedBytes)
-                : await getDownloadProgress(progressModelId);
+                : await getDownloadProgress(progressModelIdAtRequest);
             if (!loadingModelRef.current) return;
+            if (progressModelIdAtRequest !== progressModelId) return;
 
             if (prog.progress > 0 && prog.progress < 1) {
               hasShownProgress = true;
