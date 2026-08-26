@@ -656,6 +656,174 @@ class TestHardenedPolicyIsAnnounced:
         assert capsys.readouterr().out == ""
 
 
+class TestPolicyEnvIsPlatformAndHardwareInvariant:
+    """The env this helper builds must not depend on the platform or the accelerator.
+
+    It reads no hardware state and it should stay that way: an installer change that
+    quietly behaves differently on one of [Windows, Linux, WSL, macOS] x [NVIDIA, AMD,
+    CPU] is the failure mode that costs a release. Asserted by construction rather than
+    trusted, and the accelerator variables are checked to PASS THROUGH untouched, since
+    the torch repair steps downstream read them.
+    """
+
+    PLATFORMS = {
+        "Linux": {"IS_WINDOWS": False, "IS_MACOS": False, "IS_MAC_ARM": False},
+        # WSL is Linux to this module; the markers are carried to prove they are inert.
+        "WSL": {"IS_WINDOWS": False, "IS_MACOS": False, "IS_MAC_ARM": False},
+        "Windows": {"IS_WINDOWS": True, "IS_MACOS": False, "IS_MAC_ARM": False},
+        "macOS": {"IS_WINDOWS": False, "IS_MACOS": True, "IS_MAC_ARM": True},
+    }
+    ACCELERATORS = {
+        "nvidia": {"CUDA_VISIBLE_DEVICES": "0", "UNSLOTH_TORCH_BACKEND": "cuda"},
+        "amd": {"HIP_VISIBLE_DEVICES": "0", "HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+        "cpu": {"UNSLOTH_TORCH_BACKEND": "cpu"},
+    }
+    COMMANDS = [
+        ["python", "-m", "pip", "install", "-r", "extras.txt"],
+        ["python", "-m", "pip", "download", "pytorch-triton-xpu==3.5.0"],
+        ["python", "-m", "pip", "check"],
+        ["uv", "pip", "install", "-r", "base.txt"],
+        ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"],
+        ["python", "-m", "pip", "install", "torch", "--default-index", "https://x/rocm6.4"],
+    ]
+
+    @pytest.mark.parametrize("opt_out", ["", "1"])
+    @pytest.mark.parametrize("hardened", [False, True])
+    def test_identical_on_every_platform_and_accelerator(self, opt_out, hardened):
+        policy = TestHardenedPipConfigRelaxation.HOSTILE if hardened else {}
+        for command in self.COMMANDS:
+            answers = set()
+            for platform, settings in self.PLATFORMS.items():
+                for accelerator, markers in self.ACCELERATORS.items():
+                    env = dict(policy, **markers)
+                    if opt_out:
+                        env["UNSLOTH_RESPECT_PM_POLICY"] = opt_out
+                    if platform == "WSL":
+                        env["WSL_DISTRO_NAME"] = "Ubuntu"
+                    with (
+                        mock.patch.dict(os.environ, env, clear = True),
+                        mock.patch.multiple(ips, **settings),
+                    ):
+                        result = ips._install_env_for_cmd(list(command))
+                    # Only the keys this helper owns; the markers themselves differ.
+                    answers.add(
+                        None
+                        if result is None
+                        else repr(sorted(
+                            (k, v) for k, v in result.items()
+                            if k.startswith(("PIP_", "UV_"))
+                        ))
+                    )
+                    if result is not None:
+                        for name, value in markers.items():
+                            assert result[name] == value, (
+                                f"{accelerator} marker {name} was dropped on {platform}"
+                            )
+            assert len(answers) == 1, (
+                f"{command} produced different environments across platforms: {answers}"
+            )
+
+
+class TestTheNoticeCannotTakeAnInstallDown:
+    """It runs BEFORE the pip upgrade, against a venv uv may have created without pip,
+    and it reads files off disk. Every way that can go wrong must cost the notice, not
+    the install."""
+
+    def test_the_pip_probe_is_bounded(self):
+        """An unbounded probe on a half-written pip is a hang with no output at all."""
+        source = Path(ips.__file__).read_text(encoding = "utf-8")
+        body = source[
+            source.index("def _hardened_pm_policy_names") : source.index("def _announce_pm_policy")
+        ]
+        assert "timeout = 30" in body, "the pip config probe must pass an explicit timeout"
+
+    def test_a_hanging_pip_still_yields_the_environment_half(self):
+        ips._hardened_pm_policy_names.cache_clear()
+        with (
+            mock.patch.dict(os.environ, {"PIP_REQUIRE_HASHES": "1"}, clear = True),
+            mock.patch.object(
+                ips.subprocess, "run",
+                mock.Mock(side_effect = ips.subprocess.TimeoutExpired("pip", 30)),
+            ),
+            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: []),
+        ):
+            names = ips._hardened_pm_policy_names()
+        ips._hardened_pm_policy_names.cache_clear()
+        assert names == ("PIP_REQUIRE_HASHES",)
+
+    def test_the_call_site_swallows_anything(self):
+        """The notice is a message, not a step. Nothing it probes is worth aborting on."""
+        source = Path(ips.__file__).read_text(encoding = "utf-8")
+        assert (
+            "try:\n        _announce_pm_policy()\n    except Exception:\n        pass" in source
+        ), "install_python_stack() must guard the notice"
+
+    @pytest.mark.parametrize(
+        "environment",
+        [{}, {"HOME": "/home/u"}, {"XDG_CONFIG_HOME": "/xdg"}, {"APPDATA": "C:\\a"}],
+    )
+    @pytest.mark.parametrize("windows", [False, True])
+    def test_path_discovery_never_raises(self, environment, windows):
+        """A service account with no HOME, or Windows with no APPDATA, still installs."""
+        with (
+            mock.patch.dict(os.environ, environment, clear = True),
+            mock.patch.object(ips, "IS_WINDOWS", windows),
+        ):
+            assert isinstance(ips._hardened_uv_config_paths(), list)
+
+    def test_documented_config_locations_are_searched(self):
+        """uv reads ~/.config/uv/uv.toml on macOS AND Linux (not Application Support),
+        %APPDATA%\\uv on Windows, with /etc/uv and %PROGRAMDATA%\\uv system-wide. The
+        system one is where a fleet operator puts the policy this notice is about."""
+        with (
+            mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
+            mock.patch.object(ips, "IS_WINDOWS", False),
+            mock.patch.object(os.path, "isfile", lambda path: True),
+        ):
+            posix = ips._hardened_uv_config_paths()
+        assert "/home/u/.config/uv/uv.toml" in posix
+        assert "/etc/uv/uv.toml" in posix
+        with (
+            mock.patch.dict(
+                os.environ, {"APPDATA": "C:\\a", "PROGRAMDATA": "C:\\pd"}, clear = True
+            ),
+            mock.patch.object(ips, "IS_WINDOWS", True),
+            mock.patch.object(os.path, "isfile", lambda path: True),
+        ):
+            windows = ips._hardened_uv_config_paths()
+        assert any("C:\\a" in path for path in windows)
+        assert any("C:\\pd" in path for path in windows)
+        assert not any(path.startswith("/etc/uv") for path in windows)
+
+    def test_a_deleted_working_directory_is_survivable(self):
+        with (
+            mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
+            mock.patch.object(os, "getcwd", mock.Mock(side_effect = FileNotFoundError)),
+            mock.patch.object(os.path, "isfile", lambda path: True),
+        ):
+            assert isinstance(ips._hardened_uv_config_paths(), list)
+
+    def test_an_unstattable_path_is_skipped(self):
+        with (
+            mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
+            mock.patch.object(os.path, "isfile", mock.Mock(side_effect = PermissionError)),
+        ):
+            assert ips._hardened_uv_config_paths() == []
+
+    def test_an_unreadable_or_undecodable_config_is_skipped(self, tmp_path):
+        undecodable = tmp_path / "uv.toml"
+        undecodable.write_bytes(b'name = "\xff\xfe"\nno-build = true\n')
+        ips._hardened_pm_policy_names.cache_clear()
+        with (
+            mock.patch.dict(os.environ, {}, clear = True),
+            mock.patch.object(ips.subprocess, "run", mock.Mock(side_effect = OSError)),
+            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: [str(undecodable)]),
+        ):
+            names = ips._hardened_pm_policy_names()
+        ips._hardened_pm_policy_names.cache_clear()
+        assert names == ("uv.toml no-build",), "lenient decoding, not a crash"
+
+
 class TestProgressLineNotes:
     """_progress() leaves the cursor mid-line, so anything printed between two
     progress steps must close that line first. Before centralising this, a real

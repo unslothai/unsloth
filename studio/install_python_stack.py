@@ -4693,23 +4693,44 @@ def _config_value_is_on(value: str) -> bool:
 def _hardened_uv_config_paths() -> "list[str]":
     """The uv config files this host has, where a no-build / require-hashes could live.
 
-    The user config and the invocation directory only. uv also reads a pyproject
-    [tool.uv] and a workspace root above the cwd; those are left out deliberately -- this
-    list drives a NOTICE, and missing one costs a line of output, not a behaviour change.
+    System, user and invocation directory, which are the documented locations: uv reads
+    `~/.config/uv/uv.toml` on macOS AND Linux (not Application Support) and
+    `%APPDATA%\\uv\\uv.toml` on Windows, with `/etc/uv/uv.toml` and `%PROGRAMDATA%\\uv`
+    as the system-wide pair. The system one matters most here: a fleet operator hardening
+    every machine puts `no-build` there. uv also reads a pyproject [tool.uv] and a
+    workspace root above the cwd; those are left out deliberately -- this list drives a
+    NOTICE, and missing one costs a line of output, not a behaviour change.
     """
     candidates = []
     explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
     if explicit:
         candidates.append(explicit)
     if IS_WINDOWS:
-        appdata = os.environ.get("APPDATA", "")
-        if appdata:
-            candidates.append(os.path.join(appdata, "uv", "uv.toml"))
+        for variable in ("APPDATA", "PROGRAMDATA"):
+            base = os.environ.get(variable, "")
+            if base:
+                candidates.append(os.path.join(base, "uv", "uv.toml"))
     else:
+        # XDG_CONFIG_HOME first: uv honours it, and a host that sets it does not
+        # necessarily have ~/.config at all.
         base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
         candidates.append(os.path.join(base, "uv", "uv.toml"))
-    candidates.append(os.path.join(os.getcwd(), "uv.toml"))
-    return [path for path in candidates if os.path.isfile(path)]
+        candidates.append("/etc/uv/uv.toml")
+    try:
+        # A deleted working directory raises here rather than returning anything.
+        candidates.append(os.path.join(os.getcwd(), "uv.toml"))
+    except OSError:
+        pass
+    found = []
+    for path in candidates:
+        try:
+            if os.path.isfile(path):
+                found.append(path)
+        except OSError:
+            # A path this process cannot stat (permissions, a dead network mount) is
+            # simply not a config file we can report on.
+            continue
+    return found
 
 
 @functools.lru_cache(maxsize = 1)
@@ -4730,9 +4751,13 @@ def _hardened_pm_policy_names() -> "tuple[str, ...]":
             [sys.executable, "-m", "pip", "config", "list"],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
+            # Bounded because this runs BEFORE the pip upgrade, against a venv that may
+            # have no pip at all (uv creates them without one). A notice must never be
+            # able to hang an install.
+            timeout = 30,
             **_windows_hidden_subprocess_kwargs(),
         )
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         result = None
     if result is not None and result.returncode == 0:
         for line in (result.stdout or b"").decode("utf-8", "replace").splitlines():
@@ -5374,7 +5399,14 @@ def install_python_stack() -> int:
     # Before the bar starts, so the line cannot land mid-progress: on a hardened host,
     # say which controls are relaxed for the installer's own dependency installs and how
     # to keep them. Silent on every ordinary machine.
-    _announce_pm_policy()
+    #
+    # Guarded because this is a message, not a step. It probes pip and reads files the
+    # install itself never touches, and no failure of that probing is worth aborting an
+    # install over -- the worst case is that the notice is missing.
+    try:
+        _announce_pm_policy()
+    except Exception:
+        pass
 
     # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
     #    include pip by default).
