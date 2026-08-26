@@ -17513,13 +17513,12 @@ def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
 
     def append_resampled(resampled) -> None:
         nonlocal sample_count
-        block = resampled.to_ndarray().reshape(-1)
-        sample_count += block.size
+        sample_count += int(resampled.samples)
         if sample_count > sample_rate * _MAX_AUDIO_SECONDS:
             raise _DecodedAudioTooLongError(
                 f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
             )
-        chunks.append(block)
+        chunks.append(resampled.to_ndarray().reshape(-1))
 
     with av.open(io.BytesIO(raw), mode = "r", metadata_errors = "ignore") as container:
         if not container.streams.audio:

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+use crate::native_path_policy::{is_audio_only_3gp, is_binary_property_list, is_binary_vobsub};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
 use std::fs::File;
@@ -183,10 +184,10 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
         {
             continue;
         }
-        if crate::native_path_policy::is_binary_property_list(&path, &bytes) {
+        if is_binary_property_list(&path, &bytes) || is_binary_vobsub(&path, &bytes) {
             continue;
         }
-        let mime_type = if is_3gp && crate::native_intents::is_audio_only_3gp(&bytes) {
+        let mime_type = if is_3gp && is_audio_only_3gp(&bytes) {
             "audio/3gpp"
         } else {
             mime_type
@@ -430,6 +431,10 @@ mod tests {
             clipboard_file_mime_type(Path::new("Containerfile")),
             Some("text/plain")
         );
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("recording.3gp")),
+            Some("video/3gpp")
+        );
         assert_eq!(clipboard_file_mime_type(Path::new("unknown.bin")), None);
     }
 
@@ -485,6 +490,20 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_skips_binary_vobsub_but_keeps_text_subtitles() {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("binary.sub");
+        std::fs::write(&binary, b"\x00\x00\x01\xbapayload").unwrap();
+        let text = directory.path().join("text.sub");
+        std::fs::write(&text, b"{1}{24}Subtitle").unwrap();
+
+        let files = read_clipboard_files(vec![binary, text]).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "text.sub");
+        assert_eq!(files[0].mime_type, "text/plain");
+    }
+
+    #[test]
     fn clipboard_3gp_uses_its_bmff_track_type() {
         let directory = tempfile::tempdir().unwrap();
         let audio = directory.path().join("recording.3gp");
@@ -500,7 +519,10 @@ mod tests {
 
     #[test]
     fn clipboard_audio_uses_the_chat_upload_boundary() {
-        assert_eq!(clipboard_file_max_bytes("audio/mpeg"), 25 * 1024 * 1024);
+        assert_eq!(
+            clipboard_file_max_bytes("audio/mpeg"),
+            MAX_CLIPBOARD_AUDIO_BYTES
+        );
         assert_eq!(
             clipboard_file_max_bytes("video/3gpp"),
             MAX_CLIPBOARD_SOURCE_BYTES

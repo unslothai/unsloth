@@ -5,8 +5,9 @@ use crate::native_backend_lease::{
 };
 use crate::native_path_policy::{
     classify_artifact_path, classify_native_attachment_path, classify_native_dataset_path,
-    classify_native_document_folder, classify_native_model_path, is_binary_property_list,
-    is_text_attachment_name, reveal_target, ClassifiedPath, NativeArtifactKind,
+    classify_native_document_folder, classify_native_model_path, is_audio_only_3gp,
+    is_binary_property_list, is_binary_vobsub, is_text_attachment_name, reveal_target,
+    ClassifiedPath, NativeArtifactKind,
 };
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -679,60 +680,6 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
     }
 }
 
-fn bmff_box_payloads<'a>(data: &'a [u8], wanted: &[u8; 4]) -> Vec<&'a [u8]> {
-    let mut payloads = Vec::new();
-    let mut offset = 0usize;
-    while data.len().saturating_sub(offset) >= 8 {
-        let size32 = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap());
-        let box_type = &data[offset + 4..offset + 8];
-        let (header_size, box_size) = match size32 {
-            0 => (8usize, data.len() - offset),
-            1 if data.len().saturating_sub(offset) >= 16 => {
-                let size64 = u64::from_be_bytes(data[offset + 8..offset + 16].try_into().unwrap());
-                let Ok(size) = usize::try_from(size64) else {
-                    break;
-                };
-                (16, size)
-            }
-            1 => break,
-            size => (8, size as usize),
-        };
-        if box_size < header_size || box_size > data.len() - offset {
-            break;
-        }
-        if box_type == wanted {
-            payloads.push(&data[offset + header_size..offset + box_size]);
-        }
-        offset += box_size;
-    }
-    payloads
-}
-
-/// 3GP is an ISO BMFF container shared by audio recordings and videos. Prefer
-/// video when any video track exists; an audio-only file belongs to the audio
-/// adapter registered ahead of video in the composer.
-pub(crate) fn is_audio_only_3gp(raw: &[u8]) -> bool {
-    let mut has_audio = false;
-    let mut has_video = false;
-    for moov in bmff_box_payloads(raw, b"moov") {
-        for trak in bmff_box_payloads(moov, b"trak") {
-            for mdia in bmff_box_payloads(trak, b"mdia") {
-                for hdlr in bmff_box_payloads(mdia, b"hdlr") {
-                    if hdlr.len() < 12 {
-                        continue;
-                    }
-                    match &hdlr[8..12] {
-                        b"soun" => has_audio = true,
-                        b"vide" => has_video = true,
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-    has_audio && !has_video
-}
-
 fn attachment_payload_mime_type(path: &Path, raw: &[u8]) -> Option<&'static str> {
     if path
         .extension()
@@ -838,6 +785,9 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
         return Err(
             "Binary property lists are not supported. Export the .plist as XML first.".to_string(),
         );
+    }
+    if is_binary_vobsub(path, &bytes) {
+        return Err("VobSub .sub files are not supported as text attachments.".to_string());
     }
     let mime_type = attachment_payload_mime_type(path, &bytes)
         .ok_or_else(|| "Only chat attachments can be read inline.".to_string())?;
@@ -976,6 +926,18 @@ mod tests {
             panic!("expected binary plist read to fail");
         };
         assert!(error.contains("Binary property lists"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn binary_vobsub_read_is_rejected() {
+        let path = temp_path("movie").with_extension("sub");
+        fs::write(&path, b"\x00\x00\x01\xbapayload").unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let Err(error) = read_attachment_payload(&entry) else {
+            panic!("expected binary VobSub read to fail");
+        };
+        assert!(error.contains("VobSub"));
         let _ = fs::remove_file(path);
     }
 

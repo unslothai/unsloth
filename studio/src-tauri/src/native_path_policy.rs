@@ -371,6 +371,62 @@ pub fn is_binary_property_list(path: &Path, bytes: &[u8]) -> bool {
     has_extension(path, "plist") && bytes.starts_with(b"bplist00")
 }
 
+pub fn is_binary_vobsub(path: &Path, bytes: &[u8]) -> bool {
+    has_extension(path, "sub") && bytes.starts_with(b"\x00\x00\x01\xba")
+}
+
+fn bmff_box_payloads<'a>(data: &'a [u8], wanted: &[u8; 4]) -> Vec<&'a [u8]> {
+    let mut payloads = Vec::new();
+    let mut offset = 0usize;
+    while data.len().saturating_sub(offset) >= 8 {
+        let size32 = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap());
+        let box_type = &data[offset + 4..offset + 8];
+        let (header_size, box_size) = match size32 {
+            0 => (8usize, data.len() - offset),
+            1 if data.len().saturating_sub(offset) >= 16 => {
+                let size64 = u64::from_be_bytes(data[offset + 8..offset + 16].try_into().unwrap());
+                let Ok(size) = usize::try_from(size64) else {
+                    break;
+                };
+                (16, size)
+            }
+            1 => break,
+            size => (8, size as usize),
+        };
+        if box_size < header_size || box_size > data.len() - offset {
+            break;
+        }
+        if box_type == wanted {
+            payloads.push(&data[offset + header_size..offset + box_size]);
+        }
+        offset += box_size;
+    }
+    payloads
+}
+
+/// Whether a 3GP container has audio tracks and no video tracks.
+pub fn is_audio_only_3gp(raw: &[u8]) -> bool {
+    let mut has_audio = false;
+    let mut has_video = false;
+    for moov in bmff_box_payloads(raw, b"moov") {
+        for trak in bmff_box_payloads(moov, b"trak") {
+            for mdia in bmff_box_payloads(trak, b"mdia") {
+                for hdlr in bmff_box_payloads(mdia, b"hdlr") {
+                    if hdlr.len() < 12 {
+                        continue;
+                    }
+                    match &hdlr[8..12] {
+                        b"soun" => has_audio = true,
+                        b"vide" => has_video = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    has_audio && !has_video
+}
+
 /// Vision chat image attachments; keep in sync with `drop-paths.ts` `CHAT_IMAGE_DROP_ACCEPT`.
 pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
 
@@ -1057,6 +1113,22 @@ mod tests {
         assert!(!is_binary_property_list(
             Path::new("settings.txt"),
             b"bplist00payload"
+        ));
+    }
+
+    #[test]
+    fn binary_vobsub_magic_is_detected() {
+        assert!(is_binary_vobsub(
+            Path::new("movie.sub"),
+            b"\x00\x00\x01\xbapayload"
+        ));
+        assert!(!is_binary_vobsub(
+            Path::new("movie.sub"),
+            b"{1}{24}Subtitle"
+        ));
+        assert!(!is_binary_vobsub(
+            Path::new("movie.txt"),
+            b"\x00\x00\x01\xbapayload"
         ));
     }
 
