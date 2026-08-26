@@ -242,6 +242,16 @@ _uv_download_markers() {
     '
 }
 
+# True when the operator asked for their pip/uv policy to be left in force. Mirrors
+# _respect_pm_policy() in studio/install_python_stack.py, including its false set, so the
+# same variable means the same thing at every entry point.
+_respect_pm_policy() {
+    case "$(printf '%s' "${UNSLOTH_RESPECT_PM_POLICY:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+        ''|0|false|no) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 run_install_cmd() {
     _label="$1"
     shift
@@ -250,7 +260,17 @@ run_install_cmd() {
     # redirects torch; UV_NO_CONFIG=1 + dropping UV_CONFIG_FILE stops a uv.toml/pyproject
     # index outranking the CLI pin, uv 0.10).
     case " $* " in
-        *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS -u UV_CONFIG_FILE UV_NO_CONFIG=1 "$@" ;;
+        *" --default-index "*)
+            if _respect_pm_policy; then
+                # This runs before install_python_stack.py, so the Python side's opt-out
+                # cannot cover it. Keep UV_CONFIG_FILE and uv's config discovery: the
+                # operator asked for their uv.toml to bind this install too. The ADDITIVE
+                # index variables still go, since the pin is itself a provenance control.
+                set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS "$@"
+            else
+                set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS -u UV_CONFIG_FILE UV_NO_CONFIG=1 "$@"
+            fi
+            ;;
     esac
     if _is_verbose; then
         # Stream through the redactor: uv echoes index URLs (credentials and

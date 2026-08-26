@@ -4650,6 +4650,23 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 # the catch: this is the last statement before Fast-Install starts resolving `python`.
 Assert-VenvActivated -VenvDir $VenvDir
 
+# True when the operator asked for their pip/uv policy to be left in force. Mirrors
+# _respect_pm_policy() in install_python_stack.py, including its false set, so the same
+# variable means the same thing on both sides of the hand-off.
+function Test-RespectPmPolicy {
+    $value = [Environment]::GetEnvironmentVariable('UNSLOTH_RESPECT_PM_POLICY')
+    if ($null -eq $value) { return $false }
+    return @('', '0', 'false', 'no') -notcontains $value.Trim().ToLowerInvariant()
+}
+
+# PIP_NO_INDEX read the way pip reads it, for the one variable the opt-out keeps.
+# Same false set as pip's strtobool, which is what _config_value_is_on() uses.
+function Test-PipNoIndexOn {
+    $value = [Environment]::GetEnvironmentVariable('PIP_NO_INDEX')
+    if ($null -eq $value) { return $false }
+    return @('', 'n', 'no', 'f', 'false', 'off', '0') -notcontains $value.Trim().ToLowerInvariant()
+}
+
 # Helper: install a package, preferring uv with pip fallback
 function Fast-Install {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
@@ -4660,18 +4677,36 @@ function Fast-Install {
     # pin (uv 0.10); PIP_NO_INDEX / PIP_INDEX_URL would defeat the pinned --index-url in pip.
     $saved = @{}
     $pinned = @($Args_) -contains '--index-url'
+    # These installs run BEFORE install_python_stack.py is invoked, so the Python side's
+    # opt-out cannot cover them: without this gate an operator who set the variable would
+    # have their pip.conf and uv.toml bypassed for the torch install and only see the
+    # notice afterwards. Same split as _install_env_for_cmd(): the ADDITIVE index
+    # variables are still scrubbed, because the pin is itself a provenance control, but
+    # the policy-bearing config files survive.
+    $respectPolicy = Test-RespectPmPolicy
     if ($pinned) {
-        foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL',
-                       'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS',
-                       'PIP_NO_INDEX', 'PIP_INDEX_URL',
-                       'UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE') {
+        $scrub = @('UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL',
+                   'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS',
+                   'PIP_NO_INDEX', 'PIP_INDEX_URL',
+                   'UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE')
+        if ($respectPolicy) {
+            # PIP_NO_INDEX only ever REMOVES sources, so it and the PIP_FIND_LINKS it
+            # leaves as the sole source are kept: dropping them would send a pinned
+            # command to the network on a host that had said not to.
+            $keep = @('UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE')
+            if (Test-PipNoIndexOn) { $keep += @('PIP_NO_INDEX', 'PIP_FIND_LINKS') }
+            $scrub = @($scrub | Where-Object { $keep -notcontains $_ })
+        }
+        foreach ($n in $scrub) {
             $saved[$n] = [Environment]::GetEnvironmentVariable($n)
             Remove-Item "Env:$n" -ErrorAction SilentlyContinue
         }
-        $env:UV_NO_CONFIG = '1'
-        # A `pip config` global.extra-index-url still adds indexes to the pip FALLBACK;
-        # PIP_CONFIG_FILE = 'nul' (Windows devnull) loads NO config (uv ignores pip config).
-        $env:PIP_CONFIG_FILE = 'nul'
+        if (-not $respectPolicy) {
+            $env:UV_NO_CONFIG = '1'
+            # A `pip config` global.extra-index-url still adds indexes to the pip FALLBACK;
+            # PIP_CONFIG_FILE = 'nul' (Windows devnull) loads NO config (uv ignores pip config).
+            $env:PIP_CONFIG_FILE = 'nul'
+        }
     }
     try {
         if ($UseUv) {
@@ -4682,7 +4717,10 @@ function Fast-Install {
         & python -m pip install @Args_ 2>&1
     }
     finally {
-        if ($pinned) {
+        # Only clear what this function SET. Under the opt-out these two were neither
+        # saved nor overwritten, so removing them here would destroy the operator's own
+        # values for the rest of the run.
+        if ($pinned -and -not $respectPolicy) {
             Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue
             Remove-Item "Env:PIP_CONFIG_FILE" -ErrorAction SilentlyContinue
         }
@@ -4708,16 +4746,25 @@ function Fast-Uninstall {
 function Fast-Download {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
     $saved = @{}
-    foreach ($n in 'PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS', 'PIP_NO_INDEX', 'PIP_INDEX_URL', 'PIP_CONFIG_FILE') {
+    # Gated like Fast-Install: a pip.conf the operator asked to keep in force must also
+    # bind the fetch half of a staged swap, or the wheel arrives unverified.
+    $respectPolicy = Test-RespectPmPolicy
+    $scrub = @('PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS', 'PIP_NO_INDEX', 'PIP_INDEX_URL', 'PIP_CONFIG_FILE')
+    if ($respectPolicy) {
+        $keep = @('PIP_CONFIG_FILE')
+        if (Test-PipNoIndexOn) { $keep += @('PIP_NO_INDEX', 'PIP_FIND_LINKS') }
+        $scrub = @($scrub | Where-Object { $keep -notcontains $_ })
+    }
+    foreach ($n in $scrub) {
         $saved[$n] = [Environment]::GetEnvironmentVariable($n)
         Remove-Item "Env:$n" -ErrorAction SilentlyContinue
     }
-    $env:PIP_CONFIG_FILE = 'nul'
+    if (-not $respectPolicy) { $env:PIP_CONFIG_FILE = 'nul' }
     try {
         & python -m pip download @Args_ 2>&1
     }
     finally {
-        Remove-Item "Env:PIP_CONFIG_FILE" -ErrorAction SilentlyContinue
+        if (-not $respectPolicy) { Remove-Item "Env:PIP_CONFIG_FILE" -ErrorAction SilentlyContinue }
         foreach ($n in $saved.Keys) { if ($null -ne $saved[$n]) { Set-Item "Env:$n" $saved[$n] } }
     }
 }
@@ -5351,7 +5398,14 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
     $_tritonXpuSpec = if ($_tritonProbe.Ok -and $_tritonProbe.Output -match '(?m)^TRITONXPU=(\S+)\s*$') { $Matches[1] } else { "" }
     # The spec must itself be an XPU triton (pytorch-triton-xpu / triton-xpu); anything else means
     # torch is not the +xpu wheel this branch assumes.
-    if ($_tritonWinVer -and $_tritonXpuSpec -match '(?i)xpu') {
+    if ($_tritonWinVer -and $_tritonXpuSpec -match '(?i)xpu' -and (Test-RespectPmPolicy)) {
+        # Same decline as _ensure_xpu_triton(). The reinstall below installs a local wheel
+        # PATH, which carries no hash, so a require-hashes policy fails it -- and it runs
+        # after triton-windows is already gone. Refusing before the removal keeps the venv
+        # whole; the cost is torch.compile on the XPU, which the next run can still fix.
+        substep "[WARN] UNSLOTH_RESPECT_PM_POLICY is set and the XPU triton swap would have to install a wheel your hash policy cannot verify; triton-windows $_tritonWinVer left in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
+    }
+    elseif ($_tritonWinVer -and $_tritonXpuSpec -match '(?i)xpu') {
         substep "replacing triton-windows $_tritonWinVer with $_tritonXpuSpec (Intel XPU)..." "Cyan"
         # install_manifest.manifest_path() is venv_root()/MANIFEST_NAME and venv_root() is
         # sys.prefix, which is $VenvDir here -- the same join Get-PersistedNoTorch does. Assembled
