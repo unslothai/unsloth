@@ -4879,21 +4879,30 @@ def _hardened_pip_config_paths() -> "list[str]":
     return _existing_files(candidates)
 
 
-def _hardened_keys_in_ini(text: str) -> "list[str]":
-    """Hardened keys switched ON in a pip.conf, in any of its sections."""
+def _hardened_settings_in_ini(text: str) -> "dict[str, str]":
+    """Hardened keys DEFINED in a pip.conf, with their values, in any of its sections.
+
+    Values rather than a filtered list of on-keys, because precedence is resolved across
+    files: a later pip.conf setting `require-hashes = false` has to be able to cancel an
+    earlier one, and a caller that only ever saw the enabled keys could not do that.
+    """
     parser = configparser.RawConfigParser()
     try:
         parser.read_string(text)
     except configparser.Error:
-        return []
-    found = []
+        return {}
+    settings: dict[str, str] = {}
     for section in parser.sections():
         for key in _HARDENED_CONFIG_KEYS:
             if parser.has_option(section, key):
-                value = parser.get(section, key, fallback = "")
-                if _config_value_is_on(value):
-                    found.append(key)
-    return found
+                settings[key] = parser.get(section, key, fallback = "")
+    return settings
+
+
+def _hardened_keys_in_ini(text: str) -> "list[str]":
+    """Hardened keys switched ON in a single pip.conf."""
+    return [key for key, value in _hardened_settings_in_ini(text).items()
+            if _config_value_is_on(value)]
 
 
 def _read_text(path: str) -> "str | None":
@@ -4936,23 +4945,40 @@ def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
     except (OSError, subprocess.SubprocessError):
         result = None
     if result is not None and result.returncode == 0:
+        # `pip config list` prints EVERY definition, including ones a
+        # higher-precedence file overrides: a user pip.conf require-hashes=true and a
+        # venv site pip.conf require-hashes=false emit both lines, and pip enforces the
+        # second. Measured on pip 26.2.1, `config get` returns false there and the
+        # install is not hash-checked, so taking any enabled occurrence would announce a
+        # policy pip does not apply. The lines come in load order, so last wins.
+        effective: "dict[str, str]" = {}
         for line in (result.stdout or b"").decode("utf-8", "replace").splitlines():
             name, separator, raw = line.partition("=")
             # `:env:` entries restate the environment, already covered above.
             if not separator or name.strip().startswith(":env:"):
                 continue
             option = name.strip().rpartition(".")[2]
-            if option in _HARDENED_CONFIG_KEYS and _config_value_is_on(raw.strip().strip("'\"")):
+            if option in _HARDENED_CONFIG_KEYS:
+                effective[option] = raw.strip().strip("'\"")
+        for option, value in effective.items():
+            if _config_value_is_on(value):
                 found.append(("pip", "pip.conf", option))
     else:
         # No usable pip, so read pip's files directly rather than report an ordinary
         # machine. Only in this branch: when pip answered, it already merged them.
+        # _hardened_pip_config_paths returns them in pip's own load order, so the same
+        # last-wins resolution applies here: a site pip.conf turning a policy off must
+        # cancel the user pip.conf that turned it on.
+        winners: "dict[str, tuple[str, str]]" = {}
         for path in _hardened_pip_config_paths():
             text = _read_text(path)
             if text is None:
                 continue
-            for key in _hardened_keys_in_ini(text):
-                found.append(("pip", os.path.basename(path), key))
+            for key, value in _hardened_settings_in_ini(text).items():
+                winners[key] = (os.path.basename(path), value)
+        for key, (basename, value) in winners.items():
+            if _config_value_is_on(value):
+                found.append(("pip", basename, key))
     for path in _hardened_uv_config_paths():
         text = _read_text(path)
         if text is None:

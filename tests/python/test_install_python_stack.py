@@ -899,6 +899,43 @@ class TestConfigDetectionReadsValuesNotJustKeys:
         assert windows and all(path.endswith("pip.ini") for path in windows)
         assert any(path.startswith("C:\\pd") for path in windows)
 
+    def test_pip_config_precedence_is_resolved(self):
+        """`pip config list` prints EVERY definition, overridden ones included.
+
+        Measured on pip 26.2.1 with a user pip.conf `require-hashes = true` and a venv
+        site pip.conf `require-hashes = false`: both lines are emitted, `pip config get
+        global.require-hashes` returns false, and the install is NOT hash-checked. Taking
+        any enabled occurrence announced a policy pip does not apply.
+        """
+        listing = "global.require-hashes='true'\nglobal.require-hashes='false'\n"
+        assert self._names({}, pip_ok = True, pip_config = listing) == ()
+        # And the other order still reports it, so the resolution is precedence, not
+        # "an off value anywhere wins".
+        listing = "global.require-hashes='false'\nglobal.require-hashes='true'\n"
+        assert self._names({}, pip_ok = True, pip_config = listing) == (
+            "pip.conf require-hashes",
+        )
+
+    def test_file_precedence_is_resolved_when_pip_is_missing(self, tmp_path):
+        """The same resolution in the branch this feature exists for: no pip at all."""
+        user = tmp_path / "user.conf"
+        user.write_text("[global]\nrequire-hashes = true\n", encoding = "utf-8")
+        site = tmp_path / "site.conf"
+        site.write_text("[global]\nrequire-hashes = false\n", encoding = "utf-8")
+        ips._detected_policy.cache_clear()
+        with (
+            mock.patch.dict(os.environ, {}, clear = True),
+            mock.patch.object(ips.subprocess, "run", mock.Mock(side_effect = OSError)),
+            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: []),
+            # Returned in pip's load order, so the site file is last and wins.
+            mock.patch.object(
+                ips, "_hardened_pip_config_paths", lambda: [str(user), str(site)]
+            ),
+        ):
+            names = ips._hardened_pm_policy_names()
+        ips._detected_policy.cache_clear()
+        assert names == ()
+
     def test_a_malformed_pip_conf_is_survivable(self, tmp_path):
         config = tmp_path / "pip.conf"
         config.write_text("this is not ini at all\n[[[\n", encoding = "utf-8")
