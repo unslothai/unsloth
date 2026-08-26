@@ -963,7 +963,7 @@ def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatc
     monkeypatch.setattr(embeddings, "_st_accepts_local_files_only", lambda _c: False)
     import utils.utils as utils
 
-    monkeypatch.setattr(utils, "snapshot_has_st_weights", lambda m: True)
+    monkeypatch.setattr(utils, "cached_st_source", lambda m: ("org/embedder", snapshot))
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
     import sys as _sys
     import types as _t

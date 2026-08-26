@@ -446,31 +446,32 @@ def _get(model_name: str | None = None):
                 model_kwargs = dtype_kwargs("float32" if device == "cpu" else "float16"),
             )
             load_target = name
-            from utils.utils import hf_cache_snapshot_dir, snapshot_has_st_weights
+            from utils.utils import cached_st_source, hf_cache_snapshot_dir
 
-            # Same ST-specific check as below, for the same reason: the shared
-            # loadable predicate counts .gguf, so a GGUF-only cached snapshot
-            # would be pinned as the load target for a SentenceTransformer load.
-            if not local_only and snapshot_has_st_weights(name):
+            # The repo AND the directory that supplied the weights, together: a
+            # slashless name can match under sentence-transformers/ while a stale
+            # literal cache entry is what a second lookup would return, and ST
+            # weights alone are satisfied by the first finalized shard of a
+            # transfer still in flight.
+            st_source = cached_st_source(name)
+            if not local_only and st_source is not None:
                 # Settings reported this model on-device off the same predicate, so
                 # handing SentenceTransformer the repo id here is what lets it reach
                 # the Hub for a revision published since, and fetch it during the
                 # first index. That is the invisible transfer the picker exists to
                 # replace, and it changes the vectors without changing the identity
                 # they are tagged with. Load the snapshot that was called cached.
-                snapshot = hf_cache_snapshot_dir(name)
-                if snapshot is not None:
-                    load_target = str(snapshot)
+                load_target = str(st_source[1])
             if local_only:
-                # ST-specific: a hybrid repo whose GGUF is cached while its ST
-                # snapshot is still downloading would otherwise retire the marker
-                # and hand SentenceTransformer a GGUF-only snapshot.
-                if download_pending and not snapshot_has_st_weights(name):
+                # ST-specific AND complete: a hybrid repo whose GGUF is cached, or a
+                # transfer that has finalized only its first shard, would otherwise
+                # retire the marker and be handed to SentenceTransformer.
+                if download_pending and st_source is None:
                     raise EmbeddingModelDownloadRequiredError(
                         f"Embedding model {name!r} is not downloaded yet. "
                         "Finish its Settings download before indexing documents."
                     )
-                snapshot = hf_cache_snapshot_dir(name)
+                snapshot = st_source[1] if st_source else hf_cache_snapshot_dir(name)
                 if snapshot is not None and download_pending:
                     # Only once the snapshot path is in hand: off the loadable check
                     # alone, an eviction in between cleared the marker AND raised,

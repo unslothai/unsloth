@@ -555,30 +555,43 @@ def is_st_weight_name(basename: str) -> bool:
     return False
 
 
-def cached_st_repo(model_name: str) -> Optional[str]:
-    """Repo id whose cached snapshot holds ST-loadable weights for ``model_name``.
+def cached_st_source(model_name: str) -> Optional[tuple]:
+    """``(repo id, snapshot dir)`` whose cache holds ST-loadable weights, complete.
 
     Alias-aware, and it reports WHICH candidate matched: a slashless name caches
-    under ``sentence-transformers/``, so naming the literal id as the download
-    repo sends the manager at a repo that usually does not exist."""
+    under ``sentence-transformers/``, so the literal id names a repo that usually
+    does not exist, and a stale literal cache entry is not the directory that
+    supplied the weights. Completeness comes from
+    ``hf_cache_snapshot_is_loadable`` on that same candidate: ST weights alone are
+    satisfied by the first finalized shard of a transfer still in flight.
+    """
     for candidate in st_repo_id_candidates(model_name):
         snapshot = hf_cache_snapshot_dir(candidate)
         if snapshot is None:
             continue
         try:
-            if any(is_st_weight_name(p.name) and p.is_file() for p in snapshot.rglob("*")):
-                return candidate
+            if not any(is_st_weight_name(p.name) and p.is_file() for p in snapshot.rglob("*")):
+                continue
         except OSError:
             continue
+        if hf_cache_snapshot_is_loadable(candidate):
+            return (candidate, snapshot)
     return None
 
 
+def cached_st_repo(model_name: str) -> Optional[str]:
+    """Repo id whose cached snapshot holds complete ST-loadable weights."""
+    source = cached_st_source(model_name)
+    return source[0] if source else None
+
+
 def snapshot_has_st_weights(model_name: str) -> bool:
-    """Whether ``model_name``'s cached snapshot holds a checkpoint ST can open.
+    """Whether ``model_name`` has a complete cached checkpoint ST can open.
 
     ``hf_cache_snapshot_is_loadable`` counts ``.gguf``, which is right for the
-    llama backend and wrong wherever SentenceTransformer is the loader."""
-    return cached_st_repo(model_name) is not None
+    llama backend and wrong wherever SentenceTransformer is the loader; this pairs
+    it with the ST-specific file family so both hold."""
+    return cached_st_source(model_name) is not None
 
 
 def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:

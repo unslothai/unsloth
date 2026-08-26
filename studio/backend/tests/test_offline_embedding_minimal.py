@@ -1220,3 +1220,96 @@ def test_a_gguf_only_cache_does_not_retire_the_pending_st_marker(monkeypatch, tm
         embeddings._name = None
 
     assert cleared == [], "the advertised ST transfer has not landed yet"
+
+
+def test_a_partial_st_transfer_keeps_the_pending_marker(monkeypatch, tmp_path):
+    """ST weights alone are satisfied by the first finalized shard of a transfer
+    still in flight. Clearing the marker there and loading the partial snapshot
+    means a later cancel plus eviction leaves the next attempt free to download."""
+    from core.rag import embeddings
+    import utils.embedding_model_settings as ems
+    import utils.utils as utils
+
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model-00001-of-00003.safetensors").write_bytes(b"ST")
+
+    cleared = []
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda m: cleared.append(m) or True)
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: True)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+    # The ST family is there; the snapshot as a whole is not complete.
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: False)
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    monkeypatch.setattr(embeddings, "_st_accepts_local_files_only", lambda _c: False)
+    st_mod = types.ModuleType("sentence_transformers")
+    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer = None)
+    monkeypatch.setitem(sys.modules, "sentence_transformers", st_mod)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    embeddings._model = None
+    embeddings._name = None
+
+    assert utils.cached_st_source("org/partial") is None
+    try:
+        with pytest.raises(embeddings.EmbeddingModelDownloadRequiredError):
+            embeddings._get("org/partial")
+    finally:
+        embeddings._model = None
+        embeddings._name = None
+
+    assert cleared == [], "the planned snapshot has not landed in full yet"
+
+
+def test_the_alias_snapshot_is_the_one_loaded(monkeypatch, tmp_path):
+    """cached_st_source can match under sentence-transformers/ while a separate
+    hf_cache_snapshot_dir lookup returns a stale literal entry. Pinning that one
+    hands SentenceTransformer the wrong directory while the valid alias snapshot
+    sits right there."""
+    from core.rag import embeddings
+    import utils.utils as utils
+
+    literal = tmp_path / "literal"
+    literal.mkdir()
+    (literal / "config.json").write_text("{}")
+    alias = tmp_path / "alias"
+    alias.mkdir()
+    (alias / "config.json").write_text("{}")
+    (alias / "model.safetensors").write_bytes(b"ST")
+
+    def _dir(repo):
+        return alias if repo == "sentence-transformers/all-MiniLM-L6-v2" else literal
+
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir", _dir)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
+
+    assert utils.cached_st_source("all-MiniLM-L6-v2") == (
+        "sentence-transformers/all-MiniLM-L6-v2",
+        alias,
+    )
+
+    loaded = {}
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    monkeypatch.setattr(embeddings, "_st_accepts_local_files_only", lambda _c: False)
+    st_mod = types.ModuleType("sentence_transformers")
+
+    def _st(target, **_kwargs):
+        loaded["target"] = target
+        return SimpleNamespace(tokenizer = None)
+
+    st_mod.SentenceTransformer = _st
+    monkeypatch.setitem(sys.modules, "sentence_transformers", st_mod)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    embeddings._model = None
+    embeddings._name = None
+    try:
+        embeddings._get("all-MiniLM-L6-v2")
+    finally:
+        embeddings._model = None
+        embeddings._name = None
+
+    assert loaded["target"] == str(alias)
