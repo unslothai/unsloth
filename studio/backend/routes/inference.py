@@ -14095,11 +14095,12 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         system_prompt:  System message text (empty string if none).
         chat_messages:  Non-system messages with content flattened to strings and
                         assistant reasoning_content preserved.
-        image_base64:   Base64 of the *first* image found, or ``None``.
+        image_base64:   Base64 of the most recent image found, or ``None``.
     """
     system_parts: list[str] = []
     chat_messages: list[dict] = []
-    first_image_b64: Optional[str] = None
+    latest_image_b64: Optional[str] = None
+    latest_user_image_b64: Optional[str] = None
 
     for msg in messages:
         # ── System / developer messages → extract as system_prompt ────────
@@ -14119,16 +14120,32 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         elif isinstance(msg.content, list):
             # Multimodal content parts
             text_parts: list[str] = []
+            message_image_b64: Optional[str] = None
             for part in msg.content:
                 if part.type == "text":
                     text_parts.append(part.text)
-                elif part.type == "image_url" and first_image_b64 is None:
+                elif part.type == "image_url":
                     url = part.image_url.url
                     if url.startswith("data:"):
-                        # data:image/png;base64,<DATA> -> extract <DATA>
-                        first_image_b64 = url.split(",", 1)[1] if "," in url else None
+                        # A payloadless data URL is not an image, so it must not
+                        # displace a real one from an earlier turn.
+                        part_b64 = url.partition(",")[2]
+                        if part_b64:
+                            # First within a message, matching the frontend's
+                            # findLatestUserImageBase64 (chat-adapter.ts).
+                            if message_image_b64 is None:
+                                message_image_b64 = part_b64
+                        else:
+                            logger.warning(
+                                f"Ignoring image URL with no base64 payload: {url[:80]}..."
+                            )
                     else:
                         logger.warning(f"Remote image URLs not yet supported: {url[:80]}...")
+            # Latest message wins: send the image just attached, not the thread's first.
+            if message_image_b64 is not None:
+                latest_image_b64 = message_image_b64
+                if msg.role == "user":
+                    latest_user_image_b64 = message_image_b64
             combined_text = "\n".join(text_parts) if text_parts else ""
         elif msg.role == "assistant" and msg.reasoning_content:
             # A reasoning-only turn has no visible content, but still needs a
@@ -14142,7 +14159,13 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
             chat_message["reasoning_content"] = msg.reasoning_content
         chat_messages.append(chat_message)
 
-    return "\n\n".join(p for p in system_parts if p), chat_messages, first_image_b64
+    # A user's own attachment outranks an assistant-generated one, as the frontend's
+    # legacy image_base64 field does. An assistant-only history still falls back.
+    return (
+        "\n\n".join(p for p in system_parts if p),
+        chat_messages,
+        latest_user_image_b64 or latest_image_b64,
+    )
 
 
 # ── External provider proxy ──────────────────────────────────────

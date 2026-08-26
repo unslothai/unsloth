@@ -1179,10 +1179,26 @@ export function adoptLegacyConfigKey(
   return writeMap(map);
 }
 
+export interface ResolvedPerModelConfig {
+  config: PerModelConfig;
+  remembered: boolean;
+}
+
+export function perModelConfigStorageChanged(
+  atStart: ResolvedPerModelConfig,
+  current: ResolvedPerModelConfig,
+): boolean {
+  return (
+    atStart.remembered !== current.remembered ||
+    JSON.stringify(toStoredConfig(atStart.config)) !==
+      JSON.stringify(toStoredConfig(current.config))
+  );
+}
+
 export function resolveInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
-): { config: PerModelConfig; remembered: boolean } {
+): ResolvedPerModelConfig {
   const saved = loadPerModelConfig(modelId, ggufVariant);
   if (saved) {
     return { config: saved, remembered: true };
@@ -1202,7 +1218,7 @@ export function resolveInitialConfig(
 export function resolveResidentInitialConfig(
   modelId: string,
   ggufVariant?: string | null,
-): { config: PerModelConfig; remembered: boolean } {
+): ResolvedPerModelConfig {
   const direct = resolveInitialConfig(modelId, ggufVariant);
   if (direct.remembered) {
     return direct;
