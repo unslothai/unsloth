@@ -107,8 +107,7 @@ def test_load_model_index_rejects_non_object_json(tmp_path, payload):
 
 def test_load_model_index_wraps_unreadable_local_file(monkeypatch, tmp_path):
     # Present but unreadable (0600, EIO, a Windows AV lock): the OSError used to be swallowed and
-    # re-reported as "not found", sending the user after a file that is right there. Faulted at the
-    # read because chmod cannot stage it -- CI and containers run as root.
+    # re-reported as "not found". Faulted at the read because chmod is a no-op as root.
     (tmp_path / "model_index.json").write_text('{"patch_size": 2}', encoding = "utf-8")
     original = Path.read_text
 
@@ -127,8 +126,7 @@ def test_load_model_index_wraps_unreadable_local_file(monkeypatch, tmp_path):
 
 def test_load_model_index_wraps_a_nesting_bomb(monkeypatch, tmp_path):
     # Valid JSON and valid UTF-8, so neither guard above sees it; the parser blows the stack.
-    # Faulted directly because the triggering depth is not portable: 3.10-3.13 raise on ~50k
-    # nested objects and 3.14's scanner parses the same payload.
+    # Faulted directly because the depth is not portable: 3.14 parses what 3.10-3.13 reject.
     (tmp_path / "model_index.json").write_text('{"a": 1}', encoding = "utf-8")
     monkeypatch.setattr(
         json, "loads", lambda *args, **kwargs: (_ for _ in ()).throw(RecursionError("too deep"))
