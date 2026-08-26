@@ -5500,10 +5500,7 @@ def test_speech_gguf_classification_preserves_decoder_provenance(tmp_path):
     )
     assert _classification._arch_to_audio_type("llama-csm", hints) == "csm"
     assert (
-        _classification._arch_to_audio_type(
-            "llama", ("unsloth/orpheus-3b-0.1-ft-GGUF",)
-        )
-        == "snac"
+        _classification._arch_to_audio_type("llama", ("unsloth/orpheus-3b-0.1-ft-GGUF",)) == "snac"
     )
     snapshot = tmp_path / "snapshot"
     _arch_gguf(snapshot / "orpheus-3b-q4.gguf", "llama")

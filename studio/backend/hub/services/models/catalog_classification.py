@@ -387,7 +387,6 @@ def _local_model_audio_type(model) -> Optional[str]:
         return _gguf_path_audio_type(path, (model.model_id, model.display_name, model.id))
     try:
         from utils.audio_tokens import detect_local_tts_audio_type
-
         return detect_local_tts_audio_type(path)
     except Exception:
         return None

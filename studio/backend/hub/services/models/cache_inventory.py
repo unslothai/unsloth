@@ -620,7 +620,6 @@ def _scan_cached_gguf(
                 if row_task == "text-to-speech":
                     try:
                         from hub.services.models import catalog_classification
-
                         row_audio_type = catalog_classification._repo_gguf_audio_type(
                             repo_info, gguf_identity.load_snapshot or gguf_snapshot
                         )

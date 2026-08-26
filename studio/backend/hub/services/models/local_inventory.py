@@ -953,6 +953,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             # Module-qualified for the same reason as _cached_row_task: binding the bare
             # name re-points a load that resolved to routes.models before the move.
             from hub.services.models import catalog_classification
+
             models = []
             for model in response.models:
                 task = catalog_classification._local_model_task(model)
