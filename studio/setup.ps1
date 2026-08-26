@@ -4670,34 +4670,49 @@ function Test-RespectPmPolicy {
 # ahead of its files. Otherwise ask pip, once per run. A probe that fails reads as off,
 # which cannot cost anything: it only fails when there is no pip, and PIP_FIND_LINKS is
 # inert without pip, since uv reads UV_FIND_LINKS instead.
-$script:PipNoIndexInForce = $null
+# Cached only once the probe has actually reached pip: a venv with no pip yet must not
+# memoise "nothing configured" for the rest of the run. Mirrors _pip_config_settings().
+$script:PipNoIndexSections = $null
 function Test-PipNoIndexOn {
+    param([string] $Command = 'install')
     $value = [Environment]::GetEnvironmentVariable('PIP_NO_INDEX')
     if ($null -ne $value -and $value.Trim() -ne '') {
         # Same false set as pip's strtobool, which is what _config_value_is_on() uses.
         return @('n', 'no', 'f', 'false', 'off', '0') -notcontains $value.Trim().ToLowerInvariant()
     }
-    if ($null -ne $script:PipNoIndexInForce) { return $script:PipNoIndexInForce }
-    $script:PipNoIndexInForce = $false
-    try {
-        $listed = & python -m pip config list 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            foreach ($line in @($listed)) {
-                # Section verbatim, option normalised: the split pip itself makes. `:env:`
-                # entries restate the environment, which the branch above already read.
-                if (-not "$line".Contains('=')) { continue }
-                $name = ("$line" -split '=', 2)[0].Trim()
-                $raw = ("$line" -split '=', 2)[1].Trim().Trim("'", '"').ToLowerInvariant()
-                if ($name.StartsWith(':env:')) { continue }
-                $option = ($name -split '\.')[-1].ToLowerInvariant().Replace('_', '-')
-                $section = $name.Substring(0, [Math]::Max(0, $name.Length - $option.Length)).TrimEnd('.')
-                if ($option -ne 'no-index') { continue }
-                if (@('global', 'install', 'download', 'wheel') -notcontains $section) { continue }
-                $script:PipNoIndexInForce = @('n', 'no', 'f', 'false', 'off', '0', '') -notcontains $raw
+    if ($null -eq $script:PipNoIndexSections) {
+        $found = @{}
+        try {
+            $listed = & python -m pip config list 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                foreach ($line in @($listed)) {
+                    # Section verbatim, option normalised: the split pip itself makes.
+                    # `:env:` entries restate the environment, read by the branch above.
+                    if (-not "$line".Contains('=')) { continue }
+                    $name = ("$line" -split '=', 2)[0].Trim()
+                    $raw = ("$line" -split '=', 2)[1].Trim().Trim("'", '"').ToLowerInvariant()
+                    if ($name.StartsWith(':env:')) { continue }
+                    $option = ($name -split '\.')[-1].ToLowerInvariant().Replace('_', '-')
+                    $section = $name.Substring(0, [Math]::Max(0, $name.Length - $option.Length)).TrimEnd('.')
+                    if ($option -ne 'no-index') { continue }
+                    if (@('global', 'install', 'download', 'wheel') -notcontains $section) { continue }
+                    # Printed in load order, so the last definition of an entry wins.
+                    $found[$section] = @('n', 'no', 'f', 'false', 'off', '0', '') -notcontains $raw
+                }
+                $script:PipNoIndexSections = $found
             }
-        }
-    } catch { $script:PipNoIndexInForce = $false }
-    return $script:PipNoIndexInForce
+        } catch { }
+    }
+    if ($null -eq $script:PipNoIndexSections) { return $false }
+    # A command-prefixed key affects only the command it names, so the command's own
+    # section beats [global] and the others do not apply at all.
+    if ($script:PipNoIndexSections.ContainsKey($Command)) {
+        return [bool] $script:PipNoIndexSections[$Command]
+    }
+    if ($script:PipNoIndexSections.ContainsKey('global')) {
+        return [bool] $script:PipNoIndexSections['global']
+    }
+    return $false
 }
 
 # Helper: install a package, preferring uv with pip fallback
@@ -4730,7 +4745,7 @@ function Fast-Install {
             # had lifted. PIP_FIND_LINKS genuinely IS additive, so it survives only while
             # no-index is in force and it is the sole remaining source.
             $keep = @('UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE', 'PIP_NO_INDEX')
-            if (Test-PipNoIndexOn) { $keep += @('PIP_FIND_LINKS') }
+            if (Test-PipNoIndexOn -Command 'install') { $keep += @('PIP_FIND_LINKS') }
             $scrub = @($scrub | Where-Object { $keep -notcontains $_ })
         }
         foreach ($n in $scrub) {
@@ -4790,7 +4805,7 @@ function Fast-Download {
         # Same split as Fast-Install: the policy variable is kept either way, the
         # additive one only while no-index makes it the sole source.
         $keep = @('PIP_CONFIG_FILE', 'PIP_NO_INDEX')
-        if (Test-PipNoIndexOn) { $keep += @('PIP_FIND_LINKS') }
+        if (Test-PipNoIndexOn -Command 'download') { $keep += @('PIP_FIND_LINKS') }
         $scrub = @($scrub | Where-Object { $keep -notcontains $_ })
     }
     foreach ($n in $scrub) {

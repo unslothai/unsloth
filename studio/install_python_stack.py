@@ -4836,7 +4836,64 @@ def _env_policy_key(name: str) -> str:
 _PIP_COMMANDS = ("install", "download", "wheel")
 
 
-@functools.lru_cache(maxsize = 1)
+def _pip_config_settings() -> "dict[tuple[str, str], str]":
+    """`pip config list`, parsed into {(section, option): value}.
+
+    Memoised, but ONLY once the probe has actually reached pip. A fresh uv venv has no
+    pip when the notice runs, and caching that emptiness meant a later step still saw
+    "nothing configured" after pip had been bootstrapped, which scrubbed PIP_FIND_LINKS
+    out of a pinned command whose only source it was. A probe that cannot import pip
+    fails immediately rather than sitting out the timeout, so retrying is cheap.
+    """
+    cached = getattr(_pip_config_settings, "_cache", None)
+    if cached is not None:
+        return cached
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "config", "list"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            # Bounded because this runs BEFORE the pip upgrade, against a venv that may
+            # have no pip at all. A notice must never be able to hang an install.
+            timeout = 30,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        result = None
+    if result is None or result.returncode != 0:
+        return {}
+    settings: "dict[tuple[str, str], str]" = {}
+    for line in (result.stdout or b"").decode("utf-8", "replace").splitlines():
+        name, separator, raw = line.partition("=")
+        # `:env:` entries restate the environment, which callers read directly.
+        if not separator or name.strip().startswith(":env:"):
+            continue
+        # Section verbatim, option normalised: that is the split pip itself makes,
+        # so `[INSTALL]` is a section it never selects.
+        section, _, option = name.strip().rpartition(".")
+        option = option.strip().lower().replace("_", "-")
+        if section not in ("global",) + _PIP_COMMANDS or option not in _PIP_CONFIG_KEYS:
+            continue
+        # Printed in load order, so the last definition of a given entry wins.
+        settings[(section, option)] = raw.strip().strip("'\"")
+    _pip_config_settings._cache = settings
+    return settings
+
+
+_pip_config_settings._cache = None
+
+
+def _pip_setting_is_on(settings: "dict[tuple[str, str], str]", command: str, option: str) -> bool:
+    """Is `option` on for `command`, with the command's own section beating [global]?
+
+    A command-prefixed key affects only the named command, so these must not be pooled:
+    a `[download] no-index = true` says nothing about `pip install`, and collapsing the
+    two let an install keep a find-links location that is additive for it.
+    """
+    value = settings.get((command, option), settings.get(("global", option)))
+    return value is not None and _config_value_is_on(value, option)
+
+
 def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
     """(tool, source, key) for each hardening this host has configured.
 
@@ -4871,50 +4928,31 @@ def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
             # variable cancels a config entry enabling the same control.
             cancelled.add(_canonical_policy_key(name))
 
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "config", "list"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            # Bounded because this runs BEFORE the pip upgrade, against a venv that may
-            # have no pip at all. A notice must never be able to hang an install.
-            timeout = 30,
-            **_windows_hidden_subprocess_kwargs(),
-        )
-    except (OSError, subprocess.SubprocessError):
-        result = None
-    if result is not None and result.returncode == 0:
-        settings: "dict[tuple[str, str], str]" = {}
-        for line in (result.stdout or b"").decode("utf-8", "replace").splitlines():
-            name, separator, raw = line.partition("=")
-            # `:env:` entries restate the environment, already handled above.
-            if not separator or name.strip().startswith(":env:"):
-                continue
-            # Section verbatim, option normalised: that is the split pip itself makes,
-            # so `[INSTALL]` is a section it never selects.
-            section, _, option = name.strip().rpartition(".")
-            option = option.strip().lower().replace("_", "-")
-            if section not in ("global",) + _PIP_COMMANDS or option not in _PIP_CONFIG_KEYS:
-                continue
-            # Printed in load order, so the last definition of a given entry wins.
-            settings[(section, option)] = raw.strip().strip("'\"")
-        # pip applies `[global]` and then the command's own section, so a control the
-        # operator enabled globally and disabled for install, download AND wheel is not
-        # hardening any command this module runs. Reporting it there put the notice in
-        # front of someone whose policy was not being relaxed at all.
-        for option in _PIP_CONFIG_KEYS:
-            if _canonical_policy_key(option) in cancelled:
-                continue
-            for command in _PIP_COMMANDS:
-                value = settings.get((command, option), settings.get(("global", option)))
-                if value is not None and _config_value_is_on(value, option):
-                    on.append(("pip", "pip.conf", option))
-                    break
+    settings = _pip_config_settings()
+    # pip applies `[global]` and then the command's own section, so a control the
+    # operator enabled globally and disabled for install, download AND wheel is not
+    # hardening any command this module runs. Reporting it there put the notice in
+    # front of someone whose policy was not being relaxed at all.
+    for option in _PIP_CONFIG_KEYS:
+        if _canonical_policy_key(option) in cancelled:
+            continue
+        for command in _PIP_COMMANDS:
+            if _pip_setting_is_on(settings, command, option):
+                on.append(("pip", "pip.conf", option))
+                break
 
     return tuple(dict.fromkeys(on))
 
 
-def _pip_no_index_in_force() -> bool:
+def _clear_detected_policy_cache() -> None:
+    """Drop the memoised `pip config list`. Kept under the name the callers already use."""
+    _pip_config_settings._cache = None
+
+
+_detected_policy.cache_clear = _clear_detected_policy_cache
+
+
+def _pip_no_index_in_force(command: str = "install") -> bool:
     """Is pip's no-index effectively ON, counting the config file as well as the env?
 
     `--no-index` means "ignore the indexes and look only at find-links", so whether
@@ -4935,9 +4973,11 @@ def _pip_no_index_in_force() -> bool:
     raw = os.environ.get("PIP_NO_INDEX")
     if raw is not None and raw.strip():
         return _config_value_is_on(raw, "no-index")
-    return any(
-        source == "pip.conf" and key == "no-index" for _tool, source, key in _detected_policy()
-    )
+    # For the COMMAND being run. A command-prefixed key affects only the command it
+    # names, so a `[download] no-index = true` says nothing about `pip install`, and
+    # answering from the pooled reading let an install keep a find-links location that
+    # is purely additive for it.
+    return _pip_setting_is_on(_pip_config_settings(), command, "no-index")
 
 
 def _hardened_pm_policy_names() -> "tuple[str, ...]":

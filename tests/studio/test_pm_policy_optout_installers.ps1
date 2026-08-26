@@ -137,7 +137,7 @@ Check "but find-links is scrubbed, being additive again" ($null -eq $Recorded['P
 # sources at all. `python` is stubbed so the probe is a fixture, not a real pip.
 Write-Host "a config-only no-index still keeps find-links"
 Reset-Env
-$script:PipNoIndexInForce = $null
+$script:PipNoIndexSections = $null
 function python { if ($args -contains 'list') { "global.no-index = true" }; $global:LASTEXITCODE = 0 }
 $env:UNSLOTH_RESPECT_PM_POLICY = "1"
 $env:PIP_FIND_LINKS = "C:\op\wheels"
@@ -146,13 +146,13 @@ Check "find-links survives a pip.conf no-index" ($Recorded['PIP_FIND_LINKS'] -eq
 
 Write-Host "and with no no-index anywhere it is still additive"
 Reset-Env
-$script:PipNoIndexInForce = $null
+$script:PipNoIndexSections = $null
 function python { $global:LASTEXITCODE = 0 }
 $env:UNSLOTH_RESPECT_PM_POLICY = "1"
 $env:PIP_FIND_LINKS = "C:\op\wheels"
 Fast-Install --index-url https://x torch | Out-Null
 Check "find-links is scrubbed when nothing sets no-index" ($null -eq $Recorded['PIP_FIND_LINKS'])
-$script:PipNoIndexInForce = $null
+$script:PipNoIndexSections = $null
 Remove-Item function:python -ErrorAction SilentlyContinue
 
 Write-Host "a command with no pinned index is untouched either way"
@@ -173,9 +173,37 @@ foreach ($pair in @(@('', $false), @('0', $false), @('false', $false), @('FALSE'
 }
 
 Reset-Env
+
+# A command-prefixed key affects only the command it names, so a `[download] no-index`
+# says nothing about `pip install`. Pooling them let an install keep a find-links
+# location that is purely additive for it.
+Write-Host "no-index is read for the command being run"
+Reset-Env
+$script:PipNoIndexSections = $null
+function python { if ($args -contains 'list') { "download.no-index = true" }; $global:LASTEXITCODE = 0 }
+$env:UNSLOTH_RESPECT_PM_POLICY = "1"
+$env:PIP_FIND_LINKS = "C:\op\wheels"
+Fast-Install --index-url https://x torch | Out-Null
+Check "a download-scoped no-index does not hold find-links for install" ($null -eq $Recorded['PIP_FIND_LINKS'])
+
+Reset-Env
+$script:PipNoIndexSections = $null
+function python { if ($args -contains 'list') { "global.no-index = true"; "install.no-index = false" }; $global:LASTEXITCODE = 0 }
+$env:UNSLOTH_RESPECT_PM_POLICY = "1"
+$env:PIP_FIND_LINKS = "C:\op\wheels"
+Fast-Install --index-url https://x torch | Out-Null
+Check "an install-scoped false beats a global true" ($null -eq $Recorded['PIP_FIND_LINKS'])
+
+Reset-Env
+$script:PipNoIndexSections = $null
+function python { if ($args -contains 'list') { "install.no-index = true" }; $global:LASTEXITCODE = 0 }
+$env:UNSLOTH_RESPECT_PM_POLICY = "1"
+$env:PIP_FIND_LINKS = "C:\op\wheels"
+Fast-Install --index-url https://x torch | Out-Null
+Check "an install-scoped true holds find-links" ($Recorded['PIP_FIND_LINKS'] -eq "C:\op\wheels")
+$script:PipNoIndexSections = $null
+Remove-Item function:python -ErrorAction SilentlyContinue
+
 Write-Host ""
-if ($failures -gt 0) {
-    Write-Host "$failures check(s) FAILED" -ForegroundColor Red
-    exit 1
-}
+if ($failures -gt 0) { Write-Host "$failures check(s) FAILED" -ForegroundColor Red; exit 1 }
 Write-Host "all checks passed"

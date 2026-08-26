@@ -1022,8 +1022,13 @@ class TestTheNoticeCannotTakeAnInstallDown:
 
     def test_the_pip_probe_is_bounded(self):
         """No timeout here means an install that hangs forever on a wedged pip."""
-        source = inspect.getsource(ips._detected_policy)
+        # The probe lives in _pip_config_settings, which _detected_policy calls.
+        source = inspect.getsource(ips._pip_config_settings)
         assert "timeout = 30" in source, "the pip config probe must be bounded"
+        assert "subprocess.run" in source, (
+            "this test is checking the function that actually runs pip; if the probe "
+            "moved again, follow it rather than leaving the assertion looking at nothing"
+        )
 
     def test_a_hanging_pip_still_yields_the_environment_half(self):
         ips._detected_policy.cache_clear()
@@ -2996,3 +3001,77 @@ class TestNoIndexCountsTheConfigFileNotJustTheEnvironment:
         assert env is not None
         assert "PIP_FIND_LINKS" not in env and "PIP_NO_INDEX" not in env
         assert called == []
+
+
+class TestNoIndexIsReadForTheCommandBeingRun:
+    """A command-prefixed pip.conf key affects only the command it names.
+
+    Pooling `[global]`, `[install]`, `[download]` and `[wheel]` into one answer let a
+    `[download] no-index = true` hold PIP_FIND_LINKS through a pinned INSTALL, where it
+    is purely additive and could satisfy torch from an unpinned location.
+    """
+
+    def test_the_commands_own_section_beats_global(self):
+        settings = {("global", "no-index"): "true", ("install", "no-index"): "false"}
+        assert ips._pip_setting_is_on(settings, "install", "no-index") is False
+        assert ips._pip_setting_is_on(settings, "download", "no-index") is True
+
+    def test_another_commands_section_does_not_apply(self):
+        settings = {("download", "no-index"): "true"}
+        assert ips._pip_setting_is_on(settings, "install", "no-index") is False
+        assert ips._pip_setting_is_on(settings, "download", "no-index") is True
+
+    def test_global_applies_where_no_command_section_exists(self):
+        settings = {("global", "no-index"): "true"}
+        for command in ips._PIP_COMMANDS:
+            assert ips._pip_setting_is_on(settings, command, "no-index") is True
+
+
+class TestAFailedPipProbeIsNotMemoisedForTheRun:
+    """A fresh uv venv has no pip when the notice runs.
+
+    Caching that emptiness meant a later step still saw "nothing configured" after pip
+    had been bootstrapped, which scrubbed PIP_FIND_LINKS out of a pinned command whose
+    only source it was. Only a reading that reached pip is kept.
+    """
+
+    def test_an_unreachable_pip_leaves_the_cache_empty(self, monkeypatch, tmp_path):
+        ips._detected_policy.cache_clear()
+        monkeypatch.setattr(ips.sys, "executable", str(tmp_path / "no-such-python"))
+        assert ips._pip_config_settings() == {}
+        assert ips._pip_config_settings._cache is None, (
+            "a probe that never reached pip must not be memoised: pip can be "
+            "bootstrapped later in the same run"
+        )
+        ips._detected_policy.cache_clear()
+
+    def test_a_successful_probe_is_memoised(self, monkeypatch, tmp_path):
+        ips._detected_policy.cache_clear()
+        conf = tmp_path / "pip.conf"
+        conf.write_text("[global]\nno-index = true\n", encoding = "utf-8")
+        monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
+        try:
+            first = ips._pip_config_settings()
+            assert first.get(("global", "no-index")) == "true"
+            assert ips._pip_config_settings._cache is not None
+            # Second call must not re-probe: point the interpreter at nothing and the
+            # memoised answer should still come back.
+            monkeypatch.setattr(ips.sys, "executable", str(tmp_path / "gone"))
+            assert ips._pip_config_settings() == first
+        finally:
+            ips._detected_policy.cache_clear()
+
+    def test_the_answer_changes_once_pip_appears(self, monkeypatch, tmp_path):
+        ips._detected_policy.cache_clear()
+        conf = tmp_path / "pip.conf"
+        conf.write_text("[global]\nno-index = true\n", encoding = "utf-8")
+        monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
+        monkeypatch.delenv("PIP_NO_INDEX", raising = False)
+        real = ips.sys.executable
+        try:
+            monkeypatch.setattr(ips.sys, "executable", str(tmp_path / "no-such-python"))
+            assert ips._pip_no_index_in_force() is False
+            monkeypatch.setattr(ips.sys, "executable", real)
+            assert ips._pip_no_index_in_force() is True
+        finally:
+            ips._detected_policy.cache_clear()
