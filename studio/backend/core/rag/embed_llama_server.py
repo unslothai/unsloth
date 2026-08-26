@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
@@ -95,6 +96,13 @@ class LlamaServerBackend:
     def __init__(self) -> None:
         # Lifecycle (spawn/restart/kill) is serialized; HTTP requests are not.
         self._lifecycle_lock = threading.Lock()
+        # Unload closes the client/process only after every encode/tokenize/probe
+        # that already entered has left, and blocks late callers from restarting
+        # the backend after it was unpublished.
+        self._operation_condition = threading.Condition()
+        self._active_operations = 0
+        self._operation_local = threading.local()
+        self._closed = False
         self._process: subprocess.Popen | None = None
         self._port: int | None = None
         self._stdout_lines: list[str] = []
@@ -115,6 +123,26 @@ class LlamaServerBackend:
         # Pooled client (full URLs per request survive a respawn); trust_env=False skips HTTP(S)_PROXY.
         self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S, trust_env = False)
         atexit.register(self._shutdown)
+
+    @contextmanager
+    def _operation(self):
+        depth = getattr(self._operation_local, "depth", 0)
+        with self._operation_condition:
+            if self._closed and depth == 0:
+                raise RuntimeError("llama-server embedding backend was unloaded")
+            if depth == 0:
+                self._active_operations += 1
+            self._operation_local.depth = depth + 1
+        try:
+            yield
+        finally:
+            with self._operation_condition:
+                next_depth = self._operation_local.depth - 1
+                self._operation_local.depth = next_depth
+                if next_depth == 0:
+                    self._active_operations -= 1
+                    if self._active_operations == 0:
+                        self._operation_condition.notify_all()
 
     @property
     def _base_url(self) -> str:
@@ -346,6 +374,24 @@ class LlamaServerBackend:
         cached = self._resolve_cached_gguf(desired)
         if cached is not None:
             return self._adopt_model_path(cached, desired)
+        try:
+            from utils.embedding_model_settings import get_stored_download_pending
+            download_pending = get_stored_download_pending(model)
+        except Exception:  # noqa: BLE001 - old/unavailable settings store
+            download_pending = False
+        if download_pending:
+            # A published repo may not carry the configured quant; the picker
+            # deliberately downloaded the complete family the Hub resolver
+            # selected, so accept any complete cached quant here. Never fall
+            # through to the online loader while the explicit transfer is
+            # pending/cancelled.
+            cached = self._resolve_cached_gguf(desired, require_variant = False)
+            if cached is not None:
+                return self._adopt_model_path(cached, desired)
+            raise RuntimeError(
+                f"Embedding model {model!r} is not downloaded yet. "
+                "Finish its Settings download before indexing documents."
+            )
         return self._resolve_uncached_model_path(desired, candidates)
 
     def _adopt_model_path(self, path: str, desired: str) -> str:
@@ -716,8 +762,13 @@ class LlamaServerBackend:
                 self._stdout_thread = None
 
     def _shutdown(self) -> None:
+        with self._operation_condition:
+            self._closed = True
+            while self._active_operations:
+                self._operation_condition.wait()
         try:
-            self._kill_process()
+            with self._lifecycle_lock:
+                self._kill_process()
         finally:
             try:
                 self._client.close()
@@ -728,6 +779,10 @@ class LlamaServerBackend:
         """POST to the server, restarting once and retrying on a dropped connection
         (the reaper may have killed us) or a timeout (the bundled build sometimes
         wedges a request); a fresh server unsticks both."""
+        with self._operation():
+            return self._post_active(path, payload)
+
+    def _post_active(self, path: str, payload: dict) -> dict:
         last_exc: Exception | None = None
         for attempt in range(2):
             self._ensure_ready()
@@ -756,6 +811,15 @@ class LlamaServerBackend:
     ):
         """Embed texts -> (N, dim) float32. ``model_name`` is ignored (the GGUF is
         fixed by config). Normalizes in Python to match the ST backend."""
+        with self._operation():
+            return self._encode_active(texts, normalize = normalize)
+
+    def _encode_active(
+        self,
+        texts,
+        *,
+        normalize = True,
+    ):
         n = len(texts)
         if n == 0:
             return np.zeros((0, self.dim()), dtype = np.float32)
@@ -789,19 +853,21 @@ class LlamaServerBackend:
         (_resolve_model_path clears it when the effective repo changes).
         Unlocked: concurrent probes are benign, and locking would deadlock when
         the probe's encode respawns onto a changed model (see __init__)."""
-        self._ensure_ready()
-        cached = self._dim
-        if cached is not None:
-            return cached
-        vec = self.encode(["x"], normalize = False)
-        width = int(vec.shape[1])
-        self._dim = width
-        return width
+        with self._operation():
+            self._ensure_ready()
+            cached = self._dim
+            if cached is not None:
+                return cached
+            vec = self.encode(["x"], normalize = False)
+            width = int(vec.shape[1])
+            self._dim = width
+            return width
 
     def warm(self, *, model_name = None) -> None:
         """Start the server and probe dim off the request path."""
-        self._ensure_ready()
-        self.dim()
+        with self._operation():
+            self._ensure_ready()
+            self.dim()
 
     def token_counter(self, *, model_name = None):
         """Count tokens via the GGUF's /tokenize so chunk sizing matches the
@@ -809,7 +875,8 @@ class LlamaServerBackend:
 
         @lru_cache(maxsize = 4096)
         def _count(text: str) -> int:
-            data = self._post("/tokenize", {"content": text, "add_special": False})
-            return len(data.get("tokens", []))
+            with self._operation():
+                data = self._post("/tokenize", {"content": text, "add_special": False})
+                return len(data.get("tokens", []))
 
         return _count

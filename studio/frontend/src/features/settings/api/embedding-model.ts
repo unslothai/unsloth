@@ -110,7 +110,7 @@ export type EmbeddingModelResolution = {
   backend: "llama" | "sentence-transformers";
   /** Repo to hand the download manager; null when nothing needs fetching. */
   downloadRepo: string | null;
-  /** The single GGUF to take from it, on the llama-server backend. */
+  /** The selected GGUF family (all shards when split), on llama-server. */
   files: string[] | null;
   cached: boolean;
   sizeBytes: number | null;

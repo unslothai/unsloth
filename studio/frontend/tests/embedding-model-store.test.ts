@@ -21,6 +21,7 @@ type Settings = {
   defaultEmbeddingModel: string;
   defaultEmbeddingGgufRepo: string;
   isCustom: boolean;
+  loaded: boolean;
 };
 
 function settings(model: string): Settings {
@@ -30,6 +31,7 @@ function settings(model: string): Settings {
     defaultEmbeddingModel: "unsloth/bge-small-en-v1.5",
     defaultEmbeddingGgufRepo: "",
     isCustom: model !== "unsloth/bge-small-en-v1.5",
+    loaded: false,
   };
 }
 
@@ -51,6 +53,7 @@ function respondWith(model: string, release?: Promise<void>): void {
         default_embedding_gguf_repo: "",
         // biome-ignore lint/style/useNamingConvention: API schema
         is_custom: model !== "unsloth/bge-small-en-v1.5",
+        loaded: false,
       }),
     } as unknown as Response;
   }) as typeof fetch;
@@ -177,6 +180,30 @@ test("an older save cannot land on top of a newer one", async () => {
   assert.equal(
     useEmbeddingModelStore.getState().settings?.embeddingModel,
     "unsloth/bge-m3",
+  );
+});
+
+test("selection order is reserved before an older preflight finishes", async () => {
+  reset();
+  const store = useEmbeddingModelStore.getState();
+  const olderSelection = store.beginSave();
+  const newerSelection = store.beginSave();
+  let olderWriteRan = false;
+
+  assert.equal(
+    await store.save(async () => {
+      olderWriteRan = true;
+      return settings("org/older");
+    }, olderSelection),
+    false,
+  );
+  assert.equal(olderWriteRan, false, "the superseded preflight cannot write");
+  assert.ok(
+    await store.save(async () => settings("org/newer"), newerSelection),
+  );
+  assert.equal(
+    useEmbeddingModelStore.getState().settings?.embeddingModel,
+    "org/newer",
   );
 });
 

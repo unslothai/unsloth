@@ -46,7 +46,7 @@ def _resolve(c, model = "unsloth/bge-small-en-v1.5"):
 def test_sentence_transformers_backend_points_at_the_model_repo(client, monkeypatch):
     """No GGUF involved: ST loads the model repo itself, and the cache check is the
     ordinary snapshot probe."""
-    monkeypatch.setattr(settings, "_llama_backend_active", lambda: False)
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
     import utils.utils as utils
 
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
@@ -59,15 +59,44 @@ def test_sentence_transformers_backend_points_at_the_model_repo(client, monkeypa
     assert body["error"] is None
 
 
+def test_resolution_selects_the_backend_for_the_new_model_not_the_old_one(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        settings,
+        "_llama_backend_active",
+        lambda model = None: seen.append(model) or False,
+    )
+    import utils.utils as utils
+
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda model: True)
+    body = _resolve(client, "org/new-model").json()
+
+    assert seen == ["org/new-model"]
+    assert body["backend"] == "sentence-transformers"
+
+
+def test_sentence_transformers_local_path_is_already_present(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
+    local = tmp_path / "embedder"
+    local.mkdir()
+
+    body = _resolve(client, str(local)).json()
+    assert body["backend"] == "sentence-transformers"
+    assert body["cached"] is True
+    assert body["download_repo"] is None
+
+
 def test_uncached_gguf_names_the_one_file_the_loader_would_open(client, monkeypatch):
     """The companion repo carries every quant; only the variant the embedder opens
     should be fetched, so the picker gets a file list rather than a whole repo."""
-    monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
-    monkeypatch.setattr(settings, "_cached_embedding_gguf", lambda candidates: False)
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
+    monkeypatch.setattr(
+        settings, "_cached_embedding_gguf", lambda candidates, require_variant: None
+    )
     monkeypatch.setattr(
         settings,
         "_remote_embedding_gguf_plan",
-        lambda candidates, token: (candidates[0], "bge-small-en-v1.5-F16.gguf"),
+        lambda candidates, token: (candidates[0], ["bge-small-en-v1.5-F16.gguf"]),
     )
     monkeypatch.setattr(settings, "_hf_files_size", lambda repo, files, token: 133_000_000)
 
@@ -80,9 +109,37 @@ def test_uncached_gguf_names_the_one_file_the_loader_would_open(client, monkeypa
     assert body["error"] is None
 
 
+def test_relaxed_cache_does_not_hide_the_preferred_online_variant(client, monkeypatch):
+    """A fallback quant/candidate is only the loader's offline last resort; it
+    must not suppress the configured variant's download while Hub listing works."""
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
+    seen = []
+
+    def _cached(candidates, require_variant):
+        seen.append((tuple(candidates), require_variant))
+        return candidates[0] if not require_variant else None
+
+    monkeypatch.setattr(settings, "_cached_embedding_gguf", _cached)
+    monkeypatch.setattr(
+        settings,
+        "_remote_embedding_gguf_plan",
+        lambda candidates, token: (candidates[0], ["embed-F16.gguf"]),
+    )
+    monkeypatch.setattr(settings, "_hf_files_size", lambda *a: 10)
+
+    body = _resolve(client, "acme/embed").json()
+    assert seen == [(("acme/embed-GGUF",), True)]
+    assert body["cached"] is False
+    assert body["files"] == ["embed-F16.gguf"]
+
+
 def test_cached_gguf_asks_for_no_download(client, monkeypatch):
-    monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
-    monkeypatch.setattr(settings, "_cached_embedding_gguf", lambda candidates: True)
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
+    monkeypatch.setattr(
+        settings,
+        "_cached_embedding_gguf",
+        lambda candidates, require_variant: candidates[0],
+    )
 
     def _unreachable(*args, **kwargs):  # pragma: no cover - the point of the test
         raise AssertionError("a cached model must not be listed against the hub")
@@ -97,13 +154,18 @@ def test_cached_gguf_asks_for_no_download(client, monkeypatch):
 def test_the_search_fallback_finds_an_off_convention_name(client, monkeypatch):
     """The companion may not be named "<model>-GGUF" at all, so the owner's repos
     are searched before giving up."""
-    monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
-    monkeypatch.setattr(settings, "_cached_embedding_gguf", lambda candidates: False)
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
+    monkeypatch.setattr(
+        settings, "_cached_embedding_gguf", lambda candidates, require_variant: None
+    )
     monkeypatch.setattr(settings, "_remote_embedding_gguf_plan", lambda candidates, token: None)
     monkeypatch.setattr(
         settings,
         "_search_hub_for_gguf",
-        lambda m, token: ("unsloth/embeddinggemma-300m-GGUF", "embeddinggemma-300M-F16.gguf"),
+        lambda m, token: (
+            "unsloth/embeddinggemma-300m-GGUF",
+            ["embeddinggemma-300M-F16.gguf"],
+        ),
     )
     monkeypatch.setattr(settings, "_hf_files_size", lambda repo, files, token: None)
 
@@ -138,9 +200,65 @@ def test_the_search_never_leaves_the_model_owner(monkeypatch):
     assert seen["author"] == "unsloth"
 
 
+def test_the_search_requires_an_exact_conversion_name(monkeypatch):
+    class _Hit:
+        def __init__(self, repo_id):
+            self.id = repo_id
+
+    class _Api:
+        def list_models(self, **kwargs):
+            return [_Hit("acme/foo-bar-GGUF"), _Hit("acme/foo-GGUF")]
+
+    import huggingface_hub
+    import utils.utils as utils
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda *a, **k: ["foo-F16.gguf"])
+    monkeypatch.setattr(
+        utils,
+        "call_with_deadline",
+        lambda fn, timeout, name: fn(),
+    )
+
+    assert settings._search_hub_for_gguf("acme/foo", None) == ("acme/foo-GGUF", ["foo-F16.gguf"])
+
+
+def test_split_gguf_plan_contains_every_shard():
+    names = [
+        "F16/embed-00002-of-00002.gguf",
+        "F16/embed-00001-of-00002.gguf",
+        "Q8/embed-Q8_0.gguf",
+    ]
+    assert settings._pick_downloadable_gguf(names) == [
+        "F16/embed-00001-of-00002.gguf",
+        "F16/embed-00002-of-00002.gguf",
+    ]
+
+
+def test_repo_file_listing_uses_a_deadline(monkeypatch):
+    import huggingface_hub
+    import utils.utils as utils
+
+    seen = {}
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda repo, token = None: [repo])
+
+    def _bounded(fn, timeout, name):
+        seen.update(timeout = timeout, name = name)
+        return fn()
+
+    monkeypatch.setattr(utils, "call_with_deadline", _bounded)
+    assert settings._list_repo_files_bounded("acme/embed", None) == ["acme/embed"]
+    assert seen == {
+        "timeout": settings._GGUF_LIST_DEADLINE_S,
+        "name": "embed-settings-repo-listing",
+    }
+
+
 def _no_gguf_anywhere(monkeypatch):
-    monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
-    monkeypatch.setattr(settings, "_cached_embedding_gguf", lambda candidates: False)
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
+    monkeypatch.setattr(
+        settings, "_cached_embedding_gguf", lambda candidates, require_variant: None
+    )
     monkeypatch.setattr(settings, "_remote_embedding_gguf_plan", lambda candidates, token: None)
     monkeypatch.setattr(settings, "_search_hub_for_gguf", lambda m, token: None)
 
@@ -162,6 +280,19 @@ def test_no_gguf_falls_back_to_the_models_own_safetensors(client, monkeypatch):
     assert body["files"] is None
     assert body["size_bytes"] == 4096
     assert body["error"] is None
+
+
+def test_explicit_llama_policy_does_not_offer_safetensors(client, monkeypatch):
+    _no_gguf_anywhere(monkeypatch)
+    monkeypatch.setattr(settings, "_sentence_transformers_fallback_allowed", lambda model: False)
+    monkeypatch.setattr(
+        settings,
+        "_safetensors_plan",
+        lambda *a: (_ for _ in ()).throw(AssertionError("ST fallback must not be probed")),
+    )
+    body = _resolve(client, "acme/safetensors-only").json()
+    assert body["backend"] == "llama"
+    assert body["error"].startswith("No GGUF weights found")
 
 
 def test_the_fallback_stays_in_the_models_own_repo(monkeypatch):
@@ -190,19 +321,15 @@ def test_nothing_anywhere_still_reports_the_save_reason(client, monkeypatch):
     """Only when the name candidates, the Hub search AND safetensors come up empty."""
     _no_gguf_anywhere(monkeypatch)
     monkeypatch.setattr(settings, "_safetensors_plan", lambda m, token: None)
-    monkeypatch.setattr(
-        settings, "_hf_gguf_backend_error", lambda m, token: "No GGUF weights found in ..."
-    )
-
     body = _resolve(client, "unsloth/nothing-like-this").json()
     assert body["download_repo"] is None
     assert body["files"] is None
     assert body["cached"] is False
-    assert body["error"] == "No GGUF weights found in ..."
+    assert body["error"].startswith("No GGUF weights found")
 
 
 def test_a_local_gguf_is_already_the_artifact(client, monkeypatch):
-    monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: True)
 
     body = _resolve(client, "/models/my-embedder.gguf").json()
@@ -218,6 +345,39 @@ def test_candidates_follow_the_loader_order(monkeypatch):
         "acme/embedder-GGUF",
         "acme/embedder",
     ]
+
+
+def test_stored_off_convention_repo_is_the_preferred_candidate(monkeypatch):
+    import utils.embedding_model_settings as ems
+    monkeypatch.setattr(
+        ems,
+        "get_stored_gguf_repo",
+        lambda model: "acme/special-conversion" if model == "acme/embedder" else None,
+    )
+    assert settings._embedding_gguf_candidates("acme/embedder") == [
+        "acme/special-conversion",
+        "acme/embedder-GGUF",
+        "acme/embedder",
+    ]
+
+
+def test_resolved_mirror_reports_its_exact_downloaded_files_as_cached(client, monkeypatch):
+    _no_gguf_anywhere(monkeypatch)
+    monkeypatch.setattr(
+        settings,
+        "_search_hub_for_gguf",
+        lambda model, token: ("acme/embedder_gguf", ["embed-F16.gguf"]),
+    )
+    monkeypatch.setattr(
+        settings,
+        "_cached_embedding_gguf_files",
+        lambda repo, files: repo == "acme/embedder_gguf" and files == ["embed-F16.gguf"],
+    )
+
+    body = _resolve(client, "acme/embedder").json()
+    assert body["download_repo"] == "acme/embedder_gguf"
+    assert body["cached"] is True
+    assert body["files"] == ["embed-F16.gguf"]
     # A repo that already names GGUF is its own candidate, not "...-GGUF-GGUF".
     assert settings._embedding_gguf_candidates("acme/embedder-GGUF") == ["acme/embedder-GGUF"]
     # unsloth's unquantized re-uploads keep their GGUF on the base name.
@@ -236,7 +396,9 @@ def test_the_resolved_repo_is_what_the_loader_opens(monkeypatch):
     import storage.studio_db as db
 
     store: dict = {}
-    monkeypatch.setattr(db, "get_app_setting", lambda k, fallback = None: store.get(k, fallback))
+    monkeypatch.setattr(
+        db, "get_app_settings", lambda keys: {k: store[k] for k in keys if k in store}
+    )
     monkeypatch.setattr(db, "upsert_app_settings", lambda s: store.update(s) or store)
 
     import utils.embedding_model_settings as ems
@@ -261,7 +423,9 @@ def test_the_chosen_backend_is_read_back_by_the_loader(monkeypatch):
     import storage.studio_db as db
 
     store: dict = {}
-    monkeypatch.setattr(db, "get_app_setting", lambda k, fallback = None: store.get(k, fallback))
+    monkeypatch.setattr(
+        db, "get_app_settings", lambda keys: {k: store[k] for k in keys if k in store}
+    )
     monkeypatch.setattr(db, "upsert_app_settings", lambda s: store.update(s) or store)
 
     import utils.embedding_model_settings as ems
@@ -274,6 +438,11 @@ def test_the_chosen_backend_is_read_back_by_the_loader(monkeypatch):
 
     # A backend recorded for another model must not be served for this one.
     store[ems.EMBEDDING_MODEL_SETTING_KEY] = "unsloth/bge-m3"
+    store[ems.EMBEDDING_RESOLUTION_SETTING_KEY] = {
+        "model": "unsloth/bge-m3",
+        "gguf_repo": None,
+        "backend": "sentence-transformers",
+    }
     ems._invalidate_cache()
     assert ems.get_stored_backend("unsloth/Qwen3-Embedding-8B") is None
     ems._invalidate_cache()
@@ -281,13 +450,15 @@ def test_the_chosen_backend_is_read_back_by_the_loader(monkeypatch):
 
 def test_the_token_is_a_header_not_a_query_parameter(client, monkeypatch):
     """A gated repo's credential must stay out of URLs and access logs."""
-    monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
-    monkeypatch.setattr(settings, "_cached_embedding_gguf", lambda candidates: False)
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
+    monkeypatch.setattr(
+        settings, "_cached_embedding_gguf", lambda candidates, require_variant: None
+    )
     seen: dict = {}
 
     def _plan(candidates, token):
         seen["token"] = token
-        return candidates[0], "model-F16.gguf"
+        return candidates[0], ["model-F16.gguf"]
 
     monkeypatch.setattr(settings, "_remote_embedding_gguf_plan", _plan)
     monkeypatch.setattr(settings, "_hf_files_size", lambda repo, files, token: None)

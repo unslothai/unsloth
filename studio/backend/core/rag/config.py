@@ -223,9 +223,18 @@ def effective_gguf_repo() -> str:
     resolved and stored for this model (which need not follow any naming rule),
     then the ``-GGUF`` companion convention.
     """
+    return effective_gguf_repo_for_embedding_model(effective_embedding_model())
+
+
+def effective_gguf_repo_for_embedding_model(model: str) -> str:
+    """GGUF repo the loader/identity use for ``model``.
+
+    The resolved repo is part of the vector space identity, not merely a load
+    location: two different conversions of the same source model need separate
+    tags or their document/query vectors can be mixed.
+    """
     if "RAG_EMBED_GGUF_REPO" in os.environ:
         return EMBED_GGUF_REPO
-    model = effective_embedding_model()
     try:
         from utils.embedding_model_settings import get_stored_gguf_repo
         stored = get_stored_gguf_repo(model)

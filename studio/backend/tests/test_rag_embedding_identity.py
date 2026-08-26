@@ -180,6 +180,20 @@ def test_identity_distinguishes_the_backends_and_the_gguf_repo(monkeypatch):
     assert embeddings.embedding_identity(MODEL) != as_llama
 
 
+def test_llama_identity_uses_the_resolved_stored_repo(monkeypatch):
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: True)
+    monkeypatch.setattr(
+        config,
+        "effective_gguf_repo_for_embedding_model",
+        lambda model: "publisher/off-convention-GGUF",
+    )
+    assert embeddings.embedding_identity(MODEL) == config.embedding_identity(
+        "llama-server",
+        MODEL,
+        gguf_repo = "publisher/off-convention-GGUF",
+    )
+
+
 def test_untagged_values_match_on_the_model_name_alone():
     tagged = config.embedding_identity("sentence-transformers", MODEL)
     assert config.embedding_identity_matches(None, tagged) is True

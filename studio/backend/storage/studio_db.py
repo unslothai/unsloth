@@ -3863,6 +3863,29 @@ def get_app_setting(key: str, fallback = None):
         conn.close()
 
 
+def get_app_settings(keys: list[str]) -> dict[str, Any]:
+    """Read a set of settings from one SQLite snapshot.
+
+    Values that form one logical record must not be fetched through separate
+    connections: a concurrent multi-key upsert could otherwise leave a reader
+    pairing one save's first field with another save's remaining fields.
+    Missing keys are omitted from the result.
+    """
+    unique = list(dict.fromkeys(keys))
+    if not unique:
+        return {}
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" for _ in unique)
+        rows = conn.execute(
+            f"SELECT key, value_json FROM app_settings WHERE key IN ({placeholders})",
+            unique,
+        ).fetchall()
+        return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
+    finally:
+        conn.close()
+
+
 def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
     if not settings:
         return {}

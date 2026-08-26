@@ -54,7 +54,10 @@ test("only the query searches; the saved model never becomes one", () => {
 });
 
 test("picking applies straight away, with no Save button", () => {
-  assert.match(SECTION, /onSelect=\{\(model\) => void applyEmbeddingModel\(model, false\)\}/);
+  assert.match(
+    SECTION,
+    /onSelect=\{\(model\) => void applyEmbeddingModel\(model, false\)\}/,
+  );
   assert.ok(
     !SECTION.includes('t("common.save")'),
     "selection is the apply action, as it is for dictation models",
@@ -81,18 +84,38 @@ test("the resolve runs before the save, not after it", () => {
     SECTION.indexOf("const startDownload"),
   );
   assert.ok(
-    fn.indexOf("resolveEmbeddingModel") < fn.indexOf("persist(trimmed, resolution"),
+    fn.indexOf("resolveEmbeddingModel") <
+      fn.indexOf("persist(trimmed, resolution"),
     "resolve decides, then the save records what it found",
   );
   // Only the explicit override skips it.
-  assert.match(fn, /if \(force\) \{\s*await persist\(trimmed, null, true\);/);
+  assert.match(
+    fn,
+    /if \(force\) \{\s*await persist\(trimmed, null, true, reservation\);/,
+  );
+});
+
+test("cross-surface save order is claimed before model resolution", () => {
+  const fn = SECTION.slice(
+    SECTION.indexOf("const applyEmbeddingModel"),
+    SECTION.indexOf("const startDownload"),
+  );
+  assert.ok(
+    fn.indexOf("const reservation = beginSave()") <
+      fn.indexOf("resolveEmbeddingModel(trimmed"),
+  );
+  assert.match(fn, /isSaveCurrent\(reservation\)/);
+  assert.match(fn, /persist\(trimmed, resolution, false, reservation\)/);
 });
 
 test("the repo the resolve picked is what gets stored", () => {
   // A GGUF repo need not follow a naming rule, so the loader has to be told
   // rather than left to re-derive it. The backend rides along: a model with no
   // GGUF runs on safetensors, and llama-server would have nothing to open.
-  assert.match(SECTION, /ggufRepo: plan\?\.downloadRepo \?\? null/);
+  assert.match(
+    SECTION,
+    /plan\?\.backend === "llama" \? \(plan\.downloadRepo \?\? null\) : null/,
+  );
   assert.match(SECTION, /backend: plan\?\.backend \?\? null/);
   assert.match(API, /gguf_repo: options\?\.ggufRepo \?\? null/);
   assert.match(API, /backend: options\?\.backend \?\? null/);
@@ -102,7 +125,10 @@ test("a missing model gets a Download button, not a popup", () => {
   // A modal for a one-click action was noise, and voice already had the shape.
   assert.ok(!SECTION.includes("AlertDialog"), "no confirmation modal");
   assert.match(SECTION, /const canDownload = Boolean\(/);
-  assert.match(SECTION, /onClick=\{\(\) => resolution && void startDownload\(resolution\)\}/);
+  assert.match(
+    SECTION,
+    /onClick=\{\(\) => resolution && void startDownload\(resolution\)\}/,
+  );
 });
 
 test("the action slot offers Download or Unload, not Reset to default", () => {
@@ -120,9 +146,54 @@ test("the button follows a transfer started anywhere", () => {
   assert.match(SECTION, /jobKeyOf\(/);
 });
 
+test("download completion refreshes the resolved cache state", () => {
+  assert.match(SECTION, /downloadState !== "complete"/);
+  assert.match(
+    SECTION,
+    /Promise\.all\(\[\s*resolveEmbeddingModel\(savedModel,[\s\S]*refreshCachedRepos\(\)/,
+  );
+});
+
+test("a saved-model change clears the previous repository action", () => {
+  const effect = SECTION.slice(
+    SECTION.indexOf("const savedModel"),
+    SECTION.indexOf("/** Persist the pick"),
+  );
+  assert.ok(
+    effect.indexOf("setResolution(null)") <
+      effect.indexOf("resolveEmbeddingModel(savedModel"),
+  );
+});
+
+test("a new save cannot retain another model's force action", () => {
+  const apply = SECTION.slice(
+    SECTION.indexOf("const applyEmbeddingModel"),
+    SECTION.indexOf("const startDownload"),
+  );
+  assert.match(apply, /setForceCandidate\(null\);[\s\S]*const trimmed/);
+});
+
+test("every download-manager non-start outcome gets feedback", () => {
+  assert.match(SECTION, /if \(outcome === "started"\)[\s\S]*else \{/);
+  assert.match(
+    SECTION,
+    /toast\.error\(t\("settings\.general\.rag\.downloadFailed"\)\)/,
+  );
+});
+
 test("only the embedder's own GGUF is fetched, not every quant", () => {
   assert.match(SECTION, /scopeId: scoped \? EMBEDDING_DOWNLOAD_SCOPE : null/);
-  assert.match(SECTION, /variant: scoped \? scopedVariant\(EMBEDDING_DOWNLOAD_SCOPE\) : null/);
+  assert.match(
+    SECTION,
+    /variant: scoped \? scopedVariant\(EMBEDDING_DOWNLOAD_SCOPE\) : null/,
+  );
+});
+
+test("the current row can be reselected to retry and Windows paths submit", () => {
+  assert.match(PICKER, /onSelect\(model\);/);
+  assert.ok(!PICKER.includes("if (model !== value.trim())"));
+  assert.match(PICKER, /LOCAL_PATH_PATTERN/);
+  assert.match(PICKER, /\[A-Za-z\]:\[\\\\\/\]/);
 });
 
 test("a gated-repo token never rides in the URL", () => {
@@ -157,8 +228,14 @@ const VOICE_TAB = read("../src/features/settings/tabs/voice-tab.tsx");
 test("a dictation download is reported once, not twice", () => {
   // Settings drew its own bar and Cancel beside the shared downloads panel,
   // so one transfer showed two identical progress readouts.
-  assert.ok(!VOICE_TAB.includes("DownloadProgressBar"), "no second progress bar");
-  assert.ok(!VOICE_TAB.includes("sttCancelDownload"), "cancelling belongs to the panel");
+  assert.ok(
+    !VOICE_TAB.includes("DownloadProgressBar"),
+    "no second progress bar",
+  );
+  assert.ok(
+    !VOICE_TAB.includes("sttCancelDownload"),
+    "cancelling belongs to the panel",
+  );
   // The status line still names the state; only the duplicate readout went.
   assert.match(VOICE_TAB, /\{sttModelStatusText\}/);
   assert.match(VOICE_TAB, /sttDownloading/);

@@ -29,7 +29,9 @@ def settings_store(monkeypatch):
 
     store: dict = {}
     monkeypatch.setattr(
-        studio_db, "get_app_setting", lambda key, fallback = None: store.get(key, fallback)
+        studio_db,
+        "get_app_settings",
+        lambda keys: {key: store[key] for key in keys if key in store},
     )
     monkeypatch.setattr(
         studio_db, "upsert_app_settings", lambda settings: store.update(settings) or store
@@ -60,3 +62,48 @@ def test_env_default_derives_its_gguf_companion(monkeypatch):
     monkeypatch.setattr(rag_config, "EMBEDDING_MODEL", "org/env-default-embedder")
 
     assert rag_config.default_gguf_repo() == "org/env-default-embedder-GGUF"
+
+
+def test_env_default_keeps_its_resolved_gguf_without_becoming_custom(settings_store, monkeypatch):
+    """An env default can resolve to an off-convention repo even though selecting
+    it should not turn the default itself into a persisted override."""
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    monkeypatch.setattr(rag_config, "EMBEDDING_MODEL", "org/env-default-embedder")
+
+    ems.set_rag_embedding_model(
+        "org/env-default-embedder",
+        gguf_repo = "org/published-conversion",
+        backend = "llama-server",
+    )
+
+    assert ems.get_stored_embedding_model() is None
+    assert ems.get_stored_gguf_repo("org/env-default-embedder") == "org/published-conversion"
+    assert rag_config.effective_gguf_repo() == "org/published-conversion"
+
+
+def test_resolution_record_keeps_model_repo_and_backend_atomic(settings_store):
+    ems.set_rag_embedding_model(
+        "org/embedder",
+        gguf_repo = "org/embedder-conversion",
+        backend = "llama-server",
+    )
+    assert settings_store[ems.EMBEDDING_RESOLUTION_SETTING_KEY] == {
+        "model": "org/embedder",
+        "gguf_repo": "org/embedder-conversion",
+        "backend": "llama-server",
+        "download_pending": False,
+    }
+    assert settings_store[ems.EMBEDDING_GGUF_SETTING_KEY] is None
+    assert settings_store[ems.EMBEDDING_BACKEND_SETTING_KEY] is None
+
+
+def test_pending_download_is_stored_with_the_same_atomic_resolution(settings_store):
+    ems.set_rag_embedding_model(
+        "org/embedder",
+        gguf_repo = "org/embedder-conversion",
+        backend = "llama-server",
+        download_pending = True,
+    )
+    assert ems.get_stored_download_pending("org/embedder") is True
+    assert ems.get_stored_download_pending("org/another") is False
+    assert settings_store[ems.EMBEDDING_RESOLUTION_SETTING_KEY]["download_pending"] is True

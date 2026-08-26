@@ -23,6 +23,11 @@ const EMBEDDING_TASKS: readonly PipelineType[] = [
   "sentence-similarity",
   "feature-extraction",
 ];
+const LOCAL_PATH_PATTERN = /^(?:\/|~[\\/]|\.{1,2}[\\/]|[A-Za-z]:[\\/]|\\\\)/;
+
+function isDirectModelReference(value: string): boolean {
+  return value.includes("/") || LOCAL_PATH_PATTERN.test(value);
+}
 
 type EmbeddingModelPickerProps = {
   value: string;
@@ -88,7 +93,9 @@ export function EmbeddingModelPicker({
   const pick = (model: string) => {
     setOpen(false);
     setQuery("");
-    if (model !== value.trim()) onSelect(model);
+    // Reselecting is a retry: a previous transfer may have been cancelled or
+    // its cache evicted while the setting still names this model.
+    onSelect(model);
   };
 
   return (
@@ -139,8 +146,11 @@ export function EmbeddingModelPicker({
               event.preventDefault();
               // A pasted repo id is taken as typed; otherwise Enter is the top row.
               const typed = query.trim();
-              if (typed.includes("/")) pick(typed);
-              else if (items.length > 0) pick(items[0].id);
+              if (isDirectModelReference(typed)) {
+                pick(typed);
+              } else if (items.length > 0) {
+                pick(items[0].id);
+              }
             }}
           />
         </div>

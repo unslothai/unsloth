@@ -140,6 +140,10 @@ class UnsafeEmbeddingModelError(RuntimeError):
     routine ST failure."""
 
 
+class EmbeddingModelDownloadRequiredError(RuntimeError):
+    """The picker activated a model whose explicit transfer is still pending."""
+
+
 def _ambient_hf_token() -> str | None:
     """The HF token the loader itself would use (HF_TOKEN env or the cached login), so
     the scan can reach a gated/private repo instead of failing open. None if unavailable."""
@@ -415,7 +419,12 @@ def _get(model_name: str | None = None):
     name = model_name or config.effective_embedding_model()
     # Capture offline state once so the gate and the load agree (no window where the gate is
     # skipped as offline but the constructor then reaches the network).
-    local_only = hf_env_offline()
+    try:
+        from utils.embedding_model_settings import get_stored_download_pending
+        download_pending = get_stored_download_pending(name)
+    except Exception:  # noqa: BLE001 - old/unavailable settings store
+        download_pending = False
+    local_only = hf_env_offline() or download_pending
     with _lock:
         if _model is None or _name != name:
             # Probe before loading sentence-transformers on the selected device.
@@ -439,13 +448,26 @@ def _get(model_name: str | None = None):
             )
             load_target = name
             if local_only:
-                from utils.utils import hf_cache_snapshot_dir
+                from utils.utils import hf_cache_snapshot_dir, hf_cache_snapshot_is_loadable
+
+                if download_pending and not hf_cache_snapshot_is_loadable(name):
+                    raise EmbeddingModelDownloadRequiredError(
+                        f"Embedding model {name!r} is not downloaded yet. "
+                        "Finish its Settings download before indexing documents."
+                    )
                 snapshot = hf_cache_snapshot_dir(name)
                 if snapshot is not None:
                     # Load from the local snapshot dir: a local path never touches the Hub, so
                     # this is offline-safe on ANY sentence-transformers version (even ones
                     # predating local_files_only).
                     load_target = str(snapshot)
+                elif download_pending:
+                    # Defensive: a loadable check and snapshot lookup share no
+                    # lock, so eviction between them is still a pending model.
+                    raise EmbeddingModelDownloadRequiredError(
+                        f"Embedding model {name!r} is not downloaded yet. "
+                        "Finish its Settings download before indexing documents."
+                    )
                 elif _st_accepts_local_files_only(SentenceTransformer):
                     st_kwargs["local_files_only"] = True
             with _quiet_transformers_load() as report:
@@ -524,6 +546,17 @@ def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
     return _count
 
 
+def _release_st_model() -> bool:
+    """Drop the module-level SentenceTransformer without racing an encode."""
+    global _model, _name
+    with _compute_lock:
+        with _lock:
+            released = _model is not None
+            _model = None
+            _name = None
+    return released
+
+
 class _SentenceTransformersBackend:
     """Default backend; delegates to the module-level ST helpers so the ``_get``
     monkeypatch in tests keeps working."""
@@ -537,12 +570,12 @@ class _SentenceTransformersBackend:
     ):
         try:
             return _st_encode(texts, model_name = model_name, normalize = normalize)
-        except UnsafeEmbeddingModelError:
-            raise  # a security block must hard-fail, not fall back to llama-server
+        except (UnsafeEmbeddingModelError, EmbeddingModelDownloadRequiredError):
+            raise  # policy failures must hard-fail, not change backend/download
         except Exception as st_err:  # noqa: BLE001 - runtime ST/CUDA encode failure
             # ST loaded but this encode blew up; swap the process to the llama-server
             # embedder (so later encodes stay in one space) and retry.
-            fallback = _switch_to_llama_fallback(st_err)
+            fallback = _switch_to_llama_fallback(st_err, model_name)
             if fallback is None:
                 raise
             _served_by.backend = fallback
@@ -565,6 +598,10 @@ _backend_key: str | None = None
 # It pins the resolved choice so the swap survives the next rebuild; cleared only
 # by a reset or an explicit unload, both of which are a fresh start.
 _forced_backend_key: str | None = None
+# The runtime/load failure pin applies only to the model that failed. A later
+# safetensors-only selection must be allowed to build ST instead of inheriting
+# another model's llama fallback.
+_forced_backend_model: str | None = None
 
 _ST_ALIASES = frozenset({"sentence-transformers", "sentence_transformers", "st"})
 _LLAMA_ALIASES = frozenset(
@@ -592,15 +629,16 @@ def _resolve_auto() -> str:
     return "sentence-transformers"
 
 
-def _resolve_auto_for_model() -> str:
+def _resolve_auto_for_model(model_name: str | None = None) -> str:
     """``auto``, but honouring the backend recorded for the saved model.
 
     An embedder with no GGUF still runs on sentence-transformers, so the picker
     records that choice rather than refusing the model; without this the hardware
     default would send it to llama-server, which has nothing to open."""
+    model = model_name or config.effective_embedding_model()
     try:
         from utils.embedding_model_settings import get_stored_backend
-        stored = get_stored_backend(config.effective_embedding_model())
+        stored = get_stored_backend(model)
     except Exception:  # noqa: BLE001 - store unavailable: fall back to hardware
         stored = None
     if stored:
@@ -608,6 +646,22 @@ def _resolve_auto_for_model() -> str:
         if key in _ST_ALIASES or key in _LLAMA_ALIASES:
             return key
     return _resolve_auto()
+
+
+def resolved_backend_for_model(model_name: str) -> str:
+    """Backend a fresh operation for ``model_name`` would actually select."""
+    raw = _raw_backend()
+    with _backend_lock:
+        forced = _forced_backend_key if _forced_backend_model == model_name else None
+    key = forced or (_resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw)
+    if key in _LLAMA_ALIASES:
+        return "llama-server"
+    if key in _ST_ALIASES:
+        return "sentence-transformers"
+    raise ValueError(
+        f"Unknown RAG_EMBED_BACKEND={config.EMBED_BACKEND!r}; expected "
+        "'auto', 'sentence-transformers' or 'llama-server'"
+    )
 
 
 def _try_make_llama_backend():
@@ -631,8 +685,8 @@ def _build_st_backend_or_fallback():
     try:
         backend.warm(model_name = None)
         return backend
-    except UnsafeEmbeddingModelError:
-        raise  # a security block must hard-fail, not fall back to llama-server
+    except (UnsafeEmbeddingModelError, EmbeddingModelDownloadRequiredError):
+        raise  # policy failures must hard-fail, not change backend/download
     except Exception as st_err:  # noqa: BLE001 - any ST/torch import or load failure
         fallback = _try_make_llama_backend()
         if fallback is None:
@@ -645,12 +699,14 @@ def _build_st_backend_or_fallback():
         return fallback
 
 
-def _switch_to_llama_fallback(err):
+def _switch_to_llama_fallback(err, model_name: str | None = None):
     """An ST encode failed at runtime even though the model had loaded. Swap the
     process embedder to llama-server so every later encode stays in one space, and
     return it (None if no binary). Vectors written before the swap were ST, so any
     KB already embedded with ST should be reindexed."""
-    global _backend, _backend_key, _forced_backend_key
+    global _backend, _backend_key, _forced_backend_key, _forced_backend_model
+    failed_model = model_name or config.effective_embedding_model()
+    old = None
     with _backend_lock:
         if not isinstance(_backend, _SentenceTransformersBackend):
             return _backend  # another thread already swapped (or was never ST)
@@ -663,21 +719,42 @@ def _switch_to_llama_fallback(err):
             "was already embedded with sentence-transformers.",
             err,
         )
-        _backend = fallback
+        old, _backend = _backend, fallback
         _forced_backend_key = "llama-server"
+        _forced_backend_model = failed_model
         _backend_key = _backend_cache_key(_raw_backend(), "llama-server")
-        return fallback
+    # The failed ST wrapper is no longer published, but its module-level model
+    # would otherwise survive even a later unload of the llama replacement.
+    _dispose_replaced_backend(old, fallback)
+    return fallback
 
 
 def _raw_backend() -> str:
     return (config.EMBED_BACKEND or "auto").strip().lower()
 
 
+def sentence_transformers_fallback_allowed(model_name: str | None = None) -> bool:
+    """Whether a resolved ST plan can actually be selected for a new model.
+
+    An explicit llama configuration ignores the per-model stored backend, and
+    a runtime ST failure deliberately pins llama until unload. In either state,
+    offering safetensors would save a model the first index cannot load.
+    """
+    raw = _raw_backend()
+    model = model_name or config.effective_embedding_model()
+    with _backend_lock:
+        forced = _forced_backend_key
+        forced_model = _forced_backend_model
+    if forced in _LLAMA_ALIASES and forced_model == model:
+        return False
+    return raw in _AUTO_ALIASES or raw in _ST_ALIASES
+
+
 def _current_backend_key() -> str:
     """The cache key the backend in use should carry right now. Tests that install a
     stub backend set ``_backend_key`` from this so it is not rebuilt under them."""
     raw = _raw_backend()
-    if _forced_backend_key:
+    if _forced_backend_key and _forced_backend_model == config.effective_embedding_model():
         return _backend_cache_key(raw, _forced_backend_key)
     key = _resolve_auto_for_model() if raw in _AUTO_ALIASES else raw
     return _backend_cache_key(raw, key)
@@ -690,36 +767,71 @@ def _backend_cache_key(raw: str, key: str) -> str:
     return f"{raw}\x00{key}"
 
 
+def _dispose_replaced_backend(old, new = None) -> None:
+    """Release resources owned by a backend that is no longer published."""
+    if old is None or old is new:
+        return
+    if isinstance(old, _SentenceTransformersBackend):
+        # Two ST wrappers share the module-level model. A replacement ST was
+        # already warmed against the new name, so clearing it here would discard
+        # the model we just selected.
+        if not isinstance(new, _SentenceTransformersBackend):
+            _release_st_model()
+        return
+    shutdown = getattr(old, "_shutdown", None)
+    if callable(shutdown):
+        try:
+            shutdown()
+        except Exception:  # noqa: BLE001 - replacement is already selected
+            logger.warning("replaced embedding backend shutdown failed", exc_info = True)
+
+
 def _get_backend():
     """The process-wide embedding backend for ``config.EMBED_BACKEND``, built once.
     Cached by the resolved choice, so ``auto`` detection runs only on a miss and a
     config or saved-model change rebuilds it."""
-    global _backend, _backend_key
+    global _backend, _backend_key, _forced_backend_key, _forced_backend_model
     raw = _raw_backend()
+    old = None
+    new = None
     with _backend_lock:
-        key = _forced_backend_key or (_resolve_auto_for_model() if raw in _AUTO_ALIASES else raw)
+        model = config.effective_embedding_model()
+        forced = _forced_backend_key if _forced_backend_model == model else None
+        key = forced or (_resolve_auto_for_model() if raw in _AUTO_ALIASES else raw)
         if _backend is not None and _backend_key == _backend_cache_key(raw, key):
             return _backend
+        old = _backend
         if key in _ST_ALIASES:
-            _backend = _build_st_backend_or_fallback()
+            new = _build_st_backend_or_fallback()
         elif key in _LLAMA_ALIASES:
             # Imported lazily so the ST path never imports llama plumbing.
             from .embed_llama_server import LlamaServerBackend
-            _backend = LlamaServerBackend()
+            new = LlamaServerBackend()
         else:
             raise ValueError(
                 f"Unknown RAG_EMBED_BACKEND={config.EMBED_BACKEND!r}; expected "
                 "'auto', 'sentence-transformers' or 'llama-server'"
             )
+        _backend = new
+        if key in _ST_ALIASES and _is_llama_backend(new):
+            # The ST warm probe fell back before producing vectors. Pin that
+            # actual backend for this model, but let a different model retry ST.
+            key = "llama-server"
+            _forced_backend_key = key
+            _forced_backend_model = model
         _backend_key = _backend_cache_key(raw, key)
-        return _backend
+    # A llama shutdown can wait for an in-flight encode, so keep that wait out
+    # of the global publication lock. New callers already see ``new``.
+    _dispose_replaced_backend(old, new)
+    return new
 
 
 def _reset_backend() -> None:
     """Drop the cached backend (test teardown / re-init)."""
-    global _backend, _backend_key, _forced_backend_key
+    global _backend, _backend_key, _forced_backend_key, _forced_backend_model
     with _backend_lock:
         _forced_backend_key = None
+        _forced_backend_model = None
         _backend = None
         _backend_key = None
 
@@ -736,20 +848,16 @@ def release_backend() -> bool:
 
     Safe mid-ingestion: the next embed rebuilds, and the llama backend's own POST
     retry already covers a server that went away under it."""
-    global _backend, _backend_key, _forced_backend_key
+    global _backend, _backend_key, _forced_backend_key, _forced_backend_model
     with _backend_lock:
         # Unload is an explicit fresh start, so a past runtime fallback stops pinning
         # the choice and the saved model picks its backend again.
         _forced_backend_key = None
+        _forced_backend_model = None
         backend, _backend, _backend_key = _backend, None, None
     if backend is None:
         return False
-    shutdown = getattr(backend, "_shutdown", None)
-    if callable(shutdown):
-        try:
-            shutdown()
-        except Exception:  # noqa: BLE001 - already dropped; a stuck kill must not 500
-            logger.warning("embedding backend shutdown failed", exc_info = True)
+    _dispose_replaced_backend(backend)
     return True
 
 
@@ -787,7 +895,9 @@ def active_backend_is_llama() -> bool:
 def _identity(is_llama: bool, name: str) -> str:
     if is_llama:
         return config.embedding_identity(
-            "llama-server", name, gguf_repo = config.gguf_repo_for_embedding_model(name)
+            "llama-server",
+            name,
+            gguf_repo = config.effective_gguf_repo_for_embedding_model(name),
         )
     return config.embedding_identity("sentence-transformers", name)
 

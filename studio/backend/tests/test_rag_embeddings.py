@@ -415,6 +415,100 @@ def test_st_success_keeps_sentence_transformers(monkeypatch):
     assert isinstance(backend, embeddings._SentenceTransformersBackend)
 
 
+def test_unload_clears_the_sentence_transformer_weights(monkeypatch):
+    embeddings._backend = embeddings._SentenceTransformersBackend()
+    embeddings._backend_key = embeddings._current_backend_key()
+    embeddings._model = object()
+    embeddings._name = "org/embedder"
+
+    assert embeddings.release_backend() is True
+    assert embeddings._model is None
+    assert embeddings._name is None
+
+
+def test_pending_sentence_transformer_refuses_implicit_download_and_llama_fallback(
+    monkeypatch,
+):
+    import utils.embedding_model_settings as ems
+    import utils.utils as utils
+
+    class _MustNotLoad:
+        def __init__(self, *args, **kwargs):  # pragma: no cover - failure is the assertion
+            raise AssertionError("pending model reached SentenceTransformer")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer = _MustNotLoad),
+    )
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda model: False)
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
+    monkeypatch.setattr(
+        embeddings,
+        "_try_make_llama_backend",
+        lambda: (_ for _ in ()).throw(AssertionError("pending ST fell back to llama")),
+    )
+    embeddings._model = None
+    embeddings._name = None
+
+    with pytest.raises(embeddings.EmbeddingModelDownloadRequiredError, match = "not downloaded"):
+        embeddings._build_st_backend_or_fallback()
+
+
+def test_replacing_a_llama_backend_shuts_it_down(monkeypatch):
+    calls = []
+
+    class _OldLlama:
+        def _shutdown(self):
+            calls.append("shutdown")
+
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "sentence-transformers")
+    monkeypatch.setattr(
+        embeddings,
+        "_build_st_backend_or_fallback",
+        lambda: embeddings._SentenceTransformersBackend(),
+    )
+    embeddings._backend = _OldLlama()
+    embeddings._backend_key = "stale"
+
+    assert isinstance(embeddings._get_backend(), embeddings._SentenceTransformersBackend)
+    assert calls == ["shutdown"]
+
+
+def test_explicit_llama_backend_disallows_st_resolution(monkeypatch):
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "llama-server")
+    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
+    assert embeddings.sentence_transformers_fallback_allowed() is False
+
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    assert embeddings.sentence_transformers_fallback_allowed() is True
+    monkeypatch.setattr(embeddings, "_forced_backend_key", "llama-server")
+    monkeypatch.setattr(
+        embeddings,
+        "_forced_backend_model",
+        embeddings.config.effective_embedding_model(),
+    )
+    assert embeddings.sentence_transformers_fallback_allowed() is False
+
+
+def test_forced_llama_fallback_is_scoped_to_the_model_that_failed(monkeypatch):
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_forced_backend_key", "llama-server")
+    monkeypatch.setattr(embeddings, "_forced_backend_model", "org/failed")
+    monkeypatch.setattr(
+        embeddings,
+        "_resolve_auto_for_model",
+        lambda model = None: "sentence-transformers",
+    )
+
+    assert embeddings.sentence_transformers_fallback_allowed("org/failed") is False
+    assert embeddings.sentence_transformers_fallback_allowed("org/new-model") is True
+    assert embeddings.resolved_backend_for_model("org/failed") == "llama-server"
+    assert embeddings.resolved_backend_for_model("org/new-model") == "sentence-transformers"
+
+
 class _BoomOnEncodeModel:
     """Loads fine (init probe passes) but raises when encoding."""
 
@@ -429,6 +523,8 @@ def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel())
     _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
     calls = {}
+    embeddings._model = object()
+    embeddings._name = "org/embedder"
 
     def _sentinel_encode(
         self,
@@ -446,6 +542,11 @@ def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
     out = embeddings.encode(["alpha", "beta"])
     assert calls.get("used") is True  # retried on the llama fallback
     assert out.shape == (2, 4)
+    # The failed ST weights are no longer reachable, including after the
+    # published backend became llama rather than an ST wrapper.
+    assert embeddings._model is None
+    assert embeddings._name is None
+    assert embeddings._forced_backend_model == embeddings.config.effective_embedding_model()
     # Switch is process-wide: later calls keep using llama, not ST.
     assert isinstance(embeddings._get_backend(), _SentinelLlamaBackend)
     # It outranks what the saved model would otherwise resolve to, so a model that

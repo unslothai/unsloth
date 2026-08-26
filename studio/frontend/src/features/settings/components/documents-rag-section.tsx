@@ -38,13 +38,16 @@ const EMBEDDING_DOWNLOAD_SCOPE = "rag-embedding";
  * off one shared store, so a save on one is what the other reads.
  *
  * Picking applies immediately, as dictation does; a model that is not on disk
- * is then offered as a download instead of being fetched at the first index.
+ * is marked pending by the server and offered as a download. Its loader remains
+ * cache-only, so closing or cancelling cannot turn into a first-index transfer.
  */
 export function DocumentsRagSection(): ReactElement {
   const t = useT();
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const embeddingModel = useEmbeddingModelStore((s) => s.settings);
   const loadError = useEmbeddingModelStore((s) => s.loadError);
+  const beginSave = useEmbeddingModelStore((s) => s.beginSave);
+  const isSaveCurrent = useEmbeddingModelStore((s) => s.isSaveCurrent);
   const save = useEmbeddingModelStore((s) => s.save);
   const [saveError, setSaveError] = useState<string | null>(null);
   // The store carries the backend's reason; an unreadable failure has none.
@@ -96,6 +99,9 @@ export function DocumentsRagSection(): ReactElement {
   // rather than only after a pick.
   const savedModel = embeddingModel?.embeddingModel;
   useEffect(() => {
+    // Another mounted settings surface may have saved a different model. Its
+    // old resolution must not leave a Download action targeting the wrong repo.
+    setResolution(null);
     if (!savedModel) return;
     let live = true;
     void resolveEmbeddingModel(savedModel, { hfToken: hfToken || undefined })
@@ -116,15 +122,19 @@ export function DocumentsRagSection(): ReactElement {
     model: string,
     plan: EmbeddingModelResolution | null,
     force: boolean,
+    reservation: number,
   ): Promise<boolean> => {
     try {
-      const stood = await save(() =>
-        updateEmbeddingModelSettings(model, {
-          hfToken: hfToken || undefined,
-          ggufRepo: plan?.downloadRepo ?? null,
-          backend: plan?.backend ?? null,
-          force,
-        }),
+      const stood = await save(
+        () =>
+          updateEmbeddingModelSettings(model, {
+            hfToken: hfToken || undefined,
+            ggufRepo:
+              plan?.backend === "llama" ? (plan.downloadRepo ?? null) : null,
+            backend: plan?.backend ?? null,
+            force,
+          }),
+        reservation,
       );
       // A later save owns the setting now, so this answer says nothing current.
       if (!stood) return false;
@@ -152,16 +162,21 @@ export function DocumentsRagSection(): ReactElement {
   /** Resolve first, so a model that needs fetching is offered as a download
    * rather than saved and quietly fetched at the first index. */
   const applyEmbeddingModel = async (model: string, force: boolean) => {
+    // A force affordance belongs only to the request that produced its 409.
+    setForceCandidate(null);
     const trimmed = model.trim();
     if (!trimmed) {
       setSaveError(t("settings.general.rag.emptyError"));
       return;
     }
+    // Claim cross-surface ordering before the resolver await. Otherwise a
+    // slower older selection can call save last and overwrite a newer pick.
+    const reservation = beginSave();
     setIsSavingEmbeddingModel(true);
     setSaveError(null);
     try {
       if (force) {
-        await persist(trimmed, null, true);
+        await persist(trimmed, null, true, reservation);
         return;
       }
       let resolution: EmbeddingModelResolution;
@@ -170,10 +185,12 @@ export function DocumentsRagSection(): ReactElement {
           hfToken: hfToken || undefined,
         });
       } catch {
+        if (!isSaveCurrent(reservation)) return;
         // Offline or the probe failed: let the save decide, as it did before.
-        await persist(trimmed, null, false);
+        await persist(trimmed, null, false, reservation);
         return;
       }
+      if (!isSaveCurrent(reservation)) return;
       if (resolution.error) {
         // Forceable: the user may know something the probe cannot see.
         setResolution(resolution);
@@ -183,11 +200,11 @@ export function DocumentsRagSection(): ReactElement {
       }
       setResolution(resolution);
       if (resolution.cached || !resolution.downloadRepo) {
-        await persist(trimmed, resolution, false);
+        await persist(trimmed, resolution, false, reservation);
         return;
       }
-      // Not on disk: record the pick, then offer Download in the action row.
-      await persist(trimmed, resolution, false);
+      // Not on disk: record the cache-only pending pick, then offer Download.
+      await persist(trimmed, resolution, false, reservation);
     } finally {
       setIsSavingEmbeddingModel(false);
     }
@@ -215,8 +232,11 @@ export function DocumentsRagSection(): ReactElement {
           }),
           { description: t("settings.general.rag.downloadingDescription") },
         );
+      } else {
+        // requestStart turns refused starts into outcomes rather than throws.
+        // Every non-start therefore needs feedback from this caller.
+        toast.error(t("settings.general.rag.downloadFailed"));
       }
-      // "conflict" and "busy" already raise their own notice from the manager.
     } catch (error) {
       toast.error(t("settings.general.rag.downloadFailed"), {
         description: error instanceof Error ? error.message : undefined,
@@ -236,12 +256,32 @@ export function DocumentsRagSection(): ReactElement {
             : null,
         )
       : null;
-  const downloading = useDownloadManagerStore((state) =>
-    downloadJobKey
-      ? state.jobs[downloadJobKey]?.state === "running" ||
-        state.jobs[downloadJobKey]?.state === "cancelling"
-      : false,
+  const downloadState = useDownloadManagerStore((state) =>
+    downloadJobKey ? (state.jobs[downloadJobKey]?.state ?? null) : null,
   );
+  const downloading =
+    downloadState === "running" || downloadState === "cancelling";
+
+  // The original resolve correctly said uncached. Once the shared manager
+  // completes, ask again so the status/button and picker dots reflect disk.
+  useEffect(() => {
+    if (downloadState !== "complete" || !savedModel) return;
+    let live = true;
+    void Promise.all([
+      resolveEmbeddingModel(savedModel, { hfToken: hfToken || undefined }),
+      refreshCachedRepos(),
+    ])
+      .then(([next]) => {
+        if (live && next.embeddingModel === savedModel) setResolution(next);
+      })
+      .catch(() => {
+        // The completed transfer remains in the shared panel; a later open
+        // retries the advisory resolve/cache inventory.
+      });
+    return () => {
+      live = false;
+    };
+  }, [downloadState, savedModel, hfToken, refreshCachedRepos]);
   const canDownload = Boolean(
     resolution && !resolution.cached && resolution.downloadRepo,
   );

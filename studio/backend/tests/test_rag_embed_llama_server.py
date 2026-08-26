@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 import types
 from pathlib import Path
@@ -92,6 +93,33 @@ def test_unknown_backend_raises(monkeypatch):
     monkeypatch.setattr(config, "EMBED_BACKEND", "bogus")
     with pytest.raises(ValueError, match = "Unknown RAG_EMBED_BACKEND"):
         embeddings._get_backend()
+
+
+def test_shutdown_waits_for_an_active_embedding_operation(monkeypatch):
+    backend = LlamaServerBackend()
+    entered = threading.Event()
+    finish = threading.Event()
+    shutdown_done = threading.Event()
+
+    def _post(path, payload):
+        entered.set()
+        assert finish.wait(timeout = 2)
+        return {"data": [{"index": 0, "embedding": [1.0, 0.0]}]}
+
+    monkeypatch.setattr(backend, "_post", _post)
+    worker = threading.Thread(target = lambda: backend.encode(["x"]))
+    worker.start()
+    assert entered.wait(timeout = 2)
+
+    closer = threading.Thread(target = lambda: (backend._shutdown(), shutdown_done.set()))
+    closer.start()
+    assert shutdown_done.wait(timeout = 0.05) is False
+    finish.set()
+    worker.join(timeout = 2)
+    closer.join(timeout = 2)
+    assert shutdown_done.is_set()
+    with pytest.raises(RuntimeError, match = "unloaded"):
+        backend.encode(["x"])
 
 
 def test_explicit_backend_overrides_auto(monkeypatch):
@@ -932,6 +960,44 @@ def test_an_unreachable_hub_falls_back_to_whatever_variant_is_cached(monkeypatch
     )
     backend = LlamaServerBackend()
     assert backend._resolve_model_path().endswith("bge-Q8_0.gguf")
+
+
+def test_a_pending_picker_download_never_falls_through_to_the_hub(monkeypatch, tmp_path):
+    import utils.embedding_model_settings as ems
+
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: "org/pending-GGUF")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    _use_cache_root(monkeypatch, tmp_path / "empty")
+    backend = LlamaServerBackend()
+    monkeypatch.setattr(
+        backend,
+        "_resolve_uncached_model_path",
+        lambda *a: (_ for _ in ()).throw(AssertionError("pending model reached the Hub")),
+    )
+
+    with pytest.raises(RuntimeError, match = "not downloaded yet"):
+        backend._resolve_model_path()
+
+
+def test_a_completed_pending_download_uses_its_cached_fallback_quant(monkeypatch, tmp_path):
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    _seed_cache(tmp_path / "hub", repo, ["pending-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+    monkeypatch.setattr(
+        backend,
+        "_resolve_uncached_model_path",
+        lambda *a: (_ for _ in ()).throw(AssertionError("cached pending model reached Hub")),
+    )
+
+    assert backend._resolve_model_path().endswith("pending-Q8_0.gguf")
 
 
 def test_an_unreachable_hub_still_reaches_the_fallback_repo_s_cache(monkeypatch, tmp_path):

@@ -1837,8 +1837,8 @@ def _ambient_hf_token() -> Optional[str]:
         return None
 
 
-def _llama_backend_active() -> bool:
-    """True when this install actually embeds via the llama-server (GGUF) backend.
+def _llama_backend_active(model: str | None = None) -> bool:
+    """Whether llama serves the active model, or would serve ``model`` if supplied.
 
     Delegates to the embeddings module so a runtime fallback from
     sentence-transformers to llama-server (after a torch/CUDA load or encode
@@ -1847,6 +1847,8 @@ def _llama_backend_active() -> bool:
     Before any backend is built this still reflects the resolver."""
     from core.rag import embeddings
     try:
+        if model is not None:
+            return embeddings.resolved_backend_for_model(model) == "llama-server"
         return embeddings.active_backend_is_llama()
     except Exception:  # noqa: BLE001 - backend probe must never block saving
         return False
@@ -1874,7 +1876,7 @@ def _local_gguf_backend_error(model: str) -> str | None:
         return None
     from core.rag.embed_llama_server import LlamaServerBackend
 
-    if not _llama_backend_active():
+    if not _llama_backend_active(model):
         return None
     try:
         LlamaServerBackend._resolve_local_gguf(model)
@@ -1898,18 +1900,24 @@ def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
 
     if Path(model).expanduser().exists():
         return None  # local paths are handled by the local checks
-    if not _llama_backend_active():
+    if not _llama_backend_active(model):
         return None
-    from core.rag import config as rag_config
-
-    candidates = rag_config.gguf_repo_candidates(model)
+    candidates = _embedding_gguf_candidates(model)
     if _remote_embedding_gguf_plan(candidates, hf_token) is not None:
         return None
     if _search_hub_for_gguf(model, hf_token) is not None:
         return None
     # Safetensors on sentence-transformers is a working answer, not a failure.
-    if _safetensors_plan(model, hf_token) is not None:
+    if (
+        _sentence_transformers_fallback_allowed(model)
+        and _safetensors_plan(model, hf_token) is not None
+    ):
         return None
+    return _no_embedding_weights_error(candidates)
+
+
+def _no_embedding_weights_error(candidates: list[str]) -> str:
+    """Error after the caller has already exhausted GGUF and ST resolution."""
     checked = " or ".join(repr(c) for c in candidates)
     return (
         f"No GGUF weights found in {checked}, and no safetensors to fall back to. "
@@ -1927,7 +1935,8 @@ def get_embedding_model(
 class EmbeddingModelResolveResponse(BaseModel):
     embedding_model: str
     backend: Literal["llama", "sentence-transformers"]
-    # Repo the picker hands the download manager, and the file to take from it.
+    # Repo the picker hands the download manager, and the files to take from it.
+    # Split GGUF plans contain every shard in the selected family.
     # Both None when nothing needs fetching, or when ``error`` is set.
     download_repo: Optional[str] = None
     files: Optional[list[str]] = None
@@ -1939,94 +1948,199 @@ class EmbeddingModelResolveResponse(BaseModel):
 def _embedding_gguf_candidates(model: str) -> list[str]:
     """Repos the loader would try for ``model``'s GGUF, in its order."""
     from core.rag import config as rag_config
-    return rag_config.gguf_repo_candidates(model)
+
+    try:
+        from utils.embedding_model_settings import get_stored_gguf_repo
+        stored = get_stored_gguf_repo(model)
+    except Exception:  # noqa: BLE001 - resolver still has derived candidates
+        stored = None
+    return list(
+        dict.fromkeys([*([stored] if stored else []), *rag_config.gguf_repo_candidates(model)])
+    )
 
 
 # A GGUF conversion must come from the same owner as the model. Repo names are
 # not proof of provenance, so an unsloth/ pick only ever downloads from unsloth.
 _GGUF_MIRROR_SEARCH_LIMIT = 25
+_GGUF_LIST_DEADLINE_S = 20.0
 
 
-def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[str, str]]:
-    """``(repo, filename)`` for a GGUF conversion of ``model`` published by the same
+def _list_repo_files_bounded(repo: str, hf_token: Optional[str]) -> list[str]:
+    """List a Hub repo without letting a blackholed route pin Settings forever."""
+    from huggingface_hub import list_repo_files
+    from utils.utils import call_with_deadline
+
+    return call_with_deadline(
+        lambda: list_repo_files(repo, token = hf_token),
+        _GGUF_LIST_DEADLINE_S,
+        name = "embed-settings-repo-listing",
+    )
+
+
+def _gguf_conversion_name_matches(hit_name: str, base: str) -> bool:
+    """Whether a search hit names a conversion of exactly ``base``.
+
+    Prefix matching is unsafe (``foo`` must never resolve to ``foo-bar-GGUF``).
+    The Hub filter already requires GGUF; this check accepts only the common
+    conversion suffix spellings and the exact model name.
+    """
+    name = hit_name.casefold()
+    base = base.casefold()
+    return name == base or name in {f"{base}-gguf", f"{base}_gguf", f"{base}.gguf"}
+
+
+def _gguf_files_for_pick(names: list[str], picked: str) -> Optional[list[str]]:
+    """The complete downloadable file family for a picked GGUF.
+
+    llama-server opens split siblings implicitly, so a single selected shard is
+    not a usable plan. Incomplete published families are rejected.
+    """
+    from pathlib import PurePosixPath
+    from utils.models.model_config import _GGUF_SPLIT_FILE_RE
+
+    path = PurePosixPath(picked)
+    match = _GGUF_SPLIT_FILE_RE.match(path.name)
+    if match is None:
+        return [picked]
+    total = int(match.group("total"))
+    if total < 1:
+        return None
+    found: dict[int, str] = {}
+    for name in names:
+        other = PurePosixPath(name)
+        other_match = _GGUF_SPLIT_FILE_RE.match(other.name)
+        if (
+            other.parent != path.parent
+            or other_match is None
+            or other_match.group("prefix").casefold() != match.group("prefix").casefold()
+            or other_match.group("total") != match.group("total")
+        ):
+            continue
+        index = int(other_match.group("index"))
+        if 1 <= index <= total:
+            found[index] = name
+    if len(found) != total:
+        return None
+    return [found[index] for index in range(1, total + 1)]
+
+
+def _pick_downloadable_gguf(names: list[str]) -> Optional[list[str]]:
+    """Pick the loader's preferred GGUF, skipping torn split families."""
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    remaining = list(names)
+    while remaining:
+        picked = LlamaServerBackend._pick_gguf(remaining)
+        if not picked:
+            return None
+        files = _gguf_files_for_pick(names, picked)
+        if files:
+            return files
+        remaining = [name for name in remaining if name != picked]
+    return None
+
+
+def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
+    """``(repo, files)`` for a GGUF conversion of ``model`` published by the same
     owner under a name the -GGUF candidates do not cover.
 
     Same owner only: a third party's "Qwen3-Embedding-8B-GGUF" is an unverified
     re-upload, and picking unsloth/X must download unsloth's own weights."""
     from core.rag import config as rag_config
-    from core.rag.embed_llama_server import LlamaServerBackend
 
     owner, _, name = model.rpartition("/")
     if not owner:
         return None
     try:
-        from huggingface_hub import HfApi, list_repo_files
+        from huggingface_hub import HfApi
     except Exception:  # noqa: BLE001 - hub client unavailable
         return None
     base = rag_config._QUANT_SUFFIX_RE.sub("", name).lower()
     if not base:
         return None
     try:
-        hits = list(
-            HfApi().list_models(
-                search = base,
-                author = owner,
-                filter = ["gguf"],
-                sort = "downloads",
-                limit = _GGUF_MIRROR_SEARCH_LIMIT,
-                token = hf_token,
-            )
+        from utils.utils import call_with_deadline
+        hits = call_with_deadline(
+            lambda: list(
+                HfApi().list_models(
+                    search = base,
+                    author = owner,
+                    filter = ["gguf"],
+                    sort = "downloads",
+                    limit = _GGUF_MIRROR_SEARCH_LIMIT,
+                    token = hf_token,
+                )
+            ),
+            _GGUF_LIST_DEADLINE_S,
+            name = "embed-settings-model-search",
         )
     except Exception:  # noqa: BLE001 - offline or rate limited
         return None
     for hit in hits:
         hit_owner, _, hit_name = hit.id.rpartition("/")
-        if hit_owner.lower() != owner.lower() or not hit_name.lower().startswith(base):
+        if hit_owner.casefold() != owner.casefold() or not _gguf_conversion_name_matches(
+            hit_name, base
+        ):
             continue
         try:
-            filename = LlamaServerBackend._pick_gguf(list_repo_files(hit.id, token = hf_token))
+            files = _pick_downloadable_gguf(_list_repo_files_bounded(hit.id, hf_token))
         except Exception:  # noqa: BLE001 - unreadable listing: try the next
             continue
-        if filename:
-            return hit.id, filename
+        if files:
+            return hit.id, files
     return None
 
 
-def _cached_embedding_gguf(candidates: list[str]) -> bool:
-    """Whether any candidate already holds a usable GGUF on disk. No network."""
+def _cached_embedding_gguf(candidates: list[str], *, require_variant: bool) -> Optional[str]:
+    """First candidate already holding a usable GGUF on disk. No network."""
     from core.rag.embed_llama_server import LlamaServerBackend
 
     for candidate in candidates:
         try:
-            if LlamaServerBackend._resolve_cached_gguf(candidate, require_variant = False):
-                return True
+            if LlamaServerBackend._resolve_cached_gguf(candidate, require_variant = require_variant):
+                return candidate
         except Exception:  # noqa: BLE001 - a bad cache entry is just a miss
             continue
-    return False
+    return None
+
+
+def _cached_embedding_gguf_files(repo: str, files: list[str]) -> bool:
+    """Whether the exact resolved GGUF family is complete in ``repo``'s snapshot."""
+    from pathlib import Path, PurePosixPath
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    try:
+        snapshot = LlamaServerBackend._cached_snapshot_dir(repo)
+        if snapshot is None or not files:
+            return False
+        for name in files:
+            path = PurePosixPath(name)
+            if (
+                path.is_absolute()
+                or ".." in path.parts
+                or not (snapshot / Path(*path.parts)).is_file()
+            ):
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - an unreadable cache is a miss
+        return False
 
 
 def _remote_embedding_gguf_plan(
     candidates: list[str], hf_token: Optional[str]
-) -> Optional[tuple[str, str]]:
-    """``(repo, filename)`` for the first candidate publishing a GGUF, picked the
-    way the loader picks it, so we fetch the file it will open."""
-    from core.rag.embed_llama_server import LlamaServerBackend
-
-    try:
-        from huggingface_hub import list_repo_files
-    except Exception:  # noqa: BLE001 - hub client unavailable
-        return None
+) -> Optional[tuple[str, list[str]]]:
+    """``(repo, files)`` for the first candidate publishing a usable GGUF family."""
     for candidate in candidates:
         try:
-            names = list_repo_files(candidate, token = hf_token)
+            names = _list_repo_files_bounded(candidate, hf_token)
         except Exception:  # noqa: BLE001 - missing/gated repo: try the next
             continue
         try:
-            filename = LlamaServerBackend._pick_gguf(names)
+            files = _pick_downloadable_gguf(names)
         except Exception:  # noqa: BLE001 - unreadable listing: try the next
-            filename = None
-        if filename:
-            return candidate, filename
+            files = None
+        if files:
+            return candidate, files
     return None
 
 
@@ -2047,8 +2161,7 @@ def _st_backend_available() -> bool:
 def _st_weight_files(model: str, hf_token: Optional[str]) -> Optional[list[str]]:
     """The repo's own weight files, or None when it publishes none we can load."""
     try:
-        from huggingface_hub import list_repo_files
-        files = list_repo_files(model, token = hf_token)
+        files = _list_repo_files_bounded(model, hf_token)
     except Exception:  # noqa: BLE001 - missing/gated repo or offline
         return None
     for suffix in _ST_WEIGHT_SUFFIXES:
@@ -2069,6 +2182,15 @@ def _safetensors_plan(model: str, hf_token: Optional[str]) -> Optional[tuple[str
     return (model, weights) if weights else None
 
 
+def _sentence_transformers_fallback_allowed(model: str) -> bool:
+    """Whether a newly selected model can actually be served by ST in this process."""
+    try:
+        from core.rag import embeddings
+        return embeddings.sentence_transformers_fallback_allowed(model)
+    except Exception:  # noqa: BLE001 - an unknown backend is not a safe fallback
+        return False
+
+
 def _hf_files_size(repo: str, files: list[str], hf_token: Optional[str]) -> Optional[int]:
     """Total bytes of ``files`` in ``repo``, for the confirm dialog. None when the
     hub does not say; the dialog has copy for that."""
@@ -2085,36 +2207,41 @@ def _hf_files_size(repo: str, files: list[str], hf_token: Optional[str]) -> Opti
         return None
 
 
-@router.get("/embedding-model/resolve", response_model = EmbeddingModelResolveResponse)
-def resolve_embedding_model(
-    model: str,
-    # Header, not a query param: keeps a gated-repo token out of URLs and logs.
-    hf_token: Optional[str] = Header(None, alias = "X-Unsloth-HF-Token"),
-    current_subject: str = Depends(get_current_subject),
-) -> EmbeddingModelResolveResponse:
-    """What saving ``model`` would need fetched, and whether it is already here.
+def _local_sentence_transformer_is_present(model: str) -> bool:
+    """Whether ``model`` is an existing local path ST can open directly."""
+    try:
+        from pathlib import Path
+        from utils.paths import is_local_path, normalize_path
+        return is_local_path(model) and Path(normalize_path(model)).expanduser().exists()
+    except Exception:  # noqa: BLE001 - filesystem oddity is a cache miss
+        return False
 
-    The picker calls this so it can offer the download up front instead of letting
-    it happen invisibly at first index. ``error`` is the detail the PUT would
-    refuse with, so the two cannot disagree about what is usable."""
+
+def _resolve_embedding_model_plan(
+    resolved: str, token: Optional[str]
+) -> EmbeddingModelResolveResponse:
+    """Server-owned artifact/backend plan shared by GET and PUT.
+
+    The PUT must not persist a client assertion that the GET never validated,
+    so both routes use this exact resolver.
+    """
     from utils.utils import hf_cache_snapshot_is_loadable
 
-    try:
-        resolved = validate_embedding_model(model)
-    except ValueError as exc:
-        raise log_and_http_error(
-            exc,
-            400,
-            safe_error_detail(exc, fallback = "Invalid embedding model."),
-            event = "settings.resolve_embedding_model_failed",
-            log = logger,
-        ) from exc
-    token = (hf_token or "").strip() or None
-    on_llama = _llama_backend_active()
-    backend = "llama" if on_llama else "sentence-transformers"
+    # Resolve for the model being selected, not the backend still serving the
+    # previous model. A model-scoped runtime fallback must not force the next
+    # selection onto llama-server.
+    on_llama = _llama_backend_active(resolved)
+    backend: Literal["llama", "sentence-transformers"] = (
+        "llama" if on_llama else "sentence-transformers"
+    )
 
     if not on_llama:
-        # sentence-transformers loads the model repo itself.
+        # A valid local SentenceTransformer path is already the artifact; it is
+        # not a Hub repo for the download manager to fetch.
+        if _local_sentence_transformer_is_present(resolved):
+            return EmbeddingModelResolveResponse(
+                embedding_model = resolved, backend = backend, cached = True
+            )
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
             backend = backend,
@@ -2132,25 +2259,42 @@ def resolve_embedding_model(
         )
 
     candidates = _embedding_gguf_candidates(resolved)
-    if _cached_embedding_gguf(candidates):
+    # Match the loader's online fast path exactly: only the preferred repo and
+    # only the configured variant can suppress the download offer.
+    cached_repo = _cached_embedding_gguf(candidates[:1], require_variant = True)
+    if cached_repo:
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
             backend = backend,
-            download_repo = candidates[0],
+            download_repo = cached_repo,
             cached = True,
         )
     plan = _remote_embedding_gguf_plan(candidates, token) or _search_hub_for_gguf(resolved, token)
     if plan is None:
-        # No GGUF from this publisher: run it on its own safetensors rather than
-        # refusing it or downloading a stranger's conversion. The whole repo is
-        # fetched, not just the weights, since ST also needs the config/tokenizer.
-        st_plan = _safetensors_plan(resolved, token)
+        # The loader's offline fallback accepts any complete cached quant from
+        # any candidate only after its bounded online listing fails.
+        cached_repo = _cached_embedding_gguf(candidates, require_variant = False)
+        if cached_repo:
+            return EmbeddingModelResolveResponse(
+                embedding_model = resolved,
+                backend = backend,
+                download_repo = cached_repo,
+                cached = True,
+            )
+        # No GGUF from this publisher: run it on its own safetensors only when
+        # configuration/runtime policy can actually select ST for this model.
+        st_plan = (
+            _safetensors_plan(resolved, token)
+            if _sentence_transformers_fallback_allowed(resolved)
+            else None
+        )
         if st_plan is None:
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved,
                 backend = backend,
-                error = _hf_gguf_backend_error(resolved, token)
-                or "No usable weights could be resolved for this model.",
+                # Every remote/cache/fallback probe above has already failed;
+                # do not repeat the bounded Hub calls merely to format an error.
+                error = _no_embedding_weights_error(candidates),
             )
         st_repo, st_files = st_plan
         return EmbeddingModelResolveResponse(
@@ -2160,14 +2304,48 @@ def resolve_embedding_model(
             cached = hf_cache_snapshot_is_loadable(resolved),
             size_bytes = _hf_files_size(st_repo, st_files, token),
         )
-    repo, filename = plan
+    repo, files = plan
+    if _cached_embedding_gguf_files(repo, files):
+        return EmbeddingModelResolveResponse(
+            embedding_model = resolved,
+            backend = backend,
+            download_repo = repo,
+            files = files,
+            cached = True,
+        )
     return EmbeddingModelResolveResponse(
         embedding_model = resolved,
         backend = backend,
         download_repo = repo,
-        files = [filename],
-        size_bytes = _hf_files_size(repo, [filename], token),
+        files = files,
+        size_bytes = _hf_files_size(repo, files, token),
     )
+
+
+@router.get("/embedding-model/resolve", response_model = EmbeddingModelResolveResponse)
+def resolve_embedding_model(
+    model: str,
+    # Header, not a query param: keeps a gated-repo token out of URLs and logs.
+    hf_token: Optional[str] = Header(None, alias = "X-Unsloth-HF-Token"),
+    current_subject: str = Depends(get_current_subject),
+) -> EmbeddingModelResolveResponse:
+    """What saving ``model`` would need fetched, and whether it is already here.
+
+    The picker calls this so it can offer the download up front instead of letting
+    it happen invisibly at first index. ``error`` is the detail the PUT would
+    refuse with, so the two cannot disagree about what is usable."""
+    try:
+        resolved = validate_embedding_model(model)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid embedding model."),
+            event = "settings.resolve_embedding_model_failed",
+            log = logger,
+        ) from exc
+    token = (hf_token or "").strip() or None
+    return _resolve_embedding_model_plan(resolved, token)
 
 
 @router.put("/embedding-model", response_model = EmbeddingModelResponse)
@@ -2198,17 +2376,32 @@ def update_embedding_model(
     # Offline, both the Hub malware scan and the is-embedding check are unreachable and degrade
     # to the local cache below; capture the state once.
     local_only_load = hf_env_offline()
+    # Resolve again server-side. The client fields are only an optimistic echo
+    # of GET /resolve; neither a repository nor a backend is trusted on its word.
+    plan = _resolve_embedding_model_plan(model, hf_token)
+    requested_repo = (payload.gguf_repo or "").strip() or None
+    if payload.backend is not None and payload.backend != plan.backend:
+        raise HTTPException(
+            status_code = 400,
+            detail = "The embedding backend no longer matches the server resolution. Resolve it again.",
+        )
+    if requested_repo is not None and requested_repo != plan.download_repo:
+        raise HTTPException(
+            status_code = 400,
+            detail = "The embedding download repository was not validated for this model.",
+        )
+    destination_is_llama = plan.backend == "llama"
     # The env/default model needs no verification; saving it is a no-op override.
     # A local GGUF on the llama-server backend is accepted as-is: it is exactly
     # what the backend loads, and HF metadata cannot verify a local path.
-    is_local_gguf = _llama_backend_active() and _resolves_as_local_gguf(model)
+    is_local_gguf = destination_is_llama and _resolves_as_local_gguf(model)
     # The pickle gate only matters for the sentence-transformers backend, which is what
     # deserializes pickles. On the llama-server backend the embedder loads GGUF files
     # (inert) from effective_gguf_repo(), so scanning the ST repo's pickle here would
     # wrongly reject a custom repo whose GGUF companion is clean; the GGUF availability
     # checks below cover that path instead.
     scan_st_pickle = (
-        model != default_embedding_model() and not is_local_gguf and not _llama_backend_active()
+        model != default_embedding_model() and not is_local_gguf and not destination_is_llama
     )
     if scan_st_pickle:
         # Malware/pickle gate before we persist a repo the embedder later loads with
@@ -2263,7 +2456,7 @@ def update_embedding_model(
         # files, which rarely carry sentence-transformers metadata; verify the
         # GGUF is available (below) rather than the ST embedding-metadata gate,
         # which would wrongly 409 a valid online GGUF embedder.
-        gguf_named = _llama_backend_active() and rag_config._names_gguf(model)
+        gguf_named = destination_is_llama and rag_config._names_gguf(model)
         if not gguf_named and not is_embedding_model(model, hf_token = hf_token):
             # Offline, is_embedding_model can only confirm the ST layout (modules.json); a
             # transformers-native embedder (e.g. gte-modernbert) is unverifiable without Hub
@@ -2283,16 +2476,29 @@ def update_embedding_model(
                         "you may be offline)."
                     ),
                 )
-        # The Hub GGUF probe (list_repo_files) can hang offline; skip it. Local check stays.
-        gguf_error = _local_gguf_backend_error(model)
-        if gguf_error is None and not local_only_load:
-            gguf_error = _hf_gguf_backend_error(model, hf_token)
+        # The shared resolver already applied the bounded GGUF listing and the
+        # exact destination backend, so PUT and GET cannot disagree.
+        gguf_error = plan.error if destination_is_llama else None
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
+    trusted_backend = None
+    trusted_gguf_repo = None
+    trusted_download_pending = False
+    if plan.error is None:
+        trusted_backend = "llama-server" if destination_is_llama else "sentence-transformers"
+        # A sentence-transformers download repo is not a GGUF source. Keeping
+        # it out also prevents a later runtime fallback from mislabelling it.
+        trusted_gguf_repo = plan.download_repo if destination_is_llama else None
+        # The setting may be activated so both mounted settings surfaces stay
+        # in sync, but its loader must remain cache-only until this transfer is
+        # complete. That prevents a close/cancel from becoming an implicit
+        # first-index download.
+        trusted_download_pending = bool(plan.download_repo and not plan.cached)
     set_rag_embedding_model(
         model,
-        gguf_repo = (payload.gguf_repo or "").strip() or None,
-        backend = "llama-server" if payload.backend == "llama" else payload.backend,
+        gguf_repo = trusted_gguf_repo,
+        backend = trusted_backend,
+        download_pending = trusted_download_pending,
     )
     logger.info(
         "settings.embedding_model_updated subject=%s model=%s forced=%s",
