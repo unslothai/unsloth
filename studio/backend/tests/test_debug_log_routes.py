@@ -149,7 +149,13 @@ def test_an_api_key_session_cannot_read_the_logs():
 
 def test_export_contains_every_visible_source_and_masks_credentials(client):
     secret = "hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345"
-    server = _seed_server_log(f"server line\ntoken={secret}\n")
+    cookie_secret = "abc123def456COOKIESECRET"
+    redis_secret = "correct-horse-battery"
+    server = _seed_server_log(
+        f"server line\ntoken={secret}\n"
+        rf'payload="{{\"Cookie\":\"session={cookie_secret}\"}}"'
+        f"\nredis://:{redis_secret}@localhost:6379/0\n"
+    )
     llama = _seed_llama_log("llama runner line\n")
 
     response = client.get("/api/settings/debug/logs/export")
@@ -164,6 +170,8 @@ def test_export_contains_every_visible_source_and_masks_credentials(client):
     assert "server line" in exported
     assert "llama runner line" in exported
     assert secret not in exported
+    assert cookie_secret not in exported
+    assert redis_secret not in exported
     assert "hf_<redacted>" in exported
 
 

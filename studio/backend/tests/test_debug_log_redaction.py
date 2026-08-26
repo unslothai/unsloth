@@ -49,6 +49,7 @@ SECRETS = [
         "git clone https://dan:ghp_ABCDEFGHIJKLMNOPQRST0123@github.com/x/y",
         "ghp_ABCDEFGHIJKLMNOPQRST0123",
     ),
+    ("redis://:correct-horse-battery@localhost:6379/0", "correct-horse-battery"),
     ("password: hunter2hunter2", "hunter2hunter2"),
     ("password: correct horse battery staple", "correct horse battery staple"),
     ("password=1234", "1234"),
@@ -255,6 +256,10 @@ def test_the_fields_after_a_masked_header_survive(line, expected):
         (
             r'payload="{\"password\":\"abc\\\"defSECRET\"}"',
             r'payload="{\"password\":\"<redacted>\"}"',
+        ),
+        (
+            r'payload="{\"Cookie\":\"session=abc123def456SECRET\"}"',
+            r'payload="{\"Cookie\":\"<redacted>\"}"',
         ),
         ("password=correct horse battery staple", "password=<redacted>"),
         ('{"password":"null"}', '{"password":"<redacted>"}'),

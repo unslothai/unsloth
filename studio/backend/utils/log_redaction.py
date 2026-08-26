@@ -79,8 +79,9 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), REDACTED),
     # JWTs, including the desktop access token
     (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}"), REDACTED),
-    # user:password@host in a URL
-    (re.compile(r"://[^/\s:@]+:[^/\s@]+@"), "://" + REDACTED + "@"),
+    # user:password@host in a URL. The username may be empty (Redis commonly
+    # uses redis://:password@host), but the colon and password are required.
+    (re.compile(r"://[^/\s:@]*:[^/\s@]+@"), "://" + REDACTED + "@"),
     # Presigned URL parameters. Bare "key" is deliberately absent: in an object
     # storage URL it names the object, and blanking it hides WHICH download
     # failed. Google's ?key=AIza... is caught by the AIza rule above.
@@ -121,7 +122,7 @@ _PLAIN_SCALAR_KV_RE = re.compile(
     r"(?P<sep>[\"']?\s*[:=]\s*)(?P<val>[^\"'\s|>,}\]][^\"'\r\n,}\]]*)"
 )
 _ESCAPED_QUOTED_KV_RE = re.compile(
-    r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
+    r"(?i)" + _KEY_START + r"(?P<key>(?:" + _SECRET_KEYS + r"|(?:set-)?cookie))\b"
     r"(?P<sep>\\(?P<key_quote>[\"'])\s*[:=]\s*\\(?P<quote>[\"']))"
     r"(?P<rest>[^\r\n]*)"
 )
@@ -271,6 +272,7 @@ def _redact_unterminated_quoted_kv(match: re.Match[str]) -> str:
 def _redact_escaped_quoted_kv(match: re.Match[str]) -> str:
     rest = match.group("rest")
     quote = match.group("quote")
+    is_cookie = match.group("key").lower().endswith("cookie")
     for index, char in enumerate(rest):
         if char != quote:
             continue
@@ -283,12 +285,17 @@ def _redact_escaped_quoted_kv(match: re.Match[str]) -> str:
         # quote into an unescaped nested quote. Runs of 3, 7, 11, ... encode a
         # quote inside the credential and must remain part of the masked value.
         if slash_count % 4 == 1:
+            value = rest[: index - 1]
+            if is_cookie and not _COOKIE_PAIR_RE.match(value.strip()):
+                return match.group(0)
             return (
                 f"{match.group('key')}{match.group('sep')}{REDACTED}"
                 f"\\{quote}{rest[index + 1:]}"
             )
     # An exact secret key with an unterminated serialized value is still
     # sensitive. Mask the remainder rather than leaking it for malformed logs.
+    if is_cookie and not _COOKIE_PAIR_RE.match(rest.strip()):
+        return match.group(0)
     return f"{match.group('key')}{match.group('sep')}{REDACTED}"
 
 

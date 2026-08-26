@@ -148,8 +148,14 @@ def _family_files(family: str, max_sources: Optional[int] = MAX_SOURCES_PER_FAMI
         try:
             if not directory.is_dir():
                 continue
+            real_root = Path(os.path.realpath(root))
             real_dir = Path(os.path.realpath(directory))
-        except OSError:
+            # A family directory can itself be a symlink. Trusting its resolved
+            # target as the containment root would turn the export into a glob
+            # over an unrelated directory outside every Studio home.
+            if not _is_inside(real_dir, real_root):
+                continue
+        except (OSError, ValueError):
             continue
         try:
             entries = list(directory.glob(pattern))
