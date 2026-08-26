@@ -309,9 +309,14 @@ def _offenders(path: Path) -> list[str]:
 def test_text_io_names_its_encoding(path: Path) -> None:
     offenders = _offenders(path)
     assert not offenders, (
-        "Text I/O without an explicit encoding falls back to the Windows ANSI "
-        'codepage and corrupts non-ASCII (ä ö ü → 世). Pass encoding = "utf-8":\n  '
-        + "\n  ".join(offenders)
+        "Text I/O without an explicit encoding falls back to locale.getencoding(), "
+        "which is the ANSI codepage on Windows (cp1252, cp932, cp1251, ... by system "
+        "locale) and ASCII under a C or POSIX locale on Linux, as containers and CI "
+        "runners routinely have. Either way non-ASCII (ä ö ü → 世) mojibakes or raises "
+        "UnicodeDecodeError.\n\n"
+        "A platform guard above the call does NOT make this safe: the Windows codepage "
+        "is only one of the two ways to get the wrong decoder, and a linux-only path "
+        'still meets the C-locale one. Pass encoding = "utf-8":\n  ' + "\n  ".join(offenders)
     )
 
 

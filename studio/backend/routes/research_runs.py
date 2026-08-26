@@ -15,7 +15,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
 from core.inference.message_content import message_text_with_pastes
@@ -47,6 +47,10 @@ _SENSITIVE_KEY_SUFFIXES = (
     "sessiontoken",
 )
 _MAX_PLAN_STEPS = 30
+# Zero is the unlimited sentinel, so a finite value only has to cover the longest run anyone
+# would set: a year reads back in the 400, unlike a float-max ceiling.
+_MIN_FINITE_MODEL_TIMEOUT_SECONDS = 10
+_MAX_FINITE_MODEL_TIMEOUT_SECONDS = 365 * 24 * 3600
 _DELTA_ONLY_EVENTS = {
     "reasoning.updated",
     "report.updated",
@@ -71,6 +75,17 @@ class CreateResearchRun(BaseModel):
     budgets: dict[str, int] | None = None
     websitePolicy: dict[str, list[str]] | None = None
     instructions: str | None = Field(default = None, max_length = 32_000)
+
+    @field_validator("budgets", mode = "before")
+    @classmethod
+    def _reject_boolean_budgets(cls, value: Any) -> Any:
+        # bool is an int subclass, so False would coerce to the 0 "unlimited" sentinel and
+        # silently drop a deadline. Reject it here: by the time the field is typed it is 0.
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(item, bool):
+                    raise ValueError(f"{key} must be an integer, not a boolean")
+        return value
 
 
 class ResearchPlanStep(BaseModel):
@@ -309,16 +324,24 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
     limits = {
         "maxSteps": (1, _MAX_PLAN_STEPS),
         "maxSources": (1, 100),
-        "modelTimeoutSeconds": (10, 3600),
+        # Zero disables the total wall-clock deadline. Per-output stall deadlines still apply.
+        "modelTimeoutSeconds": (
+            _MIN_FINITE_MODEL_TIMEOUT_SECONDS,
+            _MAX_FINITE_MODEL_TIMEOUT_SECONDS,
+        ),
         "toolTimeoutSeconds": (5, 600),
         # Same range as its parent: slow CPU and offloaded models need minutes to first token.
         "firstOutputTimeoutSeconds": (10, 3600),
     }
     for key, (minimum, maximum) in limits.items():
+        # The sentinel is not a short timeout, so it skips the floor rather than lowering it.
+        if key == "modelTimeoutSeconds" and budgets[key] == 0:
+            continue
         if not minimum <= budgets[key] <= maximum:
-            raise HTTPException(
-                status_code = 400, detail = f"{key} must be between {minimum} and {maximum}"
-            )
+            allowed = f"between {minimum} and {maximum}"
+            if key == "modelTimeoutSeconds":
+                allowed = f"0 (unlimited) or {allowed}"
+            raise HTTPException(status_code = 400, detail = f"{key} must be {allowed}")
     # Server-controlled, not client tunable. OFF unless UNSLOTH_RESEARCH_AUTO_SCRAPE=1, and
     # injected only when enabled, so a default run's budgets stay byte-identical to legacy.
     from core.research_runs import _auto_scrape_default

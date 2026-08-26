@@ -48,7 +48,91 @@ pub fn classify_native_model_path(path: &Path) -> Result<ClassifiedPath, String>
 
 /// Document types the RAG ingest accepts; keep in sync with `config.UPLOAD_EXTS`.
 pub const ATTACHMENT_EXTS: &[&str] = &["pdf", "txt", "md", "markdown", "docx", "html", "htm"];
+/// OpenDocument files the chat composer parses directly rather than indexing as RAG sources.
+pub const OPEN_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &["ods", "odt"];
 pub const TRAINING_DATASET_EXTS: &[&str] = &["csv", "json", "jsonl", "parquet"];
+
+/// Keep in sync with `text-attachment-accept.ts`. RAG types are absent so a
+/// dropped .txt/.md keeps being indexed.
+pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
+    "text",
+    "log",
+    "mdx",
+    "rst",
+    "csv",
+    "tsv",
+    "json",
+    "jsonl",
+    "ndjson",
+    "xml",
+    "yaml",
+    "yml",
+    "toml",
+    "ini",
+    "cfg",
+    "conf",
+    "env",
+    "properties",
+    "css",
+    "scss",
+    "sass",
+    "less",
+    "svg",
+    "js",
+    "jsx",
+    "mjs",
+    "cjs",
+    "ts",
+    "tsx",
+    "py",
+    "pyi",
+    "ipynb",
+    "rb",
+    "php",
+    "go",
+    "rs",
+    "java",
+    "kt",
+    "kts",
+    "scala",
+    "swift",
+    "c",
+    "h",
+    "cc",
+    "cpp",
+    "hpp",
+    "cxx",
+    "cs",
+    "m",
+    "mm",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "ps1",
+    "bat",
+    "lua",
+    "pl",
+    "pm",
+    "r",
+    "jl",
+    "dart",
+    "vue",
+    "svelte",
+    "astro",
+    "sql",
+    "graphql",
+    "gql",
+    "proto",
+    "tf",
+    "tfvars",
+    "gradle",
+    "dockerfile",
+    "makefile",
+    "cmake",
+    "diff",
+    "patch",
+];
 
 /// Vision chat image attachments; keep in sync with `drop-paths.ts` `CHAT_IMAGE_DROP_ACCEPT`.
 pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
@@ -56,11 +140,19 @@ pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"
 /// Chat audio attachments; keep in sync with `audio-attachment-adapter.ts` `accept`.
 pub const AUDIO_ATTACHMENT_EXTS: &[&str] = &["wav", "mp3", "m4a", "ogg", "oga", "flac"];
 
+/// Chat video attachments; keep in sync with `drop-paths.ts`
+/// `CHAT_VIDEO_DROP_ACCEPT`. llama-server decodes with ffmpeg, so this is what
+/// ffmpeg reads, not what the webview can play.
+pub const VIDEO_ATTACHMENT_EXTS: &[&str] = &["mp4", "mov", "webm", "mkv", "avi"];
+
 fn accepted_attachment_exts() -> impl Iterator<Item = &'static &'static str> {
     ATTACHMENT_EXTS
         .iter()
+        .chain(OPEN_DOCUMENT_ATTACHMENT_EXTS.iter())
+        .chain(TEXT_ATTACHMENT_EXTS.iter())
         .chain(IMAGE_ATTACHMENT_EXTS.iter())
         .chain(AUDIO_ATTACHMENT_EXTS.iter())
+        .chain(VIDEO_ATTACHMENT_EXTS.iter())
 }
 
 pub fn classify_native_attachment_path(path: &Path) -> Result<ClassifiedPath, String> {
@@ -68,8 +160,8 @@ pub fn classify_native_attachment_path(path: &Path) -> Result<ClassifiedPath, St
     if classified.path_type != NativePathType::File {
         return Err("Only files can be attached to a chat.".to_string());
     }
-    let supported = accepted_attachment_exts()
-        .any(|ext| has_extension(&classified.canonical_path, ext));
+    let supported =
+        accepted_attachment_exts().any(|ext| has_extension(&classified.canonical_path, ext));
     if !supported {
         return Err(format!(
             "Unsupported attachment type. Supported: {}",
@@ -630,9 +722,11 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        scratch_root().join(format!("unsloth-native-policy-{name}-{}-{nanos}", std::process::id()))
+        scratch_root().join(format!(
+            "unsloth-native-policy-{name}-{}-{nanos}",
+            std::process::id()
+        ))
     }
-
 
     #[test]
     fn gguf_model_allows_validate_load_reveal() {
