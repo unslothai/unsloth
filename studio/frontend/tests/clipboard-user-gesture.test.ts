@@ -10,10 +10,13 @@
 //   2. Prefetching the text without keying it to what is on screen. The run bar keeps
 //      one QuantOptionsMenu mounted and swaps repoId/quant under it, so an unkeyed
 //      cache silently copies the previously selected quant's path.
-//   3. Prefetching once and never again. The launch tunnel resolves while the server is
-//      already serving, so the first /api/health of a session can answer
-//      cloudflare_url null; a single read leaves the store null for the rest of it and
-//      the button copies a link only this machine can open.
+//   3. Prefetching once and never again. The tunnel URL arrives on the backend's
+//      schedule (published only after DNS and a public probe) and can leave the same
+//      way, so a single read leaves the store holding null, or a dead hostname, for
+//      the rest of the session -- and the click can no longer correct it.
+//   4. Letting a stale response win. A prefetch for the quant the menu just moved off
+//      can land last; if it evicts the current entry the copy is back to awaiting a
+//      fetch inside the click.
 //
 // Read from the source: the node suite has no DOM to click in.
 
@@ -96,20 +99,29 @@ test("the prefetched model path is keyed to the model it was fetched for", () =>
   assert.ok(PREFETCH_PATH.includes("{ key: pathKey, path }"));
 });
 
-test("the link base keeps being re-read until the tunnel URL lands", () => {
+test("the link base is kept fresh for as long as the grid is on screen", () => {
   assert.match(
     HISTORY,
-    /if \(cloudflareUrl !== null\) \{\s*return;/,
-    "the retry must stop once a tunnel URL is in the store",
+    /setInterval\(refreshLinkBase, LINK_BASE_POLL_MS\)/,
+    "one read cannot see a tunnel that is published late, or one that dies",
   );
   assert.ok(
-    /LINK_BASE_RETRIES/.test(HISTORY) && /LINK_BASE_RETRY_MS/.test(HISTORY),
-    "the retry must be bounded: a Studio launched without a tunnel never gets one",
+    !/cloudflareUrl !== null/.test(HISTORY),
+    "a cached URL is not a reason to stop: it is exactly what goes stale",
   );
   assert.ok(
-    !COPY_PREVIEW.includes("setInterval"),
-    "the retry belongs outside the click",
+    !COPY_PREVIEW.includes("setInterval") &&
+      !COPY_PREVIEW.includes("fetchDeviceType"),
+    "the refresh belongs outside the click",
   );
+});
+
+test("a prefetch for the previous model cannot evict the current one", () => {
+  assert.ok(
+    PREFETCH_PATH.includes("if (pathKeyRef.current === pathKey)"),
+    "a response that outlived the switch must not commit",
+  );
+  assert.ok(COPY_PATH.includes("if (pathKeyRef.current === pathKey)"));
 });
 
 test("the model path starts resolving before the menu item is reachable", () => {

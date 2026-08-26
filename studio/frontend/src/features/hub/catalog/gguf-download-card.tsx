@@ -299,13 +299,23 @@ export function QuantOptionsMenu({
   // swaps repoId/quant under it, so an unkeyed cache copies the old quant's path.
   const cachedPathRef = useRef<{ key: string; path: string } | null>(null);
   const pathKey = JSON.stringify([repoId, quant ?? null]);
+  // What the menu points at now, read by responses that outlive the switch.
+  const pathKeyRef = useRef(pathKey);
+  useEffect(() => {
+    pathKeyRef.current = pathKey;
+  }, [pathKey]);
   const prefetchCachedPath = useCallback(() => {
     if (!downloaded || cachedPathRef.current?.key === pathKey) {
       return;
     }
     getCachedModelPath(repoId, quant)
       .then(({ path }) => {
-        cachedPathRef.current = { key: pathKey, path };
+        // Switching quants leaves the old request in flight, and it can land last.
+        // Letting it evict the current entry costs the copy its cache hit, which is
+        // the awaited fetch and the lost clipboard activation all over again.
+        if (pathKeyRef.current === pathKey) {
+          cachedPathRef.current = { key: pathKey, path };
+        }
       })
       .catch(() => undefined);
   }, [downloaded, repoId, quant, pathKey]);
@@ -317,7 +327,9 @@ export function QuantOptionsMenu({
         cached?.key === pathKey
           ? cached.path
           : (await getCachedModelPath(repoId, quant)).path;
-      cachedPathRef.current = { key: pathKey, path };
+      if (pathKeyRef.current === pathKey) {
+        cachedPathRef.current = { key: pathKey, path };
+      }
       if (await copyToClipboard(path)) {
         toast.success("Copied path");
       } else {

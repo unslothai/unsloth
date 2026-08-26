@@ -56,13 +56,10 @@ type StudioT = ReturnType<typeof useT>;
 
 const PAGE_SIZE = 12;
 const RUNNING_POLL_INTERVAL_MS = 5000;
-// How the copy-link base recovers when the grid mounts inside the tunnel's startup
-// window. start_studio_tunnel waits up to 15s for a URL AFTER the port is bound, so
-// the first /api/health of a session can answer cloudflare_url null; these cover that
-// window and then stop, because a Studio launched without a tunnel never gets one and
-// must not be polled for the rest of the session.
-const LINK_BASE_RETRY_MS = 3000;
-const LINK_BASE_RETRIES = 10;
+// How often the copy-link base is re-read while this grid is on screen. A forced
+// re-read is one GET: fetchDeviceType spends its hardware wait once per page load,
+// not per call.
+const LINK_BASE_POLL_MS = 15000;
 
 const statusBadge: Record<string, { className: string }> = {
   completed: {
@@ -260,40 +257,28 @@ export function HistoryCardGrid({
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
   const { resumeTrainingRunFromHistory, startBlocked, stopRequested } =
     useTrainingActions();
-  const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   // Copy-link base: Cloudflare tunnel > LAN host:port > origin. Nothing else re-reads
-  // /api/health once the platform verdict settles, so the base is refreshed here and
+  // /api/health once the platform verdict settles, so the base is kept fresh here and
   // never in the click, where Safari drops the clipboard permission across an await.
-  // The focus listener is for a tunnel started or stopped somewhere else since.
+  //
+  // Polled rather than read once, because the tunnel URL both arrives and leaves on
+  // the backend's schedule. It is published only after DNS and a public probe --
+  // cloudflare_tunnel.py bounds those at 15s + 45s and retries once over HTTP/2 -- so
+  // a grid that mounted first holds null and would copy a link only this machine can
+  // open; and when cloudflared exits, or another client stops the tunnel, the stored
+  // URL is dead. Neither is corrected by the focus listener while this tab keeps focus.
   useEffect(() => {
     const refreshLinkBase = () => {
       void fetchDeviceType({ force: true });
     };
     refreshLinkBase();
+    const id = window.setInterval(refreshLinkBase, LINK_BASE_POLL_MS);
     window.addEventListener("focus", refreshLinkBase);
-    return () => window.removeEventListener("focus", refreshLinkBase);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("focus", refreshLinkBase);
+    };
   }, []);
-
-  // The one read above is not enough on its own: a grid that mounted while the launch
-  // tunnel was still resolving gets cloudflare_url null, and this tab is already
-  // focused, so no focus event is coming to correct it. Without this the button copies
-  // a link only this machine can open for the rest of the session. Bounded, and torn
-  // down by the re-run a landed URL triggers.
-  useEffect(() => {
-    if (cloudflareUrl !== null) {
-      return;
-    }
-    let left = LINK_BASE_RETRIES;
-    const id = window.setInterval(() => {
-      if (left <= 0) {
-        window.clearInterval(id);
-        return;
-      }
-      left -= 1;
-      void fetchDeviceType({ force: true });
-    }, LINK_BASE_RETRY_MS);
-    return () => window.clearInterval(id);
-  }, [cloudflareUrl]);
 
   const userControllerRef = useRef<AbortController | null>(null);
   const pollControllerRef = useRef<AbortController | null>(null);
