@@ -94,10 +94,6 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/llama-2-7b-chat",
         "meta-llama/Llama-2-7b-chat-hf",
     ),
-    "unsloth/llama-2-7b-chat-bnb-4bit" : (
-        "unsloth/llama-2-7b-chat",
-        "meta-llama/Llama-2-7b-chat-hf",
-    ),
     "unsloth/Mixtral-8x7B-v0.1-unsloth-bnb-4bit" : (
         "unsloth/Mixtral-8x7B-v0.1",
         "mistralai/Mixtral-8x7B-v0.1",
@@ -1120,14 +1116,14 @@ __INT_TO_FLOAT_MAPPER = \
             "unsloth/Magistral-Small-2509-bnb-4bit",
         ),
     },
+    # No Unsloth 16bit repo exists at this size, so this is a 1-tuple naming the
+    # real upstream, same as the other 70B and 405B rows.
     "unsloth/Apertus-70B-Instruct-2509-unsloth-bnb-4bit" : (
-        "unsloth/Apertus-70B-Instruct-2509",
-        "swiss-ai/Apertus-70B-2509",
-        "unsloth/Apertus-70B-Instruct-2509-unsloth-bnb-4bit",
+        "swiss-ai/Apertus-70B-Instruct-2509",
     ),
     "unsloth/Apertus-8B-Instruct-2509-unsloth-bnb-4bit" : (
         "unsloth/Apertus-8B-Instruct-2509",
-        "swiss-ai/Apertus-8B-2509",
+        "swiss-ai/Apertus-8B-Instruct-2509",
         "unsloth/Apertus-8B-Instruct-2509-unsloth-bnb-4bit",
     ),
     "unsloth/granite-4.0-micro-unsloth-bnb-4bit" : (
@@ -1384,6 +1380,16 @@ __INT_TO_FLOAT_MAPPER = \
     ),
     "unsloth/Kimi-K2-Instruct-BF16" : (
         "unsloth/Kimi-K2-Instruct",
+    ),
+    "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit" : (
+        "unsloth/Muse-Glimmer-30B",
+        "meta-models/Muse-Glimmer-30B",
+        "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit",
+    ),
+    "unsloth/Qwen3.8-27B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3.8-27B",
+        "Qwen/Qwen3.8-27B",
+        "unsloth/Qwen3.8-27B-unsloth-bnb-4bit",
     ),
 }
 

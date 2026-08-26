@@ -11,10 +11,14 @@ export function DownloadSection({
   isDownloaded,
   isPartial = false,
   partialTransport = null,
+  partialResumable = false,
   modelFormat,
   canRun = true,
   isActive,
   activeQuant,
+  preferredGgufFile = null,
+
+  preferredGgufFileIntent = 0,
   isLoadingThisModel,
   gpuGb,
   systemRamGb,
@@ -31,10 +35,14 @@ export function DownloadSection({
   isDownloaded: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  partialResumable?: boolean;
   modelFormat?: ModelInventoryFormat | null;
   canRun?: boolean;
   isActive: boolean;
   activeQuant: string | null;
+  preferredGgufFile?: string | null;
+
+  preferredGgufFileIntent?: number;
   isLoadingThisModel: boolean;
   gpuGb?: number;
   systemRamGb?: number;
@@ -46,12 +54,15 @@ export function DownloadSection({
   onTrain?: () => void;
   onChange?: () => void;
 }) {
-  if (isGguf) {
+  if (isGguf || preferredGgufFile) {
     return (
       <GgufDownloadCard
         repoId={repoId}
         isActive={isActive}
         activeQuant={activeQuant}
+        preferredFile={preferredGgufFile}
+
+        preferredFileIntent={preferredGgufFileIntent}
         isLoadingThisModel={isLoadingThisModel}
         gpuGb={gpuGb}
         systemRamGb={systemRamGb}
@@ -70,6 +81,7 @@ export function DownloadSection({
       isDownloaded={isDownloaded}
       isPartial={isPartial}
       partialTransport={partialTransport}
+      partialResumable={partialResumable}
       modelFormat={modelFormat}
       canRun={canRun}
       isActive={isActive}

@@ -134,7 +134,10 @@ def test_execute_tool_malformed_mcp_name():
 def test_execute_tool_unknown_server(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     from core.inference.tools import execute_tool
-    assert execute_tool("mcp__missing__do_thing", {}) == "Error: MCP server 'missing' not found"
+    assert (
+        execute_tool("mcp__missing__do_thing", {})
+        == "Error: MCP server for tool 'do_thing' not found"
+    )
 
 
 def test_execute_tool_disabled_server(tmp_path, monkeypatch):
@@ -147,7 +150,7 @@ def test_execute_tool_disabled_server(tmp_path, monkeypatch):
     )
     from core.inference.tools import execute_tool
 
-    assert execute_tool("mcp__srv1__do_thing", {}) == "Error: MCP server 'srv1' is disabled"
+    assert execute_tool("mcp__srv1__do_thing", {}) == "Error: MCP server 'A' is disabled"
 
 
 def test_mcp_specs_skip_invalid_openai_function_names():
@@ -173,6 +176,85 @@ def test_mcp_specs_skip_empty_tool_name():
     server = {"id": "srv", "display_name": "S"}
     specs = _mcp_specs_for_server(server, [{"name": "", "description": "x"}])
     assert specs == []
+
+
+def test_mcp_specs_skip_app_only_tools():
+    """MCP Apps tools marked _meta.ui.visibility without "model" are for the
+    server's rendered widget, not the LLM; keep them out of the schema set."""
+    from core.inference.tools import _mcp_specs_for_server
+
+    server = {"id": "srv", "display_name": "S"}
+    tools = [
+        {"name": "shown"},
+        {"name": "widget_only", "meta": {"ui": {"visibility": ["app"]}}},
+        {"name": "both", "meta": {"ui": {"visibility": ["app", "model"]}}},
+        {"name": "flat_key", "meta": {"ui/visibility": ["app"]}},
+        {"name": "underscore_meta", "_meta": {"ui": {"visibility": ["app"]}}},
+        {"name": "unrelated_meta", "meta": {"ui": {"resourceUri": "ui://x"}}},
+    ]
+    specs = _mcp_specs_for_server(server, tools)
+    names = {s["function"]["name"] for s in specs}
+    assert names == {"mcp__srv__shown", "mcp__srv__both", "mcp__srv__unrelated_meta"}
+
+
+def test_mcp_specs_read_visibility_from_either_meta_spelling():
+    """A "meta" holding unrelated keys must not mask an app-only "_meta"."""
+    from core.inference.tools import _mcp_specs_for_server
+
+    server = {"id": "srv", "display_name": "S"}
+    tools = [
+        {
+            "name": "widget_only",
+            "meta": {"vendor": "x"},
+            "_meta": {"ui": {"visibility": ["app"]}},
+        },
+        {"name": "shown", "meta": {"vendor": "x"}, "_meta": {"ui": {"visibility": ["model"]}}},
+    ]
+    specs = _mcp_specs_for_server(server, tools)
+    assert {s["function"]["name"] for s in specs} == {"mcp__srv__shown"}
+
+
+@pytest.mark.parametrize(
+    "visibility, visible",
+    [
+        (["model"], True),
+        (["app"], False),
+        ([], False),  # "visible to nobody" reads as hidden
+        ("model", True),  # not a list: unrecognised shape stays visible
+        (None, True),
+        (["Model"], False),  # spec values are lowercase
+    ],
+)
+def test_mcp_specs_visibility_shapes(visibility, visible):
+    from core.inference.tools import _mcp_specs_for_server
+
+    tool = {"name": "t", "meta": {"ui": {"visibility": visibility}}}
+    specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, [tool])
+    assert bool(specs) is visible
+
+
+@pytest.mark.parametrize("schema_key", ["inputSchema", "input_schema"])
+def test_mcp_specs_keep_the_tool_arguments(schema_key):
+    """Reading one spelling only would leave every tool argument-less after an
+    mcp 2.x bump."""
+    from core.inference.tools import _mcp_specs_for_server
+
+    schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+    tool = {"name": "search", "description": "d", schema_key: schema}
+    specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, [tool])
+    assert specs[0]["function"]["parameters"] == schema
+
+
+def test_mcp_specs_match_the_installed_sdk_dump():
+    """Whichever spelling the pinned SDK emits, the arguments must survive."""
+    from mcp.types import Tool
+
+    from core.inference.tools import _mcp_specs_for_server
+
+    schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+    dumped = Tool(name = "search", description = "d", inputSchema = schema).model_dump(exclude_none = True)
+    specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, [dumped])
+    assert specs[0]["function"]["parameters"] == schema
 
 
 def test_mcp_specs_drops_duplicate_names():
@@ -599,7 +681,9 @@ def test_tool_xml_strip_handles_hyphenated_function_names():
 
     from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
 
-    src = (Path(__file__).resolve().parent.parent / "routes/inference.py").read_text()
+    src = (Path(__file__).resolve().parent.parent / "routes/inference.py").read_text(
+        encoding = "utf-8"
+    )
     m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", src, _re.DOTALL)
     assert m, "could not extract _TOOL_XML_RE"
     ns: dict = {"_re": _re, "_DS_OPEN_SRC": _DS_OPEN_SRC}
@@ -1323,3 +1407,109 @@ def test_oauth_probe_failure_in_chat_path_uses_long_cooloff(tmp_path, monkeypatc
     # branch (use_oauth=True) fired -- not the 60 s default.
     remaining = mcp_client._probe_cooloff_until["s1"] - time.monotonic()
     assert remaining > mcp_client.FAILED_PROBE_COOLOFF_SECONDS
+
+
+# ── MCP display names in status text and provenance ─────────────────
+
+
+def test_status_for_tool_uses_mcp_display_name(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import status_for_tool
+
+    assert status_for_tool("mcp__srv1__create_issue", {}) == "Calling: GitHub · create_issue"
+
+
+def test_status_for_tool_unknown_mcp_server_keeps_raw_name(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference.tool_loop_controller import status_for_tool
+    assert status_for_tool("mcp__missing__x", {}) == "Calling: mcp__missing__x"
+
+
+def test_awaiting_approval_status_uses_mcp_display_name(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import awaiting_approval_status
+
+    assert (
+        awaiting_approval_status("mcp__srv1__create_issue")
+        == "Waiting for approval: GitHub · create_issue"
+    )
+
+
+def test_prepare_call_stamps_mcp_server_provenance(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    controller = ToolLoopController(tools = None)
+    decision = controller.prepare_call(
+        {"function": {"name": "mcp__srv1__create_issue", "arguments": {}}}
+    )
+    assert decision.provenance["mcp_server"] == "GitHub"
+
+    plain = controller.prepare_call({"function": {"name": "python", "arguments": {}}})
+    assert "mcp_server" not in plain.provenance
+
+
+def test_provisional_tool_provenance_stamps_mcp_display_name(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import provisional_tool_provenance
+
+    prov = provisional_tool_provenance("mcp__srv1__create_issue")
+    assert prov["provisional"] is True
+    assert prov["mcp_server"] == "GitHub"
+
+    assert "mcp_server" not in provisional_tool_provenance("python")
+    assert "mcp_server" not in provisional_tool_provenance("mcp__missing__x")
+
+
+def test_display_names_never_reach_the_callable_tool_name(tmp_path, monkeypatch):
+    """Routing, approvals and replay all key off mcp__<serverId>__<tool>, so the
+    display name must stay presentation only."""
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import (
+        mcp_display_parts,
+        provisional_tool_provenance,
+    )
+    from core.inference.tools import _mcp_specs_for_server
+
+    specs = _mcp_specs_for_server(
+        {"id": "srv1", "display_name": "GitHub"}, [{"name": "create_issue"}]
+    )
+    assert specs[0]["function"]["name"] == "mcp__srv1__create_issue"
+    # Allowed in the description and the provenance stamp.
+    assert "GitHub" in specs[0]["function"]["description"]
+    assert provisional_tool_provenance("mcp__srv1__create_issue")["mcp_server"] == "GitHub"
+    assert mcp_display_parts("mcp__srv1__create_issue") == ("GitHub", "create_issue")
+
+
+def test_two_servers_sharing_a_display_name_stay_separately_routable(tmp_path, monkeypatch):
+    """Duplicate display names must not collapse two servers into one route."""
+    _reset_db(tmp_path, monkeypatch)
+    for sid in ("srv1", "srv2"):
+        mcp_servers_db.create_server(id = sid, display_name = "GitHub", url = f"https://{sid}/m")
+    from core.inference.tools import _mcp_specs_for_server
+
+    names = {
+        _mcp_specs_for_server({"id": sid, "display_name": "GitHub"}, [{"name": "run"}])[0][
+            "function"
+        ]["name"]
+        for sid in ("srv1", "srv2")
+    }
+    assert names == {"mcp__srv1__run", "mcp__srv2__run"}
+
+
+@pytest.mark.parametrize(
+    "display",
+    ["line\nbreak", "**bold**", "<script>", "‮gnitseT", "x" * 1000],
+)
+def test_adversarial_display_names_do_not_break_provenance(tmp_path, monkeypatch, display):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = display, url = "https://a/m")
+    from core.inference.tool_loop_controller import provisional_tool_provenance
+
+    # Stored verbatim; escaping is the renderer's job.
+    assert provisional_tool_provenance("mcp__srv1__run")["mcp_server"] == display

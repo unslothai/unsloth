@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getInferenceStatus, loadModel } from "@/features/chat";
-import { toast } from "@/lib/toast";
+import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
 import { useCallback, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -238,8 +238,15 @@ async function loadLocalModelSelection(
 ): Promise<string | null> {
   const { target, ggufVariant } = selection;
   const modelLabel = ggufVariant ? `${target} (${ggufVariant})` : target;
-  const toastId = toast.loading(`Loading ${modelLabel}...`, {
+  let loadToastDismissed = false;
+  const toastId = toast.message(`Loading ${modelLabel}...`, {
     description: "Starting the local inference server for this recipe.",
+    duration: Number.POSITIVE_INFINITY,
+    closeButton: true,
+    icon: createLoadingToastIcon(),
+    onDismiss: () => {
+      loadToastDismissed = true;
+    },
   });
   try {
     const isGguf = GGUF_MODEL_PATTERN.test(target) || Boolean(ggufVariant);
@@ -267,7 +274,16 @@ async function loadLocalModelSelection(
       // biome-ignore lint/style/useNamingConvention: api schema
       tensor_parallel: false,
     });
-    toast.success(`Loaded ${modelLabel}`, { id: toastId, duration: 2000 });
+    const successOptions = {
+      description: undefined,
+      duration: 2000,
+      icon: undefined,
+    };
+    if (loadToastDismissed) {
+      toast.success(`Loaded ${modelLabel}`, successOptions);
+    } else {
+      toast.success(`Loaded ${modelLabel}`, { ...successOptions, id: toastId });
+    }
     return null;
   } catch (error) {
     toast.dismiss(toastId);

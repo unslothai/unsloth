@@ -5,12 +5,15 @@ import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
+import type { PresetLoadConfig } from "./preset-load-config";
 
 export const defaultInferenceParams = DEFAULT_INFERENCE_PARAMS;
 
 export interface Preset {
   name: string;
   params: InferenceParams;
+  /** Optional GGUF/load knobs captured with the preset. */
+  loadConfig?: PresetLoadConfig;
 }
 
 export type PresetOwnedParams = Pick<
@@ -85,6 +88,7 @@ export function normalizeCustomPresets(presets: Preset[]): Preset[] {
       return {
         name,
         params: preset.params,
+        ...(preset.loadConfig ? { loadConfig: preset.loadConfig } : {}),
       };
     })
     .filter((preset): preset is Preset => preset !== null);

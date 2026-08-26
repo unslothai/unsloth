@@ -170,7 +170,9 @@ def test_backend_model_info_persists_trust_remote_code():
     """Both backends must store ``trust_remote_code`` on their per-model info dict so
     ``render_native_template`` can source the consent value. Guards against the read
     landing on a key ``load_model`` never sets (which would silently no-op the fix)."""
-    inf = (Path(_BACKEND_DIR) / "core" / "inference" / "inference.py").read_text()
-    mlx = (Path(_BACKEND_DIR) / "core" / "inference" / "mlx_inference.py").read_text()
+    inf = (Path(_BACKEND_DIR) / "core" / "inference" / "inference.py").read_text(encoding = "utf-8")
+    mlx = (Path(_BACKEND_DIR) / "core" / "inference" / "mlx_inference.py").read_text(
+        encoding = "utf-8"
+    )
     assert '"trust_remote_code": trust_remote_code,' in inf
     assert '"trust_remote_code": trust_remote_code,' in mlx

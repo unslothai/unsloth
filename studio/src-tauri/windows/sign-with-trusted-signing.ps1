@@ -17,7 +17,7 @@ $trustedSigningArgs = @(
     "-e",
     "https://eus.codesigning.azure.net",
     "-d",
-    "Unsloth Studio (Desktop)",
+    "Unsloth",
     $Path
 )
 

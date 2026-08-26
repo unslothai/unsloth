@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import re
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import tempfile
+
+from utils.paths.path_utils import drop_appledouble_metadata
 
 
 def _infer_studio_home_from_venv() -> Path | None:
@@ -126,7 +129,7 @@ def _xdg_user_dir(key: str) -> Path | None:
     config = Path.home() / ".config" / "user-dirs.dirs"
     try:
         lines = config.read_text(encoding = "utf-8").splitlines()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     prefix = f"{key}="
     for line in lines:
@@ -140,11 +143,49 @@ def _xdg_user_dir(key: str) -> Path | None:
     return None
 
 
+def _documents_from_registry_value(value: object, expandable: bool) -> Path | None:
+    """The Documents path a Windows shell-folder registry value names."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    # REG_EXPAND_SZ stores it unexpanded, e.g. %USERPROFILE%\Documents. ntpath
+    # rather than os.path: %VAR% is Windows syntax, which posixpath leaves as-is.
+    return Path(ntpath.expandvars(value) if expandable else value)
+
+
+def _windows_documents_dir() -> Path | None:
+    """Windows' own Documents folder, wherever the user moved it.
+
+    OneDrive's Known Folder Move repoints Documents at the synced copy and
+    leaves ~/Documents behind, so that guess writes to the wrong place or to a
+    folder that is not there at all.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import winreg  # Windows-only, and absent from some stripped builds.
+    except ImportError:
+        return None
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as key:
+            # "Personal" is the registry's name for Documents.
+            value, kind = winreg.QueryValueEx(key, "Personal")
+    except OSError:
+        return None
+    return _documents_from_registry_value(value, kind == winreg.REG_EXPAND_SZ)
+
+
 def documents_root() -> Path:
     override = (os.environ.get("UNSLOTH_STUDIO_DOCUMENTS_HOME") or "").strip()
     if override:
         return Path(override).expanduser()
-    return _xdg_user_dir("XDG_DOCUMENTS_DIR") or (Path.home() / "Documents")
+    return (
+        _windows_documents_dir()
+        or _xdg_user_dir("XDG_DOCUMENTS_DIR")
+        or (Path.home() / "Documents")
+    )
 
 
 def project_workspaces_root() -> Path:
@@ -212,7 +253,7 @@ def lmstudio_model_dirs() -> list[Path]:
     settings_path = Path.home() / ".lmstudio" / "settings.json"
     if settings_path.is_file():
         try:
-            with open(settings_path) as f:
+            with open(settings_path, encoding = "utf-8-sig") as f:
                 settings = json.load(f)
             downloads = settings.get("downloadsFolder", "")
             if downloads:
@@ -277,8 +318,8 @@ def well_known_model_dirs() -> list[Path]:
 def _setup_cache_env() -> None:
     """Set cache env vars for HuggingFace, uv, and vLLM.
 
-    Explicit Hugging Face environment variables take precedence over Studio's
-    stored location. Studio seeds import-time variables once, while each later
+    Explicit Hugging Face environment variables take precedence over Unsloth's
+    stored location. Unsloth seeds import-time variables once, while each later
     worker receives its own captured cache location.
     """
     root = cache_root()
@@ -288,16 +329,45 @@ def _setup_cache_env() -> None:
     defaults: dict[str, str] = {
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
+        # unsloth_zoo defaults this to a bare relative name, which resolves
+        # against the CWD, and the Windows launcher runs Unsloth with
+        # WorkingDirectory=%USERPROFILE%, so the cache landed in the user home.
+        # Must be set before unsloth_zoo.compiler imports: it reads the value
+        # at import time and puts it on sys.path.
+        "UNSLOTH_COMPILE_LOCATION": str(root.parent / "compiled_cache"),
     }
     for key, value in defaults.items():
-        if key not in os.environ:
+        # Blank counts as unset: an inherited KEY= would otherwise pin the
+        # cache to "", which puts an empty entry on sys.path and sends the
+        # compiler to the system temp directory instead.
+        if not (os.environ.get(key) or "").strip():
             os.environ[key] = value
             # Best-effort: a non-writable custom HF_HOME must not crash startup;
             # HF surfaces a clear error at download time instead.
             try:
-                Path(value).mkdir(parents = True, exist_ok = True)
-            except OSError:
+                created = True
+                try:
+                    Path(value).mkdir(parents = True, exist_ok = False)
+                except FileExistsError:
+                    created = False
+                if key == "UNSLOTH_COMPILE_LOCATION" and created:
+                    # Marks the directory as ours, so the cleanup can delete
+                    # from it without inferring that from its contents. Only when
+                    # this call made it: the marker is what licenses an rmtree.
+                    from utils.cache_cleanup import CACHE_MARKER
+                    (Path(value) / CACHE_MARKER).touch(exist_ok = True)
+            except (OSError, ImportError):
                 pass
+
+
+def setup_cache_env() -> None:
+    """Seed the cache env vars without creating every studio directory.
+
+    For `uvicorn main:app`, which bypasses run.py and so never reaches
+    ensure_studio_directories, but still has to pin UNSLOTH_COMPILE_LOCATION
+    before unsloth_zoo.compiler is imported.
+    """
+    _setup_cache_env()
 
 
 def ensure_studio_directories() -> None:
@@ -462,6 +532,23 @@ def resolve_tensorboard_dir(path_value: str | None = None) -> Path:
         root = tensorboard_root(),
         strip_prefixes = ("runs", "tensorboard"),
     )
+
+
+def dataset_files_in_dir(directory: Path) -> list[Path]:
+    """Loadable dataset files for *directory*, preferring a ``parquet-files/`` export over the
+    directory's own files. Raises ``ValueError`` when it holds no supported format."""
+    parquet_dir = directory / "parquet-files"
+    if not parquet_dir.exists():
+        parquet_dir = directory
+    parquet = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
+    if parquet:
+        return parquet
+    files: list[Path] = []
+    for ext in (".json", ".jsonl", ".csv", ".parquet"):
+        files.extend(drop_appledouble_metadata(sorted(directory.glob(f"*{ext}"))))
+    if not files:
+        raise ValueError(f"No supported data files in directory: {directory}")
+    return files
 
 
 def resolve_dataset_path(path_value: str) -> Path:

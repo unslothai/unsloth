@@ -1,24 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { HfTokenIndicator } from "@/features/hub/components/hf-token-indicator";
-import { PageHeading } from "@/features/hub/components/page-heading";
-import { TransportToggle } from "./transport-toggle";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useSettingsDialogStore } from "@/features/settings";
 import {
   ChipIcon,
+  CpuIcon,
   Database02Icon,
   PackageIcon,
   RamMemoryIcon,
   RemoveCircleIcon,
-  CpuIcon
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { HfTokenIndicator } from "../components/hf-token-indicator";
+import { PageHeading } from "../components/page-heading";
+import { TransportToggle } from "./transport-toggle";
 
 function StatPill({
   icon,
@@ -61,10 +62,11 @@ export function ModelsHeader({
   onTitleClick: () => void;
   onEject: () => void;
 }) {
+  const openSettings = useSettingsDialogStore((s) => s.openDialog);
   return (
     <header className="font-heading flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
       <PageHeading
-        title={isDataset ? "Datasets" : "Models"}
+        title={isDataset ? "Datasets" : "Model hub"}
         onTitleClick={onTitleClick}
         subtitle={
           isDataset
@@ -74,7 +76,7 @@ export function ModelsHeader({
       />
 
       <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:flex-1">
-        <HfTokenIndicator />
+        <HfTokenIndicator onOpenSettings={() => openSettings("general")} />
         <TransportToggle />
         <StatPill
           icon={PackageIcon}
@@ -97,7 +99,7 @@ export function ModelsHeader({
               aria-hidden="true"
             />
             <Tooltip>
-              <TooltipTrigger asChild>
+              <TooltipTrigger asChild={true}>
                 <span className="max-w-[120px] cursor-default truncate font-medium text-primary">
                   {activeCheckpoint}
                   {activeGgufVariant ? ` · ${activeGgufVariant}` : ""}

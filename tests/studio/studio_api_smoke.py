@@ -142,7 +142,7 @@ except Exception as exc:
 # GET / cross-origin must NOT leak the bootstrap password in the served HTML.
 boot_path = AUTH_DIR / ".bootstrap_password"
 if boot_path.exists():
-    bootstrap_pw = boot_path.read_text().strip()
+    bootstrap_pw = boot_path.read_text(encoding = "utf-8").strip()
     if bootstrap_pw:
         req = urllib.request.Request(
             f"{BASE}/",

@@ -34,7 +34,6 @@ import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
-  createChatProject,
   deleteChatProject,
   renameChatProject,
   useChatProjects,
@@ -42,6 +41,7 @@ import {
   usePinnedProjectsStore,
   type ProjectRecord,
 } from "@/features/chat";
+import { NewProjectDialog } from "./components/new-project-dialog";
 import {
   Delete02Icon,
   Download01Icon,
@@ -58,13 +58,19 @@ import { MoreHorizontalIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  COMBINED_EXPORT_FORMATS_LIST,
   exportProjectConversations,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
-  importConversationsFromFile,
   EXPORT_FORMATS_LIST,
   type ConvExportFormat,
 } from "./prompt-storage/prompt-storage-dialog";
+import {
+  fileImportSource,
+  importConversationsFromSource,
+  nativeImportSource,
+  type ImportSource,
+} from "./utils/chat-import";
 import {
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
@@ -116,6 +122,7 @@ export function ProjectsPage() {
   const [extraCount, setExtraCount] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  const reloadReadySent = useRef(false);
   const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
   const togglePinProject = usePinnedProjectsStore((s) => s.togglePin);
   const pinnedProjectIdSet = useMemo(
@@ -124,35 +131,71 @@ export function ProjectsPage() {
   );
 
   const [creating, setCreating] = useState(false);
-  const [nameDraft, setNameDraft] = useState("");
   const [renaming, setRenaming] = useState<ProjectRecord | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
 
   const globalImportRef = useRef<HTMLInputElement>(null);
   const projectImportRefs = useRef<Map<string, HTMLInputElement>>(new Map());
-  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importFile, setImportFile] = useState<ImportSource | null>(null);
+  // A second pick mid-import would interleave two streams into one history.
+  const [importing, setImporting] = useState(false);
   // null = Recents
   const [importTargetId, setImportTargetId] = useState<string | null>(null);
 
-  async function handleImport(file: File, projectId: string | null) {
+  async function handleImport(source: ImportSource, projectId: string | null) {
+    // Counts up while it runs: a large export takes minutes of writes.
+    setImporting(true);
+    const toastId = toast.loading("Importing chats...");
     try {
-      const count = await importConversationsFromFile(file, projectId);
-      if (count === 0) {
-        toast.info("No conversations found in file.");
-      } else {
-        const dest = projectId
-          ? (projects.find((p) => p.id === projectId)?.name ?? "project")
-          : "Recents";
-        toast.success(`Imported ${count} conversation${count === 1 ? "" : "s"} to ${dest}.`);
+      const { imported, failed } = await importConversationsFromSource(
+        source,
+        projectId,
+        {
+          onProgress: ({ imported: done, bytesRead, totalBytes }) => {
+            const percent = totalBytes
+              ? Math.min(100, Math.round((bytesRead / totalBytes) * 100))
+              : 0;
+            toast.loading(`Importing chats: ${done} so far (${percent}%)...`, {
+              id: toastId,
+            });
+          },
+        },
+      );
+      if (imported === 0 && failed === 0) {
+        toast.info("No conversations found in file.", { id: toastId });
+        return;
       }
-    } catch {
-      toast.error("Import failed.");
+      if (imported === 0) {
+        // Nothing was created, so however the count is phrased this is a failure.
+        toast.error("Import failed.", {
+          id: toastId,
+          description: `${failed} conversation${failed === 1 ? "" : "s"} could not be saved.`,
+        });
+        return;
+      }
+      const dest = projectId
+        ? (projects.find((p) => p.id === projectId)?.name ?? "project")
+        : "Recents";
+      toast.success(
+        failed > 0
+          ? `Imported ${imported} conversation${imported === 1 ? "" : "s"} to ${dest}; ${failed} could not be saved.`
+          : `Imported ${imported} conversation${imported === 1 ? "" : "s"} to ${dest}.`,
+        { id: toastId },
+      );
+    } catch (error) {
+      toast.error("Import failed.", {
+        id: toastId,
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setImporting(false);
     }
   }
 
 
   async function selectGlobalImportFile() {
+    if (importing) return;
     if (!isTauri) {
       globalImportRef.current?.click();
       return;
@@ -161,7 +204,7 @@ export function ProjectsPage() {
       const selected = await pickNativeChatImport();
       if (!selected) return;
       setImportTargetId(projects[0]?.id ?? null);
-      setImportFile(new File([selected.content], selected.name));
+      setImportFile(nativeImportSource(selected));
     } catch (error) {
       toast.error("Import failed.", {
         description: error instanceof Error ? error.message : String(error),
@@ -170,6 +213,7 @@ export function ProjectsPage() {
   }
 
   async function selectProjectImportFile(projectId: string) {
+    if (importing) return;
     if (!isTauri) {
       projectImportRefs.current.get(projectId)?.click();
       return;
@@ -177,7 +221,7 @@ export function ProjectsPage() {
     try {
       const selected = await pickNativeChatImport();
       if (!selected) return;
-      await handleImport(new File([selected.content], selected.name), projectId);
+      await handleImport(nativeImportSource(selected), projectId);
     } catch (error) {
       toast.error("Import failed.", {
         description: error instanceof Error ? error.message : String(error),
@@ -213,6 +257,14 @@ export function ProjectsPage() {
     ? sortedProjects
     : sortedProjects.slice(0, visibleCount);
   const hasMore = !isSearching && sortedProjects.length > visibleCount;
+
+  useEffect(() => {
+    if (!hasLoaded || reloadReadySent.current) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [hasLoaded]);
 
   // Estimate how many rows fit below the list's top so the first page fills the
   // screen without loading everything up front.
@@ -256,21 +308,6 @@ export function ProjectsPage() {
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(projectId);
     navigate({ to: "/chat", search: { project: projectId } });
-  }
-
-  async function commitCreate() {
-    const name = nameDraft.trim();
-    if (!name) return;
-    try {
-      const project = await createChatProject(name);
-      setCreating(false);
-      setNameDraft("");
-      openProject(project.id);
-    } catch (err) {
-      toast.error("Failed to create project", {
-        description: err instanceof Error ? err.message : undefined,
-      });
-    }
   }
 
   async function commitRename() {
@@ -355,13 +392,13 @@ export function ProjectsPage() {
       <input
         ref={globalImportRef}
         type="file"
-        accept=".jsonl,.ndjson,.csv"
+        accept=".json,.jsonl,.ndjson,.csv"
         className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) {
             setImportTargetId(projects[0]?.id ?? null);
-            setImportFile(file);
+            setImportFile(fileImportSource(file));
           }
           e.target.value = "";
         }}
@@ -422,7 +459,7 @@ export function ProjectsPage() {
                     <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Combined
                     </DropdownMenuLabel>
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`ap-m-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, true)}>
                         {label}
                       </DropdownMenuItem>
@@ -448,7 +485,7 @@ export function ProjectsPage() {
                     <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Combined
                     </DropdownMenuLabel>
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`all-m-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, true)}>
                         {label}
                       </DropdownMenuItem>
@@ -469,14 +506,7 @@ export function ProjectsPage() {
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button
-            onClick={() => {
-              setNameDraft("");
-              setCreating(true);
-            }}
-          >
-            New project
-          </Button>
+          <Button onClick={() => setCreating(true)}>New project</Button>
         </div>
       </div>
 
@@ -511,10 +541,7 @@ export function ProjectsPage() {
             <Button
               variant="outline"
               className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
-              onClick={() => {
-                setNameDraft("");
-                setCreating(true);
-              }}
+              onClick={() => setCreating(true)}
             >
               <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
               Create your first project
@@ -539,7 +566,7 @@ export function ProjectsPage() {
             <input
               key={`import-${project.id}`}
               type="file"
-              accept=".jsonl,.ndjson,.csv"
+              accept=".json,.jsonl,.ndjson,.csv"
               className="hidden"
               ref={(el) => {
                 if (el) projectImportRefs.current.set(project.id, el);
@@ -547,7 +574,7 @@ export function ProjectsPage() {
               }}
               onChange={(e) => {
                 const file = e.target.files?.[0];
-                if (file) void handleImport(file, project.id);
+                if (file) void handleImport(fileImportSource(file), project.id);
                 e.target.value = "";
               }}
             />
@@ -639,7 +666,7 @@ export function ProjectsPage() {
                         <span>Export</span>
                       </DropdownMenuSubTrigger>
                       <DropdownMenuSubContent className="w-52">
-                        {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                        {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                           <DropdownMenuItem
                             key={fmt}
                             onSelect={(e) => {
@@ -674,42 +701,8 @@ export function ProjectsPage() {
         </>
       )}
 
-      {/* Create project */}
-      <Dialog
-        open={creating}
-        onOpenChange={(open) => {
-          if (!open) setCreating(false);
-        }}
-      >
-        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>New project</DialogTitle>
-          </DialogHeader>
-          <Input
-            value={nameDraft}
-            onChange={(e) => setNameDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void commitCreate();
-              }
-            }}
-            autoFocus
-            maxLength={120}
-            placeholder="Project name"
-            aria-label="Project name"
-            className="focus-visible:border-input focus-visible:ring-0"
-          />
-          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-            <Button type="button" variant="ghost" onClick={() => setCreating(false)}>
-              Cancel
-            </Button>
-            <Button type="button" onClick={() => void commitCreate()} disabled={!nameDraft.trim()}>
-              Create
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Create project (name + drag-and-drop sources) */}
+      <NewProjectDialog open={creating} onOpenChange={setCreating} />
 
       {/* Rename project */}
       <Dialog
@@ -760,7 +753,15 @@ export function ProjectsPage() {
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             Choose where to import{" "}
-            <span className="font-medium text-foreground">{importFile?.name}</span>:
+            {/* A picked local file, and the dialog portals out of any marked
+                ancestor, so the name needs its own marker. */}
+            <span
+              data-reload-snapshot-sensitive
+              className="font-medium text-foreground"
+            >
+              {importFile?.name}
+            </span>
+            :
           </p>
           <Select
             value={importTargetId ?? "__recents__"}

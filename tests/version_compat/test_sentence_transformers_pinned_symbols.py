@@ -75,6 +75,12 @@ def test_st_models_re_exports(tag: str):
             "sentence_transformers/sentence_transformer/Pooling.py",
         ],
         "Normalize": [
+            # ST master moved Normalize down beside Transformer under base/modules,
+            # which is where the reorg has been heading: Transformer above already
+            # lists its base/modules path first. Released 5.4 through 5.6 still keep
+            # it under sentence_transformer/modules, so both spellings stay listed
+            # and every tag in ST_TAGS resolves.
+            "sentence_transformers/base/modules/normalize.py",
             "sentence_transformers/sentence_transformer/modules/normalize.py",
             "sentence_transformers/sentence_transformer/Normalize.py",
         ],

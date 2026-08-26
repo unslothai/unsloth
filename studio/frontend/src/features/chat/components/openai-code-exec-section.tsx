@@ -87,6 +87,8 @@ export function OpenAICodeExecSection({
   activeThreadId,
   onProviderChange,
 }: OpenAICodeExecSectionProps) {
+
+  const hasCredential = Boolean(apiKey || provider.hasApiKey);
   const [containers, setContainers] = useState<OpenAIContainerSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -186,10 +188,12 @@ export function OpenAICodeExecSection({
       : firstRunningContainer?.id) ?? null;
 
   const refresh = useCallback(async () => {
-    if (!apiKey) return;
+    if (!hasCredential) return;
     setIsLoading(true);
     try {
       const list = await listOpenAIContainers({
+        providerId: provider.id,
+
         apiKey,
         baseUrl: provider.baseUrl || null,
       });
@@ -218,7 +222,7 @@ export function OpenAICodeExecSection({
     } finally {
       setIsLoading(false);
     }
-  }, [apiKey, provider.baseUrl]);
+  }, [apiKey, hasCredential, provider.baseUrl, provider.id]);
 
   // Fetch on mount (or provider change), then poll on a low cadence so an
   // expired container's ACTIVE pill clears without a manual refresh. Also
@@ -318,7 +322,7 @@ export function OpenAICodeExecSection({
   };
 
   const onCreate = async () => {
-    if (!apiKey) return;
+    if (!hasCredential) return;
     const name = createName.trim();
     if (!name) {
       toast.error("Container name is required");
@@ -332,7 +336,7 @@ export function OpenAICodeExecSection({
     setCreating(true);
     try {
       const created = await createOpenAIContainer(
-        { apiKey, baseUrl: provider.baseUrl || null },
+        { providerId: provider.id, apiKey, baseUrl: provider.baseUrl || null },
         { name, ttlMinutes },
       );
       toast.success(`Created container ${name}`);
@@ -387,12 +391,12 @@ export function OpenAICodeExecSection({
   };
 
   const confirmDelete = async () => {
-    if (!apiKey || !pendingDelete) return;
+    if (!hasCredential || !pendingDelete) return;
     const { id, name } = pendingDelete;
     setDeleting(true);
     try {
       await deleteOpenAIContainer(
-        { apiKey, baseUrl: provider.baseUrl || null },
+        { providerId: provider.id, apiKey, baseUrl: provider.baseUrl || null },
         id,
       );
       // Tombstone the id so the picker hides it at once even if OpenAI's list
@@ -467,7 +471,7 @@ export function OpenAICodeExecSection({
             variant="ghost"
             className="-mr-1 h-6 w-6 p-0 text-muted-foreground"
             onClick={() => void refresh()}
-            disabled={isLoading || !apiKey}
+            disabled={isLoading || !hasCredential}
             aria-label="Refresh container list"
           >
             <RefreshCwIcon
@@ -588,7 +592,7 @@ export function OpenAICodeExecSection({
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
-                if (createName.trim() && !creating && apiKey) {
+                if (createName.trim() && !creating && hasCredential) {
                   void onCreate();
                 }
               } else if (e.key === "Escape") {
@@ -615,7 +619,7 @@ export function OpenAICodeExecSection({
             size="sm"
             className="h-7 shrink-0 px-3 text-xs"
             onClick={() => void onCreate()}
-            disabled={creating || !createName.trim() || !apiKey}
+            disabled={creating || !createName.trim() || !hasCredential}
           >
             {creating ? "Creating…" : "Create"}
           </Button>
@@ -626,7 +630,7 @@ export function OpenAICodeExecSection({
           variant="outline"
           className="h-8"
           onClick={() => setCreateOpen(true)}
-          disabled={!apiKey}
+          disabled={!hasCredential}
         >
           <PlusIcon className="size-3.5 mr-1" />
           New container

@@ -69,11 +69,17 @@ IGNORED_TOKENIZER_NAMES = frozenset(
 os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAMES)
 
 # Check environments
-keynames = "\n" + "\n".join(os.environ.keys())
-IS_COLAB_ENVIRONMENT = "\nCOLAB_" in keynames
-IS_KAGGLE_ENVIRONMENT = "\nKAGGLE_" in keynames
-KAGGLE_TMP = "/tmp"
-del keynames
+# A KAGGLE_* variable is not a Kaggle kernel - the Kaggle CLI reads
+# KAGGLE_USERNAME / KAGGLE_KEY from the environment on ordinary machines, and
+# redirecting their tokenizer cache to /tmp because of it was wrong.
+from .disk_utils import (
+    KAGGLE_TMP,
+    is_colab_environment,
+    is_kaggle_environment,
+)
+
+IS_COLAB_ENVIRONMENT = is_colab_environment()
+IS_KAGGLE_ENVIRONMENT = is_kaggle_environment()
 
 
 def try_fix_tokenizer(tokenizer, prepend = True):
@@ -568,6 +574,7 @@ def _load_correct_tokenizer(
     trust_remote_code = False,
     cache_dir = "huggingface_tokenizers_cache",
     fix_tokenizer = True,
+    revision = None,
 ):
     if IS_COLAB_ENVIRONMENT:
         cache_dir = cache_dir
@@ -596,6 +603,7 @@ def _load_correct_tokenizer(
             legacy = False,
             from_slow = True,
             cache_dir = cache_dir,
+            revision = revision,
         )
     except:
         slow_tokenizer = None
@@ -614,6 +622,7 @@ def _load_correct_tokenizer(
         token = token,
         trust_remote_code = trust_remote_code,
         cache_dir = cache_dir,
+        revision = revision,
     )
 
     if not fix_tokenizer or tokenizer_name.lower() in IGNORED_TOKENIZER_NAMES:
@@ -669,6 +678,7 @@ def load_correct_tokenizer(
     trust_remote_code = False,
     cache_dir = "huggingface_tokenizers_cache",
     fix_tokenizer = True,
+    revision = None,
 ):
     tokenizer = _load_correct_tokenizer(
         tokenizer_name = tokenizer_name,
@@ -678,6 +688,7 @@ def load_correct_tokenizer(
         trust_remote_code = trust_remote_code,
         cache_dir = cache_dir,
         fix_tokenizer = fix_tokenizer,
+        revision = revision,
     )
 
     if fix_tokenizer:
@@ -711,6 +722,11 @@ def load_correct_tokenizer(
         pass
 
     tokenizer.chat_template = chat_template
+    # Saving restores sentencepiece assets from the repo name alone, which carries no
+    # branch, so stamp it for the save path. Imported late to break a circular import.
+    from .models.loader_utils import _mark_loaded_revision
+
+    _mark_loaded_revision(tokenizer, revision)
     return tokenizer
 
 

@@ -95,15 +95,30 @@ def summarize_resident_stt() -> Dict[str, Any]:
             model = ggml.loaded_model
             device = device or ggml.device
         loading = loading or ggml.is_loading()
-        return {
-            "model": model,
-            "device": device,
-            "loading": loading,
-            "any": bool(model or loading),
-        }
     except Exception as e:
         logger.warning("Could not inspect STT sidecar: %s", e)
         return {"model": None, "device": None, "loading": False, "any": False}
+
+    # Same reasoning for mtmd: its llama-server holds VRAM too, so admission has
+    # to see it. Its own boundary, so an mtmd import failure cannot discard what
+    # the other two engines just reported.
+    try:
+        from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
+
+        mtmd = get_mtmd_stt_sidecar()
+        if not model:
+            model = mtmd.loaded_model
+            device = device or mtmd.device
+        loading = loading or mtmd.is_loading()
+    except Exception as e:
+        logger.warning("Could not inspect mtmd STT sidecar: %s", e)
+
+    return {
+        "model": model,
+        "device": device,
+        "loading": loading,
+        "any": bool(model or loading),
+    }
 
 
 def can_keep_chat_during_training(
@@ -135,8 +150,8 @@ def can_keep_chat_during_training(
             resolve_requested_gpu_ids,
         )
 
-        if get_device() != DeviceType.CUDA:
-            return False, {"mode": "non_cuda", "reason": "non_cuda"}
+        if get_device() not in (DeviceType.CUDA, DeviceType.XPU):
+            return False, {"mode": "non_accelerator", "reason": "non_accelerator"}
 
         # Full finetuning runs in 16-bit, so ignore the 4-bit request or we under-count.
         effective_4bit = False if training_type == "Full Finetuning" else load_in_4bit
@@ -225,6 +240,8 @@ def can_load_chat_during_training(
     max_seq_length: int,
     requested_gpu_ids: Optional[List[int]],
     is_gguf: bool = False,
+    gpu_ids_are_vulkan_ordinals: bool = False,
+    vulkan_free_vram_gb: Optional[Dict[int, float]] = None,
     required_override_gb: Optional[float] = None,
     single_device_gpu: Optional[str] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
@@ -235,9 +252,9 @@ def can_load_chat_during_training(
     even-share per-GPU floor for device_map="balanced"; GGUF sizes from
     required_override_gb over the visible pool. ``single_device_gpu`` is the
     exact physical device token selected by a single-device runner.
-    `load_in_4bit` must be effective (LoRA can flip 4-bit -> 16-bit). Non-CUDA
-    allows the load; default-deny on any CUDA case it can't size, so a load never
-    OOMs training."""
+    `load_in_4bit` must be effective (LoRA can flip 4-bit -> 16-bit). CPU/MLX
+    allows the load; default-deny on any CUDA/XPU case it can't size, so a load
+    never OOMs training."""
     try:
         from utils.hardware import (
             DeviceType,
@@ -248,8 +265,8 @@ def can_load_chat_during_training(
             resolve_requested_gpu_ids,
         )
 
-        if get_device() != DeviceType.CUDA:
-            return True, {"mode": "non_cuda", "reason": "non_cuda"}
+        if get_device() not in (DeviceType.CUDA, DeviceType.XPU):
+            return True, {"mode": "non_accelerator", "reason": "non_accelerator"}
 
         est_kwargs = dict(
             hf_token = hf_token or None,
@@ -283,7 +300,10 @@ def can_load_chat_during_training(
             }
 
         # Explicit GPUs, or GGUF: size directly and check live free VRAM.
-        if single_device_gpu is not None:
+        uses_vulkan_memory = vulkan_free_vram_gb is not None
+        if is_gguf and uses_vulkan_memory:
+            mode = "gguf_vulkan"
+        elif single_device_gpu is not None:
             mode = "single_device"
         elif is_gguf:
             mode = "gguf"
@@ -295,8 +315,14 @@ def can_load_chat_during_training(
         if required_gb is None:
             return False, {"mode": mode, "reason": "estimate_unavailable"}
 
-        free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
-        if single_device_gpu is not None:
+        free_by_index = (
+            vulkan_free_vram_gb
+            if uses_vulkan_memory
+            else _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
+        )
+        if requested_gpu_ids and gpu_ids_are_vulkan_ordinals:
+            free_vals = [free_by_index.get(int(gpu_id), 0.0) for gpu_id in requested_gpu_ids]
+        elif single_device_gpu is not None:
             token = str(single_device_gpu).strip()
             if not token:
                 # Empty token = a CPU-only single-device runner (e.g. a CPU
@@ -324,7 +350,8 @@ def can_load_chat_during_training(
                 return True, {"mode": mode, "reason": "invalid_gpu_ids"}
             free_vals = [free_by_index.get(i, 0.0) for i in resolved]
         else:
-            # GGUF: llama.cpp picks the GPU(s); any visible GPU is a candidate.
+            # GGUF self-placement / auto Vulkan (no requested ids): llama.cpp picks
+            # the GPU(s), so any visible GPU is a candidate -> size the whole pool.
             free_vals = list(free_by_index.values())
 
         if not free_vals:
@@ -335,20 +362,27 @@ def can_load_chat_during_training(
         needed_gb = required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
         aggregate_fits = usable_gb >= needed_gb
 
-        # device_map="balanced" shards across GPUs: an even-share floor stops one
-        # near-full GPU hiding behind aggregate capacity. GGUF self-places, no floor.
+        # Explicit HF placement uses balanced sharding across a known number of
+        # GPUs. GGUF pins are candidate pools: llama.cpp may narrow an uneven
+        # pool to the smallest fitting subset, so only their aggregate matters.
         min_free_gb = min(free_vals)
         per_gpu_fits = True
+        per_gpu_needed_gb = None
         if mode == "explicit" and len(free_vals) > 1:
-            per_gpu_fits = min_free_gb >= needed_gb / len(free_vals)
+            per_gpu_needed_gb = needed_gb / len(free_vals)
+        if per_gpu_needed_gb is not None:
+            per_gpu_fits = min_free_gb >= per_gpu_needed_gb
 
-        return aggregate_fits and per_gpu_fits, {
+        info = {
             "mode": mode,
             "required_gb": round(required_gb, 3),
             "usable_gb": round(usable_gb, 3),
             "needed_gb": round(needed_gb, 3),
             "min_free_gb": round(min_free_gb, 3),
         }
+        if per_gpu_needed_gb is not None:
+            info["per_gpu_needed_gb"] = round(per_gpu_needed_gb, 3)
+        return aggregate_fits and per_gpu_fits, info
     except Exception as e:
         # Never let a sizing failure load a chat model into a training OOM.
         logger.warning("Chat-load coexistence probe failed; will refuse: %s", e)
@@ -449,6 +483,29 @@ def free_stt_model_for_training(reason: str) -> List[str]:
                 freed.append(f"stt:{ggml_model}")
     except Exception as e:
         logger.warning("Could not unload GGUF STT model: %s", e)
+
+    # The mtmd sidecar serves Qwen3-ASR through llama-server at -ngl 99, so it
+    # holds VRAM exactly like the other two and has to be freed as well.
+    try:
+        from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
+        mtmd = get_mtmd_stt_sidecar()
+        if mtmd.is_loading() and mtmd.cancel_pending_load():
+            logger.info("Cancelling mtmd STT model load for training (%s)", reason)
+            # llama-server only becomes reachable through unload() once it is
+            # ready, so a startup has to be cancelled and reaped instead. Wait
+            # for that before training claims the memory it is allocating.
+            mtmd.wait_for_load_to_settle()
+            if mtmd.loaded_model:
+                mtmd.unload()
+            freed.append("stt:mtmd-loading")
+        else:
+            mtmd_model = mtmd.loaded_model
+            if mtmd_model:
+                logger.info("Unloading mtmd STT model '%s' for training (%s)", mtmd_model, reason)
+                mtmd.unload()
+                freed.append(f"stt:{mtmd_model}")
+    except Exception as e:
+        logger.warning("Could not unload mtmd STT model: %s", e)
 
     return freed
 

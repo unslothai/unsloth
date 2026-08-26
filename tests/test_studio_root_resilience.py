@@ -64,7 +64,7 @@ def test_kill_orphan_catches_oserror_from_studio_root():
     """Cleanup must not crash when studio_root() raises. _kill_orphaned_servers
     resolves the install root through the shared _resolved_studio_root_and_is_legacy()
     classifier, which swallows (ImportError, OSError, ValueError) on the probe."""
-    src = LLAMA_CPP.read_text()
+    src = LLAMA_CPP.read_text(encoding = "utf-8")
     # Cleanup delegates to the shared classifier rather than importing studio_root inline.
     assert "LlamaCppBackend._resolved_studio_root_and_is_legacy()" in _method_body(
         src, "_kill_orphaned_servers"
@@ -85,7 +85,7 @@ def _exec_search_roots_block(
     """Run _find_llama_server_binary's search_roots derivation -- plus the shared
     _resolved_studio_root_and_is_legacy() classifier it delegates to -- with a
     controlled studio_root() and resolve(), without importing the heavy module."""
-    src = LLAMA_CPP.read_text()
+    src = LLAMA_CPP.read_text(encoding = "utf-8")
     # Shared root classifier (holds the defensive try/except for studio_root()).
     # End the slice at the next sibling def/decorator at the same indent rather
     # than the literal "@staticmethod" string, so a future docstring mentioning a

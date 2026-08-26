@@ -62,7 +62,8 @@ export function ModelDeleteAction({
         aria-label={ariaLabel}
         disabled={disabled}
         className={cn(
-          "shrink-0 rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive",
+          // Fixed box, matching the gear and dots menu it sits beside.
+          "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive",
           disabled &&
             "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-muted-foreground/60",
           buttonClassName,

@@ -21,7 +21,7 @@ if _BACKEND_DIR not in sys.path:
 # Extract the regex from source (routes module needs heavy stubbing to import).
 import re as _re
 
-_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
+_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
 _m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", _src, _re.DOTALL)
 assert _m, "could not extract _TOOL_XML_RE source"
 # The lazy ``(.*?)\n\)`` could grab a shorter expression if an arm is ever wrapped;
@@ -668,7 +668,8 @@ def test_route_history_and_passthrough_forward_the_display_gate():
     blocks = {
         "safetensors history": r"Strip stale tool-call XML from prior assistant turns.*?\.strip\(\)",
         "anthropic history": r"Strip stale tool-call XML via the protected display helper.*?\.strip\(\)",
-        "anthropic passthrough": r"gated on the declared tools so an\n.*?\.strip\(\)",
+        # Anchored on the code, not the comment above it, so rewrapping prose cannot break this.
+        "anthropic passthrough": r"if not healing_active:.*?\.strip\(\)",
     }
     for label, pat in blocks.items():
         m = _re.search(pat, _src, _re.DOTALL)
@@ -830,12 +831,16 @@ def test_route_strip_gates_wrapperless_gemma_by_enabled_tools():
     # like the parser/loop, so a disabled/example name in prose is preserved in ...
     prose = "To document syntax you write call:foo{query:example}. That shows the format."
     assert "call:foo{query:example}" in _strip_tool_xml(prose, {"web_search"})
-    # An enabled name is still a real call and stripped.
+    # An enabled name at a line boundary is still a real call and stripped.
     assert "call:web_search" not in _strip_tool_xml(
-        "Answer. call:web_search{query:x}", {"web_search"}
+        "Answer.\ncall:web_search{query:x}", {"web_search"}
     )
-    # No gate (legacy) strips every closed call.
-    assert "call:foo" not in _strip_tool_xml(prose)
+    # Mid-sentence the shape is prose whatever the name, so the answer is kept whole.
+    assert "call:web_search" in _strip_tool_xml("Answer. call:web_search{query:x}", {"web_search"})
+    # No gate (legacy) strips every closed call that owns its position.
+    assert "call:foo" not in _strip_tool_xml(
+        "To document syntax you write\ncall:foo{query:example}"
+    )
 
 
 def test_gemma_strip_gate_empty_tools_preserves_prose():
@@ -849,7 +854,7 @@ def test_gemma_strip_gate_empty_tools_preserves_prose():
     assert "call:foo{query:example}" in _strip_tool_xml(prose, _gemma_strip_gate(None))
     # An enabled tool's real call is still stripped.
     assert "call:web_search" not in _strip_tool_xml(
-        "Answer. call:web_search{query:x}",
+        "Answer.\ncall:web_search{query:x}",
         _gemma_strip_gate([{"function": {"name": "web_search"}}]),
     )
 

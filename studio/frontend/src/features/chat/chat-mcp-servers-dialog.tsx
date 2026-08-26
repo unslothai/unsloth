@@ -7,6 +7,16 @@ import { Delete02Icon, Edit03Icon, PlusSignIcon } from "@hugeicons/core-free-ico
 import { HugeiconsIcon } from "@hugeicons/react";
 import { RefreshCwIcon, UploadIcon } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -154,6 +164,7 @@ function HeadersEditor({
                 onChange={(e) => update(row.id, { key: e.target.value })}
               />
               <Input
+                data-reload-snapshot-sensitive
                 value={row.value}
                 placeholder={copy.valuePlaceholder}
                 onChange={(e) => update(row.id, { value: e.target.value })}
@@ -197,6 +208,9 @@ export function ChatMcpServersDialog({
   const [testing, setTesting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState<McpServerConfig | null>(
+    null,
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
@@ -362,8 +376,6 @@ export function ChatMcpServersDialog({
   }
 
   async function removeServer(server: McpServerConfig) {
-    const ok = window.confirm(`Delete MCP server "${server.display_name}"?`);
-    if (!ok) return;
     try {
       await deleteMcpServer(server.id);
       await refresh();
@@ -612,7 +624,7 @@ export function ChatMcpServersDialog({
                         type="button"
                         variant="ghost"
                         size="icon"
-                        onClick={() => removeServer(server)}
+                        onClick={() => setConfirmingDelete(server)}
                         aria-label="Delete server"
                       >
                         <HugeiconsIcon icon={Delete02Icon} size={14} />
@@ -625,6 +637,38 @@ export function ChatMcpServersDialog({
           </div>
         )}
       </DialogContent>
+      <AlertDialog
+        open={confirmingDelete !== null}
+        onOpenChange={(next) => {
+          if (!next) setConfirmingDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete MCP server</AlertDialogTitle>
+            <AlertDialogDescription>
+              Delete{" "}
+              <span className="font-medium text-foreground">
+                &quot;{confirmingDelete?.display_name}&quot;
+              </span>
+              ? Its tools stop being available to chats. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const server = confirmingDelete;
+                setConfirmingDelete(null);
+                if (server) void removeServer(server);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }
