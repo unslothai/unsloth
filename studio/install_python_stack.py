@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import functools
 import glob
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -4174,6 +4175,49 @@ class _QuarantinedMetadata:
         self._copied.clear()
 
 
+def _staged_restore_args(name: str, staged: str) -> "tuple[list[str], str]":
+    """pip arguments that reinstall `name` from the staged wheel directory.
+
+    By default the wheel is named as a bare requirement and pip resolves it out of
+    `--find-links`. Under the opt-out that is rejected: require-hashes wants every
+    requirement pinned with `==` and carrying a hash, and a bare name is neither. The
+    restore runs AFTER the uninstall loop has already deleted the package records, so
+    failing there leaves the core package gone -- measured, pip answers "In
+    --require-hashes mode, all requirements must have their versions pinned with ==".
+
+    The staged wheel is a local file this installer just built, so its hash is knowable.
+    Under the opt-out the restore is written into a requirements file carrying the real
+    sha256 of that exact artifact, which satisfies the policy honestly instead of
+    relaxing it for this one command or abandoning the repair. Measured: pip accepts it
+    and installs under PIP_REQUIRE_HASHES=1.
+
+    Returns (arguments, a temporary requirements file to delete, or "").
+    """
+    default = ["--no-deps", "--force-reinstall", "--no-index", "--find-links", staged, name]
+    if not _respect_pm_policy():
+        return default, ""
+    wanted = re.sub(r"[-_.]+", "-", name).lower()
+    wheel = ""
+    for candidate in sorted(glob.glob(os.path.join(staged, "*.whl"))):
+        project = re.sub(r"[-_.]+", "-", os.path.basename(candidate).split("-")[0]).lower()
+        if project == wanted:
+            wheel = candidate
+            break
+    if not wheel:
+        # Nothing to hash, so nothing better to offer than the default and its error.
+        return default, ""
+    try:
+        digest = hashlib.sha256(Path(wheel).read_bytes()).hexdigest()
+        handle = tempfile.NamedTemporaryFile(
+            "w", suffix = ".txt", delete = False, encoding = "utf-8"
+        )
+        with handle:
+            handle.write(f"{os.path.abspath(wheel)} --hash=sha256:{digest}\n")
+    except OSError:
+        return default, ""
+    return ["--no-deps", "--force-reinstall", "--no-index", "-r", handle.name], handle.name
+
+
 def _restore_from_staged(
     name: str,
     staged: str,
@@ -4188,20 +4232,25 @@ def _restore_from_staged(
     """
     if not (removed_any and staged):
         return
-    if pip_install_try(
-        f"Restoring {name} after an incomplete metadata repair",
-        "--no-cache-dir",
-        "--no-deps",
-        "--force-reinstall",
-        "--no-index",
-        "--find-links",
-        staged,
-        name,
-        # pip, not uv: the wheel is already built and sitting in staged, and uv would
-        # reject the unpinned name under UV_REQUIRE_HASHES with the package records
-        # already gone. Routing through pip also earns the PIP_REQUIRE_HASHES relaxation.
-        force_pip = True,
-    ):
+    restore_args, restore_reqs = _staged_restore_args(name, staged)
+    try:
+        restored_here = pip_install_try(
+            f"Restoring {name} after an incomplete metadata repair",
+            "--no-cache-dir",
+            *restore_args,
+            # pip, not uv: the wheel is already built and sitting in staged, and uv would
+            # reject the unpinned name under UV_REQUIRE_HASHES with the package records
+            # already gone. Routing through pip also earns the PIP_REQUIRE_HASHES
+            # relaxation, which the opt-out withholds -- see _staged_restore_args.
+            force_pip = True,
+        )
+    finally:
+        if restore_reqs:
+            try:
+                os.unlink(restore_reqs)
+            except OSError:
+                pass
+    if restored_here:
         # The wheel just wrote its own valid metadata at the same path the rewritten
         # record occupied, so the unwinding below must not put the original back over
         # it. See _QuarantinedMetadata.forget_copies.
@@ -4491,19 +4540,22 @@ def _repair_duplicate_core_metadata(
                 # The overlay install is preferred because it keeps the editable
                 # or git provenance, but the staged wheel was built from that
                 # same source, so falling back to it never substitutes a release.
-                restored = pip_install_try(
-                    f"Repairing duplicate metadata for {name}",
-                    "--no-cache-dir",
-                    "--no-deps",
-                    "--force-reinstall",
-                    "--no-index",
-                    "--find-links",
-                    staged,
-                    name,
-                    # As _restore_from_staged: pip, so a uv hash policy cannot reject the
-                    # already-built wheel once every record has been removed.
-                    force_pip = True,
-                )
+                repair_args, repair_reqs = _staged_restore_args(name, staged)
+                try:
+                    restored = pip_install_try(
+                        f"Repairing duplicate metadata for {name}",
+                        "--no-cache-dir",
+                        *repair_args,
+                        # As _restore_from_staged: pip, so a uv hash policy cannot reject
+                        # the already-built wheel once every record has been removed.
+                        force_pip = True,
+                    )
+                finally:
+                    if repair_reqs:
+                        try:
+                            os.unlink(repair_reqs)
+                        except OSError:
+                            pass
             if not restored:
                 _safe_print(
                     _red(
@@ -4712,7 +4764,7 @@ _PIP_CONFIG_KEYS = ("require-hashes", "only-binary", "no-binary", "uploaded-prio
 # "no packages selected". `off`, `n` and `f` were missing and read as ENABLED, which both
 # printed a notice about a policy pip does not enforce and, under the opt-out, translated
 # the disabled setting into a uv control that failed the install.
-_OFF_VALUES = ("", "n", "no", "f", "false", "off", "0", "none", ":none:")
+_OFF_VALUES = ("n", "no", "f", "false", "off", "0")
 
 
 # The only two controls whose value is a BOOLEAN. The rest take a package list, a scoped

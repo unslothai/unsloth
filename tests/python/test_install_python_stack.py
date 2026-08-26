@@ -7,6 +7,8 @@ import contextlib
 import importlib
 import inspect
 import io
+import hashlib
+import pathlib
 import os
 import re
 import shutil
@@ -605,6 +607,73 @@ class TestOperatorCanKeepTheirPolicy:
             ips._sdist_only_build_args("openai-whisper")
             assert os.environ["UNSLOTH_RESPECT_PM_POLICY"] == "1"
             assert os.environ["PIP_REQUIRE_HASHES"] == "1"
+
+
+class TestTheMetadataRepairCannotStrandThePackage:
+    """The repair uninstalls every record and then reinstalls from a staged wheel. If
+    that reinstall is refused, the core package is simply gone -- and under the opt-out
+    it WAS refused, because the restore names an unpinned, unhashed requirement while
+    require-hashes is in force. Measured against pip 26.2.1: "In --require-hashes mode,
+    all requirements must have their versions pinned with ==".
+    """
+
+    def _staged(self, tmp_path):
+        staged = tmp_path / "staged"
+        staged.mkdir()
+        wheel = staged / "unsloth_zoo-1.0-py3-none-any.whl"
+        wheel.write_bytes(b"PK\x03\x04 not a real wheel, but a real file to hash\n")
+        return staged, wheel
+
+    def test_the_default_path_still_names_the_requirement(self, tmp_path):
+        """Unchanged where nothing is hardened: same command as before this fix."""
+        staged, _ = self._staged(tmp_path)
+        with mock.patch.dict(os.environ, {}, clear = True):
+            args, cleanup = ips._staged_restore_args("unsloth-zoo", str(staged))
+        assert cleanup == ""
+        assert args == [
+            "--no-deps", "--force-reinstall", "--no-index",
+            "--find-links", str(staged), "unsloth-zoo",
+        ]
+
+    def test_the_opt_out_restores_through_a_real_hash(self, tmp_path):
+        """Not a relaxation and not a skipped repair: the staged wheel is a local file
+        this installer just built, so its hash is knowable and the policy is satisfied
+        honestly. Measured: pip accepts this under PIP_REQUIRE_HASHES=1, and rejects it
+        with THESE PACKAGES DO NOT MATCH THE HASHES if the wheel is altered."""
+        staged, wheel = self._staged(tmp_path)
+        with mock.patch.dict(
+            os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True
+        ):
+            args, cleanup = ips._staged_restore_args("unsloth-zoo", str(staged))
+        try:
+            assert args[:4] == ["--no-deps", "--force-reinstall", "--no-index", "-r"]
+            body = pathlib.Path(cleanup).read_text(encoding = "utf-8")
+            digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+            assert str(wheel) in body and f"--hash=sha256:{digest}" in body, body
+        finally:
+            os.unlink(cleanup)
+
+    def test_a_normalised_name_still_finds_its_wheel(self, tmp_path):
+        """The wheel spells the project with an underscore and the requirement with a
+        dash, so the match has to normalise both."""
+        staged, _ = self._staged(tmp_path)
+        with mock.patch.dict(
+            os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True
+        ):
+            args, cleanup = ips._staged_restore_args("Unsloth_Zoo", str(staged))
+        assert cleanup, "the underscore spelling must match unsloth_zoo-1.0-...whl"
+        os.unlink(cleanup)
+
+    def test_a_missing_wheel_falls_back_rather_than_raising(self, tmp_path):
+        """Nothing to hash is not a crash: the caller gets the ordinary arguments and
+        whatever pip says about them."""
+        staged = tmp_path / "empty"
+        staged.mkdir()
+        with mock.patch.dict(
+            os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True
+        ):
+            args, cleanup = ips._staged_restore_args("unsloth-zoo", str(staged))
+        assert cleanup == "" and args[-1] == "unsloth-zoo"
 
 
 class TestHardenedPolicyIsAnnounced:
