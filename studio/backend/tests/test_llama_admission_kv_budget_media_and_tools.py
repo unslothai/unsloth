@@ -3,14 +3,14 @@
 
 """Two holes in the KV reservation the estimator has to charge for.
 
-Media: Studio's composer sends attachments in the legacy top-level ``image_base64`` /
+Media: Unsloth's composer sends attachments in the legacy top-level ``image_base64`` /
 ``audio_base64`` / ``video_base64`` fields, and the generation path splices them into
 the prompt AFTER admission is decided. Charging only ``messages`` priced an image at
 zero while llama.cpp's mtmd embeddings take real KV positions.
 
 Tool loop: the server-side loop opens on ``enable_tools`` / ``mcp_enabled`` / the CLI
 policy / a checkpoint repair, none of which require a client ``tools`` array, so a
-predicate keyed on ``payload.tools`` charged Studio's own tool traffic the opening
+predicate keyed on ``payload.tools`` charged Unsloth's own tool traffic the opening
 estimate for a lease that runs up to 25 growing rounds.
 """
 

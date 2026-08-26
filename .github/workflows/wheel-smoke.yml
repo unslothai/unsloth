@@ -137,7 +137,7 @@ jobs:
           cd /tmp
           /tmp/v/bin/python -c "from studio.backend.main import app; print('Unsloth backend OK:', app.title)"
 
-      - name: CLI without the Studio stack guides instead of tracebacking
+      - name: CLI without the Unsloth stack guides instead of tracebacking
         # The smoke above installs studio.txt first, so it cannot catch a wheel
         # that ships studio/ without declaring what it imports (#4701, #5260,
         # #7147). Drop only structlog to reuse that venv without a re-download.

@@ -14,6 +14,7 @@ import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, AsyncIterator, Callable
 
 import httpx
@@ -122,6 +123,12 @@ _ADMISSION_HEARTBEAT_MISSES = 3
 # the poll loop stays bounded however long generation itself may run.
 _DEFAULT_MODEL_TIMEOUT_SECONDS = 900.0
 _MAX_MODEL_WAIT_BUDGET_SECONDS = 3600.0
+# Bounds a provider's Retry-After when the run has no wall clock of its own: past the hourly
+# windows providers reset on, short of parking a run and its lease on one mistaken header.
+_MAX_RATE_LIMIT_WAIT_SECONDS = 3600.0
+# Lifetime of the internal key one model call authenticates with. Retry waits are bounded by
+# what is left of it: a key that expires mid-backoff fails auth without reaching the provider.
+_MODEL_CALL_KEY_LIFETIME_SECONDS = 2 * 60 * 60
 # Headroom so the named stall guards expire before HTTPX's own read timeout does.
 _STREAM_READ_TIMEOUT_MARGIN_SECONDS = 30.0
 
@@ -247,11 +254,21 @@ def _extract_text(message: dict) -> str:
     return message_text_with_pastes(message).strip()
 
 
-def _research_question_context(thread_id: str, user_message_id: str) -> tuple[str, str]:
+def _research_question_context(
+    thread_id: str,
+    user_message_id: str,
+    override: str = "",
+) -> tuple[str, str]:
+    """The question to research plus the conversation that led to it.
+
+    ``override`` is the question the model handed off, which folds in what the conversation
+    established and is what the user actually wants researched. The raw message stands in for
+    runs created without one.
+    """
     messages = list_chat_messages(thread_id)
     by_id = {str(message["id"]): message for message in messages}
     user = by_id.get(user_message_id)
-    question = _extract_text(user or {})
+    question = override.strip() or _extract_text(user or {})
     if not user:
         return question, "[]"
 
@@ -454,16 +471,95 @@ async def _model_unloaded(response: httpx.Response) -> str | None:
     return "named" if _MODEL_NOT_FOUND_CODE in text else None
 
 
-def _retry_after_seconds(response: httpx.Response) -> float | None:
-    """The response's Retry-After delay in seconds, or None when it is absent or a HTTP date."""
-    header = response.headers.get("Retry-After")
-    if not header:
+def _retry_after_delay(raw: object) -> float | None:
+    """A Retry-After value as a delay in seconds, or None when it names none or has passed.
+
+    RFC 9110 defines the field as ``HTTP-date / delay-seconds``, and providers behind a CDN do
+    send dates. Reading only the number backs off a second inside a cooldown with minutes left."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
         return None
     try:
-        delay = float(header.strip())
+        delay = float(text)
     except ValueError:
-        return None
+        try:
+            at = parsedate_to_datetime(text)
+        except (IndexError, TypeError, ValueError):
+            return None
+        if at is None:
+            return None
+        if at.tzinfo is None:
+            # RFC 9110 dates are GMT; a form that omits the zone is not a local time.
+            at = at.replace(tzinfo = timezone.utc)
+        delay = (at - datetime.now(timezone.utc)).total_seconds()
     return delay if delay > 0 else None
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """The response's Retry-After delay in seconds, or None when it is absent or already past."""
+    return _retry_after_delay(response.headers.get("Retry-After"))
+
+
+async def _peek_stream_head(lines: AsyncIterator[str]) -> str | None:
+    """The stream's first line, or None when it ends without one.
+
+    One line only: a queue notice belongs to the loop that refreshes the admission bound, and the
+    refusal below is always a stream's first line."""
+    async for line in lines:
+        return line
+    return None
+
+
+def _stream_rate_limit_delay(head: str | None) -> float | None:
+    """The delay a proxied provider rate-limit refusal asks for: None when the stream does not
+    open with one, 0.0 when it names no delay.
+
+    core.inference.external_provider turns an upstream non-200 into a 200 stream carrying one
+    OpenAI-shaped error line, so a 429 survives only there: as ``code`` (``type`` for the ChatGPT
+    connection) plus the forwarded Retry-After."""
+    if head is None or not head.startswith("data:"):
+        return None
+    try:
+        chunk = json.loads(head[5:].strip())
+    except (TypeError, ValueError):
+        return None
+    error = chunk.get("error") if isinstance(chunk, dict) else None
+    if not isinstance(error, dict):
+        return None
+    if str(error.get("code")) != "429" and error.get("type") != "rate_limit_error":
+        return None
+    metadata = error.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("terminal"):
+        # Quota exhausted rather than throttled: no wait clears it, so surface it now.
+        return None
+    requested = error.get("retry_after")
+    if requested is None and isinstance(metadata, dict):
+        requested = metadata.get("retry_after")
+    return _retry_after_delay(requested) or 0.0
+
+
+async def _with_head(head: str | None, rest: AsyncIterator[str]) -> AsyncIterator[str]:
+    """``rest`` with the line already read off it put back in front.
+
+    Explicitly against None, not truthiness: a blank SSE separator line is a line."""
+    if head is not None:
+        yield head
+    async for line in rest:
+        yield line
+
+
+def _rate_limit_wait(requested: float, remaining: float, headroom: float) -> float:
+    """How much of a provider's requested retry delay this call can afford.
+
+    The delay is the provider's, not a share of the model-load budget, so it is bounded by what is
+    left of the call minus the room the re-send needs; coming back early only spends an attempt on
+    the same refusal. The standing ceiling covers a run with no wall clock at all."""
+    # Never reserve all of what is left: a call whose wall clock is no larger than its
+    # first-output budget reserves the whole of it, and every wait collapses to zero.
+    headroom = min(headroom, remaining / 2)
+    return max(0.0, min(requested, _MAX_RATE_LIMIT_WAIT_SECONDS, remaining - headroom))
 
 
 def _local_model_ready() -> bool:
@@ -732,6 +828,22 @@ def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
     return is_tool_error(web_result) or web_result.strip() in EMPTY_SEARCH_RESULTS
 
 
+def _run_moved_on(fresh: dict | None, attempt: int) -> bool:
+    """Whether the run this worker was running has since been re-pointed at a newer question.
+
+    A thread reuses its one run row for its lifetime, so between committing a terminal status
+    and writing the terminal reply the user can stop the run and ask something else: the row
+    is reset, its assistant binding moves, and the reply below -- resolved by run id -- would
+    stamp "Research cancelled." and researchStatus cancelled onto the NEW question's
+    placeholder, where it stays until that question reaches its own terminal write.
+
+    retryCount is the attempt epoch, which rebind_cancelled advances for exactly this reason.
+    """
+    if not fresh:
+        return True
+    return int(fresh.get("retryCount") or 0) != attempt
+
+
 def _update_assistant(
     run: dict,
     text: str,
@@ -750,7 +862,10 @@ def _update_assistant(
             status = status,
             sources = sources,
             completion_worker_id = completion_worker_id,
+            expected_attempt = int(run.get("retryCount") or 0),
         )
+        if not message_id:
+            return
     existing = get_chat_message(run["threadId"], message_id) or {}
     content = existing.get("content") if isinstance(existing.get("content"), list) else []
     # Only replace this worker's text/source parts; retain artifacts, reasoning, and other extensions.
@@ -800,6 +915,8 @@ def _update_assistant(
             "createdAt": existing.get("createdAt") or db.now_ms(),
         },
         allow_research_update = True,
+        expected_research_run_id = run["id"],
+        expected_research_attempt = int(run.get("retryCount") or 0),
     )
 
 
@@ -926,7 +1043,7 @@ class ResearchSupervisor:
             )
         if not pages:
             return "", []
-        # Reuse Studio's knowledge-base RAG pipeline (ingest -> hybrid retrieve -> <chunk>
+        # Reuse Unsloth's knowledge-base RAG pipeline (ingest -> hybrid retrieve -> <chunk>
         # render) over an ephemeral scope; runs off the event loop since embedding and the
         # sqlite/vec index work are CPU/GPU bound.
         from core.rag import web_rank
@@ -1014,7 +1131,7 @@ class ResearchSupervisor:
     def _endpoint(self) -> str:
         port = self._server_port()
         if port is None:
-            raise RuntimeError("Research is waiting for the Studio server port")
+            raise RuntimeError("Research is waiting for the Unsloth server port")
         return f"http://127.0.0.1:{port}/v1/chat/completions"
 
     async def _wait_for_local_model(
@@ -1024,7 +1141,7 @@ class ResearchSupervisor:
     ) -> bool:
         """Wait, up to the run's model timeout, for a model to be loaded again; True if one was.
 
-        A durable run resumes after a Studio restart and is approved long after it was created,
+        A durable run resumes after an Unsloth restart and is approved long after it was created,
         so the model it was started with can be gone. Waiting keeps the run alive instead of
         ending it on a non-retryable 400 that discards every step and source it gathered.
 
@@ -1065,6 +1182,24 @@ class ResearchSupervisor:
             await asyncio.sleep(min(_MODEL_WAIT_POLL_SECONDS, remaining))
             remaining -= _MODEL_WAIT_POLL_SECONDS
         await self._check_active(run_id)
+
+    async def _wait_out_rate_limit(
+        self, run: dict, requested: float, deadline: float, headroom: float
+    ) -> None:
+        """Wait out a provider's retry delay, whatever carried it, against the same budget."""
+        remaining = deadline - asyncio.get_running_loop().time()
+        await self._wait_out_retry_after(
+            run["id"], _rate_limit_wait(requested, remaining, headroom)
+        )
+
+    async def _wait_out_retry_after(self, run_id: str, delay: float) -> None:
+        """Wait out a provider-set retry delay in the same poll-sized slices as the model waits
+        above, so a cancel or a lost lease ends the run during the wait rather than after it."""
+        remaining = delay
+        while remaining > 0:
+            await self._check_active(run_id)
+            await asyncio.sleep(min(_MODEL_WAIT_POLL_SECONDS, remaining))
+            remaining -= _MODEL_WAIT_POLL_SECONDS
 
     @staticmethod
     def _absorb_late_task(run_id: str, what: str, task: asyncio.Task) -> None:
@@ -1173,7 +1308,10 @@ class ResearchSupervisor:
         preview_labels: bool = False,
     ) -> tuple[str, str, str | None, dict[str, int] | None]:
         call_id = uuid.uuid4().hex
-        expires = (datetime.now(timezone.utc) + timedelta(hours = 2)).isoformat()
+        expires = (
+            datetime.now(timezone.utc) + timedelta(seconds = _MODEL_CALL_KEY_LIFETIME_SECONDS)
+        ).isoformat()
+        key_minted = asyncio.get_running_loop().time()
         token, key = await asyncio.to_thread(
             auth_storage.create_api_key,
             username = run["ownerSubject"],
@@ -1337,6 +1475,12 @@ class ResearchSupervisor:
                     ModelOutputIdleTimeout,
                 )
 
+            call_started = loop.time()
+            # No backoff below may outlast this call's wall clock or the key the re-send
+            # authenticates with, so all of them measure against whichever ends first.
+            retry_deadline = key_minted + _MODEL_CALL_KEY_LIFETIME_SECONDS
+            if model_timeout:
+                retry_deadline = min(retry_deadline, call_started + model_timeout)
             async with (
                 _wall_clock_timeout(model_timeout or None),
                 httpx.AsyncClient(timeout = timeout, trust_env = False) as client,
@@ -1373,7 +1517,6 @@ class ResearchSupervisor:
                             response = await send_task
                             response.raise_for_status()
                             first_output_deadline = loop.time() + first_output_budget
-                            break
                         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                             # Only reachable before a body byte is touched (the stream is consumed
                             # after this loop), so a re-send cannot duplicate report text.
@@ -1382,9 +1525,14 @@ class ResearchSupervisor:
                                 if isinstance(exc, httpx.HTTPStatusError)
                                 else None
                             )
+                            rate_limited = (
+                                isinstance(exc, httpx.HTTPStatusError)
+                                and exc.response.status_code == 429
+                            )
                             retryable = (
                                 not isinstance(exc, httpx.HTTPStatusError)
                                 or exc.response.status_code >= 500
+                                or rate_limited
                             )
                             if unloaded:
                                 model_waits += 1
@@ -1407,13 +1555,40 @@ class ResearchSupervisor:
                                 ):
                                     raise
                             else:
-                                # re-check the lease and cancellation before re-sending.
-                                await asyncio.sleep(2**attempt)
+                                delay = 2**attempt
+                                if rate_limited:
+                                    # This runs to minutes, so re-read the run while it
+                                    # waits; the backoff below never outlasts one poll.
+                                    await self._wait_out_rate_limit(
+                                        run,
+                                        _retry_after_seconds(exc.response) or delay,
+                                        retry_deadline,
+                                        first_output_budget,
+                                    )
+                                else:
+                                    await asyncio.sleep(delay)
                                 attempt += 1
+                                # re-check the lease and cancellation before re-sending.
                                 await self._check_active(run["id"])
-                    async for line in self._iter_stream_lines(
-                        run["id"], response, semantic_deadline
-                    ):
+                            continue
+                        # A proxied provider 429 arrives as a 200 whose first line is the
+                        # refusal, so the status cannot see it. No body byte is used yet, so a
+                        # re-send cannot duplicate report text.
+                        stream = self._iter_stream_lines(run["id"], response, semantic_deadline)
+                        head = await _peek_stream_head(stream)
+                        throttled = _stream_rate_limit_delay(head)
+                        if throttled is None or attempt == 2:
+                            # Out of attempts: let the stream raise the provider's own error.
+                            break
+                        await stream.aclose()
+                        await response.aclose()
+                        response = None
+                        await self._wait_out_rate_limit(
+                            run, throttled or 2**attempt, retry_deadline, first_output_budget
+                        )
+                        attempt += 1
+                        await self._check_active(run["id"])
+                    async for line in _with_head(head, stream):
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
                         if not line.startswith("data:"):
@@ -1576,6 +1751,9 @@ class ResearchSupervisor:
             logger.debug("research.phase_event_failed run_id=%s", run_id, exc_info = True)
 
     async def _process(self, run: dict) -> None:
+        # The attempt this worker claimed. Everything it writes after a terminal status is
+        # only its to write while the run is still on that attempt.
+        attempt = int(run.get("retryCount") or 0)
         cancel_event = self._cancel_event(run["id"])
         if await asyncio.to_thread(db.is_cancel_requested, run["id"]):
             cancel_event.set()
@@ -1591,7 +1769,7 @@ class ResearchSupervisor:
                 db.finish, run["id"], self.worker_id, "cancelled"
             )
             fresh = await asyncio.to_thread(db.get_run, run["id"])
-            if actual_status == "cancelled" and fresh:
+            if actual_status == "cancelled" and not _run_moved_on(fresh, attempt):
                 await asyncio.to_thread(
                     _update_assistant, fresh, "Research cancelled.", "cancelled"
                 )
@@ -1599,14 +1777,14 @@ class ResearchSupervisor:
             logger.warning("research.lease_lost run_id=%s", run["id"])
             actual_status = await self._finish_after_lease_loss(run["id"])
             fresh = await asyncio.to_thread(db.get_run, run["id"])
-            if actual_status == "cancelled" and fresh:
+            if actual_status == "cancelled" and not _run_moved_on(fresh, attempt):
                 await asyncio.to_thread(
                     _update_assistant,
                     fresh,
                     "Research cancelled.",
                     "cancelled",
                 )
-            elif actual_status == "failed" and fresh:
+            elif actual_status == "failed" and not _run_moved_on(fresh, attempt):
                 await asyncio.to_thread(
                     _update_assistant,
                     fresh,
@@ -1625,11 +1803,11 @@ class ResearchSupervisor:
             if actual_status is None:
                 actual_status = await self._finish_after_lease_loss(run["id"])
             fresh = await asyncio.to_thread(db.get_run, run["id"])
-            if actual_status == "cancelled" and fresh:
+            if actual_status == "cancelled" and not _run_moved_on(fresh, attempt):
                 await asyncio.to_thread(
                     _update_assistant, fresh, "Research cancelled.", "cancelled"
                 )
-            elif actual_status == "failed" and fresh:
+            elif actual_status == "failed" and not _run_moved_on(fresh, attempt):
                 await asyncio.to_thread(
                     _update_assistant, fresh, f"Research failed: {error}", "failed"
                 )
@@ -1669,7 +1847,10 @@ class ResearchSupervisor:
 
     async def _plan(self, run: dict) -> None:
         question, conversation_context = await asyncio.to_thread(
-            _research_question_context, run["threadId"], run["userMessageId"]
+            _research_question_context,
+            run["threadId"],
+            run["userMessageId"],
+            str(run["config"].get("question") or ""),
         )
         if not question:
             raise ValueError("User message has no text to research")
@@ -1720,6 +1901,8 @@ class ResearchSupervisor:
             preview_labels = True,
         )
         plan = _parse_and_validate_plan(response, planning_reasoning, max_steps)
+        # Arming research in the composer is the approval, so the plan is queued as it is
+        # stored rather than parked for a second confirmation.
         try:
             result = await asyncio.to_thread(
                 db.set_plan,
@@ -1727,6 +1910,7 @@ class ResearchSupervisor:
                 plan,
                 None,
                 self.worker_id,
+                auto_approve = True,
             )
         except db.ResearchConflictError:
             if await asyncio.to_thread(db.is_cancel_requested, run["id"]):
@@ -1742,6 +1926,8 @@ class ResearchSupervisor:
         if not fresh or not fresh.get("plan"):
             raise ValueError("Approved plan is missing")
         run = fresh
+        # The attempt this pass belongs to, kept because ``run`` is re-read below.
+        research_attempt = int(run.get("retryCount") or 0)
         budgets = run["config"]["budgets"]
         max_steps = int(budgets["maxSteps"])
         max_sources = int(budgets["maxSources"])
@@ -1769,7 +1955,10 @@ class ResearchSupervisor:
         used_queries: set[str] = set()
         fetched_urls: set[str] = set()
         question, conversation_context = await asyncio.to_thread(
-            _research_question_context, run["threadId"], run["userMessageId"]
+            _research_question_context,
+            run["threadId"],
+            run["userMessageId"],
+            str(run["config"].get("question") or ""),
         )
         reset = db.prepare_execution_resume if resuming else db.reset_execution_steps
         written = await asyncio.to_thread(reset, run["id"], self.worker_id)
@@ -2442,5 +2631,5 @@ class ResearchSupervisor:
         if actual_status is None:
             raise LeaseLost()
         run = await asyncio.to_thread(db.get_run, run["id"])
-        if actual_status == "cancelled" and run:
+        if actual_status == "cancelled" and not _run_moved_on(run, research_attempt):
             await asyncio.to_thread(_update_assistant, run, "Research cancelled.", "cancelled")

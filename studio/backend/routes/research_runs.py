@@ -75,6 +75,7 @@ class CreateResearchRun(BaseModel):
     budgets: dict[str, int] | None = None
     websitePolicy: dict[str, list[str]] | None = None
     instructions: str | None = Field(default = None, max_length = 32_000)
+    question: str | None = Field(default = None, max_length = 2000)
 
     @field_validator("budgets", mode = "before")
     @classmethod
@@ -136,8 +137,11 @@ def _sync_assistant(run: dict, text: str | None = None) -> None:
             run["id"],
             text = fallback_text,
             status = run["status"],
+            expected_attempt = int(run.get("retryCount") or 0),
         )
         if created:
+            return
+        if not message_id:
             return
     message = get_chat_message(run["threadId"], message_id)
     if message is None:
@@ -166,6 +170,8 @@ def _sync_assistant(run: dict, text: str | None = None) -> None:
             "metadata": metadata,
         },
         allow_research_update = True,
+        expected_research_run_id = run["id"],
+        expected_research_attempt = int(run.get("retryCount") or 0),
     )
 
 
@@ -232,7 +238,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         ):
             raise HTTPException(
                 status_code = 400,
-                detail = "Durable research requires a saved connection whose provider supports Studio tools",
+                detail = "Durable research requires a saved connection whose provider supports Unsloth tools",
             )
         provider = providers_db.get_provider(provider_id)
         if provider is None:
@@ -242,14 +248,14 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         # connection is stored under the backend "openai" type but surfaced to
         # the UI as "custom" / "vllm" / "ollama" / "llama_cpp", and the composer
         # offers research for those aliases because their registry entries
-        # declare Studio tools. Comparing the two for equality therefore 400s
+        # declare Unsloth tools. Comparing the two for equality therefore 400s
         # exactly the connections this path exists to serve, while the ordinary
         # inference route already overrides the type from the row.
         saved_provider_type = provider["provider_type"]
         if not provider_runs_local_tools(saved_provider_type) or not provider["is_enabled"]:
             raise HTTPException(
                 status_code = 400,
-                detail = "Durable research requires an enabled connection whose provider supports Studio tools",
+                detail = "Durable research requires an enabled connection whose provider supports Unsloth tools",
             )
         request["providerType"] = saved_provider_type
 
@@ -360,6 +366,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         "budgets": budgets,
         "websitePolicy": website_policy,
         "instructions": (payload.instructions or "").strip(),
+        "question": (payload.question or "").strip(),
     }
 
 
@@ -377,28 +384,40 @@ def create_research_run(
         raise HTTPException(
             status_code = 400, detail = "userMessageId must identify a user message in the thread"
         )
-    if not message_text_with_pastes(user_message).strip():
+    # A handed-off question counts as the text. An image-, audio- or video-only send is a
+    # normal composer turn, and a multimodal model that reads one and calls deep_research
+    # passes the question it wrote; the worker researches config.question, so refusing here
+    # on the message's own (empty) text ends an otherwise complete handoff in a toast.
+    if not message_text_with_pastes(user_message).strip() and not (payload.question or "").strip():
         raise HTTPException(
             status_code = 400,
             detail = "Deep research requires a user message with non-empty text",
         )
-    if db.has_thread_claim(payload.threadId):
-        raise HTTPException(
-            status_code = 409,
-            detail = "This thread already has a Deep Research run",
-        )
     config = _sanitize_config(payload, thread)
-    run_id = uuid.uuid4().hex
-    assistant_id = payload.assistantMessageId
     try:
-        run = db.create_run(
-            run_id = run_id,
-            owner_subject = current_subject,
-            thread_id = payload.threadId,
-            user_message_id = payload.userMessageId,
-            assistant_message_id = assistant_id,
-            config = config,
-        )
+        if db.has_thread_claim(payload.threadId):
+            # The thread's one run was stopped, so it is re-pointed at this question rather
+            # than refusing every later one in the chat.
+            run = db.rebind_cancelled(
+                thread_id = payload.threadId,
+                user_message_id = payload.userMessageId,
+                assistant_message_id = payload.assistantMessageId,
+                config = config,
+            )
+            if run is None:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "This thread already has a Deep Research run",
+                )
+        else:
+            run = db.create_run(
+                run_id = uuid.uuid4().hex,
+                owner_subject = current_subject,
+                thread_id = payload.threadId,
+                user_message_id = payload.userMessageId,
+                assistant_message_id = payload.assistantMessageId,
+                config = config,
+            )
     except db.ResearchConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except sqlite3.IntegrityError as exc:
@@ -420,7 +439,7 @@ def active_research_runs(
 ):
     return {
         "runs": db.list_active(thread_id),
-        "hasRun": db.has_thread_claim(thread_id),
+        "hasRun": db.research_spent(thread_id),
     }
 
 

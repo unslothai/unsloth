@@ -1625,7 +1625,7 @@ def _audio_processor(sr = 16000, extractor = True):
     ],
 )
 def test_mlx_audio_classification(monkeypatch, processor, renders, capable, expected):
-    """Studio keeps the rate and rendering gates; the checkpoint answer is zoo's."""
+    """Unsloth keeps the rate and rendering gates; the checkpoint answer is zoo's."""
     from core.inference import mlx_inference
 
     seen = {}
@@ -1826,7 +1826,7 @@ def test_mlx_vlm_renderer_audio_marker_contract(model_type, places_marker):
 
 def test_mlx_registered_renderer_accepts_published_nemotron_model_type_case():
     """The official checkpoint capitalizes its model type while mlx-vlm's
-    registry uses lowercase. Studio must reach the registered renderer rather
+    registry uses lowercase. Unsloth must reach the registered renderer rather
     than rejecting the checkpoint before the loader's normalization can run."""
     # Real mlx-vlm and Zoo, like the renderer contract test above. Bare
     # backend CI ships neither, so skip rather than error.
@@ -2934,7 +2934,7 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
 
 def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
     """The pinned mlx-vlm has no seed parameter, and a newer one ignores it at
-    Studio's default min_p/top_k -- so the seed must ride on the sampler, built
+    Unsloth's default min_p/top_k -- so the seed must ride on the sampler, built
     with the whole filtering chain the runtime would otherwise have built."""
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend
