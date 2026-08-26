@@ -7,7 +7,10 @@ import {
   type MemoryEstimateRequest,
   fetchMemoryEstimate,
 } from "../api/memory-estimate";
-import { resolveEstimateSourceIdentity } from "../model-config/estimate-context";
+import {
+  resolveEstimateSourceIdentity,
+  resolveTokenIdentity as tokenIdentity,
+} from "../model-config/estimate-context";
 
 /** Long enough that a slider drag lands one request, not sixty; short enough that
  *  letting go feels immediate. The fetch itself is a header walk, tens of ms. */
@@ -20,23 +23,6 @@ export interface MemoryEstimateState {
   loading: boolean;
   /** The numbers shown are for older settings; a fresh answer is on its way. */
   stale: boolean;
-}
-
-/**
- * Identity of a token without the token. The backend resolves and caches gated
- * repositories per token, so swapping one for another has to re-fetch, but the
- * credential itself has no business sitting in a React dependency key.
- *
- * djb2: this only has to separate two strings held in this tab, never to resist
- * anyone, and it has to be synchronous (SubtleCrypto is not).
- */
-function tokenIdentity(token: string | null | undefined): string {
-  if (!token) return "";
-  let hash = 5381;
-  for (let i = 0; i < token.length; i++) {
-    hash = ((hash << 5) + hash + token.charCodeAt(i)) | 0;
-  }
-  return (hash >>> 0).toString(36);
 }
 
 /** Everything that changes the answer. Settings the backend ignores stay out, or

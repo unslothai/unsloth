@@ -4,6 +4,11 @@
 import { authFetch } from "@/features/auth";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 
+/** GB, to two decimals. Lives in the import-free module beside the fit rules so the
+ *  node test runner can reach it; re-exported here because every caller of the row's
+ *  figures already imports from this file. */
+export { formatMemoryGb } from "../model-config/memory-fit";
+
 /** Why no breakdown came back. The panel maps these to its own copy. */
 export type MemoryEstimateReason =
   | "not_gguf"
@@ -150,46 +155,141 @@ function estimateRequestBody(
   });
 }
 
+/**
+ * A byte count the row can show, or the fallback.
+ *
+ * `??` alone only defends against null and undefined, which is not the same as
+ * defending against a value: JSON.parse turns `1e999` into Infinity without
+ * complaint, a field can arrive as a string from a backend that stringified its
+ * numbers, and a negative byte count is not a footprint. Each of those reaches
+ * classifyMemoryFit, and NaN there used to come back "fits".
+ *
+ * Deliberately preserves the two skew fallbacks: an ABSENT key still falls through to
+ * whatever the caller passes as the fallback, and an explicit 0 is a real answer.
+ */
+function finiteBytes(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : fallback;
+}
+
+/** A count (context, slots, layers) rather than a byte size: same guard, no fallback
+ *  chain, and null stays null where null is the "unknown" the row prints. */
+function finiteCount(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : fallback;
+}
+
+function nullableCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : null;
+}
+
+/** A flag whose ABSENCE is meaningful, so a non-boolean is treated as absent rather
+ *  than coerced: `Boolean("false")` is true, and these decide what the row claims. */
+function flag(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+const ESTIMATE_REASONS: readonly MemoryEstimateReason[] = [
+  "not_gguf",
+  "not_downloaded",
+  "unsupported_source",
+  "unsizable",
+];
+
 function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
+  const drafterRuntimeBytes = finiteBytes(body.drafter_runtime_bytes, 0);
   return {
-    available: Boolean(body.available),
-    reason: body.reason ?? null,
-    weightsBytes: body.weights_bytes ?? 0,
-    kvBytes: body.kv_bytes ?? 0,
-    computeBytes: body.compute_bytes ?? 0,
-    drafterRuntimeBytes: body.drafter_runtime_bytes ?? 0,
+    available: flag(body.available, false),
+    // A reason the panel has no copy for is not a reason. An unknown string would
+    // reach the copy map and render nothing at all.
+    reason: ESTIMATE_REASONS.includes(body.reason as MemoryEstimateReason)
+      ? (body.reason as MemoryEstimateReason)
+      : null,
+    weightsBytes: finiteBytes(body.weights_bytes, 0),
+    kvBytes: finiteBytes(body.kv_bytes, 0),
+    computeBytes: finiteBytes(body.compute_bytes, 0),
+    drafterRuntimeBytes,
     // Absent on a backend predating the split: fall back to the whole term, which
     // keeps the old "all of it is on the GPU" reading rather than inventing a zero
     // that would silently drop a real VRAM charge off the row.
-    drafterRuntimeGpuBytes:
-      body.drafter_runtime_gpu_bytes ?? body.drafter_runtime_bytes ?? 0,
-    projectorRuntimeBytes: body.projector_runtime_bytes ?? 0,
-    drafterKvUnsized: Boolean(body.drafter_kv_unsized),
-    totalBytes: body.total_bytes ?? 0,
-    gpuBytes: body.gpu_bytes ?? 0,
+    drafterRuntimeGpuBytes: finiteBytes(
+      body.drafter_runtime_gpu_bytes,
+      drafterRuntimeBytes,
+    ),
+    projectorRuntimeBytes: finiteBytes(body.projector_runtime_bytes, 0),
+    drafterKvUnsized: flag(body.drafter_kv_unsized, false),
+    totalBytes: finiteBytes(body.total_bytes, 0),
+    gpuBytes: finiteBytes(body.gpu_bytes, 0),
     // Absent on an older backend: treat the KV figure as unverified, the safe
     // direction for the one number that can dwarf all the others.
-    kvEstimable: body.kv_estimable ?? false,
-    kvOnGpu: body.kv_on_gpu ?? true,
-    nCtx: body.n_ctx ?? 0,
-    cacheTypeKv: body.cache_type_kv ?? null,
-    nParallel: body.n_parallel ?? 1,
-    layerCount: body.layer_count ?? null,
-    gpuLayers: body.gpu_layers ?? null,
-    moeOffloadUnmodelled: Boolean(body.moe_offload_unmodelled),
+    kvEstimable: flag(body.kv_estimable, false),
+    kvOnGpu: flag(body.kv_on_gpu, true),
+    nCtx: finiteCount(body.n_ctx, 0),
+    cacheTypeKv:
+      typeof body.cache_type_kv === "string" ? body.cache_type_kv : null,
+    nParallel: finiteCount(body.n_parallel, 1),
+    layerCount: nullableCount(body.layer_count),
+    gpuLayers: nullableCount(body.gpu_layers),
+    moeOffloadUnmodelled: flag(body.moe_offload_unmodelled, false),
   };
+}
+
+/**
+ * Statuses that say the ROUTE is not there, as distinct from this request failing.
+ *
+ * 404 and 405 are a backend predating it (405 because a router that owns the path for
+ * another method answers that instead), 501 one that answers but declines. Everything
+ * else -- 401, 422, 500, a gateway error, a body that is not JSON -- is about this
+ * request or this moment, and says nothing about whether the route exists.
+ */
+function routeAbsentStatus(status: number): boolean {
+  return status === 404 || status === 405 || status === 501;
+}
+
+/**
+ * How long a structural miss is trusted before the next qualifying change re-probes.
+ *
+ * The memo is worth having: this route is POSTed after EVERY settings change, so a
+ * new bundle against an old backend fires one debounced request per slider release
+ * for the life of the tab, each landing in the API monitor as a 404.
+ *
+ * It must not be PERMANENT. Studio replaces its own backend in place -- an upgrade, a
+ * server-wide reload -- and a latched miss would keep the row hidden on a backend that
+ * has since gained the route until the window itself is reloaded. A window costs at
+ * most one wasted POST per window and heals with no plumbing to any restart signal.
+ */
+const ROUTE_ABSENT_TTL_MS = 5 * 60 * 1000;
+let routeAbsentAt: number | null = null;
+
+/** Forget a recorded miss. For tests, and for any caller that learns the backend
+ *  changed underneath it before the window is up. */
+export function resetMemoryEstimateRouteMemo(): void {
+  routeAbsentAt = null;
 }
 
 /**
  * Price a prospective GGUF load from its header. Allocates nothing, loads nothing.
  *
- * A backend predating the route answers 404, which surfaces as an unavailable estimate
- * rather than an error, so the panel just hides the row.
+ * Never throws for a backend answer: every failure -- an absent route, an auth
+ * expiry, a 500, a proxy's HTML error page served as 200, a truncated body -- comes
+ * back as an unavailable estimate, so the panel hides the row and the Load button
+ * beside it is untouched. The statuses are told apart only to decide whether the miss
+ * is worth remembering; the row's own reading of them is identical.
  */
 export async function fetchMemoryEstimate(
   payload: MemoryEstimateRequest,
   signal?: AbortSignal,
 ): Promise<MemoryEstimate> {
+  if (
+    routeAbsentAt !== null &&
+    Date.now() - routeAbsentAt < ROUTE_ABSENT_TTL_MS
+  ) {
+    return UNAVAILABLE;
+  }
   let nativePathLease: string | null = null;
   if (payload.nativePathToken) {
     try {
@@ -208,12 +308,23 @@ export async function fetchMemoryEstimate(
     body: estimateRequestBody(payload, nativePathLease),
   });
   if (!response.ok) {
+    // Only a structural miss latches. A transient 500 explicitly CLEARS the memo
+    // rather than leaving an older one standing: a backend that is answering at all,
+    // however badly, is not one that is missing the route.
+    routeAbsentAt = routeAbsentStatus(response.status) ? Date.now() : null;
     return UNAVAILABLE;
   }
-  return toMemoryEstimate((await response.json()) as ApiEstimateResponse);
-}
-
-/** GB, to two decimals, matching how the rest of the panel talks about memory. */
-export function formatMemoryGb(bytes: number): string {
-  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  routeAbsentAt = null;
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    // A 200 that is not JSON: a captive portal or a dev proxy serving its own HTML,
+    // or a body cut short. Nothing was measured, so there is nothing to show.
+    return UNAVAILABLE;
+  }
+  if (typeof body !== "object" || body === null) {
+    return UNAVAILABLE;
+  }
+  return toMemoryEstimate(body as ApiEstimateResponse);
 }

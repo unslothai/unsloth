@@ -47,7 +47,19 @@ export interface GpuInfo {
   loadDeviceMemoryGb: number;
   cpuCore: number;
   cpuThread: number;
+  /** Host RAM free right now, ZEROED on a host where any device shares that RAM.
+   *  The zero belongs to the SUM: every reader of this field adds it to the GPU
+   *  budget, and on a shared-memory host that would offer the same bytes twice. */
   systemRamAvailableGb: number;
+  /** Host RAM free right now as the probe reported it, whatever the devices share.
+   *
+   *  The field above cannot answer "is host RAM under pressure", because on a
+   *  dGPU + iGPU box it is permanently 0 -- `devices.some(...)` is a host-level OR, so
+   *  ONE Vulkan iGPU in the inventory zeroes the reading for the whole machine, and it
+   *  stays 0 even when the user has pinned the discrete card and host RAM is genuinely
+   *  a separate pool. `sharesSystemRam` in gpu-vram.ts already answers the pool
+   *  question per pin, which is the half that is right; this is the reading it needs. */
+  systemRamAvailableHostGb: number;
   systemRamTotalGb: number;
 }
 
@@ -63,6 +75,7 @@ const DEFAULT_GPU: GpuInfo = {
   cpuCore: 0,
   cpuThread: 0,
   systemRamAvailableGb: 0,
+  systemRamAvailableHostGb: 0,
   systemRamTotalGb: 0,
 };
 
@@ -77,6 +90,7 @@ function toGpuInfo(
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
+    systemRamAvailableHostGb: data?.memory?.available_gb ?? 0,
     systemRamTotalGb: data?.memory?.total_gb ?? 0,
   };
   const gpuData =
@@ -89,6 +103,10 @@ function toGpuInfo(
     ...base,
     // A Vulkan iGPU's reported budget is capped shared system RAM, not an
     // independent VRAM pool. Do not offer the same RAM again for CPU offload.
+    // `systemRamAvailableHostGb` deliberately keeps `base`'s reading through this
+    // spread: the zero is about not double-counting a SUM, not a claim that the
+    // machine has no free RAM, and a caller asking about host pressure needs the
+    // number itself.
     systemRamAvailableGb: devices.some((device) => device.shared_memory)
       ? 0
       : base.systemRamAvailableGb,

@@ -44,7 +44,10 @@ import {
   useGpuDevices,
   useInferenceGpuInfo,
 } from "@/hooks/use-gpu-info";
-import { resolveMemoryCapacityGb, usableFreeVramGb } from "@/hooks/gpu-vram";
+import {
+  aggregateUsableFreeVramGb,
+  resolveMemoryCapacityGb,
+} from "@/hooks/gpu-vram";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
@@ -70,11 +73,15 @@ import {
   loadManagedLlamaFlags,
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
-import {
-  type MemoryEstimate,
-  formatMemoryGb,
-} from "../api/memory-estimate";
+import { type MemoryEstimate } from "../api/memory-estimate";
 import { resolveEstimateContext } from "../model-config/estimate-context";
+import {
+  type MemoryFitVerdict,
+  formatMemoryGb,
+  resolveDraftCacheNote,
+  resolveKvNote,
+  resolveMemoryFit,
+} from "../model-config/memory-fit";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
 import {
   fetchLoadModelOverride,
@@ -899,42 +906,6 @@ function AdvancedSettingsToggle({
   );
 }
 
-/** How an estimated footprint sits against the memory available to hold it. */
-type MemoryFitVerdict = "fits" | "tight" | "exceeds" | "unknown";
-
-const MEMORY_FIT_TIGHT_RATIO = 0.85;
-
-function classifyMemoryFit(
-  bytes: number,
-  capacityGb: number,
-): MemoryFitVerdict {
-  // Nothing probed or nothing to weigh: no verdict rather than a false "fits".
-  if (capacityGb <= 0 || bytes <= 0) {
-    return "unknown";
-  }
-  const ratio = bytes / (capacityGb * 1024 ** 3);
-  if (ratio > 1) {
-    return "exceeds";
-  }
-  if (ratio > MEMORY_FIT_TIGHT_RATIO) {
-    return "tight";
-  }
-  return "fits";
-}
-
-/** The worse of two verdicts, for a load that has to satisfy both at once. */
-function worseMemoryFit(a: MemoryFitVerdict, b: MemoryFitVerdict): MemoryFitVerdict {
-  const rank: Record<MemoryFitVerdict, number> = {
-    unknown: 0,
-    fits: 1,
-    tight: 2,
-    exceeds: 3,
-  };
-  // unknown loses to any real verdict: one half being unmeasurable must not erase the
-  // other half's answer.
-  return rank[a] >= rank[b] ? a : b;
-}
-
 const MEMORY_VALUE_TONE: Record<MemoryFitVerdict, string> = {
   fits: "text-nav-fg",
   tight: "text-amber-500",
@@ -1043,130 +1014,23 @@ function MemoryEstimateRow({
     // Nothing honest to show. Silent while loading too, so the row does not flicker.
     return null;
   }
-  const rawGpuFit = classifyMemoryFit(estimate.gpuBytes, gpuCapacityGb);
-  // Capped at "tight": what is free now is a warning, not a verdict, because the
-  // resident model's VRAM comes back when this load replaces it.
-  const freeGpuFit = classifyMemoryFit(estimate.gpuBytes, freeGpuCapacityGb);
-  const gpuPressured = freeGpuFit === "exceeds" || freeGpuFit === "tight";
-  // Same question for the other pool. _host_offload_shortfall_message refuses a load
-  // whose offloaded weights exceed psutil's AVAILABLE memory less a reserve, not the
-  // machine's physical total, so a 70 GB host share read as fitting a 128 GB box with
-  // 32 GB free. Warns rather than refuses for the same reason as the GPU figure: the
-  // resident model's own pages come back when this load replaces it.
-  const hostShareBytes = Math.max(0, estimate.totalBytes - estimate.gpuBytes);
-  // One pool means the WHOLE load draws on that RAM, so the pressure question is
-  // asked of the total there rather than of a host share that has no separate
-  // meaning. This is also the closest the row can honestly get to Apple's Metal
-  // budget: that budget is 85% of the smaller of MLX's recommended working set and
-  // what is available right now, and the second term is the one that moves. The
-  // static working-set ceiling stays unmodelled, because resolving it needs an
-  // `import mlx.core` that can abort the process, which does not belong on a path
-  // the panel drives on every settings change.
-  const usableHostFit = classifyMemoryFit(
-    singleMemoryPool ? estimate.totalBytes : hostShareBytes,
+  // Every verdict and the one advisory paragraph, resolved in ../model-config/memory-fit.
+  // Kept out of this file so the node test runner can reach it: the chain is long, the
+  // cases it distinguishes are all hardware shapes nobody has on the desk, and while it
+  // lived here an arm that could never be taken shipped unnoticed.
+  const { gpuFit, totalFit, prefix, advisory } = resolveMemoryFit(estimate, {
+    gpuCapacityGb,
+    totalCapacityGb,
+    systemRamCapacityGb,
+    freeGpuCapacityGb,
     usableSystemRamGb,
+    singleMemoryPool,
+  });
+  const kvNote = resolveKvNote(estimate);
+  const draftCacheNote = resolveDraftCacheNote(
+    estimate.drafterRuntimeGpuBytes,
+    estimate.drafterRuntimeBytes,
   );
-  const hostPressured = usableHostFit === "exceeds" || usableHostFit === "tight";
-  const gpuFit =
-    rawGpuFit === "fits" && gpuPressured ? "tight" : rawGpuFit;
-  // The host share has to fit in host RAM on its own. Unused VRAM cannot hold bytes
-  // that placement has pinned outside the GPU, so weighing only the combined ceiling
-  // called a 70 GB CPU placement a fit on a 24 GB card plus 64 GB of RAM. Skipped
-  // where the two are one pool, which is the case the combined figure already
-  // describes exactly.
-  const hostShareFit = singleMemoryPool
-    ? "unknown"
-    : classifyMemoryFit(hostShareBytes, systemRamCapacityGb);
-  const totalFit = worseMemoryFit(
-    classifyMemoryFit(estimate.totalBytes, totalCapacityGb),
-    hostShareFit,
-  );
-  // Lower bound, not an estimate. Two ways to get there, and both UNDER-count by a
-  // term that grows with context: no attention dims, so the target cache is missing,
-  // or a drafter that is a repository rather than a file on this disk, so its cache
-  // is missing while its weights are counted. The advisory chain below still tells
-  // them apart, because the two are not fixed the same way.
-  const bounded = !estimate.kvEstimable || estimate.drafterKvUnsized;
-  const prefix = bounded ? "≥ " : "";
-  const kvNote = [
-    estimate.cacheTypeKv ?? "f16",
-    `${estimate.nCtx.toLocaleString()} tokens`,
-    estimate.nParallel > 1 ? `${estimate.nParallel} slots` : null,
-    estimate.kvOnGpu ? null : "host RAM",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  // Where the draft cache actually sits, read from its own GPU share rather than from
-  // kvOnGpu. kvOnGpu is the TARGET cache's placement, and the two are set by different
-  // flags: --no-kv-offload moves the target, --spec-draft-ngl 0 moves the drafter. Off
-  // the target flag this line was wrong in both directions -- silent about a genuinely
-  // host-resident draft cache, and claiming "host RAM" for one the same response had
-  // just charged to gpu_bytes. Under MTP the term is split across both placements, so
-  // there is a third case that no boolean could have expressed.
-  const draftCacheNote =
-    estimate.drafterRuntimeGpuBytes <= 0
-      ? "host RAM"
-      : estimate.drafterRuntimeGpuBytes < estimate.drafterRuntimeBytes
-        ? `${formatMemoryGb(estimate.drafterRuntimeGpuBytes)} on GPU`
-        : undefined;
-  // At most one note, most actionable first. An unsizable cache outranks any verdict
-  // drawn from the figures, since it says they are incomplete. Branches on
-  // kvEstimable rather than `bounded`: both make the figures a floor, but only this
-  // one is about the header, and the drafter case below names its own cause.
-  const advisory = !estimate.kvEstimable
-    ? {
-        tone: "warn",
-        text: "This GGUF's header doesn't carry the attention dimensions, so the KV cache can't be sized. The figures above are a floor, and the cache is usually the term that grows fastest with context.",
-      }
-    : estimate.drafterKvUnsized
-      ? {
-          tone: "warn",
-          text: "Part of this load is a file the server will fetch rather than one on this disk, so it can't be sized from here. The figures above are a floor.",
-        }
-      : estimate.moeOffloadUnmodelled
-        ? {
-            tone: "muted",
-            text: "Expert layers held on the CPU aren't modelled here, so the GPU figure reads high.",
-          }
-        : singleMemoryPool
-          ? totalFit === "exceeds"
-            ? {
-                tone: "warn",
-                text: "More than this machine's memory. The GPU and the rest of the system share one pool here, so there is nothing to offload to.",
-              }
-            : null
-          : // Discrete memory, so the two verdicts are separate questions and the
-            // aggregate one is asked FIRST. Reading gpuFit alone offered spilling to
-            // system RAM as the remedy for a load that does not fit in GPU and RAM
-            // combined, which is advice to do something that cannot work.
-            hostShareFit === "exceeds"
-            ? {
-                tone: "warn",
-                text: "More than system RAM holds. This placement keeps most of the load outside the GPU, and spare VRAM cannot take those bytes.",
-              }
-            : totalFit === "exceeds"
-              ? {
-                  tone: "warn",
-                  text: "More than this machine holds. The GPU and system RAM together are not enough for this load, so spilling layers or fitting the context down will not recover it.",
-                }
-              : gpuFit === "exceeds"
-                ? {
-                    tone: "warn",
-                    text: "More than this GPU holds. Layers will spill to system RAM, or the context will be fitted down to what fits.",
-                  }
-                : hostPressured
-                  ? {
-                      tone: "muted",
-                      text: singleMemoryPool
-                        ? "This fits the machine, but not what is free right now. If that memory is not the model being replaced, the context will be fitted down or the load refused."
-                        : "The part of this load that runs from system RAM fits the machine, but not what is free right now. If that memory is not the model being replaced, the load will be refused.",
-                    }
-                  : rawGpuFit === "fits" && gpuPressured
-                    ? {
-                        tone: "muted",
-                        text: "This fits the card, but something is using it right now. If that memory is not the model being replaced, layers will spill or the context will be fitted down.",
-                      }
-                    : null;
   return (
     <div className="space-y-2">
       <div className={ROW_CLASS}>
@@ -2959,16 +2823,12 @@ export function ModelConfigPage({
     // Per device, and by the loader's absolute-reserve rule rather than a
     // multiplication: the budget is subtracted from the card, not applied to what
     // happens to be free, and the two agree only on an idle one.
-    return pinned.reduce(
-      (sum, device) =>
-        sum +
-        usableFreeVramGb(
-          device.memoryFreeGb || 0,
-          device.memoryTotalGb || 0,
-          memoryVramBudgetFraction,
-        ),
-      0,
-    );
+    //
+    // Aggregated with the same count-the-shared-pool-once rule the TOTALS use. A
+    // plain sum over a mixed inventory counted the iGPU's share of host RAM a second
+    // time, and this figure is what freeGpuFit -- and through it the fit verdict --
+    // is measured against.
+    return aggregateUsableFreeVramGb(pinned, memoryVramBudgetFraction);
   }, [gpuDevices, pinnedGpuIds, memoryVramBudgetFraction]);
   const {
     gpuCapacityGb: memoryGpuCapacityGb,
@@ -3217,7 +3077,14 @@ export function ModelConfigPage({
                 0,
                 // _HOST_RAM_HEADROOM_MIB: the 2 GiB the loader keeps for the rest of
                 // the system before it will admit an offloaded load.
-                (inferenceGpu.systemRamAvailableGb || 0) - 2,
+                //
+                // The HOST reading, not the sum-shaped one beside it. That one is
+                // zeroed whenever ANY device on the machine shares system RAM, which
+                // is every dGPU + iGPU box, so this figure was permanently 0 there
+                // and the host-pressure advisory could not fire even under a pin on
+                // the discrete card -- exactly the case where host RAM really is a
+                // separate pool.
+                (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
               )}
               isUnifiedMemory={isUnifiedMemory}
               singleMemoryPool={singleMemoryPool}

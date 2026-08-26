@@ -60,6 +60,33 @@ export function resolveEstimateContext(
  * The token identity and the native path token are here for the same reason: both
  * select which file the backend resolves.
  */
+/**
+ * Identity of a token without the token.
+ *
+ * The backend resolves and caches gated repositories per token, so swapping one for
+ * another has to re-fetch, but the credential itself has no business sitting in a
+ * React dependency key.
+ *
+ * djb2, because this only has to separate two strings held in this tab, never to
+ * resist anyone, and it has to be synchronous (SubtleCrypto is not). It is 32 bits, so
+ * a collision is constructible: two colliding credentials would leave one's estimate
+ * on screen under the other, because the same value keys both the refetch and the
+ * blank-the-row check. The bound is the number of tokens compared IN ONE TAB, which is
+ * two -- the one that was set and the one that replaced it -- so the odds are ~2^-32
+ * per swap and the consequence is a stale byte count on a row already labelled Beta,
+ * not an incorrect load. Widening it is not worth a second hash; noting it is.
+ */
+export function resolveTokenIdentity(
+  token: string | null | undefined,
+): string {
+  if (!token) return "";
+  let hash = 5381;
+  for (let i = 0; i < token.length; i++) {
+    hash = ((hash << 5) + hash + token.charCodeAt(i)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+
 export function resolveEstimateSourceIdentity(
   modelPath: string,
   ggufVariant: string | null | undefined,

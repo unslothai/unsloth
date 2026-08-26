@@ -30,14 +30,19 @@ export interface VramReportingGpu {
 export function aggregateGpuMemoryTotalGb(
   devices: MemoryTotalDevice[],
 ): number {
+  // A probe reading, so it is not trusted to be a usable number: `?? 0` only defends
+  // against null and undefined, and one NaN or Infinity in the list poisons the sum
+  // and every fit verdict measured against it.
+  const size = (device: MemoryTotalDevice) => {
+    const total = device.memory_total_gb ?? 0;
+    return Number.isFinite(total) && total > 0 ? total : 0;
+  };
   const dedicated = devices
     .filter((device) => !device.shared_memory)
-    .reduce((sum, device) => sum + (device.memory_total_gb ?? 0), 0);
+    .reduce((sum, device) => sum + size(device), 0);
   const shared = Math.max(
     0,
-    ...devices
-      .filter((device) => device.shared_memory)
-      .map((device) => device.memory_total_gb ?? 0),
+    ...devices.filter((device) => device.shared_memory).map(size),
   );
   return Math.round((dedicated + shared) * 100) / 100;
 }
@@ -85,7 +90,14 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   // One flag for both answers, so the capacity and the pool question cannot
   // disagree about which devices they are describing.
   const pinGoverns = pinnedGpuCapacityGb > 0;
-  const rawGpuCapacityGb = pinGoverns ? pinnedGpuCapacityGb : input.hostGpuTotalGb;
+  // The host figure comes from aggregateGpuMemoryTotalGb on the caller's side, which
+  // guards itself, but this is a plain number on a public interface and a non-finite
+  // one here would make every figure below NaN.
+  const hostGpuTotalGb =
+    Number.isFinite(input.hostGpuTotalGb) && input.hostGpuTotalGb > 0
+      ? input.hostGpuTotalGb
+      : 0;
+  const rawGpuCapacityGb = pinGoverns ? pinnedGpuCapacityGb : hostGpuTotalGb;
   // The budget is what the next load is ALLOWED to claim, so it is the capacity a
   // verdict should be measured against: at 80% a 20 GB footprint on a 24 GB card is
   // over the line the slider draws, and reading the raw total called it comfortable.
@@ -98,6 +110,13 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
       ? input.gpuBudgetFraction
       : 1;
   const gpuCapacityGb = Math.round(rawGpuCapacityGb * budget * 100) / 100;
+  // Same guard as the device totals: psutil's figure arrives over the wire too, and a
+  // non-finite one would turn the ceiling below into NaN, which classifyMemoryFit
+  // reads as no verdict at all rather than as the RAM the machine plainly has.
+  const systemRamTotalGb =
+    Number.isFinite(input.systemRamTotalGb) && input.systemRamTotalGb > 0
+      ? input.systemRamTotalGb
+      : 0;
   const sharesSystemRam = pinGoverns
     ? input.pinnedDevices.some((device) => device.sharedMemory)
     : input.hostSharesSystemRam;
@@ -115,8 +134,8 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
         // iGPU was allowed 12. The larger of the two is the pool; on a mixed
         // inventory that under-counts a discrete card sitting beside it, which is
         // the side that refuses a load rather than admitting one that cannot run.
-        : Math.max(gpuCapacityGb, input.systemRamTotalGb)
-      : gpuCapacityGb + input.systemRamTotalGb,
+        : Math.max(gpuCapacityGb, systemRamTotalGb)
+      : gpuCapacityGb + systemRamTotalGb,
     singleMemoryPool,
   };
 }
@@ -174,13 +193,62 @@ export function usableFreeVramGb(
   totalGb: number,
   fraction: number,
 ): number {
-  const frac = fraction > 0 && fraction <= 1 ? fraction : 1;
-  if (!(totalGb > 0)) {
+  // Every argument is a probe reading off the wire. A NaN or an Infinity propagates
+  // through the arithmetic below into a figure a fit verdict is drawn from, so it is
+  // rejected here rather than at each of the four call sites.
+  if (!Number.isFinite(freeGb) || freeGb <= 0) {
+    return 0;
+  }
+  const total = Number.isFinite(totalGb) ? totalGb : 0;
+  const frac =
+    Number.isFinite(fraction) && fraction > 0 && fraction <= 1 ? fraction : 1;
+  if (!(total > 0)) {
     // No total to take a percentage of; the free reading is the only scale there is,
     // and the loader falls back the same way.
     return Math.max(0, freeGb * frac);
   }
-  const floor = Math.min(VRAM_FLOOR_RESERVE_GB, (1 - DEFAULT_VRAM_FRACTION) * totalGb);
-  const reserve = Math.max((1 - frac) * totalGb, floor);
+  const floor = Math.min(VRAM_FLOOR_RESERVE_GB, (1 - DEFAULT_VRAM_FRACTION) * total);
+  const reserve = Math.max((1 - frac) * total, floor);
   return Math.max(0, freeGb - reserve);
+}
+
+/** A device as the free-VRAM aggregate sees it. Structural, so a SystemGpuDevice fits. */
+export interface FreeVramDevice {
+  memoryFreeGb?: number;
+  memoryTotalGb?: number;
+  /** True when this device's budget is a capped view of the host's own RAM. */
+  sharedMemory?: boolean;
+}
+
+/**
+ * Free memory a prospective load may claim across an inventory, counting a shared
+ * host-memory pool only once.
+ *
+ * The same rule `aggregateGpuMemoryTotalGb` applies to totals, and for the same
+ * reason: on a discrete-plus-iGPU host the iGPU's free reading IS the host's free RAM
+ * seen through a cap, so adding it to the discrete card's free VRAM counts those
+ * bytes twice and hands the free-memory verdict a capacity the machine does not have.
+ * Summing blindly is worse here than for totals, because a shared device can report a
+ * total of 0 (`hardware.py` zeroes it for an iGPU on one path), and `usableFreeVramGb`
+ * then falls back to the raw free reading with no reserve subtracted at all.
+ *
+ * Several shared devices are several views of one pool, so the largest is taken
+ * rather than their sum -- two iGPUs on one host do not have two pools.
+ */
+export function aggregateUsableFreeVramGb(
+  devices: FreeVramDevice[],
+  fraction: number,
+): number {
+  const usable = (device: FreeVramDevice) =>
+    usableFreeVramGb(device.memoryFreeGb ?? 0, device.memoryTotalGb ?? 0, fraction);
+  const dedicated = devices
+    .filter((device) => !device.sharedMemory)
+    .reduce((sum, device) => sum + usable(device), 0);
+  const shared = Math.max(
+    0,
+    ...devices.filter((device) => device.sharedMemory).map(usable),
+  );
+  // Devices arrive rounded to 2dp and the reserve is a fraction of them, so the sum
+  // reintroduces float error the same way the totals aggregate does.
+  return Math.round((dedicated + shared) * 100) / 100;
 }
