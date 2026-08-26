@@ -692,11 +692,20 @@ class TestTheOptOutKeepsRestrictiveIndexSettings:
         env = self._env({"UNSLOTH_RESPECT_PM_POLICY": "1", "PIP_FIND_LINKS": "/wheels"})
         assert "PIP_FIND_LINKS" not in env
 
-    def test_a_disabled_no_index_does_not_keep_anything(self):
+    def test_a_disabled_no_index_is_carried_through_but_keeps_no_find_links(self):
+        """An explicit off is the operator lifting their own pip.conf, not an absence.
+
+        pip reads the environment ahead of pip.conf, so PIP_NO_INDEX=0 is how a
+        `no-index = true` in config is lifted for one run. Dropping the variable while
+        leaving pip.conf readable put the restriction back and failed an install the
+        operator had permitted. find-links is a different case: with no-index off it
+        ADDS a location beside the pinned index, so it is still scrubbed.
+        """
         env = self._env(
             {"UNSLOTH_RESPECT_PM_POLICY": "1", "PIP_NO_INDEX": "0", "PIP_FIND_LINKS": "/w"}
         )
-        assert "PIP_NO_INDEX" not in env and "PIP_FIND_LINKS" not in env
+        assert env["PIP_NO_INDEX"] == "0"
+        assert "PIP_FIND_LINKS" not in env
 
 
 class TestHardenedPolicyIsAnnounced:
@@ -2854,3 +2863,50 @@ class TestNoneIsAListSentinelNotABoolean:
         env = ips._install_env_for_cmd(cmd)
         assert env is not None
         assert "PIP_NO_INDEX" not in env
+
+
+class TestAnExplicitNoIndexOverrideSurvivesTheOptOut:
+    """pip reads the environment ahead of pip.conf, so PIP_NO_INDEX=0 lifts a config
+    `no-index = true` for one run. Measured on pip 26.2.1 against a clean venv: with
+    pip.conf `no-index = true` the install fails with "No matching distribution found",
+    and the same command with PIP_NO_INDEX=0 resolves. Dropping the variable while
+    leaving pip.conf readable reimposed a restriction the operator had lifted.
+    """
+
+    PINNED = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+
+    def test_an_explicit_off_is_carried_through(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        monkeypatch.setenv("PIP_NO_INDEX", "0")
+        env = ips._install_env_for_cmd(list(self.PINNED))
+        assert env is not None
+        assert env.get("PIP_NO_INDEX") == "0"
+
+    def test_an_explicit_on_is_carried_through_with_its_find_links(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        monkeypatch.setenv("PIP_NO_INDEX", "1")
+        monkeypatch.setenv("PIP_FIND_LINKS", "/op/wheels")
+        env = ips._install_env_for_cmd(list(self.PINNED))
+        assert env is not None
+        assert env.get("PIP_NO_INDEX") == "1"
+        assert env.get("PIP_FIND_LINKS") == "/op/wheels"
+
+    def test_find_links_is_still_additive_when_no_index_is_off(self, monkeypatch):
+        # With no-index off, find-links adds a location alongside the pinned index,
+        # which is the whole reason the pinned branch scrubs the mirror variables.
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        monkeypatch.setenv("PIP_NO_INDEX", "0")
+        monkeypatch.setenv("PIP_FIND_LINKS", "/op/wheels")
+        env = ips._install_env_for_cmd(list(self.PINNED))
+        assert env is not None
+        assert "PIP_FIND_LINKS" not in env
+
+    def test_the_default_path_scrubs_both_regardless(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+        for value in ("0", "1"):
+            monkeypatch.setenv("PIP_NO_INDEX", value)
+            monkeypatch.setenv("PIP_FIND_LINKS", "/op/wheels")
+            env = ips._install_env_for_cmd(list(self.PINNED))
+            assert env is not None
+            assert "PIP_NO_INDEX" not in env, value
+            assert "PIP_FIND_LINKS" not in env, value

@@ -4690,11 +4690,14 @@ function Fast-Install {
                    'PIP_NO_INDEX', 'PIP_INDEX_URL',
                    'UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE')
         if ($respectPolicy) {
-            # PIP_NO_INDEX only ever REMOVES sources, so it and the PIP_FIND_LINKS it
-            # leaves as the sole source are kept: dropping them would send a pinned
-            # command to the network on a host that had said not to.
-            $keep = @('UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE')
-            if (Test-PipNoIndexOn) { $keep += @('PIP_NO_INDEX', 'PIP_FIND_LINKS') }
+            # PIP_NO_INDEX is a POLICY variable and is kept whichever way it points. pip
+            # reads the environment ahead of pip.conf, so PIP_NO_INDEX=0 is how an
+            # operator lifts a `no-index = true` in their own config for one run;
+            # dropping it while leaving pip.conf readable reimposed a restriction they
+            # had lifted. PIP_FIND_LINKS genuinely IS additive, so it survives only while
+            # no-index is in force and it is the sole remaining source.
+            $keep = @('UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE', 'PIP_NO_INDEX')
+            if (Test-PipNoIndexOn) { $keep += @('PIP_FIND_LINKS') }
             $scrub = @($scrub | Where-Object { $keep -notcontains $_ })
         }
         foreach ($n in $scrub) {
@@ -4751,8 +4754,10 @@ function Fast-Download {
     $respectPolicy = Test-RespectPmPolicy
     $scrub = @('PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS', 'PIP_NO_INDEX', 'PIP_INDEX_URL', 'PIP_CONFIG_FILE')
     if ($respectPolicy) {
-        $keep = @('PIP_CONFIG_FILE')
-        if (Test-PipNoIndexOn) { $keep += @('PIP_NO_INDEX', 'PIP_FIND_LINKS') }
+        # Same split as Fast-Install: the policy variable is kept either way, the
+        # additive one only while no-index makes it the sole source.
+        $keep = @('PIP_CONFIG_FILE', 'PIP_NO_INDEX')
+        if (Test-PipNoIndexOn) { $keep += @('PIP_FIND_LINKS') }
         $scrub = @($scrub | Where-Object { $keep -notcontains $_ })
     }
     foreach ($n in $scrub) {
@@ -5403,7 +5408,9 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
         # PATH, which carries no hash, so a require-hashes policy fails it -- and it runs
         # after triton-windows is already gone. Refusing before the removal keeps the venv
         # whole; the cost is torch.compile on the XPU, which the next run can still fix.
-        substep "[WARN] UNSLOTH_RESPECT_PM_POLICY is set and the XPU triton swap would have to install a wheel your hash policy cannot verify; triton-windows $_tritonWinVer left in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
+        # Worded without naming a control the operator may not have set: the swap is
+        # skipped for the opt-out itself, not for a hash policy specifically.
+        substep "[WARN] UNSLOTH_RESPECT_PM_POLICY is set and the XPU triton swap would have to remove triton-windows $_tritonWinVer before installing a wheel your policy may refuse, which no rerun could repair; leaving it in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU. Unset UNSLOTH_RESPECT_PM_POLICY for one run to take the swap." "Yellow"
     }
     elseif ($_tritonWinVer -and $_tritonXpuSpec -match '(?i)xpu') {
         substep "replacing triton-windows $_tritonWinVer with $_tritonXpuSpec (Intel XPU)..." "Cyan"

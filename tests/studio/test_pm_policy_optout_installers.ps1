@@ -112,20 +112,25 @@ Fast-Install --index-url https://x torch | Out-Null
 Check "it reaches uv"              ($Recorded['UV_NO_CONFIG'] -eq '1')
 Check "and is still set afterwards" ($env:UV_NO_CONFIG -eq '1')
 
-# PIP_NO_INDEX only ever REMOVES sources, so honouring it is more restrictive, not less.
-Write-Host "PIP_NO_INDEX is kept under the opt-out, read the way pip reads it"
+# PIP_NO_INDEX is a POLICY variable and is kept whichever way it points: pip reads the
+# environment ahead of pip.conf, so PIP_NO_INDEX=0 is how an operator lifts a config
+# `no-index = true` for one run. PIP_FIND_LINKS genuinely IS additive, so it survives
+# only while no-index is in force and it is the sole remaining source.
+Write-Host "PIP_NO_INDEX is kept under the opt-out, in both directions"
 Reset-Env
 $env:UNSLOTH_RESPECT_PM_POLICY = "1"
 $env:PIP_NO_INDEX = "1"
 $env:PIP_FIND_LINKS = "C:\op\wheels"
 Fast-Install --index-url https://x torch | Out-Null
-Check "PIP_NO_INDEX is kept"      ($Recorded['PIP_NO_INDEX'] -eq '1')
-Check "PIP_FIND_LINKS is kept too" ($Recorded['PIP_FIND_LINKS'] -eq "C:\op\wheels")
+Check "an enabled PIP_NO_INDEX is kept" ($Recorded['PIP_NO_INDEX'] -eq '1')
+Check "PIP_FIND_LINKS rides along with it" ($Recorded['PIP_FIND_LINKS'] -eq "C:\op\wheels")
 Reset-Env
 $env:UNSLOTH_RESPECT_PM_POLICY = "1"
 $env:PIP_NO_INDEX = "0"
+$env:PIP_FIND_LINKS = "C:\op\wheels"
 Fast-Install --index-url https://x torch | Out-Null
-Check "a false PIP_NO_INDEX is scrubbed" ($null -eq $Recorded['PIP_NO_INDEX'])
+Check "an explicit OFF is carried through, not dropped" ($Recorded['PIP_NO_INDEX'] -eq '0')
+Check "but find-links is scrubbed, being additive again" ($null -eq $Recorded['PIP_FIND_LINKS'])
 
 Write-Host "a command with no pinned index is untouched either way"
 Reset-Env

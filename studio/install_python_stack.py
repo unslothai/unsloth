@@ -2686,11 +2686,15 @@ def _ensure_xpu_triton() -> None:
         # an optimisation -- torch.compile using the XPU -- so under the opt-out it is
         # skipped BEFORE the download, leaving the venv exactly as it was rather than
         # without triton at all, which no rerun could repair.
+        # Worded without naming a control the operator may not have set: the swap is
+        # skipped for the opt-out itself, not for a hash policy specifically.
         _safe_print(
             _red(
                 f"   {_POLICY_OPT_OUT_ENV} is set and the XPU triton swap would have to "
-                f"install a wheel your hash policy cannot verify; leaving generic triton "
-                f"{generic} in place -- torch.compile will not use the XPU."
+                f"remove generic triton {generic} before installing a wheel your policy "
+                f"may refuse, which no rerun could repair; leaving it in place -- "
+                f"torch.compile will not use the XPU. Unset {_POLICY_OPT_OUT_ENV} for "
+                f"one run to take the swap."
             )
         )
         return
@@ -5267,26 +5271,31 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
         env.update(overrides)
         return env
     env = os.environ.copy()
-    # PIP_NO_INDEX only ever REMOVES sources, so under the opt-out it is kept along with
-    # the PIP_FIND_LINKS it leaves as the sole source. Scrubbing it let a pinned command
-    # reach the network on a host that had said not to, which is the opposite of what
-    # this branch scrubs the ADDITIVE mirror variables for. If the pinned artifact is
-    # not in find-links the step fails, which is what the opt-out promises.
+    respect = _respect_pm_policy()
+    # PIP_NO_INDEX is a POLICY variable, not an additive one, and it is kept under the
+    # opt-out whichever way it points. Keeping it only when ON was wrong in the other
+    # direction: pip reads the environment ahead of pip.conf, so PIP_NO_INDEX=0 is how an
+    # operator lifts a `no-index = true` in their own config for one run. Measured on pip
+    # 26.2.1, pip.conf `no-index = true` alone fails with "No matching distribution
+    # found", and the same command with PIP_NO_INDEX=0 resolves. Dropping the variable
+    # while leaving pip.conf readable therefore reimposed a restriction the operator had
+    # lifted, and failed an install they had permitted.
+    #
     # Read as the BOOLEAN it is: without the key this fell through to the generic
     # reading, where `:none:` counts as empty and the variable was dropped even though
     # pip rejects that value outright.
-    keep_offline = _respect_pm_policy() and _config_value_is_on(
-        os.environ.get("PIP_NO_INDEX", ""),
-        "no-index",
-    )
+    no_index_on = _config_value_is_on(os.environ.get("PIP_NO_INDEX", ""), "no-index")
     for name in _UV_INDEX_ENV_VARS:
         # UV_CONFIG_FILE is an index variable only incidentally: measured, a file named
         # by it carrying `[pip] require-hashes = true` fails a pinned install, and
         # dropping it lets the same install through. Under the opt-out it is the
         # operator's policy file, so it stays.
-        if name == "UV_CONFIG_FILE" and _respect_pm_policy():
+        if respect and name in ("UV_CONFIG_FILE", "PIP_NO_INDEX"):
             continue
-        if keep_offline and name in ("PIP_NO_INDEX", "PIP_FIND_LINKS"):
+        # PIP_FIND_LINKS genuinely IS additive, so it survives only while no-index is in
+        # force and it is the sole remaining source. With no-index off it would add a
+        # location alongside the pinned index, which is what this loop exists to stop.
+        if respect and name == "PIP_FIND_LINKS" and no_index_on:
             continue
         env.pop(name, None)
     if _respect_pm_policy():
