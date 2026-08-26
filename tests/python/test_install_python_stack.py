@@ -1263,9 +1263,7 @@ class TestDetectionMatchesWhatTheManagersActuallyEnforce:
         first.write_text("[install]\nrequire-hashes = true\n", encoding = "utf-8")
         second = tmp_path / "site.conf"
         second.write_text("[wheel]\nrequire-hashes = false\n", encoding = "utf-8")
-        assert self._names({}, pip_files = [str(first), str(second)]) == (
-            "user.conf require-hashes",
-        )
+        assert self._names({}, pip_files = [str(first), str(second)]) == ("user.conf require-hashes",)
         # And the ordinary same-section override still works.
         third = tmp_path / "later.conf"
         third.write_text("[install]\nrequire-hashes = false\n", encoding = "utf-8")

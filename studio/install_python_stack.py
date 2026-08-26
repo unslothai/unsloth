@@ -5204,18 +5204,14 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
         # subcommand, which is why each one is carried across the files and only combined
         # at the end. Collapsing a file before reading the next let a `[wheel]` setting in
         # a low-priority file erase an `[install]` one pip still applies.
-        by_command: "dict[str, dict[str, tuple[str, str]]]" = {
-            name: {} for name in _PIP_COMMANDS
-        }
+        by_command: "dict[str, dict[str, tuple[str, str]]]" = {name: {} for name in _PIP_COMMANDS}
         for path in _hardened_pip_config_paths():
             text = _read_text(path)
             if text is None:
                 continue
             source = os.path.basename(path)
             for command, values in _hardened_settings_by_command(text).items():
-                by_command[command].update(
-                    {key: (source, value) for key, value in values.items()}
-                )
+                by_command[command].update({key: (source, value) for key, value in values.items()})
         pip_settings.update(_combine_pip_commands(by_command))
     for key, (source, value) in pip_settings.items():
         if _canonical_policy_key(key) not in cancelled["pip"]:
