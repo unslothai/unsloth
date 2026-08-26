@@ -26725,143 +26725,189 @@ class LlamaCppBackend:
         _metadata_finish_reason = None
         _stream_done = False
 
-        try:
-            with self._open_chat_stream_with_respawn_retry(
-                stream_payload,
-                cancel_event,
-                on_respawn = _refit_final_after_respawn,
-            ) as (
-                response,
-                first_token_deadline,
-            ):
-                for truncation in _final_respawn_truncations:
-                    yield {"type": "context_truncated", **truncation}
-                buffer = ""
-                for raw_chunk in self._iter_text_cancellable(
-                    response,
+        # The tool loop's continuation does not reach here: this generation runs AFTER
+        # the loop breaks, so a turn that spends its whole tool budget and is then cut
+        # off mid-answer had nothing to recover it. Observed live: 25 tool calls, 22387
+        # tokens, stopped inside drawBird() with the game left half-written.
+        _final_length_continuations = 0
+        _continue_final = False
+        while True:
+            try:
+                with self._open_chat_stream_with_respawn_retry(
+                    stream_payload,
                     cancel_event,
-                    first_token_deadline = first_token_deadline,
+                    on_respawn = _refit_final_after_respawn,
+                ) as (
+                    response,
+                    first_token_deadline,
                 ):
-                    buffer += raw_chunk
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
-                        line = line.strip()
+                    for truncation in _final_respawn_truncations:
+                        yield {"type": "context_truncated", **truncation}
+                    buffer = ""
+                    for raw_chunk in self._iter_text_cancellable(
+                        response,
+                        cancel_event,
+                        first_token_deadline = first_token_deadline,
+                    ):
+                        buffer += raw_chunk
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            line = line.strip()
 
-                        if not line:
-                            continue
-                        if line == "data: [DONE]":
-                            if in_thinking:
-                                if (
-                                    _final_reasoning_started_at is not None
-                                    and not _final_reasoning_summary_emitted
-                                ):
-                                    _final_reasoning_summary_emitted = True
-                                    yield _reasoning_summary_event(_final_reasoning_started_at)
-                                if has_content_tokens:
-                                    cumulative += "</think>"
-                                    _prov_entry = None
-                                    yield {
-                                        "type": "content",
-                                        "text": _strip_tool_markup(cumulative, final = True),
-                                    }
-                                else:
-                                    cumulative = _finalize_reasoning_only_cumulative(
-                                        cumulative,
-                                        reasoning_text,
-                                        _metadata_finish_reason,
-                                        promote_reasoning_only,
-                                    )
-                                    _prov_entry = None
-                                    yield {"type": "content", "text": cumulative}
-                            _stream_done = True
-                            break  # exit inner while
-                        if not line.startswith("data: "):
-                            continue
-
-                        try:
-                            chunk_data = json.loads(line[6:])
-
-                            _report_live_llama_timings(perf_callback, chunk_data)
-                            # Capture server timings/usage from final chunks.
-                            _chunk_timings = chunk_data.get("timings")
-                            if _chunk_timings:
-                                _metadata_timings = _chunk_timings
-                            _chunk_usage = chunk_data.get("usage")
-                            if _chunk_usage:
-                                _metadata_usage = _chunk_usage
-                            # See the note on the first stream loop.
-                            _stream_error = stream_error_from_chunk(chunk_data)
-                            if _stream_error is not None:
-                                raise _stream_error
-                            choices = chunk_data.get("choices", [])
-                            if choices:
-                                delta = choices[0].get("delta", {})
-                                _fr = choices[0].get("finish_reason")
-                                if _fr:
-                                    _metadata_finish_reason = _fr
-
-                                reasoning = delta.get("reasoning_content", "")
-                                if reasoning:
-                                    if _final_reasoning_started_at is None:
-                                        _final_reasoning_started_at = time.monotonic()
-                                    reasoning_text += reasoning
-                                    if not in_thinking:
-                                        if reasoning_provenance is not None and not cumulative:
-                                            reasoning_provenance["wrapped"] = (
-                                                reasoning_provenance.get("wrapped", 0) + 1
-                                            )
-                                            _prov_entry = {"len": 0}
-                                            reasoning_provenance.setdefault("wraps", []).append(
-                                                _prov_entry
-                                            )
-                                        cumulative += "<think>"
-                                        in_thinking = True
-                                    cumulative += reasoning
-                                    if _prov_entry is not None:
-                                        _prov_entry["len"] += len(reasoning)
-                                    yield {"type": "content", "text": cumulative}
-
-                                token = delta.get("content", "")
-                                if token:
+                            if not line:
+                                continue
+                            if line == "data: [DONE]":
+                                if in_thinking:
                                     if (
                                         _final_reasoning_started_at is not None
                                         and not _final_reasoning_summary_emitted
                                     ):
                                         _final_reasoning_summary_emitted = True
                                         yield _reasoning_summary_event(_final_reasoning_started_at)
-                                    has_content_tokens = True
-                                    if in_thinking:
+                                    if has_content_tokens:
                                         cumulative += "</think>"
-                                        in_thinking = False
                                         _prov_entry = None
-                                    cumulative += token
-                                    cleaned = (
-                                        _final_answer_stripper.strip(cumulative)
-                                        if auto_heal_tool_calls
-                                        else cumulative
-                                    )
-                                    # Emit only when cleaned text grows (monotonic).
-                                    if len(cleaned) > len(_last_emitted):
-                                        _last_emitted = cleaned
-                                        yield {"type": "content", "text": cleaned}
-                        except json.JSONDecodeError:
-                            logger.debug(f"Skipping malformed SSE line: {line[:100]}")
-                    if _stream_done:
-                        break  # exit outer for
-                _meta = _build_metadata_event(
-                    _metadata_usage, _metadata_timings, _metadata_finish_reason
-                )
-                if _meta is not None:
-                    yield _meta
+                                        yield {
+                                            "type": "content",
+                                            "text": _strip_tool_markup(cumulative, final = True),
+                                        }
+                                    else:
+                                        cumulative = _finalize_reasoning_only_cumulative(
+                                            cumulative,
+                                            reasoning_text,
+                                            _metadata_finish_reason,
+                                            promote_reasoning_only,
+                                        )
+                                        _prov_entry = None
+                                        yield {"type": "content", "text": cumulative}
+                                _stream_done = True
+                                break  # exit inner while
+                            if not line.startswith("data: "):
+                                continue
 
-        except _LlamaStreamCancelled:
-            return
-        except httpx.ConnectError:
-            raise RuntimeError("Lost connection to llama-server")
-        except Exception as e:
-            if cancel_event is not None and cancel_event.is_set():
+                            try:
+                                chunk_data = json.loads(line[6:])
+
+                                _report_live_llama_timings(perf_callback, chunk_data)
+                                # Capture server timings/usage from final chunks.
+                                _chunk_timings = chunk_data.get("timings")
+                                if _chunk_timings:
+                                    _metadata_timings = _chunk_timings
+                                _chunk_usage = chunk_data.get("usage")
+                                if _chunk_usage:
+                                    _metadata_usage = _chunk_usage
+                                # See the note on the first stream loop.
+                                _stream_error = stream_error_from_chunk(chunk_data)
+                                if _stream_error is not None:
+                                    raise _stream_error
+                                choices = chunk_data.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    _fr = choices[0].get("finish_reason")
+                                    if _fr:
+                                        _metadata_finish_reason = _fr
+
+                                    reasoning = delta.get("reasoning_content", "")
+                                    if reasoning:
+                                        if _final_reasoning_started_at is None:
+                                            _final_reasoning_started_at = time.monotonic()
+                                        reasoning_text += reasoning
+                                        if not in_thinking:
+                                            if reasoning_provenance is not None and not cumulative:
+                                                reasoning_provenance["wrapped"] = (
+                                                    reasoning_provenance.get("wrapped", 0) + 1
+                                                )
+                                                _prov_entry = {"len": 0}
+                                                reasoning_provenance.setdefault("wraps", []).append(
+                                                    _prov_entry
+                                                )
+                                            cumulative += "<think>"
+                                            in_thinking = True
+                                        cumulative += reasoning
+                                        if _prov_entry is not None:
+                                            _prov_entry["len"] += len(reasoning)
+                                        yield {"type": "content", "text": cumulative}
+
+                                    token = delta.get("content", "")
+                                    if token:
+                                        if (
+                                            _final_reasoning_started_at is not None
+                                            and not _final_reasoning_summary_emitted
+                                        ):
+                                            _final_reasoning_summary_emitted = True
+                                            yield _reasoning_summary_event(_final_reasoning_started_at)
+                                        has_content_tokens = True
+                                        if in_thinking:
+                                            cumulative += "</think>"
+                                            in_thinking = False
+                                            _prov_entry = None
+                                        cumulative += token
+                                        cleaned = (
+                                            _final_answer_stripper.strip(cumulative)
+                                            if auto_heal_tool_calls
+                                            else cumulative
+                                        )
+                                        # Emit only when cleaned text grows (monotonic).
+                                        if len(cleaned) > len(_last_emitted):
+                                            _last_emitted = cleaned
+                                            yield {"type": "content", "text": cleaned}
+                            except json.JSONDecodeError:
+                                logger.debug(f"Skipping malformed SSE line: {line[:100]}")
+                        if _stream_done:
+                            break  # exit outer for
+                    # Cut off mid-answer with real text on screen: resume it rather than
+                    # stop here. Same rule as the in-loop path -- the partial goes back to
+                    # be EXTENDED, thinking is left alone because it was not the problem,
+                    # and an answer that is mostly an echo of itself is left as it is.
+                    if (
+                        _metadata_finish_reason == "length"
+                        and has_content_tokens
+                        and _last_emitted.strip()
+                        and _final_length_continuations < _MAX_LENGTH_CONTINUATIONS
+                        and not is_repetition_dominated(_last_emitted)
+                    ):
+                        from core.inference.chat_template_helpers import (  # noqa: PLC0415
+                            append_assistant_turn as _append_assistant_turn,
+                        )
+
+                        _final_length_continuations += 1
+                        logger.info(
+                            "Final answer cut off at %d chars; continuing %d/%d",
+                            len(_last_emitted),
+                            _final_length_continuations,
+                            _MAX_LENGTH_CONTINUATIONS,
+                        )
+                        _append_assistant_turn(
+                            stream_payload["messages"],
+                            {"role": "assistant", "content": _last_emitted},
+                            continue_final_message = True,
+                        )
+                        stream_payload["continue_final_message"] = True
+                        _stream_done = False
+                        _metadata_finish_reason = None
+                        _continue_final = True
+                        yield {"type": "status", "text": ""}
+                        yield {"type": "status", "text": _CONTINUE_TRUNCATED_ANSWER_STATUS}
+                    else:
+                        _meta = _build_metadata_event(
+                            _metadata_usage, _metadata_timings, _metadata_finish_reason
+                        )
+                        if _meta is not None:
+                            yield _meta
+
+                if _continue_final:
+                    _continue_final = False
+                    continue
+                break
+
+            except _LlamaStreamCancelled:
                 return
-            raise
+            except httpx.ConnectError:
+                raise RuntimeError("Lost connection to llama-server")
+            except Exception as e:
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                raise
 
     # ── Prompt token counting ──────────────────────────────────
 

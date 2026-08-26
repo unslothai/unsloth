@@ -248,3 +248,80 @@ def test_the_partial_is_kept_when_it_never_converges(monkeypatch):
     content = "".join(_texts(_run(backend), "content"))
 
     assert "<!DOCTYPE html>" in content
+
+
+def _run_no_tools(backend, **kwargs):
+    """Drives the FINAL generation, the path taken once the tool loop is done."""
+    return list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Show me the HTML inline"}],
+            tools = [],
+            max_tool_iterations = 0,
+            **kwargs,
+        )
+    )
+
+
+def test_the_final_answer_is_continued_too(monkeypatch):
+    """The in-loop continuation never reaches this path, which runs after the loop breaks.
+
+    Observed live: 25 tool calls, 22387 tokens, `incomplete: length`, stopped inside
+    drawBird() with the game half-written and nothing to recover it. A turn that spends
+    its whole tool budget produces its answer here, not in the loop.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
+        payloads,
+    )
+
+    events = _run_no_tools(backend)
+
+    assert len(payloads) == 2, "the final answer was left mid-sentence"
+    assert payloads[1].get("continue_final_message") is True
+    assert "</html>" in "".join(_texts(events, "content"))
+
+
+def test_the_final_continuation_is_capped(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()]
+            for _ in range(_MAX_LENGTH_CONTINUATIONS + 3)
+        ],
+        payloads,
+    )
+
+    _run_no_tools(backend)
+
+    assert len(payloads) == _MAX_LENGTH_CONTINUATIONS + 1
+
+
+def test_a_final_echo_is_not_continued(monkeypatch):
+    echo = "I will show the file now, here it is in full for you to read.\n" * 40
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": echo}), _finish("length"), _done()]],
+        payloads,
+    )
+
+    _run_no_tools(backend)
+
+    assert len(payloads) == 1
+
+
+def test_a_clean_final_stop_is_never_continued(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": _HALF_AN_ANSWER}), _finish("stop"), _done()]],
+        payloads,
+    )
+
+    _run_no_tools(backend)
+
+    assert len(payloads) == 1
