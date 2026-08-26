@@ -44,8 +44,14 @@ def settings_store(monkeypatch):
         return True
 
     monkeypatch.setattr(studio_db, "compare_and_set_app_setting", _cas)
+    # The memo is process-wide and outlives the patched store, so a resolution
+    # recorded here would otherwise answer for the same model in every later test
+    # file: a default saved pending in this one made the llama loader refuse to
+    # fetch anything for the rest of the session.
+    ems._resolved_gguf_memo.clear()
     ems._invalidate_cache()
     yield store
+    ems._resolved_gguf_memo.clear()
     ems._invalidate_cache()
 
 
@@ -353,3 +359,22 @@ def test_a_record_written_before_the_family_existed_still_clears(settings_store)
     assert ems.get_stored_gguf_files("org/legacy") is None
     assert ems.clear_stored_download_pending("org/legacy") is True
     assert ems.get_stored_download_pending("org/legacy") is False
+
+
+def test_a_reset_keeps_a_pending_only_resolution_for_the_default(settings_store):
+    """A default saved over a failed resolution remembers no repo and no backend,
+    only the pending flag, and that flag is the one thing keeping the first index
+    from starting the implicit download this picker replaces."""
+    ems._resolved_gguf_memo.clear()
+    default = ems.default_embedding_model()
+    ems.set_rag_embedding_model(default, download_pending = True)
+    assert ems.get_stored_download_pending(default) is True
+
+    ems.set_rag_embedding_model("org/other", gguf_repo = "org/other-GGUF", backend = "llama-server")
+    assert ems.reset_rag_embedding_model() == default
+
+    # Read the store, not the memo: the memo answers for this process either way,
+    # and what the reset has to preserve is the record a restart will find.
+    ems._resolved_gguf_memo.clear()
+    ems._invalidate_cache()
+    assert ems.get_stored_download_pending(default) is True

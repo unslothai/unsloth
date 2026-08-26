@@ -1650,3 +1650,50 @@ def test_warming_one_model_cannot_respawn_under_another_models_request(monkeypat
     b.warm(model_name = "org/model-b")
 
     assert unlocked == [], "a respawn during warm-up could land outside the serving lock"
+
+
+def test_the_planned_family_outranks_a_variant_that_arrives_later(monkeypatch, tmp_path):
+    """The record names the artifact this model's vectors were produced with, and
+    the stored identity carries the model and the repo but not the file. Once the
+    marker retired, a preferred variant arriving later (a full-repo download, a
+    republished revision) silently changed the weights under an existing index
+    without changing its tag."""
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    # The transfer completed, so nothing is pending any more.
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: False)
+    monkeypatch.setattr(ems, "get_stored_gguf_files", lambda model: ["pending-Q8_0.gguf"])
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda model: False)
+    # And the configured variant has since landed in the same repo.
+    _seed_cache(tmp_path / "hub", repo, ["pending-Q8_0.gguf", "pending-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+
+    assert backend._resolve_model_path().endswith("pending-Q8_0.gguf")
+
+
+def test_a_partly_present_planned_family_is_not_served(monkeypatch, tmp_path):
+    """Whole family or nothing: entering a torn one at shard 1 gives llama-server a
+    model it cannot finish opening."""
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: False)
+    monkeypatch.setattr(
+        ems,
+        "get_stored_gguf_files",
+        lambda model: ["p-00001-of-00002.gguf", "p-00002-of-00002.gguf"],
+    )
+    _seed_cache(tmp_path / "hub", repo, ["p-00001-of-00002.gguf", "pending-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+
+    assert backend._planned_family_path("org/pending", repo) is None
+    assert backend._resolve_model_path().endswith("pending-F16.gguf")

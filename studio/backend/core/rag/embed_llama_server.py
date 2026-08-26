@@ -440,6 +440,22 @@ class LlamaServerBackend:
         local = self._resolve_local_gguf(model)
         if local is not None:
             return self._adopt_model_path(local, desired)
+        # The exact family the picker planned, whenever it is on disk, and ahead of
+        # the configured-variant lookup. The record names the artifact this model's
+        # vectors were produced with, and the stored identity carries the model and
+        # the repo but not the file, so a preferred variant arriving later (a
+        # full-repo download, a republished revision) would otherwise change the
+        # weights under an existing index without changing its tag. Consulted after
+        # completion as well as during it, which is what makes the record an
+        # identity rather than a transfer receipt.
+        planned = self._planned_family_path(model, desired)
+        if planned is not None:
+            try:
+                from utils.embedding_model_settings import clear_stored_download_pending
+                clear_stored_download_pending(model)
+            except Exception:  # noqa: BLE001 - a settings write must not fail a load
+                pass
+            return self._adopt_model_path(planned, desired)
         # Companion repo, then the naming variants, then the model repo itself.
         repo = desired
         candidates = list(dict.fromkeys([repo, *config.gguf_repo_candidates(model)]))
@@ -495,6 +511,39 @@ class LlamaServerBackend:
                 "Finish its Settings download before indexing documents."
             )
         return self._resolve_uncached_model_path(desired, candidates)
+
+    @staticmethod
+    def _planned_family_path(model: str, repo_id: str) -> str | None:
+        """The entry file of ``model``'s planned family, when all of it is cached.
+
+        Whole family or nothing: a partially present one is a torn transfer, and
+        answering with its first shard would serve llama-server a model it cannot
+        finish opening. None when no family was recorded, which is every
+        resolution written before it was stored."""
+        try:
+            from pathlib import PurePosixPath
+            from utils.embedding_model_settings import get_stored_gguf_files
+
+            planned = get_stored_gguf_files(model)
+            if not planned:
+                return None
+            snapshot = LlamaServerBackend._cached_snapshot_dir(repo_id)
+            if snapshot is None:
+                return None
+            paths = []
+            for name in planned:
+                relative = PurePosixPath(name)
+                if relative.is_absolute() or ".." in relative.parts:
+                    return None
+                path = snapshot.joinpath(*relative.parts)
+                if not path.is_file():
+                    return None
+                paths.append(path)
+            # Ordered shard 1..N by the planner, so the first is where llama-server
+            # enters the family.
+            return str(paths[0]) if paths else None
+        except Exception:  # noqa: BLE001 - an unreadable record answers nothing
+            return None
 
     @staticmethod
     def _is_planned_family(model: str, repo_id: str, path: str) -> bool:

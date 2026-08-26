@@ -731,8 +731,12 @@ def _model_names_gguf_repo(model: str | None) -> bool:
             return False
     except Exception:  # noqa: BLE001 - unparseable path is not a repo id either
         return False
-    name = model.strip().rstrip("/").rsplit("/", 1)[-1].lower()
-    return name.endswith("-gguf") or name.endswith(".gguf")
+    # config's own predicate, not a suffix test: gguf_repo_candidates already
+    # treats "gguf" as a whole name segment, so owner/GGUF-model and
+    # owner/model-GGUF-Q8 are direct GGUF repos there. Deciding it differently
+    # here routed those to sentence-transformers, which has nothing to open, and
+    # the rejection stuck even under a forced selection.
+    return config._names_gguf(model.strip().rstrip("/").rsplit("/", 1)[-1])
 
 
 def _resolve_auto_for_model(model_name: str | None = None) -> str:

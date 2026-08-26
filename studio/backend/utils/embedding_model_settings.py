@@ -347,7 +347,12 @@ def reset_rag_embedding_model() -> str:
     # of dropping it into memory-only state.
     remembered = _remembered(restored)
     resolution = None
-    if remembered and (remembered[0] or remembered[1]):
+    # The pending flag counts as much as a repo or a backend: a default saved over
+    # a failed resolution legitimately remembers (None, None, True), and that flag
+    # is the only thing keeping the first index from starting the implicit
+    # download this picker exists to replace. Dropping it here restored the model
+    # without its cache-only marker.
+    if remembered and (remembered[0] or remembered[1] or remembered[2]):
         resolution = {
             "model": restored,
             "gguf_repo": remembered[0],

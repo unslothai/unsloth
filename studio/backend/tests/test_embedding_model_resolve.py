@@ -1090,3 +1090,22 @@ def test_an_explicit_llama_policy_refuses_any_model_without_the_binary(client, m
     body = _resolve(client, "org/embedder").json()
     assert body["download_repo"] is None
     assert "no llama-server binary was found" in body["error"]
+
+
+def test_a_whole_segment_gguf_name_routes_to_llama_server(monkeypatch):
+    """config.gguf_repo_candidates treats "gguf" as a whole name segment, so
+    owner/GGUF-model is a direct GGUF repo there. Deciding it by suffix here sent
+    those to sentence-transformers, which has nothing to open, and the rejection
+    stuck even under a forced selection."""
+    from core.rag import embeddings as rag_embeddings
+    import utils.embedding_model_settings as ems
+
+    ems._resolved_gguf_memo.clear()
+    ems._invalidate_cache()
+    monkeypatch.setattr(rag_embeddings, "_resolve_auto", lambda: "sentence-transformers")
+    monkeypatch.setattr(ems, "get_stored_backend", lambda model: None)
+
+    for model in ("owner/GGUF-model", "owner/model-GGUF-Q8", "owner/model-GGUF"):
+        assert rag_embeddings._resolve_auto_for_model(model) == "llama-server", model
+    # A plain substring is still not a GGUF repo, as config's predicate says.
+    assert rag_embeddings._resolve_auto_for_model("owner/bigguf") == "sentence-transformers"

@@ -577,7 +577,11 @@ def cached_st_source(model_name: str) -> Optional[tuple]:
                 continue
         except OSError:
             continue
-        if hf_cache_snapshot_is_loadable(candidate):
+        # This snapshot, not whatever the alias-expanding lookup would find for
+        # the same id: with several cache roots configured those differ, and a
+        # complete namespaced copy in one root would then vouch for a partial
+        # literal one in another that is what actually gets loaded.
+        if snapshot_is_loadable(snapshot, candidate):
             return (candidate, snapshot)
     return None
 
@@ -717,6 +721,18 @@ def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
     snapshot = hf_cache_snapshot_dir(model_name)
     if snapshot is None:
         return False
+    return snapshot_is_loadable(snapshot, model_name)
+
+
+def snapshot_is_loadable(snapshot, model_name: str) -> bool:
+    """``hf_cache_snapshot_is_loadable`` for a snapshot the caller already has.
+
+    A caller that picked a specific directory has to have THAT one judged: the
+    lookup above expands the ST alias within each cache root while an exact
+    per-repo lookup walks the roots for one id, so with several roots configured
+    the two can land on different snapshots, and the verdict would then belong to
+    a directory nobody is going to load.
+    """
     try:
         has_config = (snapshot / "config.json").is_file() or (snapshot / "modules.json").is_file()
         if not has_config:
