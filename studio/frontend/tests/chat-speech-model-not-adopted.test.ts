@@ -110,6 +110,37 @@ test("a TTS load announces its own runtime so chat re-reads the slot", () => {
   assert.doesNotMatch(hook, /runtime === "tts"\) return;/);
 });
 
+// tryAdoptServerActiveModel is not the only door into params.checkpoint. These two
+// call sites resolve a resident model into the chat store on their own, so a guard
+// that lived only in the adopt helper still let a speech model become the chat pick.
+
+test("the Hub does not pin a speech model as the chat checkpoint", () => {
+  const hub = readSource("../src/features/hub/hub-page.tsx");
+  const adopt = hub.slice(
+    hub.indexOf("adoptResidentModelStatus("),
+    hub.indexOf("registerRefresh(", hub.indexOf("adoptResidentModelStatus(")),
+  );
+  assert.match(
+    adopt,
+    /checkpointId: isSpeechOnlyStatus\(status\)\s*\n?\s*\? null\s*\n?\s*: resolveInferenceCheckpointId\(status\),/,
+  );
+  // null, not an early return: the empty-slot branch is what clears the pick the
+  // Audio load evicted, and skipping the call would leave it pointing at a 400.
+  assert.doesNotMatch(adopt, /if \(isSpeechOnlyStatus\(status\)\) return/);
+});
+
+test("a queued local thread does not adopt a speech model either", () => {
+  const adapter = readSource("../src/features/chat/api/chat-adapter.ts");
+  const queued = adapter.slice(
+    adapter.indexOf("async function resolveQueuedEmptyLocalModel"),
+    adapter.indexOf("export function createOpenAIStreamAdapter"),
+  );
+  assert.match(
+    queued,
+    /const checkpoint = isSpeechOnlyStatus\(status\)\s*\n?\s*\? null\s*\n?\s*: resolveInferenceCheckpointId\(status\);/,
+  );
+});
+
 test("the auto-load sweep skips every task chat cannot answer", () => {
   const adapter = readSource("../src/features/chat/api/chat-adapter.ts");
   const set = adapter.slice(

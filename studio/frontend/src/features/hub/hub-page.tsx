@@ -6,6 +6,7 @@ import {
   applyActiveModelStatusToStore,
   getInferenceStatus,
   isExternalModelId,
+  isSpeechOnlyStatus,
   listGgufVariants,
   resolveInferenceCheckpointId,
   useChatModelRuntime,
@@ -443,7 +444,12 @@ export function ModelsPage() {
         adoptResidentModelStatus(
           {
             // The loadable identifier: a GGUF off disk loads by path, and two files sharing a stem collapse.
-            checkpointId: resolveInferenceCheckpointId(status),
+            // Null for a speech model: this page is the other writer of params.checkpoint,
+            // so adopting one here made it the chat model just as the mount-time sync did.
+            // The empty-slot path below then clears the pick the Audio load evicted.
+            checkpointId: isSpeechOnlyStatus(status)
+              ? null
+              : resolveInferenceCheckpointId(status),
             ggufVariant: status.gguf_variant ?? null,
           },
           {

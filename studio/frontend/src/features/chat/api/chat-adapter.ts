@@ -118,6 +118,7 @@ import {
   resolveInferenceCheckpointId,
   tryAdoptServerActiveModel,
 } from "../lib/apply-inference-status-to-store";
+import { isSpeechOnlyStatus } from "../lib/speech-only-status";
 import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
@@ -3804,7 +3805,12 @@ async function resolveQueuedEmptyLocalModel(
       // model with the recorded/default auto-load candidate.
       const status = await getInferenceStatus();
       abortSignal.throwIfAborted();
-      const checkpoint = resolveInferenceCheckpointId(status);
+      // The other door into adoption, and it bypasses tryAdoptServerActiveModel:
+      // a speech model in the slot is not one chat can queue against, so read it
+      // as an empty local server and let the sweep below load a real chat model.
+      const checkpoint = isSpeechOnlyStatus(status)
+        ? null
+        : resolveInferenceCheckpointId(status);
       if (checkpoint) {
         return {
           loaded: true,

@@ -96,7 +96,6 @@ def test_a_speech_model_is_not_chattable_despite_a_causal_lm_head(tmp_path):
 
 def test_an_ordinary_chat_model_stays_chattable(tmp_path):
     from hub.services.models.common import _local_transformers_can_chat
-
     path = _model_dir(tmp_path, "llama", ["LlamaForCausalLM"], ["<bos>", "<eos>"])
     assert _local_transformers_can_chat(path) is True
 
@@ -118,7 +117,9 @@ def test_an_audio_input_chat_model_stays_chattable(tmp_path):
 
 def test_whisper_is_not_claimed_by_the_tts_probe(tmp_path):
     """STT has its own path (stt_only / is_curated_stt_repo_id); the two must not overlap."""
-    path = _model_dir(tmp_path, "whisper", ["WhisperForConditionalGeneration"], ["<|startoftranscript|>"])
+    path = _model_dir(
+        tmp_path, "whisper", ["WhisperForConditionalGeneration"], ["<|startoftranscript|>"]
+    )
     assert detect_local_tts_audio_type(path) is None
 
 
@@ -177,7 +178,6 @@ def test_a_curated_tts_repo_row_is_not_chat_loadable(tmp_path):
 
 def test_an_ordinary_gguf_repo_row_still_chats(tmp_path):
     from hub.services.models.cache_inventory import _cache_inventory_fields
-
     fields = _cache_inventory_fields(
         "unsloth/gemma-4-E2B-it-GGUF",
         "gguf",
