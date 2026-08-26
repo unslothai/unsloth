@@ -48,11 +48,10 @@ version = {attr = "unsloth._version.__version__"}
 [tool.setuptools]
 include-package-data = true
 
-# The launcher refresh re-runs install.sh / install.ps1 with --shortcuts-only. They sit at
-# the repo root, outside every package, so packages.find and package-data cannot reach
-# them; data-files can, and pip and uv both place it at <venv>/share/unsloth. That gives a
-# wheel install a release-matched installer on disk to fall back to when the fetch of main
-# does not land, instead of skipping the refresh.
+# The launcher refresh re-runs install.sh / install.ps1 with --shortcuts-only. They live at
+# the repo root, outside every package, so packages.find and package-data cannot reach them.
+# data-files can, and pip and uv both place it at <venv>/share/unsloth, which gives a wheel
+# install something to fall back to when the fetch of main does not land.
 [tool.setuptools.data-files]
 "share/unsloth" = ["install.sh", "install.ps1"]
 

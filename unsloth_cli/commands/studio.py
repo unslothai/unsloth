@@ -3608,27 +3608,21 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(returncode)
 
 
-# The refresh re-runs the installer with --shortcuts-only. It fetches main in preference to
-# the copy shipped alongside the wheel so a launcher fix reaches users without waiting for a
-# release; the shipped copy is the fallback for when this does not land.
+# The refresh prefers main over the copy shipped with the wheel, so a launcher fix reaches
+# users without waiting for a release.
 #
-# Straight to the origin, not through https://unsloth.ai/install.sh. That URL was only ever
-# a Cloudflare 301 to this exact path, so the bytes always came from the repo, but the hop
-# put the unsloth.ai DNS and CDN control plane in the path of code execution on every
-# updating machine. Going to the origin removes a whole trust anchor without changing what
-# runs.
+# Straight to the origin, not through https://unsloth.ai/install.sh, which was only ever a
+# Cloudflare 301 here. Same bytes, one less DNS and CDN control plane able to execute code on
+# an updating machine.
 #
-# The hop was worth something, though, and it was reachability. raw.githubusercontent.com is
-# a materially worse-reachable host than a Cloudflare-fronted domain: it is absent from the
-# domain list GitHub documents for self-hosted runners and from the corporate-proxy
-# restriction list (which excludes *.githubusercontent.com outright), and it is a long
-# standing GFW target. That is what the bundled copy below is for. A network that cannot
-# reach the origin now falls back to a release-matched installer on disk instead of skipping
-# the refresh, which is what it used to do.
+# What the hop was worth was reachability: raw.githubusercontent.com is absent from the
+# domains GitHub documents for self-hosted runners and from the corporate-proxy restriction
+# list, and is a long standing GFW target. Hence the bundled copy below, which turns "cannot
+# reach the origin" from a skipped refresh into a release-matched one.
 _INSTALLER_URL_BASH = "https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh"
 _INSTALLER_URL_PWSH = "https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1"
-# The only host the fetch will talk to. Anywhere else, including unsloth.ai, and plain
-# http, is refused rather than followed.
+# The only host the fetch will talk to. Anywhere else, unsloth.ai included, and plain http,
+# is refused rather than followed.
 _INSTALLER_FETCH_HOSTS = frozenset({"raw.githubusercontent.com"})
 _INSTALLER_FETCH_TIMEOUT = 30
 # install.sh is ~250KB; the cap just stops an unbounded body from being buffered.
@@ -3749,27 +3743,24 @@ def _installer_script_candidates(installer_name: str) -> List[Path]:
 def _bundled_installer_roots() -> List[Path]:
     """`<data>/share/unsloth` dirs holding the installer that shipped with the wheel.
 
-    pyproject data-files put install.sh / install.ps1 there, and pip and uv both resolve
-    <data> to the venv root. This is the release-matched copy: it is used when the fetch of
-    main does not land, and it is what UNSLOTH_NO_REMOTE_INSTALLER=1 pins to.
+    pyproject data-files put them there, and pip and uv both resolve <data> to the venv root.
+    This is the release-matched copy: used when the fetch of main does not land, and what
+    UNSLOTH_NO_REMOTE_INSTALLER=1 pins to.
 
-    The managed venv leads deliberately. A pip-installed CLI can drive an update into
-    STUDIO_HOME/unsloth_studio (_studio_deps.running_outside_managed_venv), where setup has
-    just written the new data files; searching the running interpreter's own prefixes first
-    would run that foreign CLI's older bundled installer instead. Running inside the managed
-    venv it is sys.prefix again and the dedup below drops the repeat, so this only reorders
-    the case it is for.
+    Order, most release-matched first, because every root can hold a different vintage:
 
-    _PACKAGE_ROOT comes next because it is where the running code itself was installed, so
-    it is the most release-matched of the rest. For an ordinary venv it is site-packages and
-    holds nothing, but `pip install --target DIR` collapses purelib and data onto DIR, which
-    makes it DIR and the only root that finds that layout.
-
-    Then the interpreter's prefixes. Both sys.prefix and the sysconfig data path are listed
-    because they are not always the same: Debian and Ubuntu patch the default scheme to
-    posix_local, so a system-python install lands under /usr/local while sys.prefix is /usr.
-    site.USER_BASE last covers `pip install --user`, which is ~/.local on Linux but
-    ~/Library/Python/X.Y on macOS, so it is read from site rather than assumed.
+    - the managed venv, where a pip-installed CLI driving an update into
+      STUDIO_HOME/unsloth_studio has just written the new data files. Its own prefixes would
+      otherwise win and run an older copy. Inside the managed venv this is sys.prefix and the
+      dedup drops the repeat, so it only reorders the case it is for.
+    - _PACKAGE_ROOT, where the running code itself was installed. Site-packages for an
+      ordinary venv, holding nothing, but `pip install --target DIR` collapses purelib and
+      data onto DIR, and then this is the only root that finds it.
+    - the interpreter's prefixes. Both, because they diverge: Debian and Ubuntu patch the
+      default scheme to posix_local, so a system-python install lands under /usr/local while
+      sys.prefix stays /usr.
+    - site.USER_BASE, for `pip install --user`. Read from site, not assumed to be ~/.local,
+      because macOS puts it under ~/Library/Python/X.Y.
     """
     roots: List[Path] = [STUDIO_HOME / "unsloth_studio", _PACKAGE_ROOT, Path(sys.prefix)]
     for path in (sysconfig.get_path("data"), getattr(site, "USER_BASE", None)):
@@ -3803,16 +3794,14 @@ def _installers_on_disk(candidates: Sequence[Path]) -> List[Path]:
 def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
     """Re-run installer with --shortcuts-only to refresh launchers post-update.
 
-    Source order: a source checkout, so `update --local` tests its own installer rather
-    than main's; then main, so a launcher fix reaches users without waiting for a release;
-    then the copy that shipped with this release under <data>/share/unsloth, so an offline
-    machine, an unreachable origin, or a main that exits non-zero still gets a refresh
-    instead of silently skipping one. UNSLOTH_NO_REMOTE_INSTALLER=1 drops the middle step.
+    Source order: a checkout, so `update --local` tests its own installer rather than main's;
+    then main, for a launcher fix without a release; then the copy that shipped with this
+    release, so an offline machine, an unreachable origin, or a main that exits non-zero gets
+    a refresh instead of a skip. UNSLOTH_NO_REMOTE_INSTALLER=1 drops the middle step.
 
-    Whatever runs, runs the same --shortcuts-only branch, which regenerates the same
-    launcher at the same destination every time. The refresh is best-effort by design: it
-    happens after the package update has already succeeded, so every failure here is
-    reported and skipped rather than allowed to abort the command.
+    All three run the same --shortcuts-only branch, which rewrites the same launcher at the
+    same destination every time. Best-effort by design: this runs after the package update
+    already succeeded, so failures are reported and skipped, never allowed to abort.
     """
     env = {**os.environ}
     if verbose:
@@ -3826,8 +3815,8 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         args.append("--verbose")
 
     checkouts = _installers_on_disk(_installer_script_candidates(installer_name))
-    # Pins the refresh to the copy that shipped with the release, for air-gapped machines
-    # and for anyone who would rather their update never ran a freshly fetched script.
+    # Pins to the shipped copy: air-gapped machines, and anyone who would rather an update
+    # never ran a freshly fetched script.
     no_remote = os.environ.get("UNSLOTH_NO_REMOTE_INSTALLER") == "1"
 
     if is_windows:
@@ -3866,7 +3855,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
 
 
 def _skip_launcher_refresh(installer_name: str) -> None:
-    """Nothing usable to run. The update itself already succeeded, so say so and move on."""
+    """Nothing usable to run. The update already succeeded, so say so and move on."""
     typer.echo(f"  refresh-launcher  skipped: no usable {installer_name}")
 
 
@@ -3888,9 +3877,9 @@ def _run_installer_bash(script: Path, args: Sequence[str], env: dict) -> bool:
 
 
 def _run_fetched_installer_bash(installer: bytes, args: Sequence[str], env: dict) -> bool:
-    """False when the fetched installer did not refresh the launcher, so the caller can fall
-    back to the copy that shipped with the release. A main that is temporarily broken, or
-    incompatible with the installed version, must not consume that fallback.
+    """False when the fetched installer did not refresh the launcher, so the shipped copy
+    still gets its turn. A main that is broken, or incompatible with the installed version,
+    must not consume that fallback.
     """
     try:
         result = subprocess.run(["bash", "-s", "--", *args], input = installer, env = env, check = False)
