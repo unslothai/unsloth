@@ -1119,3 +1119,29 @@ def test_an_uncached_model_online_still_loads_by_repo_id(monkeypatch):
     embeddings._get("org/never-fetched-xyz")
 
     assert captured["name"] == "org/never-fetched-xyz"
+
+
+def test_a_module_declared_but_absent_makes_the_snapshot_incomplete(monkeypatch, tmp_path):
+    """Only module roots already carrying weights were validated, so a snapshot
+    missing 0_Transformer entirely still passed on a complete 2_Dense, and the
+    loader was then pinned to a local snapshot it cannot load."""
+    from utils import utils
+
+    snapshot = tmp_path / "snap"
+    dense = snapshot / "2_Dense"
+    dense.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "modules.json").write_text(
+        '[{"path": "0_Transformer"}, {"path": "1_Pooling"}, {"path": "2_Dense"}]'
+    )
+    (dense / "model.safetensors").write_bytes(b"ST")
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+
+    assert utils.hf_cache_snapshot_is_loadable("org/torn") is False
+
+    # A config-only module needs no weights of its own, so its bare presence is
+    # enough; what was missing before is the directory, not the checkpoint.
+    (snapshot / "1_Pooling").mkdir()
+    (snapshot / "0_Transformer").mkdir()
+    (snapshot / "0_Transformer" / "model.safetensors").write_bytes(b"ST")
+    assert utils.hf_cache_snapshot_is_loadable("org/torn") is True

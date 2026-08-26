@@ -41,6 +41,10 @@ const EMBEDDING_DOWNLOAD_SCOPE = "rag-embedding";
  * is marked pending by the server and offered as a download. Its loader remains
  * cache-only, so closing or cancelling cannot turn into a first-index transfer.
  */
+// Whether an embedder is resident is not a function of anything this component
+// does, so it is re-read on a timer rather than only on a settings mutation.
+const RESIDENCY_POLL_MS = 5000;
+
 export function DocumentsRagSection(): ReactElement {
   const t = useT();
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
@@ -74,6 +78,25 @@ export function DocumentsRagSection(): ReactElement {
 
   useEffect(() => {
     void useEmbeddingModelStore.getState().load();
+  }, []);
+
+  // Residency changes without a settings mutation: an already-running document
+  // job reaching its first encode makes a backend resident, and the store loads
+  // only on mount, so Unload stayed hidden and the status stayed "On device" for
+  // as long as the tab was open. There is no lifecycle event to subscribe to
+  // here, so re-read while this control is visible. Skipped on a hidden tab, and
+  // refreshed the moment it comes back, so a background tab costs nothing.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.hidden) return;
+      void useEmbeddingModelStore.getState().load();
+    };
+    const timer = window.setInterval(refresh, RESIDENCY_POLL_MS);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
   }, []);
 
   const refreshCachedRepos = useCallback(async () => {

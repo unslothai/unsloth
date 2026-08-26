@@ -331,3 +331,17 @@ test("the configured default stays reachable when the listing drops it", () => {
   // And the section still hands the default down for it to be found.
   assert.match(SECTION, /defaultModel=\{embeddingModel\?\.defaultEmbeddingModel\}/);
 });
+
+test("backend residency is re-read, not just loaded once on mount", () => {
+  // An already-running document job reaching its first encode makes a backend
+  // resident with no settings mutation, and the store loads only on mount, so
+  // Unload stayed hidden and the status stayed "On device" for as long as the tab
+  // was open. There is no lifecycle event to subscribe to, so this re-reads.
+  assert.match(SECTION, /const RESIDENCY_POLL_MS = \d+;/);
+  assert.match(SECTION, /window\.setInterval\(refresh, RESIDENCY_POLL_MS\)/);
+  // A hidden tab must not poll, and must catch up the moment it is shown.
+  assert.match(SECTION, /if \(document\.hidden\) return;/);
+  assert.match(SECTION, /addEventListener\("visibilitychange", refresh\)/);
+  assert.match(SECTION, /removeEventListener\("visibilitychange", refresh\)/);
+  assert.match(SECTION, /window\.clearInterval\(timer\)/);
+});

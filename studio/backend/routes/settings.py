@@ -2188,6 +2188,24 @@ def _st_backend_available() -> bool:
         return False
 
 
+def _st_weight_source(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
+    """``(repo, weight files)`` for the repo an ST load of ``model`` would open.
+
+    A slashless name such as ``all-MiniLM-L6-v2`` resolves under the
+    ``sentence-transformers/`` namespace, which is what the loader's own
+    ``st_repo_id_candidates`` encodes. Probing only the literal id meant the alias
+    reported no weights, the resolve refused it, and a forced save pinned it
+    cache-only: a download that worked before this picker existed.
+    """
+    from utils.utils import st_repo_id_candidates
+
+    for candidate in st_repo_id_candidates(model) or [model]:
+        files = _st_weight_files(candidate, hf_token)
+        if files:
+            return (candidate, files)
+    return None
+
+
 def _st_weight_files(model: str, hf_token: Optional[str]) -> Optional[list[str]]:
     """The repo's own weight files, or None when it publishes none we can load."""
     try:
@@ -2262,8 +2280,7 @@ def _safetensors_plan(model: str, hf_token: Optional[str]) -> Optional[tuple[str
     # model sitting fully downloaded on disk could not be selected.
     if _cached_snapshot_has_st_weights(model):
         return (model, _cached_st_weight_names(model))
-    weights = _st_weight_files(model, hf_token)
-    return (model, weights) if weights else None
+    return _st_weight_source(model, hf_token)
 
 
 def _sentence_transformers_fallback_allowed(model: str) -> bool:
@@ -2331,12 +2348,16 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
         # modules.json and no weights also passes is_embedding_model's local-path
         # check, so it was reported cached and accepted without force, then failed
         # at the first index when SentenceTransformer looked for the weights.
-        if p.is_dir():
-            return any(
-                child.suffix.lower() in _ST_WEIGHT_SUFFIXES and child.is_file()
-                for child in p.rglob("*")
-            )
-        return True
+        if not p.is_dir():
+            # SentenceTransformer takes a directory or a repo id, never a bare
+            # checkpoint. A standalone .safetensors used to report cached here, and
+            # a forced save then recorded it with no pending download, so the first
+            # index handed the file path straight to SentenceTransformer.
+            return False
+        return any(
+            child.suffix.lower() in _ST_WEIGHT_SUFFIXES and child.is_file()
+            for child in p.rglob("*")
+        )
     except Exception:  # noqa: BLE001 - filesystem oddity is a cache miss
         return False
 
@@ -2373,7 +2394,8 @@ def _resolve_embedding_model_plan(
         cached = hf_cache_snapshot_is_loadable(resolved) and _cached_snapshot_has_st_weights(
             resolved
         )
-        if not cached and _st_weight_files(resolved, token) is None:
+        source = None if cached else _st_weight_source(resolved, token)
+        if not cached and source is None:
             # is_embedding_model gates on the Hub's tags, so a repo tagged for
             # feature-extraction that publishes only GGUF (or no loadable
             # checkpoint at all) reaches here and would be offered as a snapshot
@@ -2388,12 +2410,15 @@ def _resolve_embedding_model_plan(
                     "The repository publishes no checkpoint this backend can load."
                 ),
             )
+        # The repo that actually publishes the weights, which for a slashless
+        # alias is the sentence-transformers/ one, not the literal name.
+        download_repo = resolved if (cached or source is None) else source[0]
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
             backend = backend,
-            download_repo = resolved,
+            download_repo = download_repo,
             cached = cached,
-            size_bytes = None if cached else _hf_snapshot_size(resolved, token),
+            size_bytes = None if cached else _hf_snapshot_size(download_repo, token),
         )
 
     # A local .gguf (file or folder) is already the artifact; nothing to fetch.

@@ -651,6 +651,14 @@ def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
                 if relative.is_absolute() or ".." in relative.parts:
                     continue
                 root = snapshot.joinpath(*relative.parts)
+                # A module the manifest declares but the snapshot does not have at
+                # all is a torn download, whatever the other modules hold. Only
+                # roots carrying weights were checked, so a snapshot missing
+                # 0_Transformer entirely still passed on a complete 2_Dense and the
+                # loader was then pinned to it. Existence is the whole test here:
+                # config-only modules such as Pooling have no weight family.
+                if root != snapshot and not root.is_dir():
+                    return False
                 if any(path == root or root in path.parents for path in weights):
                     roots.append(root)
             if roots:

@@ -756,3 +756,49 @@ def test_a_local_dir_without_weights_is_not_already_present(client, monkeypatch,
     module.mkdir()
     (module / "model.safetensors").write_bytes(b"ST")
     assert settings._local_sentence_transformer_is_present(str(empty)) is True
+
+
+def test_a_slashless_alias_resolves_under_the_sentence_transformers_namespace(client, monkeypatch):
+    """SentenceTransformer resolves a slashless name like all-MiniLM-L6-v2 under
+    sentence-transformers/, which is what the loader's own st_repo_id_candidates
+    encodes. Probing only the literal id made the alias report no weights, so the
+    resolve refused a download that worked before this picker existed."""
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
+    listed = []
+
+    def _files(repo, token):
+        listed.append(repo)
+        return ["model.safetensors"] if repo == "sentence-transformers/all-MiniLM-L6-v2" else None
+
+    monkeypatch.setattr(settings, "_st_weight_files", _files)
+    monkeypatch.setattr(settings, "_hf_snapshot_size", lambda repo, token: 90_000_000)
+    import utils.utils as utils
+
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: False)
+
+    body = _resolve(client, "all-MiniLM-L6-v2").json()
+    assert body["error"] is None
+    # The setting keeps the alias the user typed; the download names the repo that
+    # actually publishes the weights.
+    assert body["embedding_model"] == "all-MiniLM-L6-v2"
+    assert body["download_repo"] == "sentence-transformers/all-MiniLM-L6-v2"
+    assert listed == ["all-MiniLM-L6-v2", "sentence-transformers/all-MiniLM-L6-v2"]
+
+
+def test_a_bare_checkpoint_file_is_not_a_local_sentence_transformer(client, monkeypatch, tmp_path):
+    """SentenceTransformer takes a directory or a repo id, never a bare file. A
+    standalone .safetensors reported cached, and a forced save recorded it with no
+    pending download, so the first index handed the file path straight to it."""
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
+    monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
+    import utils.utils as utils
+
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: False)
+
+    bare = tmp_path / "model.safetensors"
+    bare.write_bytes(b"ST")
+    assert settings._local_sentence_transformer_is_present(str(bare)) is False
+
+    body = _resolve(client, str(bare)).json()
+    assert body["cached"] is False
+    assert "no checkpoint this backend can load" in body["error"]

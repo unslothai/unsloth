@@ -984,3 +984,28 @@ def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatc
     # The snapshot was loaded, and it is the same string the gate was handed.
     assert model.loaded == str(snapshot)
     assert scanned == [str(snapshot)]
+
+
+def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch):
+    """_get_backend holds _backend_lock across the whole ST construction and _get
+    holds _lock across the model load, so a probe that took either made GET, PUT,
+    reset and unload on this setting wait out an entire load."""
+    import threading
+
+    embeddings._reset_backend()
+    answered = threading.Event()
+    result = {}
+
+    # Both locks held, exactly as they are mid-construction.
+    with embeddings._backend_lock, embeddings._lock:
+
+        def _probe():
+            result["any"] = embeddings.backend_is_loaded()
+            result["named"] = embeddings.backend_is_loaded("org/embedder")
+            answered.set()
+
+        threading.Thread(target = _probe, daemon = True).start()
+        # Answered while the construction locks are still held by this thread.
+        assert answered.wait(timeout = 5), "the status probe blocked on the load locks"
+
+    assert result == {"any": False, "named": False}

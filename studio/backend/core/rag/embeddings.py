@@ -950,16 +950,22 @@ def _reset_backend() -> None:
 
 
 def backend_is_loaded(model_name: str | None = None) -> bool:
-    """Whether ``model_name`` is resident, or any embedder when omitted."""
-    with _backend_lock:
-        backend = _backend
+    """Whether ``model_name`` is resident, or any embedder when omitted.
+
+    Deliberately lock-free. ``_get_backend`` holds ``_backend_lock`` across the
+    whole ST construction, and ``_get`` holds ``_lock`` across the model load, so
+    taking either here made GET, PUT, reset and unload on this setting wait out an
+    entire model load. A status probe wants a snapshot, and both reads are single
+    attribute loads: the answer is either the pre-load or post-load value, and both
+    are true answers to "is something resident right now".
+    """
+    backend = _backend
     if backend is None:
         return False
     if model_name is None:
         return True
     if isinstance(backend, _SentenceTransformersBackend):
-        with _lock:
-            return _model is not None and _name == model_name
+        return _model is not None and _name == model_name
     if _is_llama_backend(backend):
         try:
             return backend._model_repo == config.effective_gguf_repo_for_embedding_model(model_name)
