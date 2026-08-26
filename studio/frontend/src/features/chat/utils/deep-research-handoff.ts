@@ -65,10 +65,9 @@ export function readDeepResearchToolEvent(
       handoff.pendingCallId = callId;
       // Clamped, not refused: the endpoint rejects a longer one and the whole handoff would
       // fail, where a small model padding the question still asked something researchable.
-      handoff.pendingQuestion = question.slice(
-        0,
-        DEEP_RESEARCH_QUESTION_MAX_CHARS,
-      );
+      handoff.pendingQuestion = Array.from(question)
+        .slice(0, DEEP_RESEARCH_QUESTION_MAX_CHARS)
+        .join("");
     }
     // A gated call has to keep its Allow / Deny card: the loop blocks on a verdict, so
     // hiding the card asks the user nothing and the turn hangs there.

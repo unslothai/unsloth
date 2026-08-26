@@ -105,6 +105,21 @@ test("the question is clamped to what the endpoint accepts", () => {
   assert.equal(handoff.question?.length, DEEP_RESEARCH_QUESTION_MAX_CHARS);
 });
 
+test("the question clamp does not split an astral Unicode character", () => {
+  const handoff = newDeepResearchHandoff();
+  const prefix = "x".repeat(DEEP_RESEARCH_QUESTION_MAX_CHARS - 1);
+  readDeepResearchToolEvent(
+    handoff,
+    start({ arguments: { question: `${prefix}\u{1f600}tail` } }),
+  );
+  readDeepResearchToolEvent(handoff, end());
+  assert.equal(handoff.question, `${prefix}\u{1f600}`);
+  assert.equal(
+    Array.from(handoff.question ?? "").length,
+    DEEP_RESEARCH_QUESTION_MAX_CHARS,
+  );
+});
+
 test("a second call in the same turn is the model repeating itself", () => {
   const handoff = newDeepResearchHandoff();
   readDeepResearchToolEvent(handoff, start());
