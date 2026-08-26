@@ -4,18 +4,16 @@
 """Where the launcher refresh gets install.sh / install.ps1, and what it refuses to run.
 
 `unsloth studio update` re-runs the installer with --shortcuts-only. It looks in a source
-checkout first, so `update --local` tests its own installer; then at
-raw.githubusercontent.com/unslothai/unsloth/main, so a launcher fix reaches users without
-waiting for a release; then at the copy that shipped with this release under
-<data>/share/unsloth.
+checkout first, so `update --local` tests its own installer; then at unsloth.ai, so a
+launcher fix reaches users without waiting for a release; then at the copy that shipped with
+this release under <data>/share/unsloth.
 
-The fetch goes to the origin rather than through https://unsloth.ai/install.sh, which was
-only ever a 301 to that same URL: the hop added the unsloth.ai DNS and CDN control plane to
-the set of things that can execute code on an updating machine, and the bundled copy covers
-what the hop was worth. So these tests pin the source order, the single allowed host, the
-UNSLOTH_NO_REMOTE_INSTALLER=1 opt-out, and everything around the fetch: a transport error
-cannot abort an update that already succeeded, a response that is not an installer is not
-piped into bash, and a fetch that does not land falls through to disk rather than skipping.
+Fetching, rather than only shipping a copy, is deliberate, and unsloth.ai stays the source.
+What the bundled copy adds is a floor: a fetch that does not land used to mean no launcher
+refresh at all, and now means a release-matched one. So these tests pin the source order, the
+allowed hosts, the UNSLOTH_NO_REMOTE_INSTALLER=1 opt-out, and everything around the fetch: a
+transport error cannot abort an update that already succeeded, a response that is not an
+installer is not piped into bash, and a fetch that does not land falls through to disk.
 """
 
 from __future__ import annotations
@@ -72,28 +70,26 @@ def _bundled_root(tmp_path, name = "install.sh"):
 # ── where the installer comes from ─────────────────────────────────────────────────
 
 
-def test_the_installer_is_fetched_from_the_repo_origin():
-    """Not through https://unsloth.ai/install.sh, which was a 301 to exactly these URLs.
-
-    The bytes were always the repo's, but the hop put the unsloth.ai DNS and CDN control
-    plane in the path of code execution on every updating machine.
-    """
+def test_the_installer_is_fetched_from_unsloth_ai():
+    """unsloth.ai is the documented install URL, and the refresh uses the same one."""
     studio = _studio()
-    base = "https://raw.githubusercontent.com/unslothai/unsloth/main"
-    assert studio._INSTALLER_URL_BASH == f"{base}/install.sh"
-    assert studio._INSTALLER_URL_PWSH == f"{base}/install.ps1"
+    assert studio._INSTALLER_URL_BASH == "https://unsloth.ai/install.sh"
+    assert studio._INSTALLER_URL_PWSH == "https://unsloth.ai/install.ps1"
 
 
-def test_only_the_origin_host_is_allowed():
-    """unsloth.ai is refused too: it is no longer in the path and must not be redirected to."""
+def test_the_redirect_chain_is_allowed_and_nothing_else():
+    """unsloth.ai 301s to raw.githubusercontent, so both are in the chain."""
     studio = _studio()
-    good = "https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh"
-    assert studio._is_allowed_installer_url(good), good
-    for bad in (
+    for good in (
         "https://unsloth.ai/install.sh",
+        "https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh",
+    ):
+        assert studio._is_allowed_installer_url(good), good
+    for bad in (
         "https://evil.example/install.sh",
-        "http://raw.githubusercontent.com/unslothai/unsloth/main/install.sh",
-        "https://raw.githubusercontent.com.evil.example/install.sh",
+        "http://unsloth.ai/install.sh",
+        "https://unsloth.ai.evil.example/install.sh",
+        "https://unsloth.ai@evil.example/install.sh",
     ):
         assert not studio._is_allowed_installer_url(bad), bad
 
@@ -157,8 +153,8 @@ def test_an_unreachable_origin_falls_back_to_the_bundled_installer(monkeypatch, 
 
 
 def test_a_fetched_installer_that_fails_falls_back_to_the_bundled_one(monkeypatch, tmp_path):
-    """A main that is broken, or incompatible with the installed release, must not consume
-    the fallback: a release-matched copy is sitting on disk."""
+    """A published installer that is broken, or incompatible with the installed release, must
+    not consume the fallback: a release-matched copy is sitting on disk."""
     root = _bundled_root(tmp_path)
     studio = _posix(monkeypatch, tmp_path, bundled = [root])
     monkeypatch.setattr(studio, "_fetch_installer", lambda *a, **k: _SH)

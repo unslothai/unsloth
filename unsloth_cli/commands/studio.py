@@ -3608,22 +3608,15 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(returncode)
 
 
-# The refresh prefers main over the copy shipped with the wheel, so a launcher fix reaches
-# users without waiting for a release.
-#
-# Straight to the origin, not through https://unsloth.ai/install.sh, which was only ever a
-# Cloudflare 301 here. Same bytes, one less DNS and CDN control plane able to execute code on
-# an updating machine.
-#
-# What the hop was worth was reachability: raw.githubusercontent.com is absent from the
-# domains GitHub documents for self-hosted runners and from the corporate-proxy restriction
-# list, and is a long standing GFW target. Hence the bundled copy below, which turns "cannot
-# reach the origin" from a skipped refresh into a release-matched one.
-_INSTALLER_URL_BASH = "https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh"
-_INSTALLER_URL_PWSH = "https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1"
-# The only host the fetch will talk to. Anywhere else, unsloth.ai included, and plain http,
-# is refused rather than followed.
-_INSTALLER_FETCH_HOSTS = frozenset({"raw.githubusercontent.com"})
+# The refresh prefers unsloth.ai over the copy shipped with the wheel, so a launcher fix
+# reaches users without waiting for a release. unsloth.ai is the documented install URL and
+# stays the one the refresh uses; the bundled copy below is the fallback for when the fetch
+# does not land, not a replacement for it.
+_INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
+_INSTALLER_URL_PWSH = "https://unsloth.ai/install.ps1"
+# unsloth.ai 301s to raw.githubusercontent.com, so both are in the chain. Anywhere
+# else, or plain http, is refused rather than followed.
+_INSTALLER_FETCH_HOSTS = frozenset({"unsloth.ai", "raw.githubusercontent.com"})
 _INSTALLER_FETCH_TIMEOUT = 30
 # install.sh is ~250KB; the cap just stops an unbounded body from being buffered.
 _INSTALLER_MAX_BYTES = 8 * 1024 * 1024
@@ -3744,7 +3737,7 @@ def _bundled_installer_roots() -> List[Path]:
     """`<data>/share/unsloth` dirs holding the installer that shipped with the wheel.
 
     pyproject data-files put them there, and pip and uv both resolve <data> to the venv root.
-    This is the release-matched copy: used when the fetch of main does not land, and what
+    This is the release-matched copy: used when the fetch does not land, and what
     UNSLOTH_NO_REMOTE_INSTALLER=1 pins to.
 
     Order, most release-matched first, because every root can hold a different vintage:
@@ -3794,10 +3787,11 @@ def _installers_on_disk(candidates: Sequence[Path]) -> List[Path]:
 def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
     """Re-run installer with --shortcuts-only to refresh launchers post-update.
 
-    Source order: a checkout, so `update --local` tests its own installer rather than main's;
-    then main, for a launcher fix without a release; then the copy that shipped with this
-    release, so an offline machine, an unreachable origin, or a main that exits non-zero gets
-    a refresh instead of a skip. UNSLOTH_NO_REMOTE_INSTALLER=1 drops the middle step.
+    Source order: a checkout, so `update --local` tests its own installer rather than the
+    published one; then unsloth.ai, for a launcher fix without a release; then the copy that
+    shipped with this release, so an offline machine, an unreachable host, or a published
+    installer that exits non-zero gets a refresh instead of a skip.
+    UNSLOTH_NO_REMOTE_INSTALLER=1 drops the middle step.
 
     All three run the same --shortcuts-only branch, which rewrites the same launcher at the
     same destination every time. Best-effort by design: this runs after the package update
@@ -3878,8 +3872,8 @@ def _run_installer_bash(script: Path, args: Sequence[str], env: dict) -> bool:
 
 def _run_fetched_installer_bash(installer: bytes, args: Sequence[str], env: dict) -> bool:
     """False when the fetched installer did not refresh the launcher, so the shipped copy
-    still gets its turn. A main that is broken, or incompatible with the installed version,
-    must not consume that fallback.
+    still gets its turn. A published installer that is broken, or incompatible with the
+    installed version, must not consume that fallback.
     """
     try:
         result = subprocess.run(["bash", "-s", "--", *args], input = installer, env = env, check = False)
