@@ -17,6 +17,9 @@ from utils.paths import (
     resolve_export_dir,
 )
 from utils.utils import without_hf_auth
+from utils.training_runs import (
+    base_model_from_run_dir_name as _base_model_from_dir_name,
+)
 from utils.models.gguf_metadata import (
     is_mmproj_by_metadata,
     mmproj_accepts_image,
@@ -3382,24 +3385,6 @@ def scan_exported_models(
     except Exception as e:
         logger.error(f"Error scanning exports folder: {e}")
         return []
-
-
-def _base_model_from_dir_name(dir_name: str) -> Optional[str]:
-    """``unsloth_<model>_<timestamp>`` -> ``unsloth/<model>``, else None.
-
-    Last resort when no config names the base model. Needs a model segment BETWEEN the
-    prefix and the timestamp: a two-segment ``unsloth_<model>`` -- what a renamed run or
-    an unzipped export leaves behind -- slices to nothing, and joining that empty slice
-    used to return the bogus repo id ``unsloth/``, logged as a successful detection and
-    then handed to the Hub by the export and ``/models/lora/base`` callers.
-    """
-    if not dir_name.startswith("unsloth_"):
-        return None
-    # strip("_"): a doubled separator would otherwise leak a leading underscore into the name.
-    model_name = "_".join(dir_name.split("_")[1:-1]).strip("_")
-    if not model_name:
-        return None
-    return "unsloth/" + model_name
 
 
 def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
