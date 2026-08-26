@@ -207,10 +207,6 @@ export async function refreshContextUsage(
   );
   if (activeModel?.isAudio && !activeModel?.hasAudioInput) return;
 
-  // Deep Research routes the turn to a server-side research run whose reply carries no usage, so
-  // a total counted here would describe a request that is never made and nothing would correct it.
-  if (store.deepResearchEnabled) return;
-
   // Never count while anything is generating: the endpoint refuses, and the recount effect depends
   // on this, so the last run finishing re-fires it. runningByThreadId, not the narrower
   // localRunByThreadId: the endpoint refuses during an external-provider run too, so gating on less

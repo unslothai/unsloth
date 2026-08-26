@@ -231,3 +231,42 @@ def test_auto_compact_settings_can_inherit_the_server_policy():
 def test_compaction_headroom_ratio_is_bounded():
     with pytest.raises(ValidationError):
         ChatSettingsPayload.model_validate({"compactionHeadroomRatio": 1.5})
+
+
+def test_a_sampling_seed_survives_the_payload():
+    payload = ChatSettingsPayload.model_validate({"inferenceParams": {"seed": 3407}})
+    assert payload.model_dump(exclude_unset = True) == {"inferenceParams": {"seed": 3407}}
+
+
+def test_clearing_the_seed_reaches_the_merge_as_null():
+    """A cleared seed is an explicit null, not an omission: the merge overwrites per
+    key and never removes one, so an omitted seed would leave the old pin in place."""
+    payload = ChatSettingsPayload.model_validate({"inferenceParams": {"seed": None}})
+    updates = payload.model_dump(exclude_unset = True)
+    assert updates == {"inferenceParams": {"seed": None}}
+
+    merged = _deep_merge_settings({"inferenceParams": {"seed": 3407, "topP": 0.9}}, updates)
+    assert merged["inferenceParams"] == {"seed": None, "topP": 0.9}
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        # bool subclasses int, so lax mode would store either as a pin the user never set.
+        True,
+        False,
+        -1,
+        2**32 - 1,  # llama.cpp's "draw one" sentinel, not a value a pin can name.
+        2**32,
+        1e40,
+    ],
+)
+def test_out_of_range_seeds_are_refused(seed):
+    with pytest.raises(ValidationError):
+        ChatSettingsPayload.model_validate({"inferenceParams": {"seed": seed}})
+
+
+@pytest.mark.parametrize("seed", [0, 3407, 2**32 - 2])
+def test_the_whole_uint32_pin_range_is_accepted(seed):
+    payload = ChatSettingsPayload.model_validate({"inferenceParams": {"seed": seed}})
+    assert payload.model_dump(exclude_unset = True) == {"inferenceParams": {"seed": seed}}
