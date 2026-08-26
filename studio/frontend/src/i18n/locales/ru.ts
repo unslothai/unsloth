@@ -799,6 +799,8 @@ export const ru = {
         embeddingModelDescription:
           "Модель Hugging Face или локальный путь для индексации и поиска по вашим документам. По умолчанию {defaultModel}.",
         searchPlaceholder: "Поиск любой модели на HF",
+        safetensorsNote:
+          "У этого издателя нет GGUF, поэтому модель работает на safetensors и занимает примерно на 1 ГБ больше памяти.",
         reindexWarning:
           "Влияет только на вновь индексируемые документы. После смены модели загрузите существующие документы заново.",
         emptyError: "Введите ID модели Hugging Face или локальный путь.",

@@ -815,6 +815,8 @@ export const fr = {
         embeddingModelDescription:
           "Modèle Hugging Face ou chemin local utilisé pour indexer et rechercher vos documents. La valeur par défaut est {defaultModel}.",
         searchPlaceholder: "Rechercher n'importe quel modèle sur HF",
+        safetensorsNote:
+          "Pas de GGUF chez cet éditeur : le modèle tourne en safetensors et utilise environ 1 Go de plus.",
         reindexWarning:
           "N'affecte que les documents nouvellement indexés. Téléversez à nouveau les documents existants après avoir changé de modèle.",
         emptyError:

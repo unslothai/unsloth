@@ -138,12 +138,60 @@ def test_the_search_never_leaves_the_model_owner(monkeypatch):
     assert seen["author"] == "unsloth"
 
 
-def test_nothing_anywhere_still_reports_the_save_reason(client, monkeypatch):
-    """Only when the name candidates AND the Hub search come up empty."""
+def _no_gguf_anywhere(monkeypatch):
     monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
     monkeypatch.setattr(settings, "_cached_embedding_gguf", lambda candidates: False)
     monkeypatch.setattr(settings, "_remote_embedding_gguf_plan", lambda candidates, token: None)
     monkeypatch.setattr(settings, "_search_hub_for_gguf", lambda m, token: None)
+
+
+def test_no_gguf_falls_back_to_the_models_own_safetensors(client, monkeypatch):
+    """Safetensors cost about 1 GB more memory but they load, so they beat both
+    refusing the model and pulling a stranger's conversion."""
+    _no_gguf_anywhere(monkeypatch)
+    monkeypatch.setattr(
+        settings, "_safetensors_plan", lambda m, token: (m, ["model.safetensors"])
+    )
+    monkeypatch.setattr(settings, "_hf_files_size", lambda repo, files, token: 4096)
+    import utils.utils as utils
+
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: False)
+
+    body = _resolve(client, "unsloth/Qwen3-Embedding-8B").json()
+    assert body["backend"] == "sentence-transformers"
+    assert body["download_repo"] == "unsloth/Qwen3-Embedding-8B"
+    # No file list: ST needs the config and tokenizer too, not just the weights.
+    assert body["files"] is None
+    assert body["size_bytes"] == 4096
+    assert body["error"] is None
+
+
+def test_the_fallback_stays_in_the_models_own_repo(monkeypatch):
+    """Same rule as the GGUF search: only the publisher is a source."""
+    monkeypatch.setattr(settings, "_st_backend_available", lambda: True)
+    monkeypatch.setattr(
+        settings,
+        "_st_weight_files",
+        lambda m, token: ["model.safetensors"] if m == "acme/embedder" else None,
+    )
+    assert settings._safetensors_plan("acme/embedder", None) == (
+        "acme/embedder",
+        ["model.safetensors"],
+    )
+    assert settings._safetensors_plan("acme/no-weights", None) is None
+
+
+def test_a_gguf_only_install_is_not_offered_safetensors(monkeypatch):
+    """No torch here, so ST is not a working answer and the save reason stands."""
+    monkeypatch.setattr(settings, "_st_backend_available", lambda: False)
+    monkeypatch.setattr(settings, "_st_weight_files", lambda m, token: ["model.safetensors"])
+    assert settings._safetensors_plan("acme/embedder", None) is None
+
+
+def test_nothing_anywhere_still_reports_the_save_reason(client, monkeypatch):
+    """Only when the name candidates, the Hub search AND safetensors come up empty."""
+    _no_gguf_anywhere(monkeypatch)
+    monkeypatch.setattr(settings, "_safetensors_plan", lambda m, token: None)
     monkeypatch.setattr(
         settings, "_hf_gguf_backend_error", lambda m, token: "No GGUF weights found in ..."
     )
@@ -206,6 +254,32 @@ def test_the_resolved_repo_is_what_the_loader_opens(monkeypatch):
     store[ems.EMBEDDING_GGUF_SETTING_KEY] = "Qwen/Qwen3-Embedding-4B-GGUF"
     ems._invalidate_cache()
     assert ems.get_stored_gguf_repo("unsloth/bge-m3") is None
+    ems._invalidate_cache()
+
+
+def test_the_chosen_backend_is_read_back_by_the_loader(monkeypatch):
+    """A safetensors-only model must not be handed to llama-server, which would have
+    nothing to open. The picker records the backend; ``auto`` honours it."""
+    import storage.studio_db as db
+
+    store: dict = {}
+    monkeypatch.setattr(db, "get_app_setting", lambda k, fallback = None: store.get(k, fallback))
+    monkeypatch.setattr(db, "upsert_app_settings", lambda s: store.update(s) or store)
+
+    import utils.embedding_model_settings as ems
+    from core.rag import embeddings as rag_embeddings
+
+    ems._invalidate_cache()
+    ems.set_rag_embedding_model(
+        "unsloth/Qwen3-Embedding-8B", backend = "sentence-transformers"
+    )
+    assert ems.get_stored_backend("unsloth/Qwen3-Embedding-8B") == "sentence-transformers"
+    assert rag_embeddings._resolve_auto_for_model() == "sentence-transformers"
+
+    # A backend recorded for another model must not be served for this one.
+    store[ems.EMBEDDING_MODEL_SETTING_KEY] = "unsloth/bge-m3"
+    ems._invalidate_cache()
+    assert ems.get_stored_backend("unsloth/Qwen3-Embedding-8B") is None
     ems._invalidate_cache()
 
 

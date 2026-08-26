@@ -19,6 +19,9 @@ EMBEDDING_MODEL_SETTING_KEY = "rag_embedding_model"
 # The GGUF repo the picker resolved for that model. Stored so the loader opens
 # what was actually downloaded instead of re-deriving a name that may not exist.
 EMBEDDING_GGUF_SETTING_KEY = "rag_embedding_gguf_repo"
+# Which backend that model needs. An embedder with no GGUF still runs fine on
+# sentence-transformers (safetensors), it just costs about 1 GB more memory.
+EMBEDDING_BACKEND_SETTING_KEY = "rag_embedding_backend"
 MAX_EMBEDDING_MODEL_LENGTH = 512
 
 # The effective model is consulted on the embedder hot path (once per embed /
@@ -73,21 +76,24 @@ def validate_embedding_model(value: Any) -> str:
 def get_stored_gguf_repo(model: str) -> str | None:
     """The GGUF repo stored alongside ``model``, or None when it was stored for a
     different model (a stale pair must not point the loader at the wrong weights)."""
-    pair = _get_stored_pair()
-    if pair is None:
-        return None
-    stored_model, repo = pair
-    return repo if stored_model == model else None
+    stored = _get_stored_pair()
+    return stored[1] if stored and stored[0] == model else None
+
+
+def get_stored_backend(model: str) -> str | None:
+    """The backend stored for ``model``, or None. Same staleness rule as above."""
+    stored = _get_stored_pair()
+    return stored[2] if stored and stored[0] == model else None
 
 
 def get_stored_embedding_model() -> str | None:
     """The persisted override, or None when unset/invalid."""
-    pair = _get_stored_pair()
-    return pair[0] if pair else None
+    stored = _get_stored_pair()
+    return stored[0] if stored else None
 
 
-def _get_stored_pair() -> tuple[str, str | None] | None:
-    """(model, gguf_repo) as stored, or None when no override is set. Both are read
+def _get_stored_pair() -> tuple[str, str | None, str | None] | None:
+    """(model, gguf_repo, backend) as stored, or None when no override is set. Read
     together so the loader cannot see a model from one save and a repo from another."""
     global _cached
     now = time.monotonic()
@@ -100,6 +106,7 @@ def _get_stored_pair() -> tuple[str, str | None] | None:
         from storage.studio_db import get_app_setting
         stored = get_app_setting(EMBEDDING_MODEL_SETTING_KEY, None)
         stored_repo = get_app_setting(EMBEDDING_GGUF_SETTING_KEY, None)
+        stored_backend = get_app_setting(EMBEDDING_BACKEND_SETTING_KEY, None)
     except Exception:
         # Transient store failure: keep the last known value instead of
         # silently reverting the embed/search hot path to the default model,
@@ -110,7 +117,11 @@ def _get_stored_pair() -> tuple[str, str | None] | None:
                 return _cached[1]
         return None
     model = _coerce_embedding_model(stored)
-    value = (model, _coerce_embedding_model(stored_repo)) if model else None
+    value = (
+        (model, _coerce_embedding_model(stored_repo), _coerce_embedding_model(stored_backend))
+        if model
+        else None
+    )
     with _lock:
         # Only cache when no save landed while we were reading; otherwise this
         # value may be pre-save, and caching it would mask the new one for the
@@ -125,7 +136,7 @@ def get_rag_embedding_model() -> str:
     return get_stored_embedding_model() or default_embedding_model()
 
 
-def set_rag_embedding_model(value: Any, gguf_repo: Any = None) -> str:
+def set_rag_embedding_model(value: Any, gguf_repo: Any = None, backend: Any = None) -> str:
     parsed = validate_embedding_model(value)
     from storage.studio_db import upsert_app_settings
 
@@ -133,7 +144,14 @@ def set_rag_embedding_model(value: Any, gguf_repo: Any = None) -> str:
     # reset affordance) honest.
     stored = parsed if parsed != default_embedding_model() else None
     repo = _coerce_embedding_model(gguf_repo) if stored else None
-    upsert_app_settings({EMBEDDING_MODEL_SETTING_KEY: stored, EMBEDDING_GGUF_SETTING_KEY: repo})
+    chosen = _coerce_embedding_model(backend) if stored else None
+    upsert_app_settings(
+        {
+            EMBEDDING_MODEL_SETTING_KEY: stored,
+            EMBEDDING_GGUF_SETTING_KEY: repo,
+            EMBEDDING_BACKEND_SETTING_KEY: chosen,
+        }
+    )
     _invalidate_cache()
     return parsed
 
@@ -142,6 +160,12 @@ def reset_rag_embedding_model() -> str:
     """Clear the override; returns the (env/default) model now in effect."""
     from storage.studio_db import upsert_app_settings
 
-    upsert_app_settings({EMBEDDING_MODEL_SETTING_KEY: None, EMBEDDING_GGUF_SETTING_KEY: None})
+    upsert_app_settings(
+        {
+            EMBEDDING_MODEL_SETTING_KEY: None,
+            EMBEDDING_GGUF_SETTING_KEY: None,
+            EMBEDDING_BACKEND_SETTING_KEY: None,
+        }
+    )
     _invalidate_cache()
     return default_embedding_model()

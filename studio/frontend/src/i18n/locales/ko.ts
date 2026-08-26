@@ -792,6 +792,8 @@ export const ko = {
         embeddingModelDescription:
           "문서를 색인하고 검색하는 데 사용되는 Hugging Face 모델 또는 로컬 경로입니다. 기본값은 {defaultModel}입니다.",
         searchPlaceholder: "HF의 모든 모델 검색",
+        safetensorsNote:
+          "이 게시자의 GGUF가 없어 safetensors로 실행되며 메모리를 약 1GB 더 사용합니다.",
         reindexWarning:
           "새로 색인되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 업로드하세요.",
         emptyError: "Hugging Face 모델 ID 또는 로컬 경로를 입력하세요.",

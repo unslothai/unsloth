@@ -90,9 +90,18 @@ test("the resolve runs before the save, not after it", () => {
 
 test("the repo the resolve picked is what gets stored", () => {
   // A GGUF repo need not follow a naming rule, so the loader has to be told
-  // rather than left to re-derive it.
-  assert.match(SECTION, /persist\(trimmed, resolution\.downloadRepo, false\)/);
+  // rather than left to re-derive it. The backend rides along: a model with no
+  // GGUF runs on safetensors, and llama-server would have nothing to open.
+  assert.match(SECTION, /ggufRepo: plan\?\.downloadRepo \?\? null/);
+  assert.match(SECTION, /backend: plan\?\.backend \?\? null/);
   assert.match(API, /gguf_repo: options\?\.ggufRepo \?\? null/);
+  assert.match(API, /backend: options\?\.backend \?\? null/);
+});
+
+test("no unsloth GGUF falls back to safetensors, not to a stranger's upload", () => {
+  // Safetensors cost about 1 GB more memory but they are the model's own weights.
+  assert.match(SECTION, /resolution\?\.backend === "sentence-transformers"/);
+  assert.match(SECTION, /safetensorsNote/);
 });
 
 test("a missing model gets a Download button, not a popup", () => {

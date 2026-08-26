@@ -784,6 +784,8 @@ export const ja = {
         embeddingModel: "埋め込みモデル",
         embeddingModelDescription: "ドキュメントのインデックス作成と検索に使用する Hugging Face モデルまたはローカルパス。デフォルトは {defaultModel} です。",
         searchPlaceholder: "HF 上の任意のモデルを検索",
+        safetensorsNote:
+          "この提供元の GGUF がないため safetensors で動作し、メモリを約 1 GB 多く使います。",
         reindexWarning: "新しくインデックスされるドキュメントにのみ影響します。モデルを変更した後は、既存のドキュメントを再アップロードしてください。",
         emptyError: "Hugging Face モデル ID またはローカルパスを入力してください。",
         loadError: "埋め込みモデル設定の読み込みに失敗しました。",

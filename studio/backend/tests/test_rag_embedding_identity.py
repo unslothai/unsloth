@@ -292,9 +292,7 @@ def test_the_identity_comes_from_the_encode_not_from_the_process_after_it(rag_co
             return vectors
 
     monkeypatch.setattr(embeddings, "_backend", _SwapsMidEncode())
-    monkeypatch.setattr(
-        embeddings, "_backend_key", (config.EMBED_BACKEND or "auto").strip().lower()
-    )
+    monkeypatch.setattr(embeddings, "_backend_key", embeddings._current_backend_key())
     hits = retrieval.retrieve_dense(rag_conn, "kb_r", "alpha bravo", k = 5, model_name = MODEL)
     assert [h.chunk_id for h in hits] == ["d1:0"]
 
@@ -395,9 +393,7 @@ def test_the_web_ranker_labels_a_page_with_the_backend_that_encoded_it(rag_home,
             return vectors
 
     monkeypatch.setattr(embeddings, "_backend", _SwapsMidEncode())
-    monkeypatch.setattr(
-        embeddings, "_backend_key", (config.EMBED_BACKEND or "auto").strip().lower()
-    )
+    monkeypatch.setattr(embeddings, "_backend_key", embeddings._current_backend_key())
 
     labels: list[str | None] = []
     real_create = store.create_document

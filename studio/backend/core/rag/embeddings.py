@@ -561,6 +561,10 @@ class _SentenceTransformersBackend:
 _backend_lock = threading.Lock()
 _backend = None
 _backend_key: str | None = None
+# Set when an ST encode failed at runtime and the process swapped to llama-server.
+# It pins the resolved choice so the swap survives the next rebuild; cleared only
+# by a reset or an explicit unload, both of which are a fresh start.
+_forced_backend_key: str | None = None
 
 _ST_ALIASES = frozenset({"sentence-transformers", "sentence_transformers", "st"})
 _LLAMA_ALIASES = frozenset(
@@ -586,6 +590,24 @@ def _resolve_auto() -> str:
     if LlamaCppBackend._find_llama_server_binary():
         return "llama-server"
     return "sentence-transformers"
+
+
+def _resolve_auto_for_model() -> str:
+    """``auto``, but honouring the backend recorded for the saved model.
+
+    An embedder with no GGUF still runs on sentence-transformers, so the picker
+    records that choice rather than refusing the model; without this the hardware
+    default would send it to llama-server, which has nothing to open."""
+    try:
+        from utils.embedding_model_settings import get_stored_backend
+        stored = get_stored_backend(config.effective_embedding_model())
+    except Exception:  # noqa: BLE001 - store unavailable: fall back to hardware
+        stored = None
+    if stored:
+        key = stored.strip().lower()
+        if key in _ST_ALIASES or key in _LLAMA_ALIASES:
+            return key
+    return _resolve_auto()
 
 
 def _try_make_llama_backend():
@@ -628,7 +650,7 @@ def _switch_to_llama_fallback(err):
     process embedder to llama-server so every later encode stays in one space, and
     return it (None if no binary). Vectors written before the swap were ST, so any
     KB already embedded with ST should be reindexed."""
-    global _backend, _backend_key
+    global _backend, _backend_key, _forced_backend_key
     with _backend_lock:
         if not isinstance(_backend, _SentenceTransformersBackend):
             return _backend  # another thread already swapped (or was never ST)
@@ -642,20 +664,44 @@ def _switch_to_llama_fallback(err):
             err,
         )
         _backend = fallback
-        _backend_key = (config.EMBED_BACKEND or "auto").strip().lower()
+        _forced_backend_key = "llama-server"
+        _backend_key = _backend_cache_key(_raw_backend(), "llama-server")
         return fallback
+
+
+def _raw_backend() -> str:
+    return (config.EMBED_BACKEND or "auto").strip().lower()
+
+
+def _current_backend_key() -> str:
+    """The cache key the backend in use should carry right now. Tests that install a
+    stub backend set ``_backend_key`` from this so it is not rebuilt under them."""
+    raw = _raw_backend()
+    if _forced_backend_key:
+        return _backend_cache_key(raw, _forced_backend_key)
+    key = _resolve_auto_for_model() if raw in _AUTO_ALIASES else raw
+    return _backend_cache_key(raw, key)
+
+
+def _backend_cache_key(raw: str, key: str) -> str:
+    """Cache key for a built backend. It carries the RESOLVED choice, not just the
+    raw config, so saving a model that needs the other backend rebuilds instead of
+    serving the one already built for the previous model."""
+    return f"{raw}\x00{key}"
 
 
 def _get_backend():
     """The process-wide embedding backend for ``config.EMBED_BACKEND``, built once.
-    Cached by the raw config value, so ``auto`` detection runs only on a miss and a
-    config change rebuilds it."""
+    Cached by the resolved choice, so ``auto`` detection runs only on a miss and a
+    config or saved-model change rebuilds it."""
     global _backend, _backend_key
-    raw = (config.EMBED_BACKEND or "auto").strip().lower()
+    raw = _raw_backend()
     with _backend_lock:
-        if _backend is not None and _backend_key == raw:
+        key = _forced_backend_key or (
+            _resolve_auto_for_model() if raw in _AUTO_ALIASES else raw
+        )
+        if _backend is not None and _backend_key == _backend_cache_key(raw, key):
             return _backend
-        key = _resolve_auto() if raw in _AUTO_ALIASES else raw
         if key in _ST_ALIASES:
             _backend = _build_st_backend_or_fallback()
         elif key in _LLAMA_ALIASES:
@@ -667,14 +713,15 @@ def _get_backend():
                 f"Unknown RAG_EMBED_BACKEND={config.EMBED_BACKEND!r}; expected "
                 "'auto', 'sentence-transformers' or 'llama-server'"
             )
-        _backend_key = raw
+        _backend_key = _backend_cache_key(raw, key)
         return _backend
 
 
 def _reset_backend() -> None:
     """Drop the cached backend (test teardown / re-init)."""
-    global _backend, _backend_key
+    global _backend, _backend_key, _forced_backend_key
     with _backend_lock:
+        _forced_backend_key = None
         _backend = None
         _backend_key = None
 
@@ -691,8 +738,11 @@ def release_backend() -> bool:
 
     Safe mid-ingestion: the next embed rebuilds, and the llama backend's own POST
     retry already covers a server that went away under it."""
-    global _backend, _backend_key
+    global _backend, _backend_key, _forced_backend_key
     with _backend_lock:
+        # Unload is an explicit fresh start, so a past runtime fallback stops pinning
+        # the choice and the saved model picks its backend again.
+        _forced_backend_key = None
         backend, _backend, _backend_key = _backend, None, None
     if backend is None:
         return False
@@ -730,7 +780,7 @@ def active_backend_is_llama() -> bool:
                 return False
             return isinstance(backend, LlamaServerBackend)
         raw = (config.EMBED_BACKEND or "auto").strip().lower()
-        key = _resolve_auto() if raw in _AUTO_ALIASES else raw
+        key = _resolve_auto_for_model() if raw in _AUTO_ALIASES else raw
         return key in _LLAMA_ALIASES
     except Exception:  # noqa: BLE001 - a backend probe must never block saving
         return False

@@ -448,6 +448,13 @@ def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
     assert out.shape == (2, 4)
     # Switch is process-wide: later calls keep using llama, not ST.
     assert isinstance(embeddings._get_backend(), _SentinelLlamaBackend)
+    # It outranks what the saved model would otherwise resolve to, so a model that
+    # asks for ST cannot walk the process back into the encoder that just failed.
+    monkeypatch.setattr(embeddings, "_resolve_auto_for_model", lambda: "sentence-transformers")
+    assert isinstance(embeddings._get_backend(), _SentinelLlamaBackend)
+    # An explicit unload is a fresh start, so the pin does not outlive it.
+    embeddings._reset_backend()
+    assert embeddings._forced_backend_key is None
 
 
 def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):

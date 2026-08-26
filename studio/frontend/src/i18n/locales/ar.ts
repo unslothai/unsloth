@@ -795,6 +795,8 @@ export const ar = {
         embeddingModelDescription:
           "نموذج Hugging Face أو مسار محلي يُستخدم لفهرسة مستنداتك والبحث فيها. القيمة الافتراضية هي {defaultModel}.",
         searchPlaceholder: "ابحث عن أي نموذج على HF",
+        safetensorsNote:
+          "لا يوفّر هذا الناشر GGUF، لذا يعمل النموذج بصيغة safetensors ويستهلك نحو 1 غيغابايت إضافية من الذاكرة.",
         reindexWarning:
           "يؤثر فقط في المستندات التي تُفهرس حديثًا. أعِد رفع المستندات الحالية بعد تغيير النموذج.",
         emptyError: "أدخل معرّف نموذج Hugging Face أو مسارًا محليًا.",

@@ -114,14 +114,15 @@ export function DocumentsRagSection(): ReactElement {
    * opens what was downloaded rather than re-deriving a name. */
   const persist = async (
     model: string,
-    ggufRepo: string | null,
+    plan: EmbeddingModelResolution | null,
     force: boolean,
   ): Promise<boolean> => {
     try {
       const stood = await save(() =>
         updateEmbeddingModelSettings(model, {
           hfToken: hfToken || undefined,
-          ggufRepo,
+          ggufRepo: plan?.downloadRepo ?? null,
+          backend: plan?.backend ?? null,
           force,
         }),
       );
@@ -182,11 +183,11 @@ export function DocumentsRagSection(): ReactElement {
       }
       setResolution(resolution);
       if (resolution.cached || !resolution.downloadRepo) {
-        await persist(trimmed, resolution.downloadRepo, false);
+        await persist(trimmed, resolution, false);
         return;
       }
       // Not on disk: record the pick, then offer Download in the action row.
-      await persist(trimmed, resolution.downloadRepo, false);
+      await persist(trimmed, resolution, false);
     } finally {
       setIsSavingEmbeddingModel(false);
     }
@@ -245,6 +246,10 @@ export function DocumentsRagSection(): ReactElement {
     resolution && !resolution.cached && resolution.downloadRepo,
   );
   const onDevice = Boolean(resolution?.cached);
+  // No GGUF from this publisher, so it runs on safetensors: same vectors, about
+  // 1 GB more memory. Worth saying, since the picker chose it rather than the user.
+  const usesSafetensors =
+    resolution?.backend === "sentence-transformers" && !resolution.error;
   const statusTone: "pending" | "ready" | "error" | null = !embeddingModel
     ? "pending"
     : embeddingModelError
@@ -357,6 +362,11 @@ export function DocumentsRagSection(): ReactElement {
               </Button>
             ) : null}
           </div>
+          {usesSafetensors ? (
+            <span className="max-w-[300px] text-right text-xs text-muted-foreground">
+              {t("settings.general.rag.safetensorsNote")}
+            </span>
+          ) : null}
           <span className="max-w-[300px] text-right text-xs text-muted-foreground">
             {t("settings.general.rag.reindexWarning")}
           </span>

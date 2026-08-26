@@ -1790,6 +1790,8 @@ class EmbeddingModelPayload(BaseModel):
     embedding_model: str = Field(..., min_length = 1, max_length = MAX_EMBEDDING_MODEL_LENGTH)
     # The repo /resolve named, stored so the loader opens what was downloaded.
     gguf_repo: Optional[str] = Field(default = None, max_length = MAX_EMBEDDING_MODEL_LENGTH)
+    # And the backend it needs, so a model with no GGUF is not sent to llama-server.
+    backend: Optional[Literal["llama", "sentence-transformers"]] = None
     # Token for gated/private repos during verification (not stored).
     hf_token: Optional[str] = Field(default = None, max_length = 512)
     # Skip HF verification (offline installs, local paths HF can't see).
@@ -1905,11 +1907,13 @@ def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
         return None
     if _search_hub_for_gguf(model, hf_token) is not None:
         return None
+    # Safetensors on sentence-transformers is a working answer, not a failure.
+    if _safetensors_plan(model, hf_token) is not None:
+        return None
     checked = " or ".join(repr(c) for c in candidates)
     return (
-        f"No GGUF weights found in {checked}. This install embeds with the "
-        "llama-server backend, which needs them, and only the model's own "
-        "publisher is used as a source."
+        f"No GGUF weights found in {checked}, and no safetensors to fall back to. "
+        "Only the model's own publisher is used as a source."
     )
 
 
@@ -2026,6 +2030,49 @@ def _remote_embedding_gguf_plan(
     return None
 
 
+# safetensors first: a repo carrying both formats would otherwise be fetched twice.
+_ST_WEIGHT_SUFFIXES = (".safetensors", ".bin")
+
+
+def _st_backend_available() -> bool:
+    """Whether sentence-transformers could actually run here. A GGUF-only install
+    has no torch, so the safetensors fallback is not on offer there."""
+    from importlib.util import find_spec
+
+    try:
+        return all(find_spec(mod) is not None for mod in ("torch", "sentence_transformers"))
+    except Exception:  # noqa: BLE001 - a broken import path is a no
+        return False
+
+
+def _st_weight_files(model: str, hf_token: Optional[str]) -> Optional[list[str]]:
+    """The repo's own weight files, or None when it publishes none we can load."""
+    try:
+        from huggingface_hub import list_repo_files
+
+        files = list_repo_files(model, token = hf_token)
+    except Exception:  # noqa: BLE001 - missing/gated repo or offline
+        return None
+    for suffix in _ST_WEIGHT_SUFFIXES:
+        weights = [f for f in files if f.lower().endswith(suffix)]
+        if weights:
+            return weights
+    return None
+
+
+def _safetensors_plan(
+    model: str, hf_token: Optional[str]
+) -> Optional[tuple[str, list[str]]]:
+    """``(repo, files)`` for running ``model`` on sentence-transformers instead.
+
+    An embedder with no GGUF still works from its own safetensors, for about 1 GB
+    more memory, which beats refusing the model or pulling a stranger's conversion."""
+    if not _st_backend_available():
+        return None
+    weights = _st_weight_files(model, hf_token)
+    return (model, weights) if weights else None
+
+
 def _hf_files_size(repo: str, files: list[str], hf_token: Optional[str]) -> Optional[int]:
     """Total bytes of ``files`` in ``repo``, for the confirm dialog. None when the
     hub does not say; the dialog has copy for that."""
@@ -2098,11 +2145,24 @@ def resolve_embedding_model(
         )
     plan = _remote_embedding_gguf_plan(candidates, token) or _search_hub_for_gguf(resolved, token)
     if plan is None:
+        # No GGUF from this publisher: run it on its own safetensors rather than
+        # refusing it or downloading a stranger's conversion. The whole repo is
+        # fetched, not just the weights, since ST also needs the config/tokenizer.
+        st_plan = _safetensors_plan(resolved, token)
+        if st_plan is None:
+            return EmbeddingModelResolveResponse(
+                embedding_model = resolved,
+                backend = backend,
+                error = _hf_gguf_backend_error(resolved, token)
+                or "No usable weights could be resolved for this model.",
+            )
+        st_repo, st_files = st_plan
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
-            backend = backend,
-            error = _hf_gguf_backend_error(resolved, token)
-            or "No GGUF weights could be resolved for this model.",
+            backend = "sentence-transformers",
+            download_repo = st_repo,
+            cached = hf_cache_snapshot_is_loadable(resolved),
+            size_bytes = _hf_files_size(st_repo, st_files, token),
         )
     repo, filename = plan
     return EmbeddingModelResolveResponse(
@@ -2233,7 +2293,11 @@ def update_embedding_model(
             gguf_error = _hf_gguf_backend_error(model, hf_token)
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
-    set_rag_embedding_model(model, gguf_repo = (payload.gguf_repo or "").strip() or None)
+    set_rag_embedding_model(
+        model,
+        gguf_repo = (payload.gguf_repo or "").strip() or None,
+        backend = "llama-server" if payload.backend == "llama" else payload.backend,
+    )
     logger.info(
         "settings.embedding_model_updated subject=%s model=%s forced=%s",
         current_subject,

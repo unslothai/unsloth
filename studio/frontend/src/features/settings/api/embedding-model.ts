@@ -63,7 +63,12 @@ export async function loadEmbeddingModelSettings(): Promise<EmbeddingModelSettin
 
 export async function updateEmbeddingModelSettings(
   embeddingModel: string,
-  options?: { hfToken?: string; force?: boolean; ggufRepo?: string | null },
+  options?: {
+    hfToken?: string;
+    force?: boolean;
+    ggufRepo?: string | null;
+    backend?: EmbeddingModelResolution["backend"] | null;
+  },
 ): Promise<EmbeddingModelSettings> {
   const res = await authFetch("/api/settings/embedding-model", {
     method: "PUT",
@@ -75,6 +80,7 @@ export async function updateEmbeddingModelSettings(
       hf_token: options?.hfToken || null,
       // biome-ignore lint/style/useNamingConvention: API schema
       gguf_repo: options?.ggufRepo ?? null,
+      backend: options?.backend ?? null,
       force: options?.force ?? false,
     }),
   });

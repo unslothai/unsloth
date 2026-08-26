@@ -50,7 +50,7 @@ def client(monkeypatch):
     monkeypatch.setattr(
         settings,
         "set_rag_embedding_model",
-        lambda v, gguf_repo = None: saved.setdefault("model", v),
+        lambda v, gguf_repo = None, backend = None: saved.setdefault("model", v),
     )
     monkeypatch.setattr(settings, "_llama_backend_active", lambda: False)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
@@ -169,7 +169,7 @@ def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
     monkeypatch.setattr(
         settings,
         "set_rag_embedding_model",
-        lambda v, gguf_repo = None: saved.setdefault("model", v),
+        lambda v, gguf_repo = None, backend = None: saved.setdefault("model", v),
     )
     monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
@@ -220,7 +220,7 @@ def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
     monkeypatch.setattr(
         settings,
         "set_rag_embedding_model",
-        lambda v, gguf_repo = None: saved.setdefault("model", v),
+        lambda v, gguf_repo = None, backend = None: saved.setdefault("model", v),
     )
     # Deliberately do NOT monkeypatch settings._llama_backend_active: this test exercises the
     # real delegation to embeddings.active_backend_is_llama() so the cached fallback is honored.
@@ -293,7 +293,7 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
     monkeypatch.setattr(
         settings,
         "set_rag_embedding_model",
-        lambda v, gguf_repo = None: saved.setdefault("model", v),
+        lambda v, gguf_repo = None, backend = None: saved.setdefault("model", v),
     )
     monkeypatch.setattr(settings, "_llama_backend_active", lambda: False)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
