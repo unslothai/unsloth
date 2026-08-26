@@ -127,7 +127,9 @@ def test_janitor_matches_v2_keys_only():
 
 
 def test_save_runs_on_the_default_branch_only():
-    action = yaml.safe_load((REPO / ".github/actions/pip-cache-save/action.yml").read_text(encoding = "utf-8"))
+    action = yaml.safe_load(
+        (REPO / ".github/actions/pip-cache-save/action.yml").read_text(encoding = "utf-8")
+    )
     condition = " ".join(str(action["runs"]["steps"][0].get("if", "")).split())
     assert "github.ref == 'refs/heads/main'" in condition
     assert "always()" in condition

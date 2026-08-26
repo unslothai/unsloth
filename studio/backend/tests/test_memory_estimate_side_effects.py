@@ -155,9 +155,7 @@ def _run_estimate(fastapi_request = None, **kwargs):
 
 def _request_carrying_slots(slots: int):
     """A stand-in for the FastAPI request carrying the server's slot default."""
-    return SimpleNamespace(
-        app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = slots))
-    )
+    return SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = slots)))
 
 
 def _priced_locally(monkeypatch, gguf_path: str):
@@ -201,7 +199,6 @@ def _hub_offline_now() -> bool:
     the honest observable for "would this call have gone to the network".
     """
     import huggingface_hub.constants as _hf_constants
-
     return bool(_hf_constants.HF_HUB_OFFLINE)
 
 
@@ -262,9 +259,7 @@ class TestTheOnDiskGateAndTheNetwork:
             offline_at_each_call.append(_hub_offline_now())
             return None
 
-        monkeypatch.setattr(
-            ri.ModelConfig, "from_identifier", staticmethod(_fake_from_identifier)
-        )
+        monkeypatch.setattr(ri.ModelConfig, "from_identifier", staticmethod(_fake_from_identifier))
 
         resp = _run_estimate(model_path = "org/definitely-not-cached")
         assert resp.available is False
@@ -275,9 +270,7 @@ class TestTheOnDiskGateAndTheNetwork:
             f"slider, offline flag per attempt was {offline_at_each_call}"
         )
 
-    def test_the_fail_open_path_dials_no_socket_and_writes_no_cache_file(
-        self, monkeypatch
-    ):
+    def test_the_fail_open_path_dials_no_socket_and_writes_no_cache_file(self, monkeypatch):
         # The end-to-end form of the same claim, driven through the real
         # ModelConfig.from_identifier with the session socket guard counting. The guard
         # is reused rather than HF_HUB_OFFLINE being set, so the ONLINE branch is the
@@ -324,21 +317,18 @@ class TestTheOnDiskGateAndTheNetwork:
 
         after = _snapshot()
         assert after == before, (
-            "the estimate wrote into the HF cache: "
-            f"{sorted(set(after) - set(before))[:12]}"
+            "the estimate wrote into the HF cache: " f"{sorted(set(after) - set(before))[:12]}"
         )
         _LOCAL = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
         outbound = [
             a
             for a in attempts
             if not (isinstance(a[1], str) and a[1] in _LOCAL)
-            and not (
-                isinstance(a[1], tuple) and a[1] and str(a[1][0]) in _LOCAL
-            )
+            and not (isinstance(a[1], tuple) and a[1] and str(a[1][0]) in _LOCAL)
         ]
-        assert outbound == [], (
-            f"the estimate tried to leave the machine {len(outbound)}x: {outbound[:5]}"
-        )
+        assert (
+            outbound == []
+        ), f"the estimate tried to leave the machine {len(outbound)}x: {outbound[:5]}"
 
     def test_an_unreadable_cache_root_answers_not_downloaded(self, tmp_path, monkeypatch):
         # Recorded because the gate's docstring promises the opposite: "an unreadable
@@ -362,9 +352,9 @@ class TestTheOnDiskGateAndTheNetwork:
             answered = ri._estimate_target_is_on_this_disk("org/Model-GGUF")
         finally:
             root.chmod(0o755)
-        assert answered is False, (
-            "behaviour changed to match the docstring; update the docstring too"
-        )
+        assert (
+            answered is False
+        ), "behaviour changed to match the docstring; update the docstring too"
 
     def test_passing_the_gate_does_not_mean_the_resolution_can_stay_local(
         self, tmp_path, monkeypatch
@@ -394,9 +384,7 @@ class TestTheOnDiskGateAndTheNetwork:
             offline_at_each_call.append(_hub_offline_now())
             return None
 
-        monkeypatch.setattr(
-            ri.ModelConfig, "from_identifier", staticmethod(_fake_from_identifier)
-        )
+        monkeypatch.setattr(ri.ModelConfig, "from_identifier", staticmethod(_fake_from_identifier))
         _run_estimate(model_path = "org/Model-GGUF")
         assert offline_at_each_call, "the resolution never ran"
         # Deliberately NOT asserted as a fix: a repo that is genuinely present but
@@ -544,9 +532,7 @@ class TestSlotResolutionStaysOffTheEventLoop:
             probe_threads.append(threading.get_ident())
             return {"found": True, "supports_kv_unified": True}
 
-        monkeypatch.setattr(
-            ri.LlamaCppBackend, "probe_server_capabilities", staticmethod(_caps)
-        )
+        monkeypatch.setattr(ri.LlamaCppBackend, "probe_server_capabilities", staticmethod(_caps))
 
         async def _drive():
             loop_thread = threading.get_ident()
@@ -565,9 +551,7 @@ class TestSlotResolutionStaysOffTheEventLoop:
             "`llama-server --help` with a ten second timeout, in front of chat streaming"
         )
 
-    def test_the_slot_default_is_still_read_from_the_app_state(
-        self, monkeypatch, side_effect_gguf
-    ):
+    def test_the_slot_default_is_still_read_from_the_app_state(self, monkeypatch, side_effect_gguf):
         # Moving the probe off the loop must not take the settings read with it: the
         # published default lives on the FastAPI app state, which belongs to the loop
         # side, and pricing 1 there underestimates the KV cache and the slot-scaled
@@ -594,9 +578,7 @@ class TestSlotResolutionStaysOffTheEventLoop:
         def boom(*a, **kw):
             raise AssertionError("a single slot must not probe the binary")
 
-        monkeypatch.setattr(
-            ri.LlamaCppBackend, "probe_server_capabilities", staticmethod(boom)
-        )
+        monkeypatch.setattr(ri.LlamaCppBackend, "probe_server_capabilities", staticmethod(boom))
         assert ri._effective_parallel_slots(1) == 1
         assert ri._effective_parallel_slots(0) == 1
 
@@ -778,9 +760,9 @@ class TestEstimateCachesUnderConcurrency:
             w.join()
 
         assert errors == []
-        assert len(resolutions) == threads, (
-            "the stampede shape changed; if a single-flight was added, say so here"
-        )
+        assert (
+            len(resolutions) == threads
+        ), "the stampede shape changed; if a single-flight was added, say so here"
         assert len(ri._estimate_config_cache) == 1
 
     def test_an_entry_is_not_born_already_expired(self, monkeypatch):
@@ -818,7 +800,6 @@ class TestEstimateCachesUnderConcurrency:
             f"{slow:.0f}s resolution, so an immediate repeat re-resolved"
         )
 
-
     def test_the_files_entry_is_not_born_already_expired_either(self, monkeypatch):
         # Same stamp, same cache, other half. A multi-shard repo whose header walk and
         # file stats outlast the TTL must not be inserted pre-expired, or the slider
@@ -838,9 +819,7 @@ class TestEstimateCachesUnderConcurrency:
         monkeypatch.setattr(ri, "_estimate_gguf_required_gb", _slow_required)
         monkeypatch.setattr(ri, "_remote_gguf_compute_reserve_gb", lambda **kw: 0.5)
 
-        config = SimpleNamespace(
-            identifier = "org/many-shards", gguf_file = None, gguf_variant = None
-        )
+        config = SimpleNamespace(identifier = "org/many-shards", gguf_file = None, gguf_variant = None)
         ri._gguf_resident_file_gb(config)
         assert len(walks) == 1
         ri._gguf_resident_file_gb(config)
@@ -861,12 +840,15 @@ class TestTokenAndSubjectIsolation:
 
         class _PerTokenModelConfig:
             @staticmethod
-            def from_identifier(*, model_id, hf_token = None, **kw):
+            def from_identifier(
+                *,
+                model_id,
+                hf_token = None,
+                **kw,
+            ):
                 if hf_token is None:
                     raise PermissionError("gated repo needs a token")
-                return SimpleNamespace(
-                    identifier = model_id, is_gguf = True, resolved_with = hf_token
-                )
+                return SimpleNamespace(identifier = model_id, is_gguf = True, resolved_with = hf_token)
 
         monkeypatch.setattr(ri, "ModelConfig", _PerTokenModelConfig)
 
@@ -891,9 +873,7 @@ class TestTokenAndSubjectIsolation:
         assert ri._estimate_token_fingerprint(None) == ""
         assert ri._estimate_token_fingerprint("") == ""
 
-    def test_the_subject_is_absent_from_the_key_and_the_token_is_what_isolates(
-        self, monkeypatch
-    ):
+    def test_the_subject_is_absent_from_the_key_and_the_token_is_what_isolates(self, monkeypatch):
         # Recorded deliberately. current_subject is NOT part of the cache key: the
         # credential is, and two subjects presenting the same token are entitled to the
         # same answer. What this pins is that nothing else about a subject leaks in --
@@ -905,9 +885,7 @@ class TestTokenAndSubjectIsolation:
             "ModelConfig",
             SimpleNamespace(
                 from_identifier = staticmethod(
-                    lambda *, model_id, **kw: SimpleNamespace(
-                        identifier = model_id, is_gguf = True
-                    )
+                    lambda *, model_id, **kw: SimpleNamespace(identifier = model_id, is_gguf = True)
                 )
             ),
         )
@@ -926,7 +904,12 @@ class TestTokenAndSubjectIsolation:
 
         class _GrantAwareModelConfig:
             @staticmethod
-            def from_identifier(*, model_id, drafter_accept = None, **kw):
+            def from_identifier(
+                *,
+                model_id,
+                drafter_accept = None,
+                **kw,
+            ):
                 seen.append(drafter_accept is not None)
                 return SimpleNamespace(identifier = model_id, is_gguf = True)
 
@@ -943,7 +926,7 @@ class TestTokenAndSubjectIsolation:
 
 
 class TestNoDeviceIsTouched:
-    """"no device is touched" -- the third clause of the route's docstring."""
+    """ "no device is touched" -- the third clause of the route's docstring."""
 
     def test_a_full_request_allocates_nothing_and_launches_nothing(
         self, monkeypatch, side_effect_gguf

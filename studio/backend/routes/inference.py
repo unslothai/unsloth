@@ -8887,7 +8887,6 @@ def _probe_backend():
     exception type, so it is told apart by whether the class can bind the keyword.
     """
     import inspect
-
     try:
         return LlamaCppBackend(manages_processes = False)
     except TypeError:

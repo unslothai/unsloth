@@ -755,9 +755,9 @@ def test_platform_matrix_weights_do_not_move_with_the_context_slider(
         )
         # Non-decreasing, not strictly increasing: a sliding-window cache is capped by
         # its window and legitimately plateaus, and an unsizable one stays at 0.
-        assert kv == sorted(kv), (
-            f"[{cell}] {shape}: kv_bytes is not non-decreasing in n_ctx: {dict(zip(CONTEXTS, kv))}"
-        )
+        assert kv == sorted(
+            kv
+        ), f"[{cell}] {shape}: kv_bytes is not non-decreasing in n_ctx: {dict(zip(CONTEXTS, kv))}"
 
 
 @pytest.mark.parametrize("platform,accelerator", MATRIX)
@@ -905,9 +905,9 @@ def test_platform_matrix_an_unsizable_kv_still_carries_its_layer_count(
     ri._estimate_files_cache.clear()
     pinned = _price(shapes, "pure_ssm", n_ctx = 131072, gpu_memory_mode = "manual", gpu_layers = 0)
     _assert_core_invariants(pinned, cell = cell, shape = "pure_ssm", note = "-ngl 0")
-    assert pinned.gpu_bytes == 0, (
-        f"[{cell}] pure_ssm at --gpu-layers 0 reported {pinned.gpu_bytes} GPU bytes"
-    )
+    assert (
+        pinned.gpu_bytes == 0
+    ), f"[{cell}] pure_ssm at --gpu-layers 0 reported {pinned.gpu_bytes} GPU bytes"
 
 
 @pytest.mark.parametrize("platform,accelerator", MATRIX)
@@ -1007,9 +1007,9 @@ def test_platform_matrix_the_metal_budget_is_never_reached(
 
     # The autouse fixture asserts the recorder is empty at teardown; assert it here too
     # so the failure names this cell rather than a teardown error.
-    assert _metal_budget_tripwire == [], (
-        f"[{platform[0]}-{accelerator[0]}] reached _apple_metal_memory_budget_bytes"
-    )
+    assert (
+        _metal_budget_tripwire == []
+    ), f"[{platform[0]}-{accelerator[0]}] reached _apple_metal_memory_budget_bytes"
 
 
 def test_platform_matrix_the_platform_label_alone_changes_nothing(monkeypatch, shapes):
@@ -1047,9 +1047,9 @@ def test_platform_matrix_the_platform_label_alone_changes_nothing(monkeypatch, s
             for (platform_label, acc), answer in answers.items()
             if acc == accelerator_label
         }
-        assert len(set(by_platform.values())) == 1, (
-            f"{accelerator_label} priced differently per platform: {by_platform}"
-        )
+        assert (
+            len(set(by_platform.values())) == 1
+        ), f"{accelerator_label} priced differently per platform: {by_platform}"
 
     # And macOS on Apple Silicon prices the same load as any other single-device host.
     # One pool is a CAPACITY fact, not a footprint one: the same bytes are allocated
@@ -1111,9 +1111,9 @@ def test_platform_matrix_the_probed_inventory_owns_the_split_on_a_vulkan_build(
     else:
         # torch sees nothing, so there is no split to price, and the pin is the only
         # thing that can say otherwise.
-        assert unpinned.compute_bytes < pinned.compute_bytes, (
-            f"[{cell}] a CUDA-shaped build reporting zero devices still priced a two-device split"
-        )
+        assert (
+            unpinned.compute_bytes < pinned.compute_bytes
+        ), f"[{cell}] a CUDA-shaped build reporting zero devices still priced a two-device split"
 
 
 @pytest.mark.parametrize("platform,accelerator", MATRIX)

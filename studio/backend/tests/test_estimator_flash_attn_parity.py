@@ -98,7 +98,12 @@ def qwen3_shaped_gguf(tmp_path):
     return str(path)
 
 
-def _kv_bytes(path, ctx, cache_type, slots = 1):
+def _kv_bytes(
+    path,
+    ctx,
+    cache_type,
+    slots = 1,
+):
     return ri._gguf_runtime_bytes(path, ctx, None, slots, cache_type, False).kv_bytes
 
 

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-""""Estimated Memory Usage" row Playwright regression test (GPU-free, no model load).
+""" "Estimated Memory Usage" row Playwright regression test (GPU-free, no model load).
 
 The row lives in the model-picker's run-settings panel (MemoryEstimateRow in
 features/model-picker/components/model-config-page.tsx) and it renders ONLY when the
@@ -120,7 +120,7 @@ ESTIMATE_WAIT_MS = int(os.environ.get("STUDIO_UI_ESTIMATE_WAIT_MS", "20000"))
 
 TRANSCRIPT_NAME = "memory-estimate-exchanges.json"
 
-GIB = 1024 ** 3
+GIB = 1024**3
 # Exact quarter-GiB figures on purpose: `formatMemoryGb` is `(bytes / 1024**3).toFixed(2)`,
 # and a quarter of a GiB is exactly representable, so the string the app renders is
 # predictable to the last digit on every engine rather than a rounding argument.
@@ -424,9 +424,7 @@ with sync_playwright() as p:
         form_err: Exception | None = None
         for _attempt in range(3):
             try:
-                page.goto(
-                    f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000
-                )
+                page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
                 try:
                     page.wait_for_load_state("networkidle", timeout = 30_000)
                 except Exception:
@@ -555,7 +553,12 @@ with sync_playwright() as p:
         page.wait_for_timeout(800)
         return row
 
-    def row_gear(popover, hint, quant = None, timeout_ms = SOLE_QUANT_SETTLE_MS):
+    def row_gear(
+        popover,
+        hint,
+        quant = None,
+        timeout_ms = SOLE_QUANT_SETTLE_MS,
+    ):
         # The gear is a sibling of the row, not inside [data-model-picker-option]. The
         # quant is anchored to the end: every label is "<repo> <quant>", so an unanchored
         # match lets F16 find BF16 and `.first` then opens a variant this test never named.
@@ -674,7 +677,12 @@ with sync_playwright() as p:
         except Exception:
             return ""
 
-    def wait_for_estimate_post(predicate, *, since: int, timeout_ms: int = ESTIMATE_WAIT_MS):
+    def wait_for_estimate_post(
+        predicate,
+        *,
+        since: int,
+        timeout_ms: int = ESTIMATE_WAIT_MS,
+    ):
         """The first recorded exchange at or after `since` matching `predicate`, or None.
 
         Driven off the recorded transcript rather than `expect_request`, because these
@@ -824,8 +832,10 @@ with sync_playwright() as p:
         else:
             info(f"OK request: priced model_path={model_path!r}")
         variant = body.get("gguf_variant")
-        if variant is not None and GGUF_VARIANT and str(variant).strip().lower() != (
-            GGUF_VARIANT.strip().lower()
+        if (
+            variant is not None
+            and GGUF_VARIANT
+            and str(variant).strip().lower() != (GGUF_VARIANT.strip().lower())
         ):
             runtime_warn(
                 f"the estimate priced quant {variant!r}, not {GGUF_VARIANT!r}; the picker row "
