@@ -578,14 +578,6 @@ def _install_cell_lower_bound(install_cell: str, target: str) -> str | None:
                 if op in ("==", ">="):
                     if best is None or cmp_versions(ver, best) > 0:
                         best = ver
-    if target == "torchao":
-        # update_all_notebooks.py installs via a runtime `_torchao` variable
-        # (`"torchao>=0.16.0"` / `"torchao>=0.16.0,<0.18.0"`), which pip
-        # invocations like `"{_torchao}"` do not surface to parse_spec.
-        for match in re.finditer(r"torchao>=([0-9.]+(?:\.[0-9]+)*)", install_cell):
-            ver = match.group(1)
-            if best is None or cmp_versions(ver, best) > 0:
-                best = ver
     return best
 
 

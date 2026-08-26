@@ -73,10 +73,10 @@ permissions:
   contents: write
 
 env:
-  # Desktop bundles publish on unslothai/unsloth. Forks have no releases of their own,
-  # so default there instead of github.repository (which would be the fork and 404 every
-  # nightly download step). workflow_dispatch can still override via release_repo.
-  REL_REPO: ${{ inputs.release_repo || 'unslothai/unsloth' }}
+  # release-desktop.yml publishes into github.repository, so a nightly aimed anywhere else
+  # goes green over a broken production bundle (unsloth-test holds one frozen release, so
+  # the schedule kept re-testing the same fixture).
+  REL_REPO: ${{ inputs.release_repo || github.repository }}
   # Empty unless dispatched: a pinned tag is an immutable fixture, so a nightly against it
   # could never catch a newly published broken bundle. Each download step resolves the
   # newest SemVer v... release carrying its required asset, drafts included. gh release

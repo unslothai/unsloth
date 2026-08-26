@@ -9020,10 +9020,6 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         return False
 
 
-WEB_SEARCH_EMPTY_ARGS_ERROR = (
-    "Error: web_search requires a non-empty 'query' or 'url'. "
-    "Retry web_search with a query based on the user's request."
-)
 # Local models often emit q/search_query instead of query, or uri/href instead of url.
 _WEB_SEARCH_QUERY_ALIASES = ("query", "q", "search_query", "search", "text")
 _WEB_SEARCH_URL_ALIASES = ("url", "uri", "href", "link")
@@ -10318,7 +10314,7 @@ def execute_tool(
         query, url = _resolve_web_search_args(arguments)
         image_queries = arguments.get("image_queries") if isinstance(arguments, dict) else None
         if not query and not url and not _clean_image_queries(image_queries):
-            return WEB_SEARCH_EMPTY_ARGS_ERROR
+            return "No query provided."
         return _fit_result_to_room(
             _web_search(
                 query,
@@ -12743,7 +12739,7 @@ def _web_search(
         return found
 
     if not query or not query.strip():
-        return WEB_SEARCH_EMPTY_ARGS_ERROR
+        return "No query provided."
     # A disconnect sets cancel_event; DDGS.text() is blocking and cannot be
     # interrupted mid-flight, so gate on either side: skip an already-cancelled
     # request, and discard results that land after the client has gone.

@@ -355,8 +355,7 @@ def test_web_search_empty_arguments_are_a_recoverable_error(monkeypatch, argumen
     # Schema allows {}, and local models emit it; that used to become "No query provided."
     _raise_if_search_backend(monkeypatch)
     result = tools.execute_tool("web_search", arguments)
-    assert result == tools.WEB_SEARCH_EMPTY_ARGS_ERROR
-    assert "Retry web_search" in result
+    assert result == "No query provided."
     assert is_tool_error(result) is True
     assert (
         "Never call web_search with empty arguments"
