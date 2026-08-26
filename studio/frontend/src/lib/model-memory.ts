@@ -25,6 +25,16 @@ export interface ModelMemoryInput {
   kvBytes?: number | null;
   /** MTP draft reserve; null for ngram (which is free) or a model without one. */
   specBytes?: number | null;
+  /**
+   * llama.cpp's compute buffers, from the load planner's own `compute_bytes`.
+   *
+   * Every launch reserves these, and they scale with slots and micro-batch, so a
+   * row near the budget could report a fit while omitting gigabytes the server
+   * allocates. Folded into the KV segment rather than drawn as a fourth sliver:
+   * it is context-linear in part and too small at default settings to resolve on
+   * its own, but it still has to count against the total.
+   */
+  computeBytes?: number | null;
   /** The share of specBytes a shorter context cannot reduce (drafter weights). */
   specFixedBytes?: number | null;
   /** Total VRAM of the GPU the model would load onto. */
@@ -132,7 +142,7 @@ export function computeModelMemory(
       ? input.budgetFraction
       : VRAM_HEADROOM_RATIO;
   const budgetGb = gpuGb * fraction;
-  const kvGb = toGb(input.kvBytes);
+  const kvGb = toGb(input.kvBytes) + toGb(input.computeBytes);
   const specGb = toGb(input.specBytes);
   const totalGb = modelGb + kvGb + specGb;
 

@@ -1312,6 +1312,12 @@ export interface KvCacheEstimate {
   /** The share of spec_bytes no shorter context can reduce, being the separate
    *  drafter's resident weights. Auto-fit softening must not cover it. */
   spec_fixed_bytes: number | null;
+  /** The load planner's compute buffers, which every launch reserves on top of
+   *  weights and cache. Scales with slots and micro-batch. */
+  compute_bytes: number | null;
+  /** The planner's complete GPU-resident figure, and its everything-total. */
+  gpu_bytes: number | null;
+  total_bytes: number | null;
 }
 
 export interface KvCacheEstimateOptions {

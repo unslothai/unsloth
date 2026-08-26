@@ -61,13 +61,19 @@ test("a disabled bar issues no estimate request", () => {
   );
 });
 
-test("the settings request is gated on the same flag", () => {
-  // The VRAM budget lookup is a second request; it must respect the opt-in too.
+test("the settings request is gated on a row that will draw a bar", () => {
+  // The VRAM budget lookup is a second request, and its gate is `plan` rather
+  // than `enabled`. That is strictly stronger: the plan memo stands down when the
+  // feature is off, so a plan can only exist when enabled is true, and it also
+  // excludes the remote and undownloaded rows that mount this hook but will never
+  // draw a bar. loadVramBudgetSettings folds together only calls already in
+  // flight -- it keeps no read-through cache -- so gating on the flag alone made
+  // scrolling a long list issue one request per row that appeared.
   const effect = HOOK.match(
-    /useEffect\(\(\) => \{\s*if \(!enabled\) return;[\s\S]*?loadVramBudgetSettings/,
+    /useEffect\(\(\) => \{\s*if \(!plan\) return;[\s\S]*?loadVramBudgetSettings/,
   );
   assert.ok(
     effect,
-    "the vram budget request is not gated on the memory bar being enabled",
+    "the vram budget request is not gated on the row having a plan",
   );
 });

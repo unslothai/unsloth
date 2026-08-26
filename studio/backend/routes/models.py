@@ -3737,6 +3737,9 @@ async def get_kv_cache_estimate(
             "spec_unpriced": False,
             "kv_checkpoint_bytes": None,
             "spec_fixed_bytes": None,
+            "gpu_bytes": None,
+            "compute_bytes": None,
+            "total_bytes": None,
         }
         try:
             from utils.models.model_config import is_local_path
@@ -3835,24 +3838,42 @@ async def get_kv_cache_estimate(
             # bar on hosts whose llama-server cannot run one.
             if not spec_unpriced and _spec_mode == "auto":
                 try:
+                    # Imported here, not borrowed from _resolve_mtp_drafter: these
+                    # live in that function's local scope, so referencing them from
+                    # this one raised NameError into the except below and left
+                    # spec_unpriced false -- the silent no-op this guard exists to
+                    # prevent, and invisible precisely because it failed quietly.
                     from core.inference.llama_cpp import (
+                        _companion_snapshot_sibling,
                         _is_dflash_drafter_path,
                         _pick_dspark,
+                        _snapshot_dir_of,
                     )
+
                     def _pick_dflash(candidates: list[str]) -> Optional[str]:
                         hits = sorted(f for f in candidates if _is_dflash_drafter_path(f))
                         return hits[0] if hits else None
 
+                    _caps = be.probe_server_capabilities() or {}
                     if _snapshot_dir_of(path) is not None:
-                        _caps = be.probe_server_capabilities() or {}
-                        if _caps.get("supports_dspark") and _companion_snapshot_sibling(
-                            path, _pick_dspark
-                        ):
-                            spec_unpriced = True
-                        elif _caps.get("supports_dflash") and _companion_snapshot_sibling(
-                            path, _pick_dflash
-                        ):
-                            spec_unpriced = True
+                        _has_dspark = bool(_companion_snapshot_sibling(path, _pick_dspark))
+                        _has_dflash = bool(_companion_snapshot_sibling(path, _pick_dflash))
+                    else:
+                        # A plain local folder resolves its sidecars the way the load
+                        # path does, through the same detectors that populate
+                        # gguf_dspark_file / gguf_dflash_file. Restricting this to
+                        # snapshots left every local model charting a total with the
+                        # drafter missing.
+                        from utils.models.drafters.dflash import detect_dflash_file
+                        from utils.models.model_config import detect_dspark_file
+
+                        _root = repo_id if is_local else None
+                        _has_dspark = bool(detect_dspark_file(path, search_root = _root))
+                        _has_dflash = bool(detect_dflash_file(path, search_root = _root))
+                    if (_caps.get("supports_dspark") and _has_dspark) or (
+                        _caps.get("supports_dflash") and _has_dflash
+                    ):
+                        spec_unpriced = True
                 except Exception as e:
                     logger.debug(f"auto sidecar probe failed for '{repo_id}' {quant}: {e}")
 
@@ -3968,6 +3989,54 @@ async def get_kv_cache_estimate(
                 except Exception as e:
                     logger.debug(f"mtp overhead estimate failed for '{repo_id}' {quant}: {e}")
 
+            # The load planner's own answer, alongside this route's field-by-field
+            # one. It is the authoritative figure: it applies the inherited
+            # environment (LLAMA_ARG_CACHE_TYPE_K/V, LLAMA_ARG_SWA_FULL,
+            # LLAMA_ARG_CTX_SIZE), derives the companion search roots the loader
+            # derives, and includes the compute buffers -- every term this route
+            # would otherwise have to reproduce, and has repeatedly reproduced
+            # incompletely. gpu_bytes is what lands on the card, with the host-heap
+            # checkpoint share already subtracted.
+            #
+            # Added beside the existing fields rather than replacing them: the
+            # planner defines weights_bytes as the weights PLUS whichever projector
+            # and drafter the launch opens, while this route's field shipped meaning
+            # the quant file alone. Redefining it would move a number an existing
+            # caller already reads.
+            planner_gpu = None
+            planner_compute = None
+            planner_total = None
+            planner_unsized = False
+            try:
+                from routes.inference import (
+                    _ESTIMATE_NOT_ON_DISK,
+                    _cached_estimate_config,
+                    _gguf_memory_breakdown,
+                    _localized_estimate_config,
+                )
+                _cfg = _cached_estimate_config(repo_id, quant, None, False)
+                if _cfg is not None and _cfg is not _ESTIMATE_NOT_ON_DISK:
+                    _cfg = _localized_estimate_config(_cfg, path)
+                    _b = _gguf_memory_breakdown(
+                        _cfg,
+                        path,
+                        n_ctx = n_ctx or 0,
+                        speculative_type = speculative_type,
+                        n_parallel = n_parallel,
+                        cache_type_kv = cache_type_kv,
+                        ctx_checkpoints = ctx_checkpoints,
+                        disable_vision = disable_vision,
+                        spec_draft_n_max = spec_draft_n_max,
+                        spec_draft_cache_type = spec_draft_cache_type,
+                    )
+                    if _b is not None:
+                        planner_gpu = int(_b.gpu_bytes) or None
+                        planner_compute = int(_b.compute_bytes) or None
+                        planner_total = int(_b.total_bytes) or None
+                        planner_unsized = bool(_b.drafter_kv_unsized)
+            except Exception as e:
+                logger.debug(f"planner breakdown failed for '{repo_id}' {quant}: {e}")
+
             return {
                 "kv_bytes": int(kv) if kv else None,
                 "weights_bytes": weights_bytes or None,
@@ -3975,10 +4044,6 @@ async def get_kv_cache_estimate(
                 "spec_bytes": int(spec) if spec else None,
                 "n_ctx": int(n_ctx),
                 "projector_bytes": projector or None,
-                # True when the configured mode attaches a drafter this route did
-                # not price. The caller draws nothing rather than a fit that is
-                # missing the launch's largest single allocation.
-                "spec_unpriced": spec_unpriced,
                 # The part of kv_bytes that llama.cpp keeps in host heap rather than
                 # on the card, so a VRAM bar can subtract it. Included in kv_bytes,
                 # not beside it: the field shipped meaning the whole cache and an
@@ -3986,6 +4051,15 @@ async def get_kv_cache_estimate(
                 "kv_checkpoint_bytes": kv_checkpoint or None,
                 # The part of spec_bytes a shorter context cannot reduce.
                 "spec_fixed_bytes": spec_fixed if spec else None,
+                # The load planner's figures. gpu_bytes is the complete footprint
+                # that lands on the card and is what a fit verdict should be drawn
+                # against; the rest are itemized for the caller that wants them.
+                "gpu_bytes": planner_gpu,
+                "compute_bytes": planner_compute,
+                "total_bytes": planner_total,
+                # The planner saw a drafter whose cache it could not size, so its
+                # own total is a floor.
+                "spec_unpriced": spec_unpriced or planner_unsized,
             }
         except Exception as e:
             logger.debug(f"kv-cache-estimate failed for '{repo_id}' {quant}: {e}")

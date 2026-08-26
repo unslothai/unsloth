@@ -73,6 +73,8 @@ interface Estimate {
   kvCheckpointBytes: number | null;
   /** The share of specBytes no shorter context can reduce (the drafter's weights). */
   specFixedBytes: number | null;
+  /** llama.cpp's compute buffers, which every launch reserves. */
+  computeBytes: number | null;
   /** The configured drafter could not be priced, so the total is a floor. */
   specUnpriced: boolean;
 }
@@ -132,6 +134,7 @@ const MISS: Estimate = {
   projectorBytes: null,
   kvCheckpointBytes: null,
   specFixedBytes: null,
+  computeBytes: null,
   specUnpriced: false,
 };
 
@@ -319,6 +322,7 @@ async function fetchEstimate(
         projectorBytes: r.projector_bytes ?? null,
         kvCheckpointBytes: r.kv_checkpoint_bytes ?? null,
         specFixedBytes: r.spec_fixed_bytes ?? null,
+        computeBytes: r.compute_bytes ?? null,
         specUnpriced: r.spec_unpriced === true,
       };
       // A 200 that could size nothing arrives down the success path, so
@@ -378,26 +382,6 @@ export function useModelMemory(
   // The loader's own admission fraction, which the user can change. Cached and
   // shared, so a long list of rows costs one request.
   const [budgetFraction, setBudgetFraction] = useState<number | null>(null);
-  useEffect(() => {
-    if (!enabled) return;
-    let alive = true;
-    const unsubscribe = subscribeVramBudgetSettings((s) => {
-      if (alive) setBudgetFraction(s.fraction);
-    });
-    void loadVramBudgetSettings()
-      .then((s) => {
-        // Null on a backend too old to serve the route; the fallback covers it.
-        if (alive && s) setBudgetFraction(s.fraction);
-      })
-      .catch(() => {
-        // Falls back to the shared headroom ratio, which is what the fit badge
-        // beside the bar already uses.
-      });
-    return () => {
-      alive = false;
-      unsubscribe();
-    };
-  }, [enabled]);
 
   const repoId = source?.repoId;
   const quant = source?.quant;
@@ -437,6 +421,33 @@ export function useModelMemory(
     // biome-ignore lint/correctness/useExhaustiveDependencies: see above
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, repoId, loadId, quant, sizeBytes, epoch, budgetIsDedicatedVram]);
+
+  // Gated on a real plan, not merely on the feature being on. Every row in the
+  // list mounts this hook, including remote and undownloaded ones that will never
+  // draw a bar, and loadVramBudgetSettings folds only calls that are already in
+  // flight together -- it holds no read-through cache. Gating on `enabled` alone
+  // therefore turned scrolling or filtering a long list into a repeated request
+  // per row that appeared.
+  useEffect(() => {
+    if (!plan) return;
+    let alive = true;
+    const unsubscribe = subscribeVramBudgetSettings((s) => {
+      if (alive) setBudgetFraction(s.fraction);
+    });
+    void loadVramBudgetSettings()
+      .then((s) => {
+        // Null on a backend too old to serve the route; the fallback covers it.
+        if (alive && s) setBudgetFraction(s.fraction);
+      })
+      .catch(() => {
+        // Falls back to the shared headroom ratio, which is what the fit badge
+        // beside the bar already uses.
+      });
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, [plan]);
 
   useEffect(() => {
     if (!plan) return;
@@ -483,6 +494,7 @@ export function useModelMemory(
           : Math.max(0, estimate.kvBytes - (estimate.kvCheckpointBytes ?? 0)),
       specBytes: estimate?.specBytes,
       specFixedBytes: estimate?.specFixedBytes,
+      computeBytes: estimate?.computeBytes,
       nCtx: estimate?.nCtx,
       // The dedicated-only aggregate, never the combined one. On a discrete card
       // beside a Vulkan iGPU the combined total adds the iGPU's allowance, which

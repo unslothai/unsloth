@@ -524,3 +524,81 @@ class TestHostMemoryIsNotChargedToTheCard:
             ctx_checkpoints = None,
         )
         assert out["kv_checkpoint_bytes"] is None
+
+
+class TestAutoAbstainsOverASidecar:
+    """Auto promotes to DSpark or DFlash when the model ships one, so the route
+    must say the reserve is unpriced rather than chart a total without it.
+
+    These assert the OUTCOME, not that the block runs: the first version of this
+    guard referenced two helpers that were only in another function's scope, and
+    the resulting NameError was swallowed by the surrounding except, leaving
+    spec_unpriced false with nothing in the response to show it had failed.
+    """
+
+    def _call(self, monkeypatch, tmp_path, *, sidecar: str | None, supports: bool):
+        model_dir = tmp_path / "local-model"
+        gguf = _write_gguf(model_dir / "model-Q4_K_M.gguf", _MLA_NO_HEAD)
+        if sidecar:
+            # A DFlash sidecar is identified by its header, not its name:
+            # detect_dflash_file confirms general.architecture = dflash, which
+            # settles the adversarial case of a real model merely CALLED DFlash.
+            _write_gguf(
+                model_dir / sidecar,
+                _MLA_NO_HEAD,
+                arch = "dflash" if sidecar.startswith("dflash") else "testarch",
+            )
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(
+                lambda cls, *a, **k: {
+                    "mtp_token": True,
+                    "supports_dspark": supports,
+                    "supports_dflash": supports,
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            models_routes,
+            "_resolve_quant_gguf",
+            lambda _repo, _quant, _local: (str(gguf), 4096),
+        )
+        monkeypatch.setattr(models_routes, "is_local_path", lambda _p: True, raising = False)
+        return asyncio.run(
+            models_routes.get_kv_cache_estimate(
+                repo_id = str(model_dir),
+                quant = "Q4_K_M",
+                n_ctx = 32768,
+                cache_type_kv = None,
+                n_parallel = 1,
+                speculative_type = "auto",
+                spec_draft_n_max = None,
+                spec_draft_cache_type = None,
+                ctx_checkpoints = None,
+                disable_vision = False,
+                request = None,
+                current_subject = "test",
+            )
+        )
+
+    @pytest.mark.parametrize("sidecar", ["dspark-model-Q8_0.gguf", "dflash-model-Q8_0.gguf"])
+    def test_a_local_sidecar_makes_the_reserve_unpriced(self, monkeypatch, tmp_path, sidecar):
+        out = self._call(monkeypatch, tmp_path, sidecar = sidecar, supports = True)
+        assert out["spec_unpriced"] is True, (
+            "Auto charted a total with the sidecar missing; a DSpark drafter is "
+            "about 11 GB, so this is the largest single allocation the route can drop"
+        )
+
+    def test_no_sidecar_leaves_the_estimate_priced(self, monkeypatch, tmp_path):
+        out = self._call(monkeypatch, tmp_path, sidecar = None, supports = True)
+        assert out["spec_unpriced"] is False
+
+    def test_a_binary_that_cannot_run_one_still_prices_normally(self, monkeypatch, tmp_path):
+        # The planner gates sidecar selection on the binary's own capability, so
+        # abstaining where the launch would never open one blanks the bar for
+        # nothing.
+        out = self._call(monkeypatch, tmp_path, sidecar = "dspark-model-Q8_0.gguf", supports = False)
+        assert out["spec_unpriced"] is False
