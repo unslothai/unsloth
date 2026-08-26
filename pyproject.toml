@@ -1486,3 +1486,23 @@ ignore = [
 # etc. The CI security job runs `pytest tests/security` explicitly.
 testpaths = ["tests/security"]
 pythonpath = ["."]
+
+# testpaths only protects a bare `pytest`. Anyone who types `pytest tests/`
+# gets the whole walk, and a handful of files in it download and merge real
+# checkpoints: measured, `pytest tests/ -n 16` was 16m22s, and 34 of the 17.5k
+# tests accounted for 11 of those minutes. Markers are what make that opt-in.
+#
+# `slow` predates this: seven uses in
+# tests/python/test_embed_lm_head_target_modules_redirect.py, never registered
+# and never consumed, so the author's intent was inert. Registering it is what
+# turns the existing annotations on.
+markers = [
+    "gpu: needs a real accelerator, and usually downloads a checkpoint to use it",
+    "slow: minutes rather than seconds, and covered again more cheaply elsewhere",
+]
+
+# Deselected by default, not deleted: CI runs them in their own leg with
+# `-m 'gpu or slow'`, and `pytest -m gpu tests/` gets them back locally.
+# A run that names one of these files directly will report "no tests ran"
+# until you pass `-m gpu` -- that is the cost of the default being fast.
+addopts = "-m 'not gpu and not slow'"
