@@ -127,6 +127,17 @@ def test_page_renders_friendly_busy_message(client):
     assert "Unsloth is currently using another model" in response.text
 
 
+def test_page_renders_reasoning_stream(client):
+    # The page used to read only delta.content, so every reasoning_content chunk
+    # was dropped and a thinking model rendered an empty bubble.
+    text = client.get(f"/p/demorun?k={_sig('demorun')}").text
+    assert "delta.reasoning_content" in text
+    assert 'choice.finish_reason === "length"' in text
+    # Reasoning counts against the preview cap, so a reply that spent it all on
+    # thinking must say so instead of showing nothing.
+    assert "Reply cut off at the preview length limit." in text
+
+
 def test_page_escapes_title(tmp_path, monkeypatch, captured):
     outputs = tmp_path / "outputs"
     # Run dir name carries an HTML-special char; the page must escape it.
