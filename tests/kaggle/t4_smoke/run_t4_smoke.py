@@ -475,7 +475,18 @@ def train_once(args, run_index: int) -> dict:
     # model from the one training produced.
     gguf_export_record = None
     gguf_run_record = None
-    if getattr(args, "export_gguf", False):
+    # ONCE per leg, on the first cycle, not once per cycle. Measured: the
+    # conversion is 310.8s and 312.3s on the two Latest_compile cycles and
+    # 99.3s and 117.3s on the two vision ones, so the repeat is 47% of the
+    # longest leg in the suite. The second export is the same base weights and
+    # an adapter trained by the same script with the same seed, so it re-runs
+    # llama.cpp rather than asking a new question; reproducibility is already
+    # asserted on the step tables and on the generated text.
+    if getattr(args, "export_gguf", False) and run_index > 0:
+        gguf_export_record = {
+            "skipped": "exported on cycle 0; the conversion is the same weights twice"
+        }
+    elif getattr(args, "export_gguf", False):
         from gguf_export import export_gguf, llama_cpp_facts, run_gguf
 
         # unsloth must be imported before unsloth_zoo.llama_cpp, which raises
@@ -2105,7 +2116,16 @@ def main() -> int:
         accept = tuple(
             q.strip() for q in (args.gguf_accept or args.gguf_quantization).split(",") if q.strip()
         )
-        for run in runs:
+        # A cycle that deliberately skipped the export is excused ONLY when
+        # another cycle really exported. "No export anywhere" stays a failure,
+        # so the saving cannot turn into missing coverage.
+        exported = [run for run in runs if not (run.get("gguf_export") or {}).get("skipped")]
+        if not exported:
+            failures.append(
+                "every cycle skipped the GGUF export, so the leg asked for one "
+                "and never produced a file"
+            )
+        for run in exported:
             failures += [
                 f"run {run['run_index']}: {f}"
                 for f in export_failures(run.get("gguf_export"), accept_quantizations = accept)

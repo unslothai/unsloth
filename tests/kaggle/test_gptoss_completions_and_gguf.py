@@ -279,3 +279,27 @@ def test_the_hook_flag_is_READ_off_the_module_rather_than_assumed():
         "the name has to come from the module walk, or it cannot be matched "
         "against the parameter that is off the card"
     )
+
+
+def test_the_text_leg_exports_once_per_leg_and_not_once_per_cycle():
+    """Measured: the conversion is 310.8s and 312.3s on the two Latest_compile
+    cycles and 99.3s and 117.3s on the two vision ones, so the repeat is 47% of
+    the longest leg in the suite. The second export is the same base weights
+    plus an adapter trained by the same script with the same seed, so it re-runs
+    llama.cpp rather than asking a new question; the cycles already prove
+    reproducibility on the step tables and the generated text.
+    """
+    src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
+    assert 'if getattr(args, "export_gguf", False) and run_index > 0:' in src
+    assert '"skipped": "exported on cycle 0' in src
+
+
+def test_skipping_every_cycle_is_still_a_failure():
+    """The saving must not be able to become missing coverage. A leg that asked
+    for an export and produced no file anywhere has to say so, and a per-cycle
+    excuse that fires on cycle 0 too would be silent."""
+    src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
+    assert "every cycle skipped the GGUF export" in src
+    # The excuse is keyed on a cycle having really exported, not on the flag.
+    assert 'exported = [run for run in runs if not (run.get("gguf_export") or {}).get("skipped")]' in src
+    assert "for run in exported:" in src
