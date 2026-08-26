@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { isSpeechOnlyHubModel } from "../src/features/settings/lib/agent-hub-model.ts";
 
 const TAB = readFileSync(
   fileURLToPath(
@@ -46,8 +47,35 @@ test("the model dropdown loads live trending GGUFs", () => {
   assert.ok(request.includes("keepUnsupportedTags: false"));
   assert.ok(TAB.includes("!isEmbeddingHubModel(model)"));
   assert.ok(TAB.includes("EMBEDDING_TAGS.has(tag.toLowerCase())"));
+  assert.ok(TAB.includes("!isSpeechOnlyHubModel(model)"));
   assert.ok(TAB.includes("mergeModelOrder(trendingModels, models)"));
   assert.ok(TAB.includes("[...primary, ...fallback]"));
+});
+
+test("the agent feed excludes speech-only model tasks", () => {
+  for (const pipelineTag of [
+    "text-to-speech",
+    "automatic-speech-recognition",
+  ]) {
+    assert.equal(isSpeechOnlyHubModel({ pipelineTag }), true);
+  }
+  assert.equal(
+    isSpeechOnlyHubModel({
+      pipelineTag: "text-generation",
+      tags: ["GGUF", " TEXT-TO-SPEECH "],
+    }),
+    true,
+  );
+  for (const pipelineTag of [
+    "text-generation",
+    "image-text-to-text",
+    "audio-text-to-text",
+  ]) {
+    assert.equal(
+      isSpeechOnlyHubModel({ pipelineTag, tags: ["gguf", "audio"] }),
+      false,
+    );
+  }
 });
 
 test("restored Hub selections remain valid while uncached", () => {

@@ -61,6 +61,7 @@ import {
 } from "../components/agent-command";
 import { SettingsSection } from "../components/settings-section";
 import { psSingle, shSingle } from "../components/usage-examples";
+import { isSpeechOnlyHubModel } from "../lib/agent-hub-model.ts";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
@@ -775,7 +776,12 @@ export function AgentsTab() {
   const trendingModels = useMemo(
     () =>
       trendingGgufs
-        .filter((model) => model.isGguf && !isEmbeddingHubModel(model))
+        .filter(
+          (model) =>
+            model.isGguf &&
+            !isEmbeddingHubModel(model) &&
+            !isSpeechOnlyHubModel(model),
+        )
         .map((model) => model.id),
     [trendingGgufs],
   );
