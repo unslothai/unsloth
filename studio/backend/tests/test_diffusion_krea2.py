@@ -94,8 +94,7 @@ def test_load_model_index_accepts_utf8_bom(tmp_path):
     "payload", ["[]", "null", "3", "2.5", '"str"', "true", "false", '[{"a": 1}]']
 )
 def test_load_model_index_rejects_non_object_json(tmp_path, payload):
-    # Every one of these parsed fine before and was handed to the caller, which then died on
-    # ``.get`` one frame away; the type is what makes an index unusable, not just the syntax.
+    # All of these parsed and reached the caller, which then died on ``.get`` one frame away.
     (tmp_path / "model_index.json").write_text(payload, encoding = "utf-8")
 
     with pytest.raises(
@@ -107,10 +106,9 @@ def test_load_model_index_rejects_non_object_json(tmp_path, payload):
 
 
 def test_load_model_index_wraps_unreadable_local_file(monkeypatch, tmp_path):
-    # The file passes is_file() and fails in the read: a 0600 checkpoint copied between users, an
-    # EIO disk, a Windows file held open by an AV scanner. That OSError used to be swallowed and
-    # re-reported as "not found", which sends the user looking for a file that is right there.
-    # chmod cannot stage this (CI and containers run as root), so the read itself is faulted.
+    # Present but unreadable (0600, EIO, a Windows AV lock): the OSError used to be swallowed and
+    # re-reported as "not found", sending the user after a file that is right there. Faulted at the
+    # read because chmod cannot stage it -- CI and containers run as root.
     (tmp_path / "model_index.json").write_text('{"patch_size": 2}', encoding = "utf-8")
     original = Path.read_text
 
@@ -128,10 +126,9 @@ def test_load_model_index_wraps_unreadable_local_file(monkeypatch, tmp_path):
 
 
 def test_load_model_index_wraps_a_nesting_bomb(monkeypatch, tmp_path):
-    # Valid JSON, valid UTF-8, and neither guard above sees it: on a deep enough index the parser
-    # blows the stack first, and RecursionError is not a ValueError. The depth that triggers it is
-    # not portable -- 3.10-3.13 raise on ~50k nested objects, 3.14's scanner parses the same
-    # payload -- so the parser is faulted directly and the guard, not the interpreter, is asserted.
+    # Valid JSON and valid UTF-8, so neither guard above sees it; the parser blows the stack.
+    # Faulted directly because the triggering depth is not portable: 3.10-3.13 raise on ~50k
+    # nested objects and 3.14's scanner parses the same payload.
     (tmp_path / "model_index.json").write_text('{"a": 1}', encoding = "utf-8")
     monkeypatch.setattr(
         json, "loads", lambda *args, **kwargs: (_ for _ in ()).throw(RecursionError("too deep"))
@@ -226,9 +223,8 @@ def test_load_krea2_pipeline_threads_init_config(monkeypatch, tmp_path):
 
 
 def test_a_corrupt_index_is_rejected_before_any_component_is_built(monkeypatch, tmp_path):
-    """The index is a few KB and the components it configures are ~35 GB, so it has to be read
-    first. Read last, a clear message still costs a full load to reach, which is most of what the
-    opaque traceback cost in the first place."""
+    """A few KB against the ~35 GB it configures, so it is read first. Read last, a clear message
+    still costs a full load to reach, which is most of what the opaque traceback cost."""
     (tmp_path / "model_index.json").write_text('{"_class_name": "Krea2Pipe', encoding = "utf-8")
 
     built: list = []
