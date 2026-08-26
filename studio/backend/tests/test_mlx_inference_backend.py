@@ -4959,6 +4959,36 @@ def test_a_cached_drafter_the_runtime_is_too_old_for_says_so_instead_of_vanishin
     assert rows[0].fields["runtime_supported"] is False
 
 
+def test_every_recommendation_is_reachable_from_a_target_shape():
+    """A seed keyed to something no shape produces is dead weight: nothing ever matches it, so
+    the checkpoint it names is never offered and the mistake stays invisible.
+    """
+    from core.inference import mlx_speculative as spec
+
+    reachable = set().union(*spec._RECOMMENDATION_TARGET_SHAPES.values())
+    assert {seed.target_key for seed in spec._RECOMMENDATIONS} <= reachable
+    assert {seed.method for seed in spec._RECOMMENDATIONS} <= spec.MLX_SPECULATIVE_METHODS
+
+
+@pytest.mark.parametrize(
+    ("target_id", "expected"),
+    [
+        ("mlx-community/LFM2.5-2.6B-8bit", "lfm2.5-2.6b"),
+        ("mlx-community/LFM2.5-8B-A1B-MLX-8bit", "lfm2.5-8b-a1b"),
+        ("LiquidAI/LFM2.5-8B-A1B", "lfm2.5-8b-a1b"),
+    ],
+)
+def test_an_lfm2_target_is_named_by_the_variant_its_repository_spells(target_id, expected):
+    """The decimal in 2.6B does not survive the identity filter, so the two variants stay apart
+    on the digits that do. The vendor a key names is compared against a case-folded owner, so a
+    seed reaches the vendor's own repository only when both are spelled the same way.
+    """
+    from core.inference import mlx_speculative as spec
+
+    assert spec._target_identity_key(target_id) == expected
+    assert spec._recommendation_target_owner_allowed(target_id, expected) is True
+
+
 def test_auto_can_rank_and_size_every_method_it_may_select():
     """Auto subscripts its rank table directly, so a method missing from it raises exactly when
     a user turns out to have that drafter downloaded. Distinct ranks keep the order total.

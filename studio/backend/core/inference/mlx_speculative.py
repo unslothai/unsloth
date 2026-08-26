@@ -96,6 +96,8 @@ _RECOMMENDATION_TARGET_SHAPES = {
     ("gemma4", 5376, 60, None, 262144): frozenset({"gemma4-31b"}),
     ("muse_glimmer", 6656, 52, None, 202048): frozenset({"muse-glimmer-30b"}),
     ("deepseek_v4", 4096, 43, 256, 129280): frozenset({"deepseek-v4-flash"}),
+    ("lfm2", 2048, 30, None, 128000): frozenset({"lfm2.5-2.6b"}),
+    ("lfm2_moe", 2048, 24, 32, 128000): frozenset({"lfm2.5-8b-a1b"}),
 }
 
 
@@ -206,6 +208,20 @@ _RECOMMENDATIONS = (
     ),
     _RecommendationSeed(
         "qwen3.8-27b",
+        "dflash2",
+        "z-lab/Qwen3.8-27B-DFlash2",
+        "Qwen 3.8 27B DFlash2",
+        3_848_817_896,
+    ),
+    _RecommendationSeed(
+        "qwen3.8-27b",
+        "dspark",
+        "RadixArk/Qwen3.8-27B-DSpark",
+        "Qwen 3.8 27B DSpark",
+        2_718_576_122,
+    ),
+    _RecommendationSeed(
+        "qwen3.8-27b",
         "mtp",
         "mlx-community/Qwen3.8-27B-MTP-bf16",
         "Qwen 3.8 27B MTP",
@@ -300,6 +316,20 @@ _RECOMMENDATIONS = (
         3_598_959_572,
         target_owner = "mlx-community",
         requires_missing_native_mtp = True,
+    ),
+    _RecommendationSeed(
+        "lfm2.5-2.6b",
+        "dspark",
+        "LiquidAI/LFM2.5-2.6B-DSpark",
+        "LFM2.5 2.6B DSpark",
+        655_421_522,
+    ),
+    _RecommendationSeed(
+        "lfm2.5-8b-a1b",
+        "dspark",
+        "LiquidAI/LFM2.5-8B-A1B-DSpark",
+        "LFM2.5 8B-A1B DSpark",
+        655_421_522,
     ),
 )
 
@@ -995,6 +1025,9 @@ def _target_identity_key(value: str) -> Optional[str]:
         if f"gemma4{variant}" in compact:
             dashed_variant = variant.replace("ba", "b-a", 1) if "ba" in variant else variant
             matches.add(f"gemma4-{dashed_variant}")
+    for variant, dashed in (("8ba1b", "8b-a1b"), ("26b", "2.6b")):
+        if f"lfm25{variant}" in compact:
+            matches.add(f"lfm2.5-{dashed}")
     if "museglimmer30b" in compact:
         matches.add("muse-glimmer-30b")
     if "deepseekv4flash" in compact:
@@ -1058,6 +1091,8 @@ def _target_vendor_owner(target_key: str) -> str:
         return "meta-models"
     if target_key.startswith("deepseek"):
         return "deepseek-ai"
+    if target_key.startswith("lfm"):
+        return "liquidai"
     return "poolside"
 
 
