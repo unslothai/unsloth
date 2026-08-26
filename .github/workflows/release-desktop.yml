@@ -316,6 +316,14 @@ jobs:
               print(f'Refusing to republish {tag}: it already carries desktop assets.', file=sys.stderr)
               for name in clashing:
                   print(f'  gh release delete-asset {tag} {name} --yes', file=sys.stderr)
+              if 'latest.json' in clashing:
+                  # Deleting a manifest off whichever release is currently GitHub
+                  # latest 404s every update check until this workflow finishes.
+                  print(
+                      '  latest.json is the live updater manifest: only delete it once '
+                      f'{tag} is not the GitHub latest release.',
+                      file=sys.stderr,
+                  )
               sys.exit(1)
           PY
 
@@ -1709,6 +1717,14 @@ jobs:
               print(f'Refusing to republish {tag}: it already carries desktop assets.', file=sys.stderr)
               for name in clashing:
                   print(f'  gh release delete-asset {tag} {name} --yes', file=sys.stderr)
+              if 'latest.json' in clashing:
+                  # Deleting a manifest off whichever release is currently GitHub
+                  # latest 404s every update check until this workflow finishes.
+                  print(
+                      '  latest.json is the live updater manifest: only delete it once '
+                      f'{tag} is not the GitHub latest release.',
+                      file=sys.stderr,
+                  )
               sys.exit(1)
           PY
 

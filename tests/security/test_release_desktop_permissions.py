@@ -263,19 +263,26 @@ def test_the_updater_workflow_skips_releases_without_desktop_bundles():
     gate = steps["Check for desktop bundles"]
     assert gate["id"] == "gate"
     assert gate["env"]["REPAIR_POINTER"] == "${{ inputs.repair_pointer }}"
-    assert '[ "$REPAIR_POINTER" = \'true\' ] && [ "$stable_count" -eq 0 ]' in gate["run"]
+    # A repair dispatch must never be turned away by the state it exists to repair.
+    assert '[ "$REPAIR_POINTER" = \'true\' ]' in gate["run"]
     assert "grep -q '^Unsloth-Desktop-'" in gate["run"]
     # An unreadable release must not look like one that simply has no bundles.
     assert "refusing to advance the channel" in gate["run"]
-    for name in (
-        "Unsloth-Desktop-MacOS.dmg",
-        "Unsloth-Desktop-Linux.AppImage",
-        "Unsloth-Desktop-Ubuntu.deb",
-        "Unsloth-Desktop-Windows.exe",
+    # Completeness is judged over the four public downloads, in whichever naming
+    # scheme the release was built with. tests/security/test_desktop_updater_pointer.py
+    # executes the classification; these only pin that all three steps share it.
+    for step_name in (
+        "Check for desktop bundles",
+        "Validate updater metadata",
+        "Mark published release as GitHub latest",
     ):
-        assert name in gate["run"]
-        assert name in steps["Validate updater metadata"]["run"]
-        assert name in steps["Mark published release as GitHub latest"]["run"]
+        run = steps[step_name]["run"]
+        for suffix in ("MacOS.dmg", "Linux.AppImage", "Ubuntu.deb", "Windows.exe"):
+            assert suffix in run, (step_name, suffix)
+        assert "Unsloth-Desktop" in run, step_name
+        # Every release published before the rename carries the version in each
+        # filename; refusing those would make the workflow unusable on all of them.
+        assert "version" in run, step_name
 
     for name in (
         "Download updater metadata",
