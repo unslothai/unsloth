@@ -1033,9 +1033,7 @@ def test_a_multi_gpu_adapter_declines_rather_than_booking_it_all_on_device_0(spa
     # inputs produced a real plan -- all 8 blocks spilled, -ngl -1 --fit off
     # emitted -- with the whole 3 GiB booked on device 0 and nothing on device 1,
     # which is where the adapter rows for that card's layers actually go.
-    two_cards = dict(
-        model_size = 21 * GIB, kv = 2 * GIB, gpus = [(0, 10 * 1024), (1, 3 * 1024)]
-    )
+    two_cards = dict(model_size = 21 * GIB, kv = 2 * GIB, gpus = [(0, 10 * 1024), (1, 3 * 1024)])
     for flag in ("--lora", "--control-vector"):
         assert _plan(stub, extra_args = [flag, str(adapter)], **two_cards) is None
 
