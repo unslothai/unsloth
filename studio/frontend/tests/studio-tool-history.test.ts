@@ -2,9 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-import { hasOnlyStudioOwnedToolHistory } from "../src/features/chat/utils/studio-tool-history.ts";
+import {
+  hasOnlyStudioOwnedToolHistory,
+  studioToolHistoryRequestFields,
+} from "../src/features/chat/utils/studio-tool-history.ts";
 
 function assistantToolCall(provenance?: unknown) {
   return {
@@ -47,4 +52,37 @@ test("mixed or unmarked tool history remains a client contract", () => {
     ]),
     false,
   );
+});
+
+test("only studio-owned tool history emits the request marker", () => {
+  assert.deepEqual(
+    studioToolHistoryRequestFields([assistantToolCall({ source: "local" })]),
+    { studio_tool_history: true },
+  );
+  assert.deepEqual(
+    studioToolHistoryRequestFields([
+      assistantToolCall({ source: "local" }),
+      assistantToolCall({ source: "external" }),
+    ]),
+    {},
+  );
+});
+
+test("the context recount forwards the tool-history request fields", () => {
+  const source = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/chat/utils/refresh-context-usage.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  const historyBuild = source.indexOf(
+    "const countHistory = await buildLocalTokenCountHistory(",
+  );
+  const countRequest = source.indexOf("await countChatInputTokens({", historyBuild);
+  const historySpread = source.indexOf("...countHistory", countRequest);
+  assert.ok(historyBuild >= 0 && countRequest > historyBuild);
+  assert.ok(historySpread > countRequest);
 });

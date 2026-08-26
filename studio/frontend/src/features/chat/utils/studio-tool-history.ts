@@ -33,3 +33,11 @@ export function hasOnlyStudioOwnedToolHistory(
   }
   return sawToolCall;
 }
+
+export function studioToolHistoryRequestFields(
+  messages: readonly ToolHistoryMessage[],
+): { studio_tool_history?: true } {
+  return hasOnlyStudioOwnedToolHistory(messages)
+    ? { studio_tool_history: true }
+    : {};
+}
