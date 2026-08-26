@@ -23,26 +23,26 @@ import {
 } from "@/components/ui/sheet";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { BulbIcon } from "@/lib/bulb-icon";
 import { openLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Telescope02Icon } from "@hugeicons/core-free-icons";
+import {
+  DashedLineCircleIcon as CircleDashedIcon,
+  Telescope02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowDown,
   ArrowUp,
-  BookOpen,
-  Brain,
   Check,
   ChevronDown,
   ExternalLink,
   FileText,
-  Globe2,
+  GlobeIcon,
   Pencil,
   Plus,
   RotateCcw,
-  Search,
-  Square,
   Trash2,
   X,
 } from "lucide-react";
@@ -318,12 +318,18 @@ function ActivityIcon({
   if (activity.state === "failed")
     return <X className={cn(className, "text-destructive")} />;
   if (activity.state === "cancelled")
-    return <Square className={cn(className, "text-muted-foreground")} />;
-  if (activity.kind === "reasoning") return <Brain className={className} />;
+    return (
+      <HugeiconsIcon
+        icon={CircleDashedIcon}
+        className={cn(className, "text-muted-foreground")}
+      />
+    );
+  if (activity.kind === "reasoning")
+    return <BulbIcon className={className} />;
   if (activity.kind === "plan") return <FileText className={className} />;
   if (activity.kind === "report") return <FileText className={className} />;
-  if (activity.action === "fetch") return <BookOpen className={className} />;
-  if (activity.action === "search") return <Search className={className} />;
+  if (activity.action === "fetch" || activity.action === "search")
+    return <GlobeIcon className={className} />;
   return <Check className={className} />;
 }
 
@@ -433,7 +439,7 @@ const ActivityRow = memo(function ActivityRow({
           onClick={() => openLink(source.url)}
           className="group/source flex w-full items-start gap-2 rounded-xl px-2 py-2 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Globe2 className="mt-0.5 size-3.5 shrink-0" />
+          <GlobeIcon className="mt-0.5 size-3.5 shrink-0" />
           <span className="min-w-0 flex-1">
             <span className="block line-clamp-2 break-words font-medium text-foreground/85">
               {source.title || source.url}
@@ -487,11 +493,11 @@ const ActivityRow = memo(function ActivityRow({
       >
         <CollapsibleTrigger
           disabled={!hasDetails}
-          className="group/activity flex min-h-10 w-full items-start gap-2 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+          className="group/activity relative flex min-h-10 w-full items-center gap-2 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
         >
           <span
             className={cn(
-              "absolute left-0 top-3 flex size-[15px] items-center justify-center rounded-full bg-background text-muted-foreground",
+              "absolute -left-7 top-1/2 flex size-[15px] -translate-y-1/2 items-center justify-center rounded-full bg-background text-muted-foreground",
               activity.kind === "step" &&
                 activity.state !== "failed" &&
                 "bg-primary/10 text-primary",
@@ -503,14 +509,14 @@ const ActivityRow = memo(function ActivityRow({
           <span className="min-w-0 flex-1 break-words text-ui-13p5 font-medium leading-5 text-foreground/90">
             {activity.title}
           </span>
-          <time className="mt-0.5 shrink-0 text-ui-10p5 tabular-nums text-muted-foreground">
+          <time className="shrink-0 text-ui-10p5 tabular-nums text-muted-foreground">
             {new Date(activity.createdAt).toLocaleTimeString([], {
               hour: "numeric",
               minute: "2-digit",
             })}
           </time>
           {hasDetails ? (
-            <ChevronDown className="mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/activity:rotate-180" />
+            <ChevronDown className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/activity:rotate-180" />
           ) : null}
         </CollapsibleTrigger>
         {hasDetails ? <CollapsibleContent>{content}</CollapsibleContent> : null}
@@ -927,7 +933,7 @@ export function ResearchActivityPanel({
                 className="mt-1 flex items-center gap-1 text-ui-10p5 font-medium text-primary/75"
                 title={websiteLimitTitle}
               >
-                <Globe2 className="size-3" />
+                <GlobeIcon className="size-3" />
                 <span className="truncate">{websiteLimitLabel}</span>
               </p>
             ) : null}
