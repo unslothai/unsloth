@@ -571,8 +571,13 @@ _LOADABLE_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".gguf", ".pt", "
 
 
 def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
-    """True when model_name's snapshot is cached and loadable: a config (config.json or
-    modules.json) plus at least one weight file, not a metadata-only partial cache. No network."""
+    """True when the cached snapshot can satisfy a cache-only transformer load.
+
+    App-managed downloads are checked against their exact manifest. Imported or
+    legacy caches without one fall back to the same weight-family/index scanner
+    used by Hub inventory, so one shard of a cancelled checkpoint is not enough.
+    No network.
+    """
     snapshot = hf_cache_snapshot_dir(model_name)
     if snapshot is None:
         return False
@@ -581,14 +586,73 @@ def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
         if not has_config:
             return False
 
+        weights = []
         for path in snapshot.rglob("*"):
             if path.suffix.lower() not in _LOADABLE_WEIGHT_SUFFIXES or not path.is_file():
                 continue
             if not is_appledouble_metadata(path):
-                return True
+                weights.append(path)
+        if not weights:
+            return False
+
+        # A managed full-snapshot transfer records its exact expected files
+        # before downloading. A cancel marker or unfinished blob is conclusive
+        # even when config.json and the first finalized shard already exist.
+        repo_dir = snapshot.parent.parent
+        hub_cache = repo_dir.parent
+        repo_id = model_name
+        try:
+            from huggingface_hub.file_download import repo_folder_name
+            for candidate in st_repo_id_candidates(model_name):
+                if repo_folder_name(repo_id = candidate, repo_type = "model") == repo_dir.name:
+                    repo_id = candidate
+                    break
+        except Exception:
+            pass
+        from hub.utils import download_manifest
+        from hub.utils.hf_cache_state import repo_cache_dir_has_incomplete_blobs
+
+        if download_manifest.has_cancel_marker(
+            "model", repo_id, None, hub_cache = hub_cache
+        ) or repo_cache_dir_has_incomplete_blobs(repo_dir):
+            return False
+        manifest = download_manifest.read_manifest("model", repo_id, None, hub_cache = hub_cache)
+        if manifest is not None:
+            return download_manifest.verify_against_disk(manifest, snapshot).ok
+
+        from hub.utils.inventory_scan import snapshot_holds_a_complete_payload
+
+        # SentenceTransformer modules may keep their own transformer checkpoint
+        # below 0_Transformer/. Validate every module subtree that carries weights;
+        # config-only modules such as Pooling need no weight family of their own.
+        if (snapshot / "modules.json").is_file():
+            import json
+            from pathlib import PurePosixPath
+
+            try:
+                modules = json.loads((snapshot / "modules.json").read_text(encoding = "utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                return False
+            roots = []
+            for module in modules if isinstance(modules, list) else []:
+                value = module.get("path") if isinstance(module, dict) else None
+                if not isinstance(value, str) or "\\" in value:
+                    continue
+                relative = PurePosixPath(value or ".")
+                if relative.is_absolute() or ".." in relative.parts:
+                    continue
+                root = snapshot.joinpath(*relative.parts)
+                if any(path == root or root in path.parents for path in weights):
+                    roots.append(root)
+            if roots:
+                return all(snapshot_holds_a_complete_payload(root, quants = False) for root in roots)
+        return snapshot_holds_a_complete_payload(snapshot, quants = False)
     except OSError:
         return False
-    return False
+    except Exception:
+        # Completeness is a safety property here: an unprovable partial must keep
+        # the pending marker so the loader cannot silently reach the network.
+        return False
 
 
 # ── Client-safe error helpers ───────────────────────────────────

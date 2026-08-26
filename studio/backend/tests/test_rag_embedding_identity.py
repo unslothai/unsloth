@@ -107,6 +107,45 @@ def test_re_uploading_after_a_backend_change_reindexes_instead_of_deduping(
         conn.close()
 
 
+def test_re_resolved_backend_reindexes_before_the_stale_backend_is_rebuilt(
+    rag_home, stub_embeddings, monkeypatch, tmp_path
+):
+    """Saving a new backend changes the next encode before that encode rebuilds
+    the resident backend. Admission must predict the replacement or identical
+    bytes dedupe against the old vector space and never reach the rebuild."""
+    choice = {"backend": "sentence-transformers"}
+    monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(
+        embeddings,
+        "_resolve_auto_for_model",
+        lambda model_name = None: choice["backend"],
+    )
+    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
+    monkeypatch.setattr(embeddings, "_forced_backend_model", None)
+    monkeypatch.setattr(embeddings, "_backend", embeddings._SentenceTransformersBackend())
+    monkeypatch.setattr(
+        embeddings,
+        "_backend_key",
+        embeddings._backend_cache_key("auto", "sentence-transformers"),
+    )
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda: False)
+
+    scope = store.kb_scope("K4-resolved")
+    first = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
+
+    # The same model now has a GGUF plan, but the first encode has not yet had a
+    # chance to replace the resident ST wrapper.
+    choice["backend"] = "llama-server"
+    second = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
+
+    assert second != first
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, second)["embedding_model"].startswith("llama-server:")
+    finally:
+        conn.close()
+
+
 def test_ingestion_records_the_backend_that_took_over_mid_job(
     rag_home, stub_embeddings, monkeypatch, tmp_path
 ):

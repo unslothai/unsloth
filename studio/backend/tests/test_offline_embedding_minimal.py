@@ -253,6 +253,84 @@ def test_snapshot_is_loadable_with_config_and_weights(hf_cache):
     assert hf_cache_snapshot_is_loadable("org/emb") is True
 
 
+def test_snapshot_is_not_loadable_with_only_one_weight_shard(hf_cache):
+    _make_cache(
+        hf_cache,
+        "org/partial-shards",
+        {
+            "config.json": "{}",
+            "model.safetensors.index.json": (
+                '{"weight_map":{"a":"model-00001-of-00002.safetensors",'
+                '"b":"model-00002-of-00002.safetensors"}}'
+            ),
+            "model-00001-of-00002.safetensors": "first",
+        },
+    )
+    assert hf_cache_snapshot_is_loadable("org/partial-shards") is False
+
+
+def test_snapshot_is_loadable_with_a_complete_indexed_weight_family(hf_cache):
+    _make_cache(
+        hf_cache,
+        "org/complete-shards",
+        {
+            "config.json": "{}",
+            "model.safetensors.index.json": (
+                '{"weight_map":{"a":"model-00001-of-00002.safetensors",'
+                '"b":"model-00002-of-00002.safetensors"}}'
+            ),
+            "model-00001-of-00002.safetensors": "first",
+            "model-00002-of-00002.safetensors": "second",
+        },
+    )
+    assert hf_cache_snapshot_is_loadable("org/complete-shards") is True
+
+
+def test_cancel_marker_keeps_a_snapshot_pending(monkeypatch, hf_cache):
+    _make_cache(hf_cache, "org/cancelled", {"config.json": "{}", "model.safetensors": "x"})
+    from hub.utils import download_manifest
+
+    monkeypatch.setattr(download_manifest, "has_cancel_marker", lambda *a, **k: True)
+    assert hf_cache_snapshot_is_loadable("org/cancelled") is False
+
+
+def test_snapshot_manifest_requires_every_expected_file(monkeypatch, hf_cache):
+    _make_cache(hf_cache, "org/manifest-partial", {"config.json": "{}", "model.safetensors": "x"})
+    from hub.utils import download_manifest
+
+    manifest = download_manifest.Manifest(
+        repo_type = "model",
+        repo_id = "org/manifest-partial",
+        variant = None,
+        started_at = "",
+        expected_files = (
+            download_manifest.ExpectedFile(path = "config.json", size = 2),
+            download_manifest.ExpectedFile(path = "model.safetensors", size = 1),
+            download_manifest.ExpectedFile(path = "tokenizer.json", size = 10),
+        ),
+    )
+    monkeypatch.setattr(download_manifest, "read_manifest", lambda *a, **k: manifest)
+
+    assert hf_cache_snapshot_is_loadable("org/manifest-partial") is False
+
+
+def test_sentence_transformer_module_shards_must_be_complete(hf_cache):
+    _make_cache(
+        hf_cache,
+        "org/st-partial",
+        {
+            "modules.json": _modules_json("0_Transformer"),
+            "0_Transformer/config.json": "{}",
+            "0_Transformer/model.safetensors.index.json": (
+                '{"weight_map":{"a":"model-00001-of-00002.safetensors",'
+                '"b":"model-00002-of-00002.safetensors"}}'
+            ),
+            "0_Transformer/model-00001-of-00002.safetensors": "first",
+        },
+    )
+    assert hf_cache_snapshot_is_loadable("org/st-partial") is False
+
+
 def test_snapshot_is_not_loadable_when_metadata_only(hf_cache):
     # A partial cache (refs/main resolves but no weights) is not loadable.
     _make_cache(hf_cache, "org/partial", {"config.json": "{}", "modules.json": MODULES_JSON})

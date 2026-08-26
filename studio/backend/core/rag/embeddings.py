@@ -915,6 +915,30 @@ def _identity(is_llama: bool, name: str) -> str:
     return config.embedding_identity("sentence-transformers", name)
 
 
+def _identity_backend_is_llama(name: str) -> bool:
+    """Backend the next encode for ``name`` will use.
+
+    The security-facing active-backend probe deliberately reports a resident
+    backend even when Settings has just selected another one. Identity prediction
+    is different: ``_get_backend`` will replace a resident backend whose cache key
+    no longer matches the stored per-model resolution, so admission/deduplication
+    must predict that replacement before the first encode happens.
+    """
+    try:
+        raw = _raw_backend()
+        with _backend_lock:
+            backend = _backend
+            cached_key = _backend_key
+            forced = _forced_backend_key if _forced_backend_model == name else None
+        resolved = forced or (_resolve_auto_for_model(name) if raw in _AUTO_ALIASES else raw)
+        expected_key = _backend_cache_key(raw, resolved)
+        if backend is None or cached_key == expected_key:
+            return active_backend_is_llama()
+        return resolved in _LLAMA_ALIASES
+    except Exception:  # noqa: BLE001 - identity prediction must not block ingestion
+        return active_backend_is_llama()
+
+
 def embedding_identity(model_name: str | None = None) -> str:
     """Identity of the vectors this process produces right now.
 
@@ -923,7 +947,8 @@ def embedding_identity(model_name: str | None = None) -> str:
     companion with its own pooling, and this process can switch to it at runtime. Two
     spaces under one label is an index that answers with the wrong documents and says
     nothing about it."""
-    return _identity(active_backend_is_llama(), model_name or config.effective_embedding_model())
+    name = model_name or config.effective_embedding_model()
+    return _identity(_identity_backend_is_llama(name), name)
 
 
 def _is_llama_backend(backend) -> bool:
