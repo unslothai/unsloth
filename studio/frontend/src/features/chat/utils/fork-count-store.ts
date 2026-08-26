@@ -57,8 +57,8 @@ async function refresh(threadId: string): Promise<void> {
   // belongs to every chat the app creates, saved ones included.
   //
   // Skipped because the answer is already the empty map the entry holds, not to dodge a
-  // failure: fork_counts_for_thread GROUPs chat_threads and never looks the source up, so an
-  // unknown thread is answered 200 with an empty map. Only GET /threads/{id} 404s.
+  // failure: fork_counts_for_thread GROUPs chat_threads without looking the source up, so an
+  // unknown thread gets 200 and an empty map. Only GET /threads/{id} 404s.
   if (isThreadIncognito(threadId)) return;
   const seq = ++entry.seq;
   let counts: Counts;

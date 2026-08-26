@@ -3,10 +3,10 @@
 
 // ThreadScopedSettingsSync reads "this chat has no row yet" off `threads.newThreadId`, which
 // only discriminates while assistant-ui clears that field on new -> regular. Upstream has
-// shipped versions where it never was (assistant-ui issue #2292, 0.10.35 / 0.10.36); a bump
-// that brings it back makes the guard permanently true and silently restores the bug this PR
-// fixes. The sibling tests are source-text regexes and would stay green through that, so this
-// drives the shipped reducer instead.
+// shipped versions where it never was (assistant-ui issue #2292, 0.10.35 / 0.10.36), and such
+// a bump would make the guard permanently true and silently restore the bug this PR fixes.
+// The sibling tests are source-text regexes and would stay green through it, so this drives
+// the shipped reducer instead.
 
 import assert from "node:assert/strict";
 import test from "node:test";
