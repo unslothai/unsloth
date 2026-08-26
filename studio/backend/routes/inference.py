@@ -13592,8 +13592,13 @@ async def _load_model_impl(
                 inference_identifier = model_identifier,
             )
 
+        is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
+
         # Ahead of the reuse path and the unload, so a rejected setting never costs the user a
-        # resident model. Auto never refuses and needs a quantization not settled yet.
+        # resident model. Auto never refuses and needs a quantization not settled yet. The GGUF
+        # answer is taken from the request rather than the configuration, which is resolved
+        # further down: the reuse path below returns on these same two signals, so a drafter
+        # judged only there would be dropped without a word whenever the server is already up.
         _mlx_resolution = None
         if normalize_mlx_speculative_mode(request.mlx_speculative_mode) != "auto":
             _mlx_resolution = await asyncio.to_thread(
@@ -13601,12 +13606,12 @@ async def _load_model_impl(
                 model_identifier,
                 request.mlx_speculative_mode,
                 request.mlx_draft_model,
+                is_gguf = bool(request.gguf_variant or is_direct_gguf_request),
             )
             _mlx_refusal = mlx_speculative_refusal(request.mlx_speculative_mode, _mlx_resolution)
             if _mlx_refusal is not None:
                 raise HTTPException(status_code = 400, detail = _mlx_refusal)
 
-        is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
         if llama_backend.is_loaded and (request.gguf_variant or is_direct_gguf_request):
             reused = _reuse_loaded_gguf(
                 _active_gguf_intent(
@@ -13740,6 +13745,22 @@ async def _load_model_impl(
             raise HTTPException(
                 status_code = 400,
                 detail = f"Invalid model identifier: {model_log_label}",
+            )
+
+        # The first point the target is known, and ahead of every path that can return without
+        # reaching the resolution below -- the GGUF reuse branch returns from inside it. A launch
+        # that carries no drafter reads none of the drafter fields, so an explicit request that is
+        # answered any later is not refused but dropped in silence.
+        _mlx_ineligible = mlx_speculative_target_ineligible(
+            is_vision = getattr(config, "is_vision", False),
+            is_lora = getattr(config, "is_lora", False),
+            is_gguf = getattr(config, "is_gguf", False),
+        )
+        if _mlx_ineligible is not None and normalize_mlx_speculative_mode(
+            request.mlx_speculative_mode
+        ) not in {"off", "auto"}:
+            raise HTTPException(
+                status_code = 400, detail = mlx_speculative_refusal_text(_mlx_ineligible)
             )
 
         # Resolve inherited extras once before command-dependent preflights.
@@ -13883,6 +13904,7 @@ async def _load_model_impl(
             request.mlx_draft_model,
             is_vision = getattr(config, "is_vision", False),
             is_lora = getattr(config, "is_lora", False),
+            is_gguf = getattr(config, "is_gguf", False),
         )
         _mlx_refusal = mlx_speculative_refusal(request.mlx_speculative_mode, _mlx_resolution)
         if _mlx_refusal is not None:
@@ -14977,6 +14999,7 @@ async def validate_model(
         _mlx_ineligible = mlx_speculative_target_ineligible(
             is_vision = getattr(config, "is_vision", False),
             is_lora = getattr(config, "is_lora", False),
+            is_gguf = getattr(config, "is_gguf", False),
         )
         if _mlx_ineligible is not None and normalize_mlx_speculative_mode(
             request.mlx_speculative_mode

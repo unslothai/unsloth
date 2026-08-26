@@ -5396,15 +5396,17 @@ def test_a_load_reuses_the_drafter_its_caller_pinned(
 
 
 @pytest.mark.parametrize(
-    "vision,lora,reason",
+    "vision,lora,gguf,reason",
     [
-        (False, False, "mlx_vlm_target_required"),
-        (True, True, "mlx_speculative_lora_unsupported"),
-        (True, False, None),
+        (False, False, False, "mlx_vlm_target_required"),
+        (True, True, False, "mlx_speculative_lora_unsupported"),
+        # A vision GGUF loads through llama-server, which reads none of the drafter fields.
+        (True, False, True, "mlx_vlm_target_required"),
+        (True, False, False, None),
     ],
 )
 def test_a_request_is_ruled_out_on_the_terms_its_own_load_will_apply(
-    monkeypatch, vision, lora, reason
+    monkeypatch, vision, lora, gguf, reason
 ):
     # Answered from the configuration here and from the built model inside the load. Disagreeing,
     # Auto reloads forever for a drafter the load drops, and explicit requests fail after teardown.
@@ -5415,14 +5417,14 @@ def test_a_request_is_ruled_out_on_the_terms_its_own_load_will_apply(
     monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
 
     auto = spec.resolve_mlx_speculative_request(
-        "org/target", "auto", None, is_vision = vision, is_lora = lora
+        "org/target", "auto", None, is_vision = vision, is_lora = lora, is_gguf = gguf
     )
     assert (auto.method, auto.draft_model, auto.reason) == (
         ("off", None, reason) if reason else ("mtp", "builtin://mtp", None)
     )
     # The preflight is the one asked ahead of the unload, so the refusal has to reach it too.
     assert spec.mlx_speculative_request_reason(
-        "org/target", "mtp", "builtin://mtp", is_vision = vision, is_lora = lora
+        "org/target", "mtp", "builtin://mtp", is_vision = vision, is_lora = lora, is_gguf = gguf
     ) == reason
 
 

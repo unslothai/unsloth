@@ -2558,6 +2558,7 @@ def mlx_speculative_request_reason(
     *,
     is_vision: bool = True,
     is_lora: bool = False,
+    is_gguf: bool = False,
 ) -> Optional[str]:
     """Why an MLX speculative request cannot be served, or None when it can.
 
@@ -2573,6 +2574,7 @@ def mlx_speculative_request_reason(
         draft_model,
         is_vision = is_vision,
         is_lora = is_lora,
+        is_gguf = is_gguf,
     ).reason
 
 
@@ -2631,14 +2633,16 @@ def mlx_speculative_target_ineligible(
     is_vision: bool,
     is_lora: bool,
     is_distributed: bool = False,
+    is_gguf: bool = False,
 ) -> Optional[str]:
     """Why this launch can run no drafter, or None when it can.
 
-    Speculation rides the mlx-vlm path, which a text-only target never takes; an adapter or a
-    sharded placement does take it but has no drafter support. Asked wherever a drafter is
-    resolved, so the answer a request is given is the one its load reaches.
+    Speculation rides the mlx-vlm path, which a text-only target never takes and a GGUF launch
+    leaves for llama-server; an adapter or a sharded placement does take it but has no drafter
+    support. Asked wherever a drafter is resolved, so the answer a request is given is the one
+    its load reaches.
     """
-    if not is_vision:
+    if is_gguf or not is_vision:
         return "mlx_vlm_target_required"
     if is_lora:
         return "mlx_speculative_lora_unsupported"
@@ -2686,21 +2690,24 @@ def resolve_mlx_speculative_request(
     *,
     is_vision: bool = True,
     is_lora: bool = False,
+    is_gguf: bool = False,
     options: Optional[dict[str, Any]] = None,
 ) -> MlxSpeculativeResolution:
     """Pin one concrete local drafter, or ordinary MLX when Auto finds none.
 
     Auto never fails a load: with no loadable candidate it resolves to Off carrying the reason.
 
-    ``is_vision`` and ``is_lora`` describe the target the load will build. Omitted, the answer is
-    about the drafters alone; passed, a target no drafter can attach to is answered here rather
-    than after the resident model has been torn down for it.
+    ``is_vision``, ``is_lora`` and ``is_gguf`` describe the target the load will build. Omitted,
+    the answer is about the drafters alone; passed, a target no drafter can attach to is answered
+    here rather than after the resident model has been torn down for it.
     """
     requested = normalize_mlx_speculative_mode(mode)
     if requested == "off":
         return MlxSpeculativeResolution("off", None)
     # Ahead of every cache read: no drafter changes an answer the target itself settles.
-    ineligible = mlx_speculative_target_ineligible(is_vision = is_vision, is_lora = is_lora)
+    ineligible = mlx_speculative_target_ineligible(
+        is_vision = is_vision, is_lora = is_lora, is_gguf = is_gguf
+    )
     if ineligible is not None:
         return MlxSpeculativeResolution(
             "off" if requested == "auto" else requested, None, ineligible
