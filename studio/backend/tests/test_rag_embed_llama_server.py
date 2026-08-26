@@ -1196,3 +1196,142 @@ def test_the_hub_resolve_runs_inside_the_unreachable_guard(monkeypatch, tmp_path
     backend = LlamaServerBackend()
     assert backend._resolve_model_path() == "/cache/bge-F16.gguf"
     assert active == []
+
+
+def test_a_split_family_is_downloaded_whole_not_just_its_first_shard(monkeypatch, tmp_path):
+    """`-m shard1` makes llama-server open the siblings itself.
+
+    Fetching only the picked file leaves it starting against a repo it just
+    downloaded and failing on the shards that were never asked for.
+    """
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    names = [
+        "bge-F16-00001-of-00003.gguf",
+        "bge-F16-00002-of-00003.gguf",
+        "bge-F16-00003-of-00003.gguf",
+    ]
+    fetched = []
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda *a, **k: names)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda **kw: (fetched.append(kw["filename"]), f"/cache/{kw['filename']}")[1],
+    )
+    backend = LlamaServerBackend()
+
+    assert backend._resolve_model_path() == "/cache/bge-F16-00001-of-00003.gguf"
+    assert fetched == names
+
+
+def test_a_torn_published_family_is_skipped_rather_than_half_fetched(monkeypatch, tmp_path):
+    """Shard 2 missing on the hub is not a repo to adopt; the candidate loop moves on."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "list_repo_files",
+        lambda *a, **k: ["bge-F16-00001-of-00003.gguf", "bge-F16-00003-of-00003.gguf"],
+    )
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda **kw: pytest.fail("a torn family must not be fetched"),
+    )
+    backend = LlamaServerBackend()
+    with pytest.raises(RuntimeError, match = "no .gguf embedder found"):
+        backend._resolve_model_path()
+
+
+def test_a_local_dir_of_shards_resolves_to_shard_one_in_any_scan_order(monkeypatch, tmp_path):
+    """`iterdir` guarantees no order, and every shard name here is the same length,
+    so a length-only sort let the directory decide which shard llama-server opened."""
+    names = [
+        "bge-F16-00001-of-00003.gguf",
+        "bge-F16-00002-of-00003.gguf",
+        "bge-F16-00003-of-00003.gguf",
+    ]
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    orders = [names, list(reversed(names)), [names[1], names[2], names[0]]]
+    real_iterdir = Path.iterdir
+    for index, order in enumerate(orders):
+        d = tmp_path / f"dir{index}"
+        d.mkdir()
+        for name in order:
+            (d / name).write_bytes(b"")
+        monkeypatch.setattr(
+            Path,
+            "iterdir",
+            lambda self, o = order, r = real_iterdir: (
+                iter([self / n for n in o]) if self == d else r(self)
+            ),
+        )
+        picked = LlamaServerBackend._resolve_local_gguf(str(d))
+        assert Path(picked).name == "bge-F16-00001-of-00003.gguf"
+
+
+def test_a_local_dir_with_a_torn_family_is_refused(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    d = tmp_path / "torn"
+    d.mkdir()
+    for n in ("bge-F16-00001-of-00003.gguf", "bge-F16-00003-of-00003.gguf"):
+        (d / n).write_bytes(b"")
+    with pytest.raises(RuntimeError, match = "no .gguf file found"):
+        LlamaServerBackend._resolve_local_gguf(str(d))
+
+
+def test_a_local_dir_still_skips_mmproj_and_appledouble_sidecars(tmp_path):
+    """macOS copies leave `._name` sidecars beside the real file."""
+    d = tmp_path / "local"
+    d.mkdir()
+    (d / "mmproj-bge.gguf").write_bytes(b"")
+    (d / "._bge.gguf").write_bytes(b"\x00\x05\x16\x07")
+    (d / "bge.gguf").write_bytes(b"")
+    assert Path(LlamaServerBackend._resolve_local_gguf(str(d))).name == "bge.gguf"
+
+
+def test_a_wsl_drive_letter_dir_resolves_like_the_other_local_probes(monkeypatch, tmp_path):
+    """`normalize_path` maps `C:\\...` onto `/mnt/c/...` under WSL, and the
+    sentence-transformers and settings probes already run through it. This one did
+    not, so the same folder was a local model on one backend and an unknown Hub repo
+    on the other, failing with "No GGUF weights found in 'C:\\models\\...-GGUF'"."""
+    from utils.paths import path_utils
+
+    drive = tmp_path / "mnt" / "c" / "models"
+    drive.mkdir(parents = True)
+    (drive / "bge-F16.gguf").write_bytes(b"")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(path_utils, "_IS_WSL", True)
+    monkeypatch.setattr(
+        path_utils,
+        "normalize_path",
+        lambda p: (
+            str(tmp_path / "mnt" / p[0].lower() / p[3:].replace("\\", "/"))
+            if len(p) >= 3 and p[1] == ":"
+            else p
+        ),
+    )
+    import utils.paths as paths_pkg
+
+    monkeypatch.setattr(paths_pkg, "normalize_path", path_utils.normalize_path)
+
+    picked = LlamaServerBackend._resolve_local_gguf(r"C:\models")
+    assert picked is not None and Path(picked).name == "bge-F16.gguf"
+
+
+def test_a_posix_path_is_untouched_by_the_normalization(tmp_path):
+    """The rewrite must not start mangling ordinary POSIX paths."""
+    d = tmp_path / "plain"
+    d.mkdir()
+    (d / "bge.gguf").write_bytes(b"")
+    assert Path(LlamaServerBackend._resolve_local_gguf(str(d))).name == "bge.gguf"

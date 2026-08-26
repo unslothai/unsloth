@@ -1877,7 +1877,12 @@ def _local_gguf_backend_error(model: str) -> str | None:
     None when not applicable. ``force`` skips this check like HF verification."""
     from pathlib import Path
 
-    if not Path(model).expanduser().is_dir():
+    from utils.paths import normalize_path
+
+    # Normalized as _resolve_local_gguf normalizes it, or a WSL drive-letter dir
+    # reads as "not a directory" here and the 409 that would have explained it
+    # never fires.
+    if not Path(normalize_path(model)).expanduser().is_dir():
         return None
     from core.rag.embed_llama_server import LlamaServerBackend
 
@@ -2033,51 +2038,20 @@ def _gguf_files_for_pick(names: list[str], picked: str) -> Optional[list[str]]:
     """The complete downloadable file family for a picked GGUF.
 
     llama-server opens split siblings implicitly, so a single selected shard is
-    not a usable plan. Incomplete published families are rejected.
+    not a usable plan. Incomplete published families are rejected. Deferred to the
+    loader so the plan offered here and the transfer it performs name one set.
     """
-    from pathlib import PurePosixPath
-    from utils.models.model_config import _GGUF_SPLIT_FILE_RE
+    from core.rag.embed_llama_server import LlamaServerBackend
 
-    path = PurePosixPath(picked)
-    match = _GGUF_SPLIT_FILE_RE.match(path.name)
-    if match is None:
-        return [picked]
-    total = int(match.group("total"))
-    if total < 1:
-        return None
-    found: dict[int, str] = {}
-    for name in names:
-        other = PurePosixPath(name)
-        other_match = _GGUF_SPLIT_FILE_RE.match(other.name)
-        if (
-            other.parent != path.parent
-            or other_match is None
-            or other_match.group("prefix").casefold() != match.group("prefix").casefold()
-            or other_match.group("total") != match.group("total")
-        ):
-            continue
-        index = int(other_match.group("index"))
-        if 1 <= index <= total:
-            found[index] = name
-    if len(found) != total:
-        return None
-    return [found[index] for index in range(1, total + 1)]
+    return LlamaServerBackend._split_family(names, picked)
 
 
 def _pick_downloadable_gguf(names: list[str]) -> Optional[list[str]]:
     """Pick the loader's preferred GGUF, skipping torn split families."""
     from core.rag.embed_llama_server import LlamaServerBackend
 
-    remaining = list(names)
-    while remaining:
-        picked = LlamaServerBackend._pick_gguf(remaining)
-        if not picked:
-            return None
-        files = _gguf_files_for_pick(names, picked)
-        if files:
-            return files
-        remaining = [name for name in remaining if name != picked]
-    return None
+    _picked, files = LlamaServerBackend._pick_complete_gguf(names)
+    return files or None
 
 
 def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
