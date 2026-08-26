@@ -119,6 +119,11 @@ def _copy_redacted(source: BinaryIO, destination: BinaryIO, max_bytes: int) -> N
         write_piece(held_cr, terminated = True)
     if record or omitted:
         write_piece(b"", terminated = True)
+    if remaining:
+        raise OSError(
+            getattr(errno, "ESTALE", errno.EIO),
+            "Log source was truncated during export",
+        )
 
 
 def _safe_error_summary(exc: Exception) -> str:

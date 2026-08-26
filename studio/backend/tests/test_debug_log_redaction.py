@@ -120,6 +120,7 @@ KEEP = [
     "tokenizer: eos_token = <|eot_id|>, bos_token = <|begin_of_text|>",
     "pad_token_id=128004 set from config",
     "note: cookie support is disabled in this webview",
+    "headers=[('Cookie', 'disabled')]",
     "reading secret_sauce_path from the recipe",
     "hint: password authentication is not configured for this endpoint",
     "downloaded checkpoint-sk-9f8a7b6c5d4e3f2a1b0c9d8e7f.safetensors",
@@ -260,6 +261,14 @@ def test_the_fields_after_a_masked_header_survive(line, expected):
         (
             r'payload="{\"Cookie\":\"session=abc123def456SECRET\"}"',
             r'payload="{\"Cookie\":\"<redacted>\"}"',
+        ),
+        (
+            "headers=[('Cookie', 'session=abc123def456SECRET')]",
+            "headers=[('Cookie', '<redacted>')]",
+        ),
+        (
+            "headers=[('Authorization', 'Bearer abc123def456SECRET')]",
+            "headers=[('Authorization', 'Bearer <redacted>')]",
         ),
         ("password=correct horse battery staple", "password=<redacted>"),
         ('{"password":"null"}', '{"password":"<redacted>"}'),

@@ -126,6 +126,11 @@ _ESCAPED_QUOTED_KV_RE = re.compile(
     r"(?P<sep>\\(?P<key_quote>[\"'])\s*[:=]\s*\\(?P<quote>[\"']))"
     r"(?P<rest>[^\r\n]*)"
 )
+_QUOTED_HEADER_PAIR_RE = re.compile(
+    r"(?i)(?P<key_quote>[\"'])(?P<key>(?:" + _SECRET_KEYS + r"|(?:set-)?cookie))"
+    r"(?P=key_quote)(?P<sep>\s*,\s*)(?P<quote>[\"'])"
+    r"(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
+)
 _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?P<val>[^\"'\s,}\]]+)"
@@ -299,6 +304,27 @@ def _redact_escaped_quoted_kv(match: re.Match[str]) -> str:
     return f"{match.group('key')}{match.group('sep')}{REDACTED}"
 
 
+def _redact_quoted_header_pair(match: re.Match[str]) -> str:
+    value = match.group("val")
+    if match.group("key").lower().endswith("cookie"):
+        if not _COOKIE_PAIR_RE.match(value.strip()):
+            return match.group(0)
+        masked = REDACTED
+    else:
+        scheme, separator, credential = value.partition(" ")
+        masked = (
+            f"{scheme}{separator}{REDACTED}"
+            if scheme.lower() in _SCHEMES and separator and credential.strip()
+            else REDACTED
+        )
+    key_quote = match.group("key_quote")
+    value_quote = match.group("quote")
+    return (
+        f"{key_quote}{match.group('key')}{key_quote}{match.group('sep')}"
+        f"{value_quote}{masked}{value_quote}"
+    )
+
+
 def _redact_shaped(match: re.Match[str]) -> str:
     if not _looks_like_credential(match.group(3)):
         return match.group(0)
@@ -362,6 +388,7 @@ def redact_log_text(text: str) -> str:
     text = _SCHEME_RE.sub(_redact_shaped, text)
     text = _COOKIE_RE.sub(_redact_cookie, text)
     text = _ESCAPED_QUOTED_KV_RE.sub(_redact_escaped_quoted_kv, text)
+    text = _QUOTED_HEADER_PAIR_RE.sub(_redact_quoted_header_pair, text)
     text = _QUOTED_KV_RE.sub(_redact_quoted_kv, text)
     text = _UNTERMINATED_QUOTED_KV_RE.sub(_redact_unterminated_quoted_kv, text)
     text = _PLAIN_SCALAR_KV_RE.sub(_redact_kv, text)

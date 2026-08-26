@@ -150,10 +150,12 @@ def test_an_api_key_session_cannot_read_the_logs():
 def test_export_contains_every_visible_source_and_masks_credentials(client):
     secret = "hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345"
     cookie_secret = "abc123def456COOKIESECRET"
+    pair_cookie_secret = "abc123def456PAIRSECRET"
     redis_secret = "correct-horse-battery"
     server = _seed_server_log(
         f"server line\ntoken={secret}\n"
         rf'payload="{{\"Cookie\":\"session={cookie_secret}\"}}"'
+        f"\nheaders=[('Cookie', 'session={pair_cookie_secret}')]"
         f"\nredis://:{redis_secret}@localhost:6379/0\n"
     )
     llama = _seed_llama_log("llama runner line\n")
@@ -171,6 +173,7 @@ def test_export_contains_every_visible_source_and_masks_credentials(client):
     assert "llama runner line" in exported
     assert secret not in exported
     assert cookie_secret not in exported
+    assert pair_cookie_secret not in exported
     assert redis_secret not in exported
     assert "hf_<redacted>" in exported
 
@@ -610,6 +613,33 @@ def test_export_stops_at_each_sources_enumerated_size(tmp_path):
     finally:
         output.close()
     assert exported == initial
+
+
+def test_export_warns_when_a_source_shrinks_after_enumeration(tmp_path):
+    from utils.debug_log_export import build_debug_log_archive
+    from utils.debug_log_sources import LogSource
+
+    path = tmp_path / "shrinking.log"
+    path.write_bytes(b"abc")
+    source = LogSource(
+        id = "server:shrinking",
+        family = "server",
+        label = path.name,
+        realpath = str(path),
+        size_bytes = 10,
+        modified_at = 0,
+        is_current = False,
+    )
+
+    output = build_debug_log_archive([source])
+    try:
+        with zipfile.ZipFile(output) as archive:
+            assert archive.read("server/shrinking.log") == b"abc"
+            warning = archive.read("EXPORT_WARNINGS.txt").decode("utf-8")
+    finally:
+        output.close()
+    assert "server/shrinking.log" in warning
+    assert "OSError" in warning
 
 
 def test_export_refuses_a_source_replaced_by_a_symlink(tmp_path):
