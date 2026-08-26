@@ -297,7 +297,14 @@ def test_forced_web_search_tool_choice_is_sent_until_a_tool_runs(monkeypatch):
                         "name": "web_search",
                         "parameters": {"type": "object", "properties": {}},
                     },
-                }
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "python",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                },
             ],
             tool_choice = {"type": "function", "function": {"name": "web_search"}},
             max_tool_iterations = 5,
@@ -305,7 +312,8 @@ def test_forced_web_search_tool_choice_is_sent_until_a_tool_runs(monkeypatch):
         )
     )
 
-    assert payloads[0]["tool_choice"] == {"type": "function", "function": {"name": "web_search"}}
+    assert payloads[0]["tool_choice"] == "required"
+    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["web_search"]
     assert payloads[1]["tool_choice"] == "auto"
     assert any(
         event.get("type") == "tool_start" and event.get("tool_name") == "web_search"

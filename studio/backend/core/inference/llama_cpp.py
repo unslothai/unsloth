@@ -25774,6 +25774,7 @@ class LlamaCppBackend:
             # in the first 1-2 chunks without a non-streaming penalty.
             from core.inference.chat_template_helpers import (
                 append_assistant_turn,
+                forced_tool_name,
                 neutralize_control_markup,
                 neutralize_control_markup_in_messages,
                 reconciled_tool_choice,
@@ -25920,16 +25921,27 @@ class LlamaCppBackend:
             # As in the passthrough builder: if every name carried markup the catalog is
             # now empty, and "tools": [] would still advertise tool use.
             if safe_tools:
-                payload["tools"] = safe_tools
                 # Local GGUF owns Studio's web_search; honour a forced function
                 # so enabled_tools: ["web_search"] plus tool_choice pinning that
                 # name actually calls it (#9730). Default stays auto.
                 requested_choice = "auto" if tool_choice is None else tool_choice
                 if _executed_any and requested_choice not in ("auto", "none"):
                     requested_choice = "auto"
-                payload["tool_choice"] = (
+                requested_choice = (
                     reconciled_tool_choice(requested_choice, tools, safe_tools) or "auto"
                 )
+                forced_name = forced_tool_name(requested_choice)
+                if forced_name:
+                    matching_tools = [
+                        tool
+                        for tool in safe_tools
+                        if (tool.get("function") or {}).get("name") == forced_name
+                    ]
+                    if matching_tools:
+                        safe_tools = matching_tools
+                        requested_choice = "required"
+                payload["tools"] = safe_tools
+                payload["tool_choice"] = requested_choice
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
             # Re-checked per iteration: once a tool result is appended the partial is
