@@ -4,7 +4,7 @@
 // Containers the backend can reach wav/mp3 from: wav and mp3 pass through, the
 // rest decode via libsndfile, or librosa (ffmpeg) when libsndfile cannot.
 export const AUDIO_ACCEPT =
-  "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/opus,audio/flac,audio/mp4,audio/aac,audio/aiff,audio/x-aiff,audio/x-caf,audio/x-ms-wma,audio/amr";
+  "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/opus,audio/flac,audio/mp4,audio/aac,audio/aiff,audio/x-aiff,audio/x-caf,audio/x-ms-wma,audio/amr,audio/3gpp";
 // Keep in sync with STT_AUDIO_RAW_MAX_BYTES in the backend upload limits.
 const MAX_AUDIO_SIZE_MB = 25;
 export const MAX_AUDIO_SIZE = MAX_AUDIO_SIZE_MB * 1024 * 1024;

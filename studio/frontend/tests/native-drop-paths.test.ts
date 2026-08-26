@@ -11,7 +11,9 @@ import {
 } from "../src/features/chat/open-document-accept.ts";
 import {
   TEXT_ATTACHMENT_ACCEPT,
+  TEXT_ATTACHMENT_BASENAMES,
   TEXT_ATTACHMENT_EXTENSIONS,
+  isBinaryPropertyList,
 } from "../src/features/chat/text-attachment-accept.ts";
 import {
   dequeueNativeAttachments,
@@ -51,6 +53,8 @@ const RUST_VIDEO_ATTACHMENT_EXTS_RE =
   /VIDEO_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_TEXT_ATTACHMENT_EXTS_RE =
   /TEXT_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
+const RUST_TEXT_ATTACHMENT_NAMES_RE =
+  /TEXT_ATTACHMENT_NAMES[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_VIDEO_MIME_RE = /Some\("(video\/[^"]+)"\)/g;
 const DOTTED_EXTENSION_RE = /"(\.[^"]+)"/g;
 const RUST_EXTENSION_RE = /"([^"]+)"/g;
@@ -676,6 +680,45 @@ test("a dropped source file attaches instead of being refused", () => {
   }
   const mixed = classifyDropPaths(["/src/a.cs", "/notes/report.pdf"]);
   assert.equal(mixed.kind, "docs");
+});
+
+test("the conventional extensionless Containerfile attaches as text", () => {
+  for (const path of ["/project/Containerfile", "C:\\project\\CONTAINERFILE"]) {
+    assert.equal(classifyDropPaths([path]).kind, "docs", path);
+    assert.equal(isComposerAttachmentName(path), true, path);
+  }
+});
+
+test("frontend and Rust accept the same extensionless text names", () => {
+  const rustSource = readFileSync(
+    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
+    "utf8",
+  );
+  const rust = [
+    ...(rustSource
+      .match(RUST_TEXT_ATTACHMENT_NAMES_RE)?.[1]
+      .matchAll(RUST_EXTENSION_RE) ?? []),
+  ]
+    .map((match) => match[1])
+    .sort();
+  assert.deepEqual(rust, [...TEXT_ATTACHMENT_BASENAMES].sort());
+});
+
+test("binary plists are distinguished from XML plists", async () => {
+  assert.equal(
+    await isBinaryPropertyList(new File(["bplist00payload"], "settings.plist")),
+    true,
+  );
+  assert.equal(
+    await isBinaryPropertyList(
+      new File(['<?xml version="1.0"?><plist/>'], "settings.plist"),
+    ),
+    false,
+  );
+  assert.equal(
+    await isBinaryPropertyList(new File(["bplist00payload"], "settings.txt")),
+    false,
+  );
 });
 
 test("RAG documents keep their existing route", () => {

@@ -17401,10 +17401,37 @@ def _sniff_audio_container(raw: bytes) -> Optional[str]:
     directly (so we can forward them untouched), else None (needs transcoding)."""
     if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WAVE":
         return "wav"
-    # mp3: ID3 tag, or an MPEG audio frame sync (no other accepted format leads
-    # with 0xFF, so the simple sync check doesn't collide).
-    if raw[:3] == b"ID3" or (len(raw) >= 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0):
-        return "mp3"
+
+    # An ID3v2 tag can prefix any MPEG audio layer (and occasionally AAC), so
+    # skip it before deciding whether the first frame is actually Layer III.
+    # The four size bytes are synchsafe: their top bit must be clear.
+    frame_offset = 0
+    if (
+        len(raw) >= 10
+        and raw[:3] == b"ID3"
+        and not any(byte & 0x80 for byte in raw[6:10])
+    ):
+        tag_size = 0
+        for byte in raw[6:10]:
+            tag_size = (tag_size << 7) | byte
+        frame_offset = 10 + tag_size
+        # ID3v2.4's optional footer is not included in the stored tag size.
+        if raw[3] == 4 and raw[5] & 0x10:
+            frame_offset += 10
+
+    # MPEG audio frame header: the 11-bit sync is followed by version and layer
+    # bits. Layer III is binary 01; Layer II (MP2) is 10, while ADTS AAC uses
+    # the reserved MPEG layer value 00. Only Layer III is safe to pass as mp3.
+    if len(raw) >= frame_offset + 2:
+        first, second = raw[frame_offset : frame_offset + 2]
+        version = (second >> 3) & 0x03
+        layer = (second >> 1) & 0x03
+        is_mpeg_sync = first == 0xFF and (second & 0xE0) == 0xE0
+        if is_mpeg_sync and version != 0x01 and layer == 0x01:
+            return "mp3"
+
+    # ID3-only or malformed MPEG data must go through the decoder too; treating
+    # the tag itself as proof of MP3 would reintroduce the MP2/AAC collision.
     return None
 
 

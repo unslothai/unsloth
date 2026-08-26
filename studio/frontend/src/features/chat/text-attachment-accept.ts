@@ -315,6 +315,30 @@ export const TEXT_ATTACHMENT_EXTENSIONS = [
   ".patch",
 ];
 
+/** Conventional extensionless names represented by dotted picker tokens. */
+export const TEXT_ATTACHMENT_BASENAMES = ["containerfile"] as const;
+const PATH_SEPARATOR_RE = /[\\/]/;
+
+/** Whether a path or filename belongs to the inline UTF-8 text adapter. */
+export function isTextAttachmentName(path: string): boolean {
+  const segments = path.split(PATH_SEPARATOR_RE);
+  const name = (segments[segments.length - 1] || path).toLowerCase();
+  if ((TEXT_ATTACHMENT_BASENAMES as readonly string[]).includes(name)) {
+    return true;
+  }
+  const dot = name.lastIndexOf(".");
+  return dot > 0 && TEXT_ATTACHMENT_EXTENSIONS.includes(name.slice(dot));
+}
+
+/** Binary Apple property lists are not UTF-8 despite sharing `.plist`. */
+export async function isBinaryPropertyList(file: File): Promise<boolean> {
+  if (!file.name.toLowerCase().endsWith(".plist")) {
+    return false;
+  }
+  const header = new Uint8Array(await file.slice(0, 8).arrayBuffer());
+  return header.length === 8 && String.fromCharCode(...header) === "bplist00";
+}
+
 // MIME is unreliable for source files, so match by extension too.
 export const TEXT_ATTACHMENT_ACCEPT = [
   "text/plain,text/markdown,text/csv,text/tab-separated-values,text/xml,text/json,text/css",

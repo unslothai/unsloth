@@ -5,8 +5,8 @@ use crate::native_backend_lease::{
 };
 use crate::native_path_policy::{
     classify_artifact_path, classify_native_attachment_path, classify_native_dataset_path,
-    classify_native_document_folder, classify_native_model_path, reveal_target, ClassifiedPath,
-    NativeArtifactKind,
+    classify_native_document_folder, classify_native_model_path, is_binary_property_list,
+    is_text_attachment_name, reveal_target, ClassifiedPath, NativeArtifactKind,
 };
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -626,6 +626,9 @@ pub struct NativeAttachmentFile {
 }
 
 fn attachment_mime_type(path: &Path) -> Option<&'static str> {
+    if is_text_attachment_name(path) {
+        return Some("text/plain");
+    }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
         "jpg" | "jpeg" => Some("image/jpeg"),
@@ -676,6 +679,72 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
     }
 }
 
+fn bmff_box_payloads<'a>(data: &'a [u8], wanted: &[u8; 4]) -> Vec<&'a [u8]> {
+    let mut payloads = Vec::new();
+    let mut offset = 0usize;
+    while data.len().saturating_sub(offset) >= 8 {
+        let size32 = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap());
+        let box_type = &data[offset + 4..offset + 8];
+        let (header_size, box_size) = match size32 {
+            0 => (8usize, data.len() - offset),
+            1 if data.len().saturating_sub(offset) >= 16 => {
+                let size64 = u64::from_be_bytes(data[offset + 8..offset + 16].try_into().unwrap());
+                let Ok(size) = usize::try_from(size64) else {
+                    break;
+                };
+                (16, size)
+            }
+            1 => break,
+            size => (8, size as usize),
+        };
+        if box_size < header_size || box_size > data.len() - offset {
+            break;
+        }
+        if box_type == wanted {
+            payloads.push(&data[offset + header_size..offset + box_size]);
+        }
+        offset += box_size;
+    }
+    payloads
+}
+
+/// 3GP is an ISO BMFF container shared by audio recordings and videos. Prefer
+/// video when any video track exists; an audio-only file belongs to the audio
+/// adapter registered ahead of video in the composer.
+fn is_audio_only_3gp(raw: &[u8]) -> bool {
+    let mut has_audio = false;
+    let mut has_video = false;
+    for moov in bmff_box_payloads(raw, b"moov") {
+        for trak in bmff_box_payloads(moov, b"trak") {
+            for mdia in bmff_box_payloads(trak, b"mdia") {
+                for hdlr in bmff_box_payloads(mdia, b"hdlr") {
+                    if hdlr.len() < 12 {
+                        continue;
+                    }
+                    match &hdlr[8..12] {
+                        b"soun" => has_audio = true,
+                        b"vide" => has_video = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    has_audio && !has_video
+}
+
+fn attachment_payload_mime_type(path: &Path, raw: &[u8]) -> Option<&'static str> {
+    if path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("3gp"))
+        && is_audio_only_3gp(raw)
+    {
+        return Some("audio/3gpp");
+    }
+    attachment_mime_type(path)
+}
+
 // Same shape as the clipboard reader: never traverse a link swapped in after
 // the path was validated, and never block the caller on a FIFO.
 fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
@@ -721,11 +790,14 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     let path = &entry.canonical_path;
     let mime_type = attachment_mime_type(path)
         .ok_or_else(|| "Only chat attachments can be read inline.".to_string())?;
-    let is_text_attachment = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-        .is_some_and(|ext| crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&ext.as_str()));
+    let is_text_attachment = is_text_attachment_name(path)
+        || path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .is_some_and(|ext| {
+                crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&ext.as_str())
+            });
     let max_bytes = if is_text_attachment {
         MAX_NATIVE_TEXT_BYTES
     } else if mime_type.starts_with("image/") {
@@ -762,6 +834,13 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     if bytes.len() as u64 > max_bytes {
         return Err("Attachment is unavailable or too large.".to_string());
     }
+    if is_binary_property_list(path, &bytes) {
+        return Err(
+            "Binary property lists are not supported. Export the .plist as XML first.".to_string(),
+        );
+    }
+    let mime_type = attachment_payload_mime_type(path, &bytes)
+        .ok_or_else(|| "Only chat attachments can be read inline.".to_string())?;
     let name = path
         .file_name()
         .map(|value| value.to_string_lossy().into_owned())
@@ -842,6 +921,73 @@ mod tests {
             assert!(payload.name.ends_with(&format!(".{ext}")));
             let _ = fs::remove_file(path);
         }
+    }
+
+    fn bmff_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(8 + payload.len()).unwrap();
+        let mut boxed = Vec::with_capacity(size as usize);
+        boxed.extend_from_slice(&size.to_be_bytes());
+        boxed.extend_from_slice(kind);
+        boxed.extend_from_slice(payload);
+        boxed
+    }
+
+    fn three_gp_with_tracks(handlers: &[[u8; 4]]) -> Vec<u8> {
+        let mut moov_payload = Vec::new();
+        for handler in handlers {
+            let mut hdlr_payload = vec![0; 8];
+            hdlr_payload.extend_from_slice(handler);
+            let mdia = bmff_box(b"mdia", &bmff_box(b"hdlr", &hdlr_payload));
+            moov_payload.extend_from_slice(&bmff_box(b"trak", &mdia));
+        }
+        bmff_box(b"moov", &moov_payload)
+    }
+
+    #[test]
+    fn audio_only_3gp_read_is_stamped_as_audio() {
+        let path = temp_path("recording").with_extension("3gp");
+        let raw = three_gp_with_tracks(&[*b"soun"]);
+        fs::write(&path, &raw).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let payload = read_attachment_payload(&entry).unwrap();
+        assert_eq!(payload.mime_type, "audio/3gpp");
+        assert_eq!(BASE64.decode(payload.base64).unwrap(), raw);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn any_video_track_keeps_3gp_on_the_video_adapter() {
+        for handlers in [&[*b"vide"][..], &[*b"soun", *b"vide"][..]] {
+            let raw = three_gp_with_tracks(handlers);
+            assert!(!is_audio_only_3gp(&raw));
+            assert_eq!(
+                attachment_payload_mime_type(Path::new("clip.3gp"), &raw),
+                Some("video/3gpp")
+            );
+        }
+    }
+
+    #[test]
+    fn binary_plist_read_is_rejected() {
+        let path = temp_path("settings").with_extension("plist");
+        fs::write(&path, b"bplist00payload").unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let Err(error) = read_attachment_payload(&entry) else {
+            panic!("expected binary plist read to fail");
+        };
+        assert!(error.contains("Binary property lists"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn extensionless_containerfile_reads_as_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Containerfile");
+        fs::write(&path, b"FROM scratch").unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let payload = read_attachment_payload(&entry).unwrap();
+        assert_eq!(payload.mime_type, "text/plain");
+        assert_eq!(BASE64.decode(payload.base64).unwrap(), b"FROM scratch");
     }
 
     #[test]

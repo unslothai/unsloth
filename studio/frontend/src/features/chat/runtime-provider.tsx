@@ -57,6 +57,7 @@ import {
   getDocxAttachmentError,
 } from "./attachment-content";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
+import { isBinaryPropertyList } from "./text-attachment-accept";
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
@@ -362,6 +363,12 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   accept = TEXT_ATTACHMENT_ACCEPT;
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
+    if (await isBinaryPropertyList(file)) {
+      const reason =
+        "Binary property lists aren't supported. Export the .plist as XML before attaching it.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
     return {
       id: crypto.randomUUID(),
       type: "document",

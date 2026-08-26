@@ -357,6 +357,20 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "patch",
 ];
 
+/// Conventional extensionless names represented by dotted frontend accept tokens.
+pub const TEXT_ATTACHMENT_NAMES: &[&str] = &["containerfile"];
+
+pub fn is_text_attachment_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .is_some_and(|name| TEXT_ATTACHMENT_NAMES.contains(&name.as_str()))
+}
+
+pub fn is_binary_property_list(path: &Path, bytes: &[u8]) -> bool {
+    has_extension(path, "plist") && bytes.starts_with(b"bplist00")
+}
+
 /// Vision chat image attachments; keep in sync with `drop-paths.ts` `CHAT_IMAGE_DROP_ACCEPT`.
 pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
 
@@ -388,8 +402,8 @@ pub fn classify_native_attachment_path(path: &Path) -> Result<ClassifiedPath, St
     if classified.path_type != NativePathType::File {
         return Err("Only files can be attached to a chat.".to_string());
     }
-    let supported =
-        accepted_attachment_exts().any(|ext| has_extension(&classified.canonical_path, ext));
+    let supported = is_text_attachment_name(&classified.canonical_path)
+        || accepted_attachment_exts().any(|ext| has_extension(&classified.canonical_path, ext));
     if !supported {
         return Err(format!(
             "Unsupported attachment type. Supported: {}",
@@ -1015,6 +1029,35 @@ mod tests {
         fs::write(&path, b"MZ").unwrap();
         assert!(classify_native_attachment_path(&path).is_err());
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn extensionless_containerfile_is_an_attachment() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Containerfile");
+        fs::write(&path, b"FROM scratch").unwrap();
+
+        let classified = classify_native_attachment_path(&path).unwrap();
+        assert_eq!(classified.path_kind, NativePathKind::Attachment);
+        assert!(classified
+            .allowed_operations
+            .contains(&NativePathOperation::Attach));
+    }
+
+    #[test]
+    fn binary_property_list_magic_is_detected() {
+        assert!(is_binary_property_list(
+            Path::new("settings.plist"),
+            b"bplist00payload"
+        ));
+        assert!(!is_binary_property_list(
+            Path::new("settings.plist"),
+            b"<?xml version=\"1.0\"?>"
+        ));
+        assert!(!is_binary_property_list(
+            Path::new("settings.txt"),
+            b"bplist00payload"
+        ));
     }
 
     // The composer takes audio uploads, so a dropped one has to classify too.

@@ -5,7 +5,10 @@ import {
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
   isOpenDocumentAttachmentName,
 } from "../chat/open-document-accept.ts";
-import { TEXT_ATTACHMENT_EXTENSIONS } from "../chat/text-attachment-accept.ts";
+import {
+  TEXT_ATTACHMENT_EXTENSIONS,
+  isTextAttachmentName,
+} from "../chat/text-attachment-accept.ts";
 import { RAG_UPLOAD_ACCEPT } from "../rag/types/rag.ts";
 
 const DOC_EXTS = RAG_UPLOAD_ACCEPT.split(",").map((ext) =>
@@ -23,11 +26,13 @@ export function isComposerAttachmentName(path: string): boolean {
 }
 
 function isTextDropName(path: string): boolean {
-  // Rust classifies on Path::extension, which a dotfile like ".env" has none of.
   const name = nativeFileName(path).toLowerCase();
+  if (!name.includes(".") && isTextAttachmentName(name)) {
+    return true;
+  }
+  // A dotfile like ".env" has no extension and remains unsupported.
   const dot = name.lastIndexOf(".");
-  if (dot <= 0) return false;
-  return TEXT_EXTS.includes(name.slice(dot));
+  return dot > 0 && TEXT_EXTS.includes(name.slice(dot));
 }
 
 /** Vision chat attachments; keep in sync with `shared-composer` `IMAGE_ACCEPT`. */

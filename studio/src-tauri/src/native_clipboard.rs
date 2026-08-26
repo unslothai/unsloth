@@ -62,6 +62,9 @@ fn validate_png_bytes(png: &[u8]) -> Result<(), String> {
 }
 
 fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
+    if crate::native_path_policy::is_text_attachment_name(path) {
+        return Some("text/plain");
+    }
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
@@ -72,7 +75,7 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "md" | "markdown" | "mdx" => "text/markdown",
         "csv" => "text/csv",
         "html" | "htm" => "text/html",
-        "xml" => "application/xml",
+        "xml" | "plist" => "application/xml",
         "svg" => "image/svg+xml",
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",
@@ -165,6 +168,9 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
             || bytes.is_empty()
             || bytes.len() as u64 > limit
         {
+            continue;
+        }
+        if crate::native_path_policy::is_binary_property_list(&path, &bytes) {
             continue;
         }
         remaining -= bytes.len() as u64;
@@ -384,6 +390,10 @@ mod tests {
             clipboard_file_mime_type(Path::new("notes.md")),
             Some("text/markdown")
         );
+        assert_eq!(
+            clipboard_file_mime_type(Path::new("Containerfile")),
+            Some("text/plain")
+        );
         assert_eq!(clipboard_file_mime_type(Path::new("unknown.bin")), None);
     }
 
@@ -422,6 +432,20 @@ mod tests {
         assert_eq!(files[0].mime_type, "text/markdown");
 
         assert_eq!(BASE64.decode(&files[0].base64).unwrap(), b"clipboard text");
+    }
+
+    #[test]
+    fn clipboard_skips_binary_plists_but_keeps_xml_plists() {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("binary.plist");
+        std::fs::write(&binary, b"bplist00payload").unwrap();
+        let xml = directory.path().join("xml.plist");
+        std::fs::write(&xml, b"<?xml version=\"1.0\"?><plist/>").unwrap();
+
+        let files = read_clipboard_files(vec![binary, xml]).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "xml.plist");
+        assert_eq!(files[0].mime_type, "application/xml");
     }
 
     #[test]
