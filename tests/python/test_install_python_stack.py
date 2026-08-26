@@ -2810,3 +2810,47 @@ class TestAFalseCutoffOnlyDisablesTheManagerThatAcceptsIt:
         for key in ("exclude-newer", "uploaded-prior-to"):
             assert ips._config_value_is_on("", key) is False, key
             assert ips._config_value_is_on("   ", key) is False, key
+
+
+class TestNoneIsAListSentinelNotABoolean:
+    """`:none:` empties a package list; to a boolean it is a value pip rejects.
+
+    Measured on pip 26.2.1: `PIP_NO_INDEX=:none:` exits with ":none: is not a valid
+    value for no-index option, please specify a boolean value like yes/no, true/false
+    or 1/0 instead". Reading it as off let the opt-out drop a variable that would
+    otherwise have stopped the command, which turns an install pip refuses into one
+    that can reach the network.
+    """
+
+    def test_none_does_not_switch_off_a_boolean_control(self):
+        for key in ips._BOOLEAN_POLICY_KEYS:
+            assert ips._config_value_is_on(":none:", key) is True, key
+
+    def test_none_still_empties_a_package_list(self):
+        for key in ("no-binary", "only-binary"):
+            assert ips._config_value_is_on(":none:", key) is False, key
+
+    def test_an_empty_value_is_off_for_every_kind_of_key(self):
+        for key in (None, "no-index", "no-binary", "exclude-newer"):
+            assert ips._config_value_is_on("", key) is False, key
+            assert ips._config_value_is_on("   ", key) is False, key
+
+    def test_the_opt_out_keeps_a_no_index_pip_would_reject(self, monkeypatch):
+        # The value is unusable, so the pinned step fails -- which is exactly what the
+        # opt-out promises. Dropping it would have let the same step succeed instead.
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        monkeypatch.setenv("PIP_NO_INDEX", ":none:")
+        monkeypatch.setenv("PIP_FIND_LINKS", "/op/wheels")
+        cmd = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+        env = ips._install_env_for_cmd(cmd)
+        assert env is not None
+        assert env.get("PIP_NO_INDEX") == ":none:"
+        assert env.get("PIP_FIND_LINKS") == "/op/wheels"
+
+    def test_the_default_path_still_scrubs_it(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+        monkeypatch.setenv("PIP_NO_INDEX", ":none:")
+        cmd = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+        env = ips._install_env_for_cmd(cmd)
+        assert env is not None
+        assert "PIP_NO_INDEX" not in env

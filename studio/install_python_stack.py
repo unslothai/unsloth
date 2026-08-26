@@ -4784,12 +4784,22 @@ def _config_value_is_on(value: str, key: "str | None" = None) -> bool:
 
     `key` selects the reading: without one the value is treated as a boolean, which is
     right for the plain flags this also parses (UV_NO_CONFIG and friends).
+
+    `:none:` empties a package LIST (`--no-binary :none:`), and means nothing to a
+    boolean. Measured on pip 26.2.1, PIP_NO_INDEX=:none: exits with ":none: is not a
+    valid value for no-index option, please specify a boolean value", so reading it as
+    off let the opt-out drop a variable that would otherwise have stopped the command,
+    turning an install pip refuses into one that can reach the network.
     """
     text = value.strip().lower()
-    if text in _EMPTY_POLICY_VALUES:
+    spelling = _policy_key_spelling(key) if key is not None else None
+    is_boolean = spelling is not None and spelling in _BOOLEAN_POLICY_KEYS
+    if not text:
         return False
-    if key is not None and _policy_key_spelling(key) not in _BOOLEAN_POLICY_KEYS:
-        return not (text == "false" and _policy_key_spelling(key) in _FALSE_DISABLES_KEYS)
+    if text in _EMPTY_POLICY_VALUES and not is_boolean:
+        return False
+    if spelling is not None and not is_boolean:
+        return not (text == "false" and spelling in _FALSE_DISABLES_KEYS)
     return text not in _OFF_VALUES
 
 
@@ -5262,7 +5272,13 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     # reach the network on a host that had said not to, which is the opposite of what
     # this branch scrubs the ADDITIVE mirror variables for. If the pinned artifact is
     # not in find-links the step fails, which is what the opt-out promises.
-    keep_offline = _respect_pm_policy() and _config_value_is_on(os.environ.get("PIP_NO_INDEX", ""))
+    # Read as the BOOLEAN it is: without the key this fell through to the generic
+    # reading, where `:none:` counts as empty and the variable was dropped even though
+    # pip rejects that value outright.
+    keep_offline = _respect_pm_policy() and _config_value_is_on(
+        os.environ.get("PIP_NO_INDEX", ""),
+        "no-index",
+    )
     for name in _UV_INDEX_ENV_VARS:
         # UV_CONFIG_FILE is an index variable only incidentally: measured, a file named
         # by it carrying `[pip] require-hashes = true` fails a pinned install, and
