@@ -4416,17 +4416,15 @@ def _extra_args_tensor_split(
     """Last-wins ``-ts`` / ``--tensor-split`` proportions, or None.
 
     llama.cpp copies these into ``splits`` verbatim and prefix-sums them
-    (llama-model.cpp:1436-1447), so they ARE the row-ownership weights -- the
-    same quantity ``split_weights_per_device`` carries. A malformed value parses
-    to None rather than raising, which puts the load back on the decline path.
+    (llama-model.cpp:1436-1447), so they ARE the row-ownership weights that
+    ``split_weights_per_device`` carries. Malformed parses to None rather than
+    raising, which puts the load back on the decline path.
 
-    The delimiter set is llama.cpp's own regex ``[,/]+`` (common/arg.cpp:2791-2804)
-    and nothing else, so ``-ts 3/1`` is exactly ``-ts 3,1`` to the child. Reading
-    it as one unparseable token returned None, which the caller cannot tell apart
-    from "no override" -- it would then plan on free-VRAM proportions while the
-    child ran 3:1. Inventing extra delimiters is the same bug pointing the other
-    way: ``std::stof`` stops at the first non-numeric character, so ``-ts 3;1`` is
-    ``[3, 0]`` to llama.cpp -- every layer on one card -- not ``[3, 1]``.
+    The delimiter set is llama.cpp's own ``[,/]+`` (common/arg.cpp:2791-2804) and
+    nothing else: ``-ts 3/1`` is exactly ``-ts 3,1`` to the child, while inventing
+    extra delimiters is the same bug pointing the other way -- ``std::stof`` stops
+    at the first non-numeric character, so ``-ts 3;1`` is ``[3, 0]``, not
+    ``[3, 1]``.
     """
     source_env = os.environ if env is None else env
     raw: Optional[str] = None
@@ -4447,15 +4445,11 @@ def _extra_args_tensor_split(
         parts = [float(p) for p in re.split(r"[,/]+", raw) if p.strip()]
     except ValueError:
         return None
-    # isfinite, not just >= 0: float() takes "nan" and "inf", and NaN then passes
-    # BOTH of the other tests (every comparison against NaN is false, and sum() of
-    # a NaN list is NaN, which is not <= 0). The caller turns these into row
-    # weights with int(round(p * scale)), where NaN raises ValueError and inf
-    # raises OverflowError, and nothing between here and load_model's caller
-    # catches either -- so a value llama.cpp itself merely degenerates on
-    # (std::stof accepts it, the prefix sums go NaN, upper_bound then puts every
-    # layer on device 0) would abort the load instead. Rejecting here routes it to
-    # the unparseable-tensor-split decline like any other value we cannot model.
+    # isfinite, not just >= 0: float() takes "nan"/"inf", and NaN passes BOTH the
+    # other tests (every comparison against NaN is false, sum() of a NaN list is
+    # NaN). The caller's int(round(p * scale)) would then raise ValueError /
+    # OverflowError with nothing catching it, aborting a load llama.cpp itself
+    # merely degenerates on. Rejecting here routes it to the unparseable decline.
     if not parts or any(not math.isfinite(p) or p < 0 for p in parts) or sum(parts) <= 0:
         return None
     return parts
@@ -9988,57 +9982,47 @@ class LlamaCppBackend:
     ) -> "list[int]":
         """Relative KV size per layer, or [] when the shape is uniform/unknown.
 
-        Only the RATIOS matter: the planner scales this to the byte-accurate
-        total it already has, so this never becomes a second, competing estimate
-        of the cache size. It exists because the total says nothing about WHERE
-        the big caches land, and on a multi-device split that is the whole
-        question -- a sliding-window layer holds a window's worth of cells while
-        a full-attention layer holds the entire context, ~100x more at 128K
-        against a 1K window (llama-kv-cache-iswa.cpp:69-104 builds the two caches
-        and filters each by hparams.is_swa(il)).
+        Only the RATIOS matter: the planner scales this to the byte-accurate total
+        it already has, so it never becomes a second, competing estimate of the
+        cache size. It exists because the total says nothing about WHERE the big
+        caches land, which on a multi-device split is the whole question -- a
+        sliding-window layer holds a window's worth of cells while a
+        full-attention layer holds the entire context, ~100x more at 128K against
+        a 1K window (llama-kv-cache-iswa.cpp:69-104).
 
         The cell geometry MUST be the one the total was priced at, so the launch
-        knobs that change it travel too. ``--swa-full`` collapses the two cache
-        sizes into one (an SWA layer then holds the full context, not a window),
-        and the compact SWA allowance is per-slot plus a micro-batch and padded
-        (_estimate_kv_cache_bytes path 3), not a bare ``min(window, n_ctx)``.
-        Pricing a ratio the total does not have moves cache bytes onto the wrong
-        card, which is a per-device shortfall under the ``--fit off`` the plan
-        pins.
+        knobs that change it travel too: ``--swa-full`` collapses the two cache
+        sizes into one, and the compact SWA allowance is per-slot plus a
+        micro-batch and padded (_estimate_kv_cache_bytes path 3), not a bare
+        ``min(window, n_ctx)``. Pricing a ratio the total does not have moves cache
+        bytes onto the wrong card, a per-device shortfall under the ``--fit off``
+        the plan pins.
 
-        Trailing layers that reuse an earlier layer's cache get weight 0: Gemma
-        3n / Gemma 4 set ``n_layer_kv_from_start = n_layer_all - shared_kv_layers``
-        (models/gemma4.cpp:10, models/gemma3n.cpp:9) and ``llama_hparams::has_kv``
-        returns false past it (llama-hparams.cpp:275-279), so those layers
-        allocate nothing. _estimate_kv_cache_bytes already stops at n_layers_kv;
-        giving them weight here would spread the same total over layers that hold
-        no cache and under-book the devices that hold the real ones.
+        Trailing layers that reuse an earlier layer's cache get weight 0: Gemma 3n
+        / Gemma 4 set ``n_layer_kv_from_start = n_layer_all - shared_kv_layers``
+        and ``llama_hparams::has_kv`` is false past it (llama-hparams.cpp:275-279),
+        so they allocate nothing. Giving them weight would spread the same total
+        over layers that hold no cache.
 
-        Only ever describes _estimate_kv_cache_bytes PATH 3. That function picks a
-        path before it ever looks at the window, and the earlier paths price a
-        different quantity entirely: path 1 (MLA) caches a single compressed K
-        latent per layer with NO V at all and no window/full distinction, path 2
-        (hybrid recurrent) caches only 1 in full_attention_interval layers. A
-        window-shaped vector against either total is not an approximation, it is a
-        different model of the cache, so answer [] and let the planner take the
-        abstain it has for exactly this. Reachable, not hypothetical: dots3note
-        reads KV_LORA_RANK and ATTENTION_SLIDING_WINDOW(_PATTERN) in the same
-        loader (models/dots3note.cpp:26, 35-38), so its GGUF carries the keys for
-        both readings.
+        Only ever describes _estimate_kv_cache_bytes PATH 3, which picks its path
+        before it looks at the window. The earlier paths price a different
+        quantity: path 1 (MLA) caches one compressed K latent per layer with NO V
+        and no window/full distinction, path 2 (hybrid recurrent) caches only 1 in
+        full_attention_interval layers. A window-shaped vector against either is a
+        different model of the cache, not an approximation, so answer [] and let
+        the planner abstain. Reachable, not hypothetical: dots3note reads
+        KV_LORA_RANK and ATTENTION_SLIDING_WINDOW(_PATTERN) in the same loader.
 
-        Deliberately omits the per-slot context-checkpoint extra, which lands on
-        SWA layers only, and it is not an omission at all once you look at the
-        total: llama.cpp's checkpoints are HOST buffers -- ``std::vector<uint8_t>
-        data_tgt`` filled by ``llama_state_seq_get_data_ext``
-        (common/common.h:1137-1147, common/common.cpp:2282-2297) -- so no VRAM
-        total this is scaled against contains them either. The two agree.
+        Omits the per-slot context-checkpoint extra deliberately: llama.cpp's
+        checkpoints are HOST buffers (common/common.cpp:2282-2297), so no VRAM
+        total this is scaled against contains them either.
         """
         pattern = self._sliding_window_pattern
         n_layers = self._n_layers or 0
         if not pattern or n_layers <= 0:
             return []
-        # Mirror _estimate_kv_cache_bytes' own branch order: whatever it returns
-        # BEFORE path 3 is a shape this vector cannot describe.
+        # Mirror _estimate_kv_cache_bytes' branch order: anything it returns before
+        # path 3 is a shape this vector cannot describe.
         if self._kv_lora_rank is not None:
             return []
         if self._ssm_inner_size is not None and self._full_attention_interval is not None:
@@ -10053,8 +10037,7 @@ class LlamaCppBackend:
             return []
         key_len_swa = self._kv_key_length_swa or key_len
         val_len_swa = self._kv_value_length_swa or val_len
-        # Same floor as _estimate_kv_cache_bytes, so a bad GGUF cannot zero the
-        # whole vector out.
+        # Same floor as _estimate_kv_cache_bytes: a bad GGUF cannot zero the vector.
         n_layers_kv = max(1, n_layers - (self._shared_kv_layers or 0))
         # Same cell layout the byte total was computed with.
         slots, streams, cells_per_stream = _kv_cache_cell_layout(n_ctx, n_parallel, kv_unified)
@@ -10067,15 +10050,13 @@ class LlamaCppBackend:
             swa_cells = max(1, _pad_kv_cells(min(cells_per_stream, swa_limit)) * streams)
         # With flash attention OFF llama.cpp cannot use a ragged V cache: every
         # layer's V is padded to hparams.n_embd_v_gqa_max() over the WHOLE model,
-        # which is what _estimate_kv_cache_bytes charges (_max_kv_value_width).
-        # That flattens the V half to a constant while the K half stays per-layer,
-        # so an unpadded vector prices a ratio the total does not have. Not an edge
-        # case on this path: load_model pins planned_flash_attn = False
-        # unconditionally (llama_cpp.py:16690) so the recovery that relaunches with
-        # FA off cannot OOM, so the PADDED branch is the only one the total ever
-        # takes. The K/V element sizes differ on the same branch (bpe_v is floored
-        # at f16 for a quantised cache), and with V constant across layers that
-        # asymmetry moves the ratio too, so carry both rather than cancelling one.
+        # which is what _estimate_kv_cache_bytes charges (_max_kv_value_width). The
+        # V half goes constant while K stays per-layer, so an unpadded vector
+        # prices a ratio the total does not have. Not an edge case: load_model pins
+        # planned_flash_attn = False unconditionally (llama_cpp.py:16690), so the
+        # padded branch is the only one the total ever takes. bpe_v is floored at
+        # f16 for a quantised cache, and with V constant that asymmetry moves the
+        # ratio too, so carry both rather than cancelling one.
         bpe_k = _kv_bytes_per_elem(cache_type_kv)
         bpe_v = bpe_k if flash_attn else max(bpe_k, _kv_bytes_per_elem("f16"))
         padded_v_width = None if flash_attn else self._max_kv_value_width(val_len, val_len_swa)
@@ -19018,13 +18999,11 @@ class LlamaCppBackend:
                         # A pass-through --parallel is appended after Unsloth's own
                         # and wins, and both caches scale with it.
                         "n_parallel": int(n_parallel or 1),
-                        # Relative cache size per layer. Only the ratios are used
-                        # -- the planner scales them to kv_cache_bytes -- but on a
-                        # multi-device split they are what says WHERE the big
-                        # caches land, which the total cannot.
-                        # Same launch settings _kv_bytes priced kv_cache_bytes at:
-                        # the vector places that total, so it has to describe the
-                        # same cache geometry.
+                        # Relative cache size per layer: only the ratios are used
+                        # (the planner scales them to kv_cache_bytes), but they say
+                        # WHERE the big caches land, which the total cannot. Same
+                        # launch settings kv_cache_bytes was priced at, so the
+                        # vector describes the same cache geometry.
                         "kv_layer_weights": self._kv_layer_weights(
                             effective_ctx,
                             swa_full = swa_full,
@@ -23813,35 +23792,30 @@ class LlamaCppBackend:
             # drafter on the pinned card -- approving a footprint for the wrong
             # device, then pinning it with --fit off. cpu/none are not a pin.
             or _extra_args_draft_device_pin(extra_args)
-            # -sm row and -sm tensor both split WITHIN a tensor rather than
-            # handing out whole rows of layers, so the row model below does not
-            # describe them at all and there is nothing to plan against. `tensor`
-            # is a real accepted value (common/arg.cpp:2762-2776) and goes
+            # -sm row and -sm tensor split WITHIN a tensor rather than handing out
+            # whole rows of layers, so the row model below does not describe them.
+            # `tensor` is a real accepted value (common/arg.cpp:2762-2776) and goes
             # further than `row`: llama.cpp collapses every card into ONE meta
             # device (llama.cpp:157-215), so per-device budgets are meaningless,
-            # and llama.cpp's own fitter refuses it outright
-            # (common/fit.cpp:182-183). `none` and `layer` ARE describable and
-            # are handled after this gate.
+            # and llama.cpp's own fitter refuses it (common/fit.cpp:182-183).
+            # `none` and `layer` ARE describable and are handled after this gate.
             or (_extra_args_split_mode(extra_args, source_env) in ("row", "tensor"))
-            # An INHERITED -sm none may never reach the child. On a layer-split
-            # launch load_model reconciles the child env against its own decision
-            # and pops LLAMA_ARG_SPLIT_MODE (plus the paired LLAMA_ARG_TENSOR_SPLIT)
-            # whenever the inherited mode is not "layer"
-            # (llama_cpp.py:20452-20458), precisely so the env cannot override the
-            # layer plan. That reconciliation runs AFTER this, and its predicate
-            # (tensor_parallel) is not visible here, so an env-only mode is
-            # unknowable: budgeting the single main GPU below would plan against a
-            # mode the child never sees and then skip the per-device check
-            # entirely, since _per_device_shortfall short-circuits on one device.
-            # argv is the only spelling that provably survives to the child.
+            # An INHERITED -sm none may never reach the child: on a layer-split
+            # launch load_model pops LLAMA_ARG_SPLIT_MODE (plus the paired
+            # LLAMA_ARG_TENSOR_SPLIT) for any non-"layer" mode
+            # (llama_cpp.py:20452-20458). That runs AFTER this and its predicate is
+            # not visible here, so budgeting the single main GPU below would plan
+            # against a mode the child never sees and skip the per-device check
+            # entirely (it short-circuits on one device). argv is the only spelling
+            # that provably survives to the child.
             or (
                 _extra_args_split_mode(extra_args, source_env) == "none"
                 and _extra_args_split_mode(extra_args, {}) != "none"
             )
-            # --main-gpu / -mg is declined above as a device flag, but its env
-            # twin is not a flag and reaches the child all the same. Under
-            # -sm none llama.cpp keeps devices[main_gpu] (llama.cpp:288-299), so
-            # budgeting the first retained card would price the wrong GPU.
+            # -mg is declined above as a device flag; its env twin is not a flag
+            # and reaches the child anyway. Under -sm none llama.cpp keeps
+            # devices[main_gpu] (llama.cpp:288-299), so budgeting the first
+            # retained card would price the wrong GPU.
             or str(source_env.get("LLAMA_ARG_MAIN_GPU", "")).strip()
             # ANY explicit --fit, not just an enabling one. A retry revokes the
             # plan by appending "--fit on", and extras are appended BEFORE that,
@@ -23911,16 +23885,12 @@ class LlamaCppBackend:
             if idx not in shared and (pinned_set is None or idx in pinned_set)
         ]
         # -sm none is not a reason to decline, it is a device list of one:
-        # llama.cpp clears model->devices and keeps only devices[main_gpu]
-        # (llama.cpp:288-299), which is the single-GPU case this planner has the
-        # most evidence for.
-        # --main-gpu / -mg and LLAMA_ARG_MAIN_GPU are declined above, so the main
-        # GPU here is llama.cpp's own default of 0: the first card of the set the
-        # child is given, which after any --device pin is the first kept row.
-        # ARGV only, deliberately: the env spelling is declined above because
-        # load_model may strip it out of the child env before launch, so it does
-        # not describe the child's device list. Reading argv here keeps that
-        # invariant local rather than depending on the guard staying put.
+        # llama.cpp keeps only devices[main_gpu] (llama.cpp:288-299), the
+        # single-GPU case this planner has the most evidence for. -mg and
+        # LLAMA_ARG_MAIN_GPU are declined above, so main_gpu is llama.cpp's default
+        # of 0 -- the first kept row. ARGV only, deliberately: the env spelling is
+        # declined above because load_model may strip it before launch, so it does
+        # not describe the child's device list.
         if _extra_args_split_mode(extra_args, {}) == "none" and kept:
             kept = kept[:1]
         vram_per_device = [
@@ -23934,18 +23904,16 @@ class LlamaCppBackend:
         split_weights = [int(free_mib * 1024 * 1024) for _idx, free_mib in kept]
         # -ts REPLACES that free-memory split rather than skewing it: llama.cpp
         # copies tensor_split into `splits` verbatim and prefix-sums it
-        # (llama-model.cpp:1436-1447). So it is not a reason to decline either --
-        # it is the row-ownership weight, handed over directly. A share of 0 means
-        # the card draws no rows, which _device_slots already models. Length must
-        # match the kept list, or the two lists stop describing the same devices.
-        # Read it out of the env the CHILD will get, not the one we inherited.
-        # load_model reconciles them before launch and pops LLAMA_ARG_TENSOR_SPLIT
+        # (llama-model.cpp:1436-1447), so it IS the row-ownership weight, not a
+        # reason to decline. A share of 0 draws no rows, which _device_slots
+        # already models, and the length must match `kept` or the two lists stop
+        # describing the same devices.
+        # Read the env the CHILD will get: load_model pops LLAMA_ARG_TENSOR_SPLIT
         # together with a non-layer LLAMA_ARG_SPLIT_MODE (llama_cpp.py:20505-20511),
         # so an inherited -ts riding alongside such a mode never reaches the child
-        # -- it splits by free VRAM instead, and proving row ownership against the
-        # scrubbed shares approves the wrong device and then pins it with
-        # --fit off. The -ts mirror of the inherited -sm decline above; argv is
-        # untouched by that reconciliation, so it is always read.
+        # -- proving row ownership against the scrubbed shares approves the wrong
+        # device and pins it with --fit off. argv is untouched by that
+        # reconciliation, so it is always read.
         _inherited_sm = str(source_env.get("LLAMA_ARG_SPLIT_MODE", "")).strip().lower()
         _ts_env = source_env if _inherited_sm in ("", "layer") else {}
         _ts = _extra_args_tensor_split(extra_args, _ts_env)
@@ -23954,8 +23922,7 @@ class LlamaCppBackend:
             or str(_ts_env.get("LLAMA_ARG_TENSOR_SPLIT", "")).strip()
         ):
             # A -ts we could not read is NOT "no -ts": the child still gets one,
-            # and planning on free-VRAM proportions under it is the exact
-            # per-device shortfall this whole block exists to avoid.
+            # and free-VRAM proportions under it are the shortfall this avoids.
             logger.debug("Tensor spill: declined, -ts is present but could not be parsed")
             return None
         if _ts is not None:
@@ -24004,8 +23971,7 @@ class LlamaCppBackend:
                 host_ram_headroom_bytes = self._HOST_RAM_HEADROOM_MIB * 1024 * 1024,
                 # -nkvo is not a reason to decline: it moves the cache and the
                 # recurrent state OUT of VRAM, so the deficit is smaller, not
-                # larger. Declining on it charged the cache to VRAM and spilled
-                # FFN blocks to cover a deficit the child never had.
+                # larger.
                 kv_on_host = not _kv_offload_from_args(extra_args, env = source_env),
                 # GPU-resident allocations the layout cannot see, since it is built
                 # from the target GGUF alone: the vision projector and the MTP draft

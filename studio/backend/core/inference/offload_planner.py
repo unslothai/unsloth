@@ -121,13 +121,11 @@ class PlanOptions:
     allow_kv_quant: bool = False
     kv_quant_type: str = "q8_0"
     # The caller passed -nkvo (or a false LLAMA_ARG_KV_OFFLOAD), so llama.cpp puts
-    # the WHOLE cache on the host: offload is one scalar for the cache object and
-    # the buffer type falls back to ggml_backend_cpu_buffer_type() for every
-    # layer (llama-kv-cache.cpp:210-219), with the same branch in the recurrent
-    # and DSV4 caches. Charging it to VRAM anyway would spill FFN blocks to cover
-    # a deficit the child never has, so this is the PESSIMISTIC direction, which
-    # is why declining outright was wrong: the cache and the recurrent state move
-    # out of the VRAM footprint and into the host one.
+    # the WHOLE cache on the host: offload is one scalar and the buffer type falls
+    # back to the CPU one for every layer (llama-kv-cache.cpp:210-219), same branch
+    # in the recurrent and DSV4 caches. The cache and the recurrent state move out
+    # of the VRAM footprint and into the host one; charging them to VRAM anyway
+    # would spill FFN blocks for a deficit the child never has.
     kv_on_host: bool = False
 
 
@@ -360,10 +358,9 @@ def plan_placement(
     split. Empty falls back to the budget, which is right whenever the caller has
     applied no per-card adjustment at all.
 
-    ``kv_layer_weights`` is the RELATIVE cache size of each layer, used only to
-    place the cache across devices. The planner scales it to the total it already
-    trusts, so it is never a competing estimate of the cache SIZE. Empty means
-    the caller cannot say, and the per-device check then refuses to guess.
+    ``kv_layer_weights`` is each layer's RELATIVE cache size, scaled to the total
+    the planner already trusts: it PLACES the cache, never re-sizes it. Empty
+    means the caller cannot say, and the per-device check then abstains.
 
     ``kv_bytes_floor`` is an attention-cache size the caller has already computed
     byte-accurately for this launch. The planner never reserves less than it; see
@@ -546,11 +543,10 @@ def _per_device_shortfall(
     """
     if len(vram_bytes_per_device) <= 1:
         return None
-    # A per-layer vector answers all three of the shapes that used to abstain
-    # here -- a recurrent hybrid, an n_attention_layers short of n_layers, and a
-    # sliding window -- because each is only a problem when the cache has to be
-    # spread evenly for want of anything better. With the vector there is no
-    # guess to make. Without it, there still is, so they still abstain.
+    # These three shapes -- recurrent hybrid, n_attention_layers short of
+    # n_layers, sliding window -- are only a problem when the cache has to be
+    # spread evenly for want of anything better. A vector removes that guess;
+    # without one they still abstain.
     uneven_cache = (
         layout.recurrent_bytes > 0 or layout.n_attention_layers != layout.n_layers or layout.has_swa
     )
@@ -580,8 +576,7 @@ def _per_device_shortfall(
         if opts.kv_on_host
         else cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
     )
-    # Scale the shape to the total the caller already priced: the vector places
-    # the cache, it never re-sizes it. Uniform when nothing was supplied.
+    # Scaled to the total the caller already priced. Uniform when unsupplied.
     total_weight = sum(weights)
     if weights and total_weight > 0:
         kv_by_layer = [cache * w // total_weight for w in weights]
@@ -800,11 +795,9 @@ def _finish(
     # has to be able to pay for even when nothing is spilled.
     host_bytes = layout.token_embd_bytes + spilled_bytes
     if opts.kv_on_host:
-        # -nkvo took the cache and the recurrent state out of VRAM, which is why
-        # the deficit above shrank. They did not stop existing: they are host RAM
-        # now, and the mmap decision below is exactly the question of whether this
-        # host can hold what the plan puts on it. Leaving them out here would
-        # answer that question against a footprint short by the whole cache.
+        # -nkvo moved the cache and the recurrent state out of VRAM, not out of
+        # existence: they are host RAM now, and the mmap decision below has to see
+        # them or it answers against a footprint short by the whole cache.
         host_bytes += (
             cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
             + layout.recurrent_bytes
