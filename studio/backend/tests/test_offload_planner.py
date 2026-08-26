@@ -1086,3 +1086,127 @@ def test_a_sliding_window_model_abstains_on_a_multi_gpu_split():
     # One card has no split to mislocate the caches across.
     one = plan_placement(swa, [_ALL_SPILL_VRAM], 256 * GIB, 4096, opts = _NO_OVERHEAD)
     assert len(one.spilled_blocks) == len(layout.blocks)
+
+
+def _moe_reader(names):
+    """A 2-block MoE GGUF whose expert tensors use ``names``."""
+    fields = dict(_shard_fields())
+    fields["llama.block_count"] = 2
+    fields["llama.expert_count"] = 64
+    fields["llama.expert_used_count"] = 8
+    tensors = []
+    for i in range(2):
+        for n in names:
+            tensors.append(_StubTensor(f"blk.{i}.{n}.weight", 400 * MIB))
+        tensors.append(_StubTensor(f"blk.{i}.attn_q.weight", 10 * MIB))
+    tensors.append(_StubTensor("token_embd.weight", 100 * MIB))
+    tensors.append(_StubTensor("output.weight", 100 * MIB))
+    return _StubReader(fields, tensors)
+
+
+@pytest.mark.parametrize(
+    "label,names,expect_mib",
+    [
+        ("split", ["ffn_up_exps", "ffn_gate_exps", "ffn_down_exps"], 1200),
+        # Fused gate+up: the same two matrices under one tensor name.
+        ("fused", ["ffn_gate_up_exps", "ffn_down_exps"], 800),
+        # grovemoe's chunked experts, one tensor per chunk-expert.
+        ("chunked", ["ffn_up_chexps", "ffn_gate_chexps", "ffn_down_chexps"], 1200),
+    ],
+)
+def test_every_expert_spelling_is_spillable(label, names, expect_mib):
+    """ffn_gate_up_exps and ffn_*_chexps are experts under a different name:
+    created per expert and dispatched with GGML_OP_MUL_MAT_ID, so they are read
+    as sparsely as the three-way split and are the same cheap thing to spill.
+    Matching only the split form silently cost every fused-expert GGUF the whole
+    feature -- the bytes landed in the resident bucket and the planner found
+    nothing it was allowed to move."""
+    layout = _layout_from_reader(_moe_reader(names))
+    assert layout.is_moe
+    assert layout.blocks[0].spillable_bytes == expect_mib * MIB
+
+    # The emitted pattern has to move exactly what the layout counted, or the
+    # plan credits itself bytes that never leave the GPU.
+    pattern = spill_pattern_for(layout, None)
+    for n in names:
+        assert re.search(pattern, f"blk.0.{n}.weight"), f"{label}: {n} not matched"
+
+
+def test_routed_latent_projections_are_never_spilled():
+    """kimi-k3's ffn_routed_up/down read like experts and are not: created
+    {n_embd, n_embd_latent} with no expert axis and dispatched with plain
+    GGML_OP_MUL_MAT, so every token crosses them. Spilling one would put a hot
+    tensor on the host at the rate the cost model reserves for cold ones."""
+    layout = _layout_from_reader(_moe_reader(["ffn_routed_up", "ffn_routed_down"]))
+    assert layout.blocks[0].spillable_bytes == 0
+    pattern = spill_pattern_for(layout, None)
+    assert not re.search(pattern, "blk.0.ffn_routed_up.weight")
+    assert not re.search(pattern, "blk.0.ffn_routed_down.weight")
+
+
+def _swa_layout(n_blocks = 64):
+    """Every layer is an attention layer AND the cache is per-layer uneven --
+    the shape n_attention_layers cannot describe."""
+    layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(n_blocks))))
+    return replace(layout, has_swa = True)
+
+
+def test_a_per_layer_vector_replaces_the_sliding_window_abstain():
+    """Gemma3 interleaves 5:1, so a window layer's cache is a fraction of a
+    full-context one. Without a vector the planner has to spread the cache evenly
+    and refuses; with one it knows where the big caches land and can answer."""
+    layout = _swa_layout()
+    half = _ALL_SPILL_VRAM // 2
+    spilled = {b.index for b in layout.blocks}
+
+    without = _per_device_shortfall(
+        layout, _NO_OVERHEAD, 4096, spilled, False, [half, half],
+        quantised = False, kv_bytes_floor = 0,
+    )
+    assert without is not None and "sliding-window" in without
+
+    # 1 full-attention layer in every 5, the rest windowed at a 64th of the cost.
+    weights = [64 if (i % 5 == 0) else 1 for i in range(layout.n_layers)]
+    with_vector = _per_device_shortfall(
+        layout, _NO_OVERHEAD, 4096, spilled, False, [half, half],
+        quantised = False, kv_bytes_floor = 0, kv_layer_weights = weights,
+    )
+    assert with_vector is None or "sliding-window" not in with_vector
+
+
+def test_the_vector_places_the_cache_it_does_not_resize_it():
+    """The vector is scaled to the total the caller already priced, so changing
+    only its SHAPE must move the cache between devices without changing how much
+    cache there is."""
+    layout = _swa_layout()
+    spilled = {b.index for b in layout.blocks}
+    n = layout.n_layers
+    budgets = [_ALL_SPILL_VRAM // 2, _ALL_SPILL_VRAM // 2]
+
+    # All the cache on the rows device 0 owns, then all on device 1's.
+    front = [1] * (n // 2) + [0] * (n - n // 2)
+    back = [0] * (n // 2) + [1] * (n - n // 2)
+    a = _per_device_shortfall(
+        layout, _NO_OVERHEAD, 32768, spilled, False, budgets,
+        quantised = False, kv_bytes_floor = 8 * GIB, kv_layer_weights = front,
+    )
+    b = _per_device_shortfall(
+        layout, _NO_OVERHEAD, 32768, spilled, False, budgets,
+        quantised = False, kv_bytes_floor = 8 * GIB, kv_layer_weights = back,
+    )
+    assert a is not None and b is not None
+    assert "device 0" in a, "the front-loaded cache overflows the first card"
+    assert "device 1" in b, "the back-loaded cache overflows the second"
+
+
+def test_a_wrong_length_vector_is_ignored_rather_than_trusted():
+    """A vector that does not describe this model is not evidence. It falls back
+    to the abstain rather than being stretched to fit."""
+    layout = _swa_layout()
+    spilled = {b.index for b in layout.blocks}
+    half = _ALL_SPILL_VRAM // 2
+    got = _per_device_shortfall(
+        layout, _NO_OVERHEAD, 4096, spilled, False, [half, half],
+        quantised = False, kv_bytes_floor = 0, kv_layer_weights = [1, 2, 3],
+    )
+    assert got is not None and "sliding-window" in got

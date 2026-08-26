@@ -22,7 +22,19 @@ _BLOCK_RE = re.compile(r"^blk\.(\d+)\.(.+)$")
 
 # Sparse MoE experts: only expert_used_count of expert_count read per token, so
 # host traffic is a small fraction of their size. The cheap thing to spill.
-_MOE_EXPERT_RE = re.compile(r"^ffn_(up|gate|down)_exps\.weight$")
+#
+# Covers the fused and chunked spellings, not just the three-way split. They are
+# the same weights under one tensor: ffn_gate_up_exps is gate and up merged
+# (cohere2moe, deepseek2, dots3note) and ffn_*_chexps is grovemoe's chunked
+# expert, both created per-expert and dispatched with GGML_OP_MUL_MAT_ID
+# (llama-arch.cpp), so they are read as sparsely as the split form.
+#
+# NOT ffn_routed_up/down. The name suggests an expert and the tensor is not one:
+# kimi-k3 creates it {n_embd, n_embd_latent}, two-dimensional with no expert
+# axis, dispatched with plain GGML_OP_MUL_MAT. It is a latent projection every
+# token crosses, so spilling it would push a hot tensor to the host under the
+# rate the cost model reserves for cold ones.
+_MOE_EXPERT_RE = re.compile(r"^ffn_(up|gate|down|gate_up)_(exps|chexps)\.weight$")
 # Dense FFN. Fully activated: every byte crosses the bus every token.
 _DENSE_FFN_RE = re.compile(r"^ffn_(up|gate|down)\.weight$")
 
@@ -308,7 +320,13 @@ def spill_pattern_for(layout: ModelLayout, indices: Optional[list[int]] = None) 
     ``\\.weight$`` likewise keeps ``ffn_(up|gate|down)\\.`` from matching
     ``ffn_gate_inp.weight``.
     """
-    body = "ffn_(up|gate|down)_exps" if layout.is_moe else "ffn_(up|gate|down)"
+    # Must stay the same set _MOE_EXPERT_RE selected, or the plan credits itself
+    # bytes the emitted pattern never moves -- the optimistic direction.
+    body = (
+        "ffn_(up|gate|down|gate_up)_(exps|chexps)"
+        if layout.is_moe
+        else "ffn_(up|gate|down)"
+    )
     if indices is None:
         block = r"\d+"
     else:

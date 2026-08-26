@@ -518,40 +518,69 @@ def test_a_unified_memory_apu_is_declared_to_the_planner():
 # ------------------------------------------- the budget the fit actually tested
 
 
+@pytest.mark.parametrize("extra_args", [["--split-mode", "row"], ["-sm", "row"]])
+def test_tensor_parallel_split_still_declines(extra_args):
+    """-sm row is tensor parallelism: llama.cpp splits each TENSOR across cards
+    instead of handing out rows, so the row model this planner reasons with does
+    not describe the placement at all."""
+    assert _plan(_Stub(), extra_args = extra_args) is None
+    assert _plan(_Stub()) is not None, "not vacuous: the same load plans without it"
+
+
 @pytest.mark.parametrize(
-    "extra_args",
+    "extra_args,env",
     [
-        ["--split-mode", "none"],
-        ["-sm", "none"],
-        ["--split-mode", "row"],
-        ["--tensor-split", "3,1"],
-        ["-ts", "3,1"],
+        (["--split-mode", "none"], None),
+        (["-sm", "none"], None),
+        (None, {"LLAMA_ARG_SPLIT_MODE": "none"}),
     ],
 )
-def test_a_split_placement_argument_declines(extra_args):
-    """Split mode and tensor split are placement, and they are not in
-    _DEVICE_FLAGS, so the old guard let them through.
+def test_split_mode_none_plans_against_one_card(extra_args, env):
+    """-sm none is a device list of ONE, not a reason to decline: llama.cpp
+    clears model->devices and keeps only devices[main_gpu] (llama.cpp:288-299).
+    Planning it as a two-card pool was the bug; planning it as the single card is
+    the case this planner has the most evidence for."""
+    two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
+    got = _plan(_Stub(), gpus = two_cards, extra_args = extra_args, env = env)
+    assert got is not None
 
-    They reach the child: the layer path's own note in this module says "-sm
-    none/row keep the layer path and pass through", and extras are appended
-    last, so they win. Under -sm none llama.cpp truncates model->devices to the
-    single main GPU (llama.cpp:288-299), while this planner credits the SUM of
-    every selected card -- so it would size the plan against a pool the child
-    never gets and then pin that with --fit off. -ts replaces the free-memory
-    proportional split (llama-model.cpp:1417-1447), so one device can overflow
-    while the pool total still fits.
-    """
-    assert _plan(_Stub(), extra_args = extra_args) is None
-    # Not vacuous: the same load DOES plan without the argument.
-    assert _plan(_Stub()) is not None
+    # The proof it used ONE card: the same fixture on a genuine single card
+    # produces the same plan, while crediting both would spill less.
+    one_card = _plan(_Stub(), gpus = [(0, 14 * 1024)])
+    assert len(got.spilled_blocks) == len(one_card.spilled_blocks)
+
+
+def test_split_mode_none_with_an_explicit_main_gpu_still_declines():
+    """--main-gpu is a device flag and keeps declining, so -sm none is supported
+    only at llama.cpp's default main GPU of 0. Supporting a named one means
+    letting -mg through the placement guard, which is a separate decision."""
+    two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
+    assert _plan(_Stub(), gpus = two_cards, extra_args = ["-sm", "none", "-mg", "1"]) is None
 
 
 @pytest.mark.parametrize(
-    "env",
-    [{"LLAMA_ARG_SPLIT_MODE": "none"}, {"LLAMA_ARG_TENSOR_SPLIT": "3,1"}],
+    "extra_args,env",
+    [
+        (["--tensor-split", "3,1"], None),
+        (["-ts", "3,1"], None),
+        (None, {"LLAMA_ARG_TENSOR_SPLIT": "3,1"}),
+    ],
 )
-def test_an_inherited_split_placement_env_declines(env):
-    assert _plan(_Stub(), env = env) is None
+def test_tensor_split_becomes_the_row_weights(extra_args, env):
+    """-ts does not skew llama.cpp's free-memory split, it REPLACES it: the
+    values are copied into `splits` verbatim and prefix-summed
+    (llama-model.cpp:1436-1447). That is exactly the row-ownership weight the
+    per-device check needs, so it is data to use rather than a reason to stop."""
+    two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
+    assert _plan(_Stub(), gpus = two_cards, extra_args = extra_args, env = env) is not None
+
+
+def test_a_malformed_or_short_tensor_split_declines():
+    """Unparseable or fewer shares than cards leaves the row model undefined, and
+    a guess there is a per-device shortfall waiting to happen."""
+    two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
+    assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "3"]) is None
+    assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "abc"]) is not None
 
 
 def test_the_planner_gets_the_budget_the_fit_tested_not_raw_free():
@@ -625,31 +654,40 @@ def test_the_layout_cache_notices_a_gguf_replaced_in_place(tmp_path, monkeypatch
 # ------------------------------------------------- KV placement is placement too
 
 
-@pytest.mark.parametrize(
-    "extra_args",
-    [["-nkvo"], ["--no-kv-offload"]],
-)
-def test_a_forced_cpu_kv_cache_declines(extra_args):
+@pytest.mark.parametrize("extra_args", [["-nkvo"], ["--no-kv-offload"]])
+def test_a_forced_cpu_kv_cache_is_priced_not_declined(extra_args):
     """-nkvo sends the WHOLE cache to host RAM whatever -ngl says: offload is a
     single scalar on the cache object and the buffer type falls back to
     ggml_backend_cpu_buffer_type() for every layer (llama-kv-cache.cpp:210-219),
     with the same branch in the recurrent and DSV4 caches.
 
-    This planner charges the cache against VRAM via kv_bytes_floor, so it would
-    spill FFN blocks to cover a deficit the child never has, and a spilled block
-    is read by the CPU backend on every token. --fit on gets it right for free
-    because it measures buffer types rather than modelling them: a host-resident
-    cache lands in the host bucket (common/fit.cpp:74-79), which the per-device
-    fitting loop then ignores (common/fit.cpp:326-347).
+    That makes the deficit SMALLER, not larger, so declining was the pessimistic
+    reading: it charged a cache to VRAM the child never puts there and spilled
+    FFN blocks to cover it. Now it is priced -- out of VRAM, into host RAM.
     """
-    assert _plan(_Stub(), extra_args = extra_args) is None
-    # Not vacuous: the same load DOES plan without the argument.
-    assert _plan(_Stub()) is not None
+    baseline = _plan(_Stub(), free_mib = 14 * 1024)
+    forced = _plan(_Stub(), free_mib = 14 * 1024, extra_args = extra_args)
+    assert forced is not None, "a host-resident cache is not a reason to abstain"
+
+    # Out of VRAM: the 2 GiB cache left the footprint, so the deficit it was
+    # spilling to cover is gone. 13 blocks to 0 on this fixture.
+    assert len(forced.spilled_blocks) < len(baseline.spilled_blocks)
+
+    # Into host RAM. With nothing spilled, host_bytes would be token_embd alone
+    # (512 MiB) if the cache were not charged; it has to carry the cache too, or
+    # the mmap decision is made against a footprint short by the whole cache.
+    assert forced.host_bytes >= 512 * MIB + 2 * GIB
 
 
 @pytest.mark.parametrize("env", [{"LLAMA_ARG_KV_OFFLOAD": "0"}, {"LLAMA_ARG_KV_OFFLOAD": "false"}])
-def test_an_inherited_kv_offload_env_declines(env):
-    assert _plan(_Stub(), env = env) is None
+def test_an_inherited_kv_offload_env_is_priced_too(env):
+    """Same resolution as argv: LLAMA_ARG_ is rewritten to LLAMA_ARG_NO_ and
+    presence alone forces the value (common/arg.cpp:127-141)."""
+    forced = _plan(_Stub(), free_mib = 14 * 1024, env = env)
+    baseline = _plan(_Stub(), free_mib = 14 * 1024)
+    assert forced is not None
+    assert len(forced.spilled_blocks) < len(baseline.spilled_blocks)
+    assert forced.host_bytes >= 512 * MIB + 2 * GIB
 
 
 def test_the_positive_kv_offload_form_still_plans():
@@ -798,3 +836,33 @@ def test_a_pass_through_parallel_that_grows_the_cache_declines_the_plan():
     # Last wins, exactly as llama.cpp parses it.
     assert _plan(stub, n_parallel = 4, extra_args = ["--parallel", "8", "-np", "2"]) is not None
     assert _plan(stub, n_parallel = 1) is not None
+
+
+def test_the_seam_computes_a_per_layer_kv_vector():
+    """The data already existed on the backend (_sliding_window_pattern, used by
+    _estimate_kv_cache_bytes); it just never crossed into the planner. Only the
+    RATIOS travel: a full-attention layer holds the whole context, a window layer
+    holds its window, ~100x apart at 128K against a 1K window."""
+    b = LlamaCppBackend.__new__(LlamaCppBackend)
+    b._n_layers = 6
+    b._n_kv_heads = 8
+    b._n_heads = 8
+    b._kv_key_length = 128
+    b._kv_value_length = 128
+    b._kv_key_length_swa = None
+    b._kv_value_length_swa = None
+    b._sliding_window = 1024
+    b._sliding_window_pattern = [False, True, True, True, True, True]
+    b._n_kv_heads_by_layer = None
+
+    weights = b._kv_layer_weights(131072)
+    assert len(weights) == 6
+    assert weights[0] == max(weights), "the full-attention layer is the big one"
+    assert weights[0] // weights[1] == 128, "context 131072 over a 1024 window"
+
+    # No pattern, no window, or no dimensions: say nothing rather than guess.
+    b._sliding_window_pattern = None
+    assert b._kv_layer_weights(131072) == []
+    b._sliding_window_pattern = [False, True, True, True, True, True]
+    b._sliding_window = 0
+    assert b._kv_layer_weights(131072) == []
