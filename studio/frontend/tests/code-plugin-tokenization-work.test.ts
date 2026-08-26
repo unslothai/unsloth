@@ -75,25 +75,17 @@ const highlightOnce = (
 /*
  * THE SAME CALL, BUT WAITING FOR THE TOKENIZED ANSWER RATHER THAN THE FIRST ONE.
  *
- * `highlightOnce` resolves with whatever `plugin.highlight` hands back synchronously, which is the
- * right thing during the streaming loop above: each update there is meant to go down the tokenizing
- * path and the immediate value IS the result. It is the wrong thing for the final correctness check,
- * and that is a real Windows CI failure rather than a hypothetical. When a grown fence past
- * `MIN_INCREMENTAL_CHARS` is called again inside `REFRESH_MS`, `code-plugin.ts` returns
- * `approximateResult` synchronously and delivers the real tokens LATER through the callback --
- * which `highlightOnce` has already thrown away. The deepEqual then compares approximate tokens,
- * every one of them coloured `#005CC5`, against the reference.
+ * `highlightOnce` takes the synchronous return, which is right during the streaming loop and wrong
+ * for the final correctness check -- a real Windows CI failure. A grown fence past
+ * `MIN_INCREMENTAL_CHARS` called again inside `REFRESH_MS` gets `approximateResult` back
+ * synchronously and the real tokens LATER via the callback, so the deepEqual compared approximate
+ * tokens, all coloured `#005CC5`, against the reference.
  *
- * Sleeping longer does not fix it, and that is worth being precise about: `settle()` counts from
- * when this test resumed, while the throttle counts from the plugin's own `lastTokenizedAt`, and a
- * trailing refresh scheduled by an earlier update can land after the sleep began and push that
- * timestamp forward. There is no sleep length that makes the immediate value reliably the
- * tokenized one.
- *
- * So prefer the callback when there is one. If the plugin took the tokenizing path it returns the
- * exact result and never calls back, so the immediate value is adopted once the refresh window has
- * provably passed. Either way the assertion is unchanged and just as strict; only its input stops
- * depending on how loaded the machine is.
+ * No sleep length fixes it: `settle()` counts from when this test resumed, the throttle counts from
+ * the plugin's `lastTokenizedAt`, and a trailing refresh can push that timestamp past the sleep.
+ * So prefer the callback; if the plugin tokenized it never calls back, and the immediate value is
+ * adopted once the refresh window has provably passed. The assertion is unchanged and just as
+ * strict, only its input stops depending on machine load.
  */
 const highlightTokenized = (
   plugin: ReturnType<typeof createCodePlugin>,
