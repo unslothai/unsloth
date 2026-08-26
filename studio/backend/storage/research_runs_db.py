@@ -129,6 +129,77 @@ def append_worker_event(
         conn.close()
 
 
+def _bind_assistant_locked(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    thread_id: str,
+    user_message_id: str,
+    assistant_message_id: str | None,
+    plan_revision: int,
+    created: int,
+) -> None:
+    if not assistant_message_id:
+        return
+    message = conn.execute(
+        "SELECT * FROM chat_messages WHERE id=?", (assistant_message_id,)
+    ).fetchone()
+    metadata = {
+        "researchRunId": run_id,
+        "researchStatus": "planning",
+        "researchPlanRevision": plan_revision,
+        "serverManaged": True,
+    }
+    if message is None:
+        conn.execute(
+            """INSERT INTO chat_messages
+               (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
+               VALUES (?, ?, ?, 'assistant', '[]', ?, ?)""",
+            (
+                assistant_message_id,
+                thread_id,
+                user_message_id,
+                json.dumps(metadata, ensure_ascii = False),
+                created,
+            ),
+        )
+        conn.execute(
+            "UPDATE chat_threads SET updated_at=MAX(COALESCE(updated_at, created_at), ?) WHERE id=?",
+            (created, thread_id),
+        )
+        return
+    existing_metadata = _loads(message["metadata_json"], {})
+    existing_run_id = (
+        existing_metadata.get("researchRunId") if isinstance(existing_metadata, dict) else None
+    )
+    # Only bind to an empty placeholder or this run's own message: an untagged
+    # reply carries text/source parts that _update_assistant drops on completion,
+    # so binding one silently overwrites an existing answer.
+    existing_answer = any(
+        isinstance(part, dict)
+        and (
+            (part.get("type") == "text" and (part.get("text") or "").strip())
+            or part.get("type") == "source"
+        )
+        and part.get("researchRunId") is None
+        for part in _loads(message["content_json"], [])
+    )
+    if (
+        message["thread_id"] != thread_id
+        or message["role"] != "assistant"
+        or message["parent_id"] != user_message_id
+        or existing_run_id not in (None, run_id)
+        or (existing_run_id is None and existing_answer)
+    ):
+        raise ResearchConflictError("Assistant message does not match this research run")
+    merged_metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
+    merged_metadata.update(metadata)
+    conn.execute(
+        "UPDATE chat_messages SET metadata_json=? WHERE id=?",
+        (json.dumps(merged_metadata, ensure_ascii = False), assistant_message_id),
+    )
+
+
 def create_run(
     *,
     run_id: str,
@@ -157,71 +228,15 @@ def create_run(
             if claim is not None:
                 raise ResearchConflictError("This thread already has a Deep Research run") from exc
             raise
-        if assistant_message_id:
-            message = conn.execute(
-                "SELECT * FROM chat_messages WHERE id=?", (assistant_message_id,)
-            ).fetchone()
-            metadata = {
-                "researchRunId": run_id,
-                "researchStatus": "planning",
-                "researchPlanRevision": 0,
-                "serverManaged": True,
-            }
-            if message is None:
-                conn.execute(
-                    """INSERT INTO chat_messages
-                       (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
-                       VALUES (?, ?, ?, 'assistant', '[]', ?, ?)""",
-                    (
-                        assistant_message_id,
-                        thread_id,
-                        user_message_id,
-                        json.dumps(metadata, ensure_ascii = False),
-                        created,
-                    ),
-                )
-                conn.execute(
-                    "UPDATE chat_threads SET updated_at=MAX(COALESCE(updated_at, created_at), ?) "
-                    "WHERE id=?",
-                    (created, thread_id),
-                )
-            else:
-                existing_metadata = _loads(message["metadata_json"], {})
-                existing_run_id = (
-                    existing_metadata.get("researchRunId")
-                    if isinstance(existing_metadata, dict)
-                    else None
-                )
-                # Only bind to an empty placeholder or this run's own message: an untagged
-                # reply carries text/source parts that _update_assistant drops on completion,
-                # so binding one silently overwrites an existing answer.
-                existing_answer = any(
-                    isinstance(part, dict)
-                    and (
-                        (part.get("type") == "text" and (part.get("text") or "").strip())
-                        or part.get("type") == "source"
-                    )
-                    and part.get("researchRunId") is None
-                    for part in _loads(message["content_json"], [])
-                )
-                if (
-                    message["thread_id"] != thread_id
-                    or message["role"] != "assistant"
-                    or message["parent_id"] != user_message_id
-                    or existing_run_id not in (None, run_id)
-                    or (existing_run_id is None and existing_answer)
-                ):
-                    raise ResearchConflictError(
-                        "Assistant message does not match this research run"
-                    )
-                merged_metadata = (
-                    dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
-                )
-                merged_metadata.update(metadata)
-                conn.execute(
-                    "UPDATE chat_messages SET metadata_json=? WHERE id=?",
-                    (json.dumps(merged_metadata, ensure_ascii = False), assistant_message_id),
-                )
+        _bind_assistant_locked(
+            conn,
+            run_id = run_id,
+            thread_id = thread_id,
+            user_message_id = user_message_id,
+            assistant_message_id = assistant_message_id,
+            plan_revision = 0,
+            created = created,
+        )
         conn.execute(
             """
             INSERT INTO research_runs
@@ -248,6 +263,145 @@ def create_run(
     finally:
         conn.close()
     return get_run(run_id, owner_subject)
+
+
+def _unbind_assistant_locked(
+    conn: sqlite3.Connection, previous_id: str | None, next_id: str | None
+) -> None:
+    """Drop the research binding from the reply the run is leaving behind.
+
+    Both replies would otherwise carry the same run id, and each renders whatever that run is
+    doing now -- so the new question's live card would appear twice.
+    """
+    if not previous_id or previous_id == next_id:
+        return
+    row = conn.execute(
+        "SELECT metadata_json FROM chat_messages WHERE id=?", (previous_id,)
+    ).fetchone()
+    if row is None:
+        return
+    metadata = _loads(row["metadata_json"], {})
+    if not isinstance(metadata, dict):
+        return
+    for key in ("researchRunId", "researchStatus", "researchPlanRevision", "serverManaged"):
+        metadata.pop(key, None)
+    conn.execute(
+        "UPDATE chat_messages SET metadata_json=? WHERE id=?",
+        (json.dumps(metadata, ensure_ascii = False), previous_id),
+    )
+
+
+def _stopped_run_locked(conn: sqlite3.Connection, thread_id: str) -> sqlite3.Row | None:
+    """The claim owner's latest run, when stopped and available for a new question."""
+    run = conn.execute(
+        """SELECT r.id, r.status, r.owner_subject, r.plan_revision, r.assistant_message_id
+           FROM research_thread_claims AS c
+           JOIN research_runs AS r
+             ON r.thread_id=c.thread_id AND r.owner_subject=c.owner_subject
+           WHERE c.thread_id=?
+           ORDER BY r.created_at DESC, r.id DESC
+           LIMIT 1""",
+        (thread_id,),
+    ).fetchone()
+    if run is None or run["status"] != "cancelled":
+        return None
+    return run
+
+
+def research_spent(thread_id: str) -> bool:
+    """Whether the thread's research is used up, which is what the composer greys out on.
+
+    The claim itself outlives a stopped run so the same run can be re-pointed, so a held
+    claim alone must not read as spent: after a Stop, research is still on offer.
+    """
+    conn = get_connection()
+    try:
+        claim = conn.execute(
+            "SELECT 1 FROM research_thread_claims WHERE thread_id=?", (thread_id,)
+        ).fetchone()
+        return claim is not None and _stopped_run_locked(conn, thread_id) is None
+    finally:
+        conn.close()
+
+
+def rebind_cancelled(
+    *,
+    thread_id: str,
+    user_message_id: str,
+    assistant_message_id: str | None,
+    config: dict[str, Any],
+) -> dict | None:
+    """Re-point the thread's stopped run at a newer message, or return None.
+
+    A thread holds one Deep Research run for its lifetime, so a run the user stopped would
+    otherwise refuse every later question in that chat. Stopping kept nothing, so the same
+    run is reset and pointed at the new message instead of a second one being created.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        run = _stopped_run_locked(conn, thread_id)
+        if run is None:
+            conn.commit()
+            return None
+        message = conn.execute(
+            "SELECT role, thread_id FROM chat_messages WHERE id=?", (user_message_id,)
+        ).fetchone()
+        if message is None or message["role"] != "user" or message["thread_id"] != thread_id:
+            conn.commit()
+            return None
+        run_id = run["id"]
+        revision = int(run["plan_revision"]) + 1
+        now = now_ms()
+        _unbind_assistant_locked(conn, run["assistant_message_id"], assistant_message_id)
+        _bind_assistant_locked(
+            conn,
+            run_id = run_id,
+            thread_id = thread_id,
+            user_message_id = user_message_id,
+            assistant_message_id = assistant_message_id,
+            plan_revision = revision,
+            created = now,
+        )
+        # retry_count is the attempt epoch every event is stamped with, and the new question
+        # is a new attempt: without the bump its report would carry the stopped question's
+        # reasoning (get_reasoning_text joins every event at the run's current attempt) and its
+        # activity panel would fold the two questions together. The retry BUDGET is counted per
+        # question in retry(), so spending an epoch here does not spend a retry.
+        conn.execute(
+            "UPDATE research_runs SET user_message_id=?, assistant_message_id=?, "
+            "status='planning', cancel_requested=0, plan_json=NULL, plan_hash=NULL, "
+            "plan_revision=?, retry_count=retry_count + 1, error_message=NULL, "
+            "report_text=NULL, created_at=?, heartbeat_at=?, started_at=NULL, "
+            "completed_at=NULL, lease_owner=NULL, lease_expires_at=NULL, config_json=?, "
+            "updated_at=? WHERE id=?",
+            (
+                user_message_id,
+                assistant_message_id,
+                revision,
+                now,
+                now,
+                json.dumps(config, ensure_ascii = False),
+                now,
+                run_id,
+            ),
+        )
+        conn.execute("DELETE FROM research_plan_steps WHERE run_id=?", (run_id,))
+        conn.execute("DELETE FROM research_sources WHERE run_id=?", (run_id,))
+        conn.execute("DELETE FROM research_document_sources WHERE run_id=?", (run_id,))
+        # Events replay into the activity panel, so a kept approval would show "Plan approved"
+        # for a question this run no longer researches.
+        conn.execute(
+            "DELETE FROM research_events WHERE run_id=? AND event_type='run.approved'", (run_id,)
+        )
+        _event_locked(conn, run_id, "run.rebound", {"status": "planning"})
+        _commit_event(conn)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return get_run(run_id)
 
 
 def _row_to_run(row: sqlite3.Row) -> dict[str, Any]:
@@ -402,7 +556,8 @@ def create_and_bind_terminal_fallback(
     status: str,
     sources: list[dict] | None = None,
     completion_worker_id: str | None = None,
-) -> tuple[str, bool]:
+    expected_attempt: int | None = None,
+) -> tuple[str | None, bool]:
     """Discover a frontend message or atomically create exactly one fallback."""
     if status not in TERMINAL_STATUSES:
         raise ValueError(status)
@@ -412,6 +567,9 @@ def create_and_bind_terminal_fallback(
         run = conn.execute("SELECT * FROM research_runs WHERE id=?", (run_id,)).fetchone()
         if run is None:
             raise KeyError(run_id)
+        if expected_attempt is not None and int(run["retry_count"]) != expected_attempt:
+            conn.commit()
+            return None, False
         can_prepare_completion = (
             completion_worker_id is not None
             and status == "completed"
@@ -430,7 +588,8 @@ def create_and_bind_terminal_fallback(
             conn.commit()
             return message_id, False
 
-        message_id = f"research-{run_id}"
+        attempt = int(run["retry_count"])
+        message_id = f"research-{run_id}" if attempt == 0 else f"research-{run_id}-{attempt}"
         parts: list[dict[str, Any]] = [{"type": "text", "text": text, "researchRunId": run_id}]
         for source in sources or []:
             parts.append(
@@ -493,9 +652,18 @@ def set_plan(
     plan: dict,
     expected_revision: int | None = None,
     worker_id: str | None = None,
+    auto_approve: bool = False,
 ) -> dict:
+    """Store the plan and either park the run for review or queue it in the same write.
+
+    Arming research in the composer is the approval, so the worker queues its own plan with
+    ``auto_approve``. Done in one transaction: a separate approve call left a window where
+    the run sat at awaiting_approval, flashing the review card and letting a concurrent plan
+    edit fail the run. The endpoint still parks a hand-edited plan for the user to confirm.
+    """
     raw, digest = canonical_plan(plan)
     steps = plan.get("steps") or []
+    status = "queued" if auto_approve else "awaiting_approval"
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -522,9 +690,9 @@ def set_plan(
         revision += 1
         conn.execute(
             "UPDATE research_runs SET plan_json = ?, plan_revision = ?, plan_hash = ?, "
-            "status = 'awaiting_approval', error_message = NULL, lease_owner = NULL, "
+            "status = ?, error_message = NULL, lease_owner = NULL, "
             "lease_expires_at = NULL, updated_at = ? WHERE id = ?",
-            (raw, revision, digest, now_ms(), run_id),
+            (raw, revision, digest, status, now_ms(), run_id),
         )
         conn.execute("DELETE FROM research_plan_steps WHERE run_id = ?", (run_id,))
         conn.executemany(
@@ -539,12 +707,14 @@ def set_plan(
             run_id,
             "plan.ready",
             {
-                "status": "awaiting_approval",
+                "status": status,
                 "plan": plan,
                 "planRevision": revision,
                 "planHash": digest,
             },
         )
+        if auto_approve:
+            _event_locked(conn, run_id, "run.approved", {"status": status})
         _commit_event(conn)
         return {"plan": plan, "planRevision": revision, "planHash": digest}
     except Exception:
@@ -628,7 +798,16 @@ def retry(run_id: str, max_retries: int = 3) -> str:
             raise KeyError(run_id)
         if row["status"] not in {"failed", "cancelled"}:
             raise ResearchConflictError("Only failed or cancelled runs can be retried")
-        if int(row["retry_count"]) >= max_retries:
+        # Counted per question, not per run row: a thread holds one run for its lifetime and
+        # re-points it at each new question, so a raw retry_count would hand a fresh question
+        # whatever the stopped one left over -- and nothing at all once three were spent.
+        spent = conn.execute(
+            "SELECT COUNT(*) FROM research_events WHERE run_id=? AND event_type='run.retried' "
+            "AND seq > COALESCE((SELECT MAX(seq) FROM research_events "
+            "WHERE run_id=? AND event_type='run.rebound'), 0)",
+            (run_id, run_id),
+        ).fetchone()[0]
+        if int(spent) >= max_retries:
             raise ResearchConflictError("Retry budget exhausted")
         claim = conn.execute(
             "SELECT owner_subject FROM research_thread_claims WHERE thread_id=?",

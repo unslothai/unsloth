@@ -17,6 +17,12 @@ type RefreshResponse = {
   must_change_password: boolean;
 };
 
+type AuthFetchOptions = {
+  retryNetworkErrors?: boolean;
+  /** Synchronous policy check run immediately before any retry sends bytes. */
+  beforeRetry?: () => void;
+};
+
 let isRedirecting = false;
 let refreshInflight: Promise<boolean> | null = null;
 let refreshInflightToken: string | null = null;
@@ -36,6 +42,7 @@ async function fetchWithTauriNetworkRetry(
   input: RequestInfo | URL,
   init?: RequestInit,
   retryNetworkErrors = true,
+  beforeRetry?: () => void,
 ): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -50,11 +57,14 @@ async function fetchWithTauriNetworkRetry(
         throw error;
       }
       await wait(TAURI_FETCH_RETRY_DELAYS_MS[attempt]);
+      beforeRetry?.();
     }
   }
 }
 
-async function isPasswordChangeRequiredResponse(response: Response): Promise<boolean> {
+async function isPasswordChangeRequiredResponse(
+  response: Response,
+): Promise<boolean> {
   if (response.status !== 403) return false;
 
   try {
@@ -95,7 +105,11 @@ function asTransportFailure(err: unknown): unknown {
   // fetch TypeError = offline | backend down | CORS/DNS. Tagged so callers tell "never reached"
   // from "rejected"; Tauri is always backend-down, the web build distinguishes offline.
   if (!(err instanceof TypeError)) return err;
-  if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
+  if (
+    !isTauri &&
+    typeof navigator !== "undefined" &&
+    navigator.onLine === false
+  ) {
     return Object.assign(
       new Error(
         "You appear to be offline. Check your network connection and try again.",
@@ -113,7 +127,9 @@ async function retryWithCurrentToken(
   input: RequestInfo | URL,
   init?: RequestInit,
   retryNetworkErrors = true,
+  beforeRetry?: () => void,
 ): Promise<Response> {
+  beforeRetry?.();
   const retryHeaders = new Headers(init?.headers);
   const token = getAuthToken();
   if (token) retryHeaders.set("Authorization", `Bearer ${token}`);
@@ -123,6 +139,7 @@ async function retryWithCurrentToken(
       input,
       { ...init, headers: retryHeaders },
       retryNetworkErrors,
+      beforeRetry,
     );
   } catch (err) {
     throw asTransportFailure(err);
@@ -133,11 +150,12 @@ async function retryWithTauriAutoAuth(
   input: RequestInfo | URL,
   init?: RequestInit,
   retryNetworkErrors = true,
+  beforeRetry?: () => void,
 ): Promise<Response | null> {
   clearAuthTokens();
   const { tauriAutoAuth } = await import("./tauri-auto-auth");
   if (await tauriAutoAuth()) {
-    return retryWithCurrentToken(input, init, retryNetworkErrors);
+    return retryWithCurrentToken(input, init, retryNetworkErrors, beforeRetry);
   }
   return null;
 }
@@ -189,9 +207,9 @@ export async function refreshSession(): Promise<boolean> {
 export async function authFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
-  options?: { retryNetworkErrors?: boolean },
+  options?: AuthFetchOptions,
 ): Promise<Response> {
-  const resolvedInput = typeof input === 'string' ? apiUrl(input) : input;
+  const resolvedInput = typeof input === "string" ? apiUrl(input) : input;
   const headers = new Headers(init?.headers);
   const accessToken = getAuthToken();
   if (accessToken) {
@@ -207,6 +225,7 @@ export async function authFetch(
         headers,
       },
       options?.retryNetworkErrors ?? true,
+      options?.beforeRetry,
     );
   } catch (err) {
     throw asTransportFailure(err);
@@ -219,6 +238,7 @@ export async function authFetch(
           resolvedInput,
           init,
           options?.retryNetworkErrors ?? true,
+          options?.beforeRetry,
         )) ?? response
       );
     }
@@ -236,6 +256,7 @@ export async function authFetch(
           resolvedInput,
           init,
           options?.retryNetworkErrors ?? true,
+          options?.beforeRetry,
         )) ?? response
       );
     }
@@ -251,6 +272,7 @@ export async function authFetch(
           resolvedInput,
           init,
           options?.retryNetworkErrors ?? true,
+          options?.beforeRetry,
         )) ?? response
       );
     }
@@ -263,10 +285,13 @@ export async function authFetch(
     resolvedInput,
     init,
     options?.retryNetworkErrors ?? true,
+    options?.beforeRetry,
   );
 }
 
-async function postLogout(accessToken: string | null): Promise<Response | null> {
+async function postLogout(
+  accessToken: string | null,
+): Promise<Response | null> {
   try {
     return await fetchWithTauriNetworkRetry(apiUrl("/api/auth/logout"), {
       method: "POST",

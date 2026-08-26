@@ -136,7 +136,7 @@ export function invalidateLlamaFlagCatalog(): void {
  * The panel sanitizes a stored list with this before turning it into an explicit
  * request, and that must not wait on a cold probe (up to ten seconds), or a flag
  * denied since the list was saved stays in the request for as long as it runs.
- * Cached for the session: unlike the flag map, it describes this build of Studio.
+ * Cached for the session: unlike the flag map, it describes this build of Unsloth.
  */
 export function loadManagedLlamaFlags(): Promise<LlamaManagedFlags | null> {
   if (cachedManaged) {

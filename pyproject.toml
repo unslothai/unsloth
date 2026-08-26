@@ -30,6 +30,7 @@ dependencies = [
     "pydantic",
     "pyyaml",
     "nest-asyncio",
+    "huggingface-hub>=0.34.0",
     # Every CLI command imports studio.backend.*, which reaches structlog at
     # module level. The rest of the server stack lives in the studio extra.
     "structlog>=24.1.0",
@@ -70,7 +71,7 @@ studio = [
     "backend/assets/**/*.jinja",
     "backend/assets/**/*.html",
     # Swagger UI / ReDoc, served from this origin instead of a CDN. Without these the
-    # /docs and /redoc pages render blank in an installed Studio.
+    # /docs and /redoc pages render blank in an installed Unsloth.
     "backend/assets/docs_ui/*",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
@@ -100,7 +101,7 @@ exclude = [
 "studio.backend.hub" = ["tests/*"]
 
 [project.optional-dependencies]
-# Studio's server stack, mirroring studio/backend/requirements/studio.txt.
+# Unsloth's server stack, mirroring studio/backend/requirements/studio.txt.
 # test_studio_extra_matches_requirements.py catches drift.
 studio = [
     "typer==0.27.1 ; python_version >= '3.10'",
@@ -143,7 +144,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.8.13",
+    "unsloth_zoo>=2026.8.15",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -161,7 +162,7 @@ huggingfacenotorch = [
     # workflow raises without it), the cache_context child-registry behavior, and the
     # Flux2 / Z-Image pipelines. An unversioned entry let an upgrade keep an older
     # diffusers, so advertised models failed to load until the user upgraded by hand.
-    # Studio's installer requirements carry the temporary MiniMax-H3 commit pin. A
+    # Unsloth's installer requirements carry the temporary MiniMax-H3 commit pin. A
     # VCS direct reference cannot enter wheel metadata because PyPI rejects it.
     # diffusers dropped 3.9 in 0.37, and we still support it (requires-python >= 3.9),
     # so the floor is conditional: pinning it outright leaves pip no candidate at all
@@ -190,7 +191,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.8.13",
+    "unsloth_zoo>=2026.8.15",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -218,7 +219,7 @@ huggingface = [
 # torch, and PyPI's Windows torch is CPU-only, so without it pip lands a cu130
 # extension beside a '2.10.0+cpu' torch -- the same silent mismatch, inverted.
 # install.ps1 needs none of this: it picks the wheel from the index it installed
-# torch from, so Studio never reaches the extra below.
+# torch from, so Unsloth never reaches the extra below.
 #
 # The extra below is what a `pip install "unsloth[windows]"` resolves, and it
 # stays CUDA-agnostic because it has nothing to key off. It is deliberately NOT
@@ -714,7 +715,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.8.13",
+    "unsloth_zoo>=2026.8.15",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
@@ -1485,3 +1486,23 @@ ignore = [
 # etc. The CI security job runs `pytest tests/security` explicitly.
 testpaths = ["tests/security"]
 pythonpath = ["."]
+
+# testpaths only protects a bare `pytest`. Anyone who types `pytest tests/`
+# gets the whole walk, and a handful of files in it download and merge real
+# checkpoints: measured, `pytest tests/ -n 16` was 16m22s, and 34 of the 17.5k
+# tests accounted for 11 of those minutes. Markers are what make that opt-in.
+#
+# `slow` predates this: seven uses in
+# tests/python/test_embed_lm_head_target_modules_redirect.py, never registered
+# and never consumed, so the author's intent was inert. Registering it is what
+# turns the existing annotations on.
+markers = [
+    "gpu: needs a real accelerator, and usually downloads a checkpoint to use it",
+    "slow: minutes rather than seconds, and covered again more cheaply elsewhere",
+]
+
+# Deselected by default, not deleted: CI runs them in their own leg with
+# `-m 'gpu or slow'`, and `pytest -m gpu tests/` gets them back locally.
+# A run that names one of these files directly will report "no tests ran"
+# until you pass `-m gpu` -- that is the cost of the default being fast.
+addopts = "-m 'not gpu and not slow'"

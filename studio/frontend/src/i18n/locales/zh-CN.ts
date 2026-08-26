@@ -215,23 +215,11 @@ export const zhCN = {
       clear: "移除快捷键",
       reset: "恢复默认",
       resetAll: "全部恢复默认",
-      groups: {
-        general: "通用",
-        chat: "聊天",
-      },
+      primarySlot: "快捷键",
+      alternateSlot: "备用快捷键",
+      browserReserved:
+        "浏览器可能会占用该组合键。桌面应用中可正常使用。",
       actions: {
-        newChat: {
-          label: "新建聊天",
-          description: "开始一个新的聊天",
-        },
-        searchChats: {
-          label: "搜索聊天",
-          description: "打开聊天搜索对话框",
-        },
-        toggleSidebar: {
-          label: "切换侧边栏",
-          description: "显示或隐藏侧边栏",
-        },
         openSettings: {
           label: "打开设置",
           description: "打开设置对话框",
@@ -239,6 +227,206 @@ export const zhCN = {
         openKeyboardShortcuts: {
           label: "键盘快捷键",
           description: "打开该快捷键列表",
+        },
+        searchChats: {
+          label: "搜索聊天",
+          description: "打开聊天搜索对话框",
+        },
+        openMcpServers: {
+          label: "MCP 服务器",
+          description: "为该聊天配置 MCP 服务器",
+        },
+        logOut: {
+          label: "退出登录",
+          description: "退出 Unsloth",
+        },
+        approveToolRequest: {
+          label: "批准请求",
+          description: "允许正在等待批准的工具调用",
+        },
+        declineToolRequest: {
+          label: "拒绝请求",
+          description: "拒绝正在等待批准的工具调用",
+        },
+        newChat: {
+          label: "新建聊天",
+          description: "开始一个新的聊天",
+        },
+        newTemporaryChat: {
+          label: "新建临时聊天",
+          description: "开始一个不写入历史记录的聊天",
+        },
+        newStandaloneChat: {
+          label: "新建独立聊天",
+          description: "在所有项目之外开始新聊天",
+        },
+        archiveChat: {
+          label: "归档聊天",
+          description: "归档已选聊天，没有则归档当前聊天",
+        },
+        markChatUnread: {
+          label: "标记为未读",
+          description: "将已选聊天标记为未读，没有则标记当前聊天",
+        },
+        togglePinChat: {
+          label: "切换置顶",
+          description: "置顶或取消置顶已选聊天，没有则操作当前聊天",
+        },
+        selectAllChats: {
+          label: "选择全部对话",
+          description: "选择侧边栏中的所有对话",
+        },
+        clearChatSelection: {
+          label: "清除选择",
+          description: "取消选择已选对话。按 Esc 同样可以取消选择",
+        },
+        deleteSelectedChats: {
+          label: "删除所选对话",
+          description: "删除所有已选对话",
+        },
+        nextRecentlyViewedChat: {
+          label: "下一个最近查看的聊天",
+          description: "在最近查看的聊天中向前切换",
+        },
+        previousRecentlyViewedChat: {
+          label: "上一个最近查看的聊天",
+          description: "在最近查看的聊天中向后切换",
+        },
+        nextChat: {
+          label: "下一个聊天",
+          description: "切换到侧边栏中的下一个聊天",
+        },
+        previousChat: {
+          label: "上一个聊天",
+          description: "切换到侧边栏中的上一个聊天",
+        },
+        nextChatNeedingAttention: {
+          label: "下一个需要处理的聊天",
+          description: "切换到下一个正在生成、排队或未读的聊天",
+        },
+        clearAllUnreads: {
+          label: "全部标记为已读",
+          description: "将所有聊天标记为已读",
+        },
+        goToRecentChat1: {
+          label: "转到最近聊天 1",
+          description: "打开“最近”中的第 1 个聊天",
+        },
+        goToRecentChat2: {
+          label: "转到最近聊天 2",
+          description: "打开“最近”中的第 2 个聊天",
+        },
+        goToRecentChat3: {
+          label: "转到最近聊天 3",
+          description: "打开“最近”中的第 3 个聊天",
+        },
+        goToRecentChat4: {
+          label: "转到最近聊天 4",
+          description: "打开“最近”中的第 4 个聊天",
+        },
+        goToRecentChat5: {
+          label: "转到最近聊天 5",
+          description: "打开“最近”中的第 5 个聊天",
+        },
+        goToRecentChat6: {
+          label: "转到最近聊天 6",
+          description: "打开“最近”中的第 6 个聊天",
+        },
+        switchToChat: {
+          label: "切换到聊天",
+          description: "前往聊天工作区",
+        },
+        switchToProjects: {
+          label: "切换到项目",
+          description: "前往项目工作区",
+        },
+        switchToHub: {
+          label: "切换到模型中心",
+          description: "前往模型中心",
+        },
+        switchToTrain: {
+          label: "切换到训练",
+          description: "前往训练工作区",
+        },
+        switchToRecipes: {
+          label: "切换到 Recipes",
+          description: "前往 Data Recipes",
+        },
+        switchToImages: {
+          label: "切换到图像",
+          description: "前往图像工作区",
+        },
+        switchToVideo: {
+          label: "切换到视频",
+          description: "前往视频工作区",
+        },
+        switchToAudio: {
+          label: "切换到音频",
+          description: "前往音频工作区",
+        },
+        switchToExport: {
+          label: "切换到导出",
+          description: "前往导出工作区",
+        },
+        toggleSidebar: {
+          label: "切换侧边栏",
+          description: "显示或隐藏侧边栏",
+        },
+        toggleApiMonitor: {
+          label: "切换 API 活动",
+          description: "显示或隐藏 API 活动监视器",
+        },
+        openModelPicker: {
+          label: "打开模型选择器",
+          description: "为该聊天选择模型",
+        },
+        openProjectPicker: {
+          label: "打开项目选择器",
+          description: "从聊天标题栏切换到其他项目",
+        },
+        startDictation: {
+          label: "语音输入",
+          description: "开始或停止在输入框中语音输入",
+        },
+        attachFiles: {
+          label: "添加照片和文件",
+          description: "为输入框添加附件",
+        },
+        sendMessage: {
+          label: "发送消息",
+          description: "发送输入框中的内容",
+        },
+        cycleReasoningEffort: {
+          label: "循环切换推理强度",
+          description: "在各推理强度等级之间循环",
+        },
+        increaseReasoningEffort: {
+          label: "提高推理强度",
+          description: "将推理强度提高一级",
+        },
+        decreaseReasoningEffort: {
+          label: "降低推理强度",
+          description: "将推理强度降低一级",
+        },
+        toggleFastMode: {
+          label: "切换 Fast 模式",
+          description: "开启或关闭 Fast 模式",
+        },
+        renameChat: {
+          label: "重命名聊天",
+          description: "重命名当前聊天",
+        },
+        forkChat: {
+          label: "分叉聊天",
+          description: "从最后一条消息分出新的聊天",
+        },
+        copyChatAsMarkdown: {
+          label: "复制为 Markdown",
+          description: "将整个聊天以 Markdown 复制到剪贴板",
+        },
+        copySessionId: {
+          label: "复制会话 ID",
+          description: "复制该聊天的沙箱会话 ID",
         },
       },
     },
@@ -405,6 +593,14 @@ export const zhCN = {
         engineStudioDescription: "使用已加载的音频模型（例如 Orpheus）",
         engineSystem: "系统语音",
         engineStudio: "加载 TTS 模型",
+        engineCustom: "自定义端点",
+        engineCustomDescription:
+          "来自连接的 OpenAI 兼容 TTS 服务器（例如 Kokoro）",
+        connectionLabel: "连接",
+        connectionDescription: "在“连接”标签页中添加 OpenAI 兼容服务器",
+        connectionPlaceholder: "选择连接",
+        customModelLabel: "模型",
+        customVoiceDescription: "端点所需的语音名称（默认为 alloy）",
         modelLabel: "TTS 模型",
         modelDescription: "从模型选择器加载音频模型（例如 Orpheus TTS）",
         openAudioAction: "打开音频",
@@ -547,6 +743,27 @@ export const zhCN = {
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
       },
+      downloads: {
+        sectionTitle: "下载",
+        transport: "下载传输方式",
+        transportDescription:
+          "模型和数据集文件从 Hugging Face 下载的方式。HTTPS 会从中断处续传；Xet 首次下载通常更快，但取消后该文件会重新开始。",
+        transportHint:
+          "HTTPS 就是普通 TLS：任何网络、代理和 VPN 都允许，取消或断开的传输会从磁盘上已有的字节续传，内存占用也很平稳。Xet 获取去重后的数据块，因此与已有仓库共享数据时可以快得多，但它需要 hf_xet、占用更多内存，取消时会丢弃正在传输的文件。Auto 会针对本机判断：它会权衡内存以及 Xet 在这里是否曾经卡住，并在必要时退回 HTTPS。",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint: "标准 TLS。取消后可续传，适用于任何网络，内存占用稳定。",
+        transportDescriptionNoResume:
+          "模型和数据集文件从 Hugging Face 下载的方式。此安装的两种传输方式都无法续传，取消后的下载会重新开始；Xet 在首次下载时通常更快。",
+        httpsHintNoResume:
+          "标准 TLS。可在任何网络下使用，内存占用平稳。此安装无法续传已取消的下载。",
+        xetHint:
+          "去重数据块传输。首次下载通常更快，取消后文件重新开始，需要更多内存。",
+        autoHint: "按本机情况选择，若 Xet 在这里卡住或失败则切换到 HTTPS。",
+        autoCurrently: "本机上 Auto 正在使用 {transport}。",
+        xetMissing: "未安装 hf_xet，因此无法使用 Xet。",
+      },
       uploads: {
         sectionTitle: "上传",
         maxUploadSize: "训练数据集上传上限",
@@ -631,8 +848,8 @@ export const zhCN = {
           "下面的内容全部根据你自己的历史记录统计。不会收集任何数据，也不会发送给 Unsloth。",
         retry: "重试",
         privacyNote:
-          "统计数据由你本地 Unsloth 保存的聊天和训练历史计算得出。不收集任何数据，也不会发送给 Unsloth 或任何第三方。",
-        emptyChats: "暂无聊天。开始一段对话后，这里就会显示你的统计数据。",
+          "统计数据由本地 Unsloth 的聊天、API 使用和训练历史计算得出。统计功能绝不会保存 API 提示词、回复或密钥，也不会向 Unsloth 或任何第三方发送数据。",
+        emptyChats: "暂无聊天或 API 使用记录。请开始一段对话，或发起经过认证的本地 API 请求。",
         lifetimeTokens: "累计 token",
         peakTokens: "单日峰值",
         longestChat: "最长的聊天",
@@ -654,6 +871,9 @@ export const zhCN = {
         totalMessages: "消息总数",
         tokensIn: "发送的 token",
         tokensOut: "生成的 token",
+        totalTokens: "Token 总数",
+        studioChatTokens: "Unsloth Chat token",
+        apiTokens: "API token",
         cachedTokens: "缓存的 token",
         cachedValue: "{tokens}（占输入的 {percent}%）",
         avgTokensPerChat: "每个聊天的平均 token",
@@ -1091,7 +1311,7 @@ export const zhCN = {
         title: "网页搜索",
         images: "显示网页搜索图片",
         imagesDescription:
-          "让网页搜索返回图片，并为回答中列出的每一项各获取一张。缩略图由 Studio 获取并缩放，浏览器不会直接访问图片来源。",
+          "让网页搜索返回图片，并为回答中列出的每一项各获取一张。缩略图由 Unsloth 获取并缩放，浏览器不会直接访问图片来源。",
       },
       artifacts: {
         title: "Canvas",
@@ -1112,7 +1332,7 @@ export const zhCN = {
       exportingAction: "导出中...",
       exportConversations: "导出最近对话与项目",
       exportConversationsDescription:
-        "将最近对话（或加上项目内对话）导出为 Raw JSONL、CSV 或 ShareGPT JSONL，可合并为单个文件或每个对话一个文件。",
+        "将最近对话（或加上项目内对话）导出为 Training JSONL、CSV 或 ShareGPT JSONL，可合并为单个文件或每个对话一个文件。Message JSONL 仅支持每个对话单独导出。",
       exportConversationsAction: "导出",
       exportScopeRecents: "最近对话",
       exportScopeAll: "最近对话 + 项目",
@@ -1514,8 +1734,8 @@ export const zhCN = {
       reasonAdapter: "适配器输出不能作为基础训练模型。",
       reasonNotTrainable: "此设备上的模型无法用于训练。",
       reasonUnsupportedFormat: "训练不支持此模型格式。",
-      vramNeeds: "约需 {est}GB VRAM（GPU：{total}GB）",
-      vramTight: "约 {est}GB VRAM（在 {total}GB 上偏紧）",
+      vramNeeds: "约需 {est}GB VRAM（GPU：{total}GiB）",
+      vramTight: "约 {est}GB VRAM（在 {total}GiB 上偏紧）",
       vramApprox: "约 {est}GB VRAM",
       vramOomBadge: "OOM",
       vramTightBadge: "显存吃紧",

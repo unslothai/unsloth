@@ -63,6 +63,7 @@ from core.inference.chat_template_helpers import (
     append_assistant_turn,
     trailing_assistant_text,
 )
+from core.inference.passthrough_healing import nudge_enabled
 from core.inference.tool_stream_exec import stream_tool_execution
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
@@ -1022,16 +1023,15 @@ def run_safetensors_tool_loop(
             )
             if not safety_tc:
                 # Re-prompt once on plan-without-action, before any tool runs
-                # (GGUF loop parity). The retry is gated on nudge_tool_calls so
-                # Unsloth callers (which send True) always nudge, while API callers
-                # who omit the flag keep today's no-reprompt behavior (opt-in).
+                # (GGUF loop parity). Omitted flags follow the shared process
+                # default, while explicit request values win.
                 intent_text = _reprompt_intent_text(
                     content_accum,
                     reasoning_prefilled = reasoning_prefilled,
                 )
                 if (
                     auto_heal_tool_calls
-                    and nudge_tool_calls
+                    and nudge_enabled(nudge_tool_calls)
                     and active_tools
                     and reprompt_count < MAX_ACT_REPROMPTS
                     and not rag_autoinjected

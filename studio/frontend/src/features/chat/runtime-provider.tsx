@@ -130,6 +130,10 @@ import {
   refreshContextUsage,
   setActiveBranchReader,
 } from "./utils/refresh-context-usage";
+import {
+  type RunCheckpointScheduler,
+  createRunCheckpointScheduler,
+} from "./utils/run-checkpoint-scheduler";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import { sanitizeThreadScopedSettings } from "./utils/thread-scoped-settings";
 import { VideoAttachmentAdapter } from "./video-attachment-adapter";
@@ -693,7 +697,9 @@ export async function ensureThreadRecord({
   pairId,
   projectId,
   incognito,
+  neverSent,
   modelId,
+  modelGgufVariant,
   createdAt,
 }: {
   threadId: string;
@@ -702,8 +708,11 @@ export async function ensureThreadRecord({
   projectId?: string | null;
   /** Snapshot from the send this row belongs to, so a retry cannot read a since-flipped toggle. */
   incognito?: boolean;
+  /** True only from initialize(), which runs once for a thread that has never been sent to. */
+  neverSent?: boolean;
   /** Snapshot from the send this row belongs to, so retries cannot adopt a later checkpoint. */
   modelId?: string;
+  modelGgufVariant?: string | null;
   /** Snapshot from the send this row belongs to, so retries retain its original creation time. */
   createdAt?: number;
 }): Promise<void> {
@@ -716,10 +725,16 @@ export async function ensureThreadRecord({
   const runtimeStateAtInit = useChatRuntimeStore.getState();
   const incognitoAtInit = incognito ?? runtimeStateAtInit.incognito;
   const modelIdAtInit = modelId ?? runtimeStateAtInit.params.checkpoint ?? "";
+  const modelGgufVariantAtInit =
+    modelGgufVariant !== undefined
+      ? modelGgufVariant
+      : runtimeStateAtInit.activeGgufVariant;
   const createdAtInit = createdAt ?? Date.now();
-  // Fresh assistant-ui threads are local ids. Temporary chats can skip the
-  // history list entirely so a storage outage cannot block the first send.
-  if (incognitoAtInit && isAssistantLocalThreadId(threadId)) {
+  // A temporary chat skips the history list so a storage outage cannot block its first send.
+  // Gated on the caller knowing the thread is new, not on its id: a `__LOCALID_` id is the
+  // permanent key of every chat the app creates, so keying on the prefix tagged SAVED chats
+  // incognito whenever a caller passed the open chat's id with the toggle on.
+  if (incognitoAtInit && neverSent) {
     markThreadIncognito(threadId);
     return;
   }
@@ -728,9 +743,8 @@ export async function ensureThreadRecord({
   if (existing) {
     return;
   }
-  // For non-local ids, keep the existing check first so an already-persisted
-  // thread is never tagged -- that's what keeps a real thread saving normally
-  // even if the toggle flips on while its run is still streaming.
+  // After the row check, so an already-persisted thread is never tagged: that is what keeps
+  // a real chat saving normally when the toggle flips on mid-stream.
   if (incognitoAtInit) {
     markThreadIncognito(threadId);
     return;
@@ -741,6 +755,7 @@ export async function ensureThreadRecord({
     title: "New Chat",
     modelType,
     modelId: modelIdAtInit,
+    modelGgufVariant: modelGgufVariantAtInit,
     pairId,
     projectId: projectId ?? null,
     archived: false,
@@ -827,6 +842,9 @@ function createStudioDbAdapter(
       const modelIdAtInit = claim
         ? claim.modelId
         : (runtimeStateAtInit.params.checkpoint ?? "");
+      const modelGgufVariantAtInit = claim
+        ? claim.modelGgufVariant
+        : runtimeStateAtInit.activeGgufVariant;
       const createdAtInit = claim ? claim.createdAt : Date.now();
       const projectIdAtInit = claim ? claim.projectId : projectId;
       trackStoredChatThreadRecord(threadId, () =>
@@ -836,7 +854,11 @@ function createStudioDbAdapter(
           pairId,
           projectId: projectIdAtInit,
           incognito: incognitoAtInit,
+          // The one caller that can promise this: assistant-ui runs initialize() once, for
+          // the id it just minted. Others hand in whatever chat is open.
+          neverSent: true,
           modelId: modelIdAtInit,
+          modelGgufVariant: modelGgufVariantAtInit,
           createdAt: createdAtInit,
         }),
       );
@@ -1868,7 +1890,7 @@ function ThreadNewChatSwitch({
     // Guarded, unlike the reads elsewhere that pass an id the runtime just handed back: this
     // one is REMEMBERED, in a ref that outlives every view switch. getItemById() THROWS
     // "Entry not available in the store" for a dropped id rather than returning undefined, so
-    // the optional chain would not catch it and the effect would take the app down. Studio
+    // the optional chain would not catch it and the effect would take the app down. Unsloth
     // deletes through tombstones today; the point is not to depend on that.
     let recordedRemoteId: string | undefined;
     if (recorded) {
@@ -2132,7 +2154,7 @@ function NonceThreadResumeRestore({
     if (!remoteId) {
       return;
     }
-    // ...and neither must a chat the user deleted while they were away. Studio deletes by
+    // ...and neither must a chat the user deleted while they were away. Unsloth deletes by
     // tombstoning storage rather than calling runtime.threads.delete(), so the runtime item
     // and its remoteId both survive and every check above still passes. On remoteId, which
     // is the id storage and the sidebar delete agree on. Restoring here would undo
@@ -2157,17 +2179,18 @@ function ThreadScopedSettingsSync({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const pendingNewThreadId = useAuiState(({ threads }) => threads.newThreadId);
   const settingsHydrated = useChatRuntimeStore(
     (state) => state.settingsHydrated,
   );
 
   useEffect(() => {
     const { applyThreadScopedSettings } = useChatRuntimeStore.getState();
-    // An unsaved chat carries a runtime-made id that no row can exist for, so its read
-    // can only 404. Opening a pairing window for it holds every edit behind a round
-    // trip that is certain to say "no snapshot", which is how an edit made on a fresh
-    // /chat stopped reaching the installation defaults straight away.
-    if (isAssistantLocalThreadId(activeThreadId)) {
+    // A chat not yet sent to has no row, so pairing it holds every edit behind a read certain
+    // to 404 -- which is how an edit on a fresh /chat stopped reaching the installation
+    // defaults. The `__LOCALID_` prefix stays on the id for good, so only the runtime's
+    // pending-new-thread id tells the two apart.
+    if (activeThreadId !== null && activeThreadId === pendingNewThreadId) {
       applyThreadScopedSettings(null, null);
       return;
     }
@@ -2238,27 +2261,36 @@ function ThreadScopedSettingsSync({
       // over the values the user set and is written out again by the next edit.
       const read = new AbortController();
       reads.add(read);
-      void awaitThreadScopedSettingsWrite(activeThreadId)
-        .then(() =>
-          // Bounded, because this read is what holds sends back: an unbounded GET that
-          // never settles would park every send in the chat behind "Loading this chat's
-          // settings" with nothing to release it, and leave the request open besides.
-          // The fetch carries THIS attempt's deadline and its controller, so a stall ends
-          // the request rather than leaving it running while the retry opens the next one;
-          // the race is the backstop for the rest of the read.
-          Promise.race([
-            getStoredChatThreadReadResult(activeThreadId, {
-              timeoutMs: THREAD_READ_TIMEOUT_MS,
-              signal: read.signal,
-            }),
-            new Promise<never>((_, reject) =>
-              setTimeout(
-                () => reject(new Error("thread settings read timed out")),
-                THREAD_READ_TIMEOUT_MS,
-              ),
-            ),
-          ]),
-        )
+      // The deadline covers the WAITS as well as the read: neither is bounded on its own (the
+      // settings chain is a PATCH, and awaitStoredChatThreadWrites settles a row write opening
+      // with an unbounded getStoredChatThread). In front of it their time went uncounted, so
+      // the chain could outlast THREAD_PAIRING_WAIT_MS with the gate shut and the send refused.
+      // Inside it, a stall is one failed attempt, which retryThreadRead handles.
+      void Promise.race([
+        Promise.all([
+          // This chat's own PATCH first: a read that overtakes it returns the pre-edit
+          // snapshot, which then goes back over the values the user just set.
+          awaitThreadScopedSettingsWrite(activeThreadId),
+          // And its row, which may not exist yet: initialize() resolves as soon as the id is
+          // minted and leaves the POST tracked, so on a first send a read can overtake it, find
+          // no row, and release this chat's held edits into the installation defaults. Settles
+          // at once when nothing is tracked, so an existing chat waits for nothing.
+          awaitStoredChatThreadWrites(activeThreadId),
+        ]).then(() =>
+          getStoredChatThreadReadResult(activeThreadId, {
+            timeoutMs: THREAD_READ_TIMEOUT_MS,
+            signal: read.signal,
+          }),
+        ),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => {
+            // The waits can expire before the fetch is issued; the controller is the only
+            // thing stopping one issued a moment later from outliving them.
+            read.abort();
+            reject(new Error("thread settings read timed out"));
+          }, THREAD_READ_TIMEOUT_MS),
+        ),
+      ])
         .finally(() => {
           reads.delete(read);
         })
@@ -2345,7 +2377,7 @@ function ThreadScopedSettingsSync({
       commitHeldThreadScopedEditsToTheirThread();
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
     };
-  }, [activeThreadId, enabled, settingsHydrated]);
+  }, [activeThreadId, enabled, pendingNewThreadId, settingsHydrated]);
 
   return null;
 }
@@ -2561,15 +2593,18 @@ function ThreadBackendAutosave({
     [aui, modelType, newThreadSwitchStateRef, pairId],
   );
 
+  // Let checkpoints schedule their next timer after this write settles.
   const queueSave = useCallback(
-    (threadId: string): void => {
-      saveChainRef.current = saveChainRef.current
+    (threadId: string): Promise<void> => {
+      const queued = saveChainRef.current
         .catch(() => {})
         .then(async () => {
           await pendingFirstSavesRef.current.get(threadId);
           await saveThread(threadId);
         })
         .catch(reportAutosaveError);
+      saveChainRef.current = queued;
+      return queued;
     },
     [reportAutosaveError, saveThread],
   );
@@ -2591,11 +2626,73 @@ function ThreadBackendAutosave({
     [reportAutosaveError, saveThread],
   );
 
+  // runEnd only reaches whichever thread is main, so a thread that stops being main
+  // mid-run never gets its own and would checkpoint for the life of the page. Ask the
+  // runtime instead of trusting the event, as CancelRegistrar above already does.
+  const isRunActive = useCallback(
+    (threadId: string): boolean => {
+      const runtime = aui.threads().__internal_getAssistantRuntime?.();
+      if (!runtime) {
+        return false;
+      }
+      try {
+        return runtime.threads.getById(threadId).getState().isRunning === true;
+      } catch {
+        // A deleted or detached thread throws out of getById rather than reporting idle.
+        return false;
+      }
+    },
+    [aui],
+  );
+
+  // Keep one scheduler for the component lifetime so its timers remain stoppable. The refs
+  // give it the latest queueSave and liveness check when dependencies change.
+  const queueSaveRef = useRef(queueSave);
+  useEffect(() => {
+    queueSaveRef.current = queueSave;
+  }, [queueSave]);
+  const isRunActiveRef = useRef(isRunActive);
+  useEffect(() => {
+    isRunActiveRef.current = isRunActive;
+  }, [isRunActive]);
+  const checkpointsRef = useRef<RunCheckpointScheduler | null>(null);
+  const checkpoints = useCallback((): RunCheckpointScheduler => {
+    checkpointsRef.current ??= createRunCheckpointScheduler(
+      (threadId) => queueSaveRef.current(threadId),
+      { isActive: (threadId) => isRunActiveRef.current(threadId) },
+    );
+    return checkpointsRef.current;
+  }, []);
+
+  useEffect(() => {
+    // A hidden renderer may never get its next interval: Chromium throttles chained timers
+    // to a wake a minute and a WebView can be parked outright, so checkpoint on the way
+    // out. No beforeunload, matching flushSettingsOnPageHidden: it does not fire on every
+    // platform and a Tauri quit never fires it at all.
+    const flush = () => {
+      checkpointsRef.current?.flushAll();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flush();
+      }
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      checkpointsRef.current?.stopAll();
+    };
+  }, []);
+
   useAuiEvent("thread.runEnd", ({ threadId }) => {
+    checkpoints().stop(threadId);
     queueSave(threadId);
   });
 
   useAuiEvent("thread.runStart", ({ threadId }) => {
+    checkpoints().start(threadId);
     const runtime = aui.threads().__internal_getAssistantRuntime?.();
     const { remoteId } =
       runtime?.threads.getItemById(threadId).getState() ?? {};
@@ -2616,6 +2713,15 @@ export const ChatActiveContext = createContext(true);
 
 export function useChatActive(): boolean {
   return useContext(ChatActiveContext);
+}
+
+// True inside a Compare pane. Both panes mount the same message controls, so a
+// window-level chord would otherwise be answered by whichever pane mounted
+// first, whatever the user was looking at.
+const ComparePaneContext = createContext(false);
+
+export function useInComparePane(): boolean {
+  return useContext(ComparePaneContext);
 }
 
 export function ChatRuntimeProvider({
@@ -2699,6 +2805,7 @@ export function ChatRuntimeProvider({
           ("call_0") can't bleed live output into each other's cards. */}
       <ChatProjectScopeContext.Provider value={projectId ?? null}>
       <ToolPaneScopeContext.Provider value={toolPaneScope(modelType, pairId)}>
+        <ComparePaneContext.Provider value={Boolean(pairId)}>
         <ActiveThreadSync
           enabled={
             modelType === "base" &&
@@ -2759,6 +2866,7 @@ export function ChatRuntimeProvider({
         {/* The view stays mounted (only CSS-hidden) while off-route so the run
             stays attached and the stream alive; unmounting aborts generation. */}
         {children}
+        </ComparePaneContext.Provider>
       </ToolPaneScopeContext.Provider>
       </ChatProjectScopeContext.Provider>
     </AssistantRuntimeProvider>

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 //
-// The selector adapter for the REAL Studio chat UI.
+// The selector adapter for the REAL Unsloth chat UI.
 //
 // The salvaged action JS from playwright_heavy_thread.py calls `window.__heavyThread`, an API the
 // smoke fixture exported. The shipping app exports nothing of the kind, so the actions are ported
@@ -42,6 +42,23 @@
     return (el.textContent || "").trim();
   };
 
+  // The two hooks the app publishes a part's progress through: assistant-ui's `data-status` on a
+  // text part (markdown-text.tsx) and `aria-busy` on the reasoning content (reasoning.tsx). Named
+  // once because the streaming scan and the control on it must never drift apart.
+  // Every control ComposerRightControls can put in the run-state slot, in no significant order.
+  // "Stop research" / "Stopping research" are included because they are the same slot, even though
+  // nothing in this benchmark can reach a research run today.
+  const RUN_STATE_CONTROLS = [
+    "Stop generating",
+    "Stop queued message",
+    "Stop research",
+    "Stopping research",
+    "Queue message",
+    "Send message",
+  ];
+
+  const STATUS_HOOK = '[data-status], [data-slot="reasoning-content"][aria-busy]';
+
   const byName = (sel, name, root) =>
     qa(sel, root).find((el) => nameOf(el) === name) || null;
 
@@ -70,8 +87,136 @@
     queueButton() {
       return q('button[aria-label="Queue message"]');
     },
+    // THE DISPATCHED HALF OF A QUEUE RUN. `ComposerRightControls` renders this once the queued
+    // entry has been dispatched, under `isQueueRunning && !thread.isRunning` (thread.tsx), so the
+    // thread reports itself NOT running and neither `stopButton()` nor `queueButton()` matches.
+    // Read on its own, that transient came out as an ordinary idle composer: `streaming` and
+    // `queued_idle` both false, exactly as a settled Send arm reads. An arm caught here against a
+    // settled one then had a differing composer with no run-state difference to explain it, which
+    // is the shape the comparison layer treats as a rendering regression.
+    stopQueuedButton() {
+      return q('button[aria-label="Stop queued message"]');
+    },
     isRunning() {
       return Boolean(D.stopButton() || D.queueButton());
+    },
+    // WHICH RUN-STATE CONTROL THE COMPOSER IS RENDERING, as a token.
+    //
+    // `ComposerRightControls` renders exactly one of these at a time and which one is a function
+    // of the run state: Send when nothing is happening, Stop while a reply is being written, Queue
+    // while one is queued or while text sits in the box mid-reply, and the research pair while a
+    // research run is going. They are DIFFERENT SUBTREES, and the composer dock is inside
+    // `.aui-thread-root`, so `digest_scaffold` carries whichever one is up.
+    //
+    // Two arms showing different tokens differ in the scaffold FOR THAT REASON, with no rendering
+    // difference between them. `isRunning()` is too coarse to say so: it is true for Stop AND for
+    // Queue, so a queued-idle arm and a streaming arm agree on it while rendering different
+    // controls. The token is the thing the scaffold actually contains.
+    runStateControl() {
+      for (const name of RUN_STATE_CONTROLS) {
+        if (byName("button", name)) return name;
+      }
+      return "";
+    },
+    // THE PROMPT QUEUE'S OWN SURFACE. `PromptQueueStack` renders the waiting prompts inside the
+    // composer root with the accessible name "Prompt queue, <n> of <m>", and that is the only
+    // place the queue states its own existence in the DOM. Scoped to the thread root so a queue
+    // running on ANOTHER thread, which the sidebar also renders, is not read as this one's.
+    promptQueue() {
+      return q('[aria-label^="Prompt queue,"]', D.threadRoot());
+    },
+    // A REPLY IS ACTUALLY BEING WRITTEN, which is NOT the question `isRunning()` answers.
+    //
+    // `isRunning()` has to accept the Queue button: with text in the composer a running thread
+    // renders that button and NO Stop button (`queueDisabled` depends on the composer having a
+    // queueable prompt), so an action that waited for Stop would wait out its budget on a live
+    // stream. Every caller that asks "may I send now" wants exactly that broad reading.
+    //
+    // It is the wrong reading for a positive control on the streaming probe, because
+    // `ComposerRightControls` renders "Queue message" in a SECOND place: under
+    // `isQueueRunning && !thread.isRunning`, while a queued prompt waits to be dispatched and
+    // nothing at all is generating. `isRunning()` cannot tell that queued-idle interval from a
+    // live stream whose `data-status` hooks have gone quiet, and those two need opposite
+    // treatment -- one is an ordinary settled thread, the other is an instrument that has stopped
+    // working.
+    //
+    // The queued-idle button always comes with the queue surface: `syncPromptQueueUI` marks the
+    // entry `dispatched` from the active item, and `getPromptQueueUIItemsForRun` drops only
+    // DISPATCHED items, so an undispatched active item -- the one that renders "Queue message"
+    // rather than "Stop queued message" -- is always in the list the stack renders.
+    //
+    // WHAT THIS GIVES UP, pinned in scene/selftest/test_studiobench_queued_idle_live.py: while a
+    // queue run holds further prompts AND a reply is streaming AND the composer has text, the
+    // queue surface is up and the only control is the Queue button, so this reads false and the
+    // control is not armed for that capture. Under-claiming, and cheap: probe blindness is a
+    // renamed selector, which is global, so every other capture in the run still catches it.
+    // A RESEARCH RUN IS A GENERATION THIS PREDICATE CANNOT SEE, and deliberately so for now.
+    // `ComposerRightControls` renders "Stop research" / "Stopping research" under
+    // `isResearchActive`, which neither `stopButton()` nor `queueButton()` matches, and a research
+    // report renders through `MarkdownPreview` rather than the assistant text part, so
+    // `streamingMessages()` finds no `data-status` for it either. All THREE are blind to it
+    // together.
+    //
+    // Not patched, because nothing here can start one: `ResearchMessage` is gated on
+    // `message.metadata` and the seeder writes `None` for every message, and no action, corpus
+    // unit or scene touches the composer's research toggle. Fixing one of the three would leave
+    // two that still disagree with it. If a research scene is ever added, move all three in the
+    // same change, and add the report's own busy hook to `STATUS_HOOK` at the same time.
+    generating() {
+      if (D.stopButton()) return true;
+      if (!D.queueButton()) return false;
+      return !D.promptQueue();
+    },
+    // WHICH MESSAGES ARE STILL BEING WRITTEN, read from the app's own published state rather than
+    // guessed at from `isRunning()` plus "it is probably the last one".
+    //
+    // assistant-ui gives every text part a status and Unsloth serialises it: markdown-text.tsx
+    // renders `<div data-status={status.type}>` around the Streamdown tree, so a part that is
+    // still arriving reads `data-status="running"` and a finished one reads `"complete"`. The
+    // reasoning pane publishes the same fact as `aria-busy` on `[data-slot="reasoning-content"]`
+    // (reasoning.tsx), which is a separate part of the same message and can be running while the
+    // answer is not, or the other way round. Either one means this message's DOM is mid-flight.
+    //
+    // Both are the APP's statements about its own state. Nothing here reads a timer, a character
+    // count or "the last assistant message", all of which are the benchmark inventing a fact the
+    // page already publishes -- and inventing it is how you end up attributing a stream to the
+    // wrong message on the arm that renders faster.
+    streamingMessages() {
+      return qa("[data-role]").filter(
+        (m) => m.querySelector('[data-status="running"], [aria-busy="true"]') !== null,
+      );
+    },
+    // ── IS THE STREAMING PROBE BLIND, OR IS THERE SIMPLY NOTHING FOR IT TO SEE ──────────
+    //
+    // `streamingMessages()` returning nothing has three completely different causes, and the
+    // positive control on it is only worth having if they are told apart.
+    //
+    //   THE HOOK IS GONE          a build renamed or dropped `data-status`. It is one line in
+    //                             markdown-text.tsx and it is rendered for `complete` parts as
+    //                             well as `running` ones, so on a working build EVERY assistant
+    //                             message that has rendered a part carries it, and on a blinded
+    //                             build none does.
+    //   THE ROW IS NOT MOUNTED    a windowed arm scrolled away from the tail has unmounted the
+    //                             message it is writing into. That is what windowing is for.
+    //   THE ROW HAS NO PARTS YET  between the send being accepted and the reply's first part
+    //                             arriving, the assistant message is mounted with zero content
+    //                             parts and thread.tsx renders "Generating..." in its place. It
+    //                             publishes no status because it has nothing to publish yet, and
+    //                             `send_turn` returns the instant `isRunning()` flips, so a
+    //                             capture lands here twice a film.
+    //
+    // Scoped to ASSISTANT messages throughout: a user message never publishes `data-status` even
+    // on a perfectly working build, because only the assistant parts are rendered through
+    // `MarkdownText` (thread.tsx `ASSISTANT_PART_COMPONENTS`). A window holding only user rows
+    // would otherwise read as a build with no hook.
+    statusHookPresent() {
+      return D.assistantMessages().some((m) => m.querySelector(STATUS_HOOK) !== null);
+    },
+    // Whether the message a reply would be written INTO is publishing parts this probe can read.
+    // False means it has none yet, which is the third case above and not a broken instrument.
+    lastAssistantPublishesStatus() {
+      const last = D.lastAssistantMessage();
+      return Boolean(last && last.querySelector(STATUS_HOOK));
     },
     messages() {
       return qa("[data-role]");
@@ -582,7 +727,7 @@
       //
       // The contract is about INTENT, and intent is re-expressed by coming back: a user who
       // scrolls up is detached until they return to the end, at which point they are following
-      // again. That is the same re-attachment Studio's own intent-aware autoscroll implements.
+      // again. That is the same re-attachment Unsloth's own intent-aware autoscroll implements.
       // Only checked here, on the way out of a deliberate gesture, so the app silently pulling
       // the viewport down on its own is still scored as a yank rather than laundered into a
       // re-attachment.

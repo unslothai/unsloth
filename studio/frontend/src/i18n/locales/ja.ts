@@ -219,23 +219,11 @@ export const ja = {
       clear: "ショートカットを削除",
       reset: "既定値に戻す",
       resetAll: "すべて既定値に戻す",
-      groups: {
-        general: "一般",
-        chat: "チャット",
-      },
+      primarySlot: "ショートカット",
+      alternateSlot: "代替ショートカット",
+      browserReserved:
+        "ブラウザがこのキーを使う場合があります。デスクトップアプリでは動作します。",
       actions: {
-        newChat: {
-          label: "新しいチャット",
-          description: "新しいチャットを開始します",
-        },
-        searchChats: {
-          label: "チャットを検索",
-          description: "チャット検索ダイアログを開きます",
-        },
-        toggleSidebar: {
-          label: "サイドバーの表示切り替え",
-          description: "サイドバーを表示または非表示にします",
-        },
         openSettings: {
           label: "設定を開く",
           description: "設定ダイアログを開きます",
@@ -243,6 +231,206 @@ export const ja = {
         openKeyboardShortcuts: {
           label: "キーボードショートカット",
           description: "このショートカット一覧を開きます",
+        },
+        searchChats: {
+          label: "チャットを検索",
+          description: "チャット検索ダイアログを開きます",
+        },
+        openMcpServers: {
+          label: "MCP サーバー",
+          description: "このチャットの MCP サーバーを設定します",
+        },
+        logOut: {
+          label: "ログアウト",
+          description: "Unsloth からサインアウトします",
+        },
+        approveToolRequest: {
+          label: "リクエストを承認",
+          description: "承認待ちのツール呼び出しを許可します",
+        },
+        declineToolRequest: {
+          label: "リクエストを拒否",
+          description: "承認待ちのツール呼び出しを拒否します",
+        },
+        newChat: {
+          label: "新しいチャット",
+          description: "新しいチャットを開始します",
+        },
+        newTemporaryChat: {
+          label: "新しい一時チャット",
+          description: "履歴に保存されないチャットを開始します",
+        },
+        newStandaloneChat: {
+          label: "新しい単独チャット",
+          description: "プロジェクトの外で新しいチャットを開始します",
+        },
+        archiveChat: {
+          label: "チャットをアーカイブ",
+          description: "選択中のチャット、なければ現在のチャットをアーカイブします",
+        },
+        markChatUnread: {
+          label: "未読にする",
+          description: "選択中のチャット、なければ現在のチャットを未読にします",
+        },
+        togglePinChat: {
+          label: "ピン留めの切り替え",
+          description: "選択中のチャット、なければ現在のチャットをピン留め、または解除します",
+        },
+        selectAllChats: {
+          label: "すべてのチャットを選択",
+          description: "サイドバーのすべてのチャットを選択します",
+        },
+        clearChatSelection: {
+          label: "選択を解除",
+          description: "選択中のチャットを解除します。Esc でも解除できます",
+        },
+        deleteSelectedChats: {
+          label: "選択したチャットを削除",
+          description: "選択したすべてのチャットを削除します",
+        },
+        nextRecentlyViewedChat: {
+          label: "次に見ていたチャット",
+          description: "最近開いたチャットを前に送ります",
+        },
+        previousRecentlyViewedChat: {
+          label: "前に見ていたチャット",
+          description: "最近開いたチャットを後ろに戻します",
+        },
+        nextChat: {
+          label: "次のチャット",
+          description: "サイドバーの次のチャットに切り替えます",
+        },
+        previousChat: {
+          label: "前のチャット",
+          description: "サイドバーの前のチャットに切り替えます",
+        },
+        nextChatNeedingAttention: {
+          label: "対応が必要な次のチャット",
+          description: "生成中・待機中・未読の次のチャットに切り替えます",
+        },
+        clearAllUnreads: {
+          label: "未読をすべて解除",
+          description: "すべてのチャットを既読にします",
+        },
+        goToRecentChat1: {
+          label: "最近のチャット 1 へ移動",
+          description: "「最近」の 1 番目のチャットを開きます",
+        },
+        goToRecentChat2: {
+          label: "最近のチャット 2 へ移動",
+          description: "「最近」の 2 番目のチャットを開きます",
+        },
+        goToRecentChat3: {
+          label: "最近のチャット 3 へ移動",
+          description: "「最近」の 3 番目のチャットを開きます",
+        },
+        goToRecentChat4: {
+          label: "最近のチャット 4 へ移動",
+          description: "「最近」の 4 番目のチャットを開きます",
+        },
+        goToRecentChat5: {
+          label: "最近のチャット 5 へ移動",
+          description: "「最近」の 5 番目のチャットを開きます",
+        },
+        goToRecentChat6: {
+          label: "最近のチャット 6 へ移動",
+          description: "「最近」の 6 番目のチャットを開きます",
+        },
+        switchToChat: {
+          label: "チャットへ切り替え",
+          description: "チャットのワークスペースへ移動します",
+        },
+        switchToProjects: {
+          label: "プロジェクトへ切り替え",
+          description: "プロジェクトのワークスペースへ移動します",
+        },
+        switchToHub: {
+          label: "モデルハブへ切り替え",
+          description: "モデルハブへ移動します",
+        },
+        switchToTrain: {
+          label: "トレーニングへ切り替え",
+          description: "トレーニングのワークスペースへ移動します",
+        },
+        switchToRecipes: {
+          label: "Recipes へ切り替え",
+          description: "Data Recipes へ移動します",
+        },
+        switchToImages: {
+          label: "画像へ切り替え",
+          description: "画像のワークスペースへ移動します",
+        },
+        switchToVideo: {
+          label: "動画へ切り替え",
+          description: "動画のワークスペースへ移動します",
+        },
+        switchToAudio: {
+          label: "音声へ切り替え",
+          description: "音声のワークスペースへ移動します",
+        },
+        switchToExport: {
+          label: "エクスポートへ切り替え",
+          description: "エクスポートのワークスペースへ移動します",
+        },
+        toggleSidebar: {
+          label: "サイドバーの表示切り替え",
+          description: "サイドバーを表示または非表示にします",
+        },
+        toggleApiMonitor: {
+          label: "API アクティビティの表示切り替え",
+          description: "API アクティビティモニターを表示または非表示にします",
+        },
+        openModelPicker: {
+          label: "モデル選択を開く",
+          description: "このチャットのモデルを選びます",
+        },
+        openProjectPicker: {
+          label: "プロジェクト選択を開く",
+          description: "チャットヘッダーから別のプロジェクトに切り替えます",
+        },
+        startDictation: {
+          label: "音声入力",
+          description: "入力欄への音声入力を開始または停止します",
+        },
+        attachFiles: {
+          label: "写真とファイルを添付",
+          description: "入力欄に添付ファイルを追加します",
+        },
+        sendMessage: {
+          label: "メッセージを送信",
+          description: "入力欄の内容を送信します",
+        },
+        cycleReasoningEffort: {
+          label: "思考の深さを順に切り替え",
+          description: "思考の深さのレベルを順に切り替えます",
+        },
+        increaseReasoningEffort: {
+          label: "思考の深さを上げる",
+          description: "思考の深さを 1 段階上げます",
+        },
+        decreaseReasoningEffort: {
+          label: "思考の深さを下げる",
+          description: "思考の深さを 1 段階下げます",
+        },
+        toggleFastMode: {
+          label: "Fast モードの切り替え",
+          description: "Fast モードをオンまたはオフにします",
+        },
+        renameChat: {
+          label: "チャット名を変更",
+          description: "現在のチャットの名前を変更します",
+        },
+        forkChat: {
+          label: "チャットを分岐",
+          description: "最後のメッセージから新しいチャットを分岐します",
+        },
+        copyChatAsMarkdown: {
+          label: "Markdown としてコピー",
+          description: "チャット全体を Markdown としてクリップボードにコピーします",
+        },
+        copySessionId: {
+          label: "セッション ID をコピー",
+          description: "このチャットのサンドボックスのセッション ID をコピーします",
         },
       },
     },
@@ -416,6 +604,15 @@ export const ja = {
           "読み込み済みの音声モデルを使用します (例: Orpheus)",
         engineSystem: "システムの音声",
         engineStudio: "TTS モデルを読み込む",
+        engineCustom: "カスタムエンドポイント",
+        engineCustomDescription:
+          "接続に登録した OpenAI 互換の TTS サーバー（例: Kokoro）",
+        connectionLabel: "接続",
+        connectionDescription:
+          "OpenAI 互換サーバーは「接続」タブで追加できます",
+        connectionPlaceholder: "接続を選択",
+        customModelLabel: "モデル",
+        customVoiceDescription: "エンドポイントが期待する音声名（デフォルトは alloy）",
         modelLabel: "TTS モデル",
         modelDescription:
           "モデルセレクターから音声モデルを読み込んでください (例: Orpheus TTS)",
@@ -554,6 +751,29 @@ export const ja = {
         loadError: "ログイン時起動の設定を読み込めませんでした。",
         saveError: "ログイン時起動の設定を更新できませんでした。",
       },
+      downloads: {
+        sectionTitle: "ダウンロード",
+        transport: "ダウンロード方式",
+        transportDescription:
+          "Hugging Face からモデルやデータセットのファイルを取得する方法です。HTTPS は中断した位置から再開します。Xet は初回ダウンロードでは速いことが多い一方、キャンセルするとそのファイルを最初からやり直します。",
+        transportHint:
+          "HTTPS は通常の TLS です。あらゆるネットワーク、プロキシ、VPN が許可し、キャンセルや切断があってもディスク上のバイト列から再開でき、メモリ使用量も一定です。Xet は重複排除されたチャンクを取得するため、既に持っているリポジトリとデータを共有する場合は大幅に速く届きますが、hf_xet が必要で RAM を多く使い、キャンセルすると転送中のファイルは破棄されます。Auto はこのマシンに合わせて判断し、RAM や Xet がここで停滞していないかを見て、必要なら HTTPS に切り替えます。",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "標準の TLS。キャンセル後も再開でき、どのネットワークでも動作し、メモリ使用量が安定します。",
+        transportDescriptionNoResume:
+          "モデルやデータセットのファイルを Hugging Face から取得する方法です。このインストールではどちらの転送方式も再開できないため、キャンセルしたダウンロードは最初からやり直しになります。Xet は初回のダウンロードが速いことが多いです。",
+        httpsHintNoResume:
+          "標準の TLS。どのネットワークでも動作し、メモリ使用量は安定しています。このインストールではキャンセルしたダウンロードを再開できません。",
+        xetHint:
+          "重複排除チャンク転送。新規ダウンロードでは速いことが多く、キャンセルするとファイルをやり直し、メモリを多く使います。",
+        autoHint:
+          "マシンごとに選び、ここで Xet が停滞または失敗した場合は HTTPS に切り替えます。",
+        autoCurrently: "このマシンでは Auto は {transport} を使用しています。",
+        xetMissing: "hf_xet がインストールされていないため Xet は利用できません。",
+      },
       uploads: {
         sectionTitle: "アップロード",
         maxUploadSize: "トレーニングデータセットのアップロード容量制限",
@@ -631,9 +851,9 @@ export const ja = {
           "以下はすべてご自身の履歴から集計しています。収集も Unsloth への送信も行いません。",
         retry: "再試行",
         privacyNote:
-          "統計は、お使いの Unsloth が保持しているチャットとトレーニングの履歴から計算されます。データの収集は行わず、Unsloth や第三者への送信も行いません。",
+          "統計は、お使いの Unsloth にあるローカルのチャット、API 利用、トレーニング履歴から計算されます。統計用に API のプロンプト、応答、キーを保存することはありません。Unsloth や第三者への送信も行いません。",
         emptyChats:
-          "チャットがまだありません。会話を始めると、ここに統計が表示されます。",
+          "チャットまたは API の利用履歴がまだありません。会話を始めるか、認証済みのローカル API リクエストを実行してください。",
         lifetimeTokens: "累計トークン",
         peakTokens: "トークン最多の日",
         longestChat: "最長のチャット",
@@ -655,6 +875,9 @@ export const ja = {
         totalMessages: "メッセージ総数",
         tokensIn: "送信トークン",
         tokensOut: "生成トークン",
+        totalTokens: "合計トークン",
+        studioChatTokens: "Unsloth Chat トークン",
+        apiTokens: "API トークン",
         cachedTokens: "キャッシュされたトークン",
         cachedValue: "{tokens} (入力の {percent}%)",
         avgTokensPerChat: "チャットあたりの平均トークン",
@@ -1104,7 +1327,7 @@ export const ja = {
         title: "ウェブ検索",
         images: "ウェブ検索の画像を表示",
         imagesDescription:
-          "ウェブ検索で画像も取得し、回答に列挙された項目ごとに1枚ずつ探します。サムネイルは Studio が取得して縮小するため、ブラウザが画像ホストに接続することはありません。",
+          "ウェブ検索で画像も取得し、回答に列挙された項目ごとに1枚ずつ探します。サムネイルは Unsloth が取得して縮小するため、ブラウザが画像ホストに接続することはありません。",
       },
       artifacts: {
         title: "Canvas",
@@ -1124,7 +1347,7 @@ export const ja = {
       exportingAction: "エクスポート中...",
       exportConversations: "履歴とプロジェクトをエクスポート",
       exportConversationsDescription:
-        "履歴、または履歴とプロジェクトのチャットを、Raw JSONL、CSV、ShareGPT JSONL のいずれかで、一括またはチャットごとにダウンロードします。",
+        "履歴、または履歴とプロジェクトのチャットを、Training JSONL、CSV、ShareGPT JSONL のいずれかで、一括またはチャットごとにダウンロードします。Message JSONL はチャットごとのみ利用できます。",
       exportConversationsAction: "エクスポート",
       exportScopeRecents: "履歴",
       exportScopeAll: "履歴 + プロジェクト",
@@ -1536,8 +1759,8 @@ export const ja = {
         "このデバイス上のモデルはトレーニングできません。",
       reasonUnsupportedFormat:
         "このモデル形式はトレーニングでサポートされていません。",
-      vramNeeds: "約 {est}GB VRAM が必要 (GPU: {total}GB)",
-      vramTight: "約 {est}GB VRAM (GPU {total}GB ではギリギリです)",
+      vramNeeds: "約 {est}GB VRAM が必要 (GPU: {total}GiB)",
+      vramTight: "約 {est}GB VRAM (GPU {total}GiB ではギリギリです)",
       vramApprox: "約 {est}GB VRAM",
       vramOomBadge: "OOM",
       vramTightBadge: "ギリギリ",

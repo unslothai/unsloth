@@ -221,23 +221,11 @@ export const de = {
       clear: "Kürzel entfernen",
       reset: "Standard wiederherstellen",
       resetAll: "Alle auf Standard zurücksetzen",
-      groups: {
-        general: "Allgemein",
-        chat: "Chat",
-      },
+      primarySlot: "Kürzel",
+      alternateSlot: "Alternatives Kürzel",
+      browserReserved:
+        "Dein Browser behält diese Tastenkombination unter Umständen für sich. In der Desktop-App funktioniert sie.",
       actions: {
-        newChat: {
-          label: "Neuer Chat",
-          description: "Einen neuen Chat starten",
-        },
-        searchChats: {
-          label: "Chats durchsuchen",
-          description: "Die Chat-Suche öffnen",
-        },
-        toggleSidebar: {
-          label: "Seitenleiste umschalten",
-          description: "Seitenleiste ein- oder ausblenden",
-        },
         openSettings: {
           label: "Einstellungen öffnen",
           description: "Den Einstellungsdialog öffnen",
@@ -245,6 +233,206 @@ export const de = {
         openKeyboardShortcuts: {
           label: "Tastenkürzel",
           description: "Diese Kürzelliste öffnen",
+        },
+        searchChats: {
+          label: "Chats durchsuchen",
+          description: "Die Chat-Suche öffnen",
+        },
+        openMcpServers: {
+          label: "MCP-Server",
+          description: "MCP-Server für diesen Chat einrichten",
+        },
+        logOut: {
+          label: "Abmelden",
+          description: "Von Unsloth abmelden",
+        },
+        approveToolRequest: {
+          label: "Anfrage genehmigen",
+          description: "Den wartenden Tool-Aufruf zulassen",
+        },
+        declineToolRequest: {
+          label: "Anfrage ablehnen",
+          description: "Den wartenden Tool-Aufruf ablehnen",
+        },
+        newChat: {
+          label: "Neuer Chat",
+          description: "Einen neuen Chat starten",
+        },
+        newTemporaryChat: {
+          label: "Neuer temporärer Chat",
+          description: "Einen Chat starten, der nicht im Verlauf gespeichert wird",
+        },
+        newStandaloneChat: {
+          label: "Neuer eigenständiger Chat",
+          description: "Einen neuen Chat außerhalb jedes Projekts starten",
+        },
+        archiveChat: {
+          label: "Chat archivieren",
+          description: "Die ausgewählten Chats archivieren, sonst den aktuellen",
+        },
+        markChatUnread: {
+          label: "Als ungelesen markieren",
+          description: "Die ausgewählten Chats als ungelesen markieren, sonst den aktuellen",
+        },
+        togglePinChat: {
+          label: "Anheften umschalten",
+          description: "Die ausgewählten Chats anheften oder lösen, sonst den aktuellen",
+        },
+        selectAllChats: {
+          label: "Alle Chats auswählen",
+          description: "Jeden Chat in der Seitenleiste auswählen",
+        },
+        clearChatSelection: {
+          label: "Auswahl aufheben",
+          description: "Die ausgewählten Chats abwählen. Escape hebt sie ebenfalls auf",
+        },
+        deleteSelectedChats: {
+          label: "Ausgewählte Chats löschen",
+          description: "Jeden ausgewählten Chat löschen",
+        },
+        nextRecentlyViewedChat: {
+          label: "Nächster zuletzt geöffneter Chat",
+          description: "Vorwärts durch zuletzt geöffnete Chats blättern",
+        },
+        previousRecentlyViewedChat: {
+          label: "Vorheriger zuletzt geöffneter Chat",
+          description: "Rückwärts durch zuletzt geöffnete Chats blättern",
+        },
+        nextChat: {
+          label: "Nächster Chat",
+          description: "Zum nächsten Chat in der Seitenleiste wechseln",
+        },
+        previousChat: {
+          label: "Vorheriger Chat",
+          description: "Zum vorherigen Chat in der Seitenleiste wechseln",
+        },
+        nextChatNeedingAttention: {
+          label: "Nächster Chat mit Aktivität",
+          description: "Zum nächsten generierenden, wartenden oder ungelesenen Chat wechseln",
+        },
+        clearAllUnreads: {
+          label: "Alle als gelesen markieren",
+          description: "Jeden Chat als gelesen markieren",
+        },
+        goToRecentChat1: {
+          label: "Zu letztem Chat 1 wechseln",
+          description: "Chat 1 unter „Zuletzt“ öffnen",
+        },
+        goToRecentChat2: {
+          label: "Zu letztem Chat 2 wechseln",
+          description: "Chat 2 unter „Zuletzt“ öffnen",
+        },
+        goToRecentChat3: {
+          label: "Zu letztem Chat 3 wechseln",
+          description: "Chat 3 unter „Zuletzt“ öffnen",
+        },
+        goToRecentChat4: {
+          label: "Zu letztem Chat 4 wechseln",
+          description: "Chat 4 unter „Zuletzt“ öffnen",
+        },
+        goToRecentChat5: {
+          label: "Zu letztem Chat 5 wechseln",
+          description: "Chat 5 unter „Zuletzt“ öffnen",
+        },
+        goToRecentChat6: {
+          label: "Zu letztem Chat 6 wechseln",
+          description: "Chat 6 unter „Zuletzt“ öffnen",
+        },
+        switchToChat: {
+          label: "Zu Chat wechseln",
+          description: "Zum Chat-Arbeitsbereich gehen",
+        },
+        switchToProjects: {
+          label: "Zu Projekte wechseln",
+          description: "Zum Projekte-Arbeitsbereich gehen",
+        },
+        switchToHub: {
+          label: "Zu Modell-Hub wechseln",
+          description: "Zum Modell-Hub gehen",
+        },
+        switchToTrain: {
+          label: "Zu Training wechseln",
+          description: "Zum Trainings-Arbeitsbereich gehen",
+        },
+        switchToRecipes: {
+          label: "Zu Recipes wechseln",
+          description: "Zu Data Recipes gehen",
+        },
+        switchToImages: {
+          label: "Zu Bilder wechseln",
+          description: "Zum Bilder-Arbeitsbereich gehen",
+        },
+        switchToVideo: {
+          label: "Zu Video wechseln",
+          description: "Zum Video-Arbeitsbereich gehen",
+        },
+        switchToAudio: {
+          label: "Zu Audio wechseln",
+          description: "Zum Audio-Arbeitsbereich gehen",
+        },
+        switchToExport: {
+          label: "Zu Export wechseln",
+          description: "Zum Export-Arbeitsbereich gehen",
+        },
+        toggleSidebar: {
+          label: "Seitenleiste umschalten",
+          description: "Seitenleiste ein- oder ausblenden",
+        },
+        toggleApiMonitor: {
+          label: "API-Aktivität umschalten",
+          description: "Den API-Aktivitätsmonitor ein- oder ausblenden",
+        },
+        openModelPicker: {
+          label: "Modellauswahl öffnen",
+          description: "Das Modell für diesen Chat wählen",
+        },
+        openProjectPicker: {
+          label: "Projektauswahl öffnen",
+          description: "Über die Chat-Kopfzeile zu einem anderen Projekt wechseln",
+        },
+        startDictation: {
+          label: "Diktat",
+          description: "Diktat im Eingabefeld starten oder stoppen",
+        },
+        attachFiles: {
+          label: "Fotos und Dateien anhängen",
+          description: "Einen Anhang zum Eingabefeld hinzufügen",
+        },
+        sendMessage: {
+          label: "Nachricht senden",
+          description: "Den Inhalt des Eingabefelds senden",
+        },
+        cycleReasoningEffort: {
+          label: "Denkaufwand durchschalten",
+          description: "Durch die Stufen des Denkaufwands blättern",
+        },
+        increaseReasoningEffort: {
+          label: "Denkaufwand erhöhen",
+          description: "Den Denkaufwand um eine Stufe anheben",
+        },
+        decreaseReasoningEffort: {
+          label: "Denkaufwand verringern",
+          description: "Den Denkaufwand um eine Stufe senken",
+        },
+        toggleFastMode: {
+          label: "Fast-Modus umschalten",
+          description: "Den Fast-Modus ein- oder ausschalten",
+        },
+        renameChat: {
+          label: "Chat umbenennen",
+          description: "Den aktuellen Chat umbenennen",
+        },
+        forkChat: {
+          label: "Chat verzweigen",
+          description: "Aus der letzten Nachricht einen neuen Chat abzweigen",
+        },
+        copyChatAsMarkdown: {
+          label: "Als Markdown kopieren",
+          description: "Den gesamten Chat als Markdown in die Zwischenablage kopieren",
+        },
+        copySessionId: {
+          label: "Sitzungs-ID kopieren",
+          description: "Die Sandbox-Sitzungs-ID dieses Chats kopieren",
         },
       },
     },
@@ -423,6 +611,16 @@ export const de = {
           "Verwendet das geladene Audiomodell (z. B. Orpheus)",
         engineSystem: "Systemstimmen",
         engineStudio: "TTS-Modell laden",
+        engineCustom: "Eigener Endpunkt",
+        engineCustomDescription:
+          "Ein OpenAI-kompatibler TTS-Server aus deinen Verbindungen (z. B. Kokoro)",
+        connectionLabel: "Verbindung",
+        connectionDescription:
+          "Einen OpenAI-kompatiblen Server im Tab „Verbindungen“ hinzufügen",
+        connectionPlaceholder: "Verbindung auswählen",
+        customModelLabel: "Modell",
+        customVoiceDescription:
+          "Vom Endpunkt erwarteter Stimmenname; Standard ist alloy",
         modelLabel: "TTS-Modell",
         modelDescription:
           "Laden Sie ein Audiomodell über die Modellauswahl (z. B. Orpheus TTS)",
@@ -584,6 +782,29 @@ export const de = {
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
       },
+      downloads: {
+        sectionTitle: "Downloads",
+        transport: "Download-Transport",
+        transportDescription:
+          "Wie Modell- und Datensatzdateien von Hugging Face geladen werden. HTTPS setzt an der Abbruchstelle fort; Xet ist beim ersten Download oft schneller, beginnt die Datei nach einem Abbruch aber neu.",
+        transportHint:
+          "HTTPS ist einfaches TLS: jedes Netzwerk, jeder Proxy und jedes VPN erlaubt es, ein abgebrochener Transfer setzt bei den bereits gespeicherten Bytes fort und der Speicherbedarf bleibt konstant. Xet lädt deduplizierte Blöcke, wodurch ein Repo mit bereits vorhandenen Daten viel schneller ankommt, benötigt aber hf_xet, mehr RAM, und ein Abbruch verwirft die laufende Datei. Auto entscheidet pro Rechner: es bewertet RAM und ob Xet hier ins Stocken gerät, und fällt auf HTTPS zurück.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "Standard-TLS. Setzt nach einem Abbruch fort, funktioniert in jedem Netzwerk, gleichmäßiger Speicherbedarf.",
+        transportDescriptionNoResume:
+          "Wie Modell- und Datensatzdateien von Hugging Face geladen werden. Auf dieser Installation kann kein Transport fortsetzen, ein abgebrochener Download beginnt also neu; Xet ist beim ersten Download oft schneller.",
+        httpsHintNoResume:
+          "Standard-TLS. Funktioniert in jedem Netzwerk, gleichmäßiger Speicherbedarf. Diese Installation kann einen abgebrochenen Download nicht fortsetzen.",
+        xetHint:
+          "Deduplizierte Blockübertragung. Beim ersten Download oft schneller, beginnt die Datei nach einem Abbruch neu, braucht mehr Speicher.",
+        autoHint:
+          "Wählt pro Rechner und wechselt zu HTTPS, wenn Xet hier stockt oder fehlschlägt.",
+        autoCurrently: "Auto verwendet auf diesem Rechner {transport}.",
+        xetMissing: "Xet ist nicht verfügbar, da hf_xet nicht installiert ist.",
+      },
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Upload-Limit für Trainingsdatensätze",
@@ -670,9 +891,9 @@ export const de = {
           "Alles Folgende wird aus Ihrem eigenen Verlauf berechnet. Es wird nichts erfasst oder an Unsloth gesendet.",
         retry: "Erneut versuchen",
         privacyNote:
-          "Die Statistiken werden aus dem Chat- und Trainingsverlauf berechnet, der in Ihrer Unsloth-Installation gespeichert ist. Es wird nichts erfasst und nichts an Unsloth oder Dritte gesendet.",
+          "Die Statistiken werden aus dem lokalen Chat-, API-Nutzungs- und Trainingsverlauf Ihrer Unsloth-Installation berechnet. API-Eingaben, -Antworten und -Schlüssel werden dafür nie gespeichert. Nichts wird an Unsloth oder Dritte gesendet.",
         emptyChats:
-          "Noch keine Chats. Starten Sie ein Gespräch, dann erscheinen hier Ihre Statistiken.",
+          "Noch keine Chat- oder API-Nutzung. Starten Sie ein Gespräch oder senden Sie eine authentifizierte lokale API-Anfrage.",
         lifetimeTokens: "Tokens insgesamt",
         peakTokens: "Aktivster Tag",
         longestChat: "Längster Chat",
@@ -694,6 +915,9 @@ export const de = {
         totalMessages: "Nachrichten insgesamt",
         tokensIn: "Gesendete Tokens",
         tokensOut: "Erzeugte Tokens",
+        totalTokens: "Tokens insgesamt",
+        studioChatTokens: "Unsloth-Chat-Tokens",
+        apiTokens: "API-Tokens",
         cachedTokens: "Zwischengespeicherte Tokens",
         cachedValue: "{tokens} ({percent} % der Eingabe)",
         avgTokensPerChat: "Durchschnittliche Tokens pro Chat",
@@ -1151,7 +1375,7 @@ export const de = {
         title: "Websuche",
         images: "Bilder aus der Websuche anzeigen",
         imagesDescription:
-          "Lässt die Websuche Bilder liefern und holt eines für jeden Punkt, den eine Antwort auflistet. Vorschaubilder lädt und verkleinert Studio, der Browser kontaktiert keine Bildhosts.",
+          "Lässt die Websuche Bilder liefern und holt eines für jeden Punkt, den eine Antwort auflistet. Vorschaubilder lädt und verkleinert Unsloth, der Browser kontaktiert keine Bildhosts.",
       },
       artifacts: {
         title: "Canvas",
@@ -1173,7 +1397,7 @@ export const de = {
       exportingAction: "Wird exportiert...",
       exportConversations: "„Zuletzt verwendet“ und Projekte exportieren",
       exportConversationsDescription:
-        "Laden Sie Chats aus „Zuletzt verwendet“ oder zusätzlich auch Projekt-Chats als Raw JSONL, CSV oder ShareGPT JSONL herunter, kombiniert oder einzeln pro Chat.",
+        "Laden Sie Chats aus „Zuletzt verwendet“ oder zusätzlich auch Projekt-Chats als Training JSONL, CSV oder ShareGPT JSONL herunter, kombiniert oder einzeln pro Chat. Message JSONL ist nur einzeln pro Chat verfügbar.",
       exportConversationsAction: "Exportieren",
       exportScopeRecents: "Zuletzt verwendet",
       exportScopeAll: "Zuletzt verwendet + Projekte",
@@ -1603,8 +1827,8 @@ export const de = {
         "Dieses Modell auf dem Gerät kann nicht trainiert werden.",
       reasonUnsupportedFormat:
         "Dieses Modellformat wird für das Training nicht unterstützt.",
-      vramNeeds: "Benötigt ~{est} GB VRAM (GPU: {total} GB)",
-      vramTight: "~{est} GB VRAM (knapp bei {total} GB)",
+      vramNeeds: "Benötigt ~{est} GB VRAM (GPU: {total} GiB)",
+      vramTight: "~{est} GB VRAM (knapp bei {total} GiB)",
       vramApprox: "~{est} GB VRAM",
       sourceModelsFolder: "Modellordner",
       sourceHfCache: "HF-Cache",

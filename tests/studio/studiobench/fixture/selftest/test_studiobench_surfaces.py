@@ -10,7 +10,7 @@ that counts a surface nobody reached, and a row that records a failure without r
 three have the same shape -- the artefact looks complete and says the wrong thing -- and all three
 are cheap to catch here rather than after a forty-minute run.
 
-No browser and no Studio. The step lists are declarative for exactly this reason, and the sweep is
+No browser and no Unsloth. The step lists are declarative for exactly this reason, and the sweep is
 driven against a scripted stand-in page so its bookkeeping is exercised on both the reached and
 the unreached path.
 """
@@ -337,7 +337,7 @@ def test_every_volatile_surface_states_its_mechanism():
 
 
 def test_the_measured_volatile_surfaces_are_declared():
-    # Three consecutive sweeps against one Studio agreed on 44 of 53 surfaces. These are the ones
+    # Three consecutive sweeps against one Unsloth agreed on 44 of 53 surfaces. These are the ones
     # that did not, each with a mechanism established from source or from a text diff. Pinned so
     # a settle condition that is tightened later shows up as a flag that can now be dropped,
     # rather than as a flag nobody revisits.

@@ -350,7 +350,19 @@ def test_an_old_payload_that_records_no_rebuild_evidence_is_not_a_pass():
 def test_a_timed_out_rebuild_leaves_the_behavioural_run_with_no_verdict(tmp_path, capsys):
     """THE CONSEQUENCE, through the command that reports it. This pair was the run's only one, so
     counting it as a held invariant produced `invariants held: 1` and exit 0 over a rebuild that
-    never finished. It is now the third outcome, and a run that compared nothing exits 2."""
+    never finished. It is now the third outcome: nothing was compared, and that is not a pass.
+
+    EXIT 1 RATHER THAN 2, and the difference is which of two true statements is the more specific.
+    The invariant genuinely could not be read -- `invariants held: 0`, one pair NOT COMPARABLE,
+    NOTHING WAS COMPARED, all still asserted below. But the pair also carries a DIRECTIONAL
+    assertion failure: the action ran on both arms and its own `expect_ok` failed on the treatment
+    alone, which is the two builds behaving differently rather than the tool being unable to tell.
+    `report` already resolves this precedence for the structural mode and says so where it does it
+    -- 'a run can find a real regression while deciding nothing, and "it failed" is the more
+    specific answer than "it could not tell"' -- and running `report` over this very payload
+    returns 1. The behavioural mode was reading only its invariants, so the same payload came out
+    of the two modes with two different verdicts. It no longer does.
+    """
     import json
 
     from studiobench.sweep import ui_parity as U
@@ -367,7 +379,11 @@ def test_a_timed_out_rebuild_leaves_the_behavioural_run_with_no_verdict(tmp_path
     assert "invariants held:            0" in out, out
     assert "NOT COMPARABLE:             1" in out, out
     assert "NOTHING WAS COMPARED" in out, out
-    assert code == 2, out
+    assert "ASSERTION FAILED ON ONE ARM" in out, out
+    assert code == 1, out
+    # THE TWO MODES AGREE ON THIS PAYLOAD, checked rather than asserted in prose. The structural
+    # report is the one that already had this precedence rule written down, so it is the reference.
+    assert U.report([shard], "structural on the same payload", frozenset()) == 1
 
 
 def test_an_action_with_no_declared_invariant_is_unchecked_and_not_a_pass():
@@ -477,6 +493,79 @@ def test_behavioural_scoring_that_validated_nothing_is_not_a_pass(tmp_path, caps
     assert "NOTHING WAS COMPARED" in out
 
 
+def _scroll_extent_broken_pair(cell_suffix = "rep0"):
+    """A `select_text` pair whose declared invariant is BROKEN: the windowed arm's scrollbar says
+    the thread is a third of its real length. `compare_behaviour` returns BROKEN, so this pair
+    lands in `broken` and NOT in `matched`."""
+    rows = []
+    for side, mounted, scroll in (("base", 18, 10_000), ("treatment", 6, 3_300)):
+        row = _row(
+            "select_text",
+            _capture(mounted, 18),
+            selected_chars = 100,
+            visible_chars = 100,
+        )
+        row["census"]["viewport_scroll_height"] = scroll
+        row["cell_id"] = f"r100K.{side}.{cell_suffix}"
+        rows.append(row)
+    return rows
+
+
+def test_a_run_whose_every_invariant_BROKE_does_not_also_claim_it_compared_nothing(
+    tmp_path, capsys
+):
+    """THE SELF-CONTRADICTING ARTIFACT. `matched` and `broken` are independent counters, so a
+    payload whose only pair BROKE its invariant satisfies `matched == 0` as well.
+
+    The no-verdict banner was gated on `matched == 0` alone, so this run printed its broken
+    invariant, then printed that not one behavioural invariant was evaluated and that it carried
+    "neither a pass nor a failure" -- and then returned 1. Every clause of that banner is false
+    here, and its instruction ("find out why the actions did not run") points away from the
+    regression listed three lines above it.
+
+    The exit code was right and stays right; asserted below, because a banner fix that quietened
+    the failure would be far worse than the banner.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    shard = _write(tmp_path, "all_broken", _scroll_extent_broken_pair())
+    code = U.behaviour_report([shard], "UI PARITY: all broken")
+    out = capsys.readouterr().out
+
+    assert code == 1, out
+    assert "invariants held:            0" in out, out
+    assert "INVARIANTS BROKEN:          1" in out, out
+    assert "scroll_extent" in out, out
+    assert "NOTHING WAS COMPARED" not in out, out
+    assert "neither a pass nor a failure" not in out, out
+
+
+def test_the_no_verdict_banner_still_fires_when_a_build_DIFFERENCE_is_the_only_failure(
+    tmp_path, capsys
+):
+    """THE OTHER HALF OF THE GATE, pinned so the fix above cannot be widened into a regression.
+
+    `build_differences` collects two shapes -- one-arm execution and a directional assertion
+    failure -- from pairs whose INVARIANTS were unreadable. When one of those is the only reason a
+    run fails, "not one behavioural invariant was evaluated" is literally true, and the banner
+    belongs there alongside exit 1. Gating it on `build_failed` as well as on `broken` would
+    silence a true statement.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    rows = []
+    for side, row in (("base", _reopen_row(18)), ("treatment", _reopen_row(3, ready = False))):
+        row["cell_id"] = f"r100K.{side}.rep0"
+        rows.append(row)
+    shard = _write(tmp_path, "build_diff_only", rows)
+
+    code = U.behaviour_report([shard], "UI PARITY: build difference only")
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "INVARIANTS BROKEN:          0" in out, out
+    assert "NOTHING WAS COMPARED" in out, out
+
+
 def test_the_observation_cost_is_not_charged_to_the_action_budget():
     """`over_ms` used to be sampled AFTER the census and the multi-megabyte digest that this
     change had just moved outside the measured window, so an action that finished inside its
@@ -512,7 +601,7 @@ def test_a_style_probe_that_matched_no_elements_does_not_report_a_match():
     -- both the hash of an empty string -- so the strongest verdict the function can return was
     being issued on the strength of no observation at all.
 
-    Not hypothetical: the probe walks a hand-written selector list written against Studio's
+    Not hypothetical: the probe walks a hand-written selector list written against Unsloth's
     markup, and a class rename anywhere in it empties the scan silently.
     """
     verdict, reason = P.compare_styles(_styled(0), _styled(0))
@@ -858,6 +947,37 @@ def _action(
     if reason is not None:
         row["reason"] = reason
     return row
+
+
+def test_a_style_regression_survives_a_structural_refusal(tmp_path, capsys):
+    """THE ONLY THING HERE THAT SEES `display`, `visibility` OR `pointer-events`, dropped.
+
+    The style probe is an INDEPENDENT reading: it is computed styles, not the DOM digest, so a pair
+    refused for landing at two points in one live reply can still carry a real CSS regression on a
+    settled surface. The refusal bucket sat above it and `continue`d, so that verdict was computed,
+    attached to the row and then thrown away -- for exactly the pairs a streamed-parity refusal
+    creates most of.
+
+    The refusal itself is right and stays. What must not happen is losing the other reading with it.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    base = _capture(mounted = 4, total = 4)
+    treat = _capture(mounted = 4, total = 4)
+    # Structurally unreadable: the stream could not be placed on one arm.
+    treat["in_flight_unplaced"] = True
+    treat["in_flight"] = []
+    base["streaming"] = treat["streaming"] = True
+    # ...while the style probe read both arms cleanly and they disagree.
+    treat["styles"] = {"elements": 4, "digest": "RESTYLED", "capped": False}
+
+    rows = [_row("select_text", base), _row("select_text", treat)]
+    rows[0]["cell_id"], rows[1]["cell_id"] = "r100K.base.rep0", "r100K.treatment.rep0"
+    _write(tmp_path, "stylerefuse", rows)
+
+    U.main([str(tmp_path / "stylerefuse"), "--mode", "structural", "--min-compared", "0"])
+    out = capsys.readouterr().out
+    assert "style probe differing:      1" in out, out
 
 
 def test_a_visible_message_that_could_not_be_digested_is_printed_and_not_counted(tmp_path, capsys):
@@ -1777,3 +1897,398 @@ def test_a_resume_that_failed_again_is_still_refused(tmp_path):
     bad = U.incomplete_cells([shard / "payload.jsonl"])
     assert set(bad) == {"r100K.base.rep0", "r100K.treatment.rep0"}, bad
     assert "still short" in bad["r100K.base.rep0"], bad
+
+
+# ── the coverage floor applies to every mode, not only the structural one ─────
+
+
+def _windowed_only_shard(
+    tmp_path,
+    name,
+    *,
+    pairs = 1,
+    differ = False,
+):
+    """A payload whose every pair is a WINDOWED mount, so `main` takes the structural early return.
+
+    One clean, matching windowed pair per action. `--mode auto` classifies these on the capture's
+    own `mounted_messages` / `thread_total`, so nothing here has to be declared.
+    """
+    rows = []
+    for i in range(pairs):
+        action = f"select_text{i}" if i else "select_text"
+        for side in ("base", "treatment"):
+            windowed = side == "treatment"
+            digest = "regressed" if (differ and windowed) else "shipped"
+            rows.append(
+                _action(
+                    action,
+                    f"r100K.{side}.rep0",
+                    parity = _capture(mounted = 9 if windowed else 18, total = 18),
+                    visible = _visible([1], [1], digest = digest),
+                    expect = {"selected_chars": 100, "visible_chars": 100},
+                )
+            )
+    return _write(tmp_path, name, rows)
+
+
+def _windowed_shard_visible_only_on_one(
+    tmp_path,
+    name,
+    *,
+    pairs = 4,
+):
+    """Every pair carries a behavioural invariant; only the FIRST carries a visible capture.
+
+    One action at four cells, so all four are pairs behavioural mode declares an invariant for --
+    what varies is whether the visible-region capture is there to be read at all.
+    """
+    rows = []
+    for i in range(pairs):
+        for side in ("base", "treatment"):
+            windowed = side == "treatment"
+            rows.append(
+                _action(
+                    "select_text",
+                    f"r100K.{side}.rep{i}",
+                    parity = _capture(mounted = 9 if windowed else 18, total = 18),
+                    visible = _visible([1], [1], digest = "shipped") if i == 0 else None,
+                    expect = {"selected_chars": 100, "visible_chars": 100},
+                )
+            )
+    return _write(tmp_path, name, rows)
+
+
+def test_behavioural_coverage_does_not_stand_in_for_visible_coverage(tmp_path, capsys):
+    """THE SUBSTITUTION. The floor unioned the two windowed modes' compared sets.
+
+    They are not two slices of one film. Under `--mode auto` they are two verdicts on the SAME
+    pairs, so the union let one stand in for the other: behavioural mode reaching every pair while
+    the visible capture could be read on only ONE still filled the set, cleared the floor, and
+    exited 0 with essentially the whole appearance surface unmeasured. That is the same false green
+    the floor exists to refuse, arriving through the floor itself.
+
+    Four pairs here, all of them behaviourally checked, one of them visible. A floor of 4 has to
+    fire, and the count has to be the visible one.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    _windowed_shard_visible_only_on_one(tmp_path, "winsub", pairs = 4)
+    code = U.main([str(tmp_path / "winsub"), "--min-compared", "4"])
+    out = capsys.readouterr().out
+    assert "TOO LITTLE COMPARED" in out, out
+    assert "1 of 4 pair(s) carry a verdict" in out, out
+    assert code == 3, out
+
+
+def test_a_pair_behavioural_mode_declares_no_invariant_for_is_not_a_shortfall(tmp_path, capsys):
+    """THE OTHER DIRECTION, and the reason this is not an intersection.
+
+    A behavioural invariant only exists for the handful of actions that declare one; every other
+    pair is reported UNCHECKED, which is not a pass and equally not a coverage shortfall. Requiring
+    both verdicts on every pair therefore fails a run for pairs behavioural mode never had an
+    opinion about -- measured at 1 of 4 on this very fixture, where visible mode read all four.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    _windowed_only_shard(tmp_path, "winunchecked", pairs = 4)
+    code = U.main([str(tmp_path / "winunchecked"), "--min-compared", "4"])
+    out = capsys.readouterr().out
+    assert "UNCHECKED:                  3" in out, out
+    assert "TOO LITTLE COMPARED" not in out, out
+    assert code == 0, out
+
+
+def test_the_coverage_floor_applies_to_a_run_with_no_fully_mounted_pair(tmp_path, capsys):
+    """THE HOLE. `--min-compared` was a parameter of `report()` and enforced at one site inside it,
+    and `report()` is reached only from the structural loop BELOW `main`'s early return. A payload
+    whose every pair is a windowed mount returns before that loop, so the floor was never applied
+    to anything: `--min-compared 20` exited 0 having compared one pair.
+
+    That floor is what replaces a slot-budget liveness gate for a job that reads no timings, and
+    two blank pages have identical digests, so it is the guard against the easiest false green
+    there is. The workflow passes `--min-compared 16` on every run.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    _windowed_only_shard(tmp_path, "winonly", pairs = 1)
+    code = U.main([str(tmp_path / "winonly"), "--min-compared", "20"])
+    out = capsys.readouterr().out
+    assert "TOO LITTLE COMPARED" in out, out
+    assert "below the floor of 20" in out, out
+    assert code == 3, out
+
+
+def test_the_coverage_floor_passes_a_windowed_run_that_compared_enough(tmp_path, capsys):
+    """THE POSITIVE CONTROL, and it is the half that matters most here: a floor that fires on
+    everything is not a floor. The same shape as above with the floor set beneath what the run
+    actually compared has to come out 0, or the test above would pass against a `return 3`."""
+    from studiobench.sweep import ui_parity as U
+
+    _windowed_only_shard(tmp_path, "winenough", pairs = 4)
+    code = U.main([str(tmp_path / "winenough"), "--min-compared", "4"])
+    out = capsys.readouterr().out
+    assert "TOO LITTLE COMPARED" not in out, out
+    assert code == 0, out
+
+
+def test_the_behaviour_policy_prints_the_coverage_band_it_actually_enforces(tmp_path, capsys):
+    """The printed policy said the copy must be "complete", which reads as a content comparison.
+
+    It is a LENGTH: each arm's clipboard over the thread's own visible text, inside a band. That
+    band is the whole strength of the claim -- it is what refused truncation at 0.61 and
+    substitution at 2.16 -- so the sentence has to carry the live numbers rather than a pair
+    somebody typed once. The needle here is DERIVED from the constants, so widening the band
+    without touching the wording is caught, and so is a sentence that stopped interpolating.
+    """
+    from studiobench.sweep import ui_parity as U
+
+    band = P.behaviour_policy(B.MIN_CLIPBOARD_COVERAGE, B.MAX_CLIPBOARD_COVERAGE)
+    assert f"{B.MIN_CLIPBOARD_COVERAGE}-{B.MAX_CLIPBOARD_COVERAGE}" in band, band
+
+    # A different band has to travel through as well: a hard-coded sentence would pass the
+    # assertion above by coincidence and fail this one.
+    other = P.behaviour_policy(0.5, 2.0)
+    assert "0.5-2.0" in other, other
+    assert f"{B.MIN_CLIPBOARD_COVERAGE}-{B.MAX_CLIPBOARD_COVERAGE}" not in other, other
+
+    # And the report has to be wired to it, not merely able to produce it.
+    _mixed_rung_shard(tmp_path, "banner")
+    U.main([str(tmp_path / "banner"), "--mode", "behaviour", "--min-compared", "0"])
+    out = capsys.readouterr().out
+    assert f"{B.MIN_CLIPBOARD_COVERAGE}-{B.MAX_CLIPBOARD_COVERAGE}" in out, out
+
+
+def test_the_coverage_floor_is_applied_under_forced_visible_and_behaviour_modes(tmp_path, capsys):
+    """The other route to an empty structural plan, and it does not need a windowed payload at all.
+    `--mode visible` and `--mode behaviour` hard-set `structural` to an empty set for EVERY
+    pattern, unconditionally, so under either of them the floor could never be applied to any
+    payload whatsoever."""
+    from studiobench.sweep import ui_parity as U
+
+    _mixed_rung_shard(tmp_path, "forced")
+    for mode in ("visible", "behaviour"):
+        code = U.main([str(tmp_path / "forced"), "--mode", mode, "--min-compared", "50"])
+        out = capsys.readouterr().out
+        assert "TOO LITTLE COMPARED" in out, (mode, out)
+        assert code == 3, (mode, out)
+
+
+def test_the_coverage_floor_sums_the_windowed_and_structural_halves(tmp_path, capsys):
+    """SUMMED, NOT CHECKED SEPARATELY. A combined run splits one film's coverage across three
+    reports, and a floor applied inside each of them separately fails a run that compared plenty:
+    the structural half here compares 1 pair and the windowed half 1, and a floor of 2 is cleared
+    by the run and by neither half alone.
+
+    The `--mode auto` pair is scored TWICE, once on the visible region and once on the invariants,
+    and it still counts once: summing the two reports' counts would double every windowed pair and
+    let a floor of 2 pass on 1."""
+    from studiobench.sweep import ui_parity as U
+
+    _mixed_rung_shard(tmp_path, "sums")
+    code = U.main([str(tmp_path / "sums"), "--min-compared", "2"])
+    out = capsys.readouterr().out
+    assert "TOO LITTLE COMPARED" not in out, out
+    # 1 is the digest regression the fixture carries at the 1K rung, so the floor did not mask it.
+    assert code == 1, out
+    # And one more than the run can reach refuses it, which is what proves the count above is 2
+    # rather than the 3 a sum of the three reports would have produced.
+    code = U.main([str(tmp_path / "sums"), "--min-compared", "3"])
+    out = capsys.readouterr().out
+    assert "TOO LITTLE COMPARED: 2 of 2" in out, out
+    assert code == 3, out
+
+
+def test_the_coverage_floor_is_checked_per_payload_pattern(tmp_path, capsys):
+    """PER FILM, not per invocation. The three modes are one film's coverage split three ways, so
+    they are unioned; two positional payloads are two films, and pooling those lets each satisfy
+    the other's floor. `ui_parity normal_run windowed_run` is a supported invocation -- the mode
+    decision above already says why per-invocation was too coarse for it -- so a nearly empty or
+    failed film could be carried over the floor by an unrelated one on the same command line.
+
+    Two films of 2 pairs each against a floor of 4: pooled they clear it, and neither one did."""
+    from studiobench.sweep import ui_parity as U
+
+    _windowed_only_shard(tmp_path, "filmA", pairs = 2)
+    _windowed_only_shard(tmp_path, "filmB", pairs = 2)
+    code = U.main([str(tmp_path / "filmA"), str(tmp_path / "filmB"), "--min-compared", "4"])
+    out = capsys.readouterr().out
+    assert "TOO LITTLE COMPARED" in out, out
+    assert out.count("TOO LITTLE COMPARED") == 2, out
+    assert "filmA" in out and "filmB" in out, out
+    assert code == 3, out
+
+
+def test_a_floor_each_film_clears_on_its_own_still_passes(tmp_path, capsys):
+    """THE POSITIVE CONTROL for the one above: per-pattern must not mean every multi-payload run
+    fails. Two films of 2 pairs each against a floor of 2 is 0, or the test above would pass
+    against an unconditional `return 3`."""
+    from studiobench.sweep import ui_parity as U
+
+    _windowed_only_shard(tmp_path, "filmA", pairs = 2)
+    _windowed_only_shard(tmp_path, "filmB", pairs = 2)
+    code = U.main([str(tmp_path / "filmA"), str(tmp_path / "filmB"), "--min-compared", "2"])
+    out = capsys.readouterr().out
+    assert "TOO LITTLE COMPARED" not in out, out
+    assert code == 0, out
+
+
+# ── a build difference the capture comparison cannot see ─────
+
+
+def test_an_assertion_that_failed_on_one_arm_fails_the_windowed_verdict(tmp_path, capsys):
+    """`stop_generation` returns `ran = True, expect_ok = stopped_ms is not None`, so a head on
+    which Stop no longer ends the stream records a perfectly ordinary row with two viewports that
+    look the same. The visible and behavioural paths built their whole result from a capture
+    comparison plus one boolean -- the conjunction of `ran` -- so that shape left no trace at all,
+    and on a windowed arm those two reports ARE the UI verdict: the digest is not applicable by
+    construction and `stop_generation` has no behavioural invariant of its own, so a passing
+    invariant on some other action carried the run to exit 0."""
+    from studiobench.sweep import ui_parity as U
+
+    rows = []
+    for side in ("base", "treatment"):
+        windowed = side == "treatment"
+        mounted = 9 if windowed else 18
+        # A held invariant on another action, which is what used to carry the run to a pass.
+        rows.append(
+            _action(
+                "select_text",
+                f"r100K.{side}.rep0",
+                parity = _capture(mounted = mounted, total = 18),
+                visible = _visible([1], [1]),
+                expect = {"selected_chars": 100, "visible_chars": 100},
+            )
+        )
+        stop = _action(
+            "stop_generation",
+            f"r100K.{side}.rep0",
+            parity = _capture(mounted = mounted, total = 18),
+            visible = _visible([1], [1]),
+        )
+        if windowed:
+            stop["expect_ok"] = False
+            stop["reason"] = "the stream did not stop"
+        rows.append(stop)
+    _write(tmp_path, "assertion", rows)
+
+    code = U.main([str(tmp_path / "assertion")])
+    out = capsys.readouterr().out
+    assert "ASSERTION FAILED ON ONE ARM" in out, out
+    assert "stop_generation" in out.split("ASSERTION FAILED ON ONE ARM")[1], out
+    assert code == 1, out
+
+
+def test_an_assertion_that_failed_on_BOTH_arms_is_not_a_build_difference(tmp_path, capsys):
+    """THE CONTROL, and it is the reason the signal is an ASYMMETRY rather than a failure count.
+    Both arms failing means the fixture cannot reach the state on either build -- coverage lost,
+    not a difference between the builds -- and refusing on it would red every run whose scene
+    cannot reach `stop_generation` at all."""
+    from studiobench.sweep import ui_parity as U
+
+    rows = []
+    for side in ("base", "treatment"):
+        windowed = side == "treatment"
+        rows.append(
+            _action(
+                "select_text",
+                f"r100K.{side}.rep0",
+                parity = _capture(mounted = 9 if windowed else 18, total = 18),
+                visible = _visible([1], [1]),
+                expect = {"selected_chars": 100, "visible_chars": 100},
+            )
+        )
+        stop = _action(
+            "stop_generation",
+            f"r100K.{side}.rep0",
+            parity = _capture(mounted = 9 if windowed else 18, total = 18),
+            visible = _visible([1], [1]),
+        )
+        stop["expect_ok"] = False
+        stop["reason"] = "the stop button is not present"
+        rows.append(stop)
+    _write(tmp_path, "sym", rows)
+
+    code = U.main([str(tmp_path / "sym")])
+    out = capsys.readouterr().out
+    assert "ASSERTION FAILED ON ONE ARM" not in out, out
+    assert code == 0, out
+
+
+def test_an_action_that_could_not_be_performed_on_one_arm_fails_the_windowed_verdict(
+    tmp_path, capsys
+):
+    """The other shape a capture comparison erases. An action that RUNS on one build and cannot be
+    performed on the other is the one regression class that leaves no digest to differ -- a control
+    that stopped opening records exactly this -- and both windowed reports filed it under NOT
+    EXERCISED, which each of them counts as lost coverage rather than as a finding."""
+    from studiobench.sweep import ui_parity as U
+
+    rows = []
+    for side in ("base", "treatment"):
+        windowed = side == "treatment"
+        mounted = 9 if windowed else 18
+        rows.append(
+            _action(
+                "select_text",
+                f"r100K.{side}.rep0",
+                parity = _capture(mounted = mounted, total = 18),
+                visible = _visible([1], [1]),
+                expect = {"selected_chars": 100, "visible_chars": 100},
+            )
+        )
+        rows.append(
+            _action(
+                "message_menu",
+                f"r100K.{side}.rep0",
+                parity = _capture(mounted = mounted, total = 18),
+                visible = _visible([1], [1]),
+                ran = not windowed,
+                reason = "no message menu control on the page" if windowed else None,
+            )
+        )
+    _write(tmp_path, "onesided", rows)
+
+    code = U.main([str(tmp_path / "onesided")])
+    out = capsys.readouterr().out
+    assert "RAN ON ONE ARM ONLY" in out, out
+    assert code == 1, out
+
+
+def test_a_slot_the_runner_arrived_too_late_for_is_still_not_a_build_difference(tmp_path, capsys):
+    """THE CONTROL FOR THE ONE ABOVE, and it is the load-bearing half of `one_sided`. A missed slot
+    is a slow machine and cannot move this verdict: the misses are correlated through the runner
+    rather than being independent draws, so corroboration cannot separate them and reding on them
+    would fail the job on machine speed."""
+    from studiobench.sweep import ui_parity as U
+
+    rows = []
+    for side in ("base", "treatment"):
+        windowed = side == "treatment"
+        mounted = 9 if windowed else 18
+        rows.append(
+            _action(
+                "select_text",
+                f"r100K.{side}.rep0",
+                parity = _capture(mounted = mounted, total = 18),
+                visible = _visible([1], [1]),
+                expect = {"selected_chars": 100, "visible_chars": 100},
+            )
+        )
+        row = _action(
+            "message_menu",
+            f"r100K.{side}.rep0",
+            parity = _capture(mounted = mounted, total = 18),
+            visible = _visible([1], [1]),
+            ran = not windowed,
+            reason = "the slot closed before the runner reached it" if windowed else None,
+        )
+        if windowed:
+            row["slot_missed"] = True
+        rows.append(row)
+    _write(tmp_path, "missed", rows)
+
+    code = U.main([str(tmp_path / "missed")])
+    out = capsys.readouterr().out
+    assert "RAN ON ONE ARM ONLY" not in out, out
+    assert code == 0, out

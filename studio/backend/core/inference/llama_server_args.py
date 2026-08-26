@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # the same opaque one.
     frozenset({"--log-file"}),
     frozenset({"--log-disable"}),
-    # Slot-state dir: Studio owns it for KV persistence across idle unload. Endpoint
+    # Slot-state dir: Unsloth owns it for KV persistence across idle unload. Endpoint
     # exposure (--slots, --props) is deliberately NOT denied alongside it: Unsloth
     # reads GET /props and never /slots, so either is the user's own call.
     frozenset({"--slot-save-path"}),
@@ -280,10 +280,15 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
             raise ValueError("extra llama-server args cannot contain control characters")
         flag = _flag_name(token)
         if flag is not None and flag in _DENYLIST:
-            raise ValueError(
+            message = (
                 f"llama-server flag '{flag}' is managed by Unsloth Studio "
                 f"and cannot be passed as an extra arg"
             )
+            # Why (#9510): users reaching for `--parallel 1` to cap concurrent predictions on a
+            # local model hit this refusal with no pointer to the supported knob; name it.
+            if flag in {"-np", "--parallel", "--n-parallel"}:
+                message += "; set n_parallel on the load request (parallel decode slots) instead"
+            raise ValueError(message)
         if flag is None:
             # A token belonging to no flag. Today's llama-server answers "invalid
             # argument" and refuses to start, which is a failed load rather than a
@@ -603,6 +608,9 @@ _SPEC_DRAFT_CACHE_V_FLAGS: frozenset[str] = frozenset(
 )
 _SPEC_DRAFT_CACHE_FLAGS: frozenset[str] = _SPEC_DRAFT_CACHE_K_FLAGS | _SPEC_DRAFT_CACHE_V_FLAGS
 _FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
+# The fitter's per-device margin. Never stripped (llama.cpp is last-wins), so a
+# pass-through value is what the child really keeps free; see fit_target_margin_in.
+_FIT_TARGET_FLAGS: frozenset[str] = frozenset({"-fitt", "--fit-target"})
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
@@ -737,6 +745,29 @@ def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) ->
     return override if override is not None else fallback_n_ctx
 
 
+def matches_explicit_ctx_override(args: Optional[Iterable[str]], n_ctx: Any) -> bool:
+    """Whether a pass-through ``-c``/``--ctx-size`` matches the context the caller
+    is already sending as a first-class field.
+
+    Context is the one first-class field whose load-time value is a VRAM-fit
+    TARGET, so a matching flag is not a stale shadow but the user's standing
+    decision to run past the estimated threshold. Both strippers ask here rather
+    than mirroring the test, so auto-switch and /load inheritance cannot drift.
+
+    False for anything unconfirmable, which is the pre-existing strip: no flag, a
+    malformed one, or a non-positive/non-int ``n_ctx``. That last case is real --
+    override rows are coerced on write but returned verbatim on read, so a row
+    from an older build can hold any JSON type and must not raise here.
+    """
+    if isinstance(n_ctx, bool) or not isinstance(n_ctx, int) or n_ctx <= 0:
+        return False
+    try:
+        return parse_ctx_override(args) == n_ctx
+    except ValueError:
+        # Malformed extras are refused at the boundary; this must not raise here.
+        return False
+
+
 def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Optional[str]:
     """Return the last-wins string value among ``flags`` in extras, or None.
 
@@ -859,6 +890,93 @@ def fit_is_effectively_on(
     if raw_value is None:
         return True
     return str(raw_value).strip().lower() not in _ENV_FALSE_VALUES
+
+
+def fit_target_margin_in(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[float]:
+    """The per-device margin an effective ``--fit-target`` asks the fitter to keep.
+
+    ``-fitt/--fit-target`` takes a list of MiB values, one per device, and a
+    single value is broadcast across all of them (common/arg.cpp; default 1024,
+    ``fit_params_target`` in common/common.h). The fitter refuses
+    to allocate into that margin and spills the rest to host RAM instead
+    (``targets.push_back(dmds_full[id].free - margins[id])``, common/fit.cpp), so
+    a load-mode fit that credits VRAM has to price it.
+
+    Returns the LARGEST value in the list, because the fit charges one margin to
+    every device it credits and understating would claim a fit that is not there.
+    ``None`` when nothing readable is set, which leaves the caller on llama.cpp's
+    own default rather than on a guess. Last-wins over argv, and the env twin only
+    when argv sets nothing, the same precedence ``fit_is_effectively_on`` uses.
+    """
+    raw_value = _last_flag_value(args, _FIT_TARGET_FLAGS)
+    if raw_value is None and env:
+        raw_value = env.get("LLAMA_ARG_FIT_TARGET")
+    if raw_value is None:
+        return None
+    values: list[float] = []
+    # Upstream splits on both "," and "/" (common/arg.cpp), so "4096/4096" is a
+    # well-formed two-device margin; reading it as one token would wrongly abstain.
+    for part in str(raw_value).replace("/", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            values.append(float(part))
+        except ValueError:
+            # Upstream rejects the whole list, so abstain rather than price part of it.
+            return None
+    return max(values) if values else None
+
+
+def split_policy_starves_devices(
+    args: Optional[Iterable[str]],
+    n_credited: int,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """True when the effective split leaves fewer devices holding weights than ``n_credited``.
+
+    ``--split-mode`` and ``--tensor-split`` are pass-through under auto-select
+    (``_SPLIT_SHADOWING_FLAGS`` is stripped only when the Tensor Parallelism toggle
+    owns the split), so both reach the child appended after Unsloth's own placement
+    flags. Either can quietly shrink the pool a pooled VRAM credit was priced for:
+
+    * ``--split-mode none`` is ``LLAMA_SPLIT_MODE_NONE`` (common/arg.cpp), which
+      puts the whole model on ``--main-gpu`` alone. ``row``/``layer``/``tensor``
+      all keep every device, so only ``none`` starves.
+    * ``--tensor-split`` is a per-device proportion list, and upstream zero-fills
+      every device past the end of the list (common/arg.cpp), so a short list
+      starves the tail just as an explicit ``0`` starves its own device.
+
+    Value-aware on purpose: a restatement that keeps all devices is not an
+    override, and voiding on it would abstain from a fit that is really there.
+    """
+    if n_credited <= 1:
+        return False
+    mode = _last_flag_value(args, _SPLIT_MODE_FLAGS)
+    if mode is None and env:
+        mode = env.get("LLAMA_ARG_SPLIT_MODE")
+    if str(mode or "").strip().lower() == "none":
+        return True
+    raw_split = _last_flag_value(args, _TENSOR_SPLIT_FLAGS)
+    if raw_split is None and env:
+        raw_split = env.get("LLAMA_ARG_TENSOR_SPLIT")
+    if raw_split is None:
+        return False
+    holding = 0
+    # Upstream splits on both "," and "/" (common/arg.cpp).
+    for part in str(raw_split).replace("/", ",").split(",")[:n_credited]:
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            if float(part) > 0.0:
+                holding += 1
+        except ValueError:
+            # Upstream throws on this and the child never starts: nothing to misprice.
+            return False
+    return holding < n_credited
 
 
 def parse_cache_override_per_axis(
@@ -1337,17 +1455,17 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_CORS_METHODS",
     "LLAMA_ARG_CORS_CREDENTIALS",
     "LLAMA_ARG_MEDIA_PATH",
-    # The twins of --log-file and --log-disable. Studio classifies a failed start by
+    # The twins of --log-file and --log-disable. Unsloth classifies a failed start by
     # reading llama-server's own output, so an inherited redirect leaves every
-    # failure looking like the same opaque one; and unlike the flags, Studio emits
+    # failure looking like the same opaque one; and unlike the flags, Unsloth emits
     # nothing later that would override these. LLAMA_ARG_LOG_DISABLE has no twin in
     # today's builds, and is listed so it cannot arrive as one.
     "LLAMA_ARG_LOG_FILE",
     "LLAMA_ARG_LOG_DISABLE",
-    # --api-prefix moves every endpoint, including the /health Studio waits on, so an
+    # --api-prefix moves every endpoint, including the /health Unsloth waits on, so an
     # inherited one turns every load into a timeout.
     "LLAMA_ARG_API_PREFIX",
-    # --api-key and its file. Studio terminates auth itself and sends the child no
+    # --api-key and its file. Unsloth terminates auth itself and sends the child no
     # Authorization header, so an inherited key makes the healthy child refuse every
     # request. The bundled build reads LLAMA_API_KEY for the flag and
     # LLAMA_ARG_API_KEY_FILE for the file; the third spelling is listed because the
@@ -1356,7 +1474,7 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_API_KEY",
     "LLAMA_ARG_API_KEY_FILE",
     # The twins of --ssl-key-file and --ssl-cert-file. Given both, llama-server
-    # listens on https, while Studio probes /health and proxies over http against
+    # listens on https, while Unsloth probes /health and proxies over http against
     # the port it launched: the child comes up healthy and every load times out.
     # Measured on b10360, where an inherited pair turns "listening on
     # http://127.0.0.1:PORT" into "listening on https://...".
@@ -1364,7 +1482,7 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_SSL_CERT_FILE",
     # The rest of the twins its --help documents for a denied flag, enumerated from
     # the bundled b10342 help rather than picked one at a time: every "(env: NAME)"
-    # whose option this module refuses. Studio emits most of these itself and argv
+    # whose option this module refuses. Unsloth emits most of these itself and argv
     # wins over the environment, so removing them changes nothing in the ordinary
     # case; they are here for the paths where it does not, and so a flag denied in
     # the box is not reachable through the environment instead. The mapping below
@@ -1400,7 +1518,7 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     # LLAMA_ARG_POOLING / _RERANKING / _EMBEDDINGS itself, next to where it decides
     # what the GGUF header says.
     # The multi-model server mode: a child holding its own model directory, preset
-    # and autoload policy is not the single model Studio launched and accounts for.
+    # and autoload policy is not the single model Unsloth launched and accounts for.
     "LLAMA_ARG_MODELS_DIR",
     "LLAMA_ARG_MODELS_PRESET",
     "LLAMA_ARG_MODELS_MAX",
@@ -1428,6 +1546,58 @@ def scrub_denied_env(env: dict) -> list[str]:
     for name in removed:
         env.pop(name, None)
     return removed
+
+
+def extra_args_select_load_mode(extra_args: Optional[Iterable[str]]) -> bool:
+    """Whether the pass-through block already picks a loader mode itself.
+
+    The argv twin of ``memory_env_selects_load_mode``, and it answers for both
+    spellings: the ``--load-mode`` enum, and the flags it replaced
+    (``--no-mmap`` / ``--mmap`` / the direct-IO pair), which are what this launch
+    emits on a build predating the enum (``_LEGACY_LOAD_MODE_FLAGS``) and so are
+    what a user's own flag would collide with there.
+
+    Presence, not value: a fit-derived mode stands aside for any pick the user made
+    rather than trying to rank the two. Their tokens are appended after the managed
+    block and llama.cpp is last-wins, so theirs governs either way.
+    """
+    for raw in extra_args or ():
+        if _flag_name(str(raw)) in _LOAD_MODE_FLAGS | _LOAD_MODE_ALIAS_FLAGS:
+            return True
+    return False
+
+
+def memory_env_selects_load_mode(env: Optional[Mapping[str, str]]) -> bool:
+    """Whether the inherited environment already picks a loader mode.
+
+    llama.cpp applies the ``LLAMA_ARG_*`` twins BEFORE argv (common/arg.cpp runs
+    its environment loop and only then "handle command line arguments"), and both
+    assign the same ``params.load_mode``, so a managed ``--load-mode`` emitted here
+    beats an inherited choice without the user typing anything. A mode DERIVED from
+    a fit has to stand aside for that choice, the same way it stands aside for the
+    per-model pick; a hand-typed flag is argv and still wins by last-arg.
+
+    Per variable, matching what upstream really does with each value: a no-value
+    option (``--mlock``) runs its handler only for a truthy one (``opt.handler_void
+    && is_truthy(value)``), a negative alias (``LLAMA_ARG_NO_MMAP`` /
+    ``LLAMA_ARG_NO_DIO``) counts by PRESENCE whatever it says (``get_value_from_env``
+    forces "0" when it exists), and the rest assign a mode for any value they parse.
+    """
+    if not env:
+        return False
+    for name in MEMORY_ENV_VARS:
+        if name not in env:
+            continue
+        value = str(env.get(name) or "").strip()
+        if name == "LLAMA_ARG_MLOCK":
+            if value.lower() in _ENV_TRUE_VALUES:
+                return True
+            continue
+        if name in {"LLAMA_ARG_NO_MMAP", "LLAMA_ARG_NO_DIO"}:
+            return True
+        if value:
+            return True
+    return False
 
 
 def scrub_memory_env(env: dict) -> list[str]:
