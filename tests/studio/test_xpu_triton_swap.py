@@ -56,15 +56,21 @@ def _load_real_index_env_scrub():
         ("def _relaxed_pip_policy_env(", "\n\ndef ", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
+        # The XPU swap needs these two as well: it hashes the wheel it just downloaded
+        # when the operator has kept their policy in force.
+        ("def _hashed_requirement_file(", "\n\ndef ", 0),
     ):
         start = src.index(anchor)
         exec(compile(src[start : src.index(end, start) + keep], str(STACK), "exec"), ns)
     assert "PIP_NO_INDEX" in ns["_UV_INDEX_ENV_VARS"], "extraction lost the pip vars"
     assert "PIP_REQUIRE_HASHES" in ns["_PM_POLICY_ENV_VARS"], "extraction lost the policy vars"
-    return ns["_install_env_for_cmd"]
+    return ns
 
 
-_real_install_env_for_cmd = _load_real_index_env_scrub()
+_real_module_slices = _load_real_index_env_scrub()
+_real_install_env_for_cmd = _real_module_slices["_install_env_for_cmd"]
+_real_respect_pm_policy = _real_module_slices["_respect_pm_policy"]
+_real_hashed_requirement_file = _real_module_slices["_hashed_requirement_file"]
 
 
 def _load(
@@ -202,6 +208,12 @@ def _load(
         "_safe_print": (
             lambda *a, **k: log.append("WARN") if a and "left in place" in str(a[0]) else None
         ),
+        # The swap now asks whether the operator kept their policy, and hashes the
+        # downloaded wheel when they did. Extracted from the module rather than stubbed,
+        # for the same reason as the scrub: a hand-written copy would agree with a broken
+        # original forever.
+        "_respect_pm_policy": _real_respect_pm_policy,
+        "_hashed_requirement_file": _real_hashed_requirement_file,
     }
     exec(compile(body, str(STACK), "exec"), ns)
     mod.__dict__.update(ns)

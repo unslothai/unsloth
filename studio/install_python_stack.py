@@ -2743,13 +2743,25 @@ def _ensure_xpu_triton() -> None:
         # with it. pip_install, not pip_install_try -- a warning would let the caller write a
         # completion manifest over a venv whose torch.compile is broken, which the next update
         # then fast-paths past (no generic distribution is left to trigger on).
-        pip_install(
-            "triton (Intel XPU)",
-            "--force-reinstall",
-            "--no-deps",
-            wheels[0],
-            constrain = False,
-        )
+        # The wheel is a bare file reference, which require-hashes rejects. This install
+        # runs with the venv already stripped of triton and cannot be retried later --
+        # no generic distribution is left to trigger on -- so under the opt-out it goes
+        # through the wheel's own sha256, exactly as the metadata restore does.
+        requirements = _hashed_requirement_file(wheels[0]) if _respect_pm_policy() else ""
+        try:
+            pip_install(
+                "triton (Intel XPU)",
+                "--force-reinstall",
+                "--no-deps",
+                *(("-r", requirements) if requirements else (wheels[0],)),
+                constrain = False,
+            )
+        finally:
+            if requirements:
+                try:
+                    os.unlink(requirements)
+                except OSError:
+                    pass
     finally:
         shutil.rmtree(tmp, ignore_errors = True)
 
@@ -4175,6 +4187,26 @@ class _QuarantinedMetadata:
         self._copied.clear()
 
 
+def _hashed_requirement_file(wheel: str) -> str:
+    """A requirements file pinning `wheel` by its own sha256, or "" if it cannot be made.
+
+    Under the opt-out, an install of a wheel this installer just fetched or built has to
+    satisfy require-hashes rather than be exempted from it. Each such install also runs
+    AFTER something has been uninstalled, so being refused there leaves the venv missing
+    the package rather than merely unchanged.
+    """
+    try:
+        digest = hashlib.sha256(Path(wheel).read_bytes()).hexdigest()
+        handle = tempfile.NamedTemporaryFile(
+            "w", suffix = ".txt", delete = False, encoding = "utf-8"
+        )
+        with handle:
+            handle.write(f"{os.path.abspath(wheel)} --hash=sha256:{digest}\n")
+    except OSError:
+        return ""
+    return handle.name
+
+
 def _staged_restore_args(name: str, staged: str) -> "tuple[list[str], str]":
     """pip arguments that reinstall `name` from the staged wheel directory.
 
@@ -4203,14 +4235,10 @@ def _staged_restore_args(name: str, staged: str) -> "tuple[list[str], str]":
     if not wheel:
         # Nothing to hash, so nothing better to offer than the default and its error.
         return default, ""
-    try:
-        digest = hashlib.sha256(Path(wheel).read_bytes()).hexdigest()
-        handle = tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False, encoding = "utf-8")
-        with handle:
-            handle.write(f"{os.path.abspath(wheel)} --hash=sha256:{digest}\n")
-    except OSError:
+    requirements = _hashed_requirement_file(wheel)
+    if not requirements:
         return default, ""
-    return ["--no-deps", "--force-reinstall", "--no-index", "-r", handle.name], handle.name
+    return ["--no-deps", "--force-reinstall", "--no-index", "-r", requirements], requirements
 
 
 def _restore_from_staged(
@@ -4743,7 +4771,12 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
 # A pip.conf carrying one of those is an inert entry pip ignores, so reading it as pip
 # policy invents hardening the host does not have -- which under the opt-out made the
 # first uv step refuse over a cross-manager gap that was not one.
-_PIP_CONFIG_KEYS = ("require-hashes", "only-binary", "no-binary", "uploaded-prior-to")
+# `no-index` is here for the same reason it is kept under the opt-out: it REMOVES every
+# remote source, and the pinned branch discards it along with the rest of pip.conf, which
+# is exactly the kind of silent override this notice exists to disclose.
+_PIP_CONFIG_KEYS = (
+    "require-hashes", "only-binary", "no-binary", "uploaded-prior-to", "no-index",
+)
 
 
 # pip's own strtobool false set, verbatim, plus the empty and ":none:" spellings that mean
@@ -4757,7 +4790,7 @@ _OFF_VALUES = ("n", "no", "f", "false", "off", "0")
 # map or a date, where pip documents `:none:` as the way to clear the set and every other
 # value names something real: `PIP_ONLY_BINARY=no` restricts a distribution called "no",
 # and reading it as a disabled flag dropped an artifact rule that was fully in force.
-_BOOLEAN_POLICY_KEYS = ("require-hashes", "no-build")
+_BOOLEAN_POLICY_KEYS = ("require-hashes", "no-build", "no-index")
 
 # What clears a control of either kind.
 _EMPTY_POLICY_VALUES = ("", ":none:")
@@ -4879,12 +4912,20 @@ def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
                 continue
             # Printed in load order, so the last definition of a given entry wins.
             settings[(section, option)] = raw.strip().strip("'\"")
-        for (_section, option), value in settings.items():
-            if (
-                _config_value_is_on(value, option)
-                and _canonical_policy_key(option) not in cancelled
-            ):
-                on.append(("pip", "pip.conf", option))
+        # pip applies `[global]` and then the command's own section, so a control the
+        # operator enabled globally and disabled for install, download AND wheel is not
+        # hardening any command this module runs. Reporting it there put the notice in
+        # front of someone whose policy was not being relaxed at all.
+        for option in _PIP_CONFIG_KEYS:
+            if _canonical_policy_key(option) in cancelled:
+                continue
+            for command in _PIP_COMMANDS:
+                value = settings.get(
+                    (command, option), settings.get(("global", option))
+                )
+                if value is not None and _config_value_is_on(value, option):
+                    on.append(("pip", "pip.conf", option))
+                    break
 
     return tuple(dict.fromkeys(on))
 

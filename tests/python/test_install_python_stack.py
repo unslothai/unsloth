@@ -719,6 +719,27 @@ class TestTheOptOutKeepsRestrictiveIndexSettings:
         assert "PIP_NO_INDEX" not in env and "PIP_FIND_LINKS" not in env
 
 
+class TestTheXpuTritonSwapCannotStrandTheVenv:
+    """The swap uninstalls generic triton and installs the downloaded wheel by path. A
+    bare file reference is rejected under require-hashes, and by then the venv has NO
+    triton and no generic distribution left to trigger a retry on.
+    """
+
+    def test_the_wheel_is_pinned_by_its_own_hash(self, tmp_path):
+        wheel = tmp_path / "triton_xpu-3.5.0-py3-none-any.whl"
+        wheel.write_bytes(b"not a real wheel, but a real file to hash\n")
+        requirements = ips._hashed_requirement_file(str(wheel))
+        try:
+            body = pathlib.Path(requirements).read_text(encoding = "utf-8")
+            digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+            assert str(wheel) in body and f"--hash=sha256:{digest}" in body, body
+        finally:
+            os.unlink(requirements)
+
+    def test_an_unreadable_wheel_is_not_an_error(self, tmp_path):
+        assert ips._hashed_requirement_file(str(tmp_path / "gone.whl")) == ""
+
+
 class TestHardenedPolicyIsAnnounced:
     """The relaxation is defensible; doing it silently is not.
 
@@ -771,6 +792,26 @@ class TestHardenedPolicyIsAnnounced:
         assert self._names({"UV_EXCLUDE_NEWER": "2005-01-01T00:00:00Z"}) == ("UV_EXCLUDE_NEWER",)
         # Still not a boolean elsewhere: a package list keeps package names.
         assert self._names({"PIP_ONLY_BINARY": "false"}) == ("PIP_ONLY_BINARY",)
+
+    def test_a_control_disabled_for_every_command_is_not_reported(self):
+        """pip applies [global] then the command's own section, so a control enabled
+        globally and disabled for install, download AND wheel hardens nothing this
+        module runs. Reporting it put the notice in front of someone whose policy was
+        not being relaxed at all."""
+        listing = (
+            "global.require-hashes='true'\ninstall.require-hashes='false'\n"
+            "download.require-hashes='false'\nwheel.require-hashes='false'\n"
+        )
+        assert self._names({}, listing) == ()
+        # Disabled for only ONE of them still leaves the other two hardened.
+        partial = "global.require-hashes='true'\ninstall.require-hashes='false'\n"
+        assert self._names({}, partial) == ("pip.conf require-hashes",)
+
+    def test_an_explicit_no_index_is_reported(self):
+        """no-index REMOVES every remote source, and the pinned branch discards it with
+        the rest of pip.conf, which is exactly what this notice exists to disclose."""
+        assert self._names({}, "global.no-index='true'\n") == ("pip.conf no-index",)
+        assert self._names({}, "global.no-index='false'\n") == ()
 
     def test_uv_policy_is_reported_from_the_variables_uv_reads(self):
         """uv has no command that prints its resolved configuration, so the notice
