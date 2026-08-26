@@ -38,9 +38,9 @@ env:
   DESKTOP_RELEASE_NOTES: |
     Desktop app for Unsloth.
 
-    **macOS**: Download the Apple Silicon `.dmg`.
-    **Windows**: Download the `-setup.exe` installer.
-    **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental.
+    **macOS**: Download `Unsloth-Desktop-MacOS.dmg` (Apple Silicon).
+    **Windows**: Download `Unsloth-Desktop-Windows.exe`.
+    **Linux**: Download `Unsloth-Desktop-Ubuntu.deb` for Ubuntu/Debian. `.AppImage` is experimental.
 
     > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
     > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
