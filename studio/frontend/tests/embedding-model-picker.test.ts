@@ -358,3 +358,15 @@ test("the on-device dot follows the resolved repo, not the displayed id", () => 
     "the raw exact-id lookup is gone",
   );
 });
+
+test("an unquantized re-upload's GGUF companion counts as on device", () => {
+  // The backend strips the quant suffix, so
+  // unsloth/embeddinggemma-300m-qat-q8_0-unquantized resolves under
+  // unsloth/embeddinggemma-300m-GGUF; checking only <literal>-GGUF left the dot
+  // off a fully downloaded companion.
+  assert.match(PICKER, /\(\?:-qat\)\?\(\?:-q\\d\+_\\d\+\[a-z\]\*\)\?-unquantized\$/i);
+  assert.match(PICKER, /if \(base !== name\) candidates\.push\(`\$\{owner\}\$\{base\}-GGUF`\)/);
+  // No lookbehind: this build target ships regex verbatim, so anything Safari 16
+  // cannot parse would break the bundle rather than fail a test.
+  assert.ok(!PICKER.includes("(?<="), "no lookbehind in shipped regex");
+});

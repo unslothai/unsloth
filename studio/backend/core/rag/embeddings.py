@@ -424,7 +424,13 @@ def _get(model_name: str | None = None):
         download_pending = get_stored_download_pending(name)
     except Exception:  # noqa: BLE001 - old/unavailable settings store
         download_pending = False
-    local_only = hf_env_offline() or download_pending
+    offline = hf_env_offline()
+    # Two different questions. `local_only` says "load from cache, do not fetch",
+    # which a pending transfer also demands. `offline` is whether the Hub is
+    # reachable, which is what the security gate needs: told offline while online
+    # it applies the fail-closed cached-pickle rule and rejects a .bin-only repo
+    # the resolver just accepted and scanned, failing the first index outright.
+    local_only = offline or download_pending
     with _lock:
         if _model is None or _name != name:
             # Probe before loading sentence-transformers on the selected device.
@@ -502,7 +508,7 @@ def _get(model_name: str | None = None):
             # the load opened an older cached one. evaluate_file_security recovers
             # the repo and exact commit from a snapshot path, and fails closed
             # locally when the Hub cannot answer.
-            _guard_model_security(load_target, local_only)
+            _guard_model_security(load_target, offline)
             with _quiet_transformers_load() as report:
                 # The re-emit runs in finally: a load that raises after transformers
                 # wrote its report is exactly when a MISSING or MISMATCH line matters,

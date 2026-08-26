@@ -1313,3 +1313,61 @@ def test_the_alias_snapshot_is_the_one_loaded(monkeypatch, tmp_path):
         embeddings._name = None
 
     assert loaded["target"] == str(alias)
+
+
+def test_a_pending_transfer_does_not_make_the_security_scan_offline(monkeypatch, tmp_path):
+    """`local_only` folds two questions together: load from cache, and is the Hub
+    reachable. The security gate needs the second. Told offline while online it
+    applies the fail-closed cached-pickle rule and rejects a .bin-only repo the
+    resolver just accepted and scanned, failing the first index outright."""
+    from core.rag import embeddings
+    import utils.embedding_model_settings as ems
+    import utils.utils as utils
+
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "pytorch_model.bin").write_bytes(b"ST")
+
+    seen = {}
+    monkeypatch.setattr(
+        embeddings,
+        "_guard_model_security",
+        lambda target, local_only = False: seen.update(target = target, local_only = local_only),
+    )
+    # Pending, but the Hub is reachable.
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: True)
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda m: True)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_st_accepts_local_files_only", lambda _c: False)
+    st_mod = types.ModuleType("sentence_transformers")
+    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer = None)
+    monkeypatch.setitem(sys.modules, "sentence_transformers", st_mod)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    embeddings._model = None
+    embeddings._name = None
+    try:
+        embeddings._get("org/bin-only")
+    finally:
+        embeddings._model = None
+        embeddings._name = None
+
+    # The load still came from the cache...
+    assert seen["target"] == str(snapshot)
+    # ...but the gate was told the truth about the network.
+    assert seen["local_only"] is False
+
+    # Genuinely offline still scans offline.
+    seen.clear()
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    embeddings._model = None
+    embeddings._name = None
+    try:
+        embeddings._get("org/bin-only")
+    finally:
+        embeddings._model = None
+        embeddings._name = None
+    assert seen["local_only"] is True

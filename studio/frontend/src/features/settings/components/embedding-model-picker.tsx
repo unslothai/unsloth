@@ -59,6 +59,14 @@ export function cachedRepoCandidates(model: string): string[] {
   if (!id) return [];
   const candidates = [id, `${id}-GGUF`];
   if (!id.includes("/")) candidates.push(`sentence-transformers/${id}`);
+  // Mirrors the backend's _QUANT_SUFFIX_RE: an unquantized re-upload's GGUF sits
+  // on the base name, so embeddinggemma-300m-qat-q8_0-unquantized resolves to
+  // embeddinggemma-300m-GGUF and would otherwise never light up.
+  const slash = id.lastIndexOf("/");
+  const owner = slash === -1 ? "" : id.slice(0, slash + 1);
+  const name = id.slice(slash + 1);
+  const base = name.replace(/(?:-qat)?(?:-q\d+_\d+[a-z]*)?-unquantized$/i, "");
+  if (base !== name) candidates.push(`${owner}${base}-GGUF`);
   return candidates;
 }
 
