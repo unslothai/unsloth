@@ -41,7 +41,7 @@ def hf_env_offline() -> bool:
 
 
 def canonical_model_repo_id(model_name: str) -> str:
-    """Normalize a Hugging Face model repository ID selected in Studio."""
+    """Normalize a Hugging Face model repository ID selected in Unsloth."""
     return model_name.strip()
 
 

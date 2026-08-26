@@ -80,7 +80,6 @@ import {
   AudioWave01Icon,
   Cancel01Icon,
   DashboardCircleIcon,
-  Download01Icon,
   Flag01Icon,
   FlimSlateIcon,
   Folder02Icon,
@@ -601,20 +600,27 @@ function FormatTag({ tone, label }: { tone: FormatTone; label: string }) {
   );
 }
 
-/** "Already on disk", shown on Hub rows that are also downloaded. */
+/** "Already on disk", shown on Hub rows that are also downloaded. The Hub's own
+ *  on-device dot: a download arrow read as "click to fetch" on the one row that
+ *  needs no fetching. Hit area and tooltip as FormatTag. */
 function DownloadedBadge() {
   return (
-    <span
-      title="Already downloaded"
-      aria-label="Already downloaded"
-      className="flex h-[18px] shrink-0 items-center justify-center text-status-success"
-    >
-      <HugeiconsIcon
-        icon={Download01Icon}
-        className="size-3"
-        strokeWidth={1.8}
-      />
-    </span>
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        <span
+          aria-label="On device"
+          className="flex h-[18px] w-[14px] shrink-0 items-center justify-center"
+        >
+          <span
+            aria-hidden="true"
+            className="size-[5px] rounded-full bg-status-success"
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        On device
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -760,12 +766,12 @@ const META_COLUMN = {
   // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
   quant: "min-[560px]:w-[7.2em]",
   // The badge slot holds capability glyphs (18px), the vision badge (24px) and the Hub lists'
-  // "on disk" mark (12px), gap-1 between them. Each width below is the widest set its scope can
+  // "on disk" mark (14px), gap-1 between them. Each width below is the widest set its scope can
   // draw, since anything wider makes min-w-min expand the slot and shift every column after it.
   // Scope draws no glyph: the vision badge alone, or the disk mark alone.
   badge: "min-w-min min-[560px]:w-[24px]",
-  // One glyph plus the disk mark (18 + 4 + 12).
-  badgeMid: "min-w-min min-[560px]:w-[34px]",
+  // One glyph plus the disk mark (18 + 4 + 14).
+  badgeMid: "min-w-min min-[560px]:w-[36px]",
   // Unscoped chat: a generation glyph and audio, plus whichever of vision (On Device rows) or the
   // disk mark (Hub rows) that list carries -- the two never appear on the same row (18+4+18+4+24).
   badgeWide: "min-w-min min-[560px]:w-[68px]",
@@ -3045,7 +3051,7 @@ export function HubModelPicker({
     (id: string) => {
       if (!catalog) return true;
       // Downloaded weights keep their row. They may have been pulled on a machine that could run
-      // them, and hiding what is already on disk reads as Studio having lost the model.
+      // them, and hiding what is already on disk reads as Unsloth having lost the model.
       if (downloadedSet.has(id.toLowerCase())) return true;
       const hit = artifactForRepoId(id, catalog);
       return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass) : true;
@@ -3539,7 +3545,7 @@ export function HubModelPicker({
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
-            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
@@ -3585,7 +3591,7 @@ export function HubModelPicker({
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
-            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
@@ -3634,7 +3640,7 @@ export function HubModelPicker({
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
-            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,

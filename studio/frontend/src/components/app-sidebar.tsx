@@ -294,6 +294,7 @@ type NavRowDef = {
 
 type ConversationExportFormat =
   | "raw-jsonl"
+  | "messages-jsonl"
   | "csv"
   | "sharegpt-jsonl"
   | typeof CONVERSATION_MARKDOWN_FORMAT;
@@ -308,7 +309,7 @@ const menuRadioItemClass =
   "pl-9 pr-3 [&>[data-slot=dropdown-menu-radio-item-indicator]]:right-auto [&>[data-slot=dropdown-menu-radio-item-indicator]]:left-3";
 
 // Whether cmd or ctrl adds a row to the selection. This is the user's own
-// keyboard, not the host Studio runs on, so it reads the browser rather than
+// keyboard, not the host Unsloth runs on, so it reads the browser rather than
 // the platform store: a Mac browser on a Linux host still uses cmd. Ctrl is
 // left alone on macOS, where ctrl click is the right click chord.
 const SELECT_WITH_META =
@@ -342,7 +343,8 @@ const CHAT_EXPORT_OPTIONS: Array<{
   label: string;
   format: ConversationExportFormat;
 }> = [
-  { label: "Raw JSONL", format: "raw-jsonl" },
+  { label: "Training JSONL", format: "raw-jsonl" },
+  { label: "Message JSONL", format: "messages-jsonl" },
   { label: "CSV", format: "csv" },
   { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
   { label: CONVERSATION_MARKDOWN_LABEL, format: CONVERSATION_MARKDOWN_FORMAT },
@@ -358,6 +360,8 @@ async function exportConversationByFormat(
   switch (format) {
     case "raw-jsonl":
       return exports.exportConversationRawJsonl(threadId);
+    case "messages-jsonl":
+      return exports.exportConversationMessagesJsonl(threadId);
     case "csv":
       return exports.exportConversationCsv(threadId);
     case "sharegpt-jsonl":
@@ -1913,6 +1917,15 @@ export function AppSidebar() {
   // between a pill and the scrollbar, matched to the gap on the other side.
   const scrollRowPadding = usesDesktopTitlebar ? "px-[5px]" : "px-1.5";
 
+  // Header actions end where a hovered row's "…" does: scrollRowPadding + the
+  // action's own pr-1.5. 12px normally (the pr-3 class default), 11px here.
+  const headerRightPadding = usesDesktopTitlebar
+    ? "sidebar-sticky-label-desktop"
+    : null;
+  // Recents alone is nudged 2px right there, and carries its padding with it.
+  const recentsHeaderRightPadding = usesDesktopTitlebar
+    ? "sidebar-sticky-label-desktop-recents"
+    : null;
 
   // One definition per row, so pinned rows and the flyout can't drift apart.
   const navRows: Record<SidebarNavItemId, NavRowDef> = {
@@ -3801,7 +3814,7 @@ export function AppSidebar() {
         {!isStudioRoute && !showTrainingRecents && pinnedChatItems.length > 0 && (
           <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", scrolled && "is-scrolled")}>
+              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", headerRightPadding, scrolled && "is-scrolled")}>
                 <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
                   Pinned
                   <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
@@ -3850,7 +3863,7 @@ export function AppSidebar() {
             >
               <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
                 {/* Trigger takes the free space; the actions reveal beside it. */}
-                <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", scrolled && "is-scrolled")}>
+                <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", headerRightPadding, scrolled && "is-scrolled")}>
                   <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
                     {t("shell.navigation.projects")}
                     <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
@@ -4089,6 +4102,7 @@ export function AppSidebar() {
               <SidebarGroupLabel
                 className={cn(
                   "sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1",
+                  recentsHeaderRightPadding,
                   scrolled && "is-scrolled",
                   usesDesktopTitlebar && "translate-x-[2px]",
                 )}

@@ -281,7 +281,7 @@ def test_extra_args_source_default_is_none():
 class TestRepeatLoadMatchesTheEffectiveCache:
     """A repeat /load of an identical request must reuse the healthy server.
 
-    self._cache_type_kv records only what Studio emitted as a MANAGED flag, so a
+    self._cache_type_kv records only what Unsloth emitted as a MANAGED flag, so a
     cache set through extras or the environment leaves it None on one side and a
     type on the other; the old scalar-against-scalar comparison then read an
     identical repeat as a mismatch and tore the server down to relaunch the same

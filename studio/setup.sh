@@ -40,7 +40,7 @@ fi
 #   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "cuda", "vulkan",
 #                           "hip", or "rocm". Concrete values select and persist a
 #                           backend across updates; "auto" restores detection.
-#                           Overrides Studio's Settings > System selection.
+#                           Overrides Unsloth's Settings > System selection.
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"

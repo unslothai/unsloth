@@ -1241,7 +1241,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 # Manual __anext__ (not `async for`) so we can close the
@@ -1403,7 +1408,7 @@ class ExternalProviderClient:
                                                         continue
                                                     for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
-                        # Verbatim relay, minus Studio's own UI control protocol:
+                        # Verbatim relay, minus Unsloth's own UI control protocol:
                         # the frames this server writes to paint tool cards ride
                         # the same stream, so an endpoint that echoes them forges
                         # a card for a tool that never ran.
@@ -1541,7 +1546,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
@@ -1632,7 +1642,12 @@ class ExternalProviderClient:
                             response.status_code,
                             error_text[:500],
                         )
-                        yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                        yield _error_sse_line(
+                            response.status_code,
+                            error_text,
+                            self.provider_type,
+                            response.headers.get("Retry-After"),
+                        )
                         return
                     # Manual __anext__ loop instead of `async for` — see the
                     # stream_chat_completion comment for the Python 3.13 +
@@ -1646,7 +1661,7 @@ class ExternalProviderClient:
                                 break
                             if line.strip():
                                 # Same rule as the main relay: never let the
-                                # endpoint speak Studio's control vocabulary.
+                                # endpoint speak Unsloth's control vocabulary.
                                 relayed = sanitize_provider_sse_line(line)
                                 if relayed is not None:
                                     yield relayed
@@ -1737,7 +1752,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
@@ -1782,7 +1802,7 @@ class ExternalProviderClient:
                                                         str(ann.get("type") or "?")
                                                     )
                         # Same rule as the main relay: never let the endpoint
-                        # speak Studio's control vocabulary.
+                        # speak Unsloth's control vocabulary.
                         relayed = sanitize_provider_sse_line(line)
                         if relayed is None:
                             continue
@@ -2382,7 +2402,12 @@ class ExternalProviderClient:
                                 f"data: "
                                 f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
                             )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 # NOTE: same manual __anext__ loop as stream_chat_completion — see comment there.
@@ -4159,7 +4184,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 if web_search_active:
@@ -4865,7 +4895,7 @@ class ExternalProviderClient:
                 # OpenAI requires the reasoning items that came back alongside a
                 # tool call to be replayed with the function_call /
                 # function_call_output pair whenever the history is managed by
-                # hand, which is exactly what the Studio tool loop does: "any
+                # hand, which is exactly what the Unsloth tool loop does: "any
                 # reasoning items returned in model responses with tool calls
                 # must also be passed back with tool call outputs"
                 # (https://developers.openai.com/api/docs/guides/function-calling).
@@ -5281,7 +5311,12 @@ class ExternalProviderClient:
                             retried = True
                             attempt_container_id = None
                             continue
-                        yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                        yield _error_sse_line(
+                            response.status_code,
+                            error_text,
+                            self.provider_type,
+                            response.headers.get("Retry-After"),
+                        )
                         return
 
                     # NOTE: same manual __anext__ loop as stream_chat_completion --
@@ -6649,19 +6684,27 @@ def _readable_provider_error(status_code: int, message: str, provider_type: str)
     return f"{text} ({code})" if code and code not in text else text
 
 
-def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
-    """Format an error as an SSE data line in OpenAI error format."""
+def _error_sse_line(
+    status_code: int,
+    message: str,
+    provider_type: str,
+    retry_after: str | None = None,
+) -> str:
+    """Format an error as an SSE data line in OpenAI error format.
+
+    ``retry_after`` carries the upstream Retry-After through: this stream is delivered under a
+    200, so a client that backs off has nowhere else to read the delay from."""
     import json
 
-    error_obj = {
-        "error": {
-            "message": _readable_provider_error(status_code, message, provider_type),
-            "type": "provider_error",
-            "code": str(status_code),
-            "provider": provider_type,
-        }
+    error: dict[str, str] = {
+        "message": _readable_provider_error(status_code, message, provider_type),
+        "type": "provider_error",
+        "code": str(status_code),
+        "provider": provider_type,
     }
-    return f"data: {json.dumps(error_obj)}"
+    if retry_after:
+        error["retry_after"] = retry_after
+    return f"data: {json.dumps({'error': error})}"
 
 
 def _build_usage_chunk(
