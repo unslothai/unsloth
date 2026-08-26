@@ -3269,7 +3269,7 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     return True
 
 
-_STUDIO_MEMORY_TOOLS = frozenset({"search_conversation"})
+_LEGACY_STUDIO_MEMORY_TOOLS = frozenset({"search_conversation"})
 
 
 def _tool_call_names(message) -> list[Optional[str]]:
@@ -3290,33 +3290,32 @@ def _tool_call_names(message) -> list[Optional[str]]:
     return names
 
 
-def _only_studio_memory_tool_history(payload) -> bool:
-    """True when the request's ONLY tool history is Unsloth's own conversation memory.
+def _only_studio_tool_history(payload) -> bool:
+    """true when the request's only tool history was produced by unsloth.
 
-    Once the model uses `search_conversation`, the branch keeps an assistant `tool_calls`
-    turn and its `role="tool"` result and the client replays both forever. Read as a CLIENT
-    tool contract, that history routes every later turn to the llama-server passthrough,
-    which runs no context fit, so the epoch, the carried-forward block and the automatic
-    recall vanish one turn after the compaction that created them. It is Unsloth's own
-    read-only tool run by Unsloth's own loop, so it must route as a tools-on Unsloth chat.
+    current studio clients mark replayed local tool history after checking provenance on
+    every serialized call. older clients have no marker, so retain the strict
+    search_conversation-only fallback that protects checkpoint recall.
 
-    Deliberately strict: a caller-supplied `tools` catalog, an unnamed call or result, or
-    any other tool name means "not ours", so a real client tool loop is never claimed.
+    a caller-supplied `tools` catalog always remains a client contract.
     """
     if getattr(payload, "tools", None):
         return False
+    messages = getattr(payload, "messages", None) or []
+    if getattr(payload, "studio_tool_history", False):
+        return _has_openai_tool_history(messages)
     saw_call = False
-    for message in getattr(payload, "messages", None) or []:
+    for message in messages:
         role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
         for name in _tool_call_names(message):
             saw_call = True
-            if name not in _STUDIO_MEMORY_TOOLS:
+            if name not in _LEGACY_STUDIO_MEMORY_TOOLS:
                 return False
         if role == "tool":
             result_name = (
                 message.get("name") if isinstance(message, dict) else getattr(message, "name", None)
             )
-            if result_name not in _STUDIO_MEMORY_TOOLS:
+            if result_name not in _LEGACY_STUDIO_MEMORY_TOOLS:
                 return False
     return saw_call
 
@@ -3335,7 +3334,7 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     has_client_contract = (
         bool(payload.tools) and getattr(payload, "tool_choice", None) != "none"
     ) or (
-        _has_openai_tool_history(payload.messages) and not _only_studio_memory_tool_history(payload)
+        _has_openai_tool_history(payload.messages) and not _only_studio_tool_history(payload)
     )
     supports_passthrough = getattr(llama_backend, "supports_tool_passthrough", supports_tools)
     if supports_passthrough and has_client_contract:

@@ -570,7 +570,7 @@ def test_studios_own_memory_history_does_not_steal_the_request_from_the_context_
     )
 
     assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is False
-    assert inference_route._only_studio_memory_tool_history(payload) is True
+    assert inference_route._only_studio_tool_history(payload) is True
 
 
 def test_a_real_client_tool_loop_still_takes_the_passthrough():
@@ -590,7 +590,7 @@ def test_a_real_client_tool_loop_still_takes_the_passthrough():
         stream = True,
     )
 
-    assert inference_route._only_studio_memory_tool_history(payload) is False
+    assert inference_route._only_studio_tool_history(payload) is False
     assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is True
 
     # And a client catalog alongside Unsloth's own history is still the client's request.
@@ -607,7 +607,7 @@ def test_a_real_client_tool_loop_still_takes_the_passthrough():
             }
         ],
     )
-    assert inference_route._only_studio_memory_tool_history(with_catalog) is False
+    assert inference_route._only_studio_tool_history(with_catalog) is False
     assert inference_route._takes_tool_passthrough(with_catalog, _ToolCapableBackend()) is True
 
 
