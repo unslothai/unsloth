@@ -2648,9 +2648,16 @@ def update_embedding_model(
             raise HTTPException(status_code = 409, detail = plan.error)
     trusted_backend = None
     trusted_gguf_repo = None
+    trusted_gguf_files = None
     trusted_download_pending = False
     if plan.error is None:
         trusted_backend = "llama-server" if destination_is_llama else "sentence-transformers"
+        # The exact family this transfer delivers. A repo that publishes no
+        # RAG_EMBED_GGUF_VARIANT is served a different quant on purpose, which the
+        # loader's variant-matching lookup cannot recognize as the thing that was
+        # downloaded; without this it leaves the model cache-only for good, and a
+        # later eviction reads as "never downloaded" though the transfer finished.
+        trusted_gguf_files = plan.files if destination_is_llama else None
         # A sentence-transformers download repo is not a GGUF source. Keeping
         # it out also prevents a later runtime fallback from mislabelling it.
         trusted_gguf_repo = plan.download_repo if destination_is_llama else None
@@ -2669,6 +2676,7 @@ def update_embedding_model(
         gguf_repo = trusted_gguf_repo,
         backend = trusted_backend,
         download_pending = trusted_download_pending,
+        gguf_files = trusted_gguf_files,
     )
     logger.info(
         "settings.embedding_model_updated subject=%s model=%s forced=%s",

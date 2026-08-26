@@ -100,6 +100,7 @@ def test_resolution_record_keeps_model_repo_and_backend_atomic(settings_store):
         "gguf_repo": "org/embedder-conversion",
         "backend": "llama-server",
         "download_pending": False,
+        "gguf_files": None,
     }
     assert settings_store[ems.EMBEDDING_GGUF_SETTING_KEY] is None
     assert settings_store[ems.EMBEDDING_BACKEND_SETTING_KEY] is None
@@ -301,3 +302,54 @@ def test_a_reset_with_nothing_remembered_stays_a_plain_reset(settings_store, mon
 
     assert ems.get_stored_embedding_model() is None
     assert settings_store[ems.EMBEDDING_RESOLUTION_SETTING_KEY] is None
+
+
+def test_the_planned_gguf_family_is_stored_and_survives_the_clear(settings_store):
+    """The loader needs the family to tell the quant the picker actually delivered
+    from an unrelated one in the same repo. The clear is conditional on the record
+    as read, so carrying an extra field must not make it a permanent no-op."""
+    ems._resolved_gguf_memo.clear()
+    ems.set_rag_embedding_model(
+        "org/a",
+        gguf_repo = "org/a-GGUF",
+        backend = "llama-server",
+        download_pending = True,
+        gguf_files = ["a-Q8_0-00001-of-00002.gguf", "a-Q8_0-00002-of-00002.gguf"],
+    )
+
+    assert ems.get_stored_gguf_files("org/a") == [
+        "a-Q8_0-00001-of-00002.gguf",
+        "a-Q8_0-00002-of-00002.gguf",
+    ]
+    assert ems.clear_stored_download_pending("org/a") is True
+    assert ems.get_stored_download_pending("org/a") is False
+    # The family outlives the flag: it describes the artifact, not the transfer.
+    assert ems.get_stored_gguf_files("org/a") == [
+        "a-Q8_0-00001-of-00002.gguf",
+        "a-Q8_0-00002-of-00002.gguf",
+    ]
+
+
+def test_a_record_written_before_the_family_existed_still_clears(settings_store):
+    """Upgrade path: an install that saved under the previous build has a record
+    with no gguf_files key. Comparing against a rebuilt record would never match
+    it, pinning every such model cache-only for good."""
+    from storage.studio_db import upsert_app_settings
+
+    ems._resolved_gguf_memo.clear()
+    upsert_app_settings(
+        {
+            ems.EMBEDDING_MODEL_SETTING_KEY: "org/legacy",
+            ems.EMBEDDING_RESOLUTION_SETTING_KEY: {
+                "model": "org/legacy",
+                "gguf_repo": "org/legacy-GGUF",
+                "backend": "llama-server",
+                "download_pending": True,
+            },
+        }
+    )
+    ems._invalidate_cache()
+
+    assert ems.get_stored_gguf_files("org/legacy") is None
+    assert ems.clear_stored_download_pending("org/legacy") is True
+    assert ems.get_stored_download_pending("org/legacy") is False

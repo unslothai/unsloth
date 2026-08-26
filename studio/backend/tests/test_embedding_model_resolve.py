@@ -900,3 +900,43 @@ def test_a_stale_literal_cache_does_not_hide_a_complete_alias_snapshot(
     body = _resolve(client, "all-MiniLM-L6-v2").json()
     assert body["cached"] is True
     assert body["error"] is None
+
+
+def test_a_remote_gguf_repo_is_served_by_llama_server_on_an_st_host(monkeypatch):
+    """A GPU host resolves ``auto`` to sentence-transformers, which then searches a
+    typed or API-selected ``owner/model-GGUF`` for safetensors, finds none and errors.
+    Saving over that error sets the pending marker, and the ST loader answers a
+    pending model with "not downloaded" before the runtime fallback can reach
+    llama-server, so the repo could never load however it was cached."""
+    from core.rag import embeddings as rag_embeddings
+    import utils.embedding_model_settings as ems
+
+    ems._resolved_gguf_memo.clear()
+    ems._invalidate_cache()
+    # A GPU is present, so the hardware default is sentence-transformers.
+    monkeypatch.setattr(rag_embeddings, "_resolve_auto", lambda: "sentence-transformers")
+    # And the forced save recorded no backend, exactly as a failed plan does.
+    monkeypatch.setattr(ems, "get_stored_backend", lambda model: None)
+
+    assert rag_embeddings._resolve_auto_for_model("unsloth/bge-m3-GGUF") == "llama-server"
+    assert rag_embeddings._resolve_auto_for_model("unsloth/bge-m3") == "sentence-transformers"
+
+
+def test_a_local_directory_named_gguf_is_still_a_sentence_transformers_model(
+    monkeypatch, tmp_path
+):
+    """The remote rule is a name test, and a directory may be named anything. Only
+    the filesystem can say what ``~/models/my-gguf`` holds, and here it holds
+    safetensors."""
+    from core.rag import embeddings as rag_embeddings
+    import utils.embedding_model_settings as ems
+
+    local = tmp_path / "my-gguf"
+    local.mkdir()
+    (local / "model.safetensors").write_bytes(b"\x00")
+    ems._resolved_gguf_memo.clear()
+    ems._invalidate_cache()
+    monkeypatch.setattr(rag_embeddings, "_resolve_auto", lambda: "sentence-transformers")
+    monkeypatch.setattr(ems, "get_stored_backend", lambda model: None)
+
+    assert rag_embeddings._resolve_auto_for_model(str(local)) == "sentence-transformers"

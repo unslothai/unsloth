@@ -698,6 +698,29 @@ def _model_is_local_gguf(model: str | None) -> bool:
         return False
 
 
+def _model_names_gguf_repo(model: str | None) -> bool:
+    """Whether ``model`` is a repo id that names GGUF weights.
+
+    The `-GGUF` companion suffix is the convention the resolver derives and the
+    picker's on-device dot follows, so such a repo publishes no safetensors for
+    sentence-transformers to open. A pure name test: the remote counterpart of
+    ``_model_is_local_gguf``, which cannot see a repo that is not on disk yet."""
+    if not model:
+        return False
+    try:
+        from utils.paths import is_local_path
+
+        # A directory may be named anything: `~/models/my-gguf` holding safetensors
+        # is a sentence-transformers model, and only the filesystem can say so.
+        # _model_is_local_gguf has already answered for every local id.
+        if is_local_path(model):
+            return False
+    except Exception:  # noqa: BLE001 - unparseable path is not a repo id either
+        return False
+    name = model.strip().rstrip("/").rsplit("/", 1)[-1].lower()
+    return name.endswith("-gguf") or name.endswith(".gguf")
+
+
 def _resolve_auto_for_model(model_name: str | None = None) -> str:
     """``auto``, but honouring the backend recorded for the saved model.
 
@@ -705,10 +728,17 @@ def _resolve_auto_for_model(model_name: str | None = None) -> str:
     records that choice; the hardware default would send it to llama-server,
     which has nothing to open."""
     model = model_name or config.effective_embedding_model()
-    # A local .gguf is not a sentence-transformers artifact under any hardware,
-    # and _resolve_auto answers "sentence-transformers" whenever a GPU is present.
+    # A GGUF is not a sentence-transformers artifact under any hardware, and
+    # _resolve_auto answers "sentence-transformers" whenever a GPU is present.
     # Only ``auto`` consults this, so an explicit RAG_EMBED_BACKEND still wins.
-    if _model_is_local_gguf(model):
+    #
+    # The remote form matters as much as the local one: a typed or API-selected
+    # `owner/model-GGUF` resolved as ST is searched for safetensors, found to
+    # publish none, and can then only be saved over that error -- which sets the
+    # pending marker, and _get() answers a pending ST model with "not downloaded"
+    # before the runtime fallback to llama-server can run. The repo would never
+    # load on such a host even with llama-server installed and the GGUF cached.
+    if _model_is_local_gguf(model) or _model_names_gguf_repo(model):
         return "llama-server"
     try:
         from utils.embedding_model_settings import get_stored_backend

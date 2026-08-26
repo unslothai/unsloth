@@ -58,11 +58,14 @@ def client(monkeypatch):
     monkeypatch.setattr(
         settings,
         "set_rag_embedding_model",
-        lambda v, gguf_repo = None, backend = None, download_pending = False: saved.update(
-            model = v,
-            gguf_repo = gguf_repo,
-            backend = backend,
-            download_pending = download_pending,
+        lambda v, gguf_repo = None, backend = None, download_pending = False, gguf_files = None: (
+            saved.update(
+                model = v,
+                gguf_repo = gguf_repo,
+                backend = backend,
+                download_pending = download_pending,
+                gguf_files = gguf_files,
+            )
         ),
     )
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
@@ -237,11 +240,14 @@ def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
     monkeypatch.setattr(
         settings,
         "set_rag_embedding_model",
-        lambda v, gguf_repo = None, backend = None, download_pending = False: saved.update(
-            model = v,
-            gguf_repo = gguf_repo,
-            backend = backend,
-            download_pending = download_pending,
+        lambda v, gguf_repo = None, backend = None, download_pending = False, gguf_files = None: (
+            saved.update(
+                model = v,
+                gguf_repo = gguf_repo,
+                backend = backend,
+                download_pending = download_pending,
+                gguf_files = gguf_files,
+            )
         ),
     )
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
@@ -298,11 +304,14 @@ def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
     monkeypatch.setattr(
         settings,
         "set_rag_embedding_model",
-        lambda v, gguf_repo = None, backend = None, download_pending = False: saved.update(
-            model = v,
-            gguf_repo = gguf_repo,
-            backend = backend,
-            download_pending = download_pending,
+        lambda v, gguf_repo = None, backend = None, download_pending = False, gguf_files = None: (
+            saved.update(
+                model = v,
+                gguf_repo = gguf_repo,
+                backend = backend,
+                download_pending = download_pending,
+                gguf_files = gguf_files,
+            )
         ),
     )
     # Deliberately do NOT monkeypatch settings._llama_backend_active: this test exercises the
@@ -381,11 +390,14 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
     monkeypatch.setattr(
         settings,
         "set_rag_embedding_model",
-        lambda v, gguf_repo = None, backend = None, download_pending = False: saved.update(
-            model = v,
-            gguf_repo = gguf_repo,
-            backend = backend,
-            download_pending = download_pending,
+        lambda v, gguf_repo = None, backend = None, download_pending = False, gguf_files = None: (
+            saved.update(
+                model = v,
+                gguf_repo = gguf_repo,
+                backend = backend,
+                download_pending = download_pending,
+                gguf_files = gguf_files,
+            )
         ),
     )
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)

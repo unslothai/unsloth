@@ -35,18 +35,25 @@ MAX_EMBEDDING_MODEL_LENGTH = 512
 _CACHE_TTL_S = 2.0
 # typing.Optional, not `str | None`: the future import defers annotations, but a
 # type ALIAS is evaluated at import, and PEP 604 needs 3.10 over a 3.9 floor.
-_StoredState = tuple[Optional[str], Optional[str], Optional[str], Optional[str], bool]
-# (override model, resolved model, GGUF repo, backend, download pending)
+_StoredState = tuple[
+    Optional[str], Optional[str], Optional[str], Optional[str], bool, Optional[dict]
+]
+# (override model, resolved model, GGUF repo, backend, download pending, raw record).
+# The raw record is carried so a conditional write can compare against exactly what
+# is stored rather than a reconstruction, which would never match a record written
+# by a build that had one field fewer.
 _cached: tuple[float, _StoredState] | None = None
 # Bumped on every write/invalidate. A reader captures it before the DB read and
 # only fills the cache if it is unchanged afterward, so a read that overlapped a
 # save cannot repopulate the cache with the pre-save value for the whole TTL.
 _generation = 0
 _lock = threading.Lock()
-# Per-model, process-local: the last (gguf_repo, backend, download_pending) seen
-# for each model. The one stored record belongs to whichever model was saved last;
-# see remembered_gguf_repo.
-_resolved_gguf_memo: dict[str, tuple[Optional[str], Optional[str], bool]] = {}
+# Per-model, process-local: the last (gguf_repo, backend, download_pending, files)
+# seen for each model. The one stored record belongs to whichever model was saved
+# last; see remembered_gguf_repo.
+_resolved_gguf_memo: dict[
+    str, tuple[Optional[str], Optional[str], bool, Optional[list]]
+] = {}
 
 
 def _invalidate_cache() -> None:
@@ -85,6 +92,18 @@ def validate_embedding_model(value: Any) -> str:
     return cleaned
 
 
+def _coerce_gguf_files(value: Any) -> Optional[list]:
+    """Repo-relative GGUF names from ``value``, or None when it names no family.
+
+    Same length/control-character rules as every other stored string: this record
+    is read back to steer a loader, so it must not carry anything a path join
+    would misread."""
+    if not isinstance(value, (list, tuple)):
+        return None
+    named = [f for f in (_coerce_embedding_model(v) for v in value) if f]
+    return named or None
+
+
 def get_stored_gguf_repo(model: str) -> str | None:
     """The GGUF repo stored alongside ``model``, or None when it was stored for a
     different model (a stale pair must not point the loader at the wrong weights)."""
@@ -96,14 +115,25 @@ def get_stored_gguf_repo(model: str) -> str | None:
 
 
 def _remember_resolution(model: str, stored: _StoredState) -> None:
-    """Keep this process's last resolved repo/backend/pending for ``model``."""
+    """Keep this process's last resolved repo/backend/pending/files for ``model``."""
     with _lock:
-        _resolved_gguf_memo[model] = (stored[2], stored[3], stored[4])
+        _resolved_gguf_memo[model] = (stored[2], stored[3], stored[4], _files_of(stored[5]))
 
 
-def _remembered(model: str) -> tuple[str | None, str | None, bool] | None:
+def _remembered(model: str) -> tuple[str | None, str | None, bool, list | None] | None:
     with _lock:
         return _resolved_gguf_memo.get(model)
+
+
+def _files_of(resolution: Optional[dict]) -> Optional[list]:
+    """The planned GGUF file family recorded in ``resolution``, if it holds one."""
+    if not isinstance(resolution, dict):
+        return None
+    files = resolution.get("gguf_files")
+    if not isinstance(files, list):
+        return None
+    named = [f for f in files if isinstance(f, str) and f.strip()]
+    return named or None
 
 
 def remembered_gguf_repo(model: str) -> str | None:
@@ -134,6 +164,22 @@ def get_stored_backend(model: str) -> str | None:
     return remembered[1] if remembered else None
 
 
+def get_stored_gguf_files(model: str) -> list | None:
+    """The GGUF file family the picker planned for ``model``, if one was recorded.
+
+    Same staleness-plus-memo rule as the backend. Loaders use it to tell the quant
+    the advertised transfer actually delivered from an unrelated one left in the
+    same repo by an earlier setting. None on records written before it was stored,
+    which is why every consumer has to keep working without it.
+    """
+    stored = _get_stored_state()
+    if stored[1] == model:
+        _remember_resolution(model, stored)
+        return _files_of(stored[5])
+    remembered = _remembered(model)
+    return remembered[3] if remembered else None
+
+
 def get_stored_download_pending(model: str) -> bool:
     """Whether ``model`` was activated before its required transfer finished.
 
@@ -159,23 +205,25 @@ def clear_stored_download_pending(model: str) -> bool:
     stored = _get_stored_state()
     if stored[1] != model or not stored[4]:
         return False
+    expected = stored[5]
+    if not isinstance(expected, dict):
+        # Pre-atomic layout: the flag lives nowhere this can clear.
+        return False
     from storage.studio_db import compare_and_set_app_setting
 
-    expected = {
-        "model": stored[1],
-        "gguf_repo": stored[2],
-        "backend": stored[3],
-        "download_pending": True,
-    }
     # Conditional, not a plain upsert: a save for another model committing between
     # the read and this write would otherwise be reverted onto this resolution.
+    # Comparing the record as read, rather than a rebuilt one, keeps that guard
+    # working across a record whose field set this build does not know about.
     if not compare_and_set_app_setting(
         EMBEDDING_RESOLUTION_SETTING_KEY, expected, {**expected, "download_pending": False}
     ):
         return False
     # Retire the memo with the record, or a pinned job keeps reading pending=True
     # and stays cache-only after the download landed.
-    _remember_resolution(model, (stored[0], stored[1], stored[2], stored[3], False))
+    _remember_resolution(
+        model, (stored[0], stored[1], stored[2], stored[3], False, stored[5])
+    )
     _invalidate_cache()
     return True
 
@@ -217,7 +265,7 @@ def _get_stored_state() -> _StoredState:
             if _cached is not None:
                 _cached = (time.monotonic(), _cached[1])
                 return _cached[1]
-        return (None, None, None, None, False)
+        return (None, None, None, None, False, None)
     override = _coerce_embedding_model(settings.get(EMBEDDING_MODEL_SETTING_KEY))
     resolution = settings.get(EMBEDDING_RESOLUTION_SETTING_KEY)
     resolved_model = repo = backend = None
@@ -233,7 +281,8 @@ def _get_stored_state() -> _StoredState:
         resolved_model = override
         repo = _coerce_embedding_model(settings.get(EMBEDDING_GGUF_SETTING_KEY))
         backend = _coerce_embedding_model(settings.get(EMBEDDING_BACKEND_SETTING_KEY))
-    value: _StoredState = (override, resolved_model, repo, backend, download_pending)
+    raw = resolution if isinstance(resolution, dict) else None
+    value: _StoredState = (override, resolved_model, repo, backend, download_pending, raw)
     with _lock:
         # Only cache when no save landed while we were reading; otherwise this
         # value may be pre-save, and caching it would mask the new one for the
@@ -253,6 +302,7 @@ def set_rag_embedding_model(
     gguf_repo: Any = None,
     backend: Any = None,
     download_pending: bool = False,
+    gguf_files: Any = None,
 ) -> str:
     parsed = validate_embedding_model(value)
     from storage.studio_db import upsert_app_settings
@@ -262,12 +312,14 @@ def set_rag_embedding_model(
     stored = parsed if parsed != default_embedding_model() else None
     repo = _coerce_embedding_model(gguf_repo)
     chosen = _coerce_embedding_model(backend)
+    files = _coerce_gguf_files(gguf_files)
     resolution = (
         {
             "model": parsed,
             "gguf_repo": repo,
             "backend": chosen,
             "download_pending": download_pending is True,
+            "gguf_files": files,
         }
         if repo or chosen or download_pending
         else None
@@ -305,6 +357,7 @@ def reset_rag_embedding_model() -> str:
             "gguf_repo": remembered[0],
             "backend": remembered[1],
             "download_pending": remembered[2],
+            "gguf_files": remembered[3],
         }
     upsert_app_settings(
         {

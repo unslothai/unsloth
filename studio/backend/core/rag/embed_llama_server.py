@@ -472,17 +472,49 @@ class LlamaServerBackend:
             cached = self._resolve_cached_gguf(desired, require_variant = False)
             if cached is not None:
                 # Reaching here means the configured variant is NOT cached (the
-                # strict pass above already returned if it were), so this is some
-                # other quant left by an earlier setting. Serve it rather than
-                # failing the index, but leave the marker set: the transfer the
-                # picker advertised has not landed, and retiring the marker on a
-                # stand-in would keep this model on the wrong quant for good.
+                # strict pass above already returned if it were). Two ways that
+                # happens, and they need opposite answers.
+                if self._is_planned_family(model, cached):
+                    # The repo publishes no such variant, so the picker advertised
+                    # and fetched this quant instead. The advertised transfer is
+                    # complete: retire the marker, or the model stays cache-only
+                    # for the life of the install and a later eviction refuses to
+                    # index something that did finish downloading.
+                    try:
+                        from utils.embedding_model_settings import clear_stored_download_pending
+                        clear_stored_download_pending(model)
+                    except Exception:  # noqa: BLE001 - a settings write must not fail a load
+                        pass
+                # Otherwise it is some other quant left by an earlier setting (or a
+                # record too old to say). Serve it rather than failing the index, but
+                # leave the marker set: the advertised transfer has not landed, and
+                # retiring on a stand-in would keep this model on the wrong quant.
                 return self._adopt_model_path(cached, desired)
             raise RuntimeError(
                 f"Embedding model {model!r} is not downloaded yet. "
                 "Finish its Settings download before indexing documents."
             )
         return self._resolve_uncached_model_path(desired, candidates)
+
+    @staticmethod
+    def _is_planned_family(model: str, path: str) -> bool:
+        """Whether ``path`` is one of the files the picker planned for ``model``.
+
+        Compared by base name: the record holds repo-relative names and the cache
+        lays the same files out under a snapshot directory. False when no family
+        was recorded, which is every resolution written before it was stored, so
+        the caller keeps its conservative answer on those."""
+        try:
+            from pathlib import PurePosixPath
+            from utils.embedding_model_settings import get_stored_gguf_files
+
+            planned = get_stored_gguf_files(model)
+            if not planned:
+                return False
+            names = {PurePosixPath(name).name.casefold() for name in planned}
+            return Path(path).name.casefold() in names
+        except Exception:  # noqa: BLE001 - an unreadable record answers nothing
+            return False
 
     def _adopt_model_path(self, path: str, desired: str) -> str:
         """Serve `path` for `desired`; the width is re-probed against whatever is adopted."""

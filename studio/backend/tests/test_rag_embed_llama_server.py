@@ -1396,6 +1396,30 @@ def test_the_planned_variant_landing_retires_the_pending_marker(monkeypatch, tmp
     assert cleared == ["org/pending"]
 
 
+def test_the_planned_fallback_quant_landing_retires_the_pending_marker(monkeypatch, tmp_path):
+    """A repo publishing no F16 is downloaded as whatever quant it does publish, so
+    the variant-matching pass never recognizes the finished transfer. Left that way
+    the model is cache-only for the life of the install, and a later eviction is
+    refused as "not downloaded" though the advertised download completed."""
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    cleared = []
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    # What the picker planned and the download manager fetched.
+    monkeypatch.setattr(ems, "get_stored_gguf_files", lambda model: ["pending-Q8_0.gguf"])
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda model: cleared.append(model))
+    _seed_cache(tmp_path / "hub", repo, ["pending-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+
+    assert backend._resolve_model_path().endswith("pending-Q8_0.gguf")
+    assert cleared == ["org/pending"]
+
+
 def test_a_pinned_request_serves_the_pinned_models_gguf_not_the_live_setting(monkeypatch):
     """One subprocess serves one GGUF, and the lifecycle read the live setting, so
     a job pinned to A served B's weights while still tagging its vectors A."""
