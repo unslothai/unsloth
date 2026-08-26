@@ -128,7 +128,11 @@ def local_verification_execution_boundary(monkeypatch):
     from core.agent_workspace.execution import ProjectExecutionUnavailable
 
     class LocalVerificationBoundary:
-        def __init__(self, root, expected_identity = None):
+        def __init__(
+            self,
+            root,
+            expected_identity = None,
+        ):
             self.root = Path(root).resolve(strict = True)
             metadata = self.root.stat()
             self.identity = (int(metadata.st_dev), int(metadata.st_ino))
@@ -148,9 +152,7 @@ def local_verification_execution_boundary(monkeypatch):
         def acquire_execution_slot(self, cancel_event = None):
             if self._slot:
                 return True
-            if not execution_module.acquire_workspace_execution_slot(
-                self.identity, cancel_event
-            ):
+            if not execution_module.acquire_workspace_execution_slot(self.identity, cancel_event):
                 return False
             self._slot = True
             return True

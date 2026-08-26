@@ -174,13 +174,9 @@ def test_linux_runtime_socket_trees_are_masked_as_one_private_root(tmp_path):
     masked = execution._linux_masked_roots(home.resolve(), temp.resolve())
 
     for requested in (home.resolve(), temp.resolve()):
-        assert any(
-            requested == hidden or requested.is_relative_to(hidden) for hidden in masked
-        )
+        assert any(requested == hidden or requested.is_relative_to(hidden) for hidden in masked)
     assert not any(
-        child != parent and child.is_relative_to(parent)
-        for child in masked
-        for parent in masked
+        child != parent and child.is_relative_to(parent) for child in masked for parent in masked
     )
     if Path("/run").is_dir():
         run_root = Path("/run").resolve()
