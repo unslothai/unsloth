@@ -292,12 +292,10 @@ def get_rag_embedding_model() -> str:
     """Effective embedding model: persisted override, else env/default."""
     stored = _get_stored_state()
     model = stored[0] or default_embedding_model()
-    # Reading this is how a job pins its model, so record the resolution here.
-    # The memo only protects a pinned job if something populated it before
-    # another model's save takes the one stored record, and until now only the
-    # repo/backend getters did: a worker that pinned A, scanned for a while and
-    # embedded afterwards had nothing memoized, so a save for B in the gap moved
-    # A onto the derived A-GGUF mid-run.
+    # Reading this is how a job pins its model, so record the resolution here: the
+    # memo only protects a pinned job if it was populated before another model's
+    # save takes the one stored record, and the repo/backend getters alone left a
+    # worker that pinned A, scanned, then embedded with nothing memoized.
     if stored[1] == model:
         _remember_resolution(model, stored)
     return model
