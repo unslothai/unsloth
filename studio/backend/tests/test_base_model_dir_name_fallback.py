@@ -107,8 +107,13 @@ def test_a_generated_run_dir_name_parses_back_to_its_model(repo_id, project_name
 def test_the_bare_org_is_never_returned():
     """``unsloth/`` fails huggingface_hub's validate_repo_id, so it must never escape."""
     candidates = [
-        "unsloth_", "unsloth__1771227800", "unsloth___1771227800", "unsloth_1771227800",
-        "unsloth__", "unsloth____", "unsloth_ _1771227800",
+        "unsloth_",
+        "unsloth__1771227800",
+        "unsloth___1771227800",
+        "unsloth_1771227800",
+        "unsloth__",
+        "unsloth____",
+        "unsloth_ _1771227800",
     ]
     assert [n for n in candidates if base_model_from_run_dir_name(n) == "unsloth/"] == []
 
@@ -116,15 +121,15 @@ def test_the_bare_org_is_never_returned():
 @pytest.mark.parametrize(
     "dir_name",
     [
-        "unsloth_ _1771227800",           # space
-        "unsloth_._1771227800",           # bare dot
-        "unsloth_-_1771227800",           # a name may not start or end with '-'
-        "unsloth_..._1771227800",         # '..' is rejected outright
-        "unsloth_--_1771227800",          # so is '--'
-        "unsloth_.git_1771227800",        # a repo id may not end with '.git'
-        "unsloth_a\tb_1771227800",        # control characters
+        "unsloth_ _1771227800",  # space
+        "unsloth_._1771227800",  # bare dot
+        "unsloth_-_1771227800",  # a name may not start or end with '-'
+        "unsloth_..._1771227800",  # '..' is rejected outright
+        "unsloth_--_1771227800",  # so is '--'
+        "unsloth_.git_1771227800",  # a repo id may not end with '.git'
+        "unsloth_a\tb_1771227800",  # control characters
         "unsloth_\n_1771227800",
-        "unsloth_🦥_1771227800",           # not a word character
+        "unsloth_🦥_1771227800",  # not a word character
         "unsloth_" + "a" * 97 + "_1771227800",  # the Hub caps a name at 96 characters
     ],
 )
@@ -149,12 +154,34 @@ def test_the_transcribed_repo_id_rule_is_never_looser_than_the_hubs():
             return False
 
     names = [
-        "Qwen3-8B", "llama_3_8b", "_Qwen3-8B", "x__project-y", "20260101", "a", "a" * 96,
-        "a" * 97, ".git", "a.git", "x--y", "x..y", "-x", "x-", ".x", "x.", "x_", "🦥", "",
-        " ", "a b", "a\tb", "Café-8B", "a-b.c_d",
+        "Qwen3-8B",
+        "llama_3_8b",
+        "_Qwen3-8B",
+        "x__project-y",
+        "20260101",
+        "a",
+        "a" * 96,
+        "a" * 97,
+        ".git",
+        "a.git",
+        "x--y",
+        "x..y",
+        "-x",
+        "x-",
+        ".x",
+        "x.",
+        "x_",
+        "🦥",
+        "",
+        " ",
+        "a b",
+        "a\tb",
+        "Café-8B",
+        "a-b.c_d",
     ]
     looser = [
-        n for n in names
+        n
+        for n in names
         if base_model_from_run_dir_name(f"unsloth_{n}_1771227800") is not None
         and not hub_accepts(n)
     ]
@@ -220,9 +247,9 @@ def test_a_trailing_separator_does_not_change_the_answer(tmp_path):
 # _resolve_base_model is reached *through* get_base_model_from_lora, so while it kept its own
 # copy of the parse it rebuilt the bogus id one branch after the fixed function returned None.
 
+
 def test_the_transformers_resolvers_agree_with_the_model_config_one(tmp_path):
     from utils.transformers_version import _resolve_base_model, recorded_local_base
-
     for dir_name in ("unsloth_Qwen3-8B", "unsloth_llama_3_8b", "unsloth_Qwen3-8B_1771227800"):
         expected = base_model_from_run_dir_name(dir_name)
 
