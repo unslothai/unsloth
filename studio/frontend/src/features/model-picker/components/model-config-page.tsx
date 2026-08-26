@@ -17,6 +17,7 @@ import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
+  readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   resolveStagedDiffusionClassification,
   useChatRuntimeStore,
@@ -42,7 +43,13 @@ import {
   pinnableGpuContext,
   reconcileGpuSelection,
   useGpuDevices,
+  useInferenceGpuInfo,
 } from "@/hooks/use-gpu-info";
+import {
+  DEFAULT_VRAM_FRACTION,
+  aggregateUsableFreeVramGb,
+  resolveMemoryCapacityGb,
+} from "@/hooks/gpu-vram";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
@@ -52,6 +59,7 @@ import {
   type Ref,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -67,6 +75,16 @@ import {
   loadManagedLlamaFlags,
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
+import { type MemoryEstimate } from "../api/memory-estimate";
+import { resolveEstimateContext } from "../model-config/estimate-context";
+import {
+  type MemoryFitVerdict,
+  formatMemoryGb,
+  resolveDraftCacheNote,
+  resolveKvNote,
+  resolveMemoryFit,
+} from "../model-config/memory-fit";
+import { useMemoryEstimate } from "../hooks/use-memory-estimate";
 import {
   fetchLoadModelOverride,
   fromApiOverride,
@@ -886,6 +904,226 @@ function AdvancedSettingsToggle({
         onCheckedChange={onCheckedChange}
         aria-label="Show advanced settings"
       />
+    </div>
+  );
+}
+
+const MEMORY_VALUE_TONE: Record<MemoryFitVerdict, string> = {
+  fits: "text-nav-fg",
+  tight: "text-amber-500",
+  exceeds: "text-red-500",
+  unknown: "text-nav-fg",
+};
+
+/** One "GPU 29.41 GB" pill: dim caption, figure on the shared control surface. */
+function MemoryFigure({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: string;
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-1.5">
+      <span className="text-ui-11 font-medium leading-none tracking-nav text-muted-foreground">
+        {label}
+      </span>
+      <span
+        className={`inline-flex h-6 items-center ${CONTROL_SURFACE} px-2 text-ui-12 font-medium tabular-nums ${tone ?? "text-nav-fg"}`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function MemoryBreakdownLine({
+  label,
+  value,
+  note,
+  muted,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+  muted?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="min-w-0 text-ui-11 leading-relaxed text-muted-foreground">
+        {label}
+        {note ? (
+          <span className="ml-1 text-muted-foreground/70">{note}</span>
+        ) : null}
+      </span>
+      <span
+        className={`shrink-0 text-ui-11 tabular-nums ${muted ? "text-muted-foreground" : "text-nav-fg"}`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * "Estimated Memory Usage": what the settings above would cost, before they are run.
+ *
+ * Figures come from the loader's own sizing, not a weights-times-a-constant rule of
+ * thumb, which stops working the moment the KV cache is no longer a rounding error.
+ * So KV gets its own line, and when the header cannot size it the row quotes a floor
+ * instead of a confident total.
+ */
+function MemoryEstimateRow({
+  estimate,
+  loading,
+  stale,
+  gpuCapacityGb,
+  totalCapacityGb,
+  systemRamCapacityGb,
+  freeGpuCapacityGb,
+  usableSystemRamGb,
+  isUnifiedMemory,
+  singleMemoryPool,
+  expanded,
+  onExpandedChange,
+}: {
+  estimate: MemoryEstimate | null;
+  loading: boolean;
+  stale: boolean;
+  /** VRAM available, or the shared pool where there is only one. 0 when unknown. */
+  gpuCapacityGb: number;
+  /** GPU plus host RAM, the ceiling an offloaded load works against. 0 when unknown. */
+  totalCapacityGb: number;
+  /** Host RAM alone. The bytes a load pins OUTSIDE the GPU have to fit in this, and
+   *  unused VRAM cannot help them, so it is a separate question from the total. */
+  systemRamCapacityGb: number;
+  /** VRAM free on the usable cards right now. Warns only: see the note at the call
+   *  site for why this may not refuse a load. 0 when nothing was probed. */
+  freeGpuCapacityGb: number;
+  /** Host RAM the machine can hand out right now, less the reserve the loader keeps.
+   *  Warns only, for the same reason the free-VRAM figure does. 0 when unknown. */
+  usableSystemRamGb: number;
+  isUnifiedMemory: boolean;
+  /** GPU and host draw on the same memory, so an offloaded byte is not a freed one. */
+  singleMemoryPool: boolean;
+  expanded: boolean;
+  onExpandedChange: (next: boolean) => void;
+}) {
+  const contentId = useId();
+  if (!estimate?.available) {
+    // Nothing honest to show. Silent while loading too, so the row does not flicker.
+    return null;
+  }
+  // Every verdict and the one advisory paragraph, resolved in ../model-config/memory-fit.
+  // Kept out of this file so the node test runner can reach it: the chain is long, the
+  // cases it distinguishes are all hardware shapes nobody has on the desk, and while it
+  // lived here an arm that could never be taken shipped unnoticed.
+  const { gpuFit, totalFit, prefix, advisory } = resolveMemoryFit(estimate, {
+    gpuCapacityGb,
+    totalCapacityGb,
+    systemRamCapacityGb,
+    freeGpuCapacityGb,
+    usableSystemRamGb,
+    singleMemoryPool,
+  });
+  const kvNote = resolveKvNote(estimate);
+  const draftCacheNote = resolveDraftCacheNote(
+    estimate.drafterRuntimeGpuBytes,
+    estimate.drafterRuntimeBytes,
+  );
+  return (
+    <div className="space-y-2">
+      <div className={ROW_CLASS}>
+        <button
+          type="button"
+          onClick={() => onExpandedChange(!expanded)}
+          aria-expanded={expanded}
+          aria-controls={contentId}
+          className="flex min-w-0 items-center gap-1.5 rounded-sm text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <span className={LABEL_CLASS}>Estimated Memory Usage</span>
+          <span className="shrink-0 rounded-full bg-black/[0.06] px-1.5 py-px text-ui-10 font-medium uppercase leading-[1.4] tracking-wider text-muted-foreground dark:bg-white/[0.08]">
+            Beta
+          </span>
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
+            className={`size-3 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`}
+            strokeWidth={1.75}
+          />
+        </button>
+        <div
+          className={`flex shrink-0 items-center gap-3 transition-opacity ${stale || loading ? "opacity-50" : ""}`}
+        >
+          {/* One pool: offloading a layer moves it within the same memory rather
+              than out of it, so the honest single figure is the total. Reporting
+              the GPU share here let a zero-layer load read as almost free. */}
+          <MemoryFigure
+            label={singleMemoryPool ? (isUnifiedMemory ? "Unified" : "Shared") : "GPU"}
+            value={`${prefix}${formatMemoryGb(
+              singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes,
+            )}`}
+            tone={MEMORY_VALUE_TONE[singleMemoryPool ? totalFit : gpuFit]}
+          />
+          {singleMemoryPool ? null : (
+            <MemoryFigure
+              label="Total"
+              value={`${prefix}${formatMemoryGb(estimate.totalBytes)}`}
+              tone={MEMORY_VALUE_TONE[totalFit]}
+            />
+          )}
+        </div>
+      </div>
+      {expanded && (
+        <div id={contentId} className="space-y-1 pl-0.5">
+          <MemoryBreakdownLine
+            label="Weights"
+            value={formatMemoryGb(estimate.weightsBytes)}
+            note={
+              estimate.gpuLayers != null && estimate.layerCount != null
+                ? `${estimate.gpuLayers} of ${estimate.layerCount + 1} layers on GPU`
+                : undefined
+            }
+          />
+          <MemoryBreakdownLine
+            label="KV cache"
+            value={
+              estimate.kvEstimable ? formatMemoryGb(estimate.kvBytes) : "unknown"
+            }
+            note={estimate.kvEstimable ? kvNote : undefined}
+            muted={!estimate.kvEstimable}
+          />
+          <MemoryBreakdownLine
+            label="Compute buffers"
+            value={formatMemoryGb(estimate.computeBytes)}
+          />
+          {/* The encoder's buffers, which run about 1.3x the projector file. Only on a
+              vision load, and named separately since the file is already in Weights. */}
+          {estimate.projectorRuntimeBytes > 0 && (
+            <MemoryBreakdownLine
+              label="Vision encoder"
+              value={formatMemoryGb(estimate.projectorRuntimeBytes)}
+            />
+          )}
+          {/* Only when speculation loads a separate drafter, and it is the term most
+              likely to surprise: its cache grows with context like the target's. */}
+          {estimate.drafterRuntimeBytes > 0 && (
+            <MemoryBreakdownLine
+              label="Draft cache"
+              value={formatMemoryGb(estimate.drafterRuntimeBytes)}
+              note={draftCacheNote}
+            />
+          )}
+        </div>
+      )}
+      {advisory && (
+        <p
+          className={`text-ui-11 leading-relaxed ${advisory.tone === "warn" ? "text-amber-500" : "text-muted-foreground"}`}
+        >
+          {advisory.text}
+        </p>
+      )}
     </div>
   );
 }
@@ -1815,6 +2053,11 @@ export function ModelConfigPage({
   const rememberRef = useRef(remember);
   rememberRef.current = remember;
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
+  // Same substitution as speculativeFallback, for the same reason: only "manual" is
+  // persisted per model, so an absent mode means "follow the standing preference"
+  // rather than Auto. applyPerModelConfigToRuntime resolves it that way at load, so
+  // pricing the absence as Auto rated a Manual launch against the wrong plan.
+  const [gpuMemoryModeFallback] = useState(readPersistedGpuMemoryMode);
   const [templateOpen, setTemplateOpen] = useState(false);
   // Raised by the extra-arguments row when what is typed is something
   // validate_extra_args would refuse, so the load is not started to fail. Held by
@@ -2397,6 +2640,9 @@ export function ModelConfigPage({
     target.meta.contextLength ?? stagedDims?.contextLength ?? null;
   const activeLoadedContext =
     isActiveModel && target.isGguf ? loadedContextLength : null;
+  // resolveLoadMaxSeqLength returns 0 for a builtin-default GGUF load before it looks
+  // at the resident context, so the estimate must not fall back to it either.
+  const activePresetSource = useChatRuntimeStore((s) => s.activePresetSource);
   const minContext = CONTEXT_LENGTH_MIN;
   const maxContext = Math.max(
     minContext,
@@ -2483,6 +2729,154 @@ export function ModelConfigPage({
       ? { ...loadableConfig, customContextLength: activeLoadedContext }
       : loadableConfig
     : loadableConfig;
+  const runtimeGpuMemoryMode =
+    runtimeConfig.gpuMemoryMode ?? gpuMemoryModeFallback;
+  // Priced against the config that would actually load, at the context on screen, so
+  // the figures answer for what the Load button will do. Diffusion stands down: its
+  // runner allocates on a different plan than llama-server's.
+  //
+  // The tri-state is read as a tri-state here, not through resolvedIsDiffusion, which
+  // folds "not yet classified" in with "not diffusion". A GGUF whose classification is
+  // still in flight may be DiffusionGemma, and starting the llama-server estimate on
+  // that guess paints a footprint from the wrong allocation plan -- one that stays on
+  // screen indefinitely if the classifying probe never answers, since the tri-state
+  // then never leaves undefined. Waiting costs a moment of no row; guessing costs a
+  // confident wrong number, which is the trade this whole panel is written around.
+  const memoryEstimateRequest =
+    target.isGguf && classifiedIsDiffusion === false
+      ? {
+          modelPath: target.id,
+          ggufVariant: target.ggufVariant ?? null,
+          hfToken: hfToken || null,
+          nativePathToken,
+          // The context the Load button sends, not the one the control displays: an
+          // unset length with no header yet shows 32,768 and loads at native.
+          nCtx: resolveEstimateContext(
+            runtimeConfig.customContextLength ?? null,
+            activeLoadedContext,
+            // The two shapes where resolveLoadMaxSeqLength answers 0 before it
+            // reaches the resident context: --fit owns the sizing, or a
+            // builtin-default preset on a GGUF load.
+            (target.isGguf === true &&
+              runtimeGpuMemoryMode === "manual" &&
+              (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0) ||
+              (target.isGguf === true && activePresetSource === "builtin-default"),
+          ),
+          cacheTypeKv: runtimeConfig.kvCacheDtype,
+          nParallel: runtimeConfig.nParallel,
+          nBatch: runtimeConfig.nBatch,
+          nUbatch: runtimeConfig.nUbatch,
+          ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
+          // The same substitution applyPerModelConfigToRuntime makes at load: a model
+          // with no per-model override sends null, which the backend reads as Auto,
+          // while the selector has been showing the global fallback all along. With
+          // the global set to Off and an 11 GB DSpark sidecar in the repo, the row
+          // charged the sidecar for a load that disables it.
+          speculativeType: runtimeConfig.speculativeType ?? speculativeFallback ?? null,
+          specDraftNMax: runtimeConfig.specDraftNMax,
+          specDraftCacheType: runtimeConfig.specDraftCacheDtype ?? null,
+          tensorParallel: runtimeConfig.tensorParallel,
+          disableVision: runtimeConfig.disableVision,
+          gpuMemoryMode: runtimeGpuMemoryMode,
+          gpuLayers:
+            runtimeConfig.gpuLayers != null &&
+            runtimeConfig.gpuLayers !== GPU_LAYERS_AUTO
+              ? runtimeConfig.gpuLayers
+              : null,
+          nCpuMoe: runtimeConfig.nCpuMoe ?? null,
+          selectedGpuIds: runtimeConfig.selectedGpuIds ?? null,
+          llamaExtraArgs: runtimeConfig.llamaExtraArgs ?? null,
+        }
+      : null;
+  const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
+  const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
+  const inferenceGpu = useInferenceGpuInfo();
+  // A pin can only draw on the cards it names, so the verdict is measured against
+  // those. Judging a one-card pin against a two-card total called an 8 GB load a fit
+  // on 16 GB of VRAM it could not reach.
+  const pinnedGpuIds = runtimeConfig.selectedGpuIds;
+  // The VRAM Budget slider sits in this same panel and caps what the next load may
+  // claim per GPU, so the verdict has to be measured against the capped figure or the
+  // row contradicts the control directly above it. Subscribed as well as read once:
+  // dragging that slider must re-classify without a remount.
+  // Seeded with the loader's own default rather than a full card. The read is async
+  // and returns null on failure -- an older backend has no such route -- and in both
+  // windows the launch still applies VRAM_FRACTION_DEFAULT. Starting at 1 claimed a
+  // reserve no setting of that slider ever gives back, so the row read a hair
+  // optimistic until the answer arrived and stayed there if it never did.
+  const [memoryVramBudgetFraction, setMemoryVramBudgetFraction] =
+    useState(DEFAULT_VRAM_FRACTION);
+  useEffect(() => {
+    let cancelled = false;
+    loadVramBudgetSettings().then((loaded) => {
+      if (!cancelled && loaded) {
+        setMemoryVramBudgetFraction(loaded.fraction);
+      }
+    });
+    const unsubscribe = subscribeVramBudgetSettings((next) => {
+      setMemoryVramBudgetFraction(next.fraction);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+  // What is free RIGHT NOW on the cards this load may use. _select_gpus admits on
+  // free-minus-reserve, not on the cards' totals, so a training run or another process
+  // holding VRAM changes what will actually happen to this load.
+  //
+  // Used to WARN, never to refuse. The bytes a pending load reclaims -- the resident
+  // chat model's own, which Studio unloads first -- cannot be attributed per device
+  // from here, so raw free memory would call a reload of the loaded model impossible.
+  // Capping the free-based verdict at "tight" is honest under both readings: either
+  // something else really is holding the card, or it is about to be given back.
+  // A fixed Manual placement is launched verbatim: load_model empties its probed GPU
+  // set (gpus = []) and emits --gpu-layers N --fit off, so the server-wide VRAM Budget
+  // never reaches the planner and cannot shrink this load. Discounting capacity by it
+  // there labelled placements that will load fine as exceeding -- a 16 GiB fixed
+  // placement on a 24 GiB card reads as over budget at 50%. Auto is still budgeted,
+  // because Auto is exactly the mode that hands the decision to the planner.
+  const memoryBudgetGovernsLaunch =
+    runtimeGpuMemoryMode !== "manual" ||
+    (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0;
+  const memoryEffectiveBudgetFraction = memoryBudgetGovernsLaunch
+    ? memoryVramBudgetFraction
+    : 1;
+  const memoryFreeGpuCapacityGb = useMemo(() => {
+    const pinned =
+      pinnedGpuIds && pinnedGpuIds.length > 0
+        ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
+        : gpuDevices;
+    // Per device, and by the loader's absolute-reserve rule rather than a
+    // multiplication: the budget is subtracted from the card, not applied to what
+    // happens to be free, and the two agree only on an idle one.
+    //
+    // Aggregated with the same count-the-shared-pool-once rule the TOTALS use. A
+    // plain sum over a mixed inventory counted the iGPU's share of host RAM a second
+    // time, and this figure is what freeGpuFit -- and through it the fit verdict --
+    // is measured against.
+    // The reserve keeps its budget-derived floor even for a fixed Manual placement:
+    // what is free right now still constrains the launch, whatever set the number.
+    return aggregateUsableFreeVramGb(pinned, memoryEffectiveBudgetFraction);
+  }, [gpuDevices, pinnedGpuIds, memoryEffectiveBudgetFraction]);
+  const {
+    gpuCapacityGb: memoryGpuCapacityGb,
+    totalCapacityGb: memoryTotalCapacityGb,
+    singleMemoryPool,
+  } = resolveMemoryCapacityGb({
+      gpuBudgetFraction: memoryEffectiveBudgetFraction,
+      pinnedDevices:
+        pinnedGpuIds && pinnedGpuIds.length > 0
+          ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
+          : [],
+      hostDevices: gpuDevices,
+      hostGpuTotalGb: inferenceGpu.memoryTotalGb,
+      hostDedicatedGpuTotalGb: inferenceGpu.dedicatedMemoryTotalGb,
+      hostSharesSystemRam: inferenceGpu.sharedMemory,
+      systemRamTotalGb: inferenceGpu.systemRamTotalGb,
+      unifiedMemory: isUnifiedMemory,
+    });
+
   const rememberChanged = remember !== savedRemember;
   const persistenceOnly = isActiveModel && atBaseline && rememberChanged;
   const primaryActionLabel = persistenceOnly
@@ -2700,6 +3094,34 @@ export function ModelConfigPage({
       <div className="space-y-3.5">
         {target.isGguf && (
           <>
+            {/* Above Context Length on purpose: that is the control moving this
+                number most, and a readout below it is one you go looking for. */}
+            <MemoryEstimateRow
+              estimate={memoryEstimate.estimate}
+              loading={memoryEstimate.loading}
+              stale={memoryEstimate.stale}
+              gpuCapacityGb={memoryGpuCapacityGb}
+              totalCapacityGb={memoryTotalCapacityGb}
+              systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
+              freeGpuCapacityGb={memoryFreeGpuCapacityGb}
+              usableSystemRamGb={Math.max(
+                0,
+                // _HOST_RAM_HEADROOM_MIB: the 2 GiB the loader keeps for the rest of
+                // the system before it will admit an offloaded load.
+                //
+                // The HOST reading, not the sum-shaped one beside it. That one is
+                // zeroed whenever ANY device on the machine shares system RAM, which
+                // is every dGPU + iGPU box, so this figure was permanently 0 there
+                // and the host-pressure advisory could not fire even under a pin on
+                // the discrete card -- exactly the case where host RAM really is a
+                // separate pool.
+                (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
+              )}
+              isUnifiedMemory={isUnifiedMemory}
+              singleMemoryPool={singleMemoryPool}
+              expanded={memoryBreakdownOpen}
+              onExpandedChange={setMemoryBreakdownOpen}
+            />
             <div className="space-y-3">
               <div className={ROW_CLASS}>
                 <div className="flex min-w-0 items-center gap-1.5">

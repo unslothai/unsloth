@@ -1230,6 +1230,15 @@ export const ptBR = {
       docs: "Documentação",
       agentDocs: "Abrir a documentação de configuração do {agent}",
       copyGeneratedCommand: "Copiar comando gerado",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "O Codex exige um modelo GGUF servido pelo llama-server. Outros agentes também podem usar modelos baseados em transformers; remova --model para usar o modelo já carregado no Unsloth.",
       subagent: {

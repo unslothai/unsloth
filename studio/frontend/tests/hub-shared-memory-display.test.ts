@@ -15,7 +15,7 @@ const modelsHeader = readFileSync(
 );
 
 test("Model Hub separates dedicated VRAM from shared GPU memory", () => {
-  assert.match(hubPage, /gpu\.memoryDedicatedGb/);
+  assert.match(hubPage, /gpu\.dedicatedMemoryTotalGb/);
   assert.match(hubPage, /gpu\.memorySharedGb/);
   assert.match(hubPage, /gpuSharedLabel=\{gpuSharedLabel\}/);
   assert.match(modelsHeader, /`\$\{gpuLabel\} VRAM \+ \$\{gpuSharedLabel\}`/);

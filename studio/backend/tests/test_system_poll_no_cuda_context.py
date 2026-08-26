@@ -1030,6 +1030,22 @@ def test_rocm_apu_keeps_the_carve_out_when_the_driver_total_fails(monkeypatch):
     assert inventory["shared_memory"] is False
 
 
+def test_windows_rocm_apu_keeps_shared_scope_when_driver_total_fails(monkeypatch):
+    mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
+
+    def _fail(o):
+        raise RuntimeError("hipMemGetInfo unavailable")
+
+    mod.mem_get_info = _fail
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    inventory = hw._torch_get_device_inventory([0])[0]
+    assert inventory["total_gb"] == 100.0
+    assert inventory["shared_memory"] is True
+    assert inventory["shared_memory_host_backed_gb"] is None
+
+
 @pytest.mark.parametrize(("system", "expected_shared"), [("Linux", False), ("Windows", True)])
 def test_rocm_apu_equal_driver_total_scope_is_platform_specific(
     monkeypatch, system, expected_shared
@@ -1121,6 +1137,23 @@ def test_linux_rocm_shared_pool_declines_ambiguous_masks(monkeypatch, ambiguous_
     devices = [{"index": 0, "total_gb": 100.0, "_rocm_known_unified": True}]
 
     assert hw._rocm_linux_shared_pool_host_gb_by_index(devices) == {}
+
+
+def test_linux_rocm_shared_pool_maps_lone_uuid_mask(monkeypatch):
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("GPU_DEVICE_ORDINAL", raising = False)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "GPU-DEADBEEFDEADBEEF")
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    monkeypatch.setattr(
+        hw,
+        "_rocm_linux_sysfs_vram_by_pci_gb",
+        lambda: {"0000:03:00.0": (1.0, 8.0)},
+    )
+    devices = [{"index": 0, "total_gb": 100.0, "_rocm_known_unified": True}]
+
+    assert hw._rocm_linux_shared_pool_host_gb_by_index(devices) == {0: 92.0}
 
 
 def test_rocm_apu_sysfs_overlay_still_declines_against_the_gtt_total(monkeypatch):

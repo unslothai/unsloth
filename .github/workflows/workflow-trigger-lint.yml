@@ -138,6 +138,7 @@ jobs:
             tests/studio/test_ui_shard_engines.py \
             tests/studio/test_zoo_suite_parallel_isolation.py \
             tests/studio/test_ci_shell_suite_coverage.py \
+            tests/studio/test_pip_cache_naming.py \
             tests/studio/test_compile_caches_are_per_worker.py \
             tests/studio/test_composer_rtl_bidi_attribute.py \
             tests/studio/test_frontend_dep_removal.py \
@@ -153,7 +154,6 @@ jobs:
             tests/studio/test_macos_slots_per_commit.py \
             tests/studio/test_main_runs_survive_merge_bursts.py \
             tests/studio/test_pester_bootstrap_hardening.py \
-            tests/studio/test_pip_cache_naming.py \
             tests/studio/test_playwright_suites_run_in_ci.py \
             tests/studio/test_sdk_installs_are_major_bounded.py \
             tests/studio/test_short_job_absorption.py \
@@ -165,3 +165,4 @@ jobs:
             tests/studio/test_windows_ui_lanes_are_isolated.py \
             tests/studio/test_workflow_guards_run_unfiltered.py \
             tests/security
+

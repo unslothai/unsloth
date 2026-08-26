@@ -1288,7 +1288,7 @@ export function ModelsPage() {
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
 
   const gpuLabel = gpu.available
-    ? `${Math.round(gpu.memoryDedicatedGb)} GiB`
+    ? `${Math.round(gpu.dedicatedMemoryTotalGb)} GiB`
     : "Unavailable";
   const gpuSharedLabel =
     gpu.available && gpu.memorySharedGb > 0

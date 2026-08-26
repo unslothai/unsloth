@@ -1781,12 +1781,12 @@ def test_the_windows_path_is_inert_off_windows(win_rocm, monkeypatch, system):
 
 
 # ----------------------------------------------------------------------------- #
-# an APU the shared classifier cannot name without the exact-arch extension
+# an apu the shared classifier cannot name without the exact-arch extension
 #
 # _rocm_classify_unified_memory names an APU from hipDeviceProp_t::integrated or
 # from the shared-pool arch set that drives the memory-fraction cap. A gfx1103
-# phoenix iGPU on a runtime that leaves the flag at 0 is in neither, while on
-# windows PAL has already
+# phoenix igpu on a runtime that leaves the flag at 0 is in neither, while on
+# windows pal has already
 # added the WDDM shared heap to globalMemSize_ for it, because that inflation
 # keys off Pal::GpuType::Integrated and not off what the props struct reports.
 #

@@ -47,7 +47,7 @@ import {
 } from "../lib/per-model-params";
 import {
   type ChatLoraSummary,
-  type ChatModelSummary,
+  type ChatModelRow,
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
@@ -959,6 +959,14 @@ function heldThreadScopedParamValue(key: string): unknown {
 }
 
 /**
+ * The first value that is actually set. `??` cannot do this any more: `seed` is null when
+ * the pin is cleared, and null there is the chat's own choice rather than a missing key.
+ */
+function firstSetThreadScopedValue(...values: unknown[]): unknown {
+  return values.find((value) => value !== undefined);
+}
+
+/**
  * Put back the sampling keys the open chat owns, so a model load or status poll applying
  * that model's recommendation leaves the chat running on what it stored. Only an unpinned
  * chat falls through to the model's values.
@@ -966,8 +974,12 @@ function heldThreadScopedParamValue(key: string): unknown {
 function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
   const kept: Record<string, unknown> = {};
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
-    // ?? and not ||: 0, "" and -1 are all values a user sets on purpose here.
-    const held = heldThreadScopedParamValue(key) ?? threadScopedOverride(key);
+    // Not ||, and not ?? either: 0, "", -1 and a cleared seed's null are all values a
+    // user sets on purpose here.
+    const held = firstSetThreadScopedValue(
+      heldThreadScopedParamValue(key),
+      threadScopedOverride(key),
+    );
     if (held === undefined || isSameThreadScopedValue(held, params[key])) {
       continue;
     }
@@ -1005,10 +1017,11 @@ function withoutActiveThreadParams(
     if (held === undefined && threadScopedOverride(key) === undefined) continue;
     // For a held key the installation copy can still be null and the store no longer
     // holds the pre-edit value; the sample taken when the window opened is that value.
-    const own =
-      remembered?.[key] ??
-      globalThreadScopedDefaults?.[key] ??
-      (held !== undefined ? pairingWindowDefaults?.[key] : undefined);
+    const own = firstSetThreadScopedValue(
+      remembered?.[key],
+      globalThreadScopedDefaults?.[key],
+      held !== undefined ? pairingWindowDefaults?.[key] : undefined,
+    );
     if (own === undefined || isSameThreadScopedValue(own, params[key])) {
       continue;
     }
@@ -2415,7 +2428,7 @@ type ChatRuntimeStore = {
   customPresets: Preset[];
   activePreset: string;
   activePresetSource: ChatPresetSource;
-  models: ChatModelSummary[];
+  models: ChatModelRow[];
   loras: ChatLoraSummary[];
   runningByThreadId: Record<string, boolean>;
   /**
@@ -2791,7 +2804,7 @@ type ChatRuntimeStore = {
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
   setActivePresetSource: (source: ChatPresetSource) => void;
-  setModels: (models: ChatModelSummary[]) => void;
+  setModels: (models: ChatModelRow[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   /**
      * `local` defaults to true, so an unqualified caller still counts for the model-swap gate.
@@ -4404,7 +4417,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           continue;
         }
         // a key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
-        const value = stored?.[key] ?? globalThreadScopedDefaults?.[key];
+        const value = firstSetThreadScopedValue(
+          stored?.[key],
+          globalThreadScopedDefaults?.[key],
+        );
         if (value === undefined) continue;
         applied[key] = value;
         if (isSameThreadScopedValue(value, readThreadScopedValue(state, key))) {

@@ -1574,7 +1574,7 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
             props_total_bytes = int(props.total_memory)
             total_bytes = props_total_bytes
             known_unified = _rocm_props_are_positively_unified(props)
-            shared_memory = False
+            shared_memory = known_unified and platform.system() == "Windows"
             shared_memory_host_backed_bytes = None
             try:
                 if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
@@ -3310,7 +3310,16 @@ def _rocm_linux_sysfs_vram_by_index(
     if not pci_by_ordinal:
         return {}
     if _rocm_visibility_mask_active():
-        if not allow_numeric_mask or not _rocm_single_numeric_mask_matches(devices):
+        unambiguous_single = (
+            allow_numeric_mask
+            and len(devices) == 1
+            and len(pci_by_ordinal) == 1
+            and not _rocm_device_ordinal_active()
+            and not _rocm_visibility_masks_are_stacked()
+        )
+        if not unambiguous_single and (
+            not allow_numeric_mask or not _rocm_single_numeric_mask_matches(devices)
+        ):
             return {}
     elif len(devices) != len(pci_by_ordinal):
         return {}

@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-// #9242: a Windows ROCm system with a discrete GPU and an iGPU using shared
-// memory showed the SUM (28 GiB) as "VRAM". The aggregate stays the
-// denominator for usage math, but the halves must be derivable separately so
-// the caption can read "16 GiB VRAM + 12 GiB shared".
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -18,8 +13,8 @@ import {
 
 test("dedicated and shared split the aggregate (#9242)", () => {
   const devices = [
-    { memory_total_gb: 15.92 }, // RX 9060 XT: dedicated
-    { memory_total_gb: 12.15, shared_memory: true }, // iGPU: shared pool
+    { memory_total_gb: 15.92 },
+    { memory_total_gb: 12.15, shared_memory: true },
   ];
   const { dedicated, shared } = gpuMemoryTotalsGb(devices);
   const aggregate = aggregateGpuMemoryTotalGb(devices);
