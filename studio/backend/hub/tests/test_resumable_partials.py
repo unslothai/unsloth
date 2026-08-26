@@ -196,7 +196,7 @@ def test_the_known_local_filesystems_are_local(tmp_path, monkeypatch):
 
 
 def test_each_cache_root_is_judged_on_its_own_filesystem(tmp_path, monkeypatch):
-    """Studio remembers several cache roots and they need not lock alike.
+    """Unsloth remembers several cache roots and they need not lock alike.
 
     One global verdict taken from the selected cache would have the boot sweep delete a local
     cache's still-appendable partials whenever the selected one sits on a network mount.
@@ -269,7 +269,7 @@ def test_only_contention_counts_as_a_working_lock(tmp_path, monkeypatch):
 def test_the_probe_does_not_follow_a_planted_symlink(tmp_path):
     """A shared cache is writable by others, and a predictable probe name is a truncation gadget.
 
-    Plants a symlink at the name a pid-based scheme would pick, pointing at a file the Studio
+    Plants a symlink at the name a pid-based scheme would pick, pointing at a file the Unsloth
     account owns. Opening that path "wb" follows the link and empties the target, so the probe has
     to use a name nobody can guess and create it exclusively.
     """

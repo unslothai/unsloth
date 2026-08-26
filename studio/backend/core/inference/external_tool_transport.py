@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Transport that drives the shared Studio tool loop over any external provider.
+"""Transport that drives the shared Unsloth tool loop over any external provider.
 
 ``ExternalProviderClient.stream_chat_completion`` is the single point every
 external provider passes through: the OpenAI-compatible route yields its lines

@@ -903,7 +903,7 @@ export const ptBR = {
         tokensIn: "Tokens enviados",
         tokensOut: "Tokens gerados",
         totalTokens: "Total de tokens",
-        studioChatTokens: "Tokens do Studio Chat",
+        studioChatTokens: "Tokens do Unsloth Chat",
         apiTokens: "Tokens da API",
         cachedTokens: "Tokens em cache",
         cachedValue: "{tokens} ({percent}% da entrada)",
@@ -1354,7 +1354,7 @@ export const ptBR = {
         title: "Busca na web",
         images: "Mostrar imagens da busca na web",
         imagesDescription:
-          "Permite que a busca na web retorne imagens e busca uma para cada item que uma resposta lista. As miniaturas são baixadas e redimensionadas pelo Studio, então o navegador nunca acessa os servidores de imagens.",
+          "Permite que a busca na web retorne imagens e busca uma para cada item que uma resposta lista. As miniaturas são baixadas e redimensionadas pelo Unsloth, então o navegador nunca acessa os servidores de imagens.",
       },
       artifacts: {
         title: "Canvas",

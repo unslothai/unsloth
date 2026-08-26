@@ -162,7 +162,7 @@ def public_check_disabled() -> bool:
     """True when the operator has turned off the third-party startup lookups.
 
     On a wildcard bind Unsloth asks ifconfig.me for the public IP and check-host.net
-    whether the port is reachable. Both are useful for sharing a Studio but both tell
+    whether the port is reachable. Both are useful for sharing an Unsloth but both tell
     an outside service this machine is running one, which lab and privacy-sensitive
     deployments do not want (#7307 Problem 8). Set the var to opt out.
     """
@@ -352,7 +352,7 @@ def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
 
     print(
         f"{warn_c}  Warning: localhost resolves to IPv6 (::1), but Unsloth "
-        f"Studio is listening on 127.0.0.1 only. Open {local_url} instead of "
+        f"Unsloth is listening on 127.0.0.1 only. Open {local_url} instead of "
         f"http://localhost:{port}.{reset}",
         flush = True,
     )
@@ -539,9 +539,9 @@ def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]")
         return "Server-side tools are DISABLED (--disable-tools)."
     if enable_tools is None:
         # This launcher installs no tools-on default (that is `unsloth studio
-        # run`), so the request decides and the Studio UI sends its pills.
+        # run`), so the request decides and the Unsloth UI sends its pills.
         return (
-            "Server-side tools follow each request's enable_tools; the Studio UI's "
+            "Server-side tools follow each request's enable_tools; the Unsloth UI's "
             "tool toggles decide. Pass --enable-tools to force them on for every "
             "request."
         )
@@ -1219,7 +1219,7 @@ def _live_sibling(records: "list", me: int, timed: "list") -> "int | None":
 
 
 def live_sibling_backend() -> "int | None":
-    """PID of another live Studio backend of this install, or None.
+    """PID of another live Unsloth backend of this install, or None.
 
     Two of ours at once is a supported configuration: `_resolve_port` refuses
     only the port one of ours already holds, and `_abort_already_running` tells
@@ -1846,7 +1846,7 @@ def _is_missing_watch_fd_thread(exc):
 
 
 def _harden_console_close(stream):
-    """Stop a displaced console stream's close() from aborting Studio startup.
+    """Stop a displaced console stream's close() from aborting Unsloth startup.
 
     ``_setup_server_disk_logging`` replaces ``sys.stdout``/``sys.stderr`` with a
     tee. That changes the object identity of the console stream, so a third-party
@@ -2363,13 +2363,13 @@ def run_server(
     from utils.process_lifetime import initialize_parent_lifetime, reap_recorded_children
 
     initialize_parent_lifetime()
-    # macOS has neither PR_SET_PDEATHSIG nor job objects, so a Studio that
+    # macOS has neither PR_SET_PDEATHSIG nor job objects, so an Unsloth that
     # crashed left its sidecars running. Sweep before spawning anything: a
     # leftover holds VRAM, a port, and the files an update has to replace.
     try:
         reaped = reap_recorded_children()
         if reaped:
-            logger.warning("Reaped %d orphan(s) from a previous Studio: %s", len(reaped), reaped)
+            logger.warning("Reaped %d orphan(s) from a previous Unsloth: %s", len(reaped), reaped)
     except Exception as e:
         logger.warning("Could not sweep orphans from a previous run: %s", e)
 
@@ -2993,7 +2993,7 @@ def _build_arg_parser():
         default = _PARALLEL_DEFAULT_PLAIN,
         help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
-            f"Default {_PARALLEL_DEFAULT_PLAIN}. The Studio run settings "
+            f"Default {_PARALLEL_DEFAULT_PLAIN}. The Unsloth run settings "
             "(Parallel Slots) override it per load."
         ),
     )

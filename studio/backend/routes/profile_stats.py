@@ -36,7 +36,7 @@ async def get_profile_stats(
 ) -> dict[str, Any]:
     """Usage stats from this install, with API receipts scoped to the caller.
 
-    Studio chat and training history is legacy install-wide data because those
+    Unsloth chat and training history is legacy install-wide data because those
     tables have no subject column. Authenticated external API usage is always
     filtered to ``current_subject`` and cannot cross accounts.
 

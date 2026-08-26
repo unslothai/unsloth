@@ -197,7 +197,7 @@ else
     fi
 fi
 
-# ── 7c. An override that exists and is writable but holds no Studio install: setup
+# ── 7c. An override that exists and is writable but holds no Unsloth install: setup
 # aborts later at the venv check, so clearing first would cost the cache for nothing ──
 _novenv_home=$(new_home)
 _novenv_root="$_TMP_ROOT/exists-but-empty.$$"

@@ -104,7 +104,7 @@ def _reset_password_command() -> str:
     same as runnable: an Application Control policy leaves the generated,
     unsigned unsloth.exe on disk and denies it at CreateProcess (issue #8490),
     and a bare `unsloth` resolves to that same file because PATHEXT puts .EXE
-    ahead of the .cmd shim. Whoever is locked out of Studio is exactly who needs
+    ahead of the .cmd shim. Whoever is locked out of Unsloth is exactly who needs
     this command to work, so it must not be the one a policy refuses. Preference
     order is therefore the interpreter's module entry, which needs no quoting in
     cmd or PowerShell, then `unsloth.cmd` -- spelling the extension is what stops
