@@ -439,6 +439,8 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
         "is_custom": True,
         # Nothing is held in this process, so Unload has nothing to offer.
         "loaded": False,
+        # Nor is any other model, so the Unload control stays hidden too.
+        "backend_loaded": False,
     }
 
 
@@ -600,3 +602,24 @@ def test_forcing_over_a_failed_plan_stays_cache_only(client, monkeypatch):
     assert saved["gguf_repo"] is None
     # ...but the loader still may not download behind the user's back.
     assert saved["download_pending"] is True
+
+
+def test_unload_is_offered_while_another_model_is_still_resident(client, monkeypatch):
+    """Saving a new model does not release the old one, and `loaded` answers only
+    about the selected model, so the previous model stayed resident with no
+    control to free it."""
+    c, _saved = client
+    import core.rag.embeddings as embeddings
+
+    # A is resident; B is what Settings now names.
+    monkeypatch.setattr(embeddings, "backend_is_loaded", lambda model_name = None: model_name is None)
+
+    body = c.get("/embedding-model").json()
+    assert body["loaded"] is False
+    assert body["backend_loaded"] is True
+
+    # Nothing resident at all: neither is claimed.
+    monkeypatch.setattr(embeddings, "backend_is_loaded", lambda model_name = None: False)
+    body = c.get("/embedding-model").json()
+    assert body["loaded"] is False
+    assert body["backend_loaded"] is False

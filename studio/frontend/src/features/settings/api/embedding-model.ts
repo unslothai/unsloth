@@ -14,8 +14,11 @@ export type EmbeddingModelSettings = {
   defaultEmbeddingModel: string;
   defaultEmbeddingGgufRepo: string;
   isCustom: boolean;
-  /** An embedder is held in memory right now, so Unload has something to do. */
+  /** THIS model is held in memory right now, for the status line. */
   loaded: boolean;
+  /** ANY embedder is resident, so Unload has something to do. Saving a new model
+   * does not release the old one, so this is not the same question as `loaded`. */
+  backendLoaded: boolean;
 };
 
 type ApiEmbeddingModelSettings = {
@@ -30,6 +33,8 @@ type ApiEmbeddingModelSettings = {
   // biome-ignore lint/style/useNamingConvention: API schema
   is_custom: boolean;
   loaded?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  backend_loaded?: boolean;
 };
 
 /** 409 from the backend: the model could not be verified as an embedding model
@@ -48,6 +53,9 @@ function fromApi(settings: ApiEmbeddingModelSettings): EmbeddingModelSettings {
     defaultEmbeddingGgufRepo: settings.default_embedding_gguf_repo,
     isCustom: settings.is_custom,
     loaded: settings.loaded ?? false,
+    // A backend predating this field answers only about the selected model; that
+    // is the old behaviour, and it is still the right fallback.
+    backendLoaded: settings.backend_loaded ?? settings.loaded ?? false,
   };
 }
 

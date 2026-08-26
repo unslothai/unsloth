@@ -22,6 +22,7 @@ type Settings = {
   defaultEmbeddingGgufRepo: string;
   isCustom: boolean;
   loaded: boolean;
+  backendLoaded: boolean;
 };
 
 function settings(model: string): Settings {
@@ -32,6 +33,7 @@ function settings(model: string): Settings {
     defaultEmbeddingGgufRepo: "",
     isCustom: model !== "unsloth/bge-small-en-v1.5",
     loaded: false,
+    backendLoaded: false,
   };
 }
 

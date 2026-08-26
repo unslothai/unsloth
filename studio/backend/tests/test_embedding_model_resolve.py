@@ -602,9 +602,17 @@ def test_the_chosen_backend_is_read_back_by_the_loader(monkeypatch):
     store[ems.EMBEDDING_RESOLUTION_SETTING_KEY] = {
         "model": "unsloth/bge-m3",
         "gguf_repo": None,
-        "backend": "sentence-transformers",
+        "backend": "llama-server",
     }
     ems._invalidate_cache()
+    # A model this process never resolved gets nothing, which is the property that
+    # matters: the record belongs to bge-m3 and is not lent to anyone else.
+    assert ems.get_stored_backend("unsloth/never-resolved") is None
+    # Qwen keeps ITS OWN earlier resolution, not bge-m3's. Forgetting it dropped a
+    # still-running job for Qwen back onto the hardware default; the memo is keyed
+    # per model, so this is Qwen's record, not a stale pair.
+    assert ems.get_stored_backend("unsloth/Qwen3-Embedding-8B") == "sentence-transformers"
+    ems._resolved_gguf_memo.clear()
     assert ems.get_stored_backend("unsloth/Qwen3-Embedding-8B") is None
     ems._invalidate_cache()
 

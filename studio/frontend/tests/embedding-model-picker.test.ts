@@ -142,7 +142,15 @@ test("the action slot offers Download or Unload, not Reset to default", () => {
     "reset is reachable by picking the default in the list",
   );
   assert.match(SECTION, /settings\.general\.rag\.unload/);
-  assert.match(SECTION, /embeddingModel\?\.loaded \? \(/);
+  // Unload is gated on backendLoaded, not loaded, and sits outside the
+  // Download/Save-anyway chain: saving a new model does not release the old one,
+  // so while an uncached pick shows Download the previous model can still be
+  // resident, and the only control that frees it was unreachable.
+  assert.match(SECTION, /embeddingModel\?\.backendLoaded \? \(/);
+  assert.ok(
+    !SECTION.includes("): embeddingModel?.loaded ? ("),
+    "Unload is not an alternative to Download",
+  );
 });
 
 test("the button follows a transfer started anywhere", () => {

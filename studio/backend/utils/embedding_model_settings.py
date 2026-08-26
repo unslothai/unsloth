@@ -44,10 +44,10 @@ _cached: tuple[float, _StoredState] | None = None
 # save cannot repopulate the cache with the pre-save value for the whole TTL.
 _generation = 0
 _lock = threading.Lock()
-# Per-model, process-local: the last resolved GGUF repo this process saw for each
-# model. There is only one stored resolution record, so it belongs to whichever
-# model was saved last; see remembered_gguf_repo.
-_resolved_gguf_memo: dict[str, str] = {}
+# Per-model, process-local: the last (gguf_repo, backend, download_pending) this
+# process saw resolved for each model. There is only one stored resolution record,
+# so it belongs to whichever model was saved last; see remembered_gguf_repo.
+_resolved_gguf_memo: dict[str, tuple[Optional[str], Optional[str], bool]] = {}
 
 
 def _invalidate_cache() -> None:
@@ -92,15 +92,19 @@ def get_stored_gguf_repo(model: str) -> str | None:
     stored = _get_stored_state()
     if stored[1] != model:
         return None
-    if stored[2]:
-        _remember_resolved_gguf_repo(model, stored[2])
+    _remember_resolution(model, stored)
     return stored[2]
 
 
-def _remember_resolved_gguf_repo(model: str, repo: str) -> None:
-    """Keep this process's last resolved repo for ``model``."""
+def _remember_resolution(model: str, stored: _StoredState) -> None:
+    """Keep this process's last resolved repo/backend/pending for ``model``."""
     with _lock:
-        _resolved_gguf_memo[model] = repo
+        _resolved_gguf_memo[model] = (stored[2], stored[3], stored[4])
+
+
+def _remembered(model: str) -> tuple[str | None, str | None, bool] | None:
+    with _lock:
+        return _resolved_gguf_memo.get(model)
 
 
 def remembered_gguf_repo(model: str) -> str | None:
@@ -114,24 +118,40 @@ def remembered_gguf_repo(model: str) -> str | None:
     exactly as long as the job that needs it; a later save for A refreshes it
     through ``get_stored_gguf_repo``, and a reset drops it.
     """
-    with _lock:
-        return _resolved_gguf_memo.get(model)
+    remembered = _remembered(model)
+    return remembered[0] if remembered else None
 
 
 def get_stored_backend(model: str) -> str | None:
-    """The backend stored for ``model``, or None. Same staleness rule as above."""
+    """The backend stored for ``model``, or the one this process last saw for it.
+
+    Same staleness rule as the repo, and the same reason to survive it: on an auto
+    CPU install a model with no GGUF resolves to sentence-transformers, so losing
+    that record when another model is saved drops a still-running job for it back
+    onto the hardware default and fails it looking for GGUF weights.
+    """
     stored = _get_stored_state()
-    return stored[3] if stored[1] == model else None
+    if stored[1] == model:
+        _remember_resolution(model, stored)
+        return stored[3]
+    remembered = _remembered(model)
+    return remembered[1] if remembered else None
 
 
 def get_stored_download_pending(model: str) -> bool:
     """Whether ``model`` was activated before its required transfer finished.
 
     Loaders use this marker to remain cache-only instead of recreating the
-    invisible first-index download the picker is designed to prevent.
+    invisible first-index download the picker is designed to prevent. It outlives
+    another model's save for the same reason the backend does: forgetting it is
+    what re-enables the implicit download for a job still pinned to this model.
     """
     stored = _get_stored_state()
-    return stored[4] if stored[1] == model else False
+    if stored[1] == model:
+        _remember_resolution(model, stored)
+        return stored[4]
+    remembered = _remembered(model)
+    return remembered[2] if remembered else False
 
 
 def clear_stored_download_pending(model: str) -> bool:
@@ -162,6 +182,9 @@ def clear_stored_download_pending(model: str) -> bool:
         EMBEDDING_RESOLUTION_SETTING_KEY, expected, {**expected, "download_pending": False}
     ):
         return False
+    # The memo has to retire with the record, or a job pinned to this model keeps
+    # reading pending=True from it and stays cache-only after the download landed.
+    _remember_resolution(model, (stored[0], stored[1], stored[2], stored[3], False))
     _invalidate_cache()
     return True
 

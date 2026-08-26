@@ -112,6 +112,12 @@ class LlamaServerBackend:
         # re-enter on a mid-probe model change, which would self-deadlock a
         # non-reentrant lock held across the probe.
         self._dim: int | None = None
+        # One subprocess serves one GGUF, so readiness and the request that relies
+        # on it have to be one indivisible step. Without this, _ensure_ready(A)
+        # could return, another model's swap could kill A's server and start B's,
+        # and A's POST would land on B, storing B's vectors under A's identity.
+        # Reentrant because dim() -> encode() -> _post() re-enters on one thread.
+        self._serve_lock = threading.RLock()
         self._model_path: str | None = None
         # Effective GGUF repo the cached path/dim belong to; a Settings change
         # makes it stale, forcing a re-resolve + respawn (see _ensure_ready).
@@ -910,21 +916,25 @@ class LlamaServerBackend:
     ) -> dict:
         last_exc: Exception | None = None
         for attempt in range(2):
-            self._ensure_ready(model_name)
-            try:
-                resp = self._client.post(f"{self._base_url}{path}", json = payload)
-                resp.raise_for_status()
-                return resp.json()
-            except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as e:
-                last_exc = e
-                if attempt == 0:
-                    self._restart(model_name)
-                    continue
-            except httpx.HTTPStatusError as e:
-                body = e.response.text[:500] if e.response is not None else ""
-                raise RuntimeError(
-                    f"llama-server embedder POST {path} -> {e.response.status_code}: {body}"
-                ) from e
+            with self._serve_lock:
+                # Held across readiness AND the request: a swap for another model
+                # can only happen between whole requests, never between the check
+                # and the POST that depends on it.
+                self._ensure_ready(model_name)
+                try:
+                    resp = self._client.post(f"{self._base_url}{path}", json = payload)
+                    resp.raise_for_status()
+                    return resp.json()
+                except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as e:
+                    last_exc = e
+                    if attempt == 0:
+                        self._restart(model_name)
+                        continue
+                except httpx.HTTPStatusError as e:
+                    body = e.response.text[:500] if e.response is not None else ""
+                    raise RuntimeError(
+                        f"llama-server embedder POST {path} -> {e.response.status_code}: {body}"
+                    ) from e
         raise RuntimeError(f"llama-server embedder POST {path} failed after retry") from last_exc
 
     def encode(

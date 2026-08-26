@@ -1452,3 +1452,53 @@ def test_resolution_follows_the_pinned_model(monkeypatch, tmp_path):
     # Tagged with the repo it was resolved FOR, so a later unpinned request sees
     # it as stale rather than serving A's weights under B's name.
     assert b._model_repo == "org/model-a-GGUF"
+
+
+def test_a_swap_cannot_land_between_readiness_and_the_request(monkeypatch):
+    """_ensure_ready(A) returning and A's POST landing were two steps, so another
+    model's swap could kill A's server and start B's in between; A then posted to
+    B and stored B's vectors under A's identity."""
+    import threading
+
+    b = LlamaServerBackend()
+    order: list[str] = []
+    swapped = threading.Event()
+
+    def fake_ensure_ready(model_name = None):
+        order.append(f"ready:{model_name}")
+
+    def fake_post(url, json = None):  # noqa: A002 - httpx's parameter name
+        order.append("post")
+        # A competing swap tries to run right here, where the old code let it.
+        swapper = threading.Thread(target = _swap)
+        swapper.start()
+        swapper.join(timeout = 0.5)
+        order.append("post-done")
+
+        class _R:
+            @staticmethod
+            def raise_for_status():
+                return None
+
+            @staticmethod
+            def json():
+                return {"tokens": [1]}
+
+        return _R()
+
+    def _swap():
+        # Blocks until the in-flight request releases the lease.
+        with b._serve_lock:
+            order.append("swap")
+            swapped.set()
+
+    monkeypatch.setattr(b, "_ensure_ready", fake_ensure_ready)
+    monkeypatch.setattr(b._client, "post", fake_post)
+    monkeypatch.setattr(b, "_port", 1)
+
+    b._post("/tokenize", {"content": "x"}, model_name = "org/model-a")
+    swapped.wait(timeout = 2)
+
+    # The swap is after the request completed, never between ready and post.
+    assert order[:3] == ["ready:org/model-a", "post", "post-done"]
+    assert order[-1] == "swap"

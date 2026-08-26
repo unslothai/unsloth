@@ -427,7 +427,12 @@ export function DocumentsRagSection(): ReactElement {
                 {downloading ? <Spinner className="mr-1.5" /> : null}
                 {t("settings.general.rag.download")}
               </Button>
-            ) : embeddingModel?.loaded ? (
+            ) : null}
+            {/* Not part of the chain above: saving a new model does not release
+                the old one, so while an uncached model shows Download the
+                previous model can still be resident, and the only control that
+                frees it was unreachable. backendLoaded asks about any embedder. */}
+            {embeddingModel?.backendLoaded ? (
               <Button
                 variant="outline"
                 size="sm"

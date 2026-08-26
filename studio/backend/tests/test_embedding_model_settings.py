@@ -205,3 +205,54 @@ def test_a_reset_drops_the_remembered_repo(settings_store, monkeypatch):
     assert config.effective_gguf_repo_for_embedding_model("org/embedder-a") == (
         config.gguf_repo_for_embedding_model("org/embedder-a")
     )
+
+
+def test_a_pinned_jobs_backend_and_pending_survive_a_save_for_another_model(
+    settings_store, monkeypatch
+):
+    """On an auto CPU install a model with no GGUF resolves to sentence-transformers.
+    Losing that record when another model is saved dropped a still-running job for
+    it back onto the hardware default, which then failed looking for GGUF weights;
+    losing the pending marker re-enabled the implicit download the picker replaces."""
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    ems._resolved_gguf_memo.clear()
+
+    ems.set_rag_embedding_model(
+        "org/st-only",
+        gguf_repo = None,
+        backend = "sentence-transformers",
+        download_pending = True,
+    )
+    assert ems.get_stored_backend("org/st-only") == "sentence-transformers"
+    assert ems.get_stored_download_pending("org/st-only") is True
+
+    ems.set_rag_embedding_model("org/other", gguf_repo = None, backend = "llama-server")
+
+    assert ems.get_stored_backend("org/st-only") == "sentence-transformers"
+    assert ems.get_stored_download_pending("org/st-only") is True
+    # The newly saved model answers from the record, not the memo.
+    assert ems.get_stored_backend("org/other") == "llama-server"
+    # A model this process never resolved still has no opinion.
+    assert ems.get_stored_backend("org/never-seen") is None
+    assert ems.get_stored_download_pending("org/never-seen") is False
+
+
+def test_retiring_the_pending_marker_retires_it_in_the_memo_too(settings_store, monkeypatch):
+    """Otherwise a job pinned to this model keeps reading pending=True from the
+    memo and stays cache-only after the download landed."""
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    ems._resolved_gguf_memo.clear()
+
+    ems.set_rag_embedding_model(
+        "org/embedder",
+        gguf_repo = None,
+        backend = "sentence-transformers",
+        download_pending = True,
+    )
+    assert ems.get_stored_download_pending("org/embedder") is True
+    assert ems.clear_stored_download_pending("org/embedder") is True
+
+    ems.set_rag_embedding_model("org/other", gguf_repo = None, backend = None)
+    assert ems.get_stored_download_pending("org/embedder") is False
+    # The backend it was resolved with is still remembered.
+    assert ems.get_stored_backend("org/embedder") == "sentence-transformers"

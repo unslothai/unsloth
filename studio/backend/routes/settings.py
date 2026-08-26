@@ -1808,8 +1808,13 @@ class EmbeddingModelResponse(BaseModel):
     default_embedding_model: str
     default_embedding_gguf_repo: str
     is_custom: bool
-    # Whether an embedder is held in memory right now, for the Unload action.
+    # Whether THIS model is held in memory right now, for the status line.
     loaded: bool = False
+    # Whether ANY embedder is resident, for the Unload action. Saving a new model
+    # does not release the old one, so asking only about the selected model left
+    # the previous model's weights (or its llama-server process) resident with no
+    # control to release them.
+    backend_loaded: bool = False
 
 
 def _embedding_model_response() -> EmbeddingModelResponse:
@@ -1821,6 +1826,7 @@ def _embedding_model_response() -> EmbeddingModelResponse:
         default_embedding_gguf_repo = default_gguf_repo(),
         is_custom = get_stored_embedding_model() is not None,
         loaded = _embedder_is_loaded(model),
+        backend_loaded = _any_embedder_is_loaded(),
     )
 
 
@@ -1828,6 +1834,15 @@ def _embedder_is_loaded(model: str) -> bool:
     from core.rag import embeddings
     try:
         return embeddings.backend_is_loaded(model)
+    except Exception:  # noqa: BLE001 - probe must never block reading settings
+        return False
+
+
+def _any_embedder_is_loaded() -> bool:
+    """Whether any embedder is resident, whichever model it belongs to."""
+    from core.rag import embeddings
+    try:
+        return embeddings.backend_is_loaded()
     except Exception:  # noqa: BLE001 - probe must never block reading settings
         return False
 
