@@ -89,6 +89,7 @@ import {
   PromptStorageDialog,
   exportConversationShareGPT,
   exportConversationRawJsonl,
+  exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
 } from "./prompt-storage/prompt-storage-dialog";
@@ -2031,7 +2032,8 @@ export function SharedComposer({
           className="unsloth-plus-menu w-[208px]"
         >
           {[
-            { label: "Raw JSONL", fn: exportConversationRawJsonl },
+            { label: "Training JSONL", fn: exportConversationRawJsonl },
+            { label: "Message JSONL", fn: exportConversationMessagesJsonl },
             { label: "CSV", fn: exportConversationCsv },
             { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
             {
@@ -2767,7 +2769,7 @@ export function SharedComposer({
                       : "Stop dictation"
                   }
                 >
-                  <SquareIcon className="size-3 animate-pulse fill-current" />
+                  <SquareIcon className="aui-composer-cancel-icon size-3 animate-pulse fill-current" />
                 </TooltipIconButton>
               )}
             </>
@@ -2795,7 +2797,7 @@ export function SharedComposer({
               className="ml-1.5 size-9 rounded-full"
               onClick={stop}
             >
-              <SquareIcon className="size-3 fill-current" />
+              <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
             </Button>
           ) : (
             <TooltipIconButton

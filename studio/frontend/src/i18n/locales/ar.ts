@@ -867,9 +867,9 @@ export const ar = {
           "كل ما يلي محسوب من سجلك الخاص. لا يُجمَع أي شيء ولا يُرسَل إلى Unsloth.",
         retry: "إعادة المحاولة",
         privacyNote:
-          "تُحسب الإحصاءات من سجل المحادثات والتدريب المحفوظ في نسخة Unsloth لديك. لا يُجمَع أي شيء، ولا يُرسَل شيء إلى Unsloth أو إلى أي طرف ثالث.",
+          "تُحسب الإحصاءات من سجل المحادثات واستخدام API والتدريب المحلي في نسخة Unsloth لديك. لا تُحفظ مطالبات API أو ردوده أو مفاتيحه للإحصاءات، ولا يُرسل شيء إلى Unsloth أو أي طرف ثالث.",
         emptyChats:
-          "لا توجد محادثات بعد. ابدأ محادثة وستظهر إحصاءاتك هنا.",
+          "لا يوجد استخدام للمحادثات أو API بعد. ابدأ محادثة أو أرسل طلب API محليًا ومصادقًا عليه لتظهر إحصاءاتك هنا.",
         lifetimeTokens: "إجمالي التوكنات",
         peakTokens: "يوم الذروة",
         longestChat: "أطول محادثة",
@@ -891,6 +891,9 @@ export const ar = {
         totalMessages: "إجمالي الرسائل",
         tokensIn: "التوكنات المُرسَلة",
         tokensOut: "التوكنات المُولَّدة",
+        totalTokens: "إجمالي التوكنات",
+        studioChatTokens: "توكنات محادثة Studio",
+        apiTokens: "توكنات API",
         cachedTokens: "التوكنات المخزّنة مؤقتًا",
         cachedValue: "{tokens} ({percent}% من المُدخَلات)",
         avgTokensPerChat: "متوسط التوكنات لكل محادثة",
@@ -1357,7 +1360,7 @@ export const ar = {
       exportingAction: "جارٍ التصدير...",
       exportConversations: "تصدير العناصر الأخيرة والمشاريع",
       exportConversationsDescription:
-        "نزّل العناصر الأخيرة وحدها أو مع محادثات المشاريع بصيغة JSONL خام أو CSV أو ShareGPT JSONL، في ملف مجمّع أو في ملف لكل محادثة.",
+        "نزّل العناصر الأخيرة وحدها أو مع محادثات المشاريع بصيغة Training JSONL أو CSV أو ShareGPT JSONL، في ملف مجمّع أو في ملف لكل محادثة. يتوفر Message JSONL لكل محادثة فقط.",
       exportConversationsAction: "تصدير",
       exportScopeRecents: "العناصر الأخيرة",
       exportScopeAll: "العناصر الأخيرة + المشاريع",
