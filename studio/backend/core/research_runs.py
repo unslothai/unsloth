@@ -546,6 +546,9 @@ def _rate_limit_wait(requested: float, remaining: float, headroom: float) -> flo
     The delay is the provider's, not a share of the model-load budget, so it is bounded by what is
     left of the call minus the room the re-send needs; coming back early only spends an attempt on
     the same refusal. The standing ceiling covers a run with no wall clock at all."""
+    # Never reserve all of what is left: a call whose wall clock is no larger than its
+    # first-output budget reserves the whole of it, and every wait collapses to zero.
+    headroom = min(headroom, remaining / 2)
     return max(0.0, min(requested, _MAX_RATE_LIMIT_WAIT_SECONDS, remaining - headroom))
 
 

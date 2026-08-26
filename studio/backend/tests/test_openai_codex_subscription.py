@@ -2868,6 +2868,97 @@ def test_quota_metadata_marks_a_terminal_refusal():
     }
 
 
+def test_quota_metadata_falls_back_to_retry_after_ms():
+    """The client's own backoff already reads retry-after-ms; dropping it here left the delay
+    honoured on this side of the proxy and guessed at on the other."""
+    from core.inference import openai_codex_client as codex_client
+
+    request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
+    ms_only = httpx.Response(429, headers = {"retry-after-ms": "30000"}, request = request)
+    assert codex_client._quota_metadata(ms_only) == {"retry_after": "30.0"}
+    # Seconds win when both are present, and neither means no invented delay.
+    both = httpx.Response(
+        429,
+        headers = {"retry-after": "45", "retry-after-ms": "30000"},
+        request = request,
+    )
+    assert codex_client._quota_metadata(both) == {"retry_after": "45"}
+    assert codex_client._quota_metadata(httpx.Response(429, request = request)) == {}
+
+
+def _quota_error_for(monkeypatch, body):
+    """Drive the real send/classify loop against one 429 and return the CodexQuotaError."""
+    from core.inference import openai_codex_client as codex_client
+
+    request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
+
+    async def _no_pause(delay, cancel_event):
+        return None
+
+    monkeypatch.setattr(codex_client, "_retry_pause", _no_pause)
+
+    class _Ctx:
+        async def __aenter__(self):
+            return httpx.Response(429, json = body, request = request)
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(codex_client, "_stream_response", lambda *a, **k: _Ctx())
+
+    async def _run():
+        async with codex_client._validated_stream_response(
+            None,
+            url = "https://chatgpt.com/backend-api/codex/responses",
+            headers = {"Authorization": "Bearer t"},
+            body = {},
+            cancel_event = None,
+            refresh_access = None,
+        ):
+            pass
+
+    with pytest.raises(codex_client.CodexQuotaError) as raised:
+        asyncio.run(_run())
+    return raised.value
+
+
+def test_a_terminal_code_is_recognised_behind_a_generic_message(monkeypatch):
+    """_upstream_error_detail prefers the display message, so a terminal code arrived hidden
+    behind a "slow down" sentence and the refusal was retried as if waiting could clear it."""
+    hidden = _quota_error_for(
+        monkeypatch,
+        {"error": {"message": "Too many requests.", "code": "insufficient_quota"}},
+    )
+    assert hidden.metadata.get("terminal") is True
+
+
+def test_a_transient_code_behind_a_generic_message_stays_retryable(monkeypatch):
+    """The tightened classification must not start refusing throttles that a wait does clear."""
+    throttled = _quota_error_for(
+        monkeypatch,
+        {"error": {"message": "Too many requests.", "code": "rate_limit_exceeded"}},
+    )
+    assert "terminal" not in throttled.metadata
+
+
+def test_upstream_error_code_reads_code_then_type():
+    from core.inference import openai_codex_client as codex_client
+
+    request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
+
+    def _code_of(body):
+        return asyncio.run(
+            codex_client._upstream_error_code(httpx.Response(429, json = body, request = request))
+        )
+
+    assert _code_of({"error": {"message": "m", "code": "insufficient_quota"}}) == (
+        "insufficient_quota"
+    )
+    assert _code_of({"error": {"message": "m", "type": "rate_limit_error"}}) == "rate_limit_error"
+    assert _code_of({"detail": "nope"}) is None
+    assert _code_of({"error": "flat string"}) is None
+
+
 def test_terminal_quota_detail_is_recognised():
     from core.inference import openai_codex_client as codex_client
     assert codex_client._is_terminal_quota("You exceeded your current quota (insufficient_quota)")

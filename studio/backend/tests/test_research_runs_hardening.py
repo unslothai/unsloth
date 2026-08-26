@@ -2301,6 +2301,7 @@ def _send_attempts(
     status,
     headers = None,
     model_timeout = 900.0,
+    first_output = 5.0,
     on_wait = None,
     on_check = None,
     body = b"{}",
@@ -2319,7 +2320,7 @@ def _send_attempts(
             "inferenceRequest": {"model": "m"},
             "budgets": {
                 "modelTimeoutSeconds": model_timeout,
-                "firstOutputTimeoutSeconds": 5.0,
+                "firstOutputTimeoutSeconds": first_output,
             },
         },
     }
@@ -2386,6 +2387,30 @@ def test_rate_limit_wait_is_capped_by_what_is_left_of_the_call(monkeypatch):
     _, waits = _send_attempts(monkeypatch, 429, {"Retry-After": "300"}, model_timeout = 20.0)
     assert len(waits) == 2
     assert all(13.0 < wait <= 15.0 for wait in waits), waits
+
+
+def test_a_wall_clock_no_larger_than_the_first_output_budget_still_waits(monkeypatch):
+    # firstOutputTimeoutSeconds defaults to 120 and modelTimeoutSeconds may be set as low as
+    # 10, so any run configured at or under its own first-output budget reserved the whole
+    # of it as headroom. Every wait collapsed to zero and the three sends went out
+    # back-to-back, which is the failure this retry path exists to prevent.
+    _, waits = _send_attempts(
+        monkeypatch,
+        429,
+        {"Retry-After": "30"},
+        model_timeout = 120.0,
+        first_output = 120.0,
+    )
+    assert waits == [30.0, 30.0]
+
+
+def test_reserving_headroom_never_consumes_the_whole_remaining_budget():
+    # Half of what is left, at most: the reserve scales with the budget instead of being an
+    # absolute that can equal it. A budget with room to spare is unaffected.
+    assert research_runs._rate_limit_wait(30.0, 120.0, 120.0) == 30.0
+    assert research_runs._rate_limit_wait(30.0, 900.0, 120.0) == 30.0
+    # Still bounded by what is left: half of a 40s remainder cannot fund a 300s delay.
+    assert research_runs._rate_limit_wait(300.0, 40.0, 120.0) == 20.0
 
 
 def test_server_error_backoff_is_unchanged(monkeypatch):
