@@ -94,9 +94,7 @@ def asgi_scope(
     # `headers` is the convenient dict form; `raw_headers` is the ASGI list, which is the
     # only way to express a repeated header. A dict cannot, which is why the duplicate
     # rules went untested until now.
-    encoded = [
-        (name.lower().encode(), value.encode()) for name, value in (headers or {}).items()
-    ]
+    encoded = [(name.lower().encode(), value.encode()) for name, value in (headers or {}).items()]
     encoded += list(raw_headers or [])
     return {
         "type": "http",
@@ -221,9 +219,9 @@ def test_full_scope_denials_survive_without_the_tunnel_flag():
     assert keyless_request_allowed(request_for()) is True  # control: loopback works
 
     for bind in ("0.0.0.0", "::"):
-        assert (
-            keyless_request_allowed(request_for(state = app_state(bind_host = bind))) is False
-        ), f"wildcard bind {bind} admitted under full scope"
+        assert keyless_request_allowed(request_for(state = app_state(bind_host = bind))) is False, (
+            f"wildcard bind {bind} admitted under full scope"
+        )
 
     assert (
         keyless_request_allowed(
@@ -248,9 +246,9 @@ def test_every_hosted_mode_flag_closes_full_and_inference():
             "secure",
             "lan_access_secure_launch",
         ):
-            assert (
-                keyless_request_allowed(request_for(state = app_state(**{flag: True}))) is False
-            ), f"{flag} did not close scope={scope}"
+            assert keyless_request_allowed(request_for(state = app_state(**{flag: True}))) is False, (
+                f"{flag} did not close scope={scope}"
+            )
         assert (
             keyless_request_allowed(
                 request_for(state = app_state(cloudflare_url = "https://x.trycloudflare.com"))
@@ -420,7 +418,10 @@ def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
 
     # A repeated `Authorization` is the one shape where the two differ in form and agree
     # in meaning: the twin returns False, the dependency raises. Both mean not-keyless.
-    duplicated = [(b"authorization", b"Bearer not-needed"), (b"authorization", b"Bearer not-needed")]
+    duplicated = [
+        (b"authorization", b"Bearer not-needed"),
+        (b"authorization", b"Bearer not-needed"),
+    ]
     assert asgi_request_is_keyless(asgi_scope(raw_headers = duplicated)) is False
     with pytest.raises(HTTPException):
         resolve(request_for(path = "/v1/models", method = "GET", raw_headers = duplicated))
@@ -487,7 +488,10 @@ def test_a_cross_site_page_cannot_reach_keyless_without_sending_origin():
                     request_for(
                         path = "/v1/models",
                         method = "GET",
-                        raw_headers = [(b"sec-fetch-site", pair[0].encode()), (b"sec-fetch-site", pair[1].encode())],
+                        raw_headers = [
+                            (b"sec-fetch-site", pair[0].encode()),
+                            (b"sec-fetch-site", pair[1].encode()),
+                        ],
                     )
                 )
                 is False
@@ -542,6 +546,57 @@ def test_a_loopback_spelling_the_browser_will_not_vouch_for_is_refused():
             ), f"{spelling} was refused under {scope_name}"
 
 
+def test_an_authority_the_scope_cannot_be_reached_at_is_refused():
+    """Being an address rather than a name is not enough; it has to be a local one.
+
+    The socket checks see only the hop that connected, so an SSH forward or a reverse
+    proxy in front of a loopback bind makes both ASGI endpoints loopback while the
+    page's own origin, and so `Host`, is the public address it was served from. Before
+    this, `full` admitted `Host: 8.8.8.8` on a loopback transport and served management
+    responses to a page that could read them.
+
+    `full` is loopback-only by construction, so its authority must be loopback.
+    `inference` may also be reached across the private LAN, so it takes the same
+    networks `lan_access_settings` admits and nothing wider -- CGNAT and the
+    documentation ranges are outside them, which `is_private` would not have caught
+    since that means "not globally reachable" rather than RFC 1918.
+    """
+    seed_user()
+    for scope_name, path in (("full", "/api/chat/threads"), ("inference", "/v1/models")):
+        set_keyless_api_access(scope_name)
+        for public in (
+            "8.8.8.8:8888",
+            "203.0.113.5:8888",
+            "[2001:db8::1]:8888",
+            "100.64.0.1:8888",
+        ):
+            assert (
+                keyless_request_allowed(
+                    request_for(path = path, method = "GET", headers = {"Host": public})
+                )
+                is False
+            ), f"{public} was admitted under {scope_name}"
+
+    # a private LAN authority is right for inference and wrong for full
+    for spelling in ("192.168.1.5:8888", "10.0.0.5:8888", "[fd00::1]:8888"):
+        assert (
+            _host_authority_is_direct(request_for(headers = {"Host": spelling}), "inference") is True
+        ), f"{spelling} refused for inference"
+        assert (
+            _host_authority_is_direct(request_for(headers = {"Host": spelling}), "full") is False
+        ), f"{spelling} admitted for full"
+
+    # loopback stays right for both, and so does an absent Host
+    for spelling in ("127.0.0.1:8888", "127.0.0.2:8888", "localhost:8888", "[::1]:8888"):
+        for scope_name in ("full", "inference"):
+            assert (
+                _host_authority_is_direct(request_for(headers = {"Host": spelling}), scope_name)
+                is True
+            ), f"{spelling} refused for {scope_name}"
+    for scope_name in ("full", "inference"):
+        assert _host_authority_is_direct(request_for(), scope_name) is True
+
+
 def test_an_authority_that_is_not_a_bare_host_and_port_is_refused():
     """`Host` is a host plus an optional numeric port, and nothing else.
 
@@ -584,7 +639,10 @@ def test_an_authority_that_is_not_a_bare_host_and_port_is_refused():
 
         # a repeated Host is ambiguous. h11 rejects it on the wire, httptools passes
         # both through, and `Headers.get()` would take the first.
-        for pair in ((b"127.0.0.1:8888", b"evil.example:8888"), (b"evil.example:8888", b"127.0.0.1:8888")):
+        for pair in (
+            (b"127.0.0.1:8888", b"evil.example:8888"),
+            (b"evil.example:8888", b"127.0.0.1:8888"),
+        ):
             assert (
                 keyless_request_allowed(
                     request_for(
@@ -623,7 +681,7 @@ def test_a_plain_http_lan_browser_request_is_not_covered_by_fetch_metadata():
     # no Sec-Fetch-Site is sent to a plain-HTTP LAN origin, so the predicate is inert
     assert _browser_initiated_elsewhere(lan) is False
     # and the authority is a literal, so the rebinding guard is satisfied too
-    assert _host_authority_is_direct(lan) is True
+    assert _host_authority_is_direct(lan, "inference") is True
     # a rebound page on the LAN is still refused, by the authority rule alone
     rebound = request_for(
         path = "/v1/models",
@@ -632,7 +690,7 @@ def test_a_plain_http_lan_browser_request_is_not_covered_by_fetch_metadata():
         client = ("192.168.1.77", 51000),
         server = ("192.168.1.50", 8888),
     )
-    assert _host_authority_is_direct(rebound) is False
+    assert _host_authority_is_direct(rebound, "inference") is False
 
 
 def test_a_real_credential_authenticates_under_every_scope_and_transport(monkeypatch):

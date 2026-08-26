@@ -365,7 +365,7 @@ def _port_suffix_is_numeric(suffix: str) -> bool:
     return len(suffix) > 1 and suffix[0] == ":" and suffix[1:].isdigit()
 
 
-def _host_authority_is_direct(request: Any) -> bool:
+def _host_authority_is_direct(request: Any, scope: str) -> bool:
     """Whether the caller addressed this server directly rather than through a name.
 
     Guards DNS rebinding, which the socket checks cannot see: a page on
@@ -392,8 +392,21 @@ def _host_authority_is_direct(request: Any) -> bool:
     absence-means-not-a-browser into a bypass, so the parsing is done here rather than
     through `lan_access_settings._normalized_ip`, whose leniency is correct for the
     socket addresses it was written for and wrong for an authority off the wire.
+
+    The literal must also be one the scope could legitimately be reached at. Being an
+    address rather than a name is not enough: the socket checks see only the hop that
+    connected, so an SSH forward or a reverse proxy in front of a loopback bind makes
+    both ASGI endpoints loopback while the browser's own origin, and therefore ``Host``,
+    is the public address the page was served from. ``full`` is loopback-only by
+    construction (`_full_scope_transport_allowed` demands a loopback bind and a loopback
+    peer), so its authority must be loopback too; ``inference`` may additionally be
+    reached across the private LAN, so it takes the same private networks
+    `lan_access_settings` admits. Note this cannot be spelled with `is_private`, which
+    means "not globally reachable" and so counts the documentation ranges in as well.
     """
     import ipaddress
+
+    from utils.lan_access_settings import _private_non_loopback
 
     if _repeated_header(request, b"host"):
         return False
@@ -435,7 +448,11 @@ def _host_authority_is_direct(request: Any) -> bool:
             return False
     if address.is_unspecified:
         return False
-    return getattr(address, "ipv4_mapped", None) is None
+    if getattr(address, "ipv4_mapped", None) is not None:
+        return False
+    if address.is_loopback:
+        return True
+    return scope == KEYLESS_SCOPE_INFERENCE and _private_non_loopback(address)
 
 
 def keyless_transport_allowed(request: Any, scope: str) -> bool:
@@ -447,7 +464,7 @@ def keyless_transport_allowed(request: Any, scope: str) -> bool:
         return False
     if _browser_initiated_elsewhere(request):
         return False
-    if not _host_authority_is_direct(request):
+    if not _host_authority_is_direct(request, scope):
         return False
     app_state = _request_app_state(request)
     if _hosted_mode_forbidden(app_state):

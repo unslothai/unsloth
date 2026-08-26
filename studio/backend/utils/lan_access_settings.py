@@ -283,6 +283,7 @@ def _has_keyless_lan_url(urls: list[str]) -> bool:
     a URL that answers 401, so the literal is required here too.
     """
     from urllib.parse import urlparse
+
     for url in urls:
         parsed = urlparse(url)
         if not parsed.hostname:
