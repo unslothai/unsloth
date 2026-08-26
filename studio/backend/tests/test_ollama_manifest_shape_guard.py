@@ -26,7 +26,11 @@ def _manifest_dir(root, model = "foo"):
     return d
 
 
-def _write_good_model(root, model = "good", blob = "sha256-abc123"):
+def _write_good_model(
+    root,
+    model = "good",
+    blob = "sha256-abc123",
+):
     """A manifest whose model layer resolves to a real blob, i.e. one the scan must surface."""
     blobs = root / "blobs"
     blobs.mkdir(exist_ok = True)
@@ -73,9 +77,7 @@ def test_one_bad_manifest_does_not_hide_the_good_models(tmp_path, payload):
     ],
 )
 def test_scan_survives_wrong_shapes_inside_the_manifest(tmp_path, manifest):
-    (_manifest_dir(tmp_path, "bad") / "latest").write_text(
-        json.dumps(manifest), encoding = "utf-8"
-    )
+    (_manifest_dir(tmp_path, "bad") / "latest").write_text(json.dumps(manifest), encoding = "utf-8")
     (tmp_path / "blobs").mkdir(exist_ok = True)
 
     assert _scan_ollama_dir(tmp_path) == []
