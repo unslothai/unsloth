@@ -28,9 +28,9 @@ def _clear_policy_cache():
     """_policy_scan is cached for the life of the process, which is right in an installer
     and wrong across tests: without this a scan taken under one environment answers for
     the next one."""
-    ips._policy_scan.cache_clear()
+    ips._detected_policy.cache_clear()
     yield
-    ips._policy_scan.cache_clear()
+    ips._detected_policy.cache_clear()
 
 
 def _posix_home(path: str = "/home/u"):
@@ -620,17 +620,16 @@ class TestHardenedPolicyIsAnnounced:
         env: dict,
         pip_config: str = "",
     ):
-        ips._policy_scan.cache_clear()
+        ips._detected_policy.cache_clear()
         result = mock.Mock(returncode = 0, stdout = pip_config.encode())
         with (
             mock.patch.dict(os.environ, env, clear = True),
             mock.patch.object(ips.subprocess, "run", return_value = result),
-            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: []),
         ):
             try:
                 return ips._hardened_pm_policy_names()
             finally:
-                ips._policy_scan.cache_clear()
+                ips._detected_policy.cache_clear()
 
     def test_an_ordinary_machine_says_nothing(self):
         assert self._names({}) == ()
@@ -651,18 +650,24 @@ class TestHardenedPolicyIsAnnounced:
         names = self._names({"PIP_REQUIRE_HASHES": "1"}, ":env:.require-hashes='true'\n")
         assert names == ("PIP_REQUIRE_HASHES",)
 
-    def test_uv_config_hardening_is_reported(self, tmp_path):
-        config = tmp_path / "uv.toml"
-        config.write_text("# no-build = true\nno-build = true\n", encoding = "utf-8")
-        ips._policy_scan.cache_clear()
-        with (
-            mock.patch.dict(os.environ, {}, clear = True),
-            mock.patch.object(ips.subprocess, "run", side_effect = OSError),
-            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: [str(config)]),
+    def test_uv_policy_is_reported_from_the_variables_uv_reads(self):
+        """uv has no command that prints its resolved configuration, so the notice
+        reports the two variables uv genuinely honours and does not go looking through
+        uv.toml. Measured on the pinned uv 0.12.1: UV_REQUIRE_HASHES and
+        UV_EXCLUDE_NEWER change the outcome, UV_NO_BUILD and the other artifact
+        spellings are ignored, so reporting one would name policy uv does not apply."""
+        assert self._names({"UV_REQUIRE_HASHES": "1"}) == ("UV_REQUIRE_HASHES",)
+        assert self._names({"UV_NO_BUILD": "1"}) == ()
+
+    def test_an_undetected_setting_costs_a_line_not_an_install(self):
+        """The point of keeping detection advisory: with nothing detected the notice is
+        silent, and the opt-out still withholds every relaxation."""
+        assert self._names({}) == ()
+        with mock.patch.dict(
+            os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True
         ):
-            names = ips._hardened_pm_policy_names()
-        ips._policy_scan.cache_clear()
-        assert names == ("uv.toml no-build",)
+            assert ips._relaxed_pip_policy_env(["python", "-m", "pip", "install", "x"]) == {}
+            assert ips._sdist_only_build_args("diffusers") == []
 
     def test_the_notice_names_the_opt_out(self, capsys):
         with (
@@ -746,14 +751,20 @@ class TestTheOptOutIsNotDefeatedByOurOwnEscapeHatches:
                 raised = exit_info
         return calls, raised
 
-    def test_the_pip_fallback_is_refused_when_it_would_drop_a_uv_policy(self):
-        """pip reads none of uv's policy, so falling back to it after uv refused an
-        install runs the very command the policy rejected. Stop instead."""
+    def test_the_fallback_runs_under_the_opt_out_without_relaxing_anything(self):
+        """uv failing must not end the install, opt-out or not. pip then applies whatever
+        pip is configured with: uv's settings were never pip's to read, which is a
+        property of the two tools rather than something this installer introduces.
+        What the opt-out promises is that OUR relaxations are withheld, and they are."""
         calls, raised = self._fallback_calls(
             {"UNSLOTH_RESPECT_PM_POLICY": "1", "UV_REQUIRE_HASHES": "1"}
         )
-        assert raised is not None and raised.code == 2
-        assert calls == [], "the pip fallback must not run when it would drop the policy"
+        assert raised is None
+        assert calls, "the pip fallback must still run"
+        with mock.patch.dict(
+            os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True
+        ):
+            assert ips._relaxed_pip_policy_env(["python", "-m", "pip", "install", "x"]) == {}
 
     def test_the_fallback_still_runs_when_the_opt_out_drops_nothing(self):
         """The flag alone is not a reason to refuse. An operator who sets it
@@ -797,939 +808,6 @@ class TestTheOptOutIsNotDefeatedByOurOwnEscapeHatches:
         policy set that drives detection and the pinned scrub must agree with it."""
         assert "UV_ONLY_BINARY" in ips._PM_POLICY_ENV_VARS
         assert "UV_ONLY_BINARY_PACKAGE" in ips._PM_POLICY_ENV_VARS
-
-
-class TestConfigDetectionReadsValuesNotJustKeys:
-    """The notice is only worth printing if it is accurate in both directions."""
-
-    def _names(
-        self,
-        environment,
-        pip_ok = False,
-        pip_config = "",
-        uv_files = (),
-    ):
-        ips._policy_scan.cache_clear()
-        runner = (
-            mock.Mock(return_value = mock.Mock(returncode = 0, stdout = pip_config.encode()))
-            if pip_ok
-            else mock.Mock(side_effect = OSError("no pip"))
-        )
-        with (
-            mock.patch.dict(os.environ, environment, clear = True),
-            mock.patch.object(ips.subprocess, "run", runner),
-            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: list(uv_files)),
-            mock.patch.object(ips, "_hardened_pip_config_paths", lambda: []),
-        ):
-            names = ips._hardened_pm_policy_names()
-        ips._policy_scan.cache_clear()
-        return names
-
-    @pytest.mark.parametrize(
-        "body, expected",
-        [
-            ("no-build = true\n", ("uv.toml no-build",)),
-            # A disabled policy is an ordinary machine; reporting it puts a security
-            # notice in front of someone who switched the control off.
-            ("no-build = false\n", ()),
-            ("no-binary = false\n", ()),
-            ("no-build-package = []\n", ()),
-            ('no-build-package = ["torch"]\n', ("uv.toml no-build-package",)),
-            ('exclude-newer = "2024-01-01T00:00:00Z"\n', ("uv.toml exclude-newer",)),
-            ("# no-build = true\n", ()),
-            ("no-build-isolation = true\n", ()),
-            ("[pip]\nrequire-hashes = true\n", ("uv.toml require-hashes",)),
-            # uv reads none of this table, so neither do we.
-            ("[tool.other]\nno-build = true\n", ()),
-        ],
-    )
-    def test_uv_toml_values_are_parsed(self, tmp_path, body, expected):
-        config = tmp_path / "uv.toml"
-        config.write_text(body, encoding = "utf-8")
-        assert self._names({}, uv_files = [str(config)]) == expected
-
-    def test_pyproject_is_read_only_under_tool_uv(self, tmp_path):
-        """Measured on uv 0.12.1: a cwd pyproject's [tool.uv.pip] require-hashes DOES
-        fail a uv pip install ("Found workspace configuration" in -v), so it is real
-        policy. A parent directory's pyproject is NOT read, and neither is a bare
-        parent uv.toml, so neither is claimed here."""
-        config = tmp_path / "pyproject.toml"
-        config.write_text(
-            '[project]\nname = "x"\nversion = "1"\n[tool.uv.pip]\nrequire-hashes = true\n',
-            encoding = "utf-8",
-        )
-        assert self._names({}, uv_files = [str(config)]) == ("pyproject.toml require-hashes",)
-        config.write_text(
-            '[project]\nname = "x"\nversion = "1"\n[tool.poetry]\nno-build = true\n',
-            encoding = "utf-8",
-        )
-        assert self._names({}, uv_files = [str(config)]) == ()
-
-    def test_the_regex_fallback_agrees_with_the_parser(self, tmp_path):
-        """3.9/3.10 have no tomllib. The fallback must still test the value."""
-        config = tmp_path / "uv.toml"
-        for body, expected in (
-            ("no-build = true\n", ("uv.toml no-build",)),
-            ("no-build = false\n", ()),
-            ("  no-build   =   true  \n", ("uv.toml no-build",)),
-            ("# no-build = true\n", ()),
-        ):
-            config.write_text(body, encoding = "utf-8")
-            with mock.patch.object(ips, "_tomllib", None):
-                assert self._names({}, uv_files = [str(config)]) == expected
-
-    def test_pip_config_is_read_directly_when_pip_is_missing(self, tmp_path):
-        """install.sh builds the venv with uv, which seeds no pip, so at the moment the
-        notice runs `python -m pip config list` fails -- while the pip FALLBACK later in
-        the same install reads pip.conf perfectly well."""
-        config = tmp_path / "pip.conf"
-        config.write_text(
-            "[global]\nrequire-hashes = true\nindex-url = https://m/s\n", encoding = "utf-8"
-        )
-        ips._policy_scan.cache_clear()
-        with (
-            mock.patch.dict(os.environ, {}, clear = True),
-            mock.patch.object(ips.subprocess, "run", mock.Mock(side_effect = OSError)),
-            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: []),
-            mock.patch.object(ips, "_hardened_pip_config_paths", lambda: [str(config)]),
-        ):
-            names = ips._hardened_pm_policy_names()
-        ips._policy_scan.cache_clear()
-        assert names == ("pip.conf require-hashes",), "a mirror is not hardening"
-
-    def test_pip_files_are_not_double_read_when_pip_answers(self, tmp_path):
-        """pip merges global/user/site in its own order and reports the winner, so when
-        the subprocess works its answer is the whole answer."""
-        config = tmp_path / "pip.conf"
-        config.write_text("[global]\nonly-binary = :all:\n", encoding = "utf-8")
-        ips._policy_scan.cache_clear()
-        with (
-            mock.patch.dict(os.environ, {}, clear = True),
-            mock.patch.object(
-                ips.subprocess,
-                "run",
-                mock.Mock(
-                    return_value = mock.Mock(returncode = 0, stdout = b"global.require-hashes='true'\n")
-                ),
-            ),
-            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: []),
-            mock.patch.object(ips, "_hardened_pip_config_paths", lambda: [str(config)]),
-        ):
-            names = ips._hardened_pm_policy_names()
-        ips._policy_scan.cache_clear()
-        assert names == ("pip.conf require-hashes",)
-
-    def test_devnull_pip_config_means_no_files_at_all(self):
-        """Documented pip behaviour: PIP_CONFIG_FILE=os.devnull disables the loading of
-        ALL configuration files, so there is nothing to report."""
-        with mock.patch.dict(os.environ, {"PIP_CONFIG_FILE": os.devnull}, clear = True):
-            assert ips._hardened_pip_config_paths() == []
-
-    def test_documented_pip_locations_are_searched(self):
-        # Separator-normalised: these force IS_WINDOWS=False to exercise the POSIX branch,
-        # but os.path.join still uses the RUNNER's separator, so a literal "/etc/pip.conf"
-        # would fail the whole suite on windows-latest.
-        with (
-            mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
-            _posix_home(),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(os.path, "isfile", lambda path: True),
-        ):
-            posix = [path.replace(os.sep, "/") for path in ips._hardened_pip_config_paths()]
-        assert "/etc/pip.conf" in posix
-        assert "/etc/xdg/pip/pip.conf" in posix
-        assert "/home/u/.config/pip/pip.conf" in posix
-        assert "/home/u/.pip/pip.conf" in posix
-        with (
-            mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
-            _posix_home(),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", True),
-            mock.patch.object(os.path, "isfile", lambda path: True),
-        ):
-            macos = [path.replace(os.sep, "/") for path in ips._hardened_pip_config_paths()]
-        assert "/home/u/Library/Application Support/pip/pip.conf" in macos
-        with (
-            mock.patch.dict(os.environ, {"APPDATA": "C:\\a", "PROGRAMDATA": "C:\\pd"}, clear = True),
-            mock.patch.object(ips, "IS_WINDOWS", True),
-            mock.patch.object(os.path, "isfile", lambda path: True),
-        ):
-            windows = ips._hardened_pip_config_paths()
-        assert windows and all(path.endswith("pip.ini") for path in windows)
-        assert any(path.startswith("C:\\pd") for path in windows)
-
-    def test_pip_config_precedence_is_resolved(self):
-        """`pip config list` prints EVERY definition, overridden ones included.
-
-        Measured on pip 26.2.1 with a user pip.conf `require-hashes = true` and a venv
-        site pip.conf `require-hashes = false`: both lines are emitted, `pip config get
-        global.require-hashes` returns false, and the install is NOT hash-checked. Taking
-        any enabled occurrence announced a policy pip does not apply.
-        """
-        listing = "global.require-hashes='true'\nglobal.require-hashes='false'\n"
-        assert self._names({}, pip_ok = True, pip_config = listing) == ()
-        # And the other order still reports it, so the resolution is precedence, not
-        # "an off value anywhere wins".
-        listing = "global.require-hashes='false'\nglobal.require-hashes='true'\n"
-        assert self._names({}, pip_ok = True, pip_config = listing) == ("pip.conf require-hashes",)
-
-    def test_file_precedence_is_resolved_when_pip_is_missing(self, tmp_path):
-        """The same resolution in the branch this feature exists for: no pip at all."""
-        user = tmp_path / "user.conf"
-        user.write_text("[global]\nrequire-hashes = true\n", encoding = "utf-8")
-        site = tmp_path / "site.conf"
-        site.write_text("[global]\nrequire-hashes = false\n", encoding = "utf-8")
-        ips._policy_scan.cache_clear()
-        with (
-            mock.patch.dict(os.environ, {}, clear = True),
-            mock.patch.object(ips.subprocess, "run", mock.Mock(side_effect = OSError)),
-            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: []),
-            # Returned in pip's load order, so the site file is last and wins.
-            mock.patch.object(ips, "_hardened_pip_config_paths", lambda: [str(user), str(site)]),
-        ):
-            names = ips._hardened_pm_policy_names()
-        ips._policy_scan.cache_clear()
-        assert names == ()
-
-    def test_a_malformed_pip_conf_is_survivable(self, tmp_path):
-        config = tmp_path / "pip.conf"
-        config.write_text("this is not ini at all\n[[[\n", encoding = "utf-8")
-        assert ips._hardened_keys_in_ini(config.read_text(encoding = "utf-8")) == []
-
-
-class TestNeitherManagerIsLetOffTheOthersPolicy:
-    """pip and uv read none of each other's policy, so under the opt-out a step that runs
-    the manager the operator did NOT configure would proceed unrestricted.
-
-    Measured on the pinned uv 0.12.1: `uv pip install` of an unhashed wheel succeeds with
-    PIP_REQUIRE_HASHES=1 set AND with a pip.conf require-hashes, and is rejected only by
-    UV_REQUIRE_HASHES=1. Since pip_install() prefers uv, a pip-only policy was a silent
-    bypass.
-
-    Restating each control in the other manager's spelling was tried and removed: the two
-    differ on scopes, per-subcommand sections, config discovery and which controls exist
-    at all, and every gap became a way to fail an install the real policy permitted. The
-    step now stops and names the setting to add, which cannot invent a restriction.
-    """
-
-    def _detect(
-        self,
-        on,
-        configured = None,
-    ):
-        scan = (tuple(on), {k: frozenset(v) for k, v in (configured or {}).items()})
-        return mock.patch.object(ips, "_policy_scan", lambda: scan)
-
-    def _run(
-        self,
-        cmd,
-        on,
-        configured = None,
-        env = None,
-    ):
-        environment = {"UNSLOTH_RESPECT_PM_POLICY": "1"}
-        environment.update(env or {})
-        with (
-            mock.patch.dict(os.environ, environment, clear = True),
-            self._detect(on, configured),
-        ):
-            return ips._install_env_for_cmd(list(cmd))
-
-    def test_a_uv_step_stops_when_only_pip_is_hardened(self):
-        with pytest.raises(SystemExit) as exit_info:
-            self._run(
-                ["uv", "pip", "install", "-r", "extras.txt"],
-                [("pip", "env", "PIP_REQUIRE_HASHES")],
-                {"pip": {"require-hashes"}, "uv": set()},
-            )
-        assert exit_info.value.code == 1
-
-    def test_a_pip_step_stops_when_only_uv_is_hardened(self):
-        with pytest.raises(SystemExit):
-            self._run(
-                ["python", "-m", "pip", "install", "x"],
-                [("uv", "uv.toml", "no-build")],
-                {"uv": {"no-build"}, "pip": set()},
-            )
-
-    def test_the_message_names_the_control_and_the_setting_to_add(self, capsys):
-        with pytest.raises(SystemExit):
-            self._run(
-                ["uv", "pip", "install", "x"],
-                [("pip", "pip.conf", "require-hashes")],
-                {"pip": {"require-hashes"}, "uv": set()},
-            )
-        out = " ".join(capsys.readouterr().out.split())
-        assert "require-hashes" in out and "UV_REQUIRE_HASHES" in out
-        assert "UNSLOTH_RESPECT_PM_POLICY" in out
-
-    def test_a_deliberate_difference_is_not_a_gap(self):
-        """A uv config saying `[pip] require-hashes = false` next to PIP_REQUIRE_HASHES=1
-        is the operator configuring the two differently, not uv missing a control."""
-        assert (
-            self._run(
-                ["uv", "pip", "install", "x"],
-                [("pip", "env", "PIP_REQUIRE_HASHES")],
-                {"pip": {"require-hashes"}, "uv": {"require-hashes"}},
-            )
-            is None
-        )
-
-    def test_the_manager_that_owns_the_policy_is_left_alone(self):
-        assert (
-            self._run(
-                ["uv", "pip", "install", "x"],
-                [("uv", "env", "UV_REQUIRE_HASHES")],
-                {"uv": {"require-hashes"}, "pip": set()},
-            )
-            is None
-        )
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            ["python", "patch_metadata.py"],
-            ["python", "-m", "pip", "check"],
-            ["python", "-m", "pip", "--version"],
-            ["python", "-m", "ensurepip", "--upgrade"],
-        ],
-    )
-    def test_a_command_that_resolves_nothing_is_never_refused(self, cmd):
-        """run() routes EVERY command through this helper. Treating them all as pip
-        installs turned an unenforceable policy into a hard exit on the final metadata
-        patch, after every real step had succeeded."""
-        assert (
-            self._run(
-                cmd,
-                [("uv", "env", "UV_EXCLUDE_NEWER")],
-                {"uv": {"exclude-newer"}, "pip": set()},
-            )
-            is None
-        )
-
-    def test_nothing_is_refused_without_the_opt_out(self):
-        with (
-            mock.patch.dict(os.environ, {}, clear = True),
-            self._detect(
-                [("pip", "env", "PIP_REQUIRE_HASHES")],
-                {"pip": {"require-hashes"}, "uv": set()},
-            ),
-        ):
-            assert ips._install_env_for_cmd(["uv", "pip", "install", "x"]) is None
-
-
-class TestDetectionMatchesPipsOwnRules:
-    """Each of these was checked against pip's source or measured, not assumed."""
-
-    def _names(
-        self,
-        environment,
-        pip_ok = False,
-        pip_config = "",
-        uv_files = (),
-        pip_files = (),
-    ):
-        ips._policy_scan.cache_clear()
-        runner = (
-            mock.Mock(return_value = mock.Mock(returncode = 0, stdout = pip_config.encode()))
-            if pip_ok
-            else mock.Mock(side_effect = OSError("no pip"))
-        )
-        with (
-            mock.patch.dict(os.environ, environment, clear = True),
-            mock.patch.object(ips.subprocess, "run", runner),
-            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: list(uv_files)),
-            mock.patch.object(ips, "_hardened_pip_config_paths", lambda: list(pip_files)),
-        ):
-            names = ips._hardened_pm_policy_names()
-        ips._policy_scan.cache_clear()
-        return names
-
-    @pytest.mark.parametrize("value", ["off", "n", "f", "no", "false", "0", ""])
-    def test_pips_false_spellings_are_all_disabled(self, value):
-        """pip's strtobool: false is n, no, f, false, off, 0. `off`, `n` and `f` were
-        being read as ENABLED, which under the opt-out translated a disabled setting
-        into a uv control and failed the install."""
-        assert self._names({"PIP_REQUIRE_HASHES": value}) == ()
-
-    @pytest.mark.parametrize("value", ["on", "y", "t", "yes", "true", "1"])
-    def test_pips_true_spellings_are_all_enabled(self, value):
-        assert self._names({"PIP_REQUIRE_HASHES": value}) == ("PIP_REQUIRE_HASHES",)
-
-    def test_a_disabled_environment_variable_cancels_a_config_file(self, tmp_path):
-        """pip's environment beats every config file, so a config that enables a control
-        the environment explicitly disables is not policy. Reporting it printed a notice
-        and, under the opt-out, translated the cancelled setting into uv and failed."""
-        config = tmp_path / "pip.conf"
-        config.write_text("[global]\nrequire-hashes = true\n", encoding = "utf-8")
-        assert self._names({"PIP_REQUIRE_HASHES": "0"}, pip_files = [str(config)]) == ()
-        # Without the cancelling variable it is reported normally.
-        assert self._names({}, pip_files = [str(config)]) == ("pip.conf require-hashes",)
-
-    def test_the_command_section_beats_global_whatever_the_order(self):
-        """pip applies [global] then the command's own section, independent of textual
-        order, so [install] wins for the commands this module runs."""
-        body = "[install]\nrequire-hashes = true\n[global]\nrequire-hashes = false\n"
-        assert ips._hardened_settings_in_ini(body) == {"require-hashes": "true"}
-        body = "[global]\nrequire-hashes = false\n[install]\nrequire-hashes = true\n"
-        assert ips._hardened_settings_in_ini(body) == {"require-hashes": "true"}
-
-    def test_a_section_for_another_command_is_ignored(self):
-        assert ips._hardened_settings_in_ini("[freeze]\nrequire-hashes = true\n") == {}
-
-    def test_config_list_ranks_sections_too(self):
-        listing = "install.require-hashes='true'\nglobal.require-hashes='false'\n"
-        assert self._names({}, pip_ok = True, pip_config = listing) == ("pip.conf require-hashes",)
-
-    def test_user_configs_are_skipped_when_an_explicit_file_exists(self, tmp_path):
-        """pip's iter_config_files: "per-user config is not loaded when env_config_file
-        exists". Scanning them anyway invents a policy pip would not apply."""
-        explicit = tmp_path / "explicit.conf"
-        explicit.write_text("[global]\ntimeout = 60\n", encoding = "utf-8")
-        with (
-            mock.patch.dict(
-                os.environ,
-                {"HOME": "/home/u", "PIP_CONFIG_FILE": str(explicit)},
-                clear = True,
-            ),
-            _posix_home(),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(os.path, "isfile", lambda path: True),
-        ):
-            paths = [path.replace(os.sep, "/") for path in ips._hardened_pip_config_paths()]
-        assert not any("/home/u/.config/pip" in path for path in paths)
-        assert not any("/home/u/.pip" in path for path in paths)
-        assert "/etc/pip.conf" in paths, "global and site are still loaded"
-        assert str(explicit).replace(os.sep, "/") in paths
-
-    def test_the_windows_legacy_user_config_is_searched(self):
-        """pip's get_configuration_files still returns ~/pip/pip.ini on Windows."""
-        with (
-            mock.patch.dict(os.environ, {"APPDATA": "C:\\a"}, clear = True),
-            mock.patch.object(ips, "IS_WINDOWS", True),
-            mock.patch.object(os.path, "expanduser", lambda p: p.replace("~", "C:\\u", 1)),
-            mock.patch.object(os.path, "isfile", lambda path: True),
-        ):
-            paths = ips._hardened_pip_config_paths()
-        assert any(path.startswith("C:\\u") and path.endswith("pip.ini") for path in paths)
-
-
-class TestDetectionMatchesWhatTheManagersActuallyEnforce:
-    """Detection has to report the policy in force, not the policy that looks configured.
-
-    Every claim below was measured against the versions Unsloth ships against: the uv
-    0.12.1 that setup.sh pins by sha256, and pip 26.2.1. Over-reporting is not the safe
-    direction here, because under the opt-out a control credited to one manager and not
-    the other stops the step.
-    """
-
-    _names = TestDetectionMatchesPipsOwnRules._names
-
-    @pytest.mark.parametrize(
-        "name,value",
-        [
-            ("UV_NO_BUILD", "true"),
-            ("UV_NO_BUILD_PACKAGE", "simsrc"),
-            ("UV_ONLY_BINARY", ":all:"),
-            ("UV_NO_BINARY", ":all:"),
-        ],
-    )
-    def test_the_uv_artifact_variables_uv_ignores_are_not_policy(self, name, value):
-        """Measured on the pinned uv 0.12.1: a source directory installs with any of
-        these set, and is refused by the matching --no-build / --no-binary flag or by a
-        uv.toml carrying it. `uv help pip install` lists no [env:] spelling for them.
-
-        They are still stripped from a pinned command, which costs nothing. Counting one
-        as uv policy is the harm: it hid a genuine pip-side gap under the opt-out by
-        making uv look as though it had the control covered."""
-        assert self._names({name: value}) == ()
-        assert ips._configured_policy_keys()["uv"] == frozenset()
-
-    @pytest.mark.parametrize("name", ["UV_REQUIRE_HASHES", "UV_EXCLUDE_NEWER"])
-    def test_the_uv_variables_uv_does_read_are_still_policy(self, name):
-        """The same measurement the other way: UV_REQUIRE_HASHES fails an unhashed
-        install and UV_EXCLUDE_NEWER filters by upload date, both from the environment
-        alone."""
-        value = "1" if name.endswith("HASHES") else "2020-01-01T00:00:00Z"
-        assert self._names({name: value}) == (name,)
-
-    @pytest.mark.parametrize("key", ["no-build", "no-build-package", "exclude-newer"])
-    def test_a_uv_only_key_in_pip_conf_is_not_pip_policy(self, key, tmp_path):
-        """pip 26.2.1 has no option for these, so `pip install --help` exposes nothing
-        for them and an entry in pip.conf is inert. Reading one as pip policy made the
-        first uv step refuse under the opt-out over a gap that did not exist."""
-        config = tmp_path / "pip.conf"
-        config.write_text(f"[global]\n{key} = true\n", encoding = "utf-8")
-        assert self._names({}, pip_files = [str(config)]) == ()
-
-    @pytest.mark.parametrize("key", ["require-hashes", "only-binary", "uploaded-prior-to"])
-    def test_the_keys_pip_does_have_are_still_read(self, key, tmp_path):
-        config = tmp_path / "pip.conf"
-        value = "true" if key == "require-hashes" else ":all:"
-        config.write_text(f"[global]\n{key} = {value}\n", encoding = "utf-8")
-        assert self._names({}, pip_files = [str(config)]) == (f"pip.conf {key}",)
-
-    def test_an_empty_variable_does_not_cancel_a_config_file(self, tmp_path):
-        """pip drops empty environment values before applying precedence. Measured with
-        pip 26.2.1: PIP_ONLY_BINARY='' still rejects an sdist under a pip.conf
-        `only-binary = :all:`, while `:none:` clears it. Treating the empty spelling as a
-        cancellation suppressed a policy that was fully in force."""
-        config = tmp_path / "pip.conf"
-        config.write_text("[global]\nonly-binary = :all:\n", encoding = "utf-8")
-        assert self._names({"PIP_ONLY_BINARY": ""}, pip_files = [str(config)]) == (
-            "pip.conf only-binary",
-        )
-        assert self._names({"PIP_ONLY_BINARY": ":none:"}, pip_files = [str(config)]) == ()
-
-    def test_a_subcommand_setting_survives_a_later_file(self, tmp_path):
-        """pip resolves each command separately across ALL its files, so a low-priority
-        file's [wheel] entry cannot erase a higher one's [install] entry. Collapsing each
-        file before reading the next reported an unhardened host while pip was still
-        hash-checking every install."""
-        first = tmp_path / "user.conf"
-        first.write_text("[install]\nrequire-hashes = true\n", encoding = "utf-8")
-        second = tmp_path / "site.conf"
-        second.write_text("[wheel]\nrequire-hashes = false\n", encoding = "utf-8")
-        assert self._names({}, pip_files = [str(first), str(second)]) == ("user.conf require-hashes",)
-        # And the ordinary same-section override still works.
-        third = tmp_path / "later.conf"
-        third.write_text("[install]\nrequire-hashes = false\n", encoding = "utf-8")
-        assert self._names({}, pip_files = [str(first), str(third)]) == ()
-
-    def test_a_project_config_can_switch_a_user_config_off(self, tmp_path):
-        """Measured on the pinned uv 0.12.1: a user `~/.config/uv/uv.toml` with
-        `[pip] require-hashes = true` plus a project `[tool.uv.pip] require-hashes =
-        false` installs unhashed. Reporting the user value regardless made a later pip
-        step refuse under the opt-out over policy uv was not enforcing."""
-        user = tmp_path / "uv.toml"
-        user.write_text("[pip]\nrequire-hashes = true\n", encoding = "utf-8")
-        project = tmp_path / "pyproject.toml"
-        project.write_text(
-            '[project]\nname = "p"\nversion = "0"\n[tool.uv.pip]\nrequire-hashes = false\n',
-            encoding = "utf-8",
-        )
-        assert self._names({}, uv_files = [str(user)]) == ("uv.toml require-hashes",)
-        assert self._names({}, uv_files = [str(user), str(project)]) == ()
-
-    def test_the_uv_files_come_back_lowest_precedence_first(self, tmp_path):
-        """The resolution above is only correct if the order is: system, user, project."""
-        home = tmp_path / "home"
-        (home / "uv").mkdir(parents = True)
-        (home / "uv" / "uv.toml").write_text("[pip]\nno-build = true\n", encoding = "utf-8")
-        project = tmp_path / "proj"
-        project.mkdir()
-        (project / "pyproject.toml").write_text('[project]\nname = "p"\n', encoding = "utf-8")
-        with (
-            mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(home)}, clear = True),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(os, "getcwd", lambda: str(project)),
-            mock.patch.object(ips.os.path, "isfile", os.path.isfile),
-        ):
-            paths = ips._hardened_uv_config_paths()
-        assert paths[-1] == str(project / "pyproject.toml"), paths
-        assert str(home / "uv" / "uv.toml") in paths
-
-    def test_a_parent_pyproject_is_discovered_from_a_child_directory(self, tmp_path):
-        """Measured on the pinned uv 0.12.1: a parent `[tool.uv.pip] require-hashes =
-        true` fails an install run from a child directory. Studio is normally launched
-        from one, so stopping at the working directory missed real policy."""
-        parent = tmp_path / "parent"
-        (parent / "child" / "deep").mkdir(parents = True)
-        (parent / "pyproject.toml").write_text('[project]\nname = "p"\n', encoding = "utf-8")
-        with mock.patch.object(os, "getcwd", lambda: str(parent / "child" / "deep")):
-            assert ips._uv_project_config() == [str(parent / "pyproject.toml")]
-
-    def test_a_uv_toml_beside_the_pyproject_wins(self, tmp_path):
-        (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\n', encoding = "utf-8")
-        (tmp_path / "uv.toml").write_text("[pip]\nrequire-hashes = true\n", encoding = "utf-8")
-        with mock.patch.object(os, "getcwd", lambda: str(tmp_path)):
-            assert ips._uv_project_config() == [str(tmp_path / "uv.toml")]
-
-    def test_a_uv_toml_with_no_pyproject_beside_it_is_not_read(self, tmp_path):
-        """Measured: uv reads it in neither the working directory nor any ancestor, so
-        reporting it would be hardening uv does not apply."""
-        (tmp_path / "uv.toml").write_text("[pip]\nrequire-hashes = true\n", encoding = "utf-8")
-        with mock.patch.object(os, "getcwd", lambda: str(tmp_path)):
-            assert ips._uv_project_config() == []
-
-    def test_the_walk_terminates_on_a_host_with_no_pyproject_anywhere(self):
-        with mock.patch.object(os, "getcwd", lambda: "/a/b/c"):
-            with mock.patch.object(ips.os.path, "isfile", lambda path: False):
-                assert ips._uv_project_config() == []
-
-    def test_a_deleted_working_directory_is_not_an_error(self):
-        with mock.patch.object(os, "getcwd", mock.Mock(side_effect = OSError("gone"))):
-            assert ips._uv_project_config() == []
-
-    def test_a_command_section_beats_a_global_in_a_higher_priority_file(self, tmp_path):
-        """pip pools every file's [global] into one group and every file's command
-        section into another, then applies global first and the command second, so an
-        [install] entry in a low-priority file still wins. Folding global into the
-        command sections file by file let a later [global] erase it."""
-        first = tmp_path / "user.conf"
-        first.write_text("[install]\nrequire-hashes = true\n", encoding = "utf-8")
-        second = tmp_path / "site.conf"
-        second.write_text("[global]\nrequire-hashes = false\n", encoding = "utf-8")
-        assert self._names({}, pip_files = [str(first), str(second)]) == ("user.conf require-hashes",)
-
-    def test_the_underscore_spelling_is_normalised(self, tmp_path):
-        """pip's _normalize_name lowercases and turns underscores into dashes, so
-        `require_hashes` is a spelling it honours. RawConfigParser keeps the underscore,
-        so matching only the dashed name read a hardened host as ordinary."""
-        config = tmp_path / "pip.conf"
-        config.write_text("[global]\nREQUIRE_HASHES = true\n", encoding = "utf-8")
-        assert self._names({}, pip_files = [str(config)]) == ("pip.conf require-hashes",)
-
-    def test_the_modern_user_file_outranks_the_legacy_one(self):
-        """pip's get_configuration_files returns the user kind as
-        [legacy_config_file, new_config_file] and loads them in that order."""
-        with (
-            mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
-            _posix_home(),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(os.path, "isfile", lambda path: True),
-        ):
-            paths = [path.replace(os.sep, "/") for path in ips._hardened_pip_config_paths()]
-        assert paths.index("/home/u/.pip/pip.conf") < paths.index(
-            "/home/u/.config/pip/pip.conf"
-        ), paths
-
-    def test_the_windows_appdata_file_outranks_the_legacy_one(self):
-        with (
-            mock.patch.dict(os.environ, {"APPDATA": "C:\\a"}, clear = True),
-            mock.patch.object(ips, "IS_WINDOWS", True),
-            mock.patch.object(os.path, "expanduser", lambda p: p.replace("~", "C:\\u", 1)),
-            mock.patch.object(os.path, "isfile", lambda path: True),
-        ):
-            # os.path.join follows the RUNNER, so normalise both separators: this test is
-            # about the ORDER of the locations, not how a platform spells a path.
-            paths = [
-                path.replace("\\", "/").replace(os.sep, "/")
-                for path in ips._hardened_pip_config_paths()
-            ]
-        assert paths.index("C:/u/pip/pip.ini") < paths.index("C:/a/pip/pip.ini"), paths
-
-    def test_a_package_scoped_key_does_not_erase_its_global_twin(self, tmp_path):
-        """`no-build` and `no-build-package` are one CONTROL but two SETTINGS. Storing
-        them under the canonical name let an empty `no-build-package = []` beside an
-        active `no-build = true` erase it, and uv still refuses source builds there."""
-        config = tmp_path / "uv.toml"
-        config.write_text("no-build = true\nno-build-package = []\n", encoding = "utf-8")
-        assert self._names({}, uv_files = [str(config)]) == ("uv.toml no-build",)
-
-    def test_an_explicit_config_file_is_read_as_a_standalone_uv_toml(self, tmp_path):
-        """uv parses the file named by UV_CONFIG_FILE with the uv.toml schema whatever it
-        is called, so choosing the schema from the basename lost the policy of an
-        explicit file that happened to be named pyproject.toml."""
-        explicit = tmp_path / "pyproject.toml"
-        explicit.write_text("no-build = true\n", encoding = "utf-8")
-        assert self._names({"UV_CONFIG_FILE": str(explicit)}, uv_files = [str(explicit)]) == (
-            "pyproject.toml no-build",
-        )
-        # A DISCOVERED pyproject.toml keeps the [tool.uv] schema, where a root key is
-        # some other tool's setting and not uv policy.
-        assert self._names({}, uv_files = [str(explicit)]) == ()
-
-    def test_a_dotted_key_is_a_table_in_the_legacy_parser(self):
-        """`pip.require-hashes = true` at the root of a uv.toml is the inline spelling of
-        `[pip] require-hashes = true`, which uv enforces. Read as one literal key it
-        matched nothing and the policy was dropped on 3.9 and 3.10."""
-        with mock.patch.object(ips, "_tomllib", None):
-            assert ips._hardened_keys_in_toml("pip.require-hashes = true\n", ((), ("pip",))) == [
-                "require-hashes"
-            ]
-            # A dotted key naming a table we do not read stays ignored.
-            assert ips._hardened_keys_in_toml("other.require-hashes = true\n", ((), ("pip",))) == []
-
-    def test_a_download_only_section_is_not_an_opinion_about_install(self, tmp_path):
-        """pip resolves each subcommand separately, so `[download] only-binary = :all:`
-        does not restrict `pip install`. Pooling the three let a fallback install run as
-        though the operator's control were covered when that command was unrestricted."""
-        config = tmp_path / "pip.conf"
-        config.write_text("[download]\nonly-binary = :all:\n", encoding = "utf-8")
-        ips._policy_scan.cache_clear()
-        with (
-            mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True),
-            mock.patch.object(ips.subprocess, "run", mock.Mock(side_effect = OSError())),
-            mock.patch.object(ips, "_hardened_pip_config_paths", lambda: [str(config)]),
-            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: []),
-        ):
-            keys = ips._configured_policy_keys()
-            assert "no-build" in keys["pip:download"]
-            assert "no-build" not in keys["pip:install"], keys
-        ips._policy_scan.cache_clear()
-
-    @pytest.mark.parametrize("variable", ["UV_PROJECT", "UV_WORKING_DIR"])
-    def test_uvs_own_project_root_is_used_not_this_processs_cwd(self, variable, tmp_path):
-        """Measured on the pinned uv 0.12.1: a `[tool.uv.pip] require-hashes = true` in
-        a project named by either variable is enforced from an unrelated cwd. Walking
-        from getcwd() alone scanned the wrong tree."""
-        project = tmp_path / "elsewhere"
-        project.mkdir()
-        (project / "pyproject.toml").write_text('[project]\nname = "p"\n', encoding = "utf-8")
-        elsewhere = tmp_path / "cwd"
-        elsewhere.mkdir()
-        with (
-            mock.patch.dict(os.environ, {variable: str(project)}, clear = True),
-            mock.patch.object(os, "getcwd", lambda: str(elsewhere)),
-        ):
-            assert ips._uv_project_config() == [str(project / "pyproject.toml")]
-
-    def test_an_explicit_config_file_survives_no_config(self, tmp_path):
-        """Measured: uv reads the file named by UV_CONFIG_FILE with UV_NO_CONFIG=1 set
-        as well, so returning nothing there dropped policy that was still in force."""
-        explicit = tmp_path / "uv.toml"
-        explicit.write_text("[pip]\nrequire-hashes = true\n", encoding = "utf-8")
-        with mock.patch.dict(
-            os.environ,
-            {"UV_CONFIG_FILE": str(explicit), "UV_NO_CONFIG": "1"},
-            clear = True,
-        ):
-            assert ips._hardened_uv_config_paths() == [str(explicit)]
-        # Without an explicit file, --no-config still means nothing is discovered.
-        with mock.patch.dict(os.environ, {"UV_NO_CONFIG": "1"}, clear = True):
-            assert ips._hardened_uv_config_paths() == []
-
-    def test_the_macos_global_set_covers_both_pip_generations(self):
-        """pip changed under us: measured, pip 26.1 resolves the Darwin global set to
-        /Library/Application Support and ignores XDG_DATA_DIRS, while 26.2.1 lets
-        XDG_DATA_DIRS replace it. Either can be the pip on a user's machine."""
-        with (
-            mock.patch.dict(os.environ, {"XDG_DATA_DIRS": "/a", "HOME": "/home/u"}, clear = True),
-            _posix_home(),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", True),
-            mock.patch.object(os.path, "isfile", lambda path: True),
-        ):
-            paths = [path.replace(os.sep, "/") for path in ips._hardened_pip_config_paths()]
-        assert "/Library/Application Support/pip/pip.conf" in paths, paths
-        assert "/a/pip/pip.conf" in paths, paths
-
-    def test_the_refusal_names_a_uv_no_binary_value_uv_accepts(self):
-        """uv's no-binary is a package LIST: `no-binary = true` is a config parse error
-        there, so the remediation would have left the operator with an unusable uv."""
-        _pip, uv_name = ips._POLICY_EQUIVALENTS["no-binary"]
-        assert ":all:" in uv_name and "= true" not in uv_name, uv_name
-
-    @pytest.mark.parametrize(
-        "body,tables,expected",
-        [
-            (
-                "[tool]\nuv = { pip = { require-hashes = true } }\n",
-                (("tool", "uv"), ("tool", "uv", "pip")),
-                ["require-hashes"],
-            ),
-            ("pip = { require-hashes = true }\n", ((), ("pip",)), ["require-hashes"]),
-            (
-                "[other]\nuv = { pip = { require-hashes = true } }\n",
-                (("tool", "uv"), ("tool", "uv", "pip")),
-                [],
-            ),
-        ],
-    )
-    def test_the_legacy_parser_reads_inline_tables(self, body, tables, expected):
-        """uv 0.12.1 enforces `[tool] uv = { pip = { require-hashes = true } }`, which
-        the pre-3.11 fallback skipped because `tool` is not itself a table it reads."""
-        with mock.patch.object(ips, "_tomllib", None):
-            assert ips._hardened_keys_in_toml(body, tables) == expected
-
-    def test_an_empty_toml_map_is_not_hardening(self):
-        """`exclude-newer-package = {}` reached the value conversion as an empty dict and
-        came out as the string "{}", which is not an off spelling. uv applies no cutoff
-        for it, and under the opt-out the phantom control could stop a pip step."""
-        assert (
-            ips._hardened_keys_in_toml("[pip]\nexclude-newer-package = {}\n", ((), ("pip",))) == []
-        )
-        assert ips._hardened_keys_in_toml(
-            '[pip]\nexclude-newer-package = { foo = "2020-01-01T00:00:00Z" }\n',
-            ((), ("pip",)),
-        ) == ["exclude-newer-package"]
-
-    def test_a_relative_explicit_config_resolves_against_uvs_directory(self, tmp_path):
-        """--directory changes directory before running, so a relative --config-file is
-        resolved there. Measured: UV_WORKING_DIR=work UV_CONFIG_FILE=cfg.toml enforces
-        require-hashes, while the same relative path without it cannot even be opened."""
-        work = tmp_path / "work"
-        work.mkdir()
-        (work / "cfg.toml").write_text("[pip]\nrequire-hashes = true\n", encoding = "utf-8")
-        with mock.patch.dict(
-            os.environ,
-            {"UV_CONFIG_FILE": "cfg.toml", "UV_WORKING_DIR": str(work)},
-            clear = True,
-        ):
-            assert ips._hardened_uv_config_paths() == [str(work / "cfg.toml")]
-        # An absolute path is left alone.
-        absolute = str(work / "cfg.toml")
-        with mock.patch.dict(
-            os.environ,
-            {"UV_CONFIG_FILE": absolute, "UV_WORKING_DIR": str(tmp_path)},
-            clear = True,
-        ):
-            assert ips._hardened_uv_config_paths() == [absolute]
-
-    def test_pip_section_names_are_case_sensitive(self, tmp_path):
-        """pip normalises the OPTION name and leaves the SECTION name alone, so
-        `[INSTALL]` is a section it never selects. Measured with pip 26.2.1: an
-        `[INSTALL] require-hashes = true` installs happily, `[install]` does not."""
-        config = tmp_path / "pip.conf"
-        config.write_text("[INSTALL]\nrequire-hashes = true\n", encoding = "utf-8")
-        assert self._names({}, pip_files = [str(config)]) == ()
-        config.write_text("[install]\nrequire-hashes = true\n", encoding = "utf-8")
-        assert self._names({}, pip_files = [str(config)]) == ("pip.conf require-hashes",)
-
-    def test_config_list_keeps_section_case_too(self):
-        listing = "INSTALL.require-hashes='true'\n"
-        assert self._names({}, pip_ok = True, pip_config = listing) == ()
-
-    def test_a_gap_is_refused_before_the_manifest_is_touched(self):
-        """The refusal was right and its timing was not: the manifest is removed up
-        front, so refusing at the first resolving command left an untouched venv marked
-        half-built and the Desktop preflight then rejected a working environment."""
-        # uv will run the installs, and the only policy is pip's, which uv cannot see.
-        with (
-            mock.patch.dict(
-                os.environ,
-                {"UNSLOTH_RESPECT_PM_POLICY": "1", "PIP_REQUIRE_HASHES": "1"},
-                clear = True,
-            ),
-            pytest.raises(SystemExit),
-        ):
-            ips._preflight_policy_gap(use_uv = True)
-        # And the other way round, on a host with no usable uv.
-        ips._policy_scan.cache_clear()
-        with (
-            mock.patch.dict(
-                os.environ,
-                {"UNSLOTH_RESPECT_PM_POLICY": "1", "UV_REQUIRE_HASHES": "1"},
-                clear = True,
-            ),
-            pytest.raises(SystemExit),
-        ):
-            ips._preflight_policy_gap(use_uv = False)
-
-    def test_the_preflight_probes_only_the_manager_that_will_run(self):
-        """A pip-only rule on a host with no usable uv is not a gap: every real command
-        keeps it. Probing both refused an install that would have honoured the policy
-        in full, because _bootstrap_uv() had not run and the uv probe described a
-        manager the install was never going to use."""
-        with mock.patch.dict(
-            os.environ,
-            {"UNSLOTH_RESPECT_PM_POLICY": "1", "PIP_ONLY_BINARY": ":all:"},
-            clear = True,
-        ):
-            ips._preflight_policy_gap(use_uv = False)
-        ips._policy_scan.cache_clear()
-        with mock.patch.dict(
-            os.environ,
-            {"UNSLOTH_RESPECT_PM_POLICY": "1", "UV_REQUIRE_HASHES": "1"},
-            clear = True,
-        ):
-            ips._preflight_policy_gap(use_uv = True)
-
-    def test_the_preflight_is_silent_without_the_opt_out(self):
-        """An ordinary install must never reach the check, whatever the host has set."""
-        with mock.patch.dict(
-            os.environ, {"UV_REQUIRE_HASHES": "1", "PIP_ONLY_BINARY": ":all:"}, clear = True
-        ):
-            ips._preflight_policy_gap(use_uv = True)
-
-    def test_the_preflight_is_silent_when_both_managers_are_configured(self):
-        with mock.patch.dict(
-            os.environ,
-            {
-                "UNSLOTH_RESPECT_PM_POLICY": "1",
-                "UV_REQUIRE_HASHES": "1",
-                "PIP_REQUIRE_HASHES": "1",
-            },
-            clear = True,
-        ):
-            ips._preflight_policy_gap(use_uv = True)
-
-    def test_a_relative_uv_project_resolves_against_uvs_directory(self, tmp_path):
-        """--directory takes effect first, so a relative --project is resolved there.
-        Measured: UV_WORKING_DIR=work UV_PROJECT=proj enforces work/proj's policy."""
-        work = tmp_path / "work"
-        (work / "proj").mkdir(parents = True)
-        (work / "proj" / "pyproject.toml").write_text('[project]\nname = "p"\n',
-                                                      encoding = "utf-8")
-        with (
-            mock.patch.dict(
-                os.environ,
-                {"UV_WORKING_DIR": str(work), "UV_PROJECT": "proj"},
-                clear = True,
-            ),
-            mock.patch.object(os, "getcwd", lambda: str(tmp_path)),
-        ):
-            assert ips._uv_project_config() == [str(work / "proj" / "pyproject.toml")]
-
-    def test_the_workspace_root_outranks_the_member_the_walk_stops_at(self, tmp_path):
-        """Measured on the pinned uv 0.12.1: from root/member/sub it logs "Found
-        workspace configuration at root/pyproject.toml" and enforces the ROOT's
-        require-hashes, not the member's absence of one."""
-        root = tmp_path / "ws"
-        (root / "member" / "sub").mkdir(parents = True)
-        (root / "pyproject.toml").write_text(
-            '[project]\nname = "root"\n[tool.uv.workspace]\nmembers = ["member"]\n',
-            encoding = "utf-8",
-        )
-        (root / "member" / "pyproject.toml").write_text('[project]\nname = "m"\n',
-                                                        encoding = "utf-8")
-        with mock.patch.object(os, "getcwd", lambda: str(root / "member" / "sub")):
-            assert ips._uv_project_config() == [str(root / "pyproject.toml")]
-        # A plain parent project with no workspace declaration still wins nothing: the
-        # nearest pyproject is uv's answer there.
-        (root / "pyproject.toml").write_text('[project]\nname = "root"\n',
-                                             encoding = "utf-8")
-        with mock.patch.object(os, "getcwd", lambda: str(root / "member" / "sub")):
-            assert ips._uv_project_config() == [str(root / "member" / "pyproject.toml")]
-
-    def test_a_resolved_explicit_config_keeps_the_standalone_schema(self, tmp_path):
-        """The schema decision compared the RAW environment value, so a relative
-        explicit file resolved through UV_WORKING_DIR stopped matching and an explicit
-        pyproject.toml was read with the discovered-project schema instead."""
-        work = tmp_path / "work"
-        work.mkdir()
-        (work / "pyproject.toml").write_text("no-build = true\n", encoding = "utf-8")
-        assert ips._explicit_uv_config_path.__doc__  # documented, not incidental
-        with mock.patch.dict(
-            os.environ,
-            {"UV_CONFIG_FILE": "pyproject.toml", "UV_WORKING_DIR": str(work)},
-            clear = True,
-        ):
-            assert ips._explicit_uv_config_path() == str(work / "pyproject.toml")
-            assert ips._hardened_uv_config_paths() == [str(work / "pyproject.toml")]
-        assert self._names(
-            {"UV_CONFIG_FILE": "pyproject.toml", "UV_WORKING_DIR": str(work)},
-            uv_files = [str(work / "pyproject.toml")],
-        ) == ("pyproject.toml no-build",)
-
-    @pytest.mark.parametrize("value", ["none", "no", "false", "off", "0"])
-    def test_an_artifact_list_value_is_a_package_name_not_a_boolean(self, value):
-        """pip documents `:none:` as the way to clear --only-binary, and everything else
-        as package names, so PIP_ONLY_BINARY=no restricts a distribution called "no".
-        Reading it as a disabled flag dropped an artifact rule that was in force."""
-        assert self._names({"PIP_ONLY_BINARY": value}) == ("PIP_ONLY_BINARY",)
-        # The two spellings that really do clear it.
-        assert self._names({"PIP_ONLY_BINARY": ":none:"}) == ()
-        assert self._names({"PIP_ONLY_BINARY": ""}) == ()
-
-    @pytest.mark.parametrize("value", ["no", "false", "off", "0"])
-    def test_a_boolean_control_still_reads_pips_false_spellings(self, value):
-        """require-hashes and no-build are the two that ARE booleans."""
-        assert self._names({"PIP_REQUIRE_HASHES": value}) == ()
-        assert self._names({"PIP_REQUIRE_HASHES": "1"}) == ("PIP_REQUIRE_HASHES",)
-
-    def test_an_inline_comment_is_not_part_of_the_value(self):
-        """The pre-3.11 fallback had already stripped the comment and then appended the
-        raw line anyway, so `no-build = false # disabled` read as the value
-        "false # disabled", which is not an off spelling."""
-        body = "no-build = false # disabled by the platform team\n"
-        with mock.patch.object(ips, "_tomllib", None):
-            assert ips._hardened_keys_in_toml(body, ((),)) == []
-            assert ips._hardened_keys_in_toml("no-build = true # on\n", ((),)) == ["no-build"]
 
 
 class TestPolicyEnvIsPlatformAndHardwareInvariant:
@@ -1810,105 +888,48 @@ class TestPolicyEnvIsPlatformAndHardwareInvariant:
 
 
 class TestTheNoticeCannotTakeAnInstallDown:
-    """It runs BEFORE the pip upgrade, against a venv uv may have created without pip,
-    and it reads files off disk. Every way that can go wrong must cost the notice, not
-    the install."""
+    """It is a message, not a step. Every way the probe can go wrong ends in a missing
+    line, never a failed install: it runs before the pip upgrade, against a venv uv
+    created without pip at all.
+    """
 
     def test_the_pip_probe_is_bounded(self):
-        """An unbounded probe on a half-written pip is a hang with no output at all."""
-        source = Path(ips.__file__).read_text(encoding = "utf-8")
-        body = source[source.index("def _policy_scan") : source.index("def _detected_policy")]
-        assert "timeout = 30" in body, "the pip config probe must pass an explicit timeout"
+        """No timeout here means an install that hangs forever on a wedged pip."""
+        source = inspect.getsource(ips._detected_policy)
+        assert "timeout = 30" in source, "the pip config probe must be bounded"
 
     def test_a_hanging_pip_still_yields_the_environment_half(self):
-        ips._policy_scan.cache_clear()
+        ips._detected_policy.cache_clear()
         with (
             mock.patch.dict(os.environ, {"PIP_REQUIRE_HASHES": "1"}, clear = True),
             mock.patch.object(
                 ips.subprocess,
                 "run",
-                mock.Mock(side_effect = ips.subprocess.TimeoutExpired("pip", 30)),
+                side_effect = ips.subprocess.TimeoutExpired(cmd = "pip", timeout = 30),
             ),
-            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: []),
         ):
-            names = ips._hardened_pm_policy_names()
-        ips._policy_scan.cache_clear()
-        assert names == ("PIP_REQUIRE_HASHES",)
+            assert ips._hardened_pm_policy_names() == ("PIP_REQUIRE_HASHES",)
+        ips._detected_policy.cache_clear()
 
-    def test_the_call_site_swallows_anything(self):
-        """The notice is a message, not a step. Nothing it probes is worth aborting on."""
-        source = Path(ips.__file__).read_text(encoding = "utf-8")
-        assert (
-            "try:\n        _announce_pm_policy()\n    except Exception:\n        pass" in source
-        ), "install_python_stack() must guard the notice"
+    def test_a_broken_pip_is_not_an_error(self):
+        for failure in (OSError("no pip"), ips.subprocess.SubprocessError("boom")):
+            ips._detected_policy.cache_clear()
+            with (
+                mock.patch.dict(os.environ, {}, clear = True),
+                mock.patch.object(ips.subprocess, "run", side_effect = failure),
+            ):
+                assert ips._hardened_pm_policy_names() == ()
+            ips._detected_policy.cache_clear()
 
-    @pytest.mark.parametrize(
-        "environment",
-        [{}, {"HOME": "/home/u"}, {"XDG_CONFIG_HOME": "/xdg"}, {"APPDATA": "C:\\a"}],
-    )
-    @pytest.mark.parametrize("windows", [False, True])
-    def test_path_discovery_never_raises(self, environment, windows):
-        """A service account with no HOME, or Windows with no APPDATA, still installs."""
-        with (
-            mock.patch.dict(os.environ, environment, clear = True),
-            mock.patch.object(ips, "IS_WINDOWS", windows),
-        ):
-            assert isinstance(ips._hardened_uv_config_paths(), list)
-
-    def test_documented_config_locations_are_searched(self):
-        """uv reads ~/.config/uv/uv.toml on macOS AND Linux (not Application Support),
-        %APPDATA%\\uv on Windows, with /etc/uv and %PROGRAMDATA%\\uv system-wide. The
-        system one is where a fleet operator puts the policy this notice is about."""
-        # Separator-normalised for the same reason as the pip locations above: os.path.join
-        # follows the RUNNER, not the patched IS_WINDOWS.
-        with (
-            mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
-            _posix_home(),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(os.path, "isfile", lambda path: True),
-        ):
-            posix = [path.replace(os.sep, "/") for path in ips._hardened_uv_config_paths()]
-        assert "/home/u/.config/uv/uv.toml" in posix
-        assert "/etc/uv/uv.toml" in posix
-        with (
-            mock.patch.dict(os.environ, {"APPDATA": "C:\\a", "PROGRAMDATA": "C:\\pd"}, clear = True),
-            mock.patch.object(ips, "IS_WINDOWS", True),
-            mock.patch.object(os.path, "isfile", lambda path: True),
-        ):
-            windows = ips._hardened_uv_config_paths()
-        assert any(path.startswith("C:\\a") for path in windows)
-        assert any(path.startswith("C:\\pd") for path in windows)
-        assert not any(path.replace(os.sep, "/").startswith("/etc/uv") for path in windows)
-
-    def test_a_deleted_working_directory_is_survivable(self):
-        with (
-            mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
-            _posix_home(),
-            mock.patch.object(os, "getcwd", mock.Mock(side_effect = FileNotFoundError)),
-            mock.patch.object(os.path, "isfile", lambda path: True),
-        ):
-            assert isinstance(ips._hardened_uv_config_paths(), list)
-
-    def test_an_unstattable_path_is_skipped(self):
-        with (
-            mock.patch.dict(os.environ, {"HOME": "/home/u"}, clear = True),
-            _posix_home(),
-            mock.patch.object(os.path, "isfile", mock.Mock(side_effect = PermissionError)),
-        ):
-            assert ips._hardened_uv_config_paths() == []
-
-    def test_an_unreadable_or_undecodable_config_is_skipped(self, tmp_path):
-        undecodable = tmp_path / "uv.toml"
-        undecodable.write_bytes(b'name = "\xff\xfe"\nno-build = true\n')
-        ips._policy_scan.cache_clear()
+    def test_undecodable_probe_output_is_not_an_error(self):
+        ips._detected_policy.cache_clear()
+        result = mock.Mock(returncode = 0, stdout = b"\xff\xfe not utf-8 \x00\n")
         with (
             mock.patch.dict(os.environ, {}, clear = True),
-            mock.patch.object(ips.subprocess, "run", mock.Mock(side_effect = OSError)),
-            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: [str(undecodable)]),
+            mock.patch.object(ips.subprocess, "run", return_value = result),
         ):
-            names = ips._hardened_pm_policy_names()
-        ips._policy_scan.cache_clear()
-        assert names == ("uv.toml no-build",), "lenient decoding, not a crash"
+            assert ips._hardened_pm_policy_names() == ()
+        ips._detected_policy.cache_clear()
 
 
 class TestProgressLineNotes:

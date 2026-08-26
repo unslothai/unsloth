@@ -12,7 +12,6 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 from __future__ import annotations
 
 import ast
-import configparser
 import functools
 import glob
 import importlib
@@ -30,10 +29,6 @@ import textwrap
 import urllib.request
 from pathlib import Path
 
-try:  # 3.11+. Only the hardening notice uses it, and it degrades to a regex without it.
-    import tomllib as _tomllib
-except ImportError:  # pragma: no cover - exercised on 3.9/3.10 interpreters
-    _tomllib = None
 
 _STUDIO_DIR = Path(__file__).resolve().parent
 _BACKEND_DIR = _STUDIO_DIR / "backend"
@@ -4704,21 +4699,7 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
 # the operator sees which control is being set aside. `exclude-newer` is here for the same
 # reason UV_EXCLUDE_NEWER is in _PM_POLICY_ENV_VARS: an upload cutoff is a reproducibility
 # control, and relaxing one silently is what this notice exists to stop.
-_HARDENED_CONFIG_KEYS = (
-    "require-hashes",
-    "only-binary",
-    "no-binary",
-    "no-binary-package",
-    "no-build",
-    "no-build-package",
-    "exclude-newer",
-    "exclude-newer-package",
-    # pip's own spelling of the same control, so a pip-side cutoff is detected too.
-    "uploaded-prior-to",
-)
-
-
-# Of that list, the keys pip itself has an option for. Measured with pip 26.2.1:
+# The keys pip itself has an option for. Measured with pip 26.2.1:
 # `pip install --help` exposes --require-hashes, --only-binary, --no-binary and
 # --uploaded-prior-to, and nothing for no-build, either -package form or exclude-newer.
 # A pip.conf carrying one of those is an inert entry pip ignores, so reading it as pip
@@ -4763,533 +4744,9 @@ def _config_value_is_on(value: str, key: "str | None" = None) -> bool:
     return text not in _OFF_VALUES
 
 
-def _toml_value_is_on(value: object) -> bool:
-    """The same test for a TOML value, parsed or still in its source spelling.
 
-    `no-build = false` is an ordinary machine, and a list policy switched off is spelled
-    as the empty list, so neither may be reported as active hardening. The empty-collection
-    spellings are handled as text too, because the regex fallback never parses them.
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (list, tuple, dict)):
-        return bool(value)
-    text = str(value).strip()
-    if re.fullmatch(r"\[\s*\]|\{\s*\}", text):
-        return False
-    return _config_value_is_on(text)
-
-
-def _toml_value_text(value: object) -> str:
-    """A TOML value as the string the translator works with.
-
-    A list becomes its space-separated members, which is uv's own spelling for the
-    package-scoped controls and the form the pip translation re-splits.
-    """
-    if isinstance(value, bool):
-        # Empty for False, so a TOML boolean stays off whatever the key's type is. A
-        # list-valued control reads any other value as a package name, and "0" would be
-        # one: this is the one place the type is still known, so it is settled here.
-        return "1" if value else ""
-    if isinstance(value, (list, tuple)):
-        return " ".join(str(item).strip() for item in value if str(item).strip())
-    if isinstance(value, dict):
-        # The package-scoped maps, e.g. `exclude-newer-package = { foo = "..." }`. Its
-        # members, so an EMPTY map becomes the empty string and reads as off: str({})
-        # is "{}", which is not one of the off spellings and became phantom hardening.
-        return " ".join(str(item).strip() for item in value if str(item).strip())
-    return str(value).strip()
-
-
-def _inline_table_lines(key: str, body: str) -> "list[str]":
-    """`a = { b = 1, c = { d = 2 } }` as the dotted lines `a.b = 1` and `a.c.d = 2`.
-
-    Only the pre-3.11 fallback needs this; tomllib builds the nesting itself. Without it
-    a `[tool] uv = { pip = { require-hashes = true } }` was skipped entirely, and uv
-    0.12.1 does enforce exactly that.
-    """
-    parts: "list[str]" = []
-    current = ""
-    depth = 0
-    for char in body:
-        if char in "{[":
-            depth += 1
-        elif char in "}]":
-            depth -= 1
-        elif char == "," and depth == 0:
-            parts.append(current)
-            current = ""
-            continue
-        current += char
-    parts.append(current)
-    lines: "list[str]" = []
-    for part in parts:
-        name, separator, raw = part.partition("=")
-        if not separator:
-            continue
-        name = name.strip().strip("\"'")
-        raw = raw.strip()
-        if raw.startswith("{") and raw.endswith("}") and raw[1:-1].strip():
-            lines.extend(_inline_table_lines(f"{key}.{name}", raw[1:-1]))
-        else:
-            lines.append(f"{key}.{name} = {raw}")
-    return lines
-
-
-def _hardened_settings_in_toml(
-    text: str, tables: "tuple[tuple[str, ...], ...]"
-) -> "dict[str, str]":
-    """Hardened keys and their values inside the named tables of a TOML document."""
-    settings: dict[str, str] = {}
-    data = None
-    if _tomllib is not None:
-        try:
-            data = _tomllib.loads(text)
-        except Exception:
-            data = None
-    if data is not None:
-        for table in tables:
-            node: object = data
-            for part in table:
-                node = node.get(part) if isinstance(node, dict) else None
-                if node is None:
-                    break
-            if not isinstance(node, dict):
-                continue
-            for key in _HARDENED_CONFIG_KEYS:
-                if key in node:
-                    settings[key] = _toml_value_text(node[key])
-        return settings
-    current: "tuple[str, ...]" = ()
-    # Join continuation lines first: tomllib is absent here, and a `no-build-package = [`
-    # spread over several lines would otherwise read as the literal value "[".
-    joined: "list[str]" = []
-    pending = ""
-    for raw_line in text.splitlines():
-        piece = raw_line.split("#", 1)[0].rstrip() if "=" in raw_line or pending else raw_line
-        if pending:
-            pending += " " + piece.strip()
-            if pending.count("[") <= pending.count("]"):
-                joined.append(pending)
-                pending = ""
-            continue
-        stripped = piece.strip()
-        if stripped.count("[") > stripped.count("]") and "=" in stripped:
-            pending = stripped
-            continue
-        # `piece`, not the raw line: the comment has already been taken off it, and
-        # keeping it made `no-build = false # disabled` read as the value
-        # "false # disabled", which is not one of the off spellings and so reported a
-        # policy the operator had switched off.
-        joined.append(piece)
-    if pending:
-        joined.append(pending)
-    # Inline tables become dotted keys, which the loop below already understands.
-    expanded: "list[str]" = []
-    for line in joined:
-        name, separator, raw = line.strip().partition("=")
-        raw = raw.strip()
-        if separator and raw.startswith("{") and raw.endswith("}") and raw[1:-1].strip():
-            expanded.extend(_inline_table_lines(name.strip().strip("\"'"), raw[1:-1]))
-        else:
-            expanded.append(line)
-    for line in expanded:
-        stripped = line.strip()
-        if stripped.startswith("#") or not stripped:
-            continue
-        header = re.match(r"^\[\[?([^]]*)\]\]?$", stripped)
-        if header:
-            current = tuple(
-                part.strip().strip("\"'") for part in header.group(1).split(".") if part.strip()
-            )
-            continue
-        key, separator, raw = stripped.partition("=")
-        if not separator:
-            continue
-        key = key.strip().strip("\"'")
-        # A dotted key is the inline spelling of a table: `pip.require-hashes = true` at
-        # the root is `[pip] require-hashes = true`, which uv enforces. The table check
-        # has to come AFTER the path is assembled, since the enclosing header can be a
-        # prefix of it rather than a table this scan reads: under `[tool]`, the expanded
-        # `uv.pip.require-hashes` lives in `tool.uv.pip`, which it does read.
-        head, dot, tail = key.rpartition(".")
-        path = current + tuple(
-            part.strip().strip("\"'") for part in head.split(".") if part.strip()
-        )
-        if path not in tables:
-            continue
-        if dot:
-            key = tail.strip().strip("\"'")
-        if key in _HARDENED_CONFIG_KEYS:
-            raw = raw.strip()
-            if re.fullmatch(r"\[\s*\]|\{\s*\}", raw):
-                raw = ""
-            elif raw.startswith("[") and raw.endswith("]"):
-                raw = " ".join(
-                    item.strip().strip("\"'")
-                    for item in raw[1:-1].split(",")
-                    if item.strip().strip("\"'")
-                )
-            settings[key] = raw.strip().strip("\"'")
-    return settings
-
-
-def _hardened_keys_in_toml(text: str, tables: "tuple[tuple[str, ...], ...]") -> "list[str]":
-    """Hardened keys switched ON inside the named tables of a TOML document.
-
-    `tables` scopes the search, so a stray `no-build` in an unrelated tool's table is not
-    read as uv policy. Both the tomllib path and the pre-3.11 fallback test the VALUE,
-    since reporting `no-build = false` would put a security notice in front of a user who
-    switched the policy off.
-    """
-    return [
-        key
-        for key, value in _hardened_settings_in_toml(text, tables).items()
-        if _config_value_is_on(value, key)
-    ]
-
-
-def _existing_files(candidates: "list[str]") -> "list[str]":
-    found = []
-    for path in candidates:
-        try:
-            if os.path.isfile(path):
-                found.append(path)
-        except OSError:
-            # A path this process cannot stat (permissions, a dead network mount) is
-            # simply not a config file we can report on.
-            continue
-    return found
-
-
-def _explicit_uv_config_path() -> str:
-    """UV_CONFIG_FILE as uv resolves it, or "" when it is not set.
-
-    Shared so the schema decision downstream compares the SAME path this returns: it
-    used to test the raw environment value, so a relative explicit file resolved through
-    UV_WORKING_DIR stopped matching and an explicit `pyproject.toml` was then read with
-    the discovered-project schema instead of the standalone one.
-    """
-    explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
-    if not explicit:
-        return ""
-    working = os.environ.get("UV_WORKING_DIR", "").strip()
-    if working and not os.path.isabs(explicit):
-        # --directory changes directory BEFORE running, so a relative config path is
-        # resolved there and not against the directory the installer started in.
-        return os.path.join(working, explicit)
-    return explicit
-
-
-def _declares_uv_workspace(path: str) -> bool:
-    """True when this pyproject.toml declares a uv workspace.
-
-    Only the declaration matters here, not whether the member the walk stopped at is
-    listed in it: matching uv's member globs is more machinery than a best-effort notice
-    warrants, and an ancestor that declares a workspace over a project beneath it is
-    overwhelmingly that project's root.
-    """
-    text = _read_text(path)
-    if text is None:
-        return False
-    if _tomllib is not None:
-        try:
-            data = _tomllib.loads(text)
-        except Exception:
-            return False
-        node = data.get("tool") if isinstance(data, dict) else None
-        node = node.get("uv") if isinstance(node, dict) else None
-        return isinstance(node, dict) and "workspace" in node
-    return bool(re.search(r"^\s*\[tool\.uv\.workspace[\].]", text, re.MULTILINE))
-
-
-def _uv_project_config() -> "list[str]":
-    """The project configuration uv would discover from the working directory.
-
-    Measured on the pinned uv 0.12.1: uv walks up from the working directory to the
-    nearest ancestor holding a `pyproject.toml` and reads a `uv.toml` beside it if there
-    is one, otherwise that file's `[tool.uv]` tables. A parent `[tool.uv.pip]
-    require-hashes = true` fails an install run from a child directory, which is how
-    Studio is normally launched, so stopping at the working directory alone missed real
-    policy. A `uv.toml` with no `pyproject.toml` beside it is read nowhere, working
-    directory included, so it is not listed: reporting one would be hardening uv does
-    not apply.
-    """
-    # uv's own discovery root, not necessarily this process's: --project / UV_PROJECT
-    # moves it, and --directory / UV_WORKING_DIR moves the working directory itself.
-    # Measured on the pinned uv 0.12.1, a `[tool.uv.pip] require-hashes = true` in a
-    # project named by either variable is enforced from an unrelated cwd, so walking
-    # from getcwd() alone scanned the wrong tree and missed live policy.
-    working = os.environ.get("UV_WORKING_DIR", "").strip()
-    root = os.environ.get("UV_PROJECT", "").strip()
-    if root and working and not os.path.isabs(root):
-        # --directory takes effect first, so a relative --project resolves against it.
-        root = os.path.join(working, root)
-    try:
-        # A deleted working directory raises here rather than returning anything.
-        current = os.path.abspath(root or working or os.getcwd())
-    except OSError:
-        return []
-    found = ""
-    while True:
-        if _existing_files([os.path.join(current, "pyproject.toml")]):
-            if not found:
-                found = current
-            elif _declares_uv_workspace(os.path.join(current, "pyproject.toml")):
-                # A workspace ROOT outranks the member the walk stopped at: measured on
-                # the pinned uv 0.12.1, from root/member/sub it logs "Found workspace
-                # configuration at root/pyproject.toml" and enforces the root's policy.
-                found = current
-                break
-        parent = os.path.dirname(current)
-        if parent == current:
-            # The root is its own parent, which is how this walk terminates.
-            break
-        current = parent
-    if not found:
-        return []
-    local = _existing_files([os.path.join(found, "uv.toml")])
-    return local or [os.path.join(found, "pyproject.toml")]
-
-
-def _hardened_uv_config_paths() -> "list[str]":
-    """The uv config files this host has, in uv's own precedence order, lowest first.
-
-    System (`/etc/uv/uv.toml`, `%PROGRAMDATA%\\uv`), then user (`~/.config/uv/uv.toml` on
-    macOS AND Linux, not Application Support, and `%APPDATA%\\uv` on Windows), then the
-    project. The system one matters most for a fleet operator hardening every machine;
-    the order matters because the caller resolves last-wins, and a project config
-    switching a control off is uv's answer even when the user config switched it on.
-    """
-    explicit = _explicit_uv_config_path()
-    if explicit:
-        # --config-file is used "in place of any discovered configuration files", so the
-        # discovered set is not merely outranked, it is not read at all. Checked BEFORE
-        # --no-config: measured on the pinned uv 0.12.1, an explicit file is read with
-        # UV_NO_CONFIG=1 set as well, so returning nothing there dropped live policy.
-        return _existing_files([explicit])
-    if _config_value_is_on(os.environ.get("UV_NO_CONFIG", "")):
-        # --no-config: uv discovers nothing, so nothing here is policy.
-        return []
-    candidates = []
-    if IS_WINDOWS:
-        for variable in ("PROGRAMDATA", "APPDATA"):
-            base = os.environ.get(variable, "")
-            if base:
-                candidates.append(os.path.join(base, "uv", "uv.toml"))
-    else:
-        candidates.append("/etc/uv/uv.toml")
-        # XDG_CONFIG_HOME next: uv honours it, and a host that sets it does not
-        # necessarily have ~/.config at all.
-        base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-        candidates.append(os.path.join(base, "uv", "uv.toml"))
-    return _existing_files(candidates) + _existing_files(_uv_project_config())
-
-
-def _hardened_pip_config_paths() -> "list[str]":
-    """pip's documented configuration files, for when `python -m pip` cannot be run.
-
-    install.sh builds the venv with uv, which seeds no pip, so when this notice runs
-    `pip config list` returns nonzero and a require-hashes living only in pip.conf is
-    invisible -- while the pip FALLBACK later in the install reads it fine. Order is pip's
-    own (global, user, site, PIP_CONFIG_FILE); the subprocess answer still wins when it
-    works, since pip merges them itself.
-    """
-    # Within the user kind, pip's get_configuration_files returns
-    # [legacy_config_file, new_config_file] and loads them in that order, so the modern
-    # location is authoritative. Listing it first put the legacy file last and let
-    # ~/.pip/pip.conf override ~/.config/pip/pip.conf, which is the opposite of pip.
-    name = "pip.ini" if IS_WINDOWS else "pip.conf"
-    explicit = os.environ.get("PIP_CONFIG_FILE", "").strip()
-    if explicit and os.path.normcase(explicit) == os.path.normcase(os.devnull):
-        # Documented: PIP_CONFIG_FILE=os.devnull disables the loading of ALL config files.
-        return []
-    # pip's iter_config_files: "per-user config is not loaded when env_config_file
-    # exists". Scanning them anyway invents a policy pip would not apply, which under the
-    # opt-out gets translated into the other manager and fails the install.
-    skip_user = bool(explicit) and os.path.isfile(explicit)
-    candidates = []
-    user: "list[str]" = []
-    if IS_WINDOWS:
-        # pip's legacy user file, still in get_configuration_files(): "pip" on Windows,
-        # ".pip" elsewhere, under the expanded home. First, so %APPDATA% outranks it.
-        user.append(os.path.join(os.path.expanduser("~"), "pip", name))
-        for variable in ("PROGRAMDATA", "APPDATA"):
-            base = os.environ.get(variable, "")
-            if base:
-                target = candidates if variable == "PROGRAMDATA" else user
-                target.append(os.path.join(base, "pip", name))
-    else:
-        # Global is EVERY entry of XDG_CONFIG_DIRS, not just the default: measured with
-        # pip 26, `XDG_CONFIG_DIRS=/a:/b pip config debug` enumerates /a/pip/pip.conf and
-        # /b/pip/pip.conf. macOS reads its global set from XDG_DATA_DIRS instead, falling
-        # back to /Library/Application Support.
-        #
-        # macOS reads BOTH here, deliberately, because pip changed under us: measured,
-        # pip 26.1 resolves the Darwin global set to /Library/Application Support and
-        # ignores XDG_DATA_DIRS entirely, while 26.2.1 lets XDG_DATA_DIRS replace it.
-        # Either pip can be the one on a user's machine, and a location that only one of
-        # them reads costs a stat, so both are scanned rather than guessing the version.
-        directories = os.environ.get("XDG_DATA_DIRS" if IS_MACOS else "XDG_CONFIG_DIRS", "").strip()
-        if IS_MACOS:
-            if "/opt/python" in sys.prefix:
-                # platformdirs puts a Homebrew python's site data under the brew prefix.
-                candidates.append(
-                    os.path.join(sys.prefix.split("/opt/python")[0], "share", "pip", name)
-                )
-            candidates.append(os.path.join("/Library", "Application Support", "pip", name))
-        if directories:
-            for directory in directories.split(os.pathsep):
-                if directory.strip():
-                    candidates.append(os.path.join(directory.strip(), "pip", name))
-        elif not IS_MACOS:
-            candidates.append(os.path.join("/etc", "xdg", "pip", name))
-        candidates.append(os.path.join("/etc", name))
-        home = os.path.expanduser("~")
-        user.append(os.path.join(home, ".pip", name))
-        xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
-        user.append(os.path.join(xdg, "pip", name))
-        if IS_MACOS:
-            # user_config_dir on macOS, so it is the modern file there and goes last.
-            user.append(os.path.join(home, "Library", "Application Support", "pip", name))
-    if not skip_user:
-        candidates.extend(user)
-    # Site, then the explicit file: pip's own load order, which is what makes the
-    # last-wins resolution downstream correct.
-    site = os.environ.get("VIRTUAL_ENV", "") or sys.prefix
-    if site:
-        candidates.append(os.path.join(site, name))
-    if explicit:
-        candidates.append(explicit)
-    return _existing_files(candidates)
-
-
-# pip applies `[global]` first and then the command's own section, whatever order they
-# appear in the file, so `[install]` beats `[global]` for the commands this module runs.
-# Sections for other commands never apply to an install and are ignored entirely.
-_PIP_SECTION_RANK = {"global": 0, "install": 1, "download": 1, "wheel": 1}
-
-
-# The three pip subcommands this module drives. pip applies `[global]` and then the
-# command's own section, so each of these resolves separately: `[install] require-hashes
-# = true` with `[wheel] require-hashes = false` is two different policies, not one.
-_PIP_COMMANDS = ("install", "download", "wheel")
-
-
-_PIP_SECTIONS = ("global",) + _PIP_COMMANDS
-
-
-def _hardened_pip_sections(text: str) -> "dict[str, dict[str, str]]":
-    """Hardened settings from a pip.conf, one bucket per section and NOT merged.
-
-    Unmerged because pip pools every file's `[global]` into one group and every file's
-    command section into another, and applies global first and the command second only
-    at the end: a `[install]` setting in a low-priority file therefore still beats a
-    `[global]` in a high-priority one. Folding global into the command sections file by
-    file gets that backwards, and let a later `[global] require-hashes = false` erase an
-    earlier `[install] require-hashes = true` pip was still applying.
-
-    Option names are normalised the way pip normalises them, lowercased with underscores
-    turned into dashes: `require_hashes = true` is a spelling pip honours, and
-    RawConfigParser keeps the underscore, so matching the dashed name alone missed it.
-    """
-    sections: "dict[str, dict[str, str]]" = {name: {} for name in _PIP_SECTIONS}
-    parser = configparser.RawConfigParser()
-    try:
-        parser.read_string(text)
-    except configparser.Error:
-        return sections
-    for raw_name in parser.sections():
-        # Verbatim: pip normalises the OPTION name and leaves the SECTION name alone, so
-        # `[INSTALL]` is a section pip never selects. Lowercasing it here reported a
-        # policy pip does not apply, which under the opt-out could refuse the first uv
-        # step over a cross-manager gap that did not exist.
-        name = raw_name
-        if name not in sections:
-            continue
-        for option, value in parser.items(raw_name):
-            key = option.strip().lower().replace("_", "-")
-            if key in _PIP_CONFIG_KEYS:
-                sections[name][key] = value
-    return sections
-
-
-def _combine_pip_commands(
-    per_command: "dict[str, dict[str, tuple[str, str]]]",
-) -> "dict[str, tuple[str, str]]":
-    """One answer from the three subcommands' resolved (source, value) settings.
-
-    A control counts as configured if any of install/download/wheel configures it, and as
-    ON if any of them enables it: this module runs all three, and the caller only needs to
-    know whether the operator has an opinion, not which subcommand carries it. The source
-    travels with the value so the notice names the file the winning setting came from.
-    """
-    combined: "dict[str, tuple[str, str]]" = {}
-    for command in _PIP_COMMANDS:
-        for key, entry in per_command.get(command, {}).items():
-            # An enabled value anywhere among the three wins; otherwise keep a disabled
-            # one so it can still cancel a lower-precedence file.
-            if key not in combined or _config_value_is_on(entry[1], key):
-                combined[key] = entry
-    return combined
-
-
-def _pip_slot(command: str) -> str:
-    """The name a pip subcommand's own configured-policy set is kept under."""
-    return f"pip:{command}"
-
-
-def _resolve_pip_sections(
-    pooled: "dict[str, dict[str, tuple[str, str]]]",
-) -> "dict[str, dict[str, tuple[str, str]]]":
-    """pip's own resolution, per subcommand: `[global]` first, then its own section."""
-    return {
-        command: dict(pooled.get("global", {}), **pooled.get(command, {}))
-        for command in _PIP_COMMANDS
-    }
-
-
-def _combine_pip_sections(
-    pooled: "dict[str, dict[str, tuple[str, str]]]",
-) -> "dict[str, tuple[str, str]]":
-    """The three subcommands' resolved settings, combined into one answer."""
-    return _combine_pip_commands(_resolve_pip_sections(pooled))
-
-
-def _hardened_settings_in_ini(text: str) -> "dict[str, str]":
-    """Hardened settings from a single pip.conf, resolved per subcommand then combined.
-
-    Values rather than a filtered list of on-keys, because precedence is resolved across
-    files too: a later pip.conf setting `require-hashes = false` has to be able to cancel
-    an earlier one, and a caller that only ever saw the enabled keys could not do that.
-    """
-    pooled = {
-        name: {key: ("", value) for key, value in values.items()}
-        for name, values in _hardened_pip_sections(text).items()
-    }
-    return {key: value for key, (_source, value) in _combine_pip_sections(pooled).items()}
-
-
-def _hardened_keys_in_ini(text: str) -> "list[str]":
-    """Hardened keys switched ON in a single pip.conf."""
-    return [
-        key
-        for key, value in _hardened_settings_in_ini(text).items()
-        if _config_value_is_on(value, key)
-    ]
-
-
-def _read_text(path: str) -> "str | None":
-    try:
-        with open(path, encoding = "utf-8", errors = "replace") as handle:
-            return handle.read()
-    except OSError:
-        return None
-
-
-# The same control under each manager's name. This decides "has the target manager got an
-# opinion about this already", so pip's `only-binary` (wheels only) and uv's `no-build`
-# are one control, as are a policy and its package-scoped form.
+# The same control under each manager's name, so an explicitly disabled variable can
+# cancel a config entry that enables the same thing.
 _POLICY_KEY_ALIASES = {
     "uploaded-prior-to": "exclude-newer",
     "exclude-newer-package": "exclude-newer",
@@ -5301,8 +4758,7 @@ _POLICY_KEY_ALIASES = {
 
 def _canonical_policy_key(key: str) -> str:
     """One name per control, whatever spelling it arrived in."""
-    name = _env_policy_key(key) if key.isupper() else key.lower()
-    return _POLICY_KEY_ALIASES.get(name, name)
+    return _POLICY_KEY_ALIASES.get(_policy_key_spelling(key), _policy_key_spelling(key))
 
 
 def _env_policy_key(name: str) -> str:
@@ -5314,63 +4770,48 @@ def _env_policy_key(name: str) -> str:
     return name.split("_", 1)[1].lower().replace("_", "-")
 
 
+# The pip subcommands this module drives.
+_PIP_COMMANDS = ("install", "download", "wheel")
+
 @functools.lru_cache(maxsize = 1)
-def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozenset[str]]]":
-    """Everything the hardening probe found: what is ON, and what each manager has an
-    opinion about at all.
+def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
+    """(tool, source, key) for each hardening this host has configured.
 
-    The second half is what stops a deliberate difference between the two managers being
-    reported as a gap: `PIP_REQUIRE_HASHES=1` next to a uv config saying
-    `[pip] require-hashes = false` is the operator configuring them differently, not uv
-    missing a control.
+    ADVISORY, and deliberately narrow. It reports what the two managers can be ASKED
+    about -- the policy environment variables, and pip's own `pip config list` output --
+    and does not go looking through their configuration files.
 
-    Best-effort throughout: a probe that fails just shortens the answer.
+    Reading those files means reimplementing pip's and uv's configuration resolution:
+    discovery order, per-subcommand sections, precedence between them, XDG against
+    Darwin paths, uv workspace roots, UV_PROJECT / UV_WORKING_DIR / UV_CONFIG_FILE
+    interactions, and a TOML parser for the interpreters with no tomllib. That was
+    tried here and it is an unbounded surface: each round of review found another true
+    difference from the real thing, and some of those corrections introduced their own.
+    Nothing in the actual fix depends on it, so it asks instead of emulating.
+
+    The cost is that a pip.conf-only policy is invisible while the venv has no pip yet,
+    which is the state uv leaves a fresh venv in. The consequence of a miss is a line
+    absent from a notice, never a changed install: the opt-out withholds the relaxations
+    mechanically, whether or not anything was detected.
     """
     on: "list[tuple[str, str, str]]" = []
-    # Slots, not tools: pip resolves each subcommand separately, so `[download]
-    # only-binary = :all:` is not an opinion about `pip install`. Crediting pip with it
-    # let a fallback `pip install` proceed as though the operator's control were covered
-    # when that command was in fact unrestricted.
-    configured: "dict[str, set[str]]" = {
-        slot: set() for slot in ("uv",) + tuple(_pip_slot(name) for name in _PIP_COMMANDS)
-    }
-    cancelled: "dict[str, set[str]]" = {"pip": set(), "uv": set()}
+    cancelled: "set[str]" = set()
 
-    def _record(tool: str, source: str, key: str, value: str, slots: "tuple[str, ...]") -> None:
-        if source == "env" and not value.strip():
-            # pip drops empty environment values before applying precedence, so
-            # PIP_ONLY_BINARY='' neither enables a control nor cancels a pip.conf that
-            # does: measured with pip 26.2.1, the empty variable still rejects an sdist
-            # under `only-binary = :all:` while `:none:` clears it. Treating it as a
-            # cancellation suppressed a policy that was still fully in force.
-            return
-        canonical = _canonical_policy_key(key)
-        for slot in slots:
-            configured[slot].add(canonical)
-        if _config_value_is_on(value, key):
-            on.append((tool, source, key))
-        elif source == "env":
-            # pip's environment beats every config file, so an explicitly disabled
-            # variable cancels a file that enables the same control.
-            cancelled[tool].add(canonical)
-
-    all_pip_slots = tuple(_pip_slot(name) for name in _PIP_COMMANDS)
     for name in _PM_POLICY_ENV_VARS:
         raw = os.environ.get(name)
-        if raw is None:
+        if raw is None or not raw.strip():
+            # pip drops empty values before applying precedence, so an empty variable
+            # neither enables a control nor cancels a file that does.
             continue
         if name.startswith("UV_") and name not in _UV_ENFORCED_ENV_VARS:
             # uv ignores it, so it is not policy. See _UV_ENFORCED_ENV_VARS.
             continue
-        is_pip = name.startswith("PIP_")
-        # A variable applies to every pip subcommand, unlike a config section.
-        _record(
-            "pip" if is_pip else "uv",
-            "env",
-            name,
-            raw.strip(),
-            all_pip_slots if is_pip else ("uv",),
-        )
+        if _config_value_is_on(raw, name):
+            on.append(("pip" if name.startswith("PIP_") else "uv", "env", name))
+        elif name.startswith("PIP_"):
+            # pip's environment beats its config files, so an explicitly disabled
+            # variable cancels a config entry enabling the same control.
+            cancelled.add(_canonical_policy_key(name))
 
     try:
         result = subprocess.run(
@@ -5378,105 +4819,34 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
             # Bounded because this runs BEFORE the pip upgrade, against a venv that may
-            # have no pip at all (uv creates them without one). A notice must never be
-            # able to hang an install.
+            # have no pip at all. A notice must never be able to hang an install.
             timeout = 30,
             **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         result = None
-    pooled: "dict[str, dict[str, tuple[str, str]]]" = {name: {} for name in _PIP_SECTIONS}
     if result is not None and result.returncode == 0:
-        # `pip config list` prints EVERY definition, overridden ones included, in load
-        # order, so a later file wins. Within a file the command section beats [global]
-        # whatever the textual order, and each subcommand resolves separately.
-        per_command: "dict[str, dict[str, str]]" = {name: {} for name in _PIP_COMMANDS}
-        globals_: "dict[str, str]" = {}
+        settings: "dict[tuple[str, str], str]" = {}
         for line in (result.stdout or b"").decode("utf-8", "replace").splitlines():
             name, separator, raw = line.partition("=")
             # `:env:` entries restate the environment, already handled above.
             if not separator or name.strip().startswith(":env:"):
                 continue
-            # Section verbatim, option normalised: that is what pip itself does, and
-            # `pip config list` prints an `INSTALL.` prefix for a section pip ignores.
+            # Section verbatim, option normalised: that is the split pip itself makes,
+            # so `[INSTALL]` is a section it never selects.
             section, _, option = name.strip().rpartition(".")
-            if option not in _PIP_CONFIG_KEYS:
+            option = option.strip().lower().replace("_", "-")
+            if section not in ("global",) + _PIP_COMMANDS or option not in _PIP_CONFIG_KEYS:
                 continue
-            value = raw.strip().strip("'\"")
-            if section == "global":
-                globals_[option] = value
-            elif section in per_command:
-                per_command[section][option] = value
-        pooled = {
-            name: {
-                option: ("pip.conf", value)
-                for option, value in (globals_ if name == "global" else per_command[name]).items()
-            }
-            for name in _PIP_SECTIONS
-        }
-    else:
-        # No usable pip, so read pip's files directly rather than report an ordinary
-        # machine. They come back in pip's own load order, so a later file wins -- within
-        # a section, which is why every file's sections are pooled and only resolved
-        # against each other at the end. Collapsing a file before reading the next let a
-        # low-priority setting erase a higher-priority one pip still applies.
-        for path in _hardened_pip_config_paths():
-            text = _read_text(path)
-            if text is None:
-                continue
-            source = os.path.basename(path)
-            for name, values in _hardened_pip_sections(text).items():
-                pooled[name].update({key: (source, value) for key, value in values.items()})
-    # The `on` list comes from the three combined, so the notice names each control once;
-    # the configured sets stay per subcommand, since that is what decides whether a given
-    # command can enforce it.
-    per_command_settings = _resolve_pip_sections(pooled)
-    for key, (source, value) in _combine_pip_commands(per_command_settings).items():
-        if _canonical_policy_key(key) not in cancelled["pip"]:
-            _record("pip", source, key, value, ())
-    for command in _PIP_COMMANDS:
-        for key in per_command_settings[command]:
-            canonical = _canonical_policy_key(key)
-            if canonical not in cancelled["pip"]:
-                configured[_pip_slot(command)].add(canonical)
+            # Printed in load order, so the last definition of a given entry wins.
+            settings[(section, option)] = raw.strip().strip("'\"")
+        for (_section, option), value in settings.items():
+            if _config_value_is_on(value, option) and _canonical_policy_key(
+                option
+            ) not in cancelled:
+                on.append(("pip", "pip.conf", option))
 
-    # uv's files come back lowest precedence first, so a higher one simply overwrites:
-    # a project `[tool.uv.pip] require-hashes = false` is uv's effective answer even
-    # where the user config turned it on, and reporting the user value regardless made
-    # a later pip step refuse over a gap uv was not actually enforcing.
-    #
-    # Keyed on the literal key, not the canonical one: `no-build` and
-    # `no-build-package` are one CONTROL but two SETTINGS, and collapsing them into one
-    # slot let a `no-build-package = []` erase a `no-build = true` sitting beside it in
-    # the same file. Canonicalising is for comparing controls, not for storing them.
-    uv_settings: "dict[str, tuple[str, str]]" = {}
-    explicit_uv = _explicit_uv_config_path()
-    for path in _hardened_uv_config_paths():
-        text = _read_text(path)
-        if text is None:
-            continue
-        # Schema by provenance, not by name: a file named by UV_CONFIG_FILE is parsed as
-        # a standalone uv.toml whatever it is called, so an explicit file that happens to
-        # be named pyproject.toml still has its policy read from the root tables.
-        is_pyproject = os.path.basename(path) == "pyproject.toml" and path != explicit_uv
-        tables = (("tool", "uv"), ("tool", "uv", "pip")) if is_pyproject else ((), ("pip",))
-        for key, value in _hardened_settings_in_toml(text, tables).items():
-            uv_settings[key] = (os.path.basename(path), value)
-    for key, (source, value) in uv_settings.items():
-        if _canonical_policy_key(key) not in cancelled["uv"]:
-            _record("uv", source, key, value, ("uv",))
-
-    return tuple(dict.fromkeys(on)), {tool: frozenset(keys) for tool, keys in configured.items()}
-
-
-def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
-    """(tool, source, key) for each hardening this host actually applies."""
-    return _policy_scan()[0]
-
-
-def _configured_policy_keys() -> "dict[str, frozenset[str]]":
-    """Per manager, the controls it has any setting for, enabled or not."""
-    return _policy_scan()[1]
+    return tuple(dict.fromkeys(on))
 
 
 def _hardened_pm_policy_names() -> "tuple[str, ...]":
@@ -5487,121 +4857,6 @@ def _hardened_pm_policy_names() -> "tuple[str, ...]":
             for _tool, source, key in _detected_policy()
         )
     )
-
-
-def _is_resolving_cmd(cmd: "list[str]") -> bool:
-    """True when this command actually resolves and installs packages.
-
-    run() routes EVERY command through _install_env_for_cmd, `patch_metadata.py` and
-    `pip check` included. Those resolve nothing, so a policy that cannot be enforced is
-    not their problem -- treating them as pip installs turned an unenforceable cutoff
-    into a hard exit on the final metadata patch, after every real step had succeeded.
-    """
-    return any(arg in _PIP_COMMANDS for arg in cmd)
-
-
-def _pip_subcommand(cmd: "list[str]") -> str:
-    """Which of install / download / wheel this command runs."""
-    for arg in cmd:
-        if arg in _PIP_COMMANDS:
-            return arg
-    return "install"
-
-
-def _unenforceable_policy(cmd: "list[str]") -> "list[str]":
-    """Retained controls the manager running this command cannot see.
-
-    The opt-out promises the operator's policy is applied. pip and uv read none of each
-    other's, so when a step runs uv and the only hardening is pip's, that promise is
-    false unless something is done about it.
-
-    Restating each control in the other manager's spelling was tried and abandoned: pip
-    and uv differ on scopes (`:all:` and commas against a boolean plus a space-separated
-    `-package` variable), on per-subcommand sections, on which config files are even
-    discovered, and on which controls exist at all, and every one of those gaps became a
-    way to fail an install the operator's real policy permitted. Reporting instead is
-    smaller and cannot invent a restriction: the step stops and names the setting to add.
-
-    A control the target manager has its OWN setting for is never reported, on or off --
-    a `[pip] require-hashes = false` in uv's config is a deliberate difference between
-    the two, not a gap.
-    """
-    if not _respect_pm_policy() or not _is_resolving_cmd(cmd):
-        return []
-    target = "uv" if cmd[:1] == ["uv"] else "pip"
-    # For pip, the subcommand being run and not pip in general: `[download] only-binary`
-    # is not an opinion about `pip install`, and treating it as one let a fallback
-    # install proceed as though the control were covered.
-    slot = "uv" if target == "uv" else _pip_slot(_pip_subcommand(cmd))
-    known = _configured_policy_keys().get(slot, frozenset())
-    missing = {
-        key
-        for tool, _source, key in _detected_policy()
-        if tool != target and _canonical_policy_key(key) not in known
-    }
-    return sorted(missing)
-
-
-# What to tell the operator to set, per manager. The uv side names a uv.toml key wherever
-# uv has no environment spelling for the control: measured on the pinned uv 0.12.1,
-# UV_NO_BUILD and UV_NO_BINARY are ignored, so naming them would send someone round the
-# same loop a second time. Only require-hashes and exclude-newer are settable from the
-# environment there.
-_POLICY_EQUIVALENTS = {
-    "require-hashes": ("PIP_REQUIRE_HASHES=1", "UV_REQUIRE_HASHES=1"),
-    "no-build": ("PIP_ONLY_BINARY=:all:", "no-build = true in your uv.toml"),
-    # uv's no-binary is a package LIST, not a flag: `no-binary = true` is a config parse
-    # error there, so naming it would have left the operator with an unusable uv.
-    "no-binary": ("PIP_NO_BINARY=:all:", 'no-binary = [":all:"] in your uv.toml'),
-    "exclude-newer": ("PIP_UPLOADED_PRIOR_TO", "UV_EXCLUDE_NEWER"),
-}
-
-
-def _refuse_unenforceable_policy(cmd: "list[str]", missing: "list[str]") -> None:
-    """Stop the step, naming the control and the setting that would satisfy it."""
-    target = "uv" if cmd[:1] == ["uv"] else "pip"
-    lines = []
-    for key in missing:
-        canonical = _canonical_policy_key(key)
-        pip_name, uv_name = _POLICY_EQUIVALENTS.get(canonical, ("", ""))
-        wanted = uv_name if target == "uv" else pip_name
-        lines.append(
-            f"     {key} -> set {wanted}"
-            if wanted
-            else f"     {key} -> {target} has no equivalent setting"
-        )
-    _safe_print(
-        _red(
-            f"   {_POLICY_OPT_OUT_ENV} is set, but this step runs {target}, which does "
-            f"not read the following policy:\n" + "\n".join(lines) + "\n"
-            f"   Add the {target} setting above, or unset {_POLICY_OPT_OUT_ENV} to let "
-            "Unsloth install its own dependencies as it normally does."
-        )
-    )
-    sys.exit(1)
-
-
-def _preflight_policy_gap(use_uv: bool) -> None:
-    """Refuse a cross-manager gap BEFORE the install mutates anything.
-
-    The refusal is right, but its timing was not: `install_python_stack()` removes the
-    completion manifest up front, so a refusal at the first resolving command left a
-    venv that had not been touched marked as a half-built install, and `verify_install()`
-    and the Desktop preflight then rejected a working environment.
-
-    Only the manager that will actually run the dependency installs is probed. Probing
-    both refused a pip-only policy on a host with no usable uv, where every real command
-    would have kept that policy: `_bootstrap_uv()` had not run yet, so the synthetic uv
-    probe described a manager the install was never going to use. Nothing is reported
-    unless the opt-out is set, so an ordinary install never reaches the check.
-
-    The refusal at the uv-to-pip fallback still covers the other direction, where uv is
-    used, fails, and pip would then be asked to do what uv refused.
-    """
-    probe = ["uv", "pip", "install"] if use_uv else [sys.executable, "-m", "pip", "install"]
-    missing = _unenforceable_policy(probe)
-    if missing:
-        _refuse_unenforceable_policy(probe, missing)
 
 
 def _announce_pm_policy() -> None:
@@ -5617,9 +4872,11 @@ def _announce_pm_policy() -> None:
         _note(
             f"{_POLICY_OPT_OUT_ENV} is set: keeping {listed} in force for Unsloth's own "
             "dependency installs, which will now fail where your policy forbids them "
-            "rather than be relaxed. pip and uv apply it exactly as they would for you, "
-            "including where they choose not to: pip does not apply only-binary to an "
-            "explicitly supplied source archive.",
+            "rather than be relaxed. Each manager applies its own settings, exactly as "
+            "it would for you and including where it chooses not to: pip does not apply "
+            "only-binary to an explicitly supplied source archive, and neither reads the "
+            "other's configuration, so a step that runs uv is bound by your uv settings "
+            "and a step that runs pip by your pip ones.",
             _cyan,
         )
         return
@@ -5943,9 +5200,6 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     the price of reading the same files' security settings, and why the default is the
     opposite.
     """
-    missing = _unenforceable_policy(cmd)
-    if missing:
-        _refuse_unenforceable_policy(cmd, missing)
     if not _is_pinned_index_cmd(cmd):
         overrides = _relaxed_pip_policy_env(cmd)
         if not overrides:
@@ -6073,26 +5327,12 @@ def pip_install(
                 if VERBOSE and result.stdout:
                     _safe_print(_redact_install_output(result.stdout))
                 return
-            fallback_cmd = _build_pip_cmd(args) + constraint_args_pip + req_args_pip
-            discarded = _unenforceable_policy(fallback_cmd)
-            if discarded:
-                # Only when falling back would actually DROP a control: pip reads none of
-                # uv's policy, so retrying there would install exactly what uv refused.
-                # Gating on the opt-out flag alone was wrong -- an operator who sets it
-                # pre-emptively on a host with no uv-only policy would have had every
-                # ordinary uv failure, a resolver hiccup included, turned into a fatal
-                # one with no fallback.
-                if result.stdout:
-                    _safe_print(_redact_install_output(result.stdout))
-                _safe_print(
-                    _red(
-                        f"   uv failed and {_POLICY_OPT_OUT_ENV} is set, so the pip "
-                        "fallback is not used: pip does not read "
-                        f"{', '.join(discarded)} and would install what uv refused. "
-                        "Unset it to allow the fallback."
-                    )
-                )
-                sys.exit(result.returncode)
+            # The fallback runs under the opt-out too. pip applies whatever pip is
+            # configured with, and uv's settings were never pip's to read: that is a
+            # property of the two tools, not something this installer introduces, and
+            # bridging it needs a model of both managers' configuration that is not
+            # worth the ways it can be wrong. What the opt-out promises is that the
+            # relaxations below are withheld, and they are, on both paths.
             _safe_print(_red("   uv failed, falling back to pip..."))
             if result.stdout:
                 _safe_print(_redact_install_output(result.stdout))
@@ -6237,19 +5477,6 @@ def install_python_stack() -> int:
     # shell-installer handoff skips that slot only while base.txt has no work.
     _TOTAL = base_total - int(skip_base and base_requirements is None)
 
-    # uv selection first: it only runs dry-run probes, and the preflight below has to
-    # know which manager the dependency installs will use before it can say whether a
-    # control is out of that manager's reach.
-    #
-    # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
-    #    include pip by default).
-    USE_UV = _bootstrap_uv()
-
-    # Before the manifest goes away, so a refusal cannot leave an untouched venv marked
-    # half-built. Silent unless the opt-out is set AND the manager that will run the
-    # installs cannot see a control the operator configured.
-    _preflight_policy_gap(USE_UV)
-
     # Drop it up front: a missing manifest is what tells the CLI, setup.sh and
     # the preflight that an interrupted run left the venv half-built. Stop if it
     # survives rather than mutate the venv behind a marker that still verifies.
@@ -6274,6 +5501,10 @@ def install_python_stack() -> int:
         _announce_pm_policy()
     except Exception:
         pass
+
+    # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
+    #    include pip by default).
+    USE_UV = _bootstrap_uv()
 
     # 2. Ensure pip is available (uv venvs from install.sh omit pip).
     _progress("pip bootstrap")
