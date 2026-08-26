@@ -1601,7 +1601,10 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
                     # too, and a total below props.total_memory would hide models
                     # this device can hold.
                     driver_total_bytes = int(mod.mem_get_info(ordinal)[1])
-                    shared_memory = known_unified and driver_total_bytes >= int(total_bytes)
+                    shared_memory = known_unified and (
+                        driver_total_bytes > int(total_bytes)
+                        or (platform.system() == "Windows" and driver_total_bytes == int(total_bytes))
+                    )
                     total_bytes = max(driver_total_bytes, int(total_bytes))
             except Exception as e:
                 # Keep the carve-out rather than dropping the device: an
