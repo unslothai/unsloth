@@ -982,21 +982,40 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
 }
 
 export interface ExternalReasoningResolveOptions {
-  /** vLLM connection flagged as a reasoning model in provider config. */
+  /** Connection flagged as a reasoning model in provider config (vLLM, Ollama). */
   isReasoningProvider?: boolean;
   /** Provider base URL; used to detect custom Gemini OAI-compat gateways. */
   baseUrl?: string | null;
 }
 
-// vLLM has no per-model reasoning signal on OpenAI-compat — pin via user toggle.
+const OLLAMA_REASONING_EFFORT_LEVELS = [
+  "none",
+  "low",
+  "medium",
+  "high",
+] as const;
+
+// vLLM / Ollama have no per-model reasoning signal on OpenAI-compat — pin via
+// the connection's "reasoning model" toggle. Ollama speaks reasoning_effort
+// (none|low|medium|high); vLLM speaks chat_template_kwargs.enable_thinking.
 function resolveConnectionLevelReasoning(
   normalizedProvider: string,
   options: ExternalReasoningResolveOptions | undefined,
 ): ExternalReasoningCapabilities | null {
-  if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
+  if (!options?.isReasoningProvider) {
+    return null;
+  }
+  if (normalizedProvider === "vllm") {
     return withEnableThinkingStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
+    });
+  }
+  if (normalizedProvider === "ollama") {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: OLLAMA_REASONING_EFFORT_LEVELS,
     });
   }
   return null;

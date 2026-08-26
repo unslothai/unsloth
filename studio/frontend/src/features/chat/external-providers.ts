@@ -42,7 +42,10 @@ export interface ExternalProviderConfig {
    * marker. Omitted = inherit Anthropic's default 5-minute pool.
    */
   promptCacheTtl?: "5m" | "1h";
-  /** User-pinned: the loaded vLLM model supports `enable_thinking`. */
+  /**
+   * User-pinned: this connection's model supports thinking controls.
+   * vLLM uses `enable_thinking`; Ollama uses OpenAI-compat `reasoning_effort`.
+   */
   isReasoningModel?: boolean;
   /**
    * Default idle-timeout (minutes) for new OpenAI shell containers. Pre-fills the
@@ -89,8 +92,8 @@ export function isPromptCacheTtl(value: unknown): value is "5m" | "1h" {
 }
 
 // Provider types exposing the connection-level "reasoning model" toggle.
-// vLLM's OpenAI-compat endpoint doesn't advertise this per model.
-const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm"]);
+// vLLM and Ollama's OpenAI-compat endpoints don't advertise this per model.
+const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm", "ollama"]);
 
 export function supportsProviderReasoningToggle(
   providerType: string | null | undefined,

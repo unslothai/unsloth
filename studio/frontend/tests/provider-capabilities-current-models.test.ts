@@ -17,9 +17,11 @@ const {
   providerSupportsFastMode,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
-const { providerModelSupportsVision, setProviderModelCapabilities } = await import(
-  "../src/features/chat/external-providers.ts"
-);
+const {
+  providerModelSupportsVision,
+  setProviderModelCapabilities,
+  supportsProviderReasoningToggle,
+} = await import("../src/features/chat/external-providers.ts");
 
 // Every capability table is prefix-based, so an un-widened prefix silently drops a
 // control instead of failing loudly: a model with no reasoning entry loses its
@@ -170,4 +172,36 @@ test("a connection override cannot raise a documented per-model cap", () => {
   assert.equal(getExternalMaxOutputTokens("openai", "gpt-5.6-sol", 8192), 8192);
   // a vLLM server hosting an id borrowed from OpenAI has no documented cap of its own
   assert.equal(getExternalMaxOutputTokens("vllm", "gpt-5.6-sol", 131072), 131072);
+});
+
+test("Ollama offers the connection-level reasoning toggle, like vLLM", () => {
+  assert.equal(supportsProviderReasoningToggle("ollama"), true);
+  assert.equal(supportsProviderReasoningToggle("vllm"), true);
+  assert.equal(supportsProviderReasoningToggle("llama_cpp"), false);
+  assert.equal(supportsProviderReasoningToggle("custom"), false);
+});
+
+test("Ollama hides Thinking unless the connection is flagged as a reasoning model", () => {
+  const model = "thinkingcap-27b-bottlecap:latest";
+  const unmarked = getExternalReasoningCapabilities("ollama", model);
+  assert.equal(unmarked.supportsReasoning, false);
+  assert.equal(
+    getExternalReasoningCapabilities("ollama", model, {
+      isReasoningProvider: false,
+    }).supportsReasoning,
+    false,
+  );
+
+  const flagged = getExternalReasoningCapabilities("ollama", model, {
+    isReasoningProvider: true,
+  });
+  assert.equal(flagged.supportsReasoning, true);
+  assert.equal(flagged.reasoningStyle, "reasoning_effort");
+  assert.equal(flagged.supportsReasoningOff, true);
+  assert.deepEqual([...flagged.reasoningEffortLevels], [
+    "none",
+    "low",
+    "medium",
+    "high",
+  ]);
 });
