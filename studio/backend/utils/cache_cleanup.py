@@ -68,11 +68,11 @@ def get_existing_cache_dirs() -> List[Path]:
     return found
 
 
-# Written when Studio creates the directory, so "we made this" is a fact rather
+# Written when Unsloth creates the directory, so "we made this" is a fact rather
 # than an inference from the contents.
 CACHE_MARKER = ".unsloth_compiled_cache"
 
-# Names only the compiler produces, so a cache Studio did not create is still
+# Names only the compiler produces, so a cache Unsloth did not create is still
 # recognised once it has been written into.
 import re as _re
 
@@ -84,7 +84,7 @@ _OWNED_DELETE_RE = _re.compile(r"\Aunsloth_compiled_module_.+\.py\Z")
 
 
 def _is_dedicated_cache(path: Path) -> bool:
-    """True only for a directory Studio created for the cache and nothing else.
+    """True only for a directory Unsloth created for the cache and nothing else.
 
     A real file, not a link: exists() follows one, so a marker symlinked at any
     existing path would license the rmtree below over somebody's own directory.
@@ -131,7 +131,7 @@ def _holds_generated_modules(path: Path) -> bool:
 def _builtin_cache_paths() -> set:
     """Paths that are ours by construction, so they need no marker.
 
-    The CWD candidate is deliberately not one: Studio is launched from wherever
+    The CWD candidate is deliberately not one: Unsloth is launched from wherever
     the shell happens to be, and a directory there is only ours if it says so.
     """
     return {str(p) for p in _CACHE_DIRS}
@@ -158,7 +158,7 @@ def _cleanable_cache_dirs() -> "List[tuple]":
             cleanable.append((cache_dir, False))
         else:
             logger.warning(
-                "Not clearing %s: Studio did not create it and it holds no generated "
+                "Not clearing %s: Unsloth did not create it and it holds no generated "
                 "modules. Point UNSLOTH_COMPILE_LOCATION at a directory used only for "
                 "the compiled cache.",
                 cache_dir,

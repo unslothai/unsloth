@@ -10,6 +10,7 @@ nvidia-smi involved.
 
 from __future__ import annotations
 
+import importlib.util as _importlib_util
 import sys
 import time
 import types as _types
@@ -26,15 +27,49 @@ if _BACKEND_DIR not in sys.path:
 
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
+# Same reasoning as httpx below: only when the real one is absent. With _BACKEND_DIR on
+# sys.path the in-repo loggers package resolves, and stubbing over it trips the shadowing
+# guard in test_backend_ci_parallel_isolation.py.
+#
+# Probed with find_spec, not `import loggers`: an import bound purely to test
+# resolvability leaves an unused name that scripts/verify_import_hoist.py reads as a
+# botched hoist, and loggers/handlers.py imports structlog at module scope, whose stub is
+# not installed until below, so in the very environment this block exists for the import
+# would fail on that transitive dep and the except branch would stub over the real
+# package. find_spec answers "is it resolvable" without executing the module.
+#
+# Same except clause as _is_installed() in test_backend_ci_parallel_isolation.py:
+# find_spec raises for a missing parent, and ValueError when a prior test left a bare
+# ModuleType (__spec__ is None) in sys.modules, where the stub is already there anyway.
+try:
+    _real_loggers = _importlib_util.find_spec("loggers") is not None
+except (ImportError, ValueError):
+    _real_loggers = False
+if not _real_loggers:
+    sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
-sys.modules.setdefault("structlog", _structlog_stub)
+# Same reasoning as httpx below: only when the real one is absent. The real structlog
+# has get_logger, which is all this module wants from it.
+try:
+    import structlog  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("structlog", _structlog_stub)
 # Set get_logger even if a prior test inserted a bare ``structlog`` stub.
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
+# Only when the real library is absent, the way test_llama_cpp_placement.py already does
+# it. setdefault reads as if it defers to the real httpx, but sys.modules holds what has
+# been IMPORTED, not what is installed, so in a process where nothing has touched httpx
+# yet the stub wins and shadows the real library for the whole session. This stub has no
+# Response, and starlette.testclient reads httpx.Response at import, so every module
+# collected afterwards that reaches fastapi.testclient or routes.inference dies on it.
+#
+# In the full parallel run something always imports httpx before this file is collected,
+# which is why it went unnoticed. Splitting the timing tests into a ten-file serial step
+# removed that accident and the 3.10 leg failed collection on two of them.
 _httpx_stub = _types.ModuleType("httpx")
 for _exc in (
     "ConnectError",
@@ -56,7 +91,10 @@ _httpx_stub.Client = type(
         "__exit__": lambda s, *a: None,
     },
 )
-sys.modules.setdefault("httpx", _httpx_stub)
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference import llama_cpp as llama_cpp_module  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402

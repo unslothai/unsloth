@@ -19,7 +19,14 @@ from pydantic import (
     model_validator,
 )
 
-from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
+from core.inference.llama_server_args import (
+    BATCH_MAX,
+    BATCH_MIN,
+    CACHE_RAM_MAX_MIB,
+    CTX_CHECKPOINTS_MAX,
+    PARALLEL_MAX,
+    PARALLEL_MIN,
+)
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
@@ -34,6 +41,11 @@ class LoadRequest(BaseModel):
         max_length = 128,
         pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
         description = "Opaque client attempt ID for scoped in-flight cancellation",
+    )
+
+    force_reload: bool = Field(
+        False,
+        description = "Start a fresh runtime even when the active settings already match",
     )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
@@ -174,6 +186,54 @@ class LoadRequest(BaseModel):
             "Ignored for non-GGUF models."
         ),
     )
+    load_mode: Optional[Literal["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"]] = Field(
+        None,
+        description = (
+            "How llama-server reads the weights off disk (--load-mode). 'auto' "
+            "memory-maps unless a device cannot, 'mmap' forces the mapping, "
+            "'mlock' keeps the model in RAM rather than letting it swap or "
+            "compress, 'mmap+mlock' does both, 'dio' uses DirectIO where "
+            "available and 'none' asks for no special mode. Omit for the "
+            "llama.cpp default. The Model Memory settings own host placement, so "
+            "'Keep model in GPU memory' replaces this with mmap+mlock and "
+            "'Don't reserve system RAM' drops a mode that would hold a full host "
+            "copy. Ignored for non-GGUF models."
+        ),
+    )
+    spec_draft_cache_type: Optional[str] = Field(
+        None,
+        description = (
+            "KV cache dtype for the DRAFT model's context "
+            "(--spec-draft-type-k / --spec-draft-type-v), for example 'q8_0'. "
+            "Separate from cache_type_kv, which is the target model's. Only "
+            "reaches the command line when the load attaches a separate draft "
+            "model; omit for the llama.cpp default (f16). Ignored for non-GGUF "
+            "models."
+        ),
+    )
+    ctx_checkpoints: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = CTX_CHECKPOINTS_MAX,
+        description = (
+            "Context checkpoints kept per slot (--ctx-checkpoints), which let a "
+            "sliding-window model rewind instead of re-processing the prompt. "
+            "Omit for the llama.cpp default (32); 0 disables them. "
+            "Each costs host memory, and a model without a sliding window "
+            "ignores it. Ignored for non-GGUF models."
+        ),
+    )
+    cache_ram: Optional[int] = Field(
+        None,
+        ge = -1,
+        le = CACHE_RAM_MAX_MIB,
+        description = (
+            "Host memory in MiB llama-server may spend caching prompt state it "
+            "has evicted from a slot (--cache-ram). Omit for the llama.cpp "
+            "default (8192); 0 disables the cache and -1 lifts the limit. "
+            "Ignored for non-GGUF models."
+        ),
+    )
     tensor_parallel: bool = Field(
         False,
         description = (
@@ -181,6 +241,16 @@ class LoadRequest(BaseModel):
             "instead of by layer for GGUF models. Only affects multi-GPU "
             "setups, where it can make generation significantly faster. "
             "No effect on a single GPU. Ignored for non-GGUF models."
+        ),
+    )
+    disable_vision: bool = Field(
+        False,
+        description = (
+            "Load a vision-capable GGUF without its multimodal projector, as a "
+            "text-only model. Frees the VRAM the projector would hold, at the cost "
+            "of image input, which is off for the session; text generation is "
+            "unaffected. Ignored for models with no vision projector, and for "
+            "non-GGUF models."
         ),
     )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
@@ -234,7 +304,7 @@ class LoadRequest(BaseModel):
         ),
     )
 
-    @field_validator("n_batch", "n_ubatch", mode = "before")
+    @field_validator("n_batch", "n_ubatch", "ctx_checkpoints", "cache_ram", mode = "before")
     @classmethod
     def _no_booleans(cls, value: Any) -> Any:
         # bool subclasses int and pydantic parses non-strictly, so `true` arrives as 1 and
@@ -300,6 +370,15 @@ class UnloadRequest(BaseModel):
     )
 
 
+class SearchImagesLookupRequest(BaseModel):
+    subjects: list[str] = Field(
+        ...,
+        min_length = 1,
+        max_length = 5,
+        description = "Specific things to fetch one picture each for.",
+    )
+
+
 class TranscribeRequest(BaseModel):
     """Speech-to-text request for the dictation STT sidecar."""
 
@@ -352,6 +431,10 @@ class ValidateModelRequest(BaseModel):
     load_in_4bit: bool = Field(True)
     cache_type_kv: Optional[str] = Field(None)
     tensor_parallel: bool = Field(False)
+    # Sized with, like the other intended load settings above: the follow-up /load
+    # opens no projector when this is set, so a preflight that charges for one would
+    # refuse a load that then fits.
+    disable_vision: bool = Field(False)
     gpu_ids: Optional[List[int]] = Field(None)
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
@@ -414,6 +497,27 @@ class ValidateModelRequest(BaseModel):
         le = 16,
         description = "Draft depth intended for the follow-up load; sizes the draft KV.",
     )
+    spec_draft_cache_type: Optional[str] = Field(
+        None,
+        description = (
+            "Draft KV cache dtype intended for the follow-up load. Sent so this "
+            "preflight strips the same inherited draft-cache flags /load would, "
+            "and so approves the command the load actually runs. The coexistence "
+            "estimate prices the drafter's weights but not its KV, so the value "
+            "itself does not move the number."
+        ),
+    )
+    ctx_checkpoints: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = CTX_CHECKPOINTS_MAX,
+        description = (
+            "Checkpoints (--ctx-checkpoints) intended for the follow-up load, so "
+            "the coexistence estimate sizes the SWA cache like /load. Each one is "
+            "a per-slot snapshot that scales with the slot's context, so a load "
+            "asking for them needs materially more memory than one that does not."
+        ),
+    )
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
@@ -427,7 +531,7 @@ class ValidateModelRequest(BaseModel):
         "guard. Only the leased file's own embedded template is read, never sibling sidecars.",
     )
 
-    _no_booleans = field_validator("n_batch", "n_ubatch", mode = "before")(
+    _no_booleans = field_validator("n_batch", "n_ubatch", "ctx_checkpoints", mode = "before")(
         LoadRequest._no_booleans.__func__
     )
 
@@ -608,6 +712,164 @@ class ValidateModelResponse(BaseModel):
     )
 
 
+class EstimateMemoryRequest(BaseModel):
+    """Settings a Load-Model panel is about to submit, priced before it submits them.
+
+    Every field mirrors the load request it previews, so the estimate answers for the
+    command that would actually run. Header-only: nothing is read, touched or loaded.
+    """
+
+    model_path: str = Field(..., description = "Model identifier or local path")
+    gguf_variant: Optional[str] = Field(
+        None, description = "GGUF quantization to price (e.g. Q4_K_M); the picked variant."
+    )
+    hf_token: Optional[str] = Field(None, description = "Token for gated repositories")
+    native_path_lease: Optional[str] = Field(
+        None,
+        description = "Lease for a picked / drag-dropped .gguf, as /validate takes one.",
+    )
+    n_ctx: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = "Context length to price (--ctx-size). 0 or omitted prices the "
+        "model's native context, which is what an Auto load asks for.",
+    )
+    cache_type_kv: Optional[str] = Field(
+        None,
+        description = "KV cache dtype to price. The biggest lever on this estimate at "
+        "long contexts, so omitting it prices a load nobody asked for.",
+    )
+    n_parallel: Optional[int] = Field(
+        None,
+        ge = PARALLEL_MIN,
+        le = PARALLEL_MAX,
+        description = "Serving slots (--parallel); scales both the cache and the buffers.",
+    )
+    n_batch: Optional[int] = Field(None, ge = BATCH_MIN, le = BATCH_MAX)
+    n_ubatch: Optional[int] = Field(None, ge = BATCH_MIN, le = BATCH_MAX)
+    ctx_checkpoints: Optional[int] = Field(None, ge = 0, le = CTX_CHECKPOINTS_MAX)
+    speculative_type: Optional[str] = Field(
+        None, description = "Speculative mode; decides which drafter's weights are charged."
+    )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 16,
+        description = "Draft depth. Sizes the drafter's rollback state, so it moves the "
+        "estimate for every mode that loads a separate drafter.",
+    )
+    spec_draft_cache_type: Optional[str] = Field(
+        None,
+        description = "Draft KV cache dtype. The drafter keeps its own cache, and at a "
+        "long context that is GB, not a rounding error.",
+    )
+    tensor_parallel: bool = Field(False, description = "Whether tensor mode is requested")
+    disable_vision: bool = Field(
+        False, description = "Vision off, so an image projector's bytes are not charged."
+    )
+    gpu_memory_mode: Optional[str] = Field(
+        None, description = "'auto' or 'manual'; manual splits the weights by gpu_layers."
+    )
+    gpu_layers: Optional[int] = Field(
+        None, ge = 0, description = "Layers pinned to the GPU under manual placement."
+    )
+    n_cpu_moe: Optional[int] = Field(
+        None,
+        ge = 0,
+        description = "Expert layers held on the CPU (--n-cpu-moe). Not priced; echoed "
+        "back so the panel can say the GPU figure reads high.",
+    )
+    selected_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "GPUs the load is pinned to. Tensor mode replicates its compute "
+        "buffers per device, so the pinned count changes the footprint.",
+    )
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = "Pass-through llama-server flags. Read, not just carried: -c, "
+        "-nkvo, --swa-full and the cache-type flags all move this estimate.",
+    )
+
+    _no_booleans = field_validator(
+        "n_batch", "n_ubatch", "ctx_checkpoints", "n_ctx", mode = "before"
+    )(LoadRequest._no_booleans.__func__)
+
+
+class EstimateMemoryResponse(BaseModel):
+    """Itemized memory an inference load would occupy, or why it could not be sized."""
+
+    available: bool = Field(..., description = "Whether a breakdown could be produced at all.")
+    reason: Optional[str] = Field(
+        None,
+        description = "Cause when available is false: 'not_gguf', 'not_downloaded', "
+        "'unsupported_source' or 'unsizable'.",
+    )
+    weights_bytes: int = Field(0, description = "Resident model files: weights, projector, drafter")
+    kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
+    compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
+    drafter_runtime_bytes: int = Field(
+        0,
+        description = "A separate drafter's own KV cache and rollback state, on top of "
+        "its file in weights_bytes. Included in total_bytes, and in gpu_bytes unless the "
+        "drafter is CPU-pinned. Reported separately so the itemization accounts for it.",
+    )
+    drafter_runtime_gpu_bytes: int = Field(
+        0,
+        description = "The share of drafter_runtime_bytes that lands on the GPU. Not a "
+        "placement flag, because the term is not placed as one piece: under MTP the "
+        "target-side verification state follows the TARGET cache (so --no-kv-offload "
+        "moves it) while the draft cache follows the drafter (so --spec-draft-ngl 0 "
+        "moves that instead), and the two can go different ways in the same load.",
+    )
+    projector_runtime_bytes: int = Field(
+        0,
+        description = "The vision encoder's buffers, about 0.4x the projector file on top "
+        "of it. Included in total_bytes, and in gpu_bytes unless --no-mmproj-offload "
+        "keeps the projector in host RAM.",
+    )
+    drafter_kv_unsized: bool = Field(
+        False,
+        description = "True when a drafter is charged whose cache could not be sized: "
+        "--spec-draft-hf names a repository whose header is not on this disk. Its weights "
+        "are in weights_bytes but its context-scaled cache is missing, so total_bytes is a "
+        "lower bound.",
+    )
+    adapters_unsized: bool = Field(
+        False,
+        description = "True when a pass-through --lora / --lora-scaled / --control-vector / "
+        "--control-vector-scaled names a file that could not be stat'd. llama.cpp loads every "
+        "one of them into resident tensors on top of the base model, so those bytes are "
+        "missing from total_bytes and it is a lower bound.",
+    )
+    total_bytes: int = Field(0, description = "Weights + KV + compute, wherever they land")
+    gpu_bytes: int = Field(
+        0, description = "The share of total_bytes that lands on the GPU under this offload"
+    )
+    kv_estimable: bool = Field(
+        True,
+        description = "False when the GGUF header lacks the attention dims needed to "
+        "size the cache. kv_bytes is then 0 meaning UNKNOWN and total_bytes is a lower "
+        "bound; rendering it as a confident total is what this flag exists to prevent.",
+    )
+    kv_on_gpu: bool = Field(
+        True, description = "False under --no-kv-offload, which moves the cache to host RAM"
+    )
+    n_ctx: int = Field(0, description = "Context length the estimate actually priced")
+    cache_type_kv: Optional[str] = Field(
+        None, description = "KV dtype the estimate priced, after flags and fallbacks resolve"
+    )
+    n_parallel: int = Field(1, description = "Slots the estimate priced, after the launch clamps")
+    layer_count: Optional[int] = Field(None, description = "GGUF block_count, when readable")
+    gpu_layers: Optional[int] = Field(
+        None, description = "Layers charged to the GPU; null under automatic placement"
+    )
+    moe_offload_unmodelled: bool = Field(
+        False,
+        description = "True when --n-cpu-moe is set: experts move per-tensor, not "
+        "per-block, so the GPU/host split above ignores it and reads high.",
+    )
+
+
 class InstallLatestTransformersRequest(BaseModel):
     """Consented request to install the latest transformers release into a sidecar."""
 
@@ -678,6 +940,13 @@ class _InferenceRuntimeFields(BaseModel):
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
+    has_video_input: bool = Field(
+        False,
+        description = (
+            "Whether llama-server accepts video input for this model, from its /props "
+            "modalities. False unless the mmproj, the build and ffmpeg all support it."
+        ),
+    )
     requires_trust_remote_code: bool = Field(
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
@@ -712,7 +981,11 @@ class _InferenceRuntimeFields(BaseModel):
     )
     supports_preserve_thinking: bool = Field(
         False,
-        description = "Whether the template understands the optional preserve_thinking kwarg (Qwen3.6-style)",
+        description = "Whether the template understands the optional preserve_thinking kwarg",
+    )
+    preserve_thinking_default: bool = Field(
+        False,
+        description = "Default preserve_thinking value resolved for the active model family",
     )
     supports_tools: bool = Field(
         False,
@@ -792,6 +1065,23 @@ class _InferenceRuntimeFields(BaseModel):
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
     )
+    disable_vision: bool = Field(
+        False,
+        description = (
+            "Whether the load ran with the vision projector deliberately left "
+            "unloaded. Echoes the request, so the Advanced Settings switch can "
+            "reseed from it even on a GGUF that never had a projector."
+        ),
+    )
+    vision_disabled_by_user: bool = Field(
+        False,
+        description = (
+            "Whether image input is off because the user asked, rather than because "
+            "the model has no usable mmproj. The two look identical to a client "
+            "otherwise and need different guidance, so this stays False for a model "
+            "that never had a projector to switch off."
+        ),
+    )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
         description = "Active GPU memory strategy ('auto' or 'manual').",
@@ -806,6 +1096,18 @@ class _InferenceRuntimeFields(BaseModel):
             "Why an automatic GGUF load was downgraded to CPU. "
             "'vulkan_startup_crash' means a managed, auto-selected Vulkan launch "
             "hard-crashed and the same launch became healthy with GPU devices disabled."
+        ),
+    )
+
+    mmproj_fallback_reason: Optional[
+        Literal["cpu_offload", "projector_incompatible", "projector_startup_failure"]
+    ] = Field(
+        None,
+        description = (
+            "How an automatic GGUF multimodal-projector recovery changed the load. "
+            "'cpu_offload' keeps vision with the projector on CPU; "
+            "'projector_incompatible' and 'projector_startup_failure' mean the "
+            "model recovered text-only."
         ),
     )
     n_cpu_moe: int = Field(
@@ -864,6 +1166,36 @@ class _InferenceRuntimeFields(BaseModel):
         description = (
             "Micro-batch size (--ubatch-size) the load was invoked with, or None "
             "when the load left it at the llama.cpp default (or to extra args / env)."
+        ),
+    )
+    requested_load_mode: Optional[str] = Field(
+        None,
+        description = (
+            "Load mode (--load-mode) the load was invoked with, or None when the "
+            "load left it at the llama.cpp default. This is what was REQUESTED: "
+            "the Model Memory settings can replace it, and what they emit is "
+            "reported by the model-memory settings route instead."
+        ),
+    )
+    requested_spec_draft_cache_type: Optional[str] = Field(
+        None,
+        description = (
+            "Draft KV cache dtype the load was invoked with, or None when the "
+            "load left it at the llama.cpp default (or attached no drafter)."
+        ),
+    )
+    requested_ctx_checkpoints: Optional[int] = Field(
+        None,
+        description = (
+            "Checkpoints (--ctx-checkpoints) the load was invoked with, or None "
+            "when the load left it at the llama.cpp default."
+        ),
+    )
+    requested_cache_ram: Optional[int] = Field(
+        None,
+        description = (
+            "Host prompt cache size in MiB (--cache-ram) the load was invoked "
+            "with, or None when the load left it at the llama.cpp default."
         ),
     )
     requested_llama_extra_args: Optional[List[str]] = Field(
@@ -1056,7 +1388,87 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "whose llama.cpp MTP path runs slower than no speculation, so Auto "
             "used ngram-mod or spec-off instead -- updating won't help; choose "
             "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
+            "'mtp_partial_offload' -> an Auto-mode policy downgrade: the model "
+            "has an embedded Hybrid Mamba MTP head and the placement offloads "
+            "only part of it, where the recurrent rollback copies cost more "
+            "layers than the drafting wins back -- updating won't help; choose "
+            "MTP in Settings to force it. "
             "None when the requested strategy engaged or was not requested."
+        ),
+    )
+    spec_fallback_binary_changed: Optional[bool] = Field(
+        None,
+        description = (
+            "For a 'binary_no_mtp' / 'binary_outdated' stand-down only: whether a "
+            "different llama-server is installed than the live one launched from, "
+            "which is the necessary condition in "
+            "LlamaCppBackend.spec_binary_fallback_can_retry. False -> an identical "
+            "/load cannot repair the drafter and dedupes, so a client need not "
+            "reload for it. None for every other reason, and on a backend too old "
+            "to report it."
+        ),
+    )
+    spec_probe_retry_pending: Optional[bool] = Field(
+        None,
+        description = (
+            "The capability probe has started answering since a launch it degraded, so "
+            "an identical /load is rejected once to re-derive the runtime "
+            "(_runtime_matches_intent's _capability_probe_inconclusive arm). No "
+            "speculative mode gates it. None on a backend too old to report it."
+        ),
+    )
+    spec_dflash_retry_pending: Optional[bool] = Field(
+        None,
+        description = (
+            "A DFlash sidecar fetch failed retryably, which under Auto records no "
+            "spec_fallback_reason at all, so an identical /load is rejected to fetch "
+            "again. Applies to the 'auto' and 'dflash' modes. None on a backend too old "
+            "to report it."
+        ),
+    )
+    spec_dspark_sidecar_absent: Optional[bool] = Field(
+        None,
+        description = (
+            "The DSpark drafter is absent rather than transiently unfetchable, which is "
+            "the permanent state of every repo but one. _runtime_matches_intent excludes "
+            "it from the drafter_not_found retry arm, so an identical /load dedupes and a "
+            "client need not reload for it. None on a backend too old to report it."
+        ),
+    )
+    tensor_parallel_dropped_by_arch_gate: Optional[bool] = Field(
+        None,
+        description = (
+            "The GPU architecture gate normalized a tensor-parallel request to layer "
+            "mode, so tensor_parallel reads false while the request that produced it was "
+            "true. _runtime_matches_intent accepts the same true request against this "
+            "runtime. None on a backend too old to report it."
+        ),
+    )
+    gpu_placement_paravirtual: Optional[bool] = Field(
+        None,
+        description = (
+            "Metal is a virtualised Apple GPU, so paravirtual_normalized_request rewrites "
+            "every GGUF request to manual / zero layers / no split / no MoE before the "
+            "duplicate-load comparators run. Placement cannot tell two requests apart "
+            "here. None on a backend too old to report it."
+        ),
+    )
+    audio_probe_pending: bool = Field(
+        False,
+        description = (
+            "The post-launch audio probe did not finish and has to be retried. The route "
+            "refuses its own already-loaded answer while this is true so load_model can "
+            "re-probe, and nothing else does, so a client must not skip /load for it."
+        ),
+    )
+    diffusion_split_supported: Optional[bool] = Field(
+        None,
+        description = (
+            "A diffusion launch right now would honour --ngl. _runtime_matches_intent "
+            "rejects an otherwise identical request once this is true and gpu_layers "
+            "differs from diffusion_requested_ngl, so a split an older shim dropped can "
+            "be applied. None off a diffusion runner, and on a backend too old to report "
+            "it."
         ),
     )
     llama_cpp_prebuilt_stale: bool = Field(
@@ -1332,10 +1744,49 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = Field(
         None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
     )
-    presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
+    # OpenAI's documented range is [-2, 2] on both penalties. Widening only
+    # admits requests that used to be rejected, so nothing that works today
+    # changes. A negative value boosts repetition wherever the backend applies
+    # the penalty at all.
+    presence_penalty: float = Field(
+        0.0,
+        ge = -2.0,
+        le = 2.0,
+        description = (
+            "Presence penalty: charges a token once if it appears. MLX scores the completion"
+            " only; llama-server also counts the prompt, within its own window."
+        ),
+    )
+    frequency_penalty: float = Field(
+        0.0,
+        ge = -2.0,
+        le = 2.0,
+        description = (
+            "Frequency penalty: charges a token per occurrence. MLX scores the completion"
+            " only; llama-server also counts the prompt, within its own window."
+        ),
+    )
+    # Ids are not range-checked here: MLX bounds-checks nothing either, so a
+    # stray is dropped at the processors rather than failing the request.
+    logit_bias: Optional[Dict[int, Annotated[float, Field(ge = -100.0, le = 100.0)]]] = Field(
+        None,
+        description = "Additive per-token logit bias keyed by token id, each in [-100, 100]. Ids past the model's logit width are ignored.",
+    )
     stop: Optional[Union[str, list[str]]] = Field(
         None,
         description = "OpenAI stop sequences: a single string or list of strings at which generation halts.",
+    )
+    # Declared rather than left to model_extra so the schema documents it and a
+    # backend that cannot constrain decoding can refuse it by name.
+    response_format: Optional[Dict[str, Any]] = Field(
+        None,
+        description = (
+            'Guided decoding contract, typically `{"type": "json_object"}` or'
+            ' a `json_schema`. `{"type": "text"}` names the default and'
+            " constrains nothing. Anything else needs a grammar engine, and a"
+            " backend without one rejects the request rather than answering text"
+            " that ignores the contract."
+        ),
     )
     tools: Optional[list[dict]] = Field(
         None,
@@ -1394,6 +1845,13 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
     )
+    video_base64: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Base64-encoded video (mp4/mov/webm/mkv/avi) for video-input "
+            "models. GGUF only: llama-server samples frames with ffmpeg."
+        ),
+    )
     use_adapter: Optional[Union[bool, str]] = Field(
         None,
         description = (
@@ -1439,7 +1897,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = (
             "[x-unsloth] List of enabled tool names. Local GGUF/safetensors models "
-            "accept ['web_search', 'python', 'terminal', 'render_html']. The "
+            "accept ['web_search', 'python', 'terminal', 'edit_file', 'render_html']. The "
             "unforgettable virtual model also unions memory_* and rims_enter_sim. "
             "External "
             "providers accept ['web_search', 'web_fetch', 'code_execution'] for "
@@ -1452,13 +1910,20 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
     )
+    deep_research_armed: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Offer the deep_research handoff tool for this turn. Set when the "
+            "composer has Deep Research armed; the model decides whether to use it."
+        ),
+    )
     confirm_tool_calls: Optional[bool] = Field(
         None,
         description = "[x-unsloth] When true, pause before each tool call and wait for the user to allow/deny it via POST /api/inference/tool-confirm.",
     )
     bypass_permissions: Optional[bool] = Field(
         False,
-        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
+        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). edit_file is likewise unconfined: an absolute path resolves as written and edits the real file there, instead of being held to the conversation's working directory. Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
     )
     permission_mode: Optional[str] = Field(
         None,
@@ -1569,21 +2034,21 @@ class ChatCompletionRequest(BaseModel):
     nudge_tool_calls: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Opt-in, non-streaming client-tool passthrough only: when the "
-            "model emitted a tool signal that healing could not repair, retry ONCE with "
-            "a short nudge appended (the retry shares the full prompt prefix, so the "
-            "server's KV cache is reused). Default off; UNSLOTH_TOOL_CALL_NUDGE=1 flips "
-            "the process default."
+            "[x-unsloth] Opt-in tool-call recovery: when a model stalls with a short "
+            "plan instead of calling an available tool, or passthrough healing cannot "
+            "repair a malformed call, retry with a short nudge. Default off; "
+            "UNSLOTH_TOOL_CALL_NUDGE=1 flips the process default."
         ),
     )
-    context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
+    context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
         None,
         description = (
-            "[x-unsloth] Passthrough behavior when the prompt exceeds the real "
-            "context window. 'error' (default) returns a 400 with "
-            "code=context_length_exceeded. 'truncate_middle' drops middle "
-            "turn-groups (system prompt, first turn, and recent turns kept; "
-            "tool calls stay paired with their results) and retries."
+            "[x-unsloth] Local GGUF context-overflow behavior. 'error' (default) "
+            "returns a 400 with code=context_length_exceeded. 'truncate_middle' is "
+            "limited to client-tool or response_format passthrough and retries after "
+            "keeping the first and recent turns. 'truncate_oldest' provides a rolling "
+            "window for plain and Unsloth-tool chats by dropping complete oldest turns. "
+            "Both truncation policies preserve system messages and tool-call groups."
         ),
     )
     max_tool_calls_per_message: Optional[int] = Field(
@@ -1599,12 +2064,12 @@ class ChatCompletionRequest(BaseModel):
     run_tools_locally: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Execute the selected tools on the Studio host instead of "
+            "[x-unsloth] Execute the selected tools on the Unsloth host instead of "
             "asking the provider to run its own hosted builtins. Only meaningful "
             "for providers that ship hosted tools of the same name (OpenAI, "
             "Gemini, Kimi, OpenRouter), where 'web_search' alone is ambiguous: "
             "the same request means hosted search to a client written before "
-            "Studio ran tools for external providers. Omitted keeps the hosted "
+            "Unsloth ran tools for external providers. Omitted keeps the hosted "
             "behaviour, so an older client is unaffected."
         ),
     )
@@ -1983,6 +2448,13 @@ class ChatCountTokensRequest(BaseModel):
         None,
         description = "[x-unsloth] Append tools from every enabled MCP server",
     )
+    deep_research_armed: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Offer the deep_research handoff tool. Its schema is in the prompt "
+            "whenever the composer armed research, so the count carries it too."
+        ),
+    )
     rag_scope: Optional[dict] = Field(
         None,
         description = "[x-unsloth] Hidden RAG retrieval scope for search_knowledge_base",
@@ -2125,6 +2597,7 @@ class ChatCompletionChunk(BaseModel):
     choices: list[ChunkChoice]
     usage: Optional[CompletionUsage] = None
     timings: Optional[dict] = None
+    context_truncated: Optional[dict] = None
 
 
 # ── Non-streaming response ───────────────────────────────────────
@@ -2532,7 +3005,12 @@ class AnthropicToolResultBlock(BaseModel):
 # redacted_thinking, a provider block a resumed session replays, or a future type)
 # is accepted as an unknown block and dropped by the converter, rather than 400-ing
 # the whole request on strict validation.
-_KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result"})
+_KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset(
+    {"text", "image", "tool_use", "tool_result", "thinking", "redacted_thinking"}
+)
+# Thinking blocks are replayed only in assistant turns; the converter drops them
+# from user content, so accepting them there would silently lose a user turn.
+_USER_ANTHROPIC_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result"})
 
 
 class AnthropicUnknownBlock(BaseModel):
@@ -2549,11 +3027,29 @@ class AnthropicUnknownBlock(BaseModel):
         return v
 
 
+class AnthropicThinkingBlock(BaseModel):
+    # Clients replay thinking blocks with tool results (Anthropic's tool-use
+    # protocol requires it), so the request model must accept them; conversion
+    # drops them from the prompt.
+    type: Literal["thinking"]
+    thinking: str = ""
+    signature: str = ""
+    model_config = {"extra": "allow"}
+
+
+class AnthropicRedactedThinkingBlock(BaseModel):
+    type: Literal["redacted_thinking"]
+    data: str = ""
+    model_config = {"extra": "allow"}
+
+
 AnthropicContentBlock = Union[
     AnthropicTextBlock,
     AnthropicImageBlock,
     AnthropicToolUseBlock,
     AnthropicToolResultBlock,
+    AnthropicThinkingBlock,
+    AnthropicRedactedThinkingBlock,
     AnthropicUnknownBlock,
 ]
 
@@ -2629,7 +3125,7 @@ class AnthropicMessage(BaseModel):
                 # Guard the value: a non-string type is unsupported too, and a
                 # membership test on an unhashable value would raise TypeError
                 # (escaping as a 500 instead of a clean 400).
-                if not isinstance(btype, str) or btype not in _KNOWN_ANTHROPIC_BLOCK_TYPES:
+                if not isinstance(btype, str) or btype not in _USER_ANTHROPIC_BLOCK_TYPES:
                     raise ValueError(f"unsupported content block type {btype!r} in a user message")
         return data
 
@@ -2641,6 +3137,18 @@ class AnthropicTool(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     input_schema: Optional[dict] = None
+    model_config = {"extra": "allow"}
+
+
+class AnthropicThinkingConfig(BaseModel):
+    # Deliberately `str`, not a Literal. Anthropic ships thinking types beyond
+    # enabled/disabled (adaptive tiers), and Claude Code sends them -- a strict
+    # Literal turns an unrecognized value into a hard 400, which is worse than
+    # the silent drop this replaced. Only "disabled" means off; treat anything
+    # else as a request to think.
+    type: str = "enabled"
+    # Accepted for wire compatibility; llama-server has no thinking budget.
+    budget_tokens: Optional[int] = None
     model_config = {"extra": "allow"}
 
 
@@ -2669,6 +3177,17 @@ class AnthropicMessagesRequest(BaseModel):
     )
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
+    # Anthropic's native extended-thinking control. Only `type` is honored:
+    # llama-server has no thinking-token budget, so `budget_tokens` is accepted
+    # and ignored rather than 400'd (Claude Code always sends it alongside).
+    thinking: Optional[AnthropicThinkingConfig] = None
+    # [x-unsloth] reasoning controls mirroring the OpenAI endpoint. These win
+    # over `thinking` when both are present, matching enable_tools precedence.
+    enable_thinking: Optional[bool] = None
+    reasoning_effort: Optional[
+        Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
+    ] = None
+    preserve_thinking: Optional[bool] = None
     session_id: Optional[str] = None
     thread_id: Optional[str] = Field(
         None,
@@ -2689,9 +3208,17 @@ class AnthropicMessagesRequest(BaseModel):
     )
     nudge_tool_calls: Optional[bool] = Field(
         None,
-        description = "[x-unsloth] Opt-in, non-streaming only: retry once with a nudge when the model emitted a tool signal healing could not repair (mirrors the Chat Completions field).",
+        description = "[x-unsloth] Opt-in tool-call recovery; mirrors the Chat Completions nudge_tool_calls field and defaults off.",
     )
     model_config = {"extra": "allow"}
+
+    def resolved_enable_thinking(self) -> Optional[bool]:
+        """Effective on/off, preferring the x-unsloth field over `thinking`."""
+        if self.enable_thinking is not None:
+            return self.enable_thinking
+        if self.thinking is not None:
+            return self.thinking.type != "disabled"
+        return None
 
     @model_validator(mode = "before")
     @classmethod
@@ -2768,7 +3295,20 @@ class AnthropicResponseToolUseBlock(BaseModel):
     input: dict
 
 
-AnthropicResponseBlock = Union[AnthropicResponseTextBlock, AnthropicResponseToolUseBlock]
+class AnthropicResponseThinkingBlock(BaseModel):
+    type: Literal["thinking"] = "thinking"
+    thinking: str
+    # Anthropic signs thinking blocks so they can be replayed on a later turn.
+    # Nothing local can produce a valid signature, so it stays empty; clients
+    # that only render the trace do not check it.
+    signature: str = ""
+
+
+AnthropicResponseBlock = Union[
+    AnthropicResponseTextBlock,
+    AnthropicResponseToolUseBlock,
+    AnthropicResponseThinkingBlock,
+]
 
 
 class AnthropicMessagesResponse(BaseModel):
@@ -3567,6 +4107,21 @@ class AudioSpeechRequest(BaseModel):
         "wav", description = "Output container. Only 'wav' is supported."
     )
     speed: Optional[float] = Field(None, description = "Speech rate (accepted, unused).")
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved connection ID. When set, synthesis is proxied to that "
+        "provider's /audio/speech and model/voice/speed are forwarded as sent.",
+    )
+    provider_base_url: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Browser-snapshotted connection base URL. Required with a "
+        "legacy encrypted_api_key so an edit cannot route that key to another endpoint.",
+    )
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Per-request key for a browser still holding a legacy "
+        "provider key, used when the connection has none saved server side.",
+    )
 
     @field_validator("response_format", mode = "before")
     @classmethod
@@ -3743,6 +4298,18 @@ class VideoReferenceVideo(BaseModel):
         description = "Base64/data-URL soundtrack for THIS video. Omitted takes the track "
         "embedded in the file, if it has one; sent explicitly it replaces it.",
     )
+    trim_start_seconds: Optional[float] = Field(
+        None, ge = 0.0, description = "Inclusive start of an explicit video trim, in seconds."
+    )
+    trim_end_seconds: Optional[float] = Field(
+        None, gt = 0.0, description = "Exclusive end of an explicit video trim, in seconds."
+    )
+
+    @model_validator(mode = "after")
+    def _trim_is_a_complete_h3_interval(self) -> "VideoReferenceVideo":
+        from core.inference.video_minimax_h3 import validate_h3_reference_trim
+        validate_h3_reference_trim(self.trim_start_seconds, self.trim_end_seconds)
+        return self
 
 
 class VideoGenerateRequest(BaseModel):
@@ -3751,6 +4318,12 @@ class VideoGenerateRequest(BaseModel):
     prompt: str = Field(..., min_length = 1, description = "Text prompt")
     negative_prompt: Optional[str] = Field(
         None, description = "What to avoid (if the model supports it)"
+    )
+    model: Optional[str] = Field(
+        None,
+        description = "Video model to generate on. Only read when media auto-switch is on, "
+        "where a downloaded model that is not the resident one is loaded first; omit to use "
+        "whatever is loaded. The Video page never sends it.",
     )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds stay a COARSE outer
     # guard only -- they are family-agnostic, and a request that clears them can still be one no checkpoint can render. The

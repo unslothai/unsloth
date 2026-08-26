@@ -58,6 +58,21 @@ def _between(source: str, start: str, end: str) -> str:
     return tail.split(end, 1)[0]
 
 
+def _guard_for(source: str, call: str) -> str:
+    """The `if (...)` condition whose body performs ``call``.
+
+    Searching the whole file for the identity comparison is not enough: the abort
+    and cleanup branches next to the dispatch carry the same expression, so the
+    dispatch guard could regress to `.has(reservationKey)` on its own and a
+    whole-file search would still find a match in its neighbours.
+    """
+    assert call in source, f"missing call: {call}"
+    head = source.split(call, 1)[0]
+    opener = head.rfind("if (")
+    assert opener != -1, f"no `if (` guarding {call}"
+    return head[opener:]
+
+
 def test_scheduler_dispatches_each_ready_chat_without_a_frontend_global_cap():
     pump = _between(
         THREAD,
@@ -162,13 +177,44 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "usePromptQueueUI.getState()" in submit
     assert "livePreStreamRunActive" in submit
     assert "liveThreadIsRunning || livePreStreamRunActive" in submit
-    assert "startHydratedPromptQueue(" in submit
-    assert "aui.composer().getState().text.trim() !== queuedPrompt" in submit
+    # The submit path decides whether to queue; the queueing itself lives in
+    # queueComposerText, which #8952 extracted so the Cmd/Ctrl+Enter path could
+    # share it. Assert the delegation here and the queueing there, rather than
+    # expecting the call inline, so this stays a contract on behaviour instead
+    # of on where the code happens to sit.
+    assert "queueComposerText(liveThreadIsRunning || livePreStreamRunActive)" in submit
+
+    queue_composer_text = _between(
+        THREAD,
+        "const queueComposerText = useCallback(",
+        "const dismissWaitToast = useCallback(",
+    )
+    assert "startHydratedPromptQueue(" in queue_composer_text
+    # Read into a local first: the send guard arms on the untrimmed value too,
+    # since that is what a late DOM write carries.
+    assert "const cleared = aui.composer().getState().text" in queue_composer_text
+    assert "cleared.trim() !== queuedPrompt" in queue_composer_text
     assert "promptQueueStartPendingRef.current" in THREAD
-    assert "promptQueueStartPendingRef.current.has(reservationKey)" in THREAD
+    # Identity, not mere presence: a reservation can be replaced between the
+    # start and the callback, and acting on the successor would dispatch the
+    # wrong prompt. `.has` only asked whether the key was occupied.
+    # Read out of the guard that actually dispatches, not out of the file: the
+    # abort and cleanup branches beside it hold the same comparison, so a
+    # whole-file search stays green while the dispatch alone regresses to `.has`.
+    dispatch_guard = _guard_for(THREAD, "startPromptQueue(items, target, waitForCurrentRun);")
+    assert "promptQueueStartPendingRef.current.get(reservationKey) ===" in dispatch_guard
+    assert "promptQueueStartPendingRef.current.has(" not in dispatch_guard
+    # The other two are load-bearing as well. Abort without the identity check
+    # reports the successor's start as this one's failure; cleanup without it
+    # deletes the successor's entry.
+    assert THREAD.count("promptQueueStartPendingRef.current.get(reservationKey) ===") == 3
     assert "promptQueueStartPendingRef.current.delete(reservationKey)" in THREAD
     assert "promptQueueStartPendingRef.current.set(reservationKey, reservation)" in THREAD
-    assert "temporary: useChatRuntimeStore.getState().incognito" in THREAD
+    # Captured when the queue starts, not read live when it dispatches: a chat
+    # toggled out of temporary mid-queue must not have its queued prompts
+    # persisted, and reading the store at dispatch time would do exactly that.
+    assert "const incognitoAtQueueStart = chatStateAtQueueStart.incognito" in THREAD
+    assert "temporary: incognitoAtQueueStart" in THREAD
     assert "localPromptQueueModelBoundary.capture()" in THREAD
     assert "shouldAbortPendingQueueForModelBoundary" in THREAD
     assert "queuedSettingsEpoch:" in THREAD
@@ -319,10 +365,11 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     ) < CHAT_ADAPTER.index("if (runtime.deepResearchEnabled && threadAlreadyResearched)")
     research = _between(
         CHAT_ADAPTER,
-        "if (\n        runtime.deepResearchEnabled",
-        "const sandboxSessionId",
+        "const startDeepResearch = async function*",
+        "const deepResearchHandoff",
     )
-    assert "const liveRuntime = useChatRuntimeStore.getState()" in research
+    assert "const sendTimeRuntime = runtime" in research
+    assert "const liveRuntime = useChatRuntimeStore.getState()" not in research
     assert "...queuedRunSettings" in research
     auto_load_merge = _between(
         CHAT_ADAPTER,
@@ -366,7 +413,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "const visibleRoute = window.location.href" in CHAT_ADAPTER
     assert "window.location.href === visibleRoute" in CHAT_ADAPTER
     assert "trackQueuedSettings: false" in CHAT_ADAPTER
-    assert CHAT_ADAPTER.count("await resolveQueuedEmptyLocalModel(abortSignal)") >= 2
+    assert "await resolveQueuedEmptyLocalModel(transitionSignal)" in CHAT_ADAPTER
+    assert "await resolveQueuedEmptyLocalModel(abortSignal)" in CHAT_ADAPTER
     assert "persist: !options?.preserveVisibleSettings" in CHAT_ADAPTER
     assert "beginModelLoading()" in CHAT_ADAPTER
     assert "endModelLoading(lifecycleLease)" in CHAT_ADAPTER
@@ -382,7 +430,16 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "getInferenceStatus().catch(() => null)" not in lifecycle
     assert "const status = await getInferenceStatus();" in lifecycle
     assert "options?.abortSignal?.throwIfAborted()" in CHAT_ADAPTER
-    assert CHAT_ADAPTER.count("await persistResolvedQueuedModel(params.checkpoint)") >= 2
+    assert (
+        len(
+            re.findall(
+                r"await persistResolvedQueuedModel\(\s*params\.checkpoint,"
+                r"\s*runtime\.activeGgufVariant,\s*\)",
+                CHAT_ADAPTER,
+            )
+        )
+        >= 2
+    )
     assert "notifyQueuedRunFailed" not in CHAT_ADAPTER
     assert "pendingSettings.length === 1" not in QUEUED_SETTINGS
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
@@ -638,8 +695,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "force_cancel_active:" in SHARED_COMPOSER
     assert (
-        "resolvedThreadId ===\n              useChatRuntimeStore.getState().activeThreadId"
-        in CHAT_ADAPTER
+        "useChatRuntimeStore.getState().activeThreadId ===\n"
+        "          (usageThreadKey ?? activeThreadIdAtRunStart)" in CHAT_ADAPTER
     )
     assert (
         "findLatestUserAudioBase64(\n        survivingMessages,\n        !queuedRunSettings"
@@ -741,8 +798,10 @@ def test_clear_all_invalidates_and_removes_late_fresh_thread_initialization():
     assert CLEAR_ALL_CHATS.index("chatHistoryClearBoundary.advance();") < CLEAR_ALL_CHATS.index(
         "requestPromptQueueStop();"
     )
+    # Matched on the call prefix, not the whole call: #8932 gave clearStoredChats an options
+    # argument, which changes nothing about the ordering this pins.
     assert CLEAR_ALL_CHATS.index("requestPromptQueueStop();") < CLEAR_ALL_CHATS.index(
-        "return await clearStoredChats();"
+        "return await clearStoredChats("
     )
     assert "const historyClearGeneration = chatHistoryClearBoundary.capture();" in RUNTIME_PROVIDER
     assert "await throwIfHistoryWasCleared(initialized.remoteId);" in RUNTIME_PROVIDER
@@ -816,3 +875,110 @@ def test_sidebar_exposes_queue_activity_for_each_thread():
     assert "{showWorkSpinner && (" in APP_SIDEBAR
     assert "hasUnreadActivity" in APP_SIDEBAR
     assert "clearChatNotifications(item)" in APP_SIDEBAR
+
+
+def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
+    """The shared provider (#9129) keeps a hidden pane's run alive, so its autosave still fires
+    after Compare has hidden it. The SAVE must keep happening; only the active-thread PUBLICATION
+    is suppressed, or the hidden base pane writes its own remote id into the store and Compare's
+    ``exportThreadIds = [model1, model2, activeThreadId]`` downloads the unrelated base
+    conversation alongside the two compare threads.
+    """
+    autosave = _between(
+        RUNTIME_PROVIDER,
+        "function ThreadBackendAutosave(",
+        "\nexport function useChatActive(",
+    )
+
+    # The pane knows it is hidden.
+    assert (
+        "backgrounded: boolean;" in autosave
+    ), "ThreadBackendAutosave has to be told, like every other sync component here"
+    assert (
+        "backgrounded={backgrounded}" in RUNTIME_PROVIDER
+    ), "and the provider has to pass it, or the prop is inert"
+
+    # Read at publish time, not captured when the save was queued: the save that publishes
+    # may have been scheduled while the pane was on screen and resolve long after Compare
+    # hid it.
+    assert "const backgroundedRef = useRef(backgrounded);" in autosave
+    assert "backgroundedRef.current = backgrounded;" in autosave
+
+    # The publication is what is gated -- and ONLY the publication.
+    assert (
+        "!backgroundedRef.current &&" in autosave
+    ), "the active-thread publication must be gated on the pane being visible"
+    publish_at = autosave.index("store.setActiveThreadId(remoteId)")
+    guard_at = autosave.index("!backgroundedRef.current")
+
+    # ...and on no switch away from this thread being in flight. switchToNewThread() is
+    # async, so mainThreadId still reads as this pane for the whole gap, and a save landing
+    # in it republishes the chat the user just left into the view they navigated to.
+    assert "!switchInFlight" in autosave, (
+        "the publication must also stand down while this provider's own New Chat switch is "
+        "still resolving"
+    )
+    assert (
+        "switchState.landedAttempt !== switchState.attempt" in autosave
+    ), "the in-flight window is attempt != landedAttempt, not merely activeNonce being set"
+    assert guard_at < publish_at, "the guard has to come before the write it guards"
+
+    # The save itself is untouched: gating it would defeat the PR, which exists so a run
+    # that outlives its view still lands on disk.
+    for call in (
+        "await ensureStoredChatThread(remoteId)",
+        "await syncExportedRepositoryToBackend(remoteId, exported)",
+    ):
+        assert call in autosave, f"{call} must still run while backgrounded"
+        assert autosave.index(call) < guard_at, f"{call} must not sit behind the visibility guard"
+
+
+def test_the_history_adapters_publish_stands_down_with_the_autosaves():
+    """``ThreadBackendAutosave`` is not the only place a pane names itself the active thread.
+
+    The history adapter's ``append()`` publishes the same id for every persisted message,
+    including the assistant message of the background run #9129 exists to keep alive.
+    ``enterCompare`` blanks the active id, so the ``!== remoteId`` test passes and a hidden pane
+    republishes itself into the same ``exportThreadIds`` the autosave guard was added for. Both
+    must stand down together, or gating one is decorative.
+    """
+    append = _between(
+        RUNTIME_PROVIDER,
+        "      append({ parentId, message }: ExportedMessageRepositoryItem) {",
+        "\n  // Always register the adapter so the mic stays clickable",
+    )
+
+    assert (
+        "store.setActiveThreadId(remoteId);" in append
+    ), "this test is about the history adapter's publication; if it moved, follow it"
+    assert (
+        "!backgroundedRef?.current &&" in append
+    ), "the history adapter's publication needs the same visibility gate as the autosave's"
+    assert "!switchInFlight" in append, (
+        "...and the same stand-down while a New Chat switch this provider started is still "
+        "resolving; see the autosave test for why mainThreadId cannot be trusted in that gap"
+    )
+
+    # Read at publish time, through a ref, for the same reason the autosave does: the write
+    # is queued when the message arrives and resolves after Compare may have hidden the pane.
+    assert "const backgroundedRef = useRef(backgrounded);" in RUNTIME_PROVIDER
+    assert "backgroundedRef.current = backgrounded;" in RUNTIME_PROVIDER
+
+    # ...and the ref has to actually reach it. A ref rather than the boolean, so handing it
+    # down cannot change the memoized runtime hook's identity and rebuild the runtime.
+    hook_build = _between(
+        RUNTIME_PROVIDER,
+        "  const runtimeHook = useMemo(",
+        "  const runtime = useRemoteThreadListRuntime({",
+    )
+    assert "backgroundedRef," in hook_build, "createRuntimeHook has to be handed the ref"
+    assert "[initialThreadId, modelType, onInitialHistoryReady, pairId]," in hook_build, (
+        "and the ref must NOT join the dependency array: a new hook identity rebuilds the "
+        "runtime, which is the one thing the shared provider must never do"
+    )
+
+    # The write itself is untouched. Only the publication is gated.
+    assert "await awaitStoredChatThreadWrites(remoteId);" in append
+    assert append.index("await awaitStoredChatThreadWrites(remoteId);") < append.index(
+        "!backgroundedRef?.current"
+    ), "persisting a background run's message must not sit behind the visibility guard"

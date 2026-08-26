@@ -92,6 +92,8 @@ export const en = {
       export: "Export",
       recents: "Recents",
       noChatsYet: "No chats yet",
+      showMore: "Show more",
+      showLess: "Show less",
       settings: "Settings",
       api: "API",
       unforgettable: "Unforgettable",
@@ -106,6 +108,46 @@ export const en = {
       title: "Page not found",
       description: "{path} does not exist.",
       backToChat: "Back to chat",
+    },
+    // Bulk actions on a multi-row selection.
+    selection: {
+      pinProjects: "Pin projects",
+      unpinProjects: "Unpin projects",
+      deleteProjects: "Delete projects",
+      deleteProjectsTitle: "Delete projects",
+      deleteProjectsDescription:
+        "Delete {count} projects? Their chats are permanently deleted.",
+      deleteProjectsFilesDescription:
+        "Each project workspace folder is removed from disk.",
+      countSelected: "{count} selected",
+      pinChats: "Pin chats",
+      unpinChats: "Unpin chats",
+      archiveChats: "Archive chats",
+      markUnread: "Mark as unread",
+      deleteChats: "Delete chats",
+      deleteTitle: "Delete chats",
+      deleteDescription: "Delete {count} chats? This cannot be undone.",
+      deleteFilesDescription:
+        "Each chat's own sandbox folder is removed from disk. Files they wrote inside a project stay in that project's workspace.",
+      deleteFilesLabel: "Delete files and sandbox folder",
+      deleteChatFilesDescription:
+        "This chat's own sandbox folder is removed from disk. Files it wrote inside a project stay in that project's workspace.",
+    },
+    // Sidebar list headers: how chats are grouped and ordered.
+    organize: {
+      sidebarHeading: "Organize sidebar",
+      byProject: "By project",
+      inOneList: "In one list",
+      sortChatsBy: "Sort chats by",
+      sortPinnedBy: "Sort pinned by",
+      priority: "Priority",
+      lastUpdated: "Last updated",
+      manualOrder: "Manual order",
+      moveUp: "Move up",
+      moveDown: "Move down",
+      organizeChats: "Organize chats",
+      organizeProjects: "Organize projects",
+      sortPinnedChats: "Sort pinned chats",
     },
     dialog: {
       deleteChat: {
@@ -141,6 +183,8 @@ export const en = {
       closeAriaLabel: "Close settings",
       searchPlaceholder: "Search settings…",
       searchNoResults: "No settings found.",
+      panelFailed: "This section could not be loaded.",
+      panelReload: "Reload",
     },
     tabs: {
       general: "General",
@@ -152,10 +196,243 @@ export const en = {
       connections: "Connections",
       data: "Data",
       apiKeys: "API",
+      remoteLan: "Remote & LAN",
       agents: "Agents",
       unforgettable: "Unforgettable",
+      keyboardShortcuts: "Shortcuts",
       debugging: "Logs",
       about: "About",
+    },
+    keyboardShortcuts: {
+      title: "Keyboard shortcuts",
+      description:
+        "Change any shortcut, or clear one to free the chord for your browser or OS.",
+      searchPlaceholder: "Search shortcuts…",
+      noResults: "No shortcuts match that search.",
+      unassigned: "Unassigned",
+      recording: "Press keys…",
+      recordingHint: "Press the new chord, or Esc to cancel.",
+      needsModifier: "Add ⌘, Ctrl or Alt. A bare key would swallow typing.",
+      conflict: "Also used by another shortcut",
+      conflictShadowed: "Another shortcut has this chord and runs instead",
+      edit: "Change shortcut",
+      clear: "Remove shortcut",
+      reset: "Restore default",
+      resetAll: "Reset all to defaults",
+      primarySlot: "Shortcut",
+      alternateSlot: "Alternate shortcut",
+      browserReserved:
+        "Your browser may keep this chord for itself. It works in the desktop app.",
+      actions: {
+        openSettings: {
+          label: "Open settings",
+          description: "Open the settings dialog",
+        },
+        openKeyboardShortcuts: {
+          label: "Keyboard shortcuts",
+          description: "Open this shortcuts list",
+        },
+        searchChats: {
+          label: "Search chats",
+          description: "Open the chat search dialog",
+        },
+        openMcpServers: {
+          label: "MCP servers",
+          description: "Configure MCP servers for this chat",
+        },
+        logOut: {
+          label: "Log out",
+          description: "Sign out of Unsloth",
+        },
+        approveToolRequest: {
+          label: "Approve request",
+          description: "Allow the tool call waiting for approval",
+        },
+        declineToolRequest: {
+          label: "Decline request",
+          description: "Deny the tool call waiting for approval",
+        },
+        newChat: {
+          label: "New chat",
+          description: "Start a new chat",
+        },
+        newTemporaryChat: {
+          label: "New temporary chat",
+          description: "Start a chat that is not saved to history",
+        },
+        newStandaloneChat: {
+          label: "New standalone chat",
+          description: "Start a new chat outside of any project",
+        },
+        archiveChat: {
+          label: "Archive chat",
+          description: "Archive the selected chats, or the current one",
+        },
+        markChatUnread: {
+          label: "Mark as unread",
+          description: "Mark the selected chats unread, or the current one",
+        },
+        togglePinChat: {
+          label: "Toggle pin",
+          description: "Pin or unpin the selected chats, or the current one",
+        },
+        selectAllChats: {
+          label: "Select all chats",
+          description: "Select every chat in the sidebar",
+        },
+        clearChatSelection: {
+          label: "Clear selection",
+          description: "Deselect the selected chats. Escape does too",
+        },
+        deleteSelectedChats: {
+          label: "Delete selected chats",
+          description: "Delete every selected chat",
+        },
+        nextRecentlyViewedChat: {
+          label: "Next recently viewed chat",
+          description: "Cycle forward through recently viewed chats",
+        },
+        previousRecentlyViewedChat: {
+          label: "Previous recently viewed chat",
+          description: "Cycle back through recently viewed chats",
+        },
+        nextChat: {
+          label: "Next chat",
+          description: "Switch to the next chat in the sidebar",
+        },
+        previousChat: {
+          label: "Previous chat",
+          description: "Switch to the previous chat in the sidebar",
+        },
+        nextChatNeedingAttention: {
+          label: "Next chat needing attention",
+          description: "Switch to the next generating, queued or unread chat",
+        },
+        clearAllUnreads: {
+          label: "Clear all unreads",
+          description: "Mark every chat as read",
+        },
+        goToRecentChat1: {
+          label: "Go to recent chat 1",
+          description: "Open the first chat under Recents",
+        },
+        goToRecentChat2: {
+          label: "Go to recent chat 2",
+          description: "Open the second chat under Recents",
+        },
+        goToRecentChat3: {
+          label: "Go to recent chat 3",
+          description: "Open the third chat under Recents",
+        },
+        goToRecentChat4: {
+          label: "Go to recent chat 4",
+          description: "Open the fourth chat under Recents",
+        },
+        goToRecentChat5: {
+          label: "Go to recent chat 5",
+          description: "Open the fifth chat under Recents",
+        },
+        goToRecentChat6: {
+          label: "Go to recent chat 6",
+          description: "Open the sixth chat under Recents",
+        },
+        switchToChat: {
+          label: "Switch to Chat",
+          description: "Go to the chat workspace",
+        },
+        switchToProjects: {
+          label: "Switch to Projects",
+          description: "Go to the projects workspace",
+        },
+        switchToHub: {
+          label: "Switch to Model hub",
+          description: "Go to the model hub",
+        },
+        switchToTrain: {
+          label: "Switch to Train",
+          description: "Go to the training workspace",
+        },
+        switchToRecipes: {
+          label: "Switch to Recipes",
+          description: "Go to Data Recipes",
+        },
+        switchToImages: {
+          label: "Switch to Images",
+          description: "Go to the images workspace",
+        },
+        switchToVideo: {
+          label: "Switch to Video",
+          description: "Go to the video workspace",
+        },
+        switchToAudio: {
+          label: "Switch to Audio",
+          description: "Go to the audio workspace",
+        },
+        switchToExport: {
+          label: "Switch to Export",
+          description: "Go to the export workspace",
+        },
+        toggleSidebar: {
+          label: "Toggle sidebar",
+          description: "Show or hide the sidebar",
+        },
+        toggleApiMonitor: {
+          label: "Toggle API activity",
+          description: "Show or hide the API activity monitor",
+        },
+        openModelPicker: {
+          label: "Open model picker",
+          description: "Choose the model for this chat",
+        },
+        openProjectPicker: {
+          label: "Open project picker",
+          description: "Switch to another project from the chat header",
+        },
+        startDictation: {
+          label: "Dictation",
+          description: "Start or stop dictating into the composer",
+        },
+        attachFiles: {
+          label: "Attach photos and files",
+          description: "Add an attachment to the composer",
+        },
+        sendMessage: {
+          label: "Send message",
+          description: "Send what is in the composer",
+        },
+        cycleReasoningEffort: {
+          label: "Cycle reasoning effort",
+          description: "Step through the reasoning effort levels",
+        },
+        increaseReasoningEffort: {
+          label: "Increase reasoning effort",
+          description: "Raise reasoning effort one level",
+        },
+        decreaseReasoningEffort: {
+          label: "Decrease reasoning effort",
+          description: "Lower reasoning effort one level",
+        },
+        toggleFastMode: {
+          label: "Toggle Fast mode",
+          description: "Turn Fast mode on or off",
+        },
+        renameChat: {
+          label: "Rename chat",
+          description: "Rename the current chat",
+        },
+        forkChat: {
+          label: "Fork chat",
+          description: "Branch a new chat from the latest message",
+        },
+        copyChatAsMarkdown: {
+          label: "Copy as Markdown",
+          description: "Copy the whole chat to the clipboard as Markdown",
+        },
+        copySessionId: {
+          label: "Copy session id",
+          description: "Copy this chat's sandbox session id",
+        },
+      },
     },
     debugging: {
       logSection: "Log file",
@@ -258,6 +535,16 @@ export const en = {
         engineModel: "Local transcription",
         engineModelDescription:
           "Runs a speech-to-text (STT) model locally and works offline. Download, load, then unloads after inactivity.",
+        engineCustom: "Custom endpoint",
+        engineCustomDescription:
+          "Sends recorded audio to an OpenAI-compatible STT server from your Connections.",
+        connectionLabel: "Connection",
+        connectionDescription:
+          "Add an OpenAI-compatible server and optional API key in Connections.",
+        connectionPlaceholder: "Select a connection",
+        connectionEmpty: "No connections available",
+        customModelLabel: "Model",
+        customModelDescription: "Model name sent to /v1/audio/transcriptions.",
         sttModelLabel: "Speech recognition model",
         sttModelDescription: "Choose or search a STT model to run locally.",
         sttModelSearchPlaceholder: "Search any model on HF",
@@ -306,6 +593,8 @@ export const en = {
         allowMicrophone: "Allow microphone",
         micAccessBlocked:
           "Microphone access was blocked. Allow microphone access for this Unsloth page, then try again.",
+        micAccessBlockedDesktop:
+          "Microphone access was blocked. Try again and choose Allow, or enable the microphone in your system privacy settings.",
         micAccessUnsupported:
           "Microphone access is not supported in this browser or context.",
         systemDefault: "System default",
@@ -313,6 +602,7 @@ export const en = {
         languageLabel: "Dictation language",
         languageDescription: "Language to recognize",
         languageAuto: "Auto (browser language)",
+        languageAutoDetect: "Auto (detect language)",
       },
       dictionary: {
         sectionTitle: "Dictation dictionary",
@@ -375,9 +665,19 @@ export const en = {
         engineStudioDescription: "Uses the loaded audio model (e.g. Orpheus)",
         engineSystem: "System voices",
         engineStudio: "Load TTS model",
+        engineCustom: "Custom endpoint",
+        engineCustomDescription:
+          "An OpenAI-compatible TTS server from your connections (e.g. Kokoro)",
+        connectionLabel: "Connection",
+        connectionDescription:
+          "Add an OpenAI-compatible server in the Connections tab",
+        connectionPlaceholder: "Select a connection",
+        customModelLabel: "Model",
+        customVoiceDescription: "Voice name the endpoint expects; defaults to alloy",
         modelLabel: "TTS model",
         modelDescription:
           "Load an audio model from the model selector (e.g. Orpheus TTS)",
+        openAudioAction: "Open Audio",
         voiceLabel: "Voice",
         voiceDescription: "Best voices on this device",
         speedLabel: "Speed",
@@ -387,6 +687,7 @@ export const en = {
         previewDescription: "Play a short sample",
         previewFailed: "TTS preview failed",
         previewAction: "Preview",
+        preparingAction: "Generating…",
         stopAction: "Stop",
         ttsLabel: "Text to speech",
         notSupported: "Not supported in this browser",
@@ -459,12 +760,14 @@ export const en = {
         idleUnloadDescription:
           "Free VRAM after this many idle seconds. 0 keeps it loaded, minimum 60.",
         idleSecondsAriaLabel: "Idle auto-unload seconds",
+        mediaEnable: "Switch image and video model by request",
+        mediaEnableDescription:
+          "Load a downloaded image or video model named in an API request before generating. Its own setting: the one above covers the chat model only. Off by default.",
         mediaIdleUnload: "Idle auto-unload for image and video",
         mediaIdleUnloadDescription:
           "Free VRAM by unloading the image and video models after this many idle seconds. Its own setting: the one above covers the chat model only. 0 keeps them loaded, minimum 60.",
         mediaIdleSecondsAriaLabel: "Image and video idle auto-unload seconds",
-        mediaIdlePaused:
-          "Paused while Keep model in GPU memory or Only unload models loaded by the API is on.",
+        mediaIdlePaused: "Paused while Keep model in GPU memory is on.",
         idleNeedsEnable: "Turn on Switch model by request first.",
         idleActiveViaEnv: "Active via UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Failed to load model auto-switch settings.",
@@ -475,7 +778,7 @@ export const en = {
           "Save the KV cache before an idle unload so resumed chats skip re-reading history. Up to 10 GB on disk.",
         apiOnly: "Only unload models loaded by the API",
         apiOnlyDescription:
-          "Idle unload leaves a model you loaded from Studio in memory, and frees only the ones an API request loaded.",
+          "Idle unload leaves a model you loaded from Unsloth in memory, and frees only the ones an API request loaded.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
@@ -524,6 +827,29 @@ export const en = {
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
+      downloads: {
+        sectionTitle: "Downloads",
+        transport: "Download transport",
+        transportDescription:
+          "How model and dataset files come down from Hugging Face. HTTPS resumes where it stopped; Xet is often faster on a first download but starts the file again if you cancel.",
+        transportHint:
+          "HTTPS is plain TLS: every network, proxy and VPN allows it, a cancelled or dropped transfer resumes from the bytes already on disk, and memory use stays flat. Xet fetches deduplicated chunks, so a repo sharing data with one you already have can arrive much faster, but it needs hf_xet, uses more RAM, and a cancel discards the file in flight. Auto asks this machine: it weighs RAM and whether Xet has been stalling here, and falls back to HTTPS.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "Standard TLS. Resumes after a cancel, works on any network, steady memory use.",
+        transportDescriptionNoResume:
+          "How model and dataset files come down from Hugging Face. Neither transport can resume on this install, so a cancelled download starts again; Xet is often faster on a first download.",
+        httpsHintNoResume:
+          "Standard TLS. Works on any network, steady memory use. This install cannot resume a cancelled download.",
+        xetHint:
+          "Deduplicated chunk transfer. Often faster on a fresh download, restarts the file if you cancel, needs more memory.",
+        autoHint:
+          "Picks per machine and switches to HTTPS if Xet stalls or fails here.",
+        autoCurrently: "Auto is using {transport} on this machine.",
+        xetMissing: "Xet is unavailable because hf_xet is not installed.",
+      },
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Training dataset upload cap",
@@ -534,6 +860,7 @@ export const en = {
         embeddingModel: "Embedding model",
         embeddingModelDescription:
           "Hugging Face model or local path used to index and search your documents. Default is {defaultModel}.",
+        searchPlaceholder: "Search embedding models",
         reindexWarning:
           "Only affects newly indexed documents. Re-upload existing ones after changing the model.",
         emptyError: "Enter a Hugging Face model id or local path.",
@@ -600,9 +927,9 @@ export const en = {
           "Everything below is counted from your own history. Nothing is collected or sent to Unsloth.",
         retry: "Try again",
         privacyNote:
-          "Stats are computed from the chat and training history held by your Unsloth install. Nothing is collected, and nothing is sent to Unsloth or any third party.",
+          "Stats are computed from local chat, API usage, and training history held by your Unsloth install. API prompts, responses, and keys are never stored for stats. Nothing is sent to Unsloth or any third party.",
         emptyChats:
-          "No chats yet. Start a conversation and your stats will fill in here.",
+          "No chat or API usage yet. Start a conversation or make an authenticated local API request and your stats will fill in here.",
         lifetimeTokens: "Lifetime tokens",
         peakTokens: "Peak day",
         longestChat: "Longest chat",
@@ -624,6 +951,9 @@ export const en = {
         totalMessages: "Total messages",
         tokensIn: "Tokens sent",
         tokensOut: "Tokens generated",
+        totalTokens: "Total tokens",
+        studioChatTokens: "Unsloth Chat tokens",
+        apiTokens: "API tokens",
         cachedTokens: "Cached tokens",
         cachedValue: "{tokens} ({percent}% of input)",
         avgTokensPerChat: "Average tokens per chat",
@@ -804,6 +1134,8 @@ export const en = {
         title: "GPU devices",
         ggufInference: "GGUF inference",
         unavailable: "unavailable",
+        detecting: "Checking for GPUs...",
+        unreadable: "Could not read this server's hardware.",
         noGpu: "No visible GPU detected. CPU-only resources are shown above.",
         unknownDevice: "Unknown GPU",
         deviceWithIndex: "GPU {index}",
@@ -827,6 +1159,24 @@ export const en = {
         switchFailed: "Could not change the llama.cpp backend.",
         switchInterrupted: "The switch was interrupted before completion.",
         envLocked: "Set to {backend} by the UNSLOTH_LLAMA_CPP_BACKEND environment variable, which overrides this setting.",
+        customPath: {
+          label: "Custom llama.cpp folder",
+          description: "Use your own llama-server build.",
+          hint: "Choose the llama.cpp folder containing llama-server, or a build where it is under build/bin. The custom runtime is used for GGUF chat, embeddings, and supported voice models. Environment variables still take priority.",
+          automatic: "Automatic (bundled)",
+          bundled: "Uses the llama.cpp runtime installed by Unsloth.",
+          active: "Your custom llama-server will be used for the next model load.",
+          environmentManaged: "Managed by the {variable} environment variable.",
+          missingBinary: "llama-server is no longer available in this folder. Choose another folder or use the bundled runtime.",
+          reloadRequired: "Reload the model to use the selected llama-server.",
+          change: "Change",
+          saving: "Saving...",
+          useBundled: "Use bundled",
+          chooseTitle: "Choose llama.cpp folder",
+          chooseAction: "Use this folder",
+          saved: "llama.cpp folder updated",
+          saveError: "Couldn't update the llama.cpp folder",
+        },
         backends: {
           auto: "Automatic",
           cpu: "CPU",
@@ -839,11 +1189,12 @@ export const en = {
           notInstalled: "No managed llama.cpp install was found, so there is no backend to switch.",
           localLink: "llama.cpp is a local directory you linked yourself, so Unsloth will not replace it.",
           sourceBuild: "This llama.cpp was built from source, so its backend cannot be switched from here.",
+          customPath: "A custom llama.cpp folder is selected. Its build decides the compute backend.",
           unresolved: "The available backends could not be checked. Check your connection and try again.",
         },
         // Not rendered: extra terms the settings search matches these rows on.
         llamaBackendKeywords:
-          "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine",
+          "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
         title: "Model memory",
@@ -928,6 +1279,12 @@ export const en = {
       docs: "Docs",
       agentDocs: "Open {agent} setup docs",
       copyGeneratedCommand: "Copy generated command",
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth.",
       subagent: {
@@ -944,7 +1301,7 @@ export const en = {
       quickstart: {
         title: "Build a command",
         description:
-          "Launch an agent against the model currently loaded in Studio. Load a model first, then swap claude for any supported agent below.",
+          "Launch an agent against the model currently loaded in Unsloth. Load a model first, then swap claude for any supported agent below.",
         noneDetected: "No supported agent CLIs were found on your PATH.",
         installed: "Installed",
       },
@@ -965,7 +1322,7 @@ export const en = {
         description:
           "Unsloth flags are parsed first; anything it doesn't recognize is passed straight through to the agent.",
         model:
-          "Select a model. Without --model, unsloth start uses the model currently loaded in Studio and errors if none is loaded.",
+          "Select a model. Without --model, unsloth start uses the model currently loaded in Unsloth and errors if none is loaded.",
         contextLength:
           "Set the requested context length (alias: --max-seq-length).",
         ggufVariant: "Choose the GGUF quantization variant.",
@@ -977,12 +1334,16 @@ export const en = {
         asSubagent:
           "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, and OpenCode).",
         apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
+        reasoning:
+          "Use reasoning in the chat: on, off, or auto. Auto follows the model's chat template, which usually means on.",
+        reasoningEffort:
+          "Reasoning effort passed to the model's chat template, e.g. medium. Levels are per model, so use one that model accepts. Unset keeps the template's own.",
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
       remote: {
-        title: "Connect to a remote Studio",
+        title: "Connect to a remote Unsloth Studio",
         description:
-          "Point unsloth start at a Studio running elsewhere by setting these before launching (or pass --api-key directly):",
+          "Point unsloth start at an Unsloth Studio running elsewhere by setting these before launching (or pass --api-key directly):",
       },
       passthrough: {
         title: "Passing agent arguments",
@@ -996,6 +1357,9 @@ export const en = {
       },
     },
     chat: {
+      projectsSection: "Show projects section",
+      projectsSectionDescription:
+        "Group project chats under a Projects heading. Turn this off to list them in Recents instead.",
       title: "Chat",
       description: "Customize how chat behaves on this device.",
       modelSelection: {
@@ -1017,16 +1381,31 @@ export const en = {
         compareChat: "Compare chat",
         exportChat: "Export chat",
       },
+      pastedTextThreshold: "Condense long pastes",
+      pastedTextThresholdDescription: "Pasted text longer than this becomes a .txt attachment instead of filling the message box. Press {shortcut} to paste into the message box anyway.",
+      pastedTextThresholdOff: "Off",
       showResponseModel: "Show response model",
       showResponseModelDescription:
         "Show model metadata in assistant responses.",
       modelDisclaimer: "Show model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
+      projectAttachments: "Share files across a project",
+      projectAttachmentsDescription:
+        "Default for files attached in a chat that belongs to a project: index them for the whole project so every chat in it can use them. Each chat can override this from the attach menu.",
+      rememberParamsPerModel: "Remember settings per model",
+      rememberParamsPerModelDescription:
+        "Switching models restores the temperature, prompt and other settings you last used with that model. Off keeps one set of settings for every model.",
       thinking: {
         collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:
           "Keep reasoning collapsed while the model thinks instead of streaming it open. Expand any block to read it.",
+      },
+      webSearch: {
+        title: "Web search",
+        images: "Show images from web search",
+        imagesDescription:
+          "Let web search return pictures, and fetch one for each thing an answer lists. Thumbnails are downloaded and resized by Unsloth, so the browser never contacts image hosts.",
       },
       artifacts: {
         title: "Canvas",
@@ -1047,7 +1426,7 @@ export const en = {
       exportingAction: "Exporting...",
       exportConversations: "Export Recents and Projects",
       exportConversationsDescription:
-        "Download Recents or Recents plus project chats as Raw JSONL, CSV, or ShareGPT JSONL, combined or per chat.",
+        "Download Recents or Recents plus project chats as Training JSONL, CSV, or ShareGPT JSONL, combined or per chat. Message JSONL is available per chat.",
       exportConversationsAction: "Export",
       exportScopeRecents: "Recents",
       exportScopeAll: "Recents + Projects",
@@ -1111,6 +1490,9 @@ export const en = {
       archivedVideos: "Archived videos",
       archivedVideosDescription: "View and manage videos you have archived.",
       manageAction: "Manage",
+      manageChats: "Manage chats",
+      manageChatsDescription:
+        "Select multiple chats to move, pin, archive, export, or delete.",
       exportArchivedChats: "Export",
       exportingArchivedChats: "Exporting...",
       exportedOneArchivedChat: "Exported 1 archived chat",
@@ -1133,6 +1515,9 @@ export const en = {
       confirmBeforeDeleting: "Confirm before deleting",
       confirmBeforeDeletingDescription:
         "Ask for confirmation before a chat is deleted. Turn off to delete instantly.",
+      alwaysDeleteFiles: "Always delete files",
+      alwaysDeleteFilesDescription:
+        "Deleting a chat also removes its own sandbox folder from disk. Files it wrote inside a project stay in that project workspace.",
       filesSection: "Files",
       uploadedFiles: "Uploaded files",
       uploadedFilesDescription:
@@ -1154,6 +1539,11 @@ export const en = {
     connections: {
       title: "Connections",
       description: "Manage providers and external connections.",
+    },
+    remoteLan: {
+      title: "Remote & LAN",
+      description:
+        "Reach this Unsloth from your other devices, over your local network or a temporary public URL.",
     },
     apiKeys: {
       title: "API",
@@ -1454,8 +1844,8 @@ export const en = {
       sourceLocalModel: "Local model",
       vramOomBadge: "OOM",
       vramTightBadge: "Tight",
-      vramNeeds: "Needs ~{est}GB VRAM (GPU: {total}GB)",
-      vramTight: "~{est}GB VRAM (tight on {total}GB)",
+      vramNeeds: "Needs ~{est}GB VRAM (GPU: {total}GiB)",
+      vramTight: "~{est}GB VRAM (tight on {total}GiB)",
       vramApprox: "~{est}GB VRAM",
     },
     methods: {

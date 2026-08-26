@@ -742,10 +742,6 @@
     "tests/test_consent_gate.py"
   ],
   "routes.models._cached_repo_task": [
-    "tests/test_cached_gguf_routes.py",
-    "tests/test_cached_gguf_routes.py"
-  ],
-  "routes.models._repo_gguf_task": [
     "tests/test_cached_gguf_routes.py"
   ],
   "routes.training_vram.summarize_resident_chat": [
@@ -1111,8 +1107,6 @@
     "tests/test_hf_cache_dangling_refs.py",
     "tests/test_hf_cache_dangling_refs.py",
     "tests/test_hf_cache_dangling_refs.py",
-    "tests/test_hf_cache_dangling_refs.py",
-    "tests/test_hf_cache_dangling_refs.py",
     "tests/test_model_update_robustness.py",
     "tests/test_model_update_robustness.py",
     "tests/test_offline_embedding_minimal.py",
@@ -1153,14 +1147,14 @@
   "utils.llama_cpp_freshness.read_install_marker": [
     "tests/test_llama_cpp_mtp_detection.py"
   ],
-  "utils.models.gguf_metadata.read_gguf_context_length": [
-    "tests/test_cached_gguf_routes.py",
-    "tests/test_cached_gguf_routes.py"
-  ],
-  "utils.models.gguf_metadata.read_gguf_general_metadata": [
+  "utils.models.gguf_metadata.read_gguf_architecture": [
     "tests/test_video_backend.py",
     "tests/test_video_backend.py",
     "tests/test_video_backend.py"
+  ],
+  "utils.models.gguf_metadata.read_gguf_context_length": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py"
   ],
   "utils.models.model_config._env_offline": [
     "tests/test_vision_cache.py"

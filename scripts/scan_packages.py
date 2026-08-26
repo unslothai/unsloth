@@ -57,9 +57,11 @@ Exit codes:
 import argparse
 import atexit
 import bisect
+import contextlib
 import hashlib
 import io
 import json
+import multiprocessing
 import os
 import re
 import shutil
@@ -279,9 +281,18 @@ RE_FS_ENUM = re.compile(
     r"|\bglob\s*\.\s*glob\s*\([^)]*(?:\*\*|\*\.pem|\*\.key|\*\.cer|\*\.pfx|\*\.p12)"
     r"|\bos\.listdir\s*\(\s*['\"](?:/home|/root|/Users|/etc)"
     r"|\bPath\s*\(\s*['\"]~['\"]\s*\)\s*\.\s*glob\b"
-    r"|\bhistory\b.*\bread\b"  # reading shell history
-    r"|\b\.bash_history\b"
-    r"|\b\.zsh_history\b"
+    # Shell / REPL history FILES. Replaces `\bhistory\b.*\bread\b`, whose re.DOTALL `.*` spanned
+    # the whole file and produced 9 of the 11 baselined CRITICALs here (httpx, urllib3, IPython,
+    # torch) -- each allowlisted, which suppressed this check for the whole file.
+    r"|\.(?:bash|zsh|ksh|sh|python|node_repl|psql|mysql|rediscli|irb|sqlite)_history\b"
+    # Undotted history files, with a boundary that finds them however the path was built. fish
+    # writes fish_history and PowerShell writes PSReadLine/ConsoleHost_history.txt, neither with a
+    # leading dot. A quote counts as a boundary alongside a separator, so a basename assembled by
+    # Path.home() / "fish" / "fish_history" or os.path.join(h, "fish", "fish_history") still
+    # matches: there the character before the name is the quote, not a slash.
+    r"|(?:^|[/\\'\"])(?i:fish_history|ConsoleHost_history\.txt)\b"
+    r"|['\"~/]\.history\b"
+    r"|\bHISTFILE\b"
     r"|/etc/shadow"
     r"|/etc/passwd",
     re.DOTALL,
@@ -1898,6 +1909,25 @@ def scan_archive(archive_path: str, package: str) -> list[Finding]:
     return findings
 
 
+def _scan_one(task: tuple[str, str]) -> tuple[str, list[Finding]]:
+    """Pool worker: ``scan_archive`` over one (archive_path, package) pair.
+
+    Module-level and pickle-clean on purpose, so the pool can use the "spawn"
+    start method. ``Finding`` is a plain dataclass, so results travel as-is.
+
+    The archive-limit ``[WARN]`` lines go to stderr from deep inside
+    ``iter_archive_files``. Left alone they land in the parent's stream whenever
+    the worker happens to reach them, so two runs of the same input produce logs
+    that differ only in where those lines sit. They are returned instead and the
+    caller prints them in task order, which keeps the whole report reproducible.
+    """
+    archive_path, package = task
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        findings = scan_archive(archive_path, package)
+    return buf.getvalue(), findings
+
+
 # Download packages
 
 
@@ -3146,6 +3176,12 @@ def main() -> int:
         help = "Also download and scan transitive dependencies (full dependency tree)",
     )
     parser.add_argument(
+        "--jobs",
+        type = int,
+        default = 0,
+        help = "Archive-scanning worker processes (default: min(4, cpu count); 1 = serial)",
+    )
+    parser.add_argument(
         "--fix",
         action = "store_true",
         help = "Auto-search for safe versions and update requirements files",
@@ -3241,6 +3277,11 @@ def main() -> int:
     tmpdir = tempfile.mkdtemp(prefix = "pth_scan_")
     atexit.register(lambda d = tmpdir: shutil.rmtree(d, ignore_errors = True))
     download_errors: list[str] = []
+    # Scan-side failures, kept beside the download ones so both reach the SCAN
+    # INCOMPLETE block below. A stall has to exit 2 like any other partial scan:
+    # exit 1 is reserved for "non-baselined CRITICAL or HIGH findings detected",
+    # so exiting 1 on a dead worker reports an infrastructure failure as a threat.
+    scan_errors: list[str] = []
     try:
         downloaded, download_errors = download_packages(
             specs,
@@ -3249,15 +3290,57 @@ def main() -> int:
         )
         print(f"  Downloaded {len(downloaded)} archive(s).")
 
-        for spec, archive_path in downloaded:
-            pkg_name = _extract_pkg_name(spec)
-            findings = scan_archive(archive_path, pkg_name)
-            all_findings.extend(findings)
-            # Delete archive immediately after scanning
-            try:
-                os.remove(archive_path)
-            except OSError:
-                pass
+        # Scanning, not downloading, is the cost here: on the hf-stack shard the
+        # `pip download` above takes 9.7s and the pass below took 306s of a 316s
+        # total. It is pure CPU (regex over decompressed archive members) and
+        # every archive is independent, so it fans out across cores.
+        #
+        # `imap` with chunksize=1 yields in submission order, so the findings
+        # list is assembled in exactly the order the serial loop produced it and
+        # the report is unchanged. chunksize=1 is also what makes `next(timeout=)`
+        # available at all: above 1, CPython's Pool.imap returns a bare generator
+        # with no timeout support (Lib/multiprocessing/pool.py).
+        tasks = [(archive_path, _extract_pkg_name(spec)) for spec, archive_path in downloaded]
+        jobs = args.jobs if args.jobs else max(1, min(4, os.cpu_count() or 1))
+        if jobs > 1 and len(tasks) > 1:
+            print(f"  Scanning {len(tasks)} archive(s) across {jobs} workers...")
+            ctx = multiprocessing.get_context("spawn")
+            with ctx.Pool(processes = jobs) as pool:
+                results = pool.imap(_scan_one, tasks, chunksize = 1)
+                for i, (archive_path, _pkg) in enumerate(tasks):
+                    try:
+                        captured, findings = results.next(timeout = 900)
+                    except multiprocessing.TimeoutError:
+                        # A worker died (OOM or segfault on a hostile archive).
+                        # Without this the iterator blocks forever and the job
+                        # only ends at the workflow timeout, with no reason given.
+                        #
+                        # Recorded rather than raised: `raise SystemExit(<str>)`
+                        # prints the string and exits 1, and 1 already means
+                        # "CRITICAL or HIGH findings detected". Routing it here
+                        # gets the SCAN INCOMPLETE report and exit 2, which is
+                        # what a partial scan is supposed to return.
+                        scan_errors.append(
+                            f"scan stalled after {i}/{len(tasks)} archive(s) with no "
+                            f"result for 900s; a pool worker most likely died"
+                        )
+                        break
+                    if captured:
+                        sys.stderr.write(captured)
+                    all_findings.extend(findings)
+                    # Delete archive immediately after scanning
+                    try:
+                        os.remove(archive_path)
+                    except OSError:
+                        pass
+        else:
+            for archive_path, pkg_name in tasks:
+                all_findings.extend(scan_archive(archive_path, pkg_name))
+                # Delete archive immediately after scanning
+                try:
+                    os.remove(archive_path)
+                except OSError:
+                    pass
     finally:
         shutil.rmtree(tmpdir, ignore_errors = True)
 
@@ -3298,15 +3381,15 @@ def main() -> int:
     # Surface pip-download failures BEFORE the exit code so a partial download
     # can't masquerade as "0 findings, all clean" (silent-failure hardening 4).
     # Also keeps us from writing a baseline from an incomplete scan.
-    if download_errors:
+    incomplete_errors = download_errors + scan_errors
+    if incomplete_errors:
         print(
             f"\n  {'=' * 72}\n"
-            f"  SCAN INCOMPLETE: {len(download_errors)} pip download "
-            f"failure(s):\n"
+            f"  SCAN INCOMPLETE: {len(incomplete_errors)} failure(s):\n"
             f"  {'=' * 72}",
             file = sys.stderr,
         )
-        for err in download_errors:
+        for err in incomplete_errors:
             print(f"  [ERROR] {err}", file = sys.stderr)
         print(
             "  Refusing to report 'all clean' on a partial scan; exiting 2.",

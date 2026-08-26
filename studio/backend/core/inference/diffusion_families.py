@@ -17,15 +17,59 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple, Optional, Sequence
+from utils.paths.path_utils import is_appledouble_metadata
 
 
 # Runtime->route contract: the /images/generate route matches these messages EXACTLY for a 409 (vs a 500), so both engines raise them verbatim.
 DIFFUSION_NOT_LOADED_MSG = "No diffusion model is loaded."
 DIFFUSION_CANCELLED_MSG = "Diffusion generation was cancelled."
+
+
+@dataclass(frozen = True)
+class LoadIdentity:
+    """What a caller's derived request parameters depend on, as one comparable value.
+
+    ``repo_id`` alone is not one: /images/load takes ``base_repo`` and ``family_override``
+    independently of the path, so a local checkpoint reloads as a different model while the
+    path stays put, and the images route derives steps/guidance from ``base_repo`` and its
+    edit-only verdict from the family (#9448). Loads agreeing on all three derive identical
+    parameters, which is exactly when accepting one for the other is correct.
+
+    A type rather than a tuple, so pinning a bare repo id compares unequal and is refused
+    instead of matching some other shape by accident.
+    """
+
+    repo_id: str
+    base_repo: str
+    family: str
+
+
+def load_identity(repo_id, base_repo, family) -> LoadIdentity:
+    """``LoadIdentity`` for one load. None and "" describe the same absent field."""
+    return LoadIdentity(str(repo_id or ""), str(base_repo or ""), str(family or ""))
+
+
+class DiffusionModelReplacedError(RuntimeError):
+    """Both engines' ``generate`` refusing a ``LoadIdentity`` that is no longer loaded.
+
+    Keeps a caller's per-model steps/guidance and workflow verdict, taken from an earlier
+    ``status()`` read, off a model they never validated (#9448). Here rather than in
+    ``diffusion`` so the native engine can raise it without importing the torch backend.
+    """
+
+    def __init__(self, expected: LoadIdentity, actual: LoadIdentity):
+        super().__init__(
+            f"The image model was replaced while this request waited "
+            f"(expected {expected.repo_id!r}, loaded {actual.repo_id!r}); "
+            "retry with fresh parameters."
+        )
+        self.expected = expected
+        self.actual = actual
 
 
 @dataclass(frozen = True)
@@ -74,7 +118,7 @@ class DiffusionFamily:
     # ``<Model>-<SCHEME>.pt`` name ``prequant_repo_filename`` derives. The derived name stays on as
     # the fallback, so a repo hosting BOTH an old and a new artifact serves the new one to a build
     # that asks for it by name and the old one to every build that does not. That is what lets a
-    # rotated (v2) checkpoint ship without regressing an already-installed Studio, which would
+    # rotated (v2) checkpoint ship without regressing an already-installed Unsloth, which would
     # otherwise refuse the v2 tag and fall all the way back to the dense download.
     # A row may also be (scheme, task, filename), which names the artifact for ONE task and beats
     # the task-agnostic row; see ``family_prequant_filename``.
@@ -90,7 +134,7 @@ class DiffusionFamily:
     # Family-specific sd-cli sampler settings so native output matches the model's supported invocation. None leaves sd-cli defaults.
     sd_cpp_sampling_method: Optional[str] = None
     sd_cpp_flow_shift: Optional[float] = None
-    # True when Studio can TRAIN a LoRA on this family; the training-start path refuses a non-trainable family up front.
+    # True when Unsloth can TRAIN a LoRA on this family; the training-start path refuses a non-trainable family up front.
     trainable: bool = False
     # Recommended base repos to train FROM, most-preferred first (e.g. a QLoRA prequant repo, then bf16). Surfaced by the Train UI.
     train_base_repos: tuple[str, ...] = field(default_factory = tuple)
@@ -422,7 +466,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
 
 
 def trainable_family_names() -> tuple[str, ...]:
-    """Names of families Studio can train a LoRA on, in registry order."""
+    """Names of families Unsloth can train a LoRA on, in registry order."""
     return tuple(fam.name for fam in _FAMILIES if fam.trainable)
 
 
@@ -433,13 +477,13 @@ IDEOGRAM4_FAMILY_NAME = "ideogram-4"
 LUMINA2_FAMILY_NAME = "lumina-2"
 
 
-# Models Studio deliberately does NOT support, reason surfaced verbatim in the load error, keyed by lowercase repo-id substring. The bar is a diffusers pipeline.
+# Models Unsloth deliberately does NOT support, reason surfaced verbatim in the load error, keyed by lowercase repo-id substring. The bar is a diffusers pipeline.
 _EXCLUDED_MODELS: tuple[tuple[str, str], ...] = (
     (
         # "-3" scoped so a future HunyuanImage 2.x with a diffusers pipeline falls through normally.
         "hunyuanimage-3",
         "HunyuanImage-3.0 has no diffusers pipeline (it is an 80B autoregressive MoE "
-        "that requires trust_remote_code), so Studio does not support it.",
+        "that requires trust_remote_code), so Unsloth does not support it.",
     ),
 )
 
@@ -534,7 +578,7 @@ def pipeline_class_from_index(path: Optional[str]) -> Optional[str]:
     """The ``_class_name`` the diffusers pipeline saved at ``path`` declares, or None.
 
     Size-capped and schema-free: neither a listing nor a load may be held up by whatever a scan
-    folder contains. ``_class_name`` is a LIST for a remote-code community pipeline, which Studio
+    folder contains. ``_class_name`` is a LIST for a remote-code community pipeline, which Unsloth
     cannot load, so only a plain string answers.
 
     ``utf-8-sig`` because PowerShell writes JSON with a BOM and a hand-authored index is ordinary
@@ -718,7 +762,12 @@ def _root_holds_upstream(root: Path, repo_id: str, wanted: Sequence[str]) -> boo
             if wanted:
                 if all((rev / name).exists() for name in wanted):
                     return True
-            elif any(p.suffix.lower() in _WEIGHT_SUFFIXES and p.is_file() for p in rev.rglob("*")):
+            elif any(
+                p.suffix.lower() in _WEIGHT_SUFFIXES
+                and p.is_file()
+                and not is_appledouble_metadata(p)
+                for p in rev.rglob("*")
+            ):
                 return True
         return False
     except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
@@ -1002,10 +1051,13 @@ _DIFFUSERS_DROPPED_PY39 = "0.37.0"
 # First diffusers release exporting each pipeline class, read off ``src/diffusers/__init__.py`` at
 # the upstream tags and cross-checked against each release's requires-python on PyPI. An unlisted
 # class gets a version-free "a newer diffusers" instead of a number, since the ones left out are
-# older than any release in play. This exists so the remedy is true: telling a
+# older than any release in play -- and ``family_pipeline_available`` reads one as available, so
+# every class the listing probes belongs here. This exists so the remedy is true: telling a
 # 3.9 host that Z-Image needs Python >= 3.10 sends it to upgrade the interpreter when
 # ``pip install -U diffusers`` (0.36.0 there) would have been enough.
 _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
+    # MiniMax-H3 is judged by its transformer, first available in diffusers 0.40.0.
+    "MiniMaxH3Transformer3DModel": "0.40.0",
     "Flux2Pipeline": "0.36.0",
     "ZImagePipeline": "0.36.0",
     "ZImageImg2ImgPipeline": "0.36.0",
@@ -1025,6 +1077,12 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "QwenImagePipeline": "0.35.0",
     "QwenImageImg2ImgPipeline": "0.35.0",
     "QwenImageInpaintPipeline": "0.35.0",
+    "FluxKontextPipeline": "0.35.0",
+    "HiDreamImagePipeline": "0.34.0",
+    # WanPipeline arrived with Wan2.1 in 0.33.0. The shipped Wan2.2 family wants weights only
+    # 0.35 carries, but this table answers class presence, like the attribute probe before it.
+    "WanPipeline": "0.33.0",
+    "Lumina2Pipeline": "0.33.0",
     "FluxPipeline": "0.30.0",
     "FluxImg2ImgPipeline": "0.30.0",
     "FluxInpaintPipeline": "0.30.0",
@@ -1173,6 +1231,47 @@ def assert_pipeline_class_available(
     )
 
 
+def _module_namespace_is_unreadable(module: Any) -> bool:
+    """Return whether probing attributes could import code or read a partial module."""
+    if hasattr(type(module), "__getattr__"):
+        return True
+    if callable(getattr(module, "__getattr__", None)):
+        return True
+    return bool(getattr(getattr(module, "__spec__", None), "_initializing", False))
+
+
+def _installed_diffusers_version() -> Optional[str]:
+    """Read the installed diffusers version without importing it."""
+    module = sys.modules.get("diffusers")
+    if module is not None:
+        try:
+            installed = getattr(module, "__version__", None)
+        except Exception:  # noqa: BLE001 -- a module that raises on __version__ just falls through
+            installed = None
+        if isinstance(installed, str) and installed.strip():
+            return installed.strip()
+    try:
+        from importlib.metadata import version
+        installed = version("diffusers")
+    except Exception:  # noqa: BLE001 -- not installed / unreadable metadata: caller fails open
+        return None
+    return installed.strip() if isinstance(installed, str) and installed.strip() else None
+
+
+def _installed_at_least(installed: str, minimum: str) -> bool:
+    """Whether an INSTALLED version satisfies ``minimum``, judged on its release numbers.
+
+    Not ``_version_tuple``, which is for the clean constants in the table above: a vendor build
+    carries a PEP 440 local suffix (``0.40.0+dfsg``) that stops the numeric parse mid-version, and
+    a git install carries ``.dev0``, which strict PEP 440 sorts below its own release. Both HAVE
+    the class, so compare the release they were cut from. An unreadable version answers OPEN."""
+    try:
+        from packaging.version import Version
+        return Version(Version(installed).base_version) >= Version(minimum)
+    except Exception:  # noqa: BLE001 -- an unparseable version must not hide a model
+        return True
+
+
 def family_probe_class(fam: Any) -> str:
     """The class whose presence in the installed diffusers actually proves ``fam`` is loadable.
 
@@ -1197,10 +1296,10 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     conditional or the extra becomes unresolvable). Advertising Z-Image or Krea 2 in the picker
     on such an environment offers a pick that can only fail, and no `pip install -U diffusers`
     can fix it without also upgrading Python. Fails OPEN (True) when diffusers cannot be
-    imported at all, so a listing never hides a model over an unrelated import problem. The
-    attribute lookup is inside the guard for the same reason: diffusers resolves its pipelines
-    lazily, so the class name is only a hasattr for a name it does not know -- for one it does, the
-    lookup imports that pipeline module and can raise something other than AttributeError."""
+    imported at all, so a listing never hides a model over an unrelated import problem.
+
+    Uses installed-version metadata because probing diffusers' lazy attributes imports pipeline
+    dependencies. The load path remains the final availability check."""
     if fam is None:
         return False
     # A modular family is judged on its own transformer class, not on the generic
@@ -1212,11 +1311,24 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     # the guard below, and ``hasattr(diffusers, "")`` is False -- which would hide the model.
     if not name:
         return True
-    try:
-        import diffusers
-        return hasattr(diffusers, name)
-    except Exception:  # noqa: BLE001 -- no diffusers here: the load path reports it properly
+    if "diffusers" in sys.modules:
+        module = sys.modules["diffusers"]
+        # A None entry blocks imports, so preserve the existing fail-open behavior.
+        if module is None:
+            return True
+        if not _module_namespace_is_unreadable(module):
+            try:
+                return hasattr(module, name)
+            except Exception:  # noqa: BLE001 -- a probe failure must not hide a model
+                return True
+    minimum, _needs_py310 = pipeline_class_requirement(name)
+    # Unlisted classes predate the version gates in this table.
+    if minimum is None:
         return True
+    installed = _installed_diffusers_version()
+    if installed is None:
+        return True
+    return _installed_at_least(installed, minimum)
 
 
 def family_gguf_loadable(fam: DiffusionFamily) -> bool:
