@@ -51,7 +51,7 @@ def test_call_sites_exist():
     assert found >= 10, f"only {found} pip-cache-restore call sites found; this test is stale"
 
 
-@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", WORKFLOWS, ids = lambda p: p.name)
 def test_no_builtin_setup_python_pip_cache(path):
     for job, steps in _jobs(path):
         for step in steps:
@@ -63,7 +63,7 @@ def test_no_builtin_setup_python_pip_cache(path):
             )
 
 
-@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", WORKFLOWS, ids = lambda p: p.name)
 def test_every_restore_names_itself(path):
     for job, steps in _jobs(path):
         for step in _restores(steps):
@@ -121,7 +121,9 @@ def test_key_is_versioned_and_carries_the_name():
 
 def test_janitor_matches_v2_keys_only():
     janitor = (REPO / ".github/workflows/cache-janitor.yml").read_text()
-    assert "pip-v2-*|uv-*|fe-dist-*)" in janitor, "janitor no longer ranks the pip/uv/fe-dist families"
+    assert (
+        "pip-v2-*|uv-*|fe-dist-*)" in janitor
+    ), "janitor no longer ranks the pip/uv/fe-dist families"
     assert "\n              pip-*)" not in janitor, (
         "the janitor must not match bare pip-* : legacy keys from before `name` "
         "existed would then be ranked against unrelated jobs' keys and deleted."
