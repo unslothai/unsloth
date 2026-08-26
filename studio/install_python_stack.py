@@ -4766,7 +4766,47 @@ def _toml_value_text(value: object) -> str:
         return "1" if value else "0"
     if isinstance(value, (list, tuple)):
         return " ".join(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, dict):
+        # The package-scoped maps, e.g. `exclude-newer-package = { foo = "..." }`. Its
+        # members, so an EMPTY map becomes the empty string and reads as off: str({})
+        # is "{}", which is not one of the off spellings and became phantom hardening.
+        return " ".join(str(item).strip() for item in value if str(item).strip())
     return str(value).strip()
+
+
+def _inline_table_lines(key: str, body: str) -> "list[str]":
+    """`a = { b = 1, c = { d = 2 } }` as the dotted lines `a.b = 1` and `a.c.d = 2`.
+
+    Only the pre-3.11 fallback needs this; tomllib builds the nesting itself. Without it
+    a `[tool] uv = { pip = { require-hashes = true } }` was skipped entirely, and uv
+    0.12.1 does enforce exactly that.
+    """
+    parts: "list[str]" = []
+    current = ""
+    depth = 0
+    for char in body:
+        if char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(current)
+            current = ""
+            continue
+        current += char
+    parts.append(current)
+    lines: "list[str]" = []
+    for part in parts:
+        name, separator, raw = part.partition("=")
+        if not separator:
+            continue
+        name = name.strip().strip("\"'")
+        raw = raw.strip()
+        if raw.startswith("{") and raw.endswith("}") and raw[1:-1].strip():
+            lines.extend(_inline_table_lines(f"{key}.{name}", raw[1:-1]))
+        else:
+            lines.append(f"{key}.{name} = {raw}")
+    return lines
 
 
 def _hardened_settings_in_toml(
@@ -4817,7 +4857,16 @@ def _hardened_settings_in_toml(
         joined.append(piece)
     if pending:
         joined.append(pending)
+    # Inline tables become dotted keys, which the loop below already understands.
+    expanded: "list[str]" = []
     for line in joined:
+        name, separator, raw = line.strip().partition("=")
+        raw = raw.strip()
+        if separator and raw.startswith("{") and raw.endswith("}") and raw[1:-1].strip():
+            expanded.extend(_inline_table_lines(name.strip().strip("\"'"), raw[1:-1]))
+        else:
+            expanded.append(line)
+    for line in expanded:
         stripped = line.strip()
         if stripped.startswith("#") or not stripped:
             continue
@@ -4827,22 +4876,22 @@ def _hardened_settings_in_toml(
                 part.strip().strip("\"'") for part in header.group(1).split(".") if part.strip()
             )
             continue
-        if current not in tables:
-            continue
         key, separator, raw = stripped.partition("=")
         if not separator:
             continue
         key = key.strip().strip("\"'")
-        if "." in key:
-            # A dotted key is the inline spelling of a table: `pip.require-hashes = true`
-            # at the root is `[pip] require-hashes = true`, which uv enforces. Treated as
-            # one literal key it matched nothing and the policy was dropped.
-            head, _, tail = key.rpartition(".")
-            path = current + tuple(
-                part.strip().strip("\"'") for part in head.split(".") if part.strip()
-            )
-            if path not in tables:
-                continue
+        # A dotted key is the inline spelling of a table: `pip.require-hashes = true` at
+        # the root is `[pip] require-hashes = true`, which uv enforces. The table check
+        # has to come AFTER the path is assembled, since the enclosing header can be a
+        # prefix of it rather than a table this scan reads: under `[tool]`, the expanded
+        # `uv.pip.require-hashes` lives in `tool.uv.pip`, which it does read.
+        head, dot, tail = key.rpartition(".")
+        path = current + tuple(
+            part.strip().strip("\"'") for part in head.split(".") if part.strip()
+        )
+        if path not in tables:
+            continue
+        if dot:
             key = tail.strip().strip("\"'")
         if key in _HARDENED_CONFIG_KEYS:
             raw = raw.strip()
@@ -4898,9 +4947,17 @@ def _uv_project_config() -> "list[str]":
     directory included, so it is not listed: reporting one would be hardening uv does
     not apply.
     """
+    # uv's own discovery root, not necessarily this process's: --project / UV_PROJECT
+    # moves it, and --directory / UV_WORKING_DIR moves the working directory itself.
+    # Measured on the pinned uv 0.12.1, a `[tool.uv.pip] require-hashes = true` in a
+    # project named by either variable is enforced from an unrelated cwd, so walking
+    # from getcwd() alone scanned the wrong tree and missed live policy.
+    root = os.environ.get("UV_PROJECT", "").strip() or os.environ.get(
+        "UV_WORKING_DIR", ""
+    ).strip()
     try:
         # A deleted working directory raises here rather than returning anything.
-        current = os.path.abspath(os.getcwd())
+        current = os.path.abspath(root or os.getcwd())
     except OSError:
         return []
     while True:
@@ -4923,14 +4980,16 @@ def _hardened_uv_config_paths() -> "list[str]":
     the order matters because the caller resolves last-wins, and a project config
     switching a control off is uv's answer even when the user config switched it on.
     """
-    if _config_value_is_on(os.environ.get("UV_NO_CONFIG", "")):
-        # --no-config: uv discovers nothing, so nothing here is policy.
-        return []
     explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
     if explicit:
         # --config-file is used "in place of any discovered configuration files", so the
-        # discovered set is not merely outranked, it is not read at all.
+        # discovered set is not merely outranked, it is not read at all. Checked BEFORE
+        # --no-config: measured on the pinned uv 0.12.1, an explicit file is read with
+        # UV_NO_CONFIG=1 set as well, so returning nothing there dropped live policy.
         return _existing_files([explicit])
+    if _config_value_is_on(os.environ.get("UV_NO_CONFIG", "")):
+        # --no-config: uv discovers nothing, so nothing here is policy.
+        return []
     candidates = []
     if IS_WINDOWS:
         for variable in ("PROGRAMDATA", "APPDATA"):
@@ -4984,14 +5043,25 @@ def _hardened_pip_config_paths() -> "list[str]":
         # pip 26, `XDG_CONFIG_DIRS=/a:/b pip config debug` enumerates /a/pip/pip.conf and
         # /b/pip/pip.conf. macOS reads its global set from XDG_DATA_DIRS instead, falling
         # back to /Library/Application Support.
+        #
+        # macOS reads BOTH here, deliberately, because pip changed under us: measured,
+        # pip 26.1 resolves the Darwin global set to /Library/Application Support and
+        # ignores XDG_DATA_DIRS entirely, while 26.2.1 lets XDG_DATA_DIRS replace it.
+        # Either pip can be the one on a user's machine, and a location that only one of
+        # them reads costs a stat, so both are scanned rather than guessing the version.
         directories = os.environ.get("XDG_DATA_DIRS" if IS_MACOS else "XDG_CONFIG_DIRS", "").strip()
+        if IS_MACOS:
+            if "/opt/python" in sys.prefix:
+                # platformdirs puts a Homebrew python's site data under the brew prefix.
+                candidates.append(
+                    os.path.join(sys.prefix.split("/opt/python")[0], "share", "pip", name)
+                )
+            candidates.append(os.path.join("/Library", "Application Support", "pip", name))
         if directories:
             for directory in directories.split(os.pathsep):
                 if directory.strip():
                     candidates.append(os.path.join(directory.strip(), "pip", name))
-        elif IS_MACOS:
-            candidates.append(os.path.join("/Library", "Application Support", "pip", name))
-        else:
+        elif not IS_MACOS:
             candidates.append(os.path.join("/etc", "xdg", "pip", name))
         candidates.append(os.path.join("/etc", name))
         home = os.path.expanduser("~")
@@ -5392,7 +5462,9 @@ def _unenforceable_policy(cmd: "list[str]") -> "list[str]":
 _POLICY_EQUIVALENTS = {
     "require-hashes": ("PIP_REQUIRE_HASHES=1", "UV_REQUIRE_HASHES=1"),
     "no-build": ("PIP_ONLY_BINARY=:all:", "no-build = true in your uv.toml"),
-    "no-binary": ("PIP_NO_BINARY=:all:", "no-binary = true in your uv.toml"),
+    # uv's no-binary is a package LIST, not a flag: `no-binary = true` is a config parse
+    # error there, so naming it would have left the operator with an unusable uv.
+    "no-binary": ("PIP_NO_BINARY=:all:", 'no-binary = [":all:"] in your uv.toml'),
     "exclude-newer": ("PIP_UPLOADED_PRIOR_TO", "UV_EXCLUDE_NEWER"),
 }
 

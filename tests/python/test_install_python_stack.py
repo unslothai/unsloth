@@ -1462,6 +1462,85 @@ class TestDetectionMatchesWhatTheManagersActuallyEnforce:
             assert "no-build" not in keys["pip:install"], keys
         ips._policy_scan.cache_clear()
 
+    @pytest.mark.parametrize("variable", ["UV_PROJECT", "UV_WORKING_DIR"])
+    def test_uvs_own_project_root_is_used_not_this_processs_cwd(self, variable, tmp_path):
+        """Measured on the pinned uv 0.12.1: a `[tool.uv.pip] require-hashes = true` in
+        a project named by either variable is enforced from an unrelated cwd. Walking
+        from getcwd() alone scanned the wrong tree."""
+        project = tmp_path / "elsewhere"
+        project.mkdir()
+        (project / "pyproject.toml").write_text('[project]\nname = "p"\n', encoding = "utf-8")
+        elsewhere = tmp_path / "cwd"
+        elsewhere.mkdir()
+        with (
+            mock.patch.dict(os.environ, {variable: str(project)}, clear = True),
+            mock.patch.object(os, "getcwd", lambda: str(elsewhere)),
+        ):
+            assert ips._uv_project_config() == [str(project / "pyproject.toml")]
+
+    def test_an_explicit_config_file_survives_no_config(self, tmp_path):
+        """Measured: uv reads the file named by UV_CONFIG_FILE with UV_NO_CONFIG=1 set
+        as well, so returning nothing there dropped policy that was still in force."""
+        explicit = tmp_path / "uv.toml"
+        explicit.write_text("[pip]\nrequire-hashes = true\n", encoding = "utf-8")
+        with mock.patch.dict(
+            os.environ,
+            {"UV_CONFIG_FILE": str(explicit), "UV_NO_CONFIG": "1"},
+            clear = True,
+        ):
+            assert ips._hardened_uv_config_paths() == [str(explicit)]
+        # Without an explicit file, --no-config still means nothing is discovered.
+        with mock.patch.dict(os.environ, {"UV_NO_CONFIG": "1"}, clear = True):
+            assert ips._hardened_uv_config_paths() == []
+
+    def test_the_macos_global_set_covers_both_pip_generations(self):
+        """pip changed under us: measured, pip 26.1 resolves the Darwin global set to
+        /Library/Application Support and ignores XDG_DATA_DIRS, while 26.2.1 lets
+        XDG_DATA_DIRS replace it. Either can be the pip on a user's machine."""
+        with (
+            mock.patch.dict(os.environ, {"XDG_DATA_DIRS": "/a", "HOME": "/home/u"}, clear = True),
+            _posix_home(),
+            mock.patch.object(ips, "IS_WINDOWS", False),
+            mock.patch.object(ips, "IS_MACOS", True),
+            mock.patch.object(os.path, "isfile", lambda path: True),
+        ):
+            paths = [path.replace(os.sep, "/") for path in ips._hardened_pip_config_paths()]
+        assert "/Library/Application Support/pip/pip.conf" in paths, paths
+        assert "/a/pip/pip.conf" in paths, paths
+
+    def test_the_refusal_names_a_uv_no_binary_value_uv_accepts(self):
+        """uv's no-binary is a package LIST: `no-binary = true` is a config parse error
+        there, so the remediation would have left the operator with an unusable uv."""
+        _pip, uv_name = ips._POLICY_EQUIVALENTS["no-binary"]
+        assert ":all:" in uv_name and "= true" not in uv_name, uv_name
+
+    @pytest.mark.parametrize(
+        "body,tables,expected",
+        [
+            ("[tool]\nuv = { pip = { require-hashes = true } }\n",
+             (("tool", "uv"), ("tool", "uv", "pip")), ["require-hashes"]),
+            ("pip = { require-hashes = true }\n", ((), ("pip",)), ["require-hashes"]),
+            ("[other]\nuv = { pip = { require-hashes = true } }\n",
+             (("tool", "uv"), ("tool", "uv", "pip")), []),
+        ],
+    )
+    def test_the_legacy_parser_reads_inline_tables(self, body, tables, expected):
+        """uv 0.12.1 enforces `[tool] uv = { pip = { require-hashes = true } }`, which
+        the pre-3.11 fallback skipped because `tool` is not itself a table it reads."""
+        with mock.patch.object(ips, "_tomllib", None):
+            assert ips._hardened_keys_in_toml(body, tables) == expected
+
+    def test_an_empty_toml_map_is_not_hardening(self):
+        """`exclude-newer-package = {}` reached the value conversion as an empty dict and
+        came out as the string "{}", which is not an off spelling. uv applies no cutoff
+        for it, and under the opt-out the phantom control could stop a pip step."""
+        assert ips._hardened_keys_in_toml("[pip]\nexclude-newer-package = {}\n",
+                                          ((), ("pip",))) == []
+        assert ips._hardened_keys_in_toml(
+            '[pip]\nexclude-newer-package = { foo = "2020-01-01T00:00:00Z" }\n',
+            ((), ("pip",)),
+        ) == ["exclude-newer-package"]
+
     def test_an_inline_comment_is_not_part_of_the_value(self):
         """The pre-3.11 fallback had already stripped the comment and then appended the
         raw line anyway, so `no-build = false # disabled` read as the value
