@@ -18,9 +18,8 @@ from loggers import get_logger
 from utils.paths import path_utils as _path_utils
 from utils.paths.path_utils import wsl_automount_root
 
-# "Where local models live" is one policy, defined in utils.paths.storage_roots. It was
-# copied here too and the copies drifted: a BOM'd settings.json was honoured by one and
-# silently dropped by the other (#9748).
+# One policy, defined in utils.paths.storage_roots. The copy that used to live here
+# drifted: a BOM'd settings.json was honoured by one side and dropped by the other (#9748).
 from utils.paths.storage_roots import (
     lmstudio_model_dirs,
     ollama_model_dirs,
