@@ -2172,17 +2172,18 @@ function ThreadScopedSettingsSync({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const pendingNewThreadId = useAuiState(({ threads }) => threads.newThreadId);
   const settingsHydrated = useChatRuntimeStore(
     (state) => state.settingsHydrated,
   );
 
   useEffect(() => {
     const { applyThreadScopedSettings } = useChatRuntimeStore.getState();
-    // An unsaved chat carries a runtime-made id that no row can exist for, so its read
-    // can only 404. Opening a pairing window for it holds every edit behind a round
-    // trip that is certain to say "no snapshot", which is how an edit made on a fresh
-    // /chat stopped reaching the installation defaults straight away.
-    if (isAssistantLocalThreadId(activeThreadId)) {
+    // A chat not yet sent to has no row, so pairing it holds every edit behind a read certain
+    // to 404 -- which is how an edit on a fresh /chat stopped reaching the installation
+    // defaults. The `__LOCALID_` prefix stays on the id for good, so only the runtime's
+    // pending-new-thread id tells the two apart.
+    if (activeThreadId !== null && activeThreadId === pendingNewThreadId) {
       applyThreadScopedSettings(null, null);
       return;
     }
@@ -2253,27 +2254,36 @@ function ThreadScopedSettingsSync({
       // over the values the user set and is written out again by the next edit.
       const read = new AbortController();
       reads.add(read);
-      void awaitThreadScopedSettingsWrite(activeThreadId)
-        .then(() =>
-          // Bounded, because this read is what holds sends back: an unbounded GET that
-          // never settles would park every send in the chat behind "Loading this chat's
-          // settings" with nothing to release it, and leave the request open besides.
-          // The fetch carries THIS attempt's deadline and its controller, so a stall ends
-          // the request rather than leaving it running while the retry opens the next one;
-          // the race is the backstop for the rest of the read.
-          Promise.race([
-            getStoredChatThreadReadResult(activeThreadId, {
-              timeoutMs: THREAD_READ_TIMEOUT_MS,
-              signal: read.signal,
-            }),
-            new Promise<never>((_, reject) =>
-              setTimeout(
-                () => reject(new Error("thread settings read timed out")),
-                THREAD_READ_TIMEOUT_MS,
-              ),
-            ),
-          ]),
-        )
+      // The deadline covers the WAITS as well as the read: neither is bounded on its own (the
+      // settings chain is a PATCH, and awaitStoredChatThreadWrites settles a row write opening
+      // with an unbounded getStoredChatThread). In front of it their time went uncounted, so
+      // the chain could outlast THREAD_PAIRING_WAIT_MS with the gate shut and the send refused.
+      // Inside it, a stall is one failed attempt, which retryThreadRead handles.
+      void Promise.race([
+        Promise.all([
+          // This chat's own PATCH first: a read that overtakes it returns the pre-edit
+          // snapshot, which then goes back over the values the user just set.
+          awaitThreadScopedSettingsWrite(activeThreadId),
+          // And its row, which may not exist yet: initialize() resolves as soon as the id is
+          // minted and leaves the POST tracked, so on a first send a read can overtake it, find
+          // no row, and release this chat's held edits into the installation defaults. Settles
+          // at once when nothing is tracked, so an existing chat waits for nothing.
+          awaitStoredChatThreadWrites(activeThreadId),
+        ]).then(() =>
+          getStoredChatThreadReadResult(activeThreadId, {
+            timeoutMs: THREAD_READ_TIMEOUT_MS,
+            signal: read.signal,
+          }),
+        ),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => {
+            // The waits can expire before the fetch is issued; the controller is the only
+            // thing stopping one issued a moment later from outliving them.
+            read.abort();
+            reject(new Error("thread settings read timed out"));
+          }, THREAD_READ_TIMEOUT_MS),
+        ),
+      ])
         .finally(() => {
           reads.delete(read);
         })
@@ -2360,7 +2370,7 @@ function ThreadScopedSettingsSync({
       commitHeldThreadScopedEditsToTheirThread();
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
     };
-  }, [activeThreadId, enabled, settingsHydrated]);
+  }, [activeThreadId, enabled, pendingNewThreadId, settingsHydrated]);
 
   return null;
 }
