@@ -437,7 +437,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
-  /** A transcript belongs to the pick that produced it, and never outlives it. */
+  /** Drop the transcript with the name and the error that belong to it, so no part
+   *  of a result can be left on screen describing another one. */
   const clearTranscript = useCallback(() => {
     setTranscript("");
     setTranscribedName(null);
