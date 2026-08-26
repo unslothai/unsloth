@@ -3077,7 +3077,7 @@ def test_tool_loop_controllers_are_built_from_the_sanitized_catalog():
             encoding = "utf-8"
         )
         start = source.index("ToolLoopController(")
-        window = source[start : start + 200]
+        window = source[max(0, start - 600) : start + 200]
         # Either sanitized at construction, or handed the catalog the caller already
         # narrowed to what every template this turn could select would advertise.
         assert "neutralize_tool_descriptions" in window or "_authorized" in window, module
