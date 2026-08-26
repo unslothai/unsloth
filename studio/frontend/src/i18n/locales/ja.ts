@@ -800,6 +800,7 @@ export const ja = {
         downloadConfirmBody: "{model} はまだこのマシンにありません。ダウンロードには約 {size} かかります。",
         downloadConfirmBodyUnsized: "{model} はまだこのマシンにありません。今すぐダウンロードします。",
         download: "ダウンロード",
+        downloadSource: "提供元: {repo}",
         downloading: "{model} をダウンロード中",
         downloadingDescription: "進捗はダウンロードパネルに表示されます。完了後にインデックス作成で使用されます。",
         downloadFailed: "ダウンロードを開始できませんでした",

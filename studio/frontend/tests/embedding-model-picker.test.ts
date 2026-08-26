@@ -66,12 +66,38 @@ test("picking applies straight away, with no Save button", () => {
 test("a model that is not on disk is offered as a real download", () => {
   // The whole point of the change: before this, saving only wrote the setting
   // and the weights arrived invisibly at the first index.
-  assert.match(SECTION, /await offerDownload\(trimmed\)/);
-  assert.match(SECTION, /resolveEmbeddingModel\(model, \{/);
-  assert.match(SECTION, /if \(resolution\.cached \|\| !resolution\.downloadRepo\) return;/);
+  assert.match(SECTION, /resolveEmbeddingModel\(trimmed, \{/);
+  assert.match(SECTION, /setPendingDownload\(resolution\)/);
   // Same manager the Hub cards use, so progress, cancel and transport are shared.
   assert.match(SECTION, /downloadManager\.requestStart\(\{/);
   assert.match(SECTION, /kind: DOWNLOAD_KIND\.MODEL/);
+});
+
+test("the resolve runs before the save, not after it", () => {
+  // Saving first meant a model with no same-owner GGUF 409'd and the user saw a
+  // wall of red text instead of a download.
+  const fn = SECTION.slice(
+    SECTION.indexOf("const applyEmbeddingModel"),
+    SECTION.indexOf("const startDownload"),
+  );
+  assert.ok(
+    fn.indexOf("resolveEmbeddingModel") < fn.indexOf("persist(trimmed, resolution"),
+    "resolve decides, then the save records what it found",
+  );
+  // Only the explicit override skips it.
+  assert.match(fn, /if \(force\) \{\s*await persist\(trimmed, null, true\);/);
+});
+
+test("the repo the resolve picked is what gets stored", () => {
+  // A conversion under another owner follows no naming rule, so the loader has
+  // to be told rather than left to re-derive it.
+  assert.match(SECTION, /persist\(\s*resolution\.embeddingModel,\s*resolution\.downloadRepo,/);
+  assert.match(API, /gguf_repo: options\?\.ggufRepo \?\? null/);
+});
+
+test("the dialog names the repo it will download from", () => {
+  assert.match(SECTION, /settings\.general\.rag\.downloadSource/);
+  assert.equal(en.settings.general.rag.downloadSource, "From {repo}");
 });
 
 test("only the embedder's own GGUF is fetched, not every quant", () => {

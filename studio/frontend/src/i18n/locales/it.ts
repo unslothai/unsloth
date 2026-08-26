@@ -808,6 +808,7 @@ export const it = {
         downloadConfirmBodyUnsized:
           "{model} non è ancora su questo computer e verrà scaricato ora.",
         download: "Scarica",
+        downloadSource: "Da {repo}",
         downloading: "Download di {model}",
         downloadingDescription:
           "L'avanzamento è nel pannello dei download. L'indicizzazione lo userà al termine.",

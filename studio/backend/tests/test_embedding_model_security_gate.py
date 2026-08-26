@@ -47,7 +47,11 @@ def client(monkeypatch):
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
-    monkeypatch.setattr(settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v))
+    monkeypatch.setattr(
+        settings,
+        "set_rag_embedding_model",
+        lambda v, gguf_repo = None: saved.setdefault("model", v),
+    )
     monkeypatch.setattr(settings, "_llama_backend_active", lambda: False)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
     monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))
@@ -162,7 +166,11 @@ def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
-    monkeypatch.setattr(settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v))
+    monkeypatch.setattr(
+        settings,
+        "set_rag_embedding_model",
+        lambda v, gguf_repo = None: saved.setdefault("model", v),
+    )
     monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
     monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))
@@ -209,7 +217,11 @@ def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
-    monkeypatch.setattr(settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v))
+    monkeypatch.setattr(
+        settings,
+        "set_rag_embedding_model",
+        lambda v, gguf_repo = None: saved.setdefault("model", v),
+    )
     # Deliberately do NOT monkeypatch settings._llama_backend_active: this test exercises the
     # real delegation to embeddings.active_backend_is_llama() so the cached fallback is honored.
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
@@ -278,7 +290,11 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
-    monkeypatch.setattr(settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v))
+    monkeypatch.setattr(
+        settings,
+        "set_rag_embedding_model",
+        lambda v, gguf_repo = None: saved.setdefault("model", v),
+    )
     monkeypatch.setattr(settings, "_llama_backend_active", lambda: False)
     monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
     monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))

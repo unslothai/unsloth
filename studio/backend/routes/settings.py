@@ -1788,6 +1788,8 @@ def update_openai_auto_switch_override(
 
 class EmbeddingModelPayload(BaseModel):
     embedding_model: str = Field(..., min_length = 1, max_length = MAX_EMBEDDING_MODEL_LENGTH)
+    # The repo /resolve named, stored so the loader opens what was downloaded.
+    gguf_repo: Optional[str] = Field(default = None, max_length = MAX_EMBEDDING_MODEL_LENGTH)
     # Token for gated/private repos during verification (not stored).
     hf_token: Optional[str] = Field(default = None, max_length = 512)
     # Skip HF verification (offline installs, local paths HF can't see).
@@ -1887,23 +1889,16 @@ def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
         return None
     from core.rag import config as rag_config
 
-    candidates = [model] if rag_config._names_gguf(model) else [f"{model}-GGUF", model]
-    try:
-        from huggingface_hub import list_repo_files
-    except Exception:  # noqa: BLE001 - hub client unavailable: don't block saving
+    candidates = rag_config.gguf_repo_candidates(model)
+    if _remote_embedding_gguf_plan(candidates, hf_token) is not None:
         return None
-    for candidate in candidates:
-        try:
-            files = list_repo_files(candidate, token = hf_token)
-        except Exception:  # noqa: BLE001 - missing/gated repo: try next candidate
-            continue
-        if any(f.lower().endswith(".gguf") and "mmproj" not in f.lower() for f in files):
-            return None
+    if _search_hub_for_gguf(model, hf_token) is not None:
+        return None
     checked = " or ".join(repr(c) for c in candidates)
     return (
-        f"No GGUF weights found in {checked}, but this install embeds with the "
-        "llama-server backend which requires them. Pick a model with a GGUF "
-        "companion repo or GGUF files in the repo itself."
+        f"No GGUF weights found in {checked}, and no GGUF conversion of it was "
+        "found on Hugging Face. This install embeds with the llama-server backend, "
+        "which requires them."
     )
 
 
@@ -1927,12 +1922,59 @@ class EmbeddingModelResolveResponse(BaseModel):
 
 
 def _embedding_gguf_candidates(model: str) -> list[str]:
-    """Repos the loader would try for ``model``'s GGUF, in its order: the
-    companion repo, then the model repo itself."""
+    """Repos the loader would try for ``model``'s GGUF, in its order."""
     from core.rag import config as rag_config
 
-    companion = rag_config.gguf_repo_for_embedding_model(model)
-    return [companion] if companion == model else [companion, model]
+    return rag_config.gguf_repo_candidates(model)
+
+
+# Owners whose GGUF conversions we will offer when the model's own owner
+# published none. Ordered; earlier is preferred.
+_GGUF_MIRROR_SEARCH_LIMIT = 12
+
+
+def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[str, str]]:
+    """``(repo, filename)`` for a GGUF conversion of ``model`` published under
+    another owner.
+
+    Most embedders have no same-owner GGUF (unsloth/Qwen3-Embedding-4B has none;
+    Qwen/Qwen3-Embedding-4B-GGUF does), so without this the picker refuses almost
+    everything on a llama-server install. Only repos whose name starts with the
+    model's own name qualify, so this cannot wander onto an unrelated model."""
+    from core.rag import config as rag_config
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    try:
+        from huggingface_hub import HfApi, list_repo_files
+    except Exception:  # noqa: BLE001 - hub client unavailable
+        return None
+    name = model.rpartition("/")[2]
+    base = rag_config._QUANT_SUFFIX_RE.sub("", name).lower()
+    if not base:
+        return None
+    try:
+        hits = list(
+            HfApi().list_models(
+                search = base,
+                filter = ["gguf"],
+                sort = "downloads",
+                limit = _GGUF_MIRROR_SEARCH_LIMIT,
+                token = hf_token,
+            )
+        )
+    except Exception:  # noqa: BLE001 - offline or rate limited
+        return None
+    for hit in hits:
+        candidate = hit.id.rpartition("/")[2].lower()
+        if not candidate.startswith(base):
+            continue
+        try:
+            filename = LlamaServerBackend._pick_gguf(list_repo_files(hit.id, token = hf_token))
+        except Exception:  # noqa: BLE001 - unreadable listing: try the next
+            continue
+        if filename:
+            return hit.id, filename
+    return None
 
 
 def _cached_embedding_gguf(candidates: list[str]) -> bool:
@@ -2043,7 +2085,9 @@ def resolve_embedding_model(
             download_repo = candidates[0],
             cached = True,
         )
-    plan = _remote_embedding_gguf_plan(candidates, token)
+    plan = _remote_embedding_gguf_plan(candidates, token) or _search_hub_for_gguf(
+        resolved, token
+    )
     if plan is None:
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
@@ -2180,7 +2224,7 @@ def update_embedding_model(
             gguf_error = _hf_gguf_backend_error(model, hf_token)
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
-    set_rag_embedding_model(model)
+    set_rag_embedding_model(model, gguf_repo = (payload.gguf_repo or "").strip() or None)
     logger.info(
         "settings.embedding_model_updated subject=%s model=%s forced=%s",
         current_subject,

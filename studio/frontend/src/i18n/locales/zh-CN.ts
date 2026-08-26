@@ -793,6 +793,7 @@ export const zhCN = {
         downloadConfirmBody: "{model} 尚未下载到本机，下载约需 {size}。",
         downloadConfirmBodyUnsized: "{model} 尚未下载到本机，现在开始下载。",
         download: "下载",
+        downloadSource: "来自 {repo}",
         downloading: "正在下载 {model}",
         downloadingDescription: "进度显示在下载面板中。下载完成后即可用于建立索引。",
         downloadFailed: "无法开始下载",

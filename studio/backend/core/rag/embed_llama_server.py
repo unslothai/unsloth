@@ -336,13 +336,10 @@ class LlamaServerBackend:
         local = self._resolve_local_gguf(config.effective_embedding_model())
         if local is not None:
             return self._adopt_model_path(local, desired)
-        # A custom model derives its "-GGUF" companion repo; when that guess does
-        # not exist, the model repo itself may host the .gguf files.
+        # Companion repo, then the naming variants, then the model repo itself.
         repo = desired
-        candidates = [repo]
         model = config.effective_embedding_model()
-        if model != repo:
-            candidates.append(model)
+        candidates = list(dict.fromkeys([repo, *config.gguf_repo_candidates(model)]))
         # Only the preferred repo. A file cached under the fallback candidate must not
         # pre-empt a companion repo the hub can still resolve, which is the order the
         # listing follows; offline, the relaxed pass below still reaches both.

@@ -94,17 +94,37 @@ def test_cached_gguf_asks_for_no_download(client, monkeypatch):
     assert body["files"] is None
 
 
-def test_a_repo_with_no_gguf_reports_the_same_reason_the_save_would(client, monkeypatch):
-    """The screenshot case: a model whose companion repo publishes no GGUF. The
-    picker must not offer a download for it, and must say why in the PUT's words."""
+def test_a_model_with_no_same_owner_gguf_falls_back_to_a_hub_conversion(client, monkeypatch):
+    """Most embedders have no same-owner GGUF: unsloth/Qwen3-Embedding-4B has none,
+    Qwen/Qwen3-Embedding-4B-GGUF does. Without the search fallback the picker
+    refused nearly everything on a llama-server install."""
     monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
     monkeypatch.setattr(settings, "_cached_embedding_gguf", lambda candidates: False)
     monkeypatch.setattr(settings, "_remote_embedding_gguf_plan", lambda candidates, token: None)
     monkeypatch.setattr(
+        settings,
+        "_search_hub_for_gguf",
+        lambda m, token: ("Qwen/Qwen3-Embedding-4B-GGUF", "Qwen3-Embedding-4B-f16.gguf"),
+    )
+    monkeypatch.setattr(settings, "_hf_files_size", lambda repo, files, token: None)
+
+    body = _resolve(client, "unsloth/Qwen3-Embedding-4B").json()
+    assert body["download_repo"] == "Qwen/Qwen3-Embedding-4B-GGUF"
+    assert body["files"] == ["Qwen3-Embedding-4B-f16.gguf"]
+    assert body["error"] is None
+
+
+def test_nothing_anywhere_still_reports_the_save_reason(client, monkeypatch):
+    """Only when the name candidates AND the Hub search come up empty."""
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
+    monkeypatch.setattr(settings, "_cached_embedding_gguf", lambda candidates: False)
+    monkeypatch.setattr(settings, "_remote_embedding_gguf_plan", lambda candidates, token: None)
+    monkeypatch.setattr(settings, "_search_hub_for_gguf", lambda m, token: None)
+    monkeypatch.setattr(
         settings, "_hf_gguf_backend_error", lambda m, token: "No GGUF weights found in ..."
     )
 
-    body = _resolve(client, "unsloth/gte-modernbert-base").json()
+    body = _resolve(client, "unsloth/nothing-like-this").json()
     assert body["download_repo"] is None
     assert body["files"] is None
     assert body["cached"] is False
@@ -122,15 +142,47 @@ def test_a_local_gguf_is_already_the_artifact(client, monkeypatch):
 
 
 def test_candidates_follow_the_loader_order(monkeypatch):
-    """Companion repo first, then the model repo itself: the order
-    `_resolve_model_path` tries, so the picker cannot fetch from a repo the loader
-    would not have used."""
+    """One helper builds them, so the picker cannot fetch from a repo the loader
+    would not have opened."""
     assert settings._embedding_gguf_candidates("acme/embedder") == [
         "acme/embedder-GGUF",
         "acme/embedder",
     ]
-    # A repo that already names GGUF is its own candidate, not "…-GGUF-GGUF".
+    # A repo that already names GGUF is its own candidate, not "...-GGUF-GGUF".
     assert settings._embedding_gguf_candidates("acme/embedder-GGUF") == ["acme/embedder-GGUF"]
+    # unsloth's unquantized re-uploads keep their GGUF on the base name.
+    assert settings._embedding_gguf_candidates(
+        "unsloth/embeddinggemma-300m-qat-q8_0-unquantized"
+    ) == [
+        "unsloth/embeddinggemma-300m-qat-q8_0-unquantized-GGUF",
+        "unsloth/embeddinggemma-300m-GGUF",
+        "unsloth/embeddinggemma-300m-qat-q8_0-unquantized",
+    ]
+
+
+def test_the_resolved_repo_is_what_the_loader_opens(monkeypatch):
+    """A conversion under another owner follows no naming rule, so it is stored and
+    read back rather than re-derived."""
+    import storage.studio_db as db
+
+    store: dict = {}
+    monkeypatch.setattr(db, "get_app_setting", lambda k, fallback = None: store.get(k, fallback))
+    monkeypatch.setattr(db, "upsert_app_settings", lambda s: store.update(s) or store)
+
+    import utils.embedding_model_settings as ems
+    from core.rag import config as rag_config
+
+    ems._invalidate_cache()
+    ems.set_rag_embedding_model(
+        "unsloth/Qwen3-Embedding-4B", gguf_repo = "Qwen/Qwen3-Embedding-4B-GGUF"
+    )
+    assert rag_config.effective_gguf_repo() == "Qwen/Qwen3-Embedding-4B-GGUF"
+
+    # A pair recorded for another model must never be served for this one.
+    store[ems.EMBEDDING_GGUF_SETTING_KEY] = "Qwen/Qwen3-Embedding-4B-GGUF"
+    ems._invalidate_cache()
+    assert ems.get_stored_gguf_repo("unsloth/bge-m3") is None
+    ems._invalidate_cache()
 
 
 def test_the_token_is_a_header_not_a_query_parameter(client, monkeypatch):

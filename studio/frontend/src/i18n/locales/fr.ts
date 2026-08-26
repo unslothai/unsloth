@@ -835,6 +835,7 @@ export const fr = {
         downloadConfirmBodyUnsized:
           "{model} n'est pas encore sur cette machine et va être téléchargé.",
         download: "Télécharger",
+        downloadSource: "Depuis {repo}",
         downloading: "Téléchargement de {model}",
         downloadingDescription:
           "La progression s'affiche dans le panneau des téléchargements. L'indexation l'utilisera une fois terminé.",

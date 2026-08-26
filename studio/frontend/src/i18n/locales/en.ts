@@ -815,6 +815,7 @@ export const en = {
         downloadConfirmBodyUnsized:
           "{model} is not on this machine yet and will be downloaded now.",
         download: "Download",
+        downloadSource: "From {repo}",
         downloading: "Downloading {model}",
         downloadingDescription:
           "Progress is in the downloads panel. Indexing uses it once it lands.",

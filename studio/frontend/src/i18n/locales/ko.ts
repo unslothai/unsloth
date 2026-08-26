@@ -810,6 +810,7 @@ export const ko = {
           "{model}이(가) 아직 이 컴퓨터에 없습니다. 다운로드에 약 {size}가 필요합니다.",
         downloadConfirmBodyUnsized: "{model}이(가) 아직 이 컴퓨터에 없습니다. 지금 다운로드합니다.",
         download: "다운로드",
+        downloadSource: "출처: {repo}",
         downloading: "{model} 다운로드 중",
         downloadingDescription: "진행 상황은 다운로드 패널에 표시됩니다. 완료되면 색인에 사용됩니다.",
         downloadFailed: "다운로드를 시작할 수 없습니다",

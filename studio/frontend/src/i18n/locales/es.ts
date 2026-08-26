@@ -832,6 +832,7 @@ export const es = {
         downloadConfirmBodyUnsized:
           "{model} aún no está en este equipo y se descargará ahora.",
         download: "Descargar",
+        downloadSource: "Desde {repo}",
         downloading: "Descargando {model}",
         downloadingDescription:
           "El progreso está en el panel de descargas. La indexación lo usará cuando termine.",

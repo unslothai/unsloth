@@ -814,6 +814,7 @@ export const ar = {
         downloadConfirmBodyUnsized:
           "{model} غير موجود على هذا الجهاز بعد وسيتم تنزيله الآن.",
         download: "تنزيل",
+        downloadSource: "من {repo}",
         downloading: "جارٍ تنزيل {model}",
         downloadingDescription:
           "يظهر التقدم في لوحة التنزيلات. ستستخدمه الفهرسة بمجرد اكتماله.",

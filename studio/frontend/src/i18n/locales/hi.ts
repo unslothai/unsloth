@@ -817,6 +817,7 @@ export const hi = {
         downloadConfirmBodyUnsized:
           "{model} अभी इस मशीन पर नहीं है और अब डाउनलोड किया जाएगा।",
         download: "डाउनलोड करें",
+        downloadSource: "{repo} से",
         downloading: "{model} डाउनलोड हो रहा है",
         downloadingDescription:
           "प्रगति डाउनलोड पैनल में दिखती है। पूरा होने पर इंडेक्सिंग इसका उपयोग करेगी।",

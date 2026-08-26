@@ -818,6 +818,7 @@ export const ru = {
         downloadConfirmBodyUnsized:
           "{model} ещё нет на этом компьютере, загрузка начнётся сейчас.",
         download: "Скачать",
+        downloadSource: "Из {repo}",
         downloading: "Загрузка {model}",
         downloadingDescription:
           "Прогресс виден на панели загрузок. После завершения он будет использован для индексации.",

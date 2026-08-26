@@ -824,6 +824,7 @@ export const ptBR = {
         downloadConfirmBodyUnsized:
           "{model} ainda não está nesta máquina e será baixado agora.",
         download: "Baixar",
+        downloadSource: "De {repo}",
         downloading: "Baixando {model}",
         downloadingDescription:
           "O progresso aparece no painel de downloads. A indexação vai usá-lo quando terminar.",

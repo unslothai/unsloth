@@ -100,21 +100,46 @@ export function DocumentsRagSection(): ReactElement {
     void refreshCachedRepos();
   }, [refreshCachedRepos]);
 
-  /** Offer the download for a model that just became the setting. */
-  const offerDownload = async (model: string) => {
-    let resolution: EmbeddingModelResolution;
+  /** Persist the pick, recording the GGUF repo /resolve named so the loader
+   * opens what was downloaded rather than re-deriving a name. */
+  const persist = async (
+    model: string,
+    ggufRepo: string | null,
+    force: boolean,
+  ): Promise<boolean> => {
     try {
-      resolution = await resolveEmbeddingModel(model, {
-        hfToken: hfToken || undefined,
+      const stood = await save(() =>
+        updateEmbeddingModelSettings(model, {
+          hfToken: hfToken || undefined,
+          ggufRepo,
+          force,
+        }),
+      );
+      // A later save owns the setting now, so this answer says nothing current.
+      if (!stood) return false;
+      setForceCandidate(null);
+      toast.success(t("settings.general.rag.saved"), {
+        description: t("settings.general.rag.reindexWarning"),
       });
-    } catch {
-      // Saved either way; the first index still fetches, just with no progress row.
-      return;
+      return true;
+    } catch (error) {
+      // A hard security block cannot be forced; keep "Save anyway" hidden.
+      if (error instanceof EmbeddingModelBlockedError) {
+        setForceCandidate(null);
+      } else if (error instanceof EmbeddingModelVerificationError) {
+        setForceCandidate(model);
+      }
+      setSaveError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.rag.saveError"),
+      );
+      return false;
     }
-    if (resolution.cached || !resolution.downloadRepo) return;
-    setPendingDownload(resolution);
   };
 
+  /** Resolve first, so a model that needs fetching is offered as a download
+   * rather than saved and quietly fetched at the first index. */
   const applyEmbeddingModel = async (model: string, force: boolean) => {
     const trimmed = model.trim();
     if (!trimmed) {
@@ -124,34 +149,43 @@ export function DocumentsRagSection(): ReactElement {
     setIsSavingEmbeddingModel(true);
     setSaveError(null);
     try {
-      const stood = await save(() =>
-        updateEmbeddingModelSettings(trimmed, {
-          hfToken: hfToken || undefined,
-          force,
-        }),
-      );
-      // A later save owns the setting now, so this answer says nothing current.
-      if (!stood) return;
-      setForceCandidate(null);
-      toast.success(t("settings.general.rag.saved"), {
-        description: t("settings.general.rag.reindexWarning"),
-      });
-      await offerDownload(trimmed);
-    } catch (error) {
-      // A hard security block cannot be forced; keep "Save anyway" hidden.
-      if (error instanceof EmbeddingModelBlockedError) {
-        setForceCandidate(null);
-      } else if (error instanceof EmbeddingModelVerificationError) {
-        setForceCandidate(trimmed);
+      if (force) {
+        await persist(trimmed, null, true);
+        return;
       }
-      setSaveError(
-        error instanceof Error
-          ? error.message
-          : t("settings.general.rag.saveError"),
-      );
+      let resolution: EmbeddingModelResolution | null = null;
+      try {
+        resolution = await resolveEmbeddingModel(trimmed, {
+          hfToken: hfToken || undefined,
+        });
+      } catch {
+        // Offline or the probe failed: let the save decide, as it did before.
+        await persist(trimmed, null, false);
+        return;
+      }
+      if (resolution.error) {
+        // Forceable: the user may know something the probe cannot see.
+        setForceCandidate(trimmed);
+        setSaveError(resolution.error);
+        return;
+      }
+      if (resolution.cached || !resolution.downloadRepo) {
+        await persist(trimmed, resolution.downloadRepo, false);
+        return;
+      }
+      setPendingDownload(resolution);
     } finally {
       setIsSavingEmbeddingModel(false);
     }
+  };
+
+  const confirmDownload = async (resolution: EmbeddingModelResolution) => {
+    const saved = await persist(
+      resolution.embeddingModel,
+      resolution.downloadRepo,
+      false,
+    );
+    if (saved) await startDownload(resolution);
   };
 
   const startDownload = async (resolution: EmbeddingModelResolution) => {
@@ -289,6 +323,13 @@ export function DocumentsRagSection(): ReactElement {
                     model: pendingDownload?.embeddingModel ?? "",
                   })}
             </AlertDialogDescription>
+            {pendingDownload?.downloadRepo ? (
+              <span className="text-muted-foreground font-mono text-ui-11">
+                {t("settings.general.rag.downloadSource", {
+                  repo: pendingDownload.downloadRepo,
+                })}
+              </span>
+            ) : null}
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
@@ -297,7 +338,7 @@ export function DocumentsRagSection(): ReactElement {
                 event.preventDefault();
                 const request = pendingDownload;
                 setPendingDownload(null);
-                if (request) void startDownload(request);
+                if (request) void confirmDownload(request);
               }}
             >
               {t("settings.general.rag.download")}
