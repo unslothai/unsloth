@@ -1029,17 +1029,15 @@ def test_rocm_apu_keeps_the_carve_out_when_the_driver_total_fails(monkeypatch):
     assert inventory["shared_memory"] is False
 
 
-@pytest.mark.parametrize(("system", "expected_shared"), [("Linux", False), ("Windows", True)])
-def test_rocm_apu_equal_driver_total_scope_is_platform_specific(
-    monkeypatch, system, expected_shared
-):
+@pytest.mark.parametrize("system", ["Linux", "Windows"])
+def test_rocm_apu_equal_driver_total_is_shared(monkeypatch, system):
     mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw.platform, "system", lambda: system)
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
     inventory = hw._torch_get_device_inventory([0])[0]
     assert inventory["total_gb"] == 100.0
-    assert inventory["shared_memory"] is expected_shared
+    assert inventory["shared_memory"] is True
 
 
 def test_rocm_apu_sysfs_overlay_still_declines_against_the_gtt_total(monkeypatch):
