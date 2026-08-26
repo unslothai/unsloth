@@ -1166,7 +1166,7 @@ class FastSentenceTransformer(FastModel):
             "inputs_embeds",
             "return_dict",
         }
-        if model_forward_params is None:
+        if preinit_model_forward_params is None:
             transformer_module.model_forward_params = None
         else:
             transformer_module.model_forward_params |= preinit_model_forward_params
