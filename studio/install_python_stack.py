@@ -4807,7 +4807,8 @@ def _hardened_keys_in_toml(text: str, tables: "tuple[tuple[str, ...], ...]") -> 
     switched the policy off.
     """
     return [
-        key for key, value in _hardened_settings_in_toml(text, tables).items()
+        key
+        for key, value in _hardened_settings_in_toml(text, tables).items()
         if _config_value_is_on(value)
     ]
 

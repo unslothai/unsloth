@@ -544,9 +544,7 @@ class TestOperatorCanKeepTheirPolicy:
         controls in HOSTILE are now restated for pip, but the one thing that must never
         appear is the hash relaxation itself."""
         with mock.patch.dict(os.environ, dict(self.HOSTILE, UNSLOTH_RESPECT_PM_POLICY = value)):
-            env = ips._install_env_for_cmd(
-                ["python", "-m", "pip", "install", "-r", "extras.txt"]
-            )
+            env = ips._install_env_for_cmd(["python", "-m", "pip", "install", "-r", "extras.txt"])
         assert env is None or env.get("PIP_REQUIRE_HASHES") != "0"
 
     @pytest.mark.parametrize("value", ["", "0", "false", "no"])
@@ -1172,7 +1170,12 @@ class TestTranslationKeepsTheOperatorsActualPolicy:
         full = tuple(e if len(e) == 4 else (*e, "1") for e in entries)
         return mock.patch.object(ips, "_detected_policy", lambda: full)
 
-    def _env(self, entries, cmd, extra = None):
+    def _env(
+        self,
+        entries,
+        cmd,
+        extra = None,
+    ):
         environment = {"UNSLOTH_RESPECT_PM_POLICY": "1"}
         environment.update(extra or {})
         with mock.patch.dict(os.environ, environment, clear = True), self._detect(entries):
@@ -1188,9 +1191,7 @@ class TestTranslationKeepsTheOperatorsActualPolicy:
         assert "UV_NO_BUILD" not in env, "a policy about two packages is not a global one"
 
     def test_an_all_pip_policy_becomes_a_global_uv_one(self):
-        env = self._env(
-            [("pip", "env", "PIP_ONLY_BINARY", ":all:")], ["uv", "pip", "install", "x"]
-        )
+        env = self._env([("pip", "env", "PIP_ONLY_BINARY", ":all:")], ["uv", "pip", "install", "x"])
         assert env is not None and env["UV_NO_BUILD"] == "1"
         assert "UV_NO_BUILD_PACKAGE" not in env
 
@@ -1210,8 +1211,7 @@ class TestTranslationKeepsTheOperatorsActualPolicy:
 
     def test_a_global_setting_beats_a_scoped_one_when_both_are_present(self):
         env = self._env(
-            [("uv", "env", "UV_NO_BUILD", "1"),
-             ("uv", "env", "UV_NO_BUILD_PACKAGE", "numpy")],
+            [("uv", "env", "UV_NO_BUILD", "1"), ("uv", "env", "UV_NO_BUILD_PACKAGE", "numpy")],
             ["python", "-m", "pip", "install", "x"],
         )
         assert env is not None and env["PIP_ONLY_BINARY"] == ":all:"
@@ -1250,8 +1250,14 @@ class TestTranslationKeepsTheOperatorsActualPolicy:
 class TestDetectionMatchesPipsOwnRules:
     """Each of these was checked against pip's source or measured, not assumed."""
 
-    def _names(self, environment, pip_ok = False, pip_config = "", uv_files = (),
-               pip_files = ()):
+    def _names(
+        self,
+        environment,
+        pip_ok = False,
+        pip_config = "",
+        uv_files = (),
+        pip_files = (),
+    ):
         ips._detected_policy.cache_clear()
         runner = (
             mock.Mock(return_value = mock.Mock(returncode = 0, stdout = pip_config.encode()))
@@ -1285,9 +1291,7 @@ class TestDetectionMatchesPipsOwnRules:
         and, under the opt-out, translated the cancelled setting into uv and failed."""
         config = tmp_path / "pip.conf"
         config.write_text("[global]\nrequire-hashes = true\n", encoding = "utf-8")
-        assert self._names(
-            {"PIP_REQUIRE_HASHES": "0"}, pip_files = [str(config)]
-        ) == ()
+        assert self._names({"PIP_REQUIRE_HASHES": "0"}, pip_files = [str(config)]) == ()
         # Without the cancelling variable it is reported normally.
         assert self._names({}, pip_files = [str(config)]) == ("pip.conf require-hashes",)
 
@@ -1304,9 +1308,7 @@ class TestDetectionMatchesPipsOwnRules:
 
     def test_config_list_ranks_sections_too(self):
         listing = "install.require-hashes='true'\nglobal.require-hashes='false'\n"
-        assert self._names({}, pip_ok = True, pip_config = listing) == (
-            "pip.conf require-hashes",
-        )
+        assert self._names({}, pip_ok = True, pip_config = listing) == ("pip.conf require-hashes",)
 
     def test_user_configs_are_skipped_when_an_explicit_file_exists(self, tmp_path):
         """pip's iter_config_files: "per-user config is not loaded when env_config_file
@@ -1322,9 +1324,7 @@ class TestDetectionMatchesPipsOwnRules:
             _posix_home(),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(
-                os.path, "isfile", lambda path: True
-            ),
+            mock.patch.object(os.path, "isfile", lambda path: True),
         ):
             paths = [path.replace(os.sep, "/") for path in ips._hardened_pip_config_paths()]
         assert not any("/home/u/.config/pip" in path for path in paths)
