@@ -5251,9 +5251,7 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     # reach the network on a host that had said not to, which is the opposite of what
     # this branch scrubs the ADDITIVE mirror variables for. If the pinned artifact is
     # not in find-links the step fails, which is what the opt-out promises.
-    keep_offline = _respect_pm_policy() and _config_value_is_on(
-        os.environ.get("PIP_NO_INDEX", "")
-    )
+    keep_offline = _respect_pm_policy() and _config_value_is_on(os.environ.get("PIP_NO_INDEX", ""))
     for name in _UV_INDEX_ENV_VARS:
         # UV_CONFIG_FILE is an index variable only incidentally: measured, a file named
         # by it carrying `[pip] require-hashes = true` fails a pinned install, and

@@ -768,9 +768,7 @@ class TestHardenedPolicyIsAnnounced:
         a date filters it. Reading `false` as a cutoff put a security notice in front of
         an operator who had switched the control off."""
         assert self._names({"UV_EXCLUDE_NEWER": "false"}) == ()
-        assert self._names({"UV_EXCLUDE_NEWER": "2005-01-01T00:00:00Z"}) == (
-            "UV_EXCLUDE_NEWER",
-        )
+        assert self._names({"UV_EXCLUDE_NEWER": "2005-01-01T00:00:00Z"}) == ("UV_EXCLUDE_NEWER",)
         # Still not a boolean elsewhere: a package list keeps package names.
         assert self._names({"PIP_ONLY_BINARY": "false"}) == ("PIP_ONLY_BINARY",)
 
