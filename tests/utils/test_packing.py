@@ -474,7 +474,11 @@ def test_patch_hybrid_varlen_partial_dispatch_aborts(monkeypatch):
 
 
 def _make_fake_mamba2_fused():
-    def mamba2_split_conv1d_scan_combined(*args, seq_idx = None, **kwargs):
+    def mamba2_split_conv1d_scan_combined(
+        *args,
+        seq_idx = None,
+        **kwargs,
+    ):
         mamba2_split_conv1d_scan_combined.calls.append(seq_idx)
         return args[0] if args else None
 

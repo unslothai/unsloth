@@ -458,7 +458,13 @@ def _hybrid_varlen_dispatched(module) -> bool:
     )
 
 
-def _wrap_mamba2_fused_call(orig, mixers, *, on_module = None, attr_name = None):
+def _wrap_mamba2_fused_call(
+    orig,
+    mixers,
+    *,
+    on_module = None,
+    attr_name = None,
+):
     """Inject packed ``seq_idx`` into the fused conv1d+scan kernel.
 
     ``mixers`` is the list of Mamba2 modules sharing this kernel. On a packed
@@ -676,9 +682,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                 modeling, "_unsloth_mamba2_fused_wrapped", False
             ):
                 orig = getattr(modeling, name)
-                _wrap_mamba2_fused_call(
-                    orig, mamba2_modules, on_module = modeling, attr_name = name
-                )
+                _wrap_mamba2_fused_call(orig, mamba2_modules, on_module = modeling, attr_name = name)
                 modeling._unsloth_mamba2_fused_wrapped = True
                 wrapped_modeling.add(key)
         elif kind == "ssm":
@@ -727,9 +731,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             if first_pack:
                 model._unsloth_varlen_handshake_done = True
                 missing = [
-                    type(m).__name__
-                    for m in hybrid_modules
-                    if not _hybrid_varlen_dispatched(m)
+                    type(m).__name__ for m in hybrid_modules if not _hybrid_varlen_dispatched(m)
                 ]
                 if missing:
                     for m in hybrid_modules:
