@@ -1038,16 +1038,9 @@ def _sticky_compaction_boundary(
             # Only a fit that SUCCEEDED describes a boundary worth restoring.
             if not truncation.get("fits"):
                 return 0
-            # And only under the policy that recorded it. A checkpoint boundary is the depth
-            # of a RESET, affordable only because the block is rebuilt on every replay;
-            # under rolling nothing rebuilds it, so the depth would replay with nothing
-            # handed back (18 evicted where rolling picks 6). The request's context_policy
-            # overrides the process default the same way `_fit_context` does: switching
-            # Studio to a sliding window must not keep the reset-sized cut. Refused HERE,
-            # not at the fit: `boundary_messages` is re-recorded every turn, so a rolling
-            # turn that inherited 18 would persist it with no `checkpoint` key and make the
-            # reset-sized window permanent. Let rolling compute its own.
-            if truncation.get("checkpoint") and not _request_uses_checkpoint(context_policy):
+            # a boundary is valid only under the policy that recorded it; policy switches must refit.
+            recorded_checkpoint = bool(truncation.get("checkpoint"))
+            if recorded_checkpoint != _request_uses_checkpoint(context_policy):
                 return 0
             # Counted against the request's own transcript, which is what it is applied
             # to. `dropped_messages` is the fallback for turns saved before that was

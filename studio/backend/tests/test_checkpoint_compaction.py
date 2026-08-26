@@ -922,8 +922,8 @@ def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkey
     """Two Retry siblings can carry byte-identical replies with only one having reset.
 
     The exact-text filter keeps both, and taking the first match reopened the tool loop on
-    the branch that never reset. Where the text cannot separate them, leave the request as
-    it was, as the sticky boundary's `min(boundaries)` does; this pins that agreement.
+    the branch that never reset. Once the siblings also disagree on policy, neither boundary
+    is safe to replay: checkpoint cannot inherit rolling, and rolling cannot inherit checkpoint.
     """
     import sys
     import types
@@ -974,11 +974,11 @@ def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkey
 
     branch = [{"role": "user", "content": "q"}, {"role": "assistant", "content": reply}]
 
-    # Only the abandoned sibling reset, so the shallower (never-reset) boundary is
-    # replayed and no epoch is in force on this branch.
+    # only the abandoned sibling reset, so mixed-policy byte-identical rows force either policy to refit.
     _install(_rows(True))
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
-    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 6
+    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 0
+    assert llama_cpp._sticky_compaction_boundary("t1", branch, context_policy = "rolling") == 0
 
     # Neither reset: unchanged, and still no loop.
     _install(_rows(False))
@@ -1384,8 +1384,8 @@ def _stub_studio_db(monkeypatch, messages):
     monkeypatch.setitem(sys.modules, "storage.studio_db", module)
 
 
-def test_a_checkpoint_boundary_is_not_replayed_once_the_policy_is_rolling(monkeypatch):
-    """The escape hatch has to escape the depth too, not just the reset.
+def test_a_boundary_is_not_replayed_after_the_context_policy_changes(monkeypatch):
+    """A policy switch has to discard the old depth, not just select another fitter.
 
     A checkpoint boundary is the depth of a RESET, affordable only because the block is
     rebuilt on every replay. Under `UNSLOTH_CONTEXT_POLICY=rolling` neither `_fit_context`
@@ -1436,6 +1436,28 @@ def test_a_checkpoint_boundary_is_not_replayed_once_the_policy_is_rolling(monkey
         "boundary_messages": 6,
     }
     assert llama_cpp._sticky_compaction_boundary("t1") == 6
+    assert llama_cpp._sticky_compaction_boundary("t1", context_policy = "rolling") == 6
+    assert (
+        llama_cpp._sticky_compaction_boundary("t1", context_policy = "checkpoint") == 0
+    ), "a checkpoint request must start a new epoch instead of reusing a rolling boundary"
+
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+    switched_boundary = llama_cpp._sticky_compaction_boundary("t1")
+    assert switched_boundary == 0, (
+        "a rolling boundary must not suppress the first checkpoint reset and recall"
+    )
+
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    _, truncation = llama_cpp._fit_context(
+        _thread() + [{"role": "user", "content": "continue"}],
+        context_length = 1200,
+        max_tokens = 200,
+        count_tokens = count,
+        can_reset = True,
+        sticky_dropped = switched_boundary,
+        context_policy = "checkpoint",
+    )
+    assert truncation["checkpoint_started"] is True
 
 
 def test_a_rescued_boundary_is_recorded_but_never_replayed(monkeypatch):
