@@ -1434,6 +1434,7 @@ def streaming_pair_rows(
     settled: str = "SETTLED",
     treat_settled: str | None = None,
     treat_scaffold: str | None = None,
+    treat_role: str | None = None,
 ) -> list[dict]:
     """A base/treatment pair captured with message 1 STILL BEING WRITTEN on both arms.
 
@@ -1442,11 +1443,17 @@ def streaming_pair_rows(
     half of the thread byte-identical. `base_tail`/`treat_tail` are the digest of the message that
     was still arriving, which is the only thing wall clock gets to move.
 
-    `treat_settled` and `treat_scaffold` exist so the negative controls can move something the
-    stream provably cannot reach, and watch the branch decline to fire.
+    `treat_settled`, `treat_scaffold` and `treat_role` exist so the negative controls can move
+    something the stream provably cannot reach, and watch the branch decline to fire.
     """
 
-    def side(cid: str, tail: str, settled_digest: str, scaffold_digest: str) -> dict:
+    def side(
+        cid: str,
+        tail: str,
+        settled_digest: str,
+        scaffold_digest: str,
+        role: str = "assistant",
+    ) -> dict:
         return {
             "row_type": "action",
             "cell_id": cid,
@@ -1468,7 +1475,7 @@ def streaming_pair_rows(
                 "composer_control": "Stop",
                 "messages": [
                     {"i": 0, "role": "user", "digest": settled_digest, "chars": 10},
-                    {"i": 1, "role": "assistant", "digest": tail, "chars": len(tail)},
+                    {"i": 1, "role": role, "digest": tail, "chars": len(tail)},
                 ],
                 "overlays": [],
                 "style": {"style_attempted": True, "capped": False, "nodes": []},
@@ -1482,6 +1489,7 @@ def streaming_pair_rows(
             treat_tail,
             settled if treat_settled is None else treat_settled,
             scaffold if treat_scaffold is None else treat_scaffold,
+            "assistant" if treat_role is None else treat_role,
         ),
     ]
 
@@ -1581,6 +1589,33 @@ def test_a_scaffold_that_moved_is_a_difference_not_an_observation():
     got = P.compare(rows[0]["parity"], rows[1]["parity"])
     assert got["verdict"] == P.DIFFER
     assert P.SETTLED_MATCH not in got
+
+
+def test_a_live_row_whose_role_changed_carries_no_positive_reading():
+    # The control that is NOT reachable through `_any_moved`, which is what makes it worth
+    # asserting. The role is captured beside the digest, and the digest of an in-flight row is
+    # withheld, so a row that is `assistant` on one arm and `user` on the other passes the
+    # digest comparison untouched and the pair still reads as "everything settled agreed".
+    # `settled_messages_moved` calls that a structural change even in flight -- how far a reply
+    # has arrived says nothing about whose message it is -- so the flag must not fire here.
+    rows = streaming_pair_rows(
+        "r100K.base.rep0",
+        "r100K.treatment.rep0",
+        "keystroke",
+        base_tail = "T18277",
+        treat_tail = "T18253",
+        treat_role = "user",
+    )
+    base, treat = rows[0]["parity"], rows[1]["parity"]
+    assert P.settled_messages_moved(base, treat) == ["msg1:role assistant->user"]
+    got = P.compare(base, treat)
+    assert got["verdict"] == P.NOT_COMPARABLE
+    assert P.SETTLED_MATCH not in got
+    # And so it stays blind: two of them decide nothing and the audit still has to say undecided.
+    row = P.derive_unstable([("keystroke", got), ("keystroke", got)])["keystroke"]
+    assert row["observations"] == 0
+    assert row["not_comparable"] == 2
+    assert row["undetermined"] is True
 
 
 def test_the_audit_decides_an_action_whose_only_leftover_was_the_live_reply(tmp_path):

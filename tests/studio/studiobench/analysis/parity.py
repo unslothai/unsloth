@@ -871,7 +871,15 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
                 f"msg{i}({bm[i].get('role', '?')}):{bm[i].get('chars')}->{tm[i].get('chars')}c"
                 for i in unsettled[:4]
             )
-            return {
+            # A ROW WHOSE ROLE CHANGED IS NOT SOMETHING THIS PAIR READ AND AGREED ON, and
+            # `_any_moved` cannot see it: the role is captured beside the digest, and the digest of
+            # an in-flight row is withheld. `settled_messages_moved` reports a role change even for
+            # a row in flight, on the ground that how far a reply has arrived says nothing about
+            # whose message it is, and the two readings must not disagree. The verdict is already
+            # the refusal either way; what this decides is whether the refusal ALSO carries a
+            # positive reading, and a pair whose roles disagree carries none.
+            roles_agree = all(bm[i].get("role") == tm[i].get("role") for i in set(bm) & set(tm))
+            out = {
                 "verdict": NOT_COMPARABLE,
                 "reason": (
                     f"the settled thread is identical on both arms and the only difference is in "
@@ -885,15 +893,17 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
                 "moved": [],
                 "in_flight": sorted(streaming),
                 "not_digested": unsettled,
+                "style_verdict": style_verdict,
+                "style_reason": style_reason,
+            }
+            if roles_agree:
                 # THE ONE REFUSAL THAT ALSO CARRIES A POSITIVE READING. See `SETTLED_MATCH` for
                 # why this flag exists and what it is and is not allowed to move. It is set here
                 # and nowhere else, because this is the only branch reached with `_any_moved`
                 # already false: the scaffold agreed, every overlay agreed, the two arms mounted
                 # the same set of messages, and every message that was NOT being written agreed.
-                SETTLED_MATCH: True,
-                "style_verdict": style_verdict,
-                "style_reason": style_reason,
-            }
+                out[SETTLED_MATCH] = True
+            return out
         return {
             "verdict": MATCH,
             "reason": "",
