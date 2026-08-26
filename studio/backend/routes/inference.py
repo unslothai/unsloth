@@ -14162,6 +14162,32 @@ def _images_in_last_user_message(messages: list) -> int:
     return 0
 
 
+def _legacy_image_is_distinct(payload) -> bool:
+    """Whether the top-level ``image_base64`` holds an image the messages do not.
+
+    Studio fills that field FROM the thread rather than from the turn:
+    ``findLatestUserImageBase64`` walks the whole history, and it copies the same
+    string ``collectImageParts`` built the content part from, so an echoed value
+    is byte-equal to one of the part payloads here. A value matching none of them
+    was attached by the caller to this request, and a single-image path would drop
+    it unannounced. Comparing the payload, rather than asking whether any part
+    exists, is what separates Studio's echo from a client attaching a new image to
+    a thread that already carries one.
+    """
+    if not payload.image_base64:
+        return False
+    for msg in payload.messages:
+        if not isinstance(msg.content, list):
+            continue
+        for part in msg.content:
+            if part.type != "image_url":
+                continue
+            url = part.image_url.url
+            if (url.partition(",")[2] or url) == payload.image_base64:
+                return False
+    return True
+
+
 # ── External provider proxy ──────────────────────────────────────
 
 
@@ -16024,31 +16050,14 @@ async def openai_chat_completions(
             # discarded here exactly as silently as two.
             #
             # The legacy top-level field counts only when it carries an image the
-            # thread does not already hold. Studio fills that field FROM the thread
-            # (findLatestUserImageBase64 walks the whole history without stopping at
-            # the newest turn), and it copies the same string the content part was
-            # built from, so a derived value is byte-equal to one of the payloads
-            # below. Anything else is an image the caller attached to THIS request
-            # and this branch would drop. Comparing the payload, rather than merely
-            # asking whether any part exists, is what separates Studio's echo from a
-            # direct client attaching a new image to a thread that already has one.
+            # thread does not already hold; see _legacy_image_is_distinct.
             #
             # An image on an EARLIER turn is deliberately not refused: this branch
             # never forwarded history images, and turning that into a hard error
             # would break asking by voice about a picture attached before.
             # api_monitor directly rather than _reject, which is not bound this
             # early in the handler.
-            _legacy_image_is_new = False
-            if payload.image_base64:
-                _thread_image_payloads = {
-                    _p.image_url.url.partition(",")[2] or _p.image_url.url
-                    for _m in payload.messages
-                    if isinstance(_m.content, list)
-                    for _p in _m.content
-                    if _p.type == "image_url"
-                }
-                _legacy_image_is_new = payload.image_base64 not in _thread_image_payloads
-            if _images_in_last_user_message(payload.messages) or _legacy_image_is_new:
+            if _images_in_last_user_message(payload.messages) or _legacy_image_is_distinct(payload):
                 _audio_image_detail = (
                     "This model takes audio or an image in one message, not both."
                     " Send the image on its own turn."
@@ -18131,7 +18140,11 @@ async def openai_chat_completions(
                     "Image provided but current model is text-only. Load a vision model.",
                 )
 
-            if images_on_turn > 1:
+            # A distinct legacy image only survives when nothing was extracted, since
+            # the selection right below is `extracted_image_b64 or image_base64`. With
+            # an extracted image present the caller supplied two and would never be
+            # told the top-level one was dropped, so that is a multi-image call too.
+            if images_on_turn > 1 or (extracted_image_b64 and _legacy_image_is_distinct(payload)):
                 raise _reject(
                     400,
                     (

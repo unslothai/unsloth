@@ -53,6 +53,7 @@ from routes.inference import (
     _effective_openai_max_tokens,
     _effective_openai_max_tokens_from_values,
     _extract_content_parts,
+    _images_in_last_user_message,
     _friendly_error,
     _friendly_upstream_error,
     _merge_user_content,
@@ -81,6 +82,14 @@ from routes.inference import (
     openai_chat_completions,
 )
 from state.tool_policy import reset_tool_policy, set_tool_policy
+
+# 1x1 PNGs that Pillow can actually decode, for the paths that reach the decoder.
+_RED_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+)
+_BLUE_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC"
+)
 
 
 @pytest.fixture(autouse = True)
@@ -868,6 +877,63 @@ class TestChatCompletionRequestToolFields:
         assert backend.generated == []
         assert monitor.active_count() == 0
         assert all(e["status"] == "error" for e in monitor.snapshot())
+
+    @pytest.mark.parametrize(
+        "legacy,expected",
+        [(_BLUE_PNG_B64, 400), (_RED_PNG_B64, 200)],
+        ids = ["distinct_legacy_image_is_a_second_image", "echoed_legacy_image_is_the_same_one"],
+    )
+    def test_a_distinct_legacy_image_beside_a_message_image(self, legacy, expected, monkeypatch):
+        """`extracted_image_b64 or image_base64` always picks the message image, so
+        a DIFFERENT top-level image is a second image the caller supplied and would
+        never hear about. Studio's field is echoed from the thread and byte-matches
+        the part, so it must not be counted twice."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "what is this?"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{_RED_PNG_B64}"},
+                            },
+                        ],
+                    }
+                ],
+                "image_base64": legacy,
+            },
+        )
+
+        assert resp.status_code == expected
+        assert monitor.active_count() == 0
+        if expected == 400:
+            assert "one image per message" in resp.text
+            assert backend.generated == []
+        else:
+            assert len(backend.generated) == 1
+
+    def test_a_legacy_image_alone_is_still_served(self, monkeypatch):
+        """With nothing extracted from the messages the top-level image IS the one
+        that gets used, so it must not be refused as a second image."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "what is this?"}],
+                "image_base64": _RED_PNG_B64,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(backend.generated) == 1
+        assert backend.generated[0]["image"] is not None
+        assert monitor.active_count() == 0
 
     def test_a_single_undecodable_image_is_left_alone(self, monkeypatch):
         """One remote image is not a multi-image call. Clients that pass a remote
