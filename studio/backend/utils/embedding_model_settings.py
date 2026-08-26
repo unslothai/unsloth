@@ -297,8 +297,8 @@ def reset_rag_embedding_model() -> str:
             EMBEDDING_BACKEND_SETTING_KEY: None,
         }
     )
-    # A reset means "forget what was resolved", so the memo goes with the record.
-    with _lock:
-        _resolved_gguf_memo.clear()
+    # The memo deliberately survives: it is per model and consulted only when the
+    # store has nothing, so it exists for jobs still pinned to a model. Clearing it
+    # here moved a running ingestion onto the derived <model>-GGUF mid-run.
     _invalidate_cache()
     return default_embedding_model()

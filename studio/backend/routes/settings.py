@@ -2189,17 +2189,9 @@ def _st_backend_available() -> bool:
 def _is_st_weight_name(basename: str) -> bool:
     """Whether a filename is a checkpoint, not just something ending in a suffix.
 
-    ``.bin`` is the loose one: ``tokenizer.bin`` shares the extension with real
-    weights. The Hub listing already applied this family test; the local probes
-    did not, so a partial directory resolved as cached."""
-    name = basename.lower()
-    for suffix in _ST_WEIGHT_SUFFIXES:
-        if not name.endswith(suffix):
-            continue
-        if suffix == ".bin":
-            return name.startswith(("pytorch_model", "model", "adapter_model", "consolidated"))
-        return True
-    return False
+    Shared with the loader so the plan and the cache check cannot disagree."""
+    from utils.utils import is_st_weight_name
+    return is_st_weight_name(basename)
 
 
 def _st_weight_source(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
@@ -2244,15 +2236,8 @@ def _cached_snapshot_has_st_weights(model: str) -> bool:
     llama backend and wrong here: a cached GGUF-only repo would come back ready
     with no checkpoint ST can load. No network."""
     try:
-        from utils.utils import hf_cache_snapshot_dir
-
-        snapshot = hf_cache_snapshot_dir(model)
-        if snapshot is None:
-            return False
-        for path in snapshot.rglob("*"):
-            if _is_st_weight_name(path.name) and path.is_file():
-                return True
-        return False
+        from utils.utils import snapshot_has_st_weights
+        return snapshot_has_st_weights(model)
     except Exception:  # noqa: BLE001 - an unreadable cache is not a proof of weights
         return False
 
@@ -2283,8 +2268,14 @@ def _safetensors_plan(model: str, hf_token: Optional[str]) -> Optional[tuple[str
         return None
     # A complete local snapshot is the same proof the listing gives, and works
     # offline, where the listing fails and a downloaded model became unselectable.
-    if _cached_snapshot_has_st_weights(model):
-        return (model, _cached_st_weight_names(model))
+    from utils.utils import cached_st_repo
+
+    # The repo the snapshot is actually filed under: a slashless name caches under
+    # sentence-transformers/, and naming the literal id sends the download manager
+    # at a repo that usually does not exist.
+    cached_repo = cached_st_repo(model)
+    if cached_repo:
+        return (cached_repo, _cached_st_weight_names(cached_repo))
     return _st_weight_source(model, hf_token)
 
 

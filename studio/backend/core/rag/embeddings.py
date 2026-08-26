@@ -446,9 +446,12 @@ def _get(model_name: str | None = None):
                 model_kwargs = dtype_kwargs("float32" if device == "cpu" else "float16"),
             )
             load_target = name
-            from utils.utils import hf_cache_snapshot_dir, hf_cache_snapshot_is_loadable
+            from utils.utils import hf_cache_snapshot_dir, snapshot_has_st_weights
 
-            if not local_only and hf_cache_snapshot_is_loadable(name):
+            # Same ST-specific check as below, for the same reason: the shared
+            # loadable predicate counts .gguf, so a GGUF-only cached snapshot
+            # would be pinned as the load target for a SentenceTransformer load.
+            if not local_only and snapshot_has_st_weights(name):
                 # Settings reported this model on-device off the same predicate, so
                 # handing SentenceTransformer the repo id here is what lets it reach
                 # the Hub for a revision published since, and fetch it during the
@@ -459,7 +462,10 @@ def _get(model_name: str | None = None):
                 if snapshot is not None:
                     load_target = str(snapshot)
             if local_only:
-                if download_pending and not hf_cache_snapshot_is_loadable(name):
+                # ST-specific: a hybrid repo whose GGUF is cached while its ST
+                # snapshot is still downloading would otherwise retire the marker
+                # and hand SentenceTransformer a GGUF-only snapshot.
+                if download_pending and not snapshot_has_st_weights(name):
                     raise EmbeddingModelDownloadRequiredError(
                         f"Embedding model {name!r} is not downloaded yet. "
                         "Finish its Settings download before indexing documents."

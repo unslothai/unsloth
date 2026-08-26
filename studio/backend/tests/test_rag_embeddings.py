@@ -945,6 +945,9 @@ def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatc
     evaluate_file_security recovers repo and commit from a snapshot path."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
+    # A real ST checkpoint: the pin is ST-specific now, so a GGUF-only snapshot
+    # is deliberately not adopted as the load target.
+    (snapshot / "model.safetensors").write_bytes(b"ST")
     scanned = []
     monkeypatch.setattr(
         embeddings, "_guard_model_security", lambda target, local_only = False: scanned.append(target)
@@ -963,7 +966,7 @@ def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatc
     monkeypatch.setattr(embeddings, "_st_accepts_local_files_only", lambda _c: False)
     import utils.utils as utils
 
-    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
+    monkeypatch.setattr(utils, "snapshot_has_st_weights", lambda m: True)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
     import sys as _sys
     import types as _t

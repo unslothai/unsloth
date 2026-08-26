@@ -536,6 +536,51 @@ def _hf_cache_roots() -> list:
     return roots
 
 
+ST_WEIGHT_SUFFIXES = (".safetensors", ".bin")
+
+
+def is_st_weight_name(basename: str) -> bool:
+    """Whether a filename is a checkpoint SentenceTransformer can load.
+
+    ``.bin`` is the loose one: ``tokenizer.bin`` shares the extension with real
+    weights. Shared so the resolver's plan and the loader's cache check cannot
+    disagree about what counts as a checkpoint."""
+    name = basename.lower()
+    for suffix in ST_WEIGHT_SUFFIXES:
+        if not name.endswith(suffix):
+            continue
+        if suffix == ".bin":
+            return name.startswith(("pytorch_model", "model", "adapter_model", "consolidated"))
+        return True
+    return False
+
+
+def cached_st_repo(model_name: str) -> Optional[str]:
+    """Repo id whose cached snapshot holds ST-loadable weights for ``model_name``.
+
+    Alias-aware, and it reports WHICH candidate matched: a slashless name caches
+    under ``sentence-transformers/``, so naming the literal id as the download
+    repo sends the manager at a repo that usually does not exist."""
+    for candidate in st_repo_id_candidates(model_name):
+        snapshot = hf_cache_snapshot_dir(candidate)
+        if snapshot is None:
+            continue
+        try:
+            if any(is_st_weight_name(p.name) and p.is_file() for p in snapshot.rglob("*")):
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def snapshot_has_st_weights(model_name: str) -> bool:
+    """Whether ``model_name``'s cached snapshot holds a checkpoint ST can open.
+
+    ``hf_cache_snapshot_is_loadable`` counts ``.gguf``, which is right for the
+    llama backend and wrong wherever SentenceTransformer is the loader."""
+    return cached_st_repo(model_name) is not None
+
+
 def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
     """Active local snapshot dir for model_name's main revision, or None if not cached.
     Reads refs/main then snapshots/<commit>; no network. Tries the ST alias for slashless names."""

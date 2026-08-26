@@ -187,8 +187,11 @@ def test_a_pinned_jobs_resolved_repo_survives_a_save_for_another_model(settings_
     )
 
 
-def test_a_reset_drops_the_remembered_repo(settings_store, monkeypatch):
-    """Reset means forget what was resolved, memo included."""
+def test_a_reset_keeps_the_repo_a_running_job_still_needs(settings_store, monkeypatch):
+    """Reset clears the selection, but a job pinned to the old model is still
+    ingesting through the repo that was resolved for it. The memo is per model and
+    consulted only when the store has nothing, so dropping it here moved that job
+    onto the derived <model>-GGUF mid-run."""
     monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
     ems._resolved_gguf_memo.clear()
     from core.rag import config
@@ -199,9 +202,16 @@ def test_a_reset_drops_the_remembered_repo(settings_store, monkeypatch):
     assert ems.get_stored_gguf_repo("org/embedder-a") == "mirror/off-convention-GGUF"
     ems.reset_rag_embedding_model()
 
-    assert ems.remembered_gguf_repo("org/embedder-a") is None
+    # The stored selection is gone...
+    assert ems.get_stored_embedding_model() is None
+    # ...but the pinned job keeps embedding through the same mirror.
+    assert ems.remembered_gguf_repo("org/embedder-a") == "mirror/off-convention-GGUF"
     assert config.effective_gguf_repo_for_embedding_model("org/embedder-a") == (
-        config.gguf_repo_for_embedding_model("org/embedder-a")
+        "mirror/off-convention-GGUF"
+    )
+    # A model this process never resolved is still derived, not invented.
+    assert config.effective_gguf_repo_for_embedding_model("org/never-seen") == (
+        config.gguf_repo_for_embedding_model("org/never-seen")
     )
 
 

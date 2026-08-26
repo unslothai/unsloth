@@ -1179,3 +1179,44 @@ def test_an_eviction_between_the_check_and_the_snapshot_keeps_the_marker(monkeyp
         embeddings._name = None
 
     assert cleared == [], "the marker outlives a load that could not find the snapshot"
+
+
+def test_a_gguf_only_cache_does_not_retire_the_pending_st_marker(monkeypatch, tmp_path):
+    """hf_cache_snapshot_is_loadable counts .gguf, so a hybrid repo whose GGUF is
+    cached while its sentence-transformers snapshot is still downloading retired
+    the marker and handed SentenceTransformer a GGUF-only snapshot."""
+    from core.rag import embeddings
+    import utils.embedding_model_settings as ems
+    import utils.utils as utils
+
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model-Q8_0.gguf").write_bytes(b"GGUF")
+
+    cleared = []
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda m: cleared.append(m) or True)
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: True)
+    # The shared predicate says yes; the ST-specific one must not.
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    monkeypatch.setattr(embeddings, "_st_accepts_local_files_only", lambda _c: False)
+    st_mod = types.ModuleType("sentence_transformers")
+    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer = None)
+    monkeypatch.setitem(sys.modules, "sentence_transformers", st_mod)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    embeddings._model = None
+    embeddings._name = None
+
+    assert utils.snapshot_has_st_weights("org/hybrid") is False
+    try:
+        with pytest.raises(embeddings.EmbeddingModelDownloadRequiredError):
+            embeddings._get("org/hybrid")
+    finally:
+        embeddings._model = None
+        embeddings._name = None
+
+    assert cleared == [], "the advertised ST transfer has not landed yet"

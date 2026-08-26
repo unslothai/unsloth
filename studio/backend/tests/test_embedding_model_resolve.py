@@ -834,3 +834,31 @@ def test_the_cached_snapshot_probe_uses_the_same_filename_family(monkeypatch, tm
     (snapshot / "model.safetensors").write_bytes(b"ST")
     assert settings._cached_snapshot_has_st_weights("org/partial") is True
     assert settings._cached_st_weight_names("org/partial") == ["model.safetensors"]
+
+
+def test_a_cached_alias_names_the_namespace_it_is_filed_under(client, monkeypatch, tmp_path):
+    """hf_cache_snapshot_dir is alias-aware, so a slashless name finds its snapshot
+    under sentence-transformers/. Returning the literal id as the download repo
+    sent the manager at a top-level repo that usually does not exist."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model.safetensors").write_bytes(b"ST")
+    import utils.utils as utils
+
+    monkeypatch.setattr(
+        utils,
+        "hf_cache_snapshot_dir",
+        lambda repo: snapshot if repo == "sentence-transformers/all-MiniLM-L6-v2" else None,
+    )
+    monkeypatch.setattr(settings, "_st_backend_available", lambda: True)
+    # Offline: the remote listing cannot answer, so only the cache can.
+    monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
+
+    assert utils.cached_st_repo("all-MiniLM-L6-v2") == "sentence-transformers/all-MiniLM-L6-v2"
+    assert settings._safetensors_plan("all-MiniLM-L6-v2", None) == (
+        "sentence-transformers/all-MiniLM-L6-v2",
+        ["model.safetensors"],
+    )
+    # A name with no cached snapshot anywhere still falls through to the listing.
+    assert settings._safetensors_plan("org/uncached", None) is None
