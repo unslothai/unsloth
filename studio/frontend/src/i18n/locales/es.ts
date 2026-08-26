@@ -810,7 +810,7 @@ export const es = {
         embeddingModel: "Modelo de embeddings",
         embeddingModelDescription:
           "Modelo de Hugging Face o ruta local usada para indexar y buscar tus documentos. El valor predeterminado es {defaultModel}.",
-        searchPlaceholder: "Buscar modelos de embedding",
+        searchPlaceholder: "Buscar cualquier modelo en HF",
         reindexWarning:
           "Solo afecta a los documentos recién indexados. Vuelve a subir los existentes tras cambiar el modelo.",
         emptyError:
@@ -821,6 +821,21 @@ export const es = {
         saved: "Modelo de embeddings guardado.",
         saveAnyway: "Guardar de todos modos",
         resetAction: "Restablecer al valor predeterminado",
+        recommended: "Recomendado",
+        onDevice: "En el dispositivo",
+        searching: "Buscando en Hugging Face…",
+        checking: "Comprobando…",
+        noResults: "No se encontraron modelos de embedding",
+        downloadConfirmTitle: "¿Descargar {model}?",
+        downloadConfirmBody:
+          "{model} aún no está en este equipo. La descarga ocupa unos {size}.",
+        downloadConfirmBodyUnsized:
+          "{model} aún no está en este equipo y se descargará ahora.",
+        download: "Descargar",
+        downloading: "Descargando {model}",
+        downloadingDescription:
+          "El progreso está en el panel de descargas. La indexación lo usará cuando termine.",
+        downloadFailed: "No se pudo iniciar la descarga",
       },
       storage: {
         sectionTitle: "Almacenamiento",

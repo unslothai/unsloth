@@ -3,6 +3,9 @@
 
 import { authFetch } from "@/features/auth";
 import { bumpInventoryVersion } from "@/features/hub";
+// Leaf module, not the barrel: the barrel re-exports .tsx panels, and tests stub
+// it down to the cache bump alone.
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 export type EmbeddingModelSettings = {
@@ -87,6 +90,60 @@ export async function updateEmbeddingModelSettings(
   const settings = fromApi(await res.json());
   bumpInventoryVersion();
   return settings;
+}
+
+/** What saving a model would need fetched, and whether it is already on disk. */
+export type EmbeddingModelResolution = {
+  embeddingModel: string;
+  backend: "llama" | "sentence-transformers";
+  /** Repo to hand the download manager; null when nothing needs fetching. */
+  downloadRepo: string | null;
+  /** The single GGUF to take from it, on the llama-server backend. */
+  files: string[] | null;
+  cached: boolean;
+  sizeBytes: number | null;
+  /** Why the model is unusable here; the detail the save would refuse with. */
+  error: string | null;
+};
+
+type ApiEmbeddingModelResolution = {
+  // biome-ignore lint/style/useNamingConvention: API schema
+  embedding_model: string;
+  backend: "llama" | "sentence-transformers";
+  // biome-ignore lint/style/useNamingConvention: API schema
+  download_repo: string | null;
+  files: string[] | null;
+  cached: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  size_bytes: number | null;
+  error: string | null;
+};
+
+export async function resolveEmbeddingModel(
+  embeddingModel: string,
+  options?: { hfToken?: string },
+): Promise<EmbeddingModelResolution> {
+  const params = new URLSearchParams({ model: embeddingModel });
+  const res = await authFetch(
+    `/api/settings/embedding-model/resolve?${params}`,
+    // The token rides a header so a gated repo's credential stays out of the URL.
+    { headers: hubTokenHeader(options?.hfToken) },
+  );
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(res, "Failed to check the embedding model"),
+    );
+  }
+  const body = (await res.json()) as ApiEmbeddingModelResolution;
+  return {
+    embeddingModel: body.embedding_model,
+    backend: body.backend,
+    downloadRepo: body.download_repo,
+    files: body.files,
+    cached: body.cached,
+    sizeBytes: body.size_bytes,
+    error: body.error,
+  };
 }
 
 export async function resetEmbeddingModelSettings(): Promise<EmbeddingModelSettings> {

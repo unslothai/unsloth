@@ -804,7 +804,7 @@ export const ptBR = {
         embeddingModel: "Modelo de embedding",
         embeddingModelDescription:
           "Modelo do Hugging Face ou caminho local usado para indexar e buscar seus documentos. O padrão é {defaultModel}.",
-        searchPlaceholder: "Buscar modelos de embedding",
+        searchPlaceholder: "Buscar qualquer modelo no HF",
         reindexWarning:
           "Afeta apenas documentos recém-indexados. Reenvie os documentos existentes após alterar o modelo.",
         emptyError: "Insira um id de modelo do Hugging Face ou um caminho local.",
@@ -813,6 +813,21 @@ export const ptBR = {
         saved: "Modelo de embedding salvo.",
         saveAnyway: "Salvar mesmo assim",
         resetAction: "Redefinir para o padrão",
+        recommended: "Recomendado",
+        onDevice: "No dispositivo",
+        searching: "Buscando no Hugging Face…",
+        checking: "Verificando…",
+        noResults: "Nenhum modelo de embedding encontrado",
+        downloadConfirmTitle: "Baixar {model}?",
+        downloadConfirmBody:
+          "{model} ainda não está nesta máquina. O download ocupa cerca de {size}.",
+        downloadConfirmBodyUnsized:
+          "{model} ainda não está nesta máquina e será baixado agora.",
+        download: "Baixar",
+        downloading: "Baixando {model}",
+        downloadingDescription:
+          "O progresso aparece no painel de downloads. A indexação vai usá-lo quando terminar.",
+        downloadFailed: "Não foi possível iniciar o download",
       },
       storage: {
         sectionTitle: "Armazenamento",

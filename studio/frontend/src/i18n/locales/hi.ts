@@ -797,7 +797,7 @@ export const hi = {
         embeddingModel: "एम्बेडिंग मॉडल",
         embeddingModelDescription:
           "आपके दस्तावेज़ों को इंडेक्स और खोजने के लिए उपयोग किया जाने वाला Hugging Face मॉडल या स्थानीय पथ। डिफ़ॉल्ट {defaultModel} है।",
-        searchPlaceholder: "एम्बेडिंग मॉडल खोजें",
+        searchPlaceholder: "HF पर कोई भी मॉडल खोजें",
         reindexWarning:
           "केवल नए इंडेक्स किए गए दस्तावेज़ों को प्रभावित करता है। मॉडल बदलने के बाद मौजूदा दस्तावेज़ फिर से अपलोड करें।",
         emptyError: "एक Hugging Face मॉडल id या स्थानीय पथ दर्ज करें।",
@@ -806,6 +806,21 @@ export const hi = {
         saved: "एम्बेडिंग मॉडल सहेजा गया।",
         saveAnyway: "फिर भी सहेजें",
         resetAction: "डिफ़ॉल्ट पर रीसेट करें",
+        recommended: "अनुशंसित",
+        onDevice: "डिवाइस पर",
+        searching: "Hugging Face पर खोज रहे हैं…",
+        checking: "जाँच रहे हैं…",
+        noResults: "कोई एम्बेडिंग मॉडल नहीं मिला",
+        downloadConfirmTitle: "{model} डाउनलोड करें?",
+        downloadConfirmBody:
+          "{model} अभी इस मशीन पर नहीं है। डाउनलोड में लगभग {size} लगेगा।",
+        downloadConfirmBodyUnsized:
+          "{model} अभी इस मशीन पर नहीं है और अब डाउनलोड किया जाएगा।",
+        download: "डाउनलोड करें",
+        downloading: "{model} डाउनलोड हो रहा है",
+        downloadingDescription:
+          "प्रगति डाउनलोड पैनल में दिखती है। पूरा होने पर इंडेक्सिंग इसका उपयोग करेगी।",
+        downloadFailed: "डाउनलोड शुरू नहीं हो सका",
       },
       storage: {
         sectionTitle: "स्टोरेज",

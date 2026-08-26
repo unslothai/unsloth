@@ -9,7 +9,7 @@ import time
 from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 
 from auth.authentication import (
@@ -1912,6 +1912,157 @@ def get_embedding_model(
     current_subject: str = Depends(get_current_subject),
 ) -> EmbeddingModelResponse:
     return _embedding_model_response()
+
+
+class EmbeddingModelResolveResponse(BaseModel):
+    embedding_model: str
+    backend: Literal["llama", "sentence-transformers"]
+    # Repo the picker hands the download manager, and the file to take from it.
+    # Both None when nothing needs fetching, or when ``error`` is set.
+    download_repo: Optional[str] = None
+    files: Optional[list[str]] = None
+    cached: bool = False
+    size_bytes: Optional[int] = None
+    error: Optional[str] = None
+
+
+def _embedding_gguf_candidates(model: str) -> list[str]:
+    """Repos the loader would try for ``model``'s GGUF, in its order: the
+    companion repo, then the model repo itself."""
+    from core.rag import config as rag_config
+
+    companion = rag_config.gguf_repo_for_embedding_model(model)
+    return [companion] if companion == model else [companion, model]
+
+
+def _cached_embedding_gguf(candidates: list[str]) -> bool:
+    """Whether any candidate already holds a usable GGUF on disk. No network."""
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    for candidate in candidates:
+        try:
+            if LlamaServerBackend._resolve_cached_gguf(candidate, require_variant = False):
+                return True
+        except Exception:  # noqa: BLE001 - a bad cache entry is just a miss
+            continue
+    return False
+
+
+def _remote_embedding_gguf_plan(
+    candidates: list[str], hf_token: Optional[str]
+) -> Optional[tuple[str, str]]:
+    """``(repo, filename)`` for the first candidate publishing a GGUF, picked the
+    way the loader picks it, so we fetch the file it will open."""
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    try:
+        from huggingface_hub import list_repo_files
+    except Exception:  # noqa: BLE001 - hub client unavailable
+        return None
+    for candidate in candidates:
+        try:
+            names = list_repo_files(candidate, token = hf_token)
+        except Exception:  # noqa: BLE001 - missing/gated repo: try the next
+            continue
+        try:
+            filename = LlamaServerBackend._pick_gguf(names)
+        except Exception:  # noqa: BLE001 - unreadable listing: try the next
+            filename = None
+        if filename:
+            return candidate, filename
+    return None
+
+
+def _hf_files_size(repo: str, files: list[str], hf_token: Optional[str]) -> Optional[int]:
+    """Total bytes of ``files`` in ``repo``, for the confirm dialog. None when the
+    hub does not say; the dialog has copy for that."""
+    try:
+        from huggingface_hub import model_info
+
+        info = model_info(repo, files_metadata = True, token = hf_token)
+        wanted = set(files)
+        total = sum(
+            sibling.size or 0
+            for sibling in (info.siblings or [])
+            if sibling.rfilename in wanted
+        )
+        return total or None
+    except Exception:  # noqa: BLE001 - size is advisory, never a blocker
+        return None
+
+
+@router.get("/embedding-model/resolve", response_model = EmbeddingModelResolveResponse)
+def resolve_embedding_model(
+    model: str,
+    # Header, not a query param: keeps a gated-repo token out of URLs and logs.
+    hf_token: Optional[str] = Header(None, alias = "X-Unsloth-HF-Token"),
+    current_subject: str = Depends(get_current_subject),
+) -> EmbeddingModelResolveResponse:
+    """What saving ``model`` would need fetched, and whether it is already here.
+
+    The picker calls this so it can offer the download up front instead of letting
+    it happen invisibly at first index. ``error`` is the detail the PUT would
+    refuse with, so the two cannot disagree about what is usable."""
+    from utils.utils import hf_cache_snapshot_is_loadable
+
+    try:
+        resolved = validate_embedding_model(model)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid embedding model."),
+            event = "settings.resolve_embedding_model_failed",
+            log = logger,
+        ) from exc
+    token = (hf_token or "").strip() or None
+    on_llama = _llama_backend_active()
+    backend = "llama" if on_llama else "sentence-transformers"
+
+    if not on_llama:
+        # sentence-transformers loads the model repo itself.
+        return EmbeddingModelResolveResponse(
+            embedding_model = resolved,
+            backend = backend,
+            download_repo = resolved,
+            cached = hf_cache_snapshot_is_loadable(resolved),
+        )
+
+    # A local .gguf (file or folder) is already the artifact; nothing to fetch.
+    if _resolves_as_local_gguf(resolved):
+        return EmbeddingModelResolveResponse(
+            embedding_model = resolved, backend = backend, cached = True
+        )
+    local_error = _local_gguf_backend_error(resolved)
+    if local_error:
+        return EmbeddingModelResolveResponse(
+            embedding_model = resolved, backend = backend, error = local_error
+        )
+
+    candidates = _embedding_gguf_candidates(resolved)
+    if _cached_embedding_gguf(candidates):
+        return EmbeddingModelResolveResponse(
+            embedding_model = resolved,
+            backend = backend,
+            download_repo = candidates[0],
+            cached = True,
+        )
+    plan = _remote_embedding_gguf_plan(candidates, token)
+    if plan is None:
+        return EmbeddingModelResolveResponse(
+            embedding_model = resolved,
+            backend = backend,
+            error = _hf_gguf_backend_error(resolved, token)
+            or "No GGUF weights could be resolved for this model.",
+        )
+    repo, filename = plan
+    return EmbeddingModelResolveResponse(
+        embedding_model = resolved,
+        backend = backend,
+        download_repo = repo,
+        files = [filename],
+        size_bytes = _hf_files_size(repo, [filename], token),
+    )
 
 
 @router.put("/embedding-model", response_model = EmbeddingModelResponse)

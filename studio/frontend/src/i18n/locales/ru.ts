@@ -798,7 +798,7 @@ export const ru = {
         embeddingModel: "Модель эмбеддингов",
         embeddingModelDescription:
           "Модель Hugging Face или локальный путь для индексации и поиска по вашим документам. По умолчанию {defaultModel}.",
-        searchPlaceholder: "Поиск embedding-моделей",
+        searchPlaceholder: "Поиск любой модели на HF",
         reindexWarning:
           "Влияет только на вновь индексируемые документы. После смены модели загрузите существующие документы заново.",
         emptyError: "Введите ID модели Hugging Face или локальный путь.",
@@ -807,6 +807,21 @@ export const ru = {
         saved: "Модель эмбеддингов сохранена.",
         saveAnyway: "Всё равно сохранить",
         resetAction: "Восстановить значение по умолчанию",
+        recommended: "Рекомендуется",
+        onDevice: "На устройстве",
+        searching: "Поиск в Hugging Face…",
+        checking: "Проверка…",
+        noResults: "Модели эмбеддингов не найдены",
+        downloadConfirmTitle: "Скачать {model}?",
+        downloadConfirmBody:
+          "{model} ещё нет на этом компьютере. Загрузка займёт около {size}.",
+        downloadConfirmBodyUnsized:
+          "{model} ещё нет на этом компьютере, загрузка начнётся сейчас.",
+        download: "Скачать",
+        downloading: "Загрузка {model}",
+        downloadingDescription:
+          "Прогресс виден на панели загрузок. После завершения он будет использован для индексации.",
+        downloadFailed: "Не удалось начать загрузку",
       },
       storage: {
         sectionTitle: "Хранилище",

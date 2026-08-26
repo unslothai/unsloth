@@ -775,7 +775,7 @@ export const zhCN = {
         embeddingModel: "Embedding 模型",
         embeddingModelDescription:
           "用于为文档建立索引和搜索的 Hugging Face 模型或本地路径。默认值为 {defaultModel}。",
-        searchPlaceholder: "搜索嵌入模型",
+        searchPlaceholder: "搜索 HF 上的任意模型",
         reindexWarning:
           "仅影响新建立索引的文档。更改模型后请重新上传已有文档。",
         emptyError: "请输入 Hugging Face 模型 ID 或本地路径。",
@@ -784,6 +784,18 @@ export const zhCN = {
         saved: "Embedding 模型已保存。",
         saveAnyway: "仍然保存",
         resetAction: "重置为默认值",
+        recommended: "推荐",
+        onDevice: "本机",
+        searching: "正在搜索 Hugging Face…",
+        checking: "检查中…",
+        noResults: "未找到 embedding 模型",
+        downloadConfirmTitle: "下载 {model}？",
+        downloadConfirmBody: "{model} 尚未下载到本机，下载约需 {size}。",
+        downloadConfirmBodyUnsized: "{model} 尚未下载到本机，现在开始下载。",
+        download: "下载",
+        downloading: "正在下载 {model}",
+        downloadingDescription: "进度显示在下载面板中。下载完成后即可用于建立索引。",
+        downloadFailed: "无法开始下载",
       },
       storage: {
         sectionTitle: "存储",

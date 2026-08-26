@@ -815,7 +815,7 @@ export const de = {
         embeddingModel: "Embedding-Modell",
         embeddingModelDescription:
           "Hugging-Face-Modell oder lokaler Pfad zum Indexieren und Durchsuchen Ihrer Dokumente. Standard ist {defaultModel}.",
-        searchPlaceholder: "Embedding-Modelle suchen",
+        searchPlaceholder: "Beliebiges Modell auf HF suchen",
         reindexWarning:
           "Betrifft nur neu indexierte Dokumente. Laden Sie bestehende nach einer Modelländerung erneut hoch.",
         emptyError:
@@ -826,6 +826,21 @@ export const de = {
         saved: "Embedding-Modell gespeichert.",
         saveAnyway: "Trotzdem speichern",
         resetAction: "Auf Standard zurücksetzen",
+        recommended: "Empfohlen",
+        onDevice: "Auf dem Gerät",
+        searching: "Hugging Face wird durchsucht…",
+        checking: "Wird geprüft…",
+        noResults: "Keine Embedding-Modelle gefunden",
+        downloadConfirmTitle: "{model} herunterladen?",
+        downloadConfirmBody:
+          "{model} ist noch nicht auf diesem Rechner. Der Download benötigt etwa {size}.",
+        downloadConfirmBodyUnsized:
+          "{model} ist noch nicht auf diesem Rechner und wird jetzt heruntergeladen.",
+        download: "Herunterladen",
+        downloading: "{model} wird heruntergeladen",
+        downloadingDescription:
+          "Der Fortschritt steht im Downloads-Bereich. Nach Abschluss wird es für die Indizierung genutzt.",
+        downloadFailed: "Download konnte nicht gestartet werden",
       },
       storage: {
         sectionTitle: "Speicher",

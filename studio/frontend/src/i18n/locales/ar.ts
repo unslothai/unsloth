@@ -794,7 +794,7 @@ export const ar = {
         embeddingModel: "نموذج التضمين (Embedding)",
         embeddingModelDescription:
           "نموذج Hugging Face أو مسار محلي يُستخدم لفهرسة مستنداتك والبحث فيها. القيمة الافتراضية هي {defaultModel}.",
-        searchPlaceholder: "ابحث عن نماذج التضمين",
+        searchPlaceholder: "ابحث عن أي نموذج على HF",
         reindexWarning:
           "يؤثر فقط في المستندات التي تُفهرس حديثًا. أعِد رفع المستندات الحالية بعد تغيير النموذج.",
         emptyError: "أدخل معرّف نموذج Hugging Face أو مسارًا محليًا.",
@@ -803,6 +803,21 @@ export const ar = {
         saved: "تم حفظ نموذج التضمين.",
         saveAnyway: "الحفظ على أي حال",
         resetAction: "إعادة التعيين إلى الافتراضي",
+        recommended: "موصى به",
+        onDevice: "على الجهاز",
+        searching: "جارٍ البحث في Hugging Face…",
+        checking: "جارٍ التحقق…",
+        noResults: "لم يتم العثور على نماذج تضمين",
+        downloadConfirmTitle: "تنزيل {model}؟",
+        downloadConfirmBody:
+          "{model} غير موجود على هذا الجهاز بعد. يحتاج التنزيل نحو {size}.",
+        downloadConfirmBodyUnsized:
+          "{model} غير موجود على هذا الجهاز بعد وسيتم تنزيله الآن.",
+        download: "تنزيل",
+        downloading: "جارٍ تنزيل {model}",
+        downloadingDescription:
+          "يظهر التقدم في لوحة التنزيلات. ستستخدمه الفهرسة بمجرد اكتماله.",
+        downloadFailed: "تعذّر بدء التنزيل",
       },
       storage: {
         sectionTitle: "التخزين",

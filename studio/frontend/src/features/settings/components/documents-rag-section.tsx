@@ -1,25 +1,53 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogMedia,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { useChatRuntimeStore } from "@/features/chat";
+import { formatBytes, listCachedGguf, listCachedModels } from "@/features/hub";
+import {
+  DOWNLOAD_KIND,
+  downloadManager,
+  scopedVariant,
+} from "@/features/hub/download-manager";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { type ReactElement, useEffect, useState } from "react";
+import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { type ReactElement, useCallback, useEffect, useState } from "react";
 import {
   EmbeddingModelBlockedError,
+  type EmbeddingModelResolution,
   EmbeddingModelVerificationError,
   resetEmbeddingModelSettings,
+  resolveEmbeddingModel,
   updateEmbeddingModelSettings,
 } from "../api/embedding-model";
 import { useEmbeddingModelStore } from "../stores/embedding-model-store";
-import { EmbeddingModelCombobox } from "./embedding-model-combobox";
+import { EmbeddingModelPicker } from "./embedding-model-picker";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
+
+/** One slot per repo for the embedder's GGUF, so re-picking adopts the running
+ * transfer and a full-repo Hub download keeps its own. */
+const EMBEDDING_DOWNLOAD_SCOPE = "rag-embedding";
 
 /**
  * Which model indexes uploaded documents. Rendered in both General and Data,
  * off one shared store, so a save on one is what the other reads.
+ *
+ * Picking applies immediately, as dictation does; a model that is not on disk
+ * is then offered as a download instead of being fetched at the first index.
  */
 export function DocumentsRagSection(): ReactElement {
   const t = useT();
@@ -27,11 +55,6 @@ export function DocumentsRagSection(): ReactElement {
   const embeddingModel = useEmbeddingModelStore((s) => s.settings);
   const loadError = useEmbeddingModelStore((s) => s.loadError);
   const save = useEmbeddingModelStore((s) => s.save);
-  // Null until the user edits, so the field follows a save made on the other
-  // surface instead of pinning whatever this mount first read.
-  const [draftOverride, setDraftOverride] = useState<string | null>(null);
-  const draftEmbeddingModel =
-    draftOverride ?? embeddingModel?.embeddingModel ?? "";
   const [saveError, setSaveError] = useState<string | null>(null);
   // The store carries the backend's reason; an unreadable failure has none.
   const loadFailure =
@@ -39,17 +62,61 @@ export function DocumentsRagSection(): ReactElement {
       ? null
       : loadError || t("settings.general.rag.loadError");
   const embeddingModelError = saveError ?? loadFailure;
-  // Set after a 409 (unverifiable model); offers "Save anyway".
-  const [embeddingModelNeedsForce, setEmbeddingModelNeedsForce] =
-    useState(false);
+  // Set after a 409 (unverifiable model); "Save anyway" applies to that pick only.
+  const [forceCandidate, setForceCandidate] = useState<string | null>(null);
   const [isSavingEmbeddingModel, setIsSavingEmbeddingModel] = useState(false);
+  // Pending "download this?" confirmation, raised after a save lands on a
+  // model this machine does not hold.
+  const [pendingDownload, setPendingDownload] =
+    useState<EmbeddingModelResolution | null>(null);
+  // Repo ids with a complete cache, for the picker's on-device dot.
+  const [cachedRepos, setCachedRepos] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   useEffect(() => {
     void useEmbeddingModelStore.getState().load();
   }, []);
 
-  const saveEmbeddingModel = async (force: boolean) => {
-    const trimmed = draftEmbeddingModel.trim();
+  const refreshCachedRepos = useCallback(async () => {
+    try {
+      const [models, gguf] = await Promise.all([
+        listCachedModels(hfToken || undefined),
+        listCachedGguf(hfToken || undefined),
+      ]);
+      setCachedRepos(
+        new Set(
+          [...models, ...gguf]
+            .filter((repo) => !repo.partial)
+            .map((repo) => repo.repo_id),
+        ),
+      );
+    } catch {
+      // Advisory: without it rows just lose their dot.
+    }
+  }, [hfToken]);
+
+  useEffect(() => {
+    void refreshCachedRepos();
+  }, [refreshCachedRepos]);
+
+  /** Offer the download for a model that just became the setting. */
+  const offerDownload = async (model: string) => {
+    let resolution: EmbeddingModelResolution;
+    try {
+      resolution = await resolveEmbeddingModel(model, {
+        hfToken: hfToken || undefined,
+      });
+    } catch {
+      // Saved either way; the first index still fetches, just with no progress row.
+      return;
+    }
+    if (resolution.cached || !resolution.downloadRepo) return;
+    setPendingDownload(resolution);
+  };
+
+  const applyEmbeddingModel = async (model: string, force: boolean) => {
+    const trimmed = model.trim();
     if (!trimmed) {
       setSaveError(t("settings.general.rag.emptyError"));
       return;
@@ -63,19 +130,19 @@ export function DocumentsRagSection(): ReactElement {
           force,
         }),
       );
-      // A later save owns the field now, so this answer says nothing current.
+      // A later save owns the setting now, so this answer says nothing current.
       if (!stood) return;
-      setDraftOverride(null);
-      setEmbeddingModelNeedsForce(false);
+      setForceCandidate(null);
       toast.success(t("settings.general.rag.saved"), {
         description: t("settings.general.rag.reindexWarning"),
       });
+      await offerDownload(trimmed);
     } catch (error) {
-      // A hard security block cannot be forced; keep the "save anyway" action hidden.
+      // A hard security block cannot be forced; keep "Save anyway" hidden.
       if (error instanceof EmbeddingModelBlockedError) {
-        setEmbeddingModelNeedsForce(false);
+        setForceCandidate(null);
       } else if (error instanceof EmbeddingModelVerificationError) {
-        setEmbeddingModelNeedsForce(true);
+        setForceCandidate(trimmed);
       }
       setSaveError(
         error instanceof Error
@@ -87,13 +154,43 @@ export function DocumentsRagSection(): ReactElement {
     }
   };
 
+  const startDownload = async (resolution: EmbeddingModelResolution) => {
+    const repoId = resolution.downloadRepo;
+    if (!repoId) return;
+    // Scoped when the backend named a file: the companion repo carries every
+    // quant, and the embedder opens one.
+    const scoped = resolution.files !== null && resolution.files.length > 0;
+    try {
+      const outcome = await downloadManager.requestStart({
+        kind: DOWNLOAD_KIND.MODEL,
+        repoId,
+        variant: scoped ? scopedVariant(EMBEDDING_DOWNLOAD_SCOPE) : null,
+        scopeId: scoped ? EMBEDDING_DOWNLOAD_SCOPE : null,
+        files: scoped ? (resolution.files ?? undefined) : undefined,
+        expectedBytes: resolution.sizeBytes ?? 0,
+      });
+      if (outcome === "started") {
+        toast.success(
+          t("settings.general.rag.downloading", {
+            model: resolution.embeddingModel,
+          }),
+          { description: t("settings.general.rag.downloadingDescription") },
+        );
+      }
+      // "conflict" and "busy" already raise their own notice from the manager.
+    } catch (error) {
+      toast.error(t("settings.general.rag.downloadFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  };
+
   const resetEmbeddingModel = async () => {
     setIsSavingEmbeddingModel(true);
     setSaveError(null);
-    setEmbeddingModelNeedsForce(false);
+    setForceCandidate(null);
     try {
-      if (!(await save(resetEmbeddingModelSettings))) return;
-      setDraftOverride(null);
+      await save(resetEmbeddingModelSettings);
     } catch (error) {
       setSaveError(
         error instanceof Error
@@ -105,6 +202,10 @@ export function DocumentsRagSection(): ReactElement {
     }
   };
 
+  const pendingSize = pendingDownload?.sizeBytes
+    ? formatBytes(pendingDownload.sizeBytes)
+    : null;
+
   return (
     <SettingsSection title={t("settings.general.rag.sectionTitle")}>
       <SettingsRow
@@ -115,45 +216,28 @@ export function DocumentsRagSection(): ReactElement {
         className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"
       >
         <div className="flex flex-col items-end gap-1 max-[360px]:w-full">
-          <div className="flex items-center gap-2 max-[360px]:w-full">
-            <EmbeddingModelCombobox
-              value={draftEmbeddingModel}
-              onChange={(next) => {
-                setDraftOverride(next);
-                setEmbeddingModelNeedsForce(false);
-                setSaveError(null);
-              }}
-              accessToken={hfToken || undefined}
-              disabled={!embeddingModel}
-              placeholder={t("settings.general.rag.searchPlaceholder")}
-              ariaLabel={t("settings.general.rag.embeddingModel")}
-              className="w-[220px] max-[360px]:min-w-0 max-[360px]:flex-1"
-            />
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={
-                !embeddingModel ||
-                isSavingEmbeddingModel ||
-                draftEmbeddingModel.trim() === embeddingModel.embeddingModel
-              }
-              onClick={() => void saveEmbeddingModel(false)}
-            >
-              {isSavingEmbeddingModel ? t("common.saving") : t("common.save")}
-            </Button>
-          </div>
+          <EmbeddingModelPicker
+            value={embeddingModel?.embeddingModel ?? ""}
+            onSelect={(model) => void applyEmbeddingModel(model, false)}
+            defaultModel={embeddingModel?.defaultEmbeddingModel}
+            cachedModels={cachedRepos}
+            accessToken={hfToken || undefined}
+            disabled={!embeddingModel}
+            busy={isSavingEmbeddingModel}
+            className="w-[260px] max-[360px]:w-full"
+          />
           {embeddingModelError ? (
             <span className="max-w-[300px] text-right text-xs text-destructive">
               {embeddingModelError}
             </span>
           ) : null}
           <div className="flex items-center gap-2">
-            {embeddingModelNeedsForce ? (
+            {forceCandidate ? (
               <Button
                 variant="outline"
                 size="sm"
                 disabled={isSavingEmbeddingModel}
-                onClick={() => void saveEmbeddingModel(true)}
+                onClick={() => void applyEmbeddingModel(forceCandidate, true)}
               >
                 {t("settings.general.rag.saveAnyway")}
               </Button>
@@ -174,6 +258,53 @@ export function DocumentsRagSection(): ReactElement {
           </span>
         </div>
       </SettingsRow>
+
+      <AlertDialog
+        open={pendingDownload !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDownload(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogMedia className="size-12">
+              <HugeiconsIcon
+                icon={FileDatabaseIcon}
+                strokeWidth={1.75}
+                className="text-muted-foreground size-5"
+              />
+            </AlertDialogMedia>
+            <AlertDialogTitle>
+              {t("settings.general.rag.downloadConfirmTitle", {
+                model: pendingDownload?.embeddingModel ?? "",
+              })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingSize
+                ? t("settings.general.rag.downloadConfirmBody", {
+                    model: pendingDownload?.embeddingModel ?? "",
+                    size: pendingSize,
+                  })
+                : t("settings.general.rag.downloadConfirmBodyUnsized", {
+                    model: pendingDownload?.embeddingModel ?? "",
+                  })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                const request = pendingDownload;
+                setPendingDownload(null);
+                if (request) void startDownload(request);
+              }}
+            >
+              {t("settings.general.rag.download")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </SettingsSection>
   );
 }

@@ -791,7 +791,7 @@ export const ko = {
         embeddingModel: "임베딩 모델",
         embeddingModelDescription:
           "문서를 색인하고 검색하는 데 사용되는 Hugging Face 모델 또는 로컬 경로입니다. 기본값은 {defaultModel}입니다.",
-        searchPlaceholder: "임베딩 모델 검색",
+        searchPlaceholder: "HF의 모든 모델 검색",
         reindexWarning:
           "새로 색인되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 업로드하세요.",
         emptyError: "Hugging Face 모델 ID 또는 로컬 경로를 입력하세요.",
@@ -800,6 +800,19 @@ export const ko = {
         saved: "임베딩 모델이 저장되었습니다.",
         saveAnyway: "그래도 저장",
         resetAction: "기본값으로 재설정",
+        recommended: "추천",
+        onDevice: "기기에 있음",
+        searching: "Hugging Face 검색 중…",
+        checking: "확인 중…",
+        noResults: "임베딩 모델을 찾을 수 없습니다",
+        downloadConfirmTitle: "{model}을(를) 다운로드할까요?",
+        downloadConfirmBody:
+          "{model}이(가) 아직 이 컴퓨터에 없습니다. 다운로드에 약 {size}가 필요합니다.",
+        downloadConfirmBodyUnsized: "{model}이(가) 아직 이 컴퓨터에 없습니다. 지금 다운로드합니다.",
+        download: "다운로드",
+        downloading: "{model} 다운로드 중",
+        downloadingDescription: "진행 상황은 다운로드 패널에 표시됩니다. 완료되면 색인에 사용됩니다.",
+        downloadFailed: "다운로드를 시작할 수 없습니다",
       },
       storage: {
         sectionTitle: "저장소",
