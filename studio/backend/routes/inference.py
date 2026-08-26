@@ -13429,27 +13429,37 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         elif isinstance(msg.content, list):
             # Multimodal content parts
             text_parts: list[str] = []
+            message_image_b64: Optional[str] = None
             for part in msg.content:
                 if part.type == "text":
                     text_parts.append(part.text)
                 elif part.type == "image_url":
                     url = part.image_url.url
                     if url.startswith("data:"):
-                        # Later turns win: single-image backends must see the
-                        # image just attached, not the one that opened the thread.
                         # A data URL carrying no payload is not an image, so it
                         # must not displace a real one from an earlier turn.
                         part_b64 = url.partition(",")[2]
                         if part_b64:
-                            latest_image_b64 = part_b64
-                            if msg.role == "user":
-                                latest_user_image_b64 = part_b64
+                            # Within one message the FIRST image wins, matching
+                            # findLatestUserImageBase64 (chat-adapter.ts), which
+                            # returns on the first image part of the newest user
+                            # message. This value overrides that one downstream,
+                            # so a message carrying several images must not hand
+                            # the model a different one than the UI sent.
+                            if message_image_b64 is None:
+                                message_image_b64 = part_b64
                         else:
                             logger.warning(
                                 f"Ignoring image URL with no base64 payload: {url[:80]}..."
                             )
                     else:
                         logger.warning(f"Remote image URLs not yet supported: {url[:80]}...")
+            # Later turns win: single-image backends must see the image just
+            # attached, not the one that opened the thread.
+            if message_image_b64 is not None:
+                latest_image_b64 = message_image_b64
+                if msg.role == "user":
+                    latest_user_image_b64 = message_image_b64
             combined_text = "\n".join(text_parts) if text_parts else ""
         elif msg.role == "assistant" and msg.reasoning_content:
             # A reasoning-only turn has no visible content, but still needs a
