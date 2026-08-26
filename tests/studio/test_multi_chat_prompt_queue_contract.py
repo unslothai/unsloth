@@ -365,10 +365,11 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     ) < CHAT_ADAPTER.index("if (runtime.deepResearchEnabled && threadAlreadyResearched)")
     research = _between(
         CHAT_ADAPTER,
-        "if (\n        runtime.deepResearchEnabled",
-        "const sandboxSessionId",
+        "const startDeepResearch = async function*",
+        "const deepResearchHandoff",
     )
-    assert "const liveRuntime = useChatRuntimeStore.getState()" in research
+    assert "const sendTimeRuntime = runtime" in research
+    assert "const liveRuntime = useChatRuntimeStore.getState()" not in research
     assert "...queuedRunSettings" in research
     auto_load_merge = _between(
         CHAT_ADAPTER,
@@ -412,7 +413,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "const visibleRoute = window.location.href" in CHAT_ADAPTER
     assert "window.location.href === visibleRoute" in CHAT_ADAPTER
     assert "trackQueuedSettings: false" in CHAT_ADAPTER
-    assert CHAT_ADAPTER.count("await resolveQueuedEmptyLocalModel(abortSignal)") >= 2
+    assert "await resolveQueuedEmptyLocalModel(transitionSignal)" in CHAT_ADAPTER
+    assert "await resolveQueuedEmptyLocalModel(abortSignal)" in CHAT_ADAPTER
     assert "persist: !options?.preserveVisibleSettings" in CHAT_ADAPTER
     assert "beginModelLoading()" in CHAT_ADAPTER
     assert "endModelLoading(lifecycleLease)" in CHAT_ADAPTER
@@ -693,8 +695,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "force_cancel_active:" in SHARED_COMPOSER
     assert (
-        "resolvedThreadId ===\n              useChatRuntimeStore.getState().activeThreadId"
-        in CHAT_ADAPTER
+        "useChatRuntimeStore.getState().activeThreadId ===\n"
+        "          (usageThreadKey ?? activeThreadIdAtRunStart)" in CHAT_ADAPTER
     )
     assert (
         "findLatestUserAudioBase64(\n        survivingMessages,\n        !queuedRunSettings"

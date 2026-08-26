@@ -242,7 +242,6 @@ test("modes that answer from scratch do not offer Continue", () => {
   const plain = {
     fromAudioInput: false,
     audioOutputModel: false,
-    deepResearchArmed: false,
   };
   assert.equal(modeAllowsContinuation(plain), true);
   assert.equal(
@@ -253,11 +252,6 @@ test("modes that answer from scratch do not offer Continue", () => {
   // gates, but the resumed run regenerates the whole clip.
   assert.equal(
     modeAllowsContinuation({ ...plain, audioOutputModel: true }),
-    false,
-  );
-  // Research armed after the cut: the run replaces the partial with its report.
-  assert.equal(
-    modeAllowsContinuation({ ...plain, deepResearchArmed: true }),
     false,
   );
 });
