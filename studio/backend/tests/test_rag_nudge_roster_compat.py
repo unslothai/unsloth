@@ -107,6 +107,26 @@ CREATE TABLE chunks (
 """
 
 
+def _requires_rag():
+    """Skip where the roster cannot exist at all.
+
+    Called AFTER the legacy file is written: rag_available() opens the connection that
+    creates and migrates rag.db, so checking first would leave create_document's own
+    tables in place and the legacy schema could not be laid down at all.
+
+    A migration test asserts a document gets named, and naming one needs rag_available()
+    to be True. On a host where the sqlite-vec package imports but its vec0 library does
+    not load -- the common macOS case, called out in rag_available()'s own docstring --
+    it is False by design and the roster is correctly empty. That path has its own test
+    (test_roster_is_quiet_when_the_vector_extension_is_missing); asserting the opposite
+    here would only make the suite red on macOS.
+    """
+    from storage import rag_db
+
+    if not rag_db.rag_available():
+        pytest.skip("sqlite-vec unavailable here, so there is no roster to migrate into")
+
+
 def _write_legacy_db(
     rag_home,
     schema = _ANCIENT_SCHEMA,
@@ -135,6 +155,7 @@ def test_roster_reads_a_database_written_before_linked_folders_existed(rag_home,
     rag_available() gate has to migrate it before the query runs, or every install that
     predates linked folders silently loses the roster."""
     _write_legacy_db(rag_home)
+    _requires_rag()
     out = _nudge({"project_id": "p1"})
     assert '"legacy.pdf"' in out, out
 
@@ -156,6 +177,7 @@ def test_roster_reads_a_database_missing_only_the_newer_columns(rag_home, fresh_
     """
     )
     _write_legacy_db(rag_home, schema = schema, rows = (("halfway.pdf", "project_p1"),))
+    _requires_rag()
     out = _nudge({"project_id": "p1"})
     assert '"halfway.pdf"' in out, out
 
