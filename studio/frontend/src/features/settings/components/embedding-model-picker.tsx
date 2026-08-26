@@ -23,12 +23,6 @@ const EMBEDDING_TASKS: readonly PipelineType[] = [
   "sentence-similarity",
   "feature-extraction",
 ];
-const LOCAL_PATH_PATTERN = /^(?:\/|~[\\/]|\.{1,2}[\\/]|[A-Za-z]:[\\/]|\\\\)/;
-
-function isDirectModelReference(value: string): boolean {
-  return value.includes("/") || LOCAL_PATH_PATTERN.test(value);
-}
-
 type EmbeddingModelPickerProps = {
   value: string;
   /** Fires once, on a pick. Typing is a search, not a selection. */
@@ -144,9 +138,10 @@ export function EmbeddingModelPicker({
             onKeyDown={(event) => {
               if (event.key !== "Enter") return;
               event.preventDefault();
-              // A pasted repo id is taken as typed; otherwise Enter is the top row.
+              // Preserve arbitrary typed submission: the backend can recognize
+              // existing relative paths such as "embedder" that have no slash.
               const typed = query.trim();
-              if (isDirectModelReference(typed)) {
+              if (typed) {
                 pick(typed);
               } else if (items.length > 0) {
                 pick(items[0].id);

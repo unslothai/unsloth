@@ -415,6 +415,30 @@ def test_st_success_keeps_sentence_transformers(monkeypatch):
     assert isinstance(backend, embeddings._SentenceTransformersBackend)
 
 
+def test_loaded_state_belongs_to_the_resident_sentence_transformer(monkeypatch):
+    monkeypatch.setattr(embeddings, "_backend", embeddings._SentenceTransformersBackend())
+    monkeypatch.setattr(embeddings, "_model", object())
+    monkeypatch.setattr(embeddings, "_name", "org/resident")
+
+    assert embeddings.backend_is_loaded() is True
+    assert embeddings.backend_is_loaded("org/resident") is True
+    assert embeddings.backend_is_loaded("org/new-selection") is False
+
+
+def test_loaded_state_belongs_to_the_resident_gguf_repo(monkeypatch):
+    backend = SimpleNamespace(_model_repo = "org/resident-GGUF")
+    monkeypatch.setattr(embeddings, "_backend", backend)
+    monkeypatch.setattr(embeddings, "_is_llama_backend", lambda value: value is backend)
+    monkeypatch.setattr(
+        embeddings.config,
+        "effective_gguf_repo_for_embedding_model",
+        lambda model: f"{model}-GGUF",
+    )
+
+    assert embeddings.backend_is_loaded("org/resident") is True
+    assert embeddings.backend_is_loaded("org/new-selection") is False
+
+
 def test_unload_clears_the_sentence_transformer_weights(monkeypatch):
     embeddings._backend = embeddings._SentenceTransformersBackend()
     embeddings._backend_key = embeddings._current_backend_key()

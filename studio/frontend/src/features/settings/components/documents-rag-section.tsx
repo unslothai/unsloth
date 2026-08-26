@@ -100,8 +100,10 @@ export function DocumentsRagSection(): ReactElement {
   const savedModel = embeddingModel?.embeddingModel;
   useEffect(() => {
     // Another mounted settings surface may have saved a different model. Its
-    // old resolution must not leave a Download action targeting the wrong repo.
+    // model-scoped actions and errors say nothing about this new selection.
     setResolution(null);
+    setForceCandidate(null);
+    setSaveError(null);
     if (!savedModel) return;
     let live = true;
     void resolveEmbeddingModel(savedModel, { hfToken: hfToken || undefined })
@@ -174,6 +176,7 @@ export function DocumentsRagSection(): ReactElement {
     const reservation = beginSave();
     setIsSavingEmbeddingModel(true);
     setSaveError(null);
+    setResolution(null);
     try {
       if (force) {
         await persist(trimmed, null, true, reservation);
@@ -198,13 +201,11 @@ export function DocumentsRagSection(): ReactElement {
         setSaveError(resolution.error);
         return;
       }
-      setResolution(resolution);
-      if (resolution.cached || !resolution.downloadRepo) {
-        await persist(trimmed, resolution, false, reservation);
-        return;
+      // Retain the plan only after the server accepted the matching setting.
+      // A rejected save must not expose a Download action for an unsaved repo.
+      if (await persist(trimmed, resolution, false, reservation)) {
+        setResolution(resolution);
       }
-      // Not on disk: record the cache-only pending pick, then offer Download.
-      await persist(trimmed, resolution, false, reservation);
     } finally {
       setIsSavingEmbeddingModel(false);
     }

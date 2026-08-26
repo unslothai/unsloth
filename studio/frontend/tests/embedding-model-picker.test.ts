@@ -154,13 +154,21 @@ test("download completion refreshes the resolved cache state", () => {
   );
 });
 
-test("a saved-model change clears the previous repository action", () => {
+test("a saved-model change clears every previous model-scoped action", () => {
   const effect = SECTION.slice(
     SECTION.indexOf("const savedModel"),
     SECTION.indexOf("/** Persist the pick"),
   );
   assert.ok(
     effect.indexOf("setResolution(null)") <
+      effect.indexOf("resolveEmbeddingModel(savedModel"),
+  );
+  assert.ok(
+    effect.indexOf("setForceCandidate(null)") <
+      effect.indexOf("resolveEmbeddingModel(savedModel"),
+  );
+  assert.ok(
+    effect.indexOf("setSaveError(null)") <
       effect.indexOf("resolveEmbeddingModel(savedModel"),
   );
 });
@@ -171,6 +179,18 @@ test("a new save cannot retain another model's force action", () => {
     SECTION.indexOf("const startDownload"),
   );
   assert.match(apply, /setForceCandidate\(null\);[\s\S]*const trimmed/);
+});
+
+test("a rejected save cannot retain its download plan", () => {
+  const apply = SECTION.slice(
+    SECTION.indexOf("const applyEmbeddingModel"),
+    SECTION.indexOf("const startDownload"),
+  );
+  assert.ok(
+    apply.lastIndexOf("setResolution(resolution)") >
+      apply.indexOf("await persist(trimmed, resolution"),
+    "the accepted persistence result publishes the download plan",
+  );
 });
 
 test("every download-manager non-start outcome gets feedback", () => {
@@ -189,11 +209,14 @@ test("only the embedder's own GGUF is fetched, not every quant", () => {
   );
 });
 
-test("the current row can be reselected to retry and Windows paths submit", () => {
+test("the current row can be retried and arbitrary relative paths submit", () => {
   assert.match(PICKER, /onSelect\(model\);/);
   assert.ok(!PICKER.includes("if (model !== value.trim())"));
-  assert.match(PICKER, /LOCAL_PATH_PATTERN/);
-  assert.match(PICKER, /\[A-Za-z\]:\[\\\\\/\]/);
+  assert.match(
+    PICKER,
+    /const typed = query\.trim\(\);\s*if \(typed\) \{\s*pick\(typed\);/,
+  );
+  assert.ok(!PICKER.includes("isDirectModelReference"));
 });
 
 test("a gated-repo token never rides in the URL", () => {

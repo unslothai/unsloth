@@ -200,6 +200,11 @@ def gguf_repo_candidates(model: str) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def gguf_repo_is_explicit() -> bool:
+    """Whether one GGUF repository was explicitly pinned for every embedder."""
+    return "RAG_EMBED_GGUF_REPO" in os.environ
+
+
 def gguf_repo_for_embedding_model(model: str) -> str:
     """GGUF repo for ``model``, honoring an explicit companion override."""
     if "RAG_EMBED_GGUF_REPO" in os.environ:

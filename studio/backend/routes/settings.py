@@ -22,7 +22,10 @@ from auth.storage import rotate_preview_link_secret
 from routes.provider_credentials import current_credential_write, require_ui_session
 
 from storage import credential_secrets
-from core.rag.config import default_gguf_repo, effective_gguf_repo
+from core.rag.config import (
+    default_gguf_repo,
+    effective_gguf_repo_for_embedding_model,
+)
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
@@ -1809,20 +1812,21 @@ class EmbeddingModelResponse(BaseModel):
 
 
 def _embedding_model_response() -> EmbeddingModelResponse:
+    model = get_rag_embedding_model()
     return EmbeddingModelResponse(
-        embedding_model = get_rag_embedding_model(),
-        embedding_gguf_repo = effective_gguf_repo(),
+        embedding_model = model,
+        embedding_gguf_repo = effective_gguf_repo_for_embedding_model(model),
         default_embedding_model = default_embedding_model(),
         default_embedding_gguf_repo = default_gguf_repo(),
         is_custom = get_stored_embedding_model() is not None,
-        loaded = _embedder_is_loaded(),
+        loaded = _embedder_is_loaded(model),
     )
 
 
-def _embedder_is_loaded() -> bool:
+def _embedder_is_loaded(model: str) -> bool:
     from core.rag import embeddings
     try:
-        return embeddings.backend_is_loaded()
+        return embeddings.backend_is_loaded(model)
     except Exception:  # noqa: BLE001 - probe must never block reading settings
         return False
 
@@ -1949,6 +1953,10 @@ def _embedding_gguf_candidates(model: str) -> list[str]:
     """Repos the loader would try for ``model``'s GGUF, in its order."""
     from core.rag import config as rag_config
 
+    # An env override is the loader's only source. A stored mirror from an older
+    # selection must not outrank it, and discovery must not replace it later.
+    if rag_config.gguf_repo_is_explicit():
+        return rag_config.gguf_repo_candidates(model)
     try:
         from utils.embedding_model_settings import get_stored_gguf_repo
         stored = get_stored_gguf_repo(model)
@@ -2048,6 +2056,10 @@ def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[
     re-upload, and picking unsloth/X must download unsloth's own weights."""
     from core.rag import config as rag_config
 
+    # The loader cannot open a discovered mirror while an explicit repo override
+    # is active, so returning one would create a download that can never satisfy it.
+    if rag_config.gguf_repo_is_explicit():
+        return None
     owner, _, name = model.rpartition("/")
     if not owner:
         return None
@@ -2165,7 +2177,17 @@ def _st_weight_files(model: str, hf_token: Optional[str]) -> Optional[list[str]]
     except Exception:  # noqa: BLE001 - missing/gated repo or offline
         return None
     for suffix in _ST_WEIGHT_SUFFIXES:
-        weights = [f for f in files if f.lower().endswith(suffix)]
+        weights = []
+        for filename in files:
+            basename = filename.rsplit("/", 1)[-1].lower()
+            if suffix == ".bin":
+                if not basename.endswith(suffix) or not basename.startswith(
+                    ("pytorch_model", "model", "adapter_model", "consolidated")
+                ):
+                    continue
+            elif not basename.endswith(suffix):
+                continue
+            weights.append(filename)
         if weights:
             return weights
     return None
@@ -2202,6 +2224,19 @@ def _hf_files_size(repo: str, files: list[str], hf_token: Optional[str]) -> Opti
         total = sum(
             sibling.size or 0 for sibling in (info.siblings or []) if sibling.rfilename in wanted
         )
+        return total or None
+    except Exception:  # noqa: BLE001 - size is advisory, never a blocker
+        return None
+
+
+def _hf_snapshot_size(repo: str, hf_token: Optional[str]) -> Optional[int]:
+    """Bytes the model download worker will fetch for a full snapshot."""
+    try:
+        from huggingface_hub import model_info
+        from hub.utils.snapshot_filters import snapshot_download_size
+
+        info = model_info(repo, files_metadata = True, token = hf_token)
+        total = snapshot_download_size(info.siblings or [])
         return total or None
     except Exception:  # noqa: BLE001 - size is advisory, never a blocker
         return None
@@ -2296,13 +2331,13 @@ def _resolve_embedding_model_plan(
                 # do not repeat the bounded Hub calls merely to format an error.
                 error = _no_embedding_weights_error(candidates),
             )
-        st_repo, st_files = st_plan
+        st_repo, _st_files = st_plan
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
             backend = "sentence-transformers",
             download_repo = st_repo,
             cached = hf_cache_snapshot_is_loadable(resolved),
-            size_bytes = _hf_files_size(st_repo, st_files, token),
+            size_bytes = _hf_snapshot_size(st_repo, token),
         )
     repo, files = plan
     if _cached_embedding_gguf_files(repo, files):

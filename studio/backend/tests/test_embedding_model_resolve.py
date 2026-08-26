@@ -268,7 +268,7 @@ def test_no_gguf_falls_back_to_the_models_own_safetensors(client, monkeypatch):
     refusing the model and pulling a stranger's conversion."""
     _no_gguf_anywhere(monkeypatch)
     monkeypatch.setattr(settings, "_safetensors_plan", lambda m, token: (m, ["model.safetensors"]))
-    monkeypatch.setattr(settings, "_hf_files_size", lambda repo, files, token: 4096)
+    monkeypatch.setattr(settings, "_hf_snapshot_size", lambda repo, token: 4096)
     import utils.utils as utils
 
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: False)
@@ -280,6 +280,47 @@ def test_no_gguf_falls_back_to_the_models_own_safetensors(client, monkeypatch):
     assert body["files"] is None
     assert body["size_bytes"] == 4096
     assert body["error"] is None
+
+
+def test_sentence_transformers_weight_probe_ignores_companion_bins(monkeypatch):
+    monkeypatch.setattr(
+        settings,
+        "_list_repo_files_bounded",
+        lambda model, token: ["tokenizer.bin", "assets/vocab.bin"],
+    )
+    assert settings._st_weight_files("acme/not-a-checkpoint", None) is None
+
+    monkeypatch.setattr(
+        settings,
+        "_list_repo_files_bounded",
+        lambda model, token: ["tokenizer.bin", "weights/pytorch_model-00001-of-00001.bin"],
+    )
+    assert settings._st_weight_files("acme/checkpoint", None) == [
+        "weights/pytorch_model-00001-of-00001.bin"
+    ]
+
+
+def test_sentence_transformers_size_matches_the_full_snapshot_download(monkeypatch):
+    import huggingface_hub
+
+    siblings = [
+        _types.SimpleNamespace(rfilename = "config.json", size = 10),
+        _types.SimpleNamespace(rfilename = "tokenizer.json", size = 20),
+        _types.SimpleNamespace(rfilename = "tokenizer.bin", size = 30),
+        _types.SimpleNamespace(rfilename = "model.safetensors", size = 100),
+        _types.SimpleNamespace(rfilename = "pytorch_model.bin", size = 110),
+        _types.SimpleNamespace(rfilename = "old.gguf", size = 1_000),
+        _types.SimpleNamespace(rfilename = "consolidated.00.pth", size = 2_000),
+    ]
+    monkeypatch.setattr(
+        huggingface_hub,
+        "model_info",
+        lambda repo, files_metadata, token: _types.SimpleNamespace(siblings = siblings),
+    )
+
+    # The full-snapshot worker keeps configs/tokenizers and both transformer
+    # weight formats, while applying its normal GGUF/consolidated exclusions.
+    assert settings._hf_snapshot_size("acme/embedder", None) == 270
 
 
 def test_explicit_llama_policy_does_not_offer_safetensors(client, monkeypatch):
@@ -359,6 +400,18 @@ def test_stored_off_convention_repo_is_the_preferred_candidate(monkeypatch):
         "acme/embedder-GGUF",
         "acme/embedder",
     ]
+
+
+def test_explicit_gguf_repo_disables_stored_and_discovered_mirrors(monkeypatch):
+    from core.rag import config as rag_config
+    import utils.embedding_model_settings as ems
+
+    monkeypatch.setenv("RAG_EMBED_GGUF_REPO", "deploy/pinned-embedder")
+    monkeypatch.setattr(rag_config, "EMBED_GGUF_REPO", "deploy/pinned-embedder")
+    monkeypatch.setattr(ems, "get_stored_gguf_repo", lambda model: "acme/old-mirror")
+
+    assert settings._embedding_gguf_candidates("acme/embedder") == ["deploy/pinned-embedder"]
+    assert settings._search_hub_for_gguf("acme/embedder", None) is None
 
 
 def test_resolved_mirror_reports_its_exact_downloaded_files_as_cached(client, monkeypatch):

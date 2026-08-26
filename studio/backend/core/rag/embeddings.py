@@ -836,10 +836,23 @@ def _reset_backend() -> None:
         _backend_key = None
 
 
-def backend_is_loaded() -> bool:
-    """Whether an embedder is currently held in this process."""
+def backend_is_loaded(model_name: str | None = None) -> bool:
+    """Whether ``model_name`` is resident, or any embedder when omitted."""
     with _backend_lock:
-        return _backend is not None
+        backend = _backend
+    if backend is None:
+        return False
+    if model_name is None:
+        return True
+    if isinstance(backend, _SentenceTransformersBackend):
+        with _lock:
+            return _model is not None and _name == model_name
+    if _is_llama_backend(backend):
+        try:
+            return backend._model_repo == config.effective_gguf_repo_for_embedding_model(model_name)
+        except Exception:  # noqa: BLE001 - a status probe must never block settings
+            return False
+    return False
 
 
 def release_backend() -> bool:

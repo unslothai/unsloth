@@ -78,8 +78,8 @@ def client(monkeypatch):
     monkeypatch.setattr(settings, "get_stored_embedding_model", lambda: saved.get("model"))
     monkeypatch.setattr(
         settings,
-        "effective_gguf_repo",
-        lambda: f"{saved.get('model', 'unsloth/default-embed')}-GGUF",
+        "effective_gguf_repo_for_embedding_model",
+        lambda model: f"{model or 'unsloth/default-embed'}-GGUF",
     )
     monkeypatch.setattr(
         settings,
