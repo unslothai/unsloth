@@ -45,18 +45,37 @@ export function aggregateGpuMemoryTotalGb(
 export function gpuMemoryTotalsGb(
   devices: MemoryTotalDevice[],
 ): GpuMemoryTotalsGb {
-  const dedicated = roundToDevicePrecision(
+  const dedicatedDevices = roundToDevicePrecision(
     devices
       .filter((device) => !device.shared_memory)
       .reduce((sum, device) => sum + (device.memory_total_gb ?? 0), 0),
   );
-  const shared = roundToDevicePrecision(
-    Math.max(
-      0,
-      ...devices
-        .filter((device) => device.shared_memory)
-        .map((device) => device.memory_total_gb ?? 0),
-    ),
+  const sharedPool = devices
+    .filter((device) => device.shared_memory)
+    .reduce(
+      (largest, device) => {
+        const total = Math.max(0, device.memory_total_gb ?? 0);
+        const hostBackedReported = device.shared_memory_host_backed_gb;
+        const hostBackedKnown = hostBackedReported != null;
+        if (
+          total < largest.total ||
+          (total === largest.total && (!hostBackedKnown || largest.hostBackedKnown))
+        ) {
+          return largest;
+        }
+        return {
+          total,
+          hostBacked: hostBackedKnown
+            ? Math.min(total, Math.max(0, hostBackedReported))
+            : total,
+          hostBackedKnown,
+        };
+      },
+      { total: 0, hostBacked: 0, hostBackedKnown: false },
+    );
+  const shared = roundToDevicePrecision(sharedPool.hostBacked);
+  const dedicated = roundToDevicePrecision(
+    dedicatedDevices + sharedPool.total - sharedPool.hostBacked,
   );
   return {
     dedicated,
