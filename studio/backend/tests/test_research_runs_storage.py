@@ -2786,6 +2786,28 @@ def test_shared_chat_subject_can_follow_and_cancel_research(research_home):
     assert cancelled["status"] == "cancelling"
 
 
+def test_shared_chat_subject_can_repoint_stopped_research(research_home):
+    from routes.research_runs import CreateResearchRun, create_research_run
+
+    _create()
+    _cancel_run()
+    _new_user_message()
+
+    reused = create_research_run(
+        CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "user-2",
+            inferenceRequest = {"model": "local-model"},
+        ),
+        SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
+        current_subject = "bob",
+    )
+
+    assert reused["id"] == "run-1"
+    assert reused["ownerSubject"] == "alice"
+    assert reused["status"] == "planning"
+
+
 def test_list_active_returns_complete_snapshots(research_home):
     _create()
     research_db.set_plan("run-1", _plan())
@@ -3769,7 +3791,6 @@ def _rebind(
 ):
     return research_db.rebind_cancelled(
         thread_id = thread_id,
-        owner_subject = "alice",
         user_message_id = user_message_id,
         assistant_message_id = assistant_message_id,
         config = {
@@ -4050,6 +4071,37 @@ def test_the_new_question_gets_its_own_retry_budget(research_home):
     assert research_db.retry("run-1") == "planning"
 
 
+def test_cancel_route_sync_cannot_cross_a_rebind(research_home):
+    from routes.research_runs import _sync_assistant
+
+    _create()
+    _cancel_run()
+    stopped = research_db.get_run("run-1")
+    assert stopped is not None and stopped["status"] == "cancelled"
+
+    studio_db.upsert_chat_message(
+        {
+            "id": "assistant-2",
+            "threadId": "thread-1",
+            "parentId": "user-2",
+            "role": "assistant",
+            "content": [],
+            "createdAt": 21,
+        }
+    )
+    assert _rebind(_new_user_message(), assistant_message_id = "assistant-2") is not None
+
+    # A cancel request can hold this snapshot while another tab starts the next question.
+    _sync_assistant(stopped)
+
+    current = research_db.get_run("run-1")
+    reply = studio_db.get_chat_message("thread-1", "assistant-2")
+    assert current is not None and current["status"] == "planning"
+    assert current["retryCount"] == 1
+    assert reply["metadata"]["researchStatus"] == "planning"
+    assert reply["metadata"]["researchPlanRevision"] == current["planRevision"]
+
+
 def test_a_stopped_worker_does_not_stamp_cancelled_on_the_next_question(research_home, monkeypatch):
     """The worker finishes a stop, then writes its reply. The user can ask in between.
 
@@ -4077,7 +4129,6 @@ def test_a_stopped_worker_does_not_stamp_cancelled_on_the_next_question(research
             # as the endpoint does for the next armed question.
             research_db.rebind_cancelled(
                 thread_id = "thread-1",
-                owner_subject = "alice",
                 user_message_id = _new_user_message(),
                 assistant_message_id = "assistant-2",
                 config = dict(real_get_run("run-1")["config"]),

@@ -327,7 +327,6 @@ def research_spent(thread_id: str) -> bool:
 def rebind_cancelled(
     *,
     thread_id: str,
-    owner_subject: str,
     user_message_id: str,
     assistant_message_id: str | None,
     config: dict[str, Any],
@@ -342,7 +341,7 @@ def rebind_cancelled(
     try:
         conn.execute("BEGIN IMMEDIATE")
         run = _stopped_run_locked(conn, thread_id)
-        if run is None or run["owner_subject"] != owner_subject:
+        if run is None:
             conn.commit()
             return None
         message = conn.execute(
@@ -402,7 +401,7 @@ def rebind_cancelled(
         raise
     finally:
         conn.close()
-    return get_run(run_id, owner_subject)
+    return get_run(run_id)
 
 
 def _row_to_run(row: sqlite3.Row) -> dict[str, Any]:

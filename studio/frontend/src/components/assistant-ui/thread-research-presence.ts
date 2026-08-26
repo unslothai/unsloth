@@ -30,6 +30,7 @@
 export type ResearchPresenceMessage = { metadata?: unknown };
 
 const presenceByMessages = new WeakMap<object, boolean>();
+const presenceByLiveRun = new WeakMap<object, Map<string, boolean>>();
 
 /**
  * Whether a message holds the thread's spent research: a run that finished.
@@ -41,6 +42,7 @@ const presenceByMessages = new WeakMap<object, boolean>();
  */
 export function messageHasResearchRunId(
   message: ResearchPresenceMessage,
+  liveRunId?: string,
 ): boolean {
   const custom = (
     message.metadata as
@@ -56,6 +58,9 @@ export function messageHasResearchRunId(
   if (typeof custom?.researchRunId !== "string") {
     return false;
   }
+  if (custom.researchRunId === liveRunId) {
+    return false;
+  }
   const status = custom.researchRun?.status ?? custom.researchStatus;
   if (typeof status !== "string") {
     return true;
@@ -66,12 +71,29 @@ export function messageHasResearchRunId(
 /** @param messages the thread's message array, used as the revision key. */
 export function threadHasResearchMessage(
   messages: readonly ResearchPresenceMessage[],
+  liveRunId?: string,
 ): boolean {
+  if (liveRunId) {
+    const knownByRun = presenceByLiveRun.get(messages);
+    const known = knownByRun?.get(liveRunId);
+    if (known !== undefined) {
+      return known;
+    }
+    const answer = messages.some((message) =>
+      messageHasResearchRunId(message, liveRunId),
+    );
+    const next = knownByRun ?? new Map<string, boolean>();
+    next.set(liveRunId, answer);
+    if (!knownByRun) {
+      presenceByLiveRun.set(messages, next);
+    }
+    return answer;
+  }
   const known = presenceByMessages.get(messages);
   if (known !== undefined) {
     return known;
   }
-  const answer = messages.some(messageHasResearchRunId);
+  const answer = messages.some((message) => messageHasResearchRunId(message));
   presenceByMessages.set(messages, answer);
   return answer;
 }

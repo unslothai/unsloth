@@ -137,8 +137,11 @@ def _sync_assistant(run: dict, text: str | None = None) -> None:
             run["id"],
             text = fallback_text,
             status = run["status"],
+            expected_attempt = int(run.get("retryCount") or 0),
         )
         if created:
+            return
+        if not message_id:
             return
     message = get_chat_message(run["threadId"], message_id)
     if message is None:
@@ -167,6 +170,8 @@ def _sync_assistant(run: dict, text: str | None = None) -> None:
             "metadata": metadata,
         },
         allow_research_update = True,
+        expected_research_run_id = run["id"],
+        expected_research_attempt = int(run.get("retryCount") or 0),
     )
 
 
@@ -395,7 +400,6 @@ def create_research_run(
             # than refusing every later one in the chat.
             run = db.rebind_cancelled(
                 thread_id = payload.threadId,
-                owner_subject = current_subject,
                 user_message_id = payload.userMessageId,
                 assistant_message_id = payload.assistantMessageId,
                 config = config,

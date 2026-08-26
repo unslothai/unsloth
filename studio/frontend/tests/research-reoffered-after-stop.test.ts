@@ -72,6 +72,15 @@ test("the live run wins over the stored status, which lags a stop by one write",
   );
 });
 
+test("a live retry overrides the failed status stored on the assistant message", () => {
+  const messages = [
+    message({ researchRunId: "run_1", researchStatus: "failed" }),
+  ];
+
+  assert.equal(threadHasResearchMessage(messages), true);
+  assert.equal(threadHasResearchMessage(messages, "run_1"), false);
+});
+
 test("a thread whose only research reply was stopped reads as unused", () => {
   assert.equal(
     threadHasResearchMessage([
