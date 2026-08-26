@@ -3225,6 +3225,11 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     """
     if getattr(payload, "mcp_enabled", False):
         return False
+    # Armed research appends Studio's own deep_research past every filter below, and no
+    # provider can run it, so such a selection is never purely hosted. Without this the
+    # request proxies through, the tool is never offered and arming research does nothing.
+    if getattr(payload, "deep_research_armed", False):
+        return False
     enabled = getattr(payload, "enabled_tools", None)
     # None means "every local tool"; an empty list selects nothing and never
     # reaches the loop anyway. Neither is a hosted-tool request.
@@ -3918,6 +3923,22 @@ def _full_access_tip(code_tools: list[str]) -> str:
     )
 
 
+# Armed Deep Research. Stated outright because the schema alone does not move a small model
+# off its prior: asked about 2026 it answers from 2024 training data with no sign it is
+# stale, and the base nudge's "otherwise answer normally" reads as permission to do so.
+# The exception is worded without "greetings" on purpose: with that word in the prompt a
+# 1.7B model opens a fresh chat by greeting the user instead of researching the question
+# (0/4 first-turn calls, against 4/4 with this wording).
+_TOOL_RESEARCH_TIP = (
+    "Deep Research is turned on for this conversation. For any question about the world "
+    "-- facts, events, laws, products, papers, prices, comparisons, anything that may have "
+    "changed since your training -- call deep_research instead of answering from memory, "
+    "even when you think you know the answer: the user asked for a researched, cited "
+    "report and your knowledge has a cutoff. If a message has no question in it, such as a "
+    "hello, a thanks, or a remark about you, reply normally. If a topic is too vague to "
+    "research well, ask one short clarifying question first."
+)
+
 _TOOL_ARTIFACT_TIP = (
     "For HTML, CSS, or JavaScript canvas requests, call render_html once when "
     "it is available with one complete self-contained HTML document in the code "
@@ -3952,10 +3973,15 @@ def _build_tool_action_nudge(
     code_tools = [name for name in _LOCAL_CODE_TOOLS if name in tool_names]
     has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
-    if not (has_web or has_code or has_artifact):
+    has_research = "deep_research" in tool_names
+    if not (has_web or has_code or has_artifact or has_research):
         return ""
     if full_access_only:
         return _full_access_tip(code_tools) if (full_access and has_code) else ""
+    date_line = f"The current date is {_date.today().isoformat()}. "
+    if not (has_web or has_code or has_artifact):
+        # Research alone: the base nudge's "otherwise answer normally" would undo the tip.
+        return date_line + _TOOL_RESEARCH_TIP
 
     model_size_b = _extract_model_size_b(model_name)
     compact_web_tip = model_size_b is not None and model_size_b < 9
@@ -3970,12 +3996,9 @@ def _build_tool_action_nudge(
             tool_tip_parts.append(_full_access_tip(code_tools))
     if has_artifact:
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
-    return (
-        f"The current date is {_date.today().isoformat()}. "
-        + _TOOL_BASE_NUDGE
-        + " "
-        + " ".join(tool_tip_parts)
-    )
+    if has_research:
+        tool_tip_parts.append(_TOOL_RESEARCH_TIP)
+    return date_line + _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
 
 # Nudge appended when the RAG knowledge-base tool is active: ground answers in
@@ -4397,6 +4420,13 @@ async def _select_request_tools(
         tools = apply_full_access_tool_descriptions(tools)
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
+    # getattr: callers hand in lighter payload objects than the request models, not all of
+    # which know this field.
+    if getattr(payload, "deep_research_armed", None):
+        # Appended past every filter above, including the tools_on gate: arming research in the
+        # composer is what offers this tool, and it is the only way the model can start a run.
+        from core.inference.tools import DEEP_RESEARCH_TOOL
+        tools = tools + [DEEP_RESEARCH_TOOL]
     return tools
 
 
@@ -14385,6 +14415,57 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
     )
 
 
+def _images_in_last_user_message(messages: list) -> int:
+    """Image parts on the newest user turn.
+
+    Per message, not per thread: only the turn being answered decides whether one
+    call carries several.
+    """
+    for msg in reversed(messages):
+        if msg.role != "user":
+            continue
+        if not isinstance(msg.content, list):
+            return 0
+        return sum(1 for part in msg.content if part.type == "image_url")
+    return 0
+
+
+def _legacy_image_is_distinct(payload) -> bool:
+    """Whether the top-level ``image_base64`` holds an image the messages do not.
+
+    Studio fills that field from the thread, copying the same string the content
+    part was built from, so an echo is byte-equal to the one value
+    ``findLatestUserImageBase64`` could have sent. Anything else was attached to
+    this request and a single-image path would drop it unannounced. Compare
+    against that one value alone: matching any image in the thread let a client
+    resend an older image, or an assistant's, and hid a real attachment.
+    """
+    if not payload.image_base64:
+        return False
+    return _latest_user_image_payload(payload.messages) != payload.image_base64
+
+
+def _latest_user_image_payload(messages: list) -> "Optional[str]":
+    """The value ``findLatestUserImageBase64`` would put in ``image_base64``.
+
+    Its scan order: newest turn first, user turns only, first image part, ``data:``
+    prefix stripped the way :func:`_extract_content_parts` strips it. A part that
+    yields nothing does not end the scan, since the frontend walks on past a falsy
+    read; stopping on one refused Studio's echo of a valid earlier image.
+    """
+    for msg in reversed(messages):
+        if msg.role != "user" or not isinstance(msg.content, list):
+            continue
+        for part in msg.content:
+            if part.type != "image_url":
+                continue
+            url = part.image_url.url
+            encoded = url.partition(",")[2] if url.startswith("data:") else url
+            if encoded:
+                return encoded
+    return None
+
+
 # ── External provider proxy ──────────────────────────────────────
 
 
@@ -16175,6 +16256,17 @@ async def openai_chat_completions(
                     "request to a text model to use guided decoding.",
                 )
             _reject_audio_output_continuation(payload)
+            # Returns before every image check and speaks the newest user TEXT, so
+            # an attached image would go unread. Nothing is running yet, so a bare
+            # raise leaves nothing open.
+            if _images_in_last_user_message(payload.messages) or _legacy_image_is_distinct(payload):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "This model generates speech and does not read images."
+                        " Load a vision model to send one."
+                    ),
+                )
             return await _monitored_generate_audio(
                 model_name,
                 context_length = llama_backend.context_length,
@@ -16209,6 +16301,17 @@ async def openai_chat_completions(
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("non-GGUF audio chat completions")
             _reject_audio_output_continuation(payload)
+            # Same as the GGUF branch above: generate_audio speaks the newest user
+            # TEXT, so an attached image is dropped without a word, and this early
+            # return is why the text-only check below never sees it. No row open yet.
+            if _images_in_last_user_message(payload.messages) or _legacy_image_is_distinct(payload):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "This model generates speech and does not read images."
+                        " Load a vision model to send one."
+                    ),
+                )
             return await _monitored_generate_audio(model_name)
 
         # ── Whisper without audio: return clear error ──
@@ -16240,6 +16343,18 @@ async def openai_chat_completions(
                     status_code = 400,
                     detail = "continue_final_message is not supported with audio input.",
                 )
+            # Only the audio is forwarded, so an image on the turn is dropped on the
+            # floor; one is discarded as silently as two. An image on an EARLIER turn
+            # is deliberately allowed, since history images were never forwarded and
+            # refusing would break asking by voice about a picture attached before.
+            # api_monitor directly: _reject is not bound this early in the handler.
+            if _images_in_last_user_message(payload.messages) or _legacy_image_is_distinct(payload):
+                _audio_image_detail = (
+                    "This model takes audio or an image in one message, not both."
+                    " Send the image on its own turn."
+                )
+                api_monitor.fail(monitor_id, _audio_image_detail)
+                raise HTTPException(status_code = 400, detail = _audio_image_detail)
             try:
                 audio_array = _decode_audio_base64(payload.audio_base64)
                 system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
@@ -16473,7 +16588,6 @@ async def openai_chat_completions(
 
     def _reject_missing_forced_tool(tool_choice, selected_tools) -> None:
         from core.inference.chat_template_helpers import catalog_tool_names, forced_tool_name
-
         forced_name = forced_tool_name(tool_choice)
         if forced_name and forced_name not in catalog_tool_names(selected_tools):
             raise _reject(
@@ -18311,32 +18425,60 @@ async def openai_chat_completions(
     # Decode image (from content parts OR legacy field)
     image_b64 = extracted_image_b64 or payload.image_base64
     image = None
+    # Image PARTS, not the ones extraction could decode: only a data URL yields
+    # base64, so a turn holding several remote or empty image URLs has no image_b64
+    # at all, and counting decoded images would let exactly those slip past. One
+    # undecodable image is left alone, since it is not a multi-image call.
+    images_on_turn = _images_in_last_user_message(payload.messages)
 
-    if image_b64:
+    if image_b64 or images_on_turn > 1:
         try:
             model_info = backend.models.get(backend.active_model_name, {})
             if not model_info.get("is_vision"):
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Image provided but current model is text-only. Load a vision model.",
+                # _reject, not a bare raise: the monitor row is open by here, and one
+                # left running keeps Studio reporting the backend as generating after
+                # the request has already been answered with a 400.
+                raise _reject(
+                    400,
+                    "Image provided but current model is text-only. Load a vision model.",
                 )
 
-            image = await asyncio.to_thread(
-                _decode_and_resize_image,
-                backend,
-                image_b64,
-            )
+            # A distinct legacy image is a second image the caller supplied, so it
+            # joins the structural count. The second clause covers what the count
+            # misses, a turn with no part while an earlier one has: selection is
+            # `extracted_image_b64 or image_base64`, so the legacy one goes unread.
+            _legacy_is_distinct = _legacy_image_is_distinct(payload)
+            if images_on_turn + int(_legacy_is_distinct) > 1 or (
+                extracted_image_b64 and _legacy_is_distinct
+            ):
+                raise _reject(
+                    400,
+                    (
+                        "This model takes one image per message. Attach one, or load a"
+                        " GGUF build of it, which accepts several."
+                    ),
+                )
+
+            if image_b64:
+                image = await asyncio.to_thread(
+                    _decode_and_resize_image,
+                    backend,
+                    image_b64,
+                )
 
         except HTTPException:
             raise
         except Exception as e:
-            raise log_and_http_error(
+            # log_and_http_error knows nothing about the monitor row, so hand its
+            # public detail to _reject and close the row like the refusals above.
+            decode_error = log_and_http_error(
                 e,
                 400,
                 "Failed to decode image",
                 event = "inference.decode_image_failed",
                 log = logger,
             )
+            raise _reject(decode_error.status_code, decode_error.detail)
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
@@ -23692,9 +23834,7 @@ async def anthropic_messages(
         server_tool_choice = openai_tool_choice
         if isinstance(server_tool_choice, dict):
             forced_function = server_tool_choice.get("function")
-            forced_name = (
-                forced_function.get("name") if isinstance(forced_function, dict) else None
-            )
+            forced_name = forced_function.get("name") if isinstance(forced_function, dict) else None
             canonical_name = _STUDIO_ANTHROPIC_TOOL_ALIASES.get(forced_name)
             if canonical_name:
                 server_tool_choice = {
