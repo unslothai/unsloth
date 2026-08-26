@@ -305,7 +305,7 @@ def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, mo
             "thread_id": "t1",
             "project_id": "p1",
             "autoinject": False,
-            "context_length": 2200,
+            "context_length": 3000,
             "response_headroom": 1024,
         },
     )
@@ -321,14 +321,14 @@ def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, mo
     ]
     assert calls[0]["min_dense_score"] is None
     assert calls[0]["top_k"] == 4
-    # 2200 context - 1024 headroom - prompt - 512 overhead leaves room for one
+    # 3000 context - 1024 headroom - prompt - 512 overhead leaves room for one
     # 1600-char passage plus the project hit, not for all four.
     assert injected.count("x" * 1600) == 1
 
 
 def test_build_rag_autoinject_zero_budget_still_grounds(rag_conn, monkeypatch):
-    # A context too small to leave any whole-doc budget must not silently drop
-    # the attachment: "no room to measure" is not "inject nothing".
+    # With auto-injection ON the fallback is unbudgeted, so a context too small
+    # to leave any whole-doc budget must not silently drop the attachment.
     _add_doc(
         rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
     )
@@ -338,8 +338,7 @@ def test_build_rag_autoinject_zero_budget_still_grounds(rag_conn, monkeypatch):
     for scope in (
         # A context smaller than headroom + overhead.
         {"thread_id": "t1", "autoinject": True, "context_length": 1200},
-        {"thread_id": "t1", "autoinject": False, "context_length": 1200},
-        {"thread_id": "t1", "autoinject": False, "context_length": 512},
+        {"thread_id": "t1", "autoinject": True, "context_length": 512},
         # Headroom at or above the whole context: same zero budget.
         {"thread_id": "t1", "autoinject": True, "context_length": 8192, "response_headroom": 8192},
         {
@@ -350,17 +349,17 @@ def test_build_rag_autoinject_zero_budget_still_grounds(rag_conn, monkeypatch):
         },
         # A sidebar top-K of 0 must not be read as "already at the minimum".
         {"thread_id": "t1", "autoinject": True, "context_length": 2048, "default_top_k": 0},
-        {"thread_id": "t1", "autoinject": False, "context_length": 2048, "default_top_k": 0},
     ):
         result = inf_tools.build_rag_autoinject(_convo(), scope)
         assert result is not None, scope
         assert _injected_text(result) == "TOPK_ZERO_BUDGET", scope
 
 
-def test_build_rag_autoinject_zero_budget_grounds_with_one_passage(rag_conn, monkeypatch):
-    # Grounding survives a zero budget, but only just: a measured "no room left"
-    # keeps the single mandatory passage, not the whole top-K, which would add
-    # several chunks to a turn that has no tokens left for them.
+def test_build_rag_autoinject_refuses_when_not_even_one_passage_fits(rag_conn, monkeypatch):
+    # The block joins the current turn, which the rolling window may not evict, so
+    # admitting a passage that does not fit fails the whole request instead of
+    # degrading the answer. When nothing fits, inject nothing, which is what main
+    # does on this path anyway.
     _add_doc(
         rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
     )
@@ -375,8 +374,14 @@ def test_build_rag_autoinject_zero_budget_grounds_with_one_passage(rag_conn, mon
     monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
     scope = {"thread_id": "t1", "autoinject": False, "context_length": 1200}
     assert inf_tools._whole_doc_budget(scope, _convo()) == 0
-    injected = _injected_text(inf_tools.build_rag_autoinject(_convo(), scope))
-    assert injected.count('<chunk id="') == 1
+    assert inf_tools.build_rag_autoinject(_convo(), scope) is None
+    # Auto-injection ON is the pre-existing unbudgeted path and is unaffected.
+    assert (
+        inf_tools.build_rag_autoinject(
+            _convo(), {"thread_id": "t1", "autoinject": True, "context_length": 1200}
+        )
+        is not None
+    )
 
 
 def test_build_rag_autoinject_enabled_path_stays_unbudgeted(rag_conn, monkeypatch):
@@ -483,19 +488,19 @@ def test_build_rag_autoinject_keeps_the_project_hits_that_fit(rag_conn, monkeypa
                 "thread_id": "t1",
                 "project_id": "p1",
                 "autoinject": False,
-                "context_length": 4096,
+                "context_length": 8192,
                 "response_headroom": 1024,
             },
         )
     )
     assert "T" * 8000 in injected
-    assert injected.count("P" * 2000) == 1
+    # Some project passages survive beside the thread result, but not all four.
+    assert 1 <= injected.count("P" * 2000) < 4
 
 
-def test_build_rag_autoinject_budget_counts_multibyte_text_by_bytes(rag_conn, monkeypatch):
-    # A CJK character is about one token but three UTF-8 bytes, so a character/4
-    # estimate reads this block as a quarter of its real size and admits an
-    # injection that overflows the context. ASCII is unaffected.
+def test_build_rag_autoinject_budget_charges_multibyte_text_more(rag_conn, monkeypatch):
+    # A CJK character is about one token where ASCII runs four to one, so the same
+    # character count costs several times more and far less of it fits.
     _add_doc(
         rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
     )
@@ -513,16 +518,17 @@ def test_build_rag_autoinject_budget_counts_multibyte_text_by_bytes(rag_conn, mo
         "context_length": 4096,
         "response_headroom": 1024,
     }
-    # Same character count either way; only the encoded size differs.
-    monkeypatch.setattr(tool, "search_for_autoinject", make_search("a" * 2000))
-    ascii_chunks = _injected_text(inf_tools.build_rag_autoinject(_convo(), scope)).count(
-        '<chunk id="'
-    )
-    monkeypatch.setattr(tool, "search_for_autoinject", make_search("漢" * 2000))
-    cjk_chunks = _injected_text(inf_tools.build_rag_autoinject(_convo(), scope)).count(
-        '<chunk id="'
-    )
-    assert ascii_chunks == 4
+
+    # Same character count either way; only the per-character token cost differs.
+    def _chunks(body):
+        monkeypatch.setattr(tool, "search_for_autoinject", make_search(body))
+        result = inf_tools.build_rag_autoinject(_convo(), scope)
+        # None means not even one passage fit, which is zero chunks admitted.
+        return _injected_text(result).count('<chunk id="') if result else 0
+
+    ascii_chunks = _chunks("a" * 2000)
+    cjk_chunks = _chunks("漢" * 2000)
+    assert ascii_chunks >= 1
     assert cjk_chunks < ascii_chunks
 
 

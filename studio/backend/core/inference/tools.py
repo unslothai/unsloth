@@ -10997,6 +10997,11 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
     top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
     budget: int | None = None
+    # The window the budget was sized against, so `_text_token_cost` only trusts a
+    # resident GGUF that is actually serving this same window.
+    ctx_tokens = (
+        _opt_int(rag_scope.get("context_length") or rag_scope.get("max_context_tokens")) or 0
+    )
 
     # Whole-document mode: a thread-attached file under budget is injected in
     # full. A KB selection is exclusive so whole-doc never preempts it; project
@@ -11034,34 +11039,37 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
 
     def _fits(candidate_text, max_tokens) -> bool:
         # A budget of None means the estimate itself failed, so there is nothing
-        # to enforce. Zero is the opposite: a measured "no room left", where
-        # nothing fits and _trim falls back to the single mandatory passage
-        # rather than keeping the whole top-K.
+        # to enforce. Zero is the opposite: a measured "no room left".
         if max_tokens is None:
             return True
         if max_tokens <= 0:
             return False
-        # The house estimator for this exact hazard: a block that lands in the
-        # current tool exchange, which the window is not allowed to evict. It
-        # charges non-ASCII a token per character rather than the shared
-        # four-characters-per-token rule, which reads CJK at a quarter of its
-        # real size. Same value as that rule on pure ASCII.
-        return _conversation_search_tokens(candidate_text) <= max_tokens
+        # Priced by the serving GGUF when it can price this window, and
+        # deliberately doubled when it cannot. That doubling is the point: it is
+        # what stops dense ASCII (source code, minified JSON, hashes, which run
+        # nearer two characters per token) being charged the English four and
+        # admitted at half its real cost.
+        return _text_token_cost(candidate_text, ctx_tokens) <= max_tokens
 
     def _trim(hit_text, hit_sources, max_tokens):
-        """Drop passages from the tail until the rendered block fits.
+        """Drop passages from the tail until the rendered block fits, else give up.
 
         Re-renders only when something is actually dropped, so an untrimmed
-        result is returned exactly as retrieval built it. The first passage
-        survives even when it alone overflows: on the mandatory-grounding path
-        the alternative is dropping the attachment from the request, which is
-        the bug this branch exists to fix.
+        result is returned exactly as retrieval built it.
+
+        When even the highest-ranked passage will not fit, this returns None
+        rather than admitting it anyway. The block joins the current turn, which
+        the rolling window is not allowed to evict, so an overflowing injection
+        does not degrade the answer, it fails the whole request with a
+        context-length error. Losing the attachment is bad, which is what this
+        branch exists to fix, but it is what main already does here, and it
+        beats returning an error instead of an answer.
         """
         kept, rendered = list(hit_sources), hit_text
         while len(kept) > 1 and not _fits(rendered, max_tokens):
             kept = kept[:-1]
             rendered = render_sources(kept)
-        return rendered, kept
+        return (rendered, kept) if _fits(rendered, max_tokens) else None
 
     def retrieve(*, max_tokens = None, **scope):
         found = search_for_autoinject(query = query, top_k = top_k, **scope)
@@ -11103,7 +11111,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                         # project, so this keeps the passages that fit beside the
                         # thread result instead of dropping every one of them.
                         merged = found[1] + proj[1]
-                        found = _trim(render_sources(merged), merged, budget)
+                        found = _trim(render_sources(merged), merged, budget) or found
             else:
                 found = retrieve(
                     scope_kb_id = rag_scope.get("kb_id"),
