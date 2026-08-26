@@ -596,7 +596,11 @@ class TestHardenedPolicyIsAnnounced:
     it found and the variable that keeps them.
     """
 
-    def _names(self, env: dict, pip_config: str = ""):
+    def _names(
+        self,
+        env: dict,
+        pip_config: str = "",
+    ):
         ips._detected_policy.cache_clear()
         result = mock.Mock(returncode = 0, stdout = pip_config.encode())
         with (
@@ -749,7 +753,13 @@ class TestTheOptOutIsNotDefeatedByOurOwnEscapeHatches:
 class TestConfigDetectionReadsValuesNotJustKeys:
     """The notice is only worth printing if it is accurate in both directions."""
 
-    def _names(self, environment, pip_ok = False, pip_config = "", uv_files = ()):
+    def _names(
+        self,
+        environment,
+        pip_ok = False,
+        pip_config = "",
+        uv_files = (),
+    ):
         ips._detected_policy.cache_clear()
         runner = (
             mock.Mock(return_value = mock.Mock(returncode = 0, stdout = pip_config.encode()))
@@ -824,8 +834,9 @@ class TestConfigDetectionReadsValuesNotJustKeys:
         notice runs `python -m pip config list` fails -- while the pip FALLBACK later in
         the same install reads pip.conf perfectly well."""
         config = tmp_path / "pip.conf"
-        config.write_text("[global]\nrequire-hashes = true\nindex-url = https://m/s\n",
-                          encoding = "utf-8")
+        config.write_text(
+            "[global]\nrequire-hashes = true\nindex-url = https://m/s\n", encoding = "utf-8"
+        )
         ips._detected_policy.cache_clear()
         with (
             mock.patch.dict(os.environ, {}, clear = True),
@@ -846,9 +857,11 @@ class TestConfigDetectionReadsValuesNotJustKeys:
         with (
             mock.patch.dict(os.environ, {}, clear = True),
             mock.patch.object(
-                ips.subprocess, "run",
-                mock.Mock(return_value = mock.Mock(
-                    returncode = 0, stdout = b"global.require-hashes='true'\n")),
+                ips.subprocess,
+                "run",
+                mock.Mock(
+                    return_value = mock.Mock(returncode = 0, stdout = b"global.require-hashes='true'\n")
+                ),
             ),
             mock.patch.object(ips, "_hardened_uv_config_paths", lambda: []),
             mock.patch.object(ips, "_hardened_pip_config_paths", lambda: [str(config)]),
@@ -889,9 +902,7 @@ class TestConfigDetectionReadsValuesNotJustKeys:
             macos = [path.replace(os.sep, "/") for path in ips._hardened_pip_config_paths()]
         assert "/home/u/Library/Application Support/pip/pip.conf" in macos
         with (
-            mock.patch.dict(
-                os.environ, {"APPDATA": "C:\\a", "PROGRAMDATA": "C:\\pd"}, clear = True
-            ),
+            mock.patch.dict(os.environ, {"APPDATA": "C:\\a", "PROGRAMDATA": "C:\\pd"}, clear = True),
             mock.patch.object(ips, "IS_WINDOWS", True),
             mock.patch.object(os.path, "isfile", lambda path: True),
         ):
@@ -912,9 +923,7 @@ class TestConfigDetectionReadsValuesNotJustKeys:
         # And the other order still reports it, so the resolution is precedence, not
         # "an off value anywhere wins".
         listing = "global.require-hashes='false'\nglobal.require-hashes='true'\n"
-        assert self._names({}, pip_ok = True, pip_config = listing) == (
-            "pip.conf require-hashes",
-        )
+        assert self._names({}, pip_ok = True, pip_config = listing) == ("pip.conf require-hashes",)
 
     def test_file_precedence_is_resolved_when_pip_is_missing(self, tmp_path):
         """The same resolution in the branch this feature exists for: no pip at all."""
@@ -928,9 +937,7 @@ class TestConfigDetectionReadsValuesNotJustKeys:
             mock.patch.object(ips.subprocess, "run", mock.Mock(side_effect = OSError)),
             mock.patch.object(ips, "_hardened_uv_config_paths", lambda: []),
             # Returned in pip's load order, so the site file is last and wins.
-            mock.patch.object(
-                ips, "_hardened_pip_config_paths", lambda: [str(user), str(site)]
-            ),
+            mock.patch.object(ips, "_hardened_pip_config_paths", lambda: [str(user), str(site)]),
         ):
             names = ips._hardened_pm_policy_names()
         ips._detected_policy.cache_clear()
@@ -1029,8 +1036,11 @@ class TestNeitherManagerIsLetOffTheOthersPolicy:
         opt-out discarded the operator's policy file."""
         with mock.patch.dict(
             os.environ,
-            {"UNSLOTH_RESPECT_PM_POLICY": "1", "UV_CONFIG_FILE": "/etc/uv/uv.toml",
-             "UV_INDEX_URL": "https://mirror.corp/simple"},
+            {
+                "UNSLOTH_RESPECT_PM_POLICY": "1",
+                "UV_CONFIG_FILE": "/etc/uv/uv.toml",
+                "UV_INDEX_URL": "https://mirror.corp/simple",
+            },
             clear = True,
         ):
             env = ips._install_env_for_cmd(
@@ -1068,8 +1078,9 @@ class TestTheLegacyTomlFallbackTracksTables:
         body = "no-build = true\n[pip]\nrequire-hashes = true\n"
         assert self._keys(body, ((), ("pip",))) == ["no-build", "require-hashes"]
 
-    @pytest.mark.parametrize("value, on", [("[]", False), ("[ ]", False),
-                                           ("{}", False), ('["torch"]', True)])
+    @pytest.mark.parametrize(
+        "value, on", [("[]", False), ("[ ]", False), ("{}", False), ('["torch"]', True)]
+    )
     def test_empty_collections_are_off(self, value, on):
         keys = self._keys(f"no-build-package = {value}\n", ((),))
         assert bool(keys) is on
@@ -1134,9 +1145,7 @@ class TestPipGlobalConfigFollowsXdg:
             paths = [path.replace(os.sep, "/") for path in ips._hardened_pip_config_paths()]
         assert "/Library/Application Support/pip/pip.conf" in paths
         with (
-            mock.patch.dict(
-                os.environ, {"HOME": "/home/u", "XDG_DATA_DIRS": "/d"}, clear = True
-            ),
+            mock.patch.dict(os.environ, {"HOME": "/home/u", "XDG_DATA_DIRS": "/d"}, clear = True),
             _posix_home(),
             mock.patch.object(ips, "IS_WINDOWS", False),
             mock.patch.object(ips, "IS_MACOS", True),
@@ -1199,19 +1208,20 @@ class TestPolicyEnvIsPlatformAndHardwareInvariant:
                     answers.add(
                         None
                         if result is None
-                        else repr(sorted(
-                            (k, v) for k, v in result.items()
-                            if k.startswith(("PIP_", "UV_"))
-                        ))
+                        else repr(
+                            sorted(
+                                (k, v) for k, v in result.items() if k.startswith(("PIP_", "UV_"))
+                            )
+                        )
                     )
                     if result is not None:
                         for name, value in markers.items():
-                            assert result[name] == value, (
-                                f"{accelerator} marker {name} was dropped on {platform}"
-                            )
-            assert len(answers) == 1, (
-                f"{command} produced different environments across platforms: {answers}"
-            )
+                            assert (
+                                result[name] == value
+                            ), f"{accelerator} marker {name} was dropped on {platform}"
+            assert (
+                len(answers) == 1
+            ), f"{command} produced different environments across platforms: {answers}"
 
 
 class TestTheNoticeCannotTakeAnInstallDown:
@@ -1232,7 +1242,8 @@ class TestTheNoticeCannotTakeAnInstallDown:
         with (
             mock.patch.dict(os.environ, {"PIP_REQUIRE_HASHES": "1"}, clear = True),
             mock.patch.object(
-                ips.subprocess, "run",
+                ips.subprocess,
+                "run",
                 mock.Mock(side_effect = ips.subprocess.TimeoutExpired("pip", 30)),
             ),
             mock.patch.object(ips, "_hardened_uv_config_paths", lambda: []),
@@ -1277,9 +1288,7 @@ class TestTheNoticeCannotTakeAnInstallDown:
         assert "/home/u/.config/uv/uv.toml" in posix
         assert "/etc/uv/uv.toml" in posix
         with (
-            mock.patch.dict(
-                os.environ, {"APPDATA": "C:\\a", "PROGRAMDATA": "C:\\pd"}, clear = True
-            ),
+            mock.patch.dict(os.environ, {"APPDATA": "C:\\a", "PROGRAMDATA": "C:\\pd"}, clear = True),
             mock.patch.object(ips, "IS_WINDOWS", True),
             mock.patch.object(os.path, "isfile", lambda path: True),
         ):

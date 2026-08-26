@@ -4853,9 +4853,7 @@ def _hardened_pip_config_paths() -> "list[str]":
         # pip 26, `XDG_CONFIG_DIRS=/a:/b pip config debug` enumerates /a/pip/pip.conf and
         # /b/pip/pip.conf. macOS reads its global set from XDG_DATA_DIRS instead, falling
         # back to /Library/Application Support.
-        directories = os.environ.get(
-            "XDG_DATA_DIRS" if IS_MACOS else "XDG_CONFIG_DIRS", ""
-        ).strip()
+        directories = os.environ.get("XDG_DATA_DIRS" if IS_MACOS else "XDG_CONFIG_DIRS", "").strip()
         if directories:
             for directory in directories.split(os.pathsep):
                 if directory.strip():
@@ -4901,8 +4899,9 @@ def _hardened_settings_in_ini(text: str) -> "dict[str, str]":
 
 def _hardened_keys_in_ini(text: str) -> "list[str]":
     """Hardened keys switched ON in a single pip.conf."""
-    return [key for key, value in _hardened_settings_in_ini(text).items()
-            if _config_value_is_on(value)]
+    return [
+        key for key, value in _hardened_settings_in_ini(text).items() if _config_value_is_on(value)
+    ]
 
 
 def _read_text(path: str) -> "str | None":
@@ -4995,10 +4994,12 @@ def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
 
 def _hardened_pm_policy_names() -> "tuple[str, ...]":
     """The detected policy, as the notice prints it."""
-    return tuple(dict.fromkeys(
-        key if source == "env" else f"{source} {key}"
-        for _tool, source, key in _detected_policy()
-    ))
+    return tuple(
+        dict.fromkeys(
+            key if source == "env" else f"{source} {key}"
+            for _tool, source, key in _detected_policy()
+        )
+    )
 
 
 # pip and uv spell the same three controls differently and read none of each other's.
@@ -5015,9 +5016,7 @@ def _translated_policy_env(cmd: "list[str]") -> "dict[str, str]":
     if not _respect_pm_policy():
         return {}
     target = "uv" if cmd[:1] == ["uv"] else "pip"
-    source_keys = {
-        key.lower() for tool, _source, key in _detected_policy() if tool != target
-    }
+    source_keys = {key.lower() for tool, _source, key in _detected_policy() if tool != target}
     if not source_keys:
         return {}
 
@@ -5046,9 +5045,7 @@ def _translated_policy_env(cmd: "list[str]") -> "dict[str, str]":
         if _on("UV_ONLY_BINARY", "UV_ONLY_BINARY_PACKAGE", "only-binary"):
             overrides["PIP_ONLY_BINARY"] = ":all:"
     return {
-        name: value
-        for name, value in overrides.items()
-        if not os.environ.get(name, "").strip()
+        name: value for name, value in overrides.items() if not os.environ.get(name, "").strip()
     }
 
 
