@@ -1403,7 +1403,7 @@ class ExternalProviderClient:
                                                         continue
                                                     for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
-                        # Verbatim relay, minus Studio's own UI control protocol:
+                        # Verbatim relay, minus Unsloth's own UI control protocol:
                         # the frames this server writes to paint tool cards ride
                         # the same stream, so an endpoint that echoes them forges
                         # a card for a tool that never ran.
@@ -1646,7 +1646,7 @@ class ExternalProviderClient:
                                 break
                             if line.strip():
                                 # Same rule as the main relay: never let the
-                                # endpoint speak Studio's control vocabulary.
+                                # endpoint speak Unsloth's control vocabulary.
                                 relayed = sanitize_provider_sse_line(line)
                                 if relayed is not None:
                                     yield relayed
@@ -1782,7 +1782,7 @@ class ExternalProviderClient:
                                                         str(ann.get("type") or "?")
                                                     )
                         # Same rule as the main relay: never let the endpoint
-                        # speak Studio's control vocabulary.
+                        # speak Unsloth's control vocabulary.
                         relayed = sanitize_provider_sse_line(line)
                         if relayed is None:
                             continue
@@ -4865,7 +4865,7 @@ class ExternalProviderClient:
                 # OpenAI requires the reasoning items that came back alongside a
                 # tool call to be replayed with the function_call /
                 # function_call_output pair whenever the history is managed by
-                # hand, which is exactly what the Studio tool loop does: "any
+                # hand, which is exactly what the Unsloth tool loop does: "any
                 # reasoning items returned in model responses with tool calls
                 # must also be passed back with tool call outputs"
                 # (https://developers.openai.com/api/docs/guides/function-calling).

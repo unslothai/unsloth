@@ -217,7 +217,7 @@ fn mutation_blocker_from_probe(
         }
         // An id-less backend may be this install serving from a terminal, in
         // which case rewriting the venv underneath it would break it. It may
-        // equally be a remote Studio behind a port forward, and refusing on
+        // equally be a remote Unsloth behind a port forward, and refusing on
         // that leaves a stale install with no way to repair itself, since
         // repair is what the app runs automatically. The local per-port record
         // is what tells the two apart, so it, not the port, decides.
@@ -1198,7 +1198,7 @@ exit 1
         ));
     }
 
-    /// The report this came from: an id-less Studio answered on a candidate
+    /// The report this came from: an id-less Unsloth answered on a candidate
     /// port, and a perfectly healthy install refused to launch at all.
     #[test]
     fn an_unrelated_backend_does_not_block_a_launch() {

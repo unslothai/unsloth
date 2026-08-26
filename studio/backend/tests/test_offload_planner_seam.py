@@ -311,7 +311,7 @@ def test_an_abstaining_plan_emits_no_flags():
 
 
 def test_a_plan_that_already_fits_emits_no_flags():
-    """The planner disagreeing with Studio ("it fits after all") is not licence
+    """The planner disagreeing with Unsloth ("it fits after all") is not licence
     to pin every layer and turn the fitter off."""
     got = _plan(_Stub(), free_mib = 200 * 1024)
     assert got is not None and not got.spills_anything
@@ -321,7 +321,7 @@ def test_a_plan_that_already_fits_emits_no_flags():
 def test_the_measured_cache_floors_the_planners_own_estimate():
     """layout.kv_bytes is a bare f16 GQA product with no cache-dtype, SWA, MLA,
     stream or padding term, so on an MLA or f32-cache load it lands under the
-    cache Studio already sized. Under is the dangerous direction: the deficit
+    cache Unsloth already sized. Under is the dangerous direction: the deficit
     comes out small, too few blocks spill, and --fit off follows the plan."""
     stub = _Stub()
     layout = stub._tensor_spill_layout("/models/stub.gguf")
@@ -577,7 +577,7 @@ def test_the_projector_and_mtp_reserve_reach_the_planner():
     """The layout is rebuilt from the target GGUF's tensor table, so a vision
     projector and the MTP draft reserve are invisible to it -- yet both are in
     the model_size_fit that produced the use_fit verdict this arm answers.
-    Leaving them out makes the deficit too small on exactly the loads Studio
+    Leaving them out makes the deficit too small on exactly the loads Unsloth
     already judged not to fit, and the launch then follows that with --fit off.
     """
     stub = _Stub()
@@ -672,7 +672,7 @@ def test_an_engaged_draft_charges_the_excluded_mtp_blocks():
     (common/common.cpp:1713), which clears the TENSOR_SKIP those blocks
     otherwise carry (models/glm4-moe.cpp:42-44,
     llama-model-loader.cpp:1123-1131), and i_gpu_start counting backwards from
-    n_layer_all (llama-model.cpp:1449) places them on a GPU first. Studio's own
+    n_layer_all (llama-model.cpp:1449) places them on a GPU first. Unsloth's own
     budget already paid for them -- an embedded head contributes 0 to the draft
     weights precisely because they sit inside model_size -- so leaving them out
     here makes the deficit too small, which is the optimistic direction.
@@ -742,7 +742,7 @@ def test_the_compute_buffer_reaches_the_planner():
 
 def test_the_seam_hands_the_planner_raw_free_vram_for_the_split():
     """llama.cpp sizes its row ranges from raw free VRAM and knows nothing about
-    Studio's budget, so the seam has to pass the raw numbers separately. Observed
+    Unsloth's budget, so the seam has to pass the raw numbers separately. Observed
     through the call rather than the source: the planner records what it was
     given."""
     seen = {}
@@ -783,7 +783,7 @@ def test_a_pinned_draft_device_declines_the_plan():
 
 
 def test_a_pass_through_parallel_that_grows_the_cache_declines_the_plan():
-    """Slots are sizing, not placement. Studio's --parallel is emitted first and
+    """Slots are sizing, not placement. Unsloth's --parallel is emitted first and
     the extras are appended after it, so a larger pass-through wins at the child
     while the deficit here was priced for the smaller count -- too few blocks
     spilled, then pinned with --fit off. A SMALLER one only over-reserves, which

@@ -89,7 +89,7 @@ _QUIET_POLL_PATHS = {
 # question ("the server is up and answering"), and the SPA fires them together in one
 # burst, so heartbeating them independently emits one line per path per window instead
 # of one line per window. They share a single bucket: the first of the burst logs with
-# its real path, the rest of that window is dropped. Measured over four Studio sessions
+# its real path, the rest of that window is dropped. Measured over four Unsloth sessions
 # these were 39-69% of the access log and the shared bucket removed 25-47% of it.
 #
 # Only this group is shared. The other _QUIET_POLL_PATHS entries (/api/train/runs,

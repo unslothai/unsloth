@@ -876,7 +876,7 @@ export const ja = {
         tokensIn: "送信トークン",
         tokensOut: "生成トークン",
         totalTokens: "合計トークン",
-        studioChatTokens: "Studio Chat トークン",
+        studioChatTokens: "Unsloth Chat トークン",
         apiTokens: "API トークン",
         cachedTokens: "キャッシュされたトークン",
         cachedValue: "{tokens} (入力の {percent}%)",
@@ -1327,7 +1327,7 @@ export const ja = {
         title: "ウェブ検索",
         images: "ウェブ検索の画像を表示",
         imagesDescription:
-          "ウェブ検索で画像も取得し、回答に列挙された項目ごとに1枚ずつ探します。サムネイルは Studio が取得して縮小するため、ブラウザが画像ホストに接続することはありません。",
+          "ウェブ検索で画像も取得し、回答に列挙された項目ごとに1枚ずつ探します。サムネイルは Unsloth が取得して縮小するため、ブラウザが画像ホストに接続することはありません。",
       },
       artifacts: {
         title: "Canvas",
@@ -1347,7 +1347,7 @@ export const ja = {
       exportingAction: "エクスポート中...",
       exportConversations: "履歴とプロジェクトをエクスポート",
       exportConversationsDescription:
-        "履歴、または履歴とプロジェクトのチャットを、Raw JSONL、CSV、ShareGPT JSONL のいずれかで、一括またはチャットごとにダウンロードします。",
+        "履歴、または履歴とプロジェクトのチャットを、Training JSONL、CSV、ShareGPT JSONL のいずれかで、一括またはチャットごとにダウンロードします。Message JSONL はチャットごとのみ利用できます。",
       exportConversationsAction: "エクスポート",
       exportScopeRecents: "履歴",
       exportScopeAll: "履歴 + プロジェクト",

@@ -933,7 +933,7 @@ def _full_weight_embedding_elements(arch: ModelArchConfig, target_modules) -> in
 def compute_lora_params(arch: ModelArchConfig, lora_rank: int, target_modules: list) -> int:
     all_linear = _targets_all_linear(target_modules)
     selected_modules = list(DEFAULT_TARGET_MODULES) if all_linear else target_modules
-    # Studio's CPT path hands the trainer everything but the embedding names, where an
+    # Unsloth's CPT path hands the trainer everything but the embedding names, where an
     # empty remainder becomes the default projections and "all-linear" expands to them
     # (worker.py). Count those, or the estimate picks a GPU that then OOMs.
     if not all_linear and _full_weight_embedding_elements(arch, target_modules):

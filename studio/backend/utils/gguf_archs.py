@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-# ``general.architecture`` values naming a speech or neural-codec checkpoint that no Studio
+# ``general.architecture`` values naming a speech or neural-codec checkpoint that no Unsloth
 # runtime can decode: llama.cpp has no CSM decoder (still an unmerged upstream PR) and no
 # media backend reads one either. Published CSM GGUFs do not agree on a spelling, so all four
 # on the Hub today are listed: ggml-org "llama-csm", cartesia "csm", cstr "csm-tts", and a

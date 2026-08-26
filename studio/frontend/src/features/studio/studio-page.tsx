@@ -242,14 +242,15 @@ export function StudioPage(): ReactElement {
               <>
                 <TabsContent value="configure" className="mt-0">
                   <div className="@container/train-configure">
-                    <div className="grid grid-cols-1 gap-8 @5xl/train-configure:grid-cols-[minmax(0,1fr)_320px] @5xl/train-configure:gap-10">
+                    {/* 64rem only fit windows 1376px and wider; 56rem still clears @md/train-section */}
+                    <div className="grid grid-cols-1 gap-8 @4xl/train-configure:grid-cols-[minmax(0,1fr)_320px] @5xl/train-configure:gap-10">
                       <div className="min-w-0">
                         <TrainingWizard
                           paramMode={paramMode}
                           onParamModeChange={setParamMode}
                         />
                       </div>
-                      <div className="@5xl/train-configure:sticky @5xl/train-configure:top-6 @5xl/train-configure:self-start">
+                      <div className="@4xl/train-configure:sticky @4xl/train-configure:top-6 @4xl/train-configure:self-start">
                         <RunPreviewCard
                           paramMode={paramMode}
                           startCta={<StartTrainingCta />}
