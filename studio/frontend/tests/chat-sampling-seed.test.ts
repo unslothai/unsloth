@@ -233,6 +233,14 @@ test("typing is not rewritten before the entry is finished", () => {
   assert.match(field, /if \(e\.key === "Enter"\) e\.currentTarget\.blur\(\);/);
 });
 
+test("an abandoned entry does not outlive the box it was typed into", () => {
+  // Blur is the only commit and removing a focused element fires none, so both keys
+  // matter: a model switch and the field going away each strand a draft in committedSeed.
+  const sheet = read("../src/features/chat/chat-settings-sheet.tsx");
+  const reset = slice(sheet, "useEffect(() => {\n    setSeedDraft(null);", ");");
+  assert.match(reset, /\[currentCheckpoint, showSeed\]/);
+});
+
 test("a preset carries the seed it was saved with", () => {
   // The field sits with Temperature through Max Tokens, all preset-owned, so saving a
   // preset while a seed is pinned has to capture it rather than quietly drop it.

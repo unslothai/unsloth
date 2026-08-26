@@ -654,6 +654,11 @@ export function ChatSettingsPanel({
         : { ...params, seed: committedSeed },
     [committedSeed, params],
   );
+  // Removing a focused element fires no blur, so a draft the user walked away from
+  // would keep reporting through committedSeed with the field gone.
+  useEffect(() => {
+    setSeedDraft(null);
+  }, [currentCheckpoint, showSeed]);
   // When the prompt overflows the inline box, clicking opens the popup editor.
   const systemPromptBoxRef = useRef<HTMLTextAreaElement>(null);
   const [systemPromptOverflows, setSystemPromptOverflows] = useState(false);
