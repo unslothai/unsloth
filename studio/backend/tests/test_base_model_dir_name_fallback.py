@@ -3,14 +3,12 @@
 
 """The ``unsloth_<model>_<timestamp>`` directory-name fallback for base model detection.
 
-It is the last resort in ``get_base_model_from_checkpoint`` / ``get_base_model_from_lora`` and
-in the two import-light resolvers in ``utils.transformers_version``, reached only when no config
-names a base model. It used to accept a two-segment ``unsloth_<model>`` name, slice the model
-part away to nothing, and return the bogus repo id ``unsloth/``.
+The last resort in ``get_base_model_from_checkpoint`` / ``get_base_model_from_lora`` and in the
+two resolvers in ``utils.transformers_version``. It used to slice a two-segment
+``unsloth_<model>`` name down to nothing and return the bogus repo id ``unsloth/``.
 
-The parser lives beside ``build_default_output_dir_name`` in ``utils.training_runs`` because it
-is that function read backwards, so the round-trip tests below are the real specification: a
-name Studio writes must parse back to the model it was written from.
+The round-trip tests are the real specification: a name we write must parse back to the model
+it was written from.
 """
 
 import importlib.util
@@ -20,10 +18,9 @@ import types
 
 import pytest
 
-# Keep this test runnable where optional logging deps are not installed. Probe the installed
-# distribution rather than sys.modules: structlog is a real dependency, and stubbing it merely
-# because nothing has imported it yet would replace the package process-wide for every test
-# collected afterwards.
+# Keep this runnable where optional logging deps are absent. Probe the installed distribution,
+# not sys.modules: structlog is a real dependency, and stubbing it merely because nothing has
+# imported it yet would replace the package for every test collected afterwards.
 if importlib.util.find_spec("structlog") is None:  # pragma: no cover - minimal environments
 
     class _DummyLogger:
@@ -60,17 +57,15 @@ from utils.training_runs import (  # noqa: E402
         ("unsloth_", None),
         ("unsloth", None),
         ("unsloth__1771227800", None),
-        # A doubled separator means the model name really does start with an underscore, which
-        # HF allows ('_' is a word character, so validate_repo_id accepts 'unsloth/_Qwen3-8B').
+        # A doubled separator means the name really does start with '_', which HF allows.
         # Stripping it would resolve a different, equally valid repo.
         ("unsloth__Qwen3-8B_1771227800", "unsloth/_Qwen3-8B"),
         # The project suffix is not part of the model name.
         ("unsloth_Qwen3-8B__project-demo_1771227800", "unsloth/Qwen3-8B"),
-        # ...and a model name that itself contains the marker is escaped by the generator.
+        # ...and a name containing the marker is escaped by the generator.
         ("unsloth_x__project--y_1771227800", "unsloth/x__project-y"),
-        # A trailing segment that is not a timestamp belongs to the model name, so the whole
-        # name is unparseable rather than silently truncated. Guessing here is what produced
-        # 'unsloth/llama_3' for 'unsloth_llama_3_8b' -- a valid repo id that does not exist.
+        # A non-timestamp tail belongs to the model name, so the whole name is unparseable
+        # rather than truncated. Truncating gave 'unsloth/llama_3' -- valid, but nonexistent.
         ("unsloth_llama_3_8b", None),
         ("unsloth_gpt_oss_20b", None),
         ("unsloth_Qwen3-8B_final", None),
@@ -221,10 +216,9 @@ def test_a_trailing_separator_does_not_change_the_answer(tmp_path):
     assert get_base_model_from_lora(str(adapter) + "/") == "unsloth/Qwen3-8B"
 
 
-# --- the two import-light resolvers in utils.transformers_version --------------------------
-# These re-derived the same name independently. _resolve_base_model is reached *through*
-# get_base_model_from_lora, so while it kept its own copy of the parse it simply rebuilt the
-# bogus id one branch after the fixed function returned None.
+# --- the two resolvers in utils.transformers_version ---------------------------------------
+# _resolve_base_model is reached *through* get_base_model_from_lora, so while it kept its own
+# copy of the parse it rebuilt the bogus id one branch after the fixed function returned None.
 
 def test_the_transformers_resolvers_agree_with_the_model_config_one(tmp_path):
     from utils.transformers_version import _resolve_base_model, recorded_local_base

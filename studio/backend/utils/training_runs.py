@@ -15,16 +15,12 @@ _PROJECT_MARKER = "__project-"
 _PROJECT_MARKER_ESCAPE = f"{_PROJECT_MARKER}-"
 _UNSLOTH_ORG_PREFIX = "unsloth_"
 
-# ``build_default_output_dir_name`` only ever emits ``str(int(time.time()))``, but folders
-# made by hand or by other tools commonly carry a date-time stamp instead, so accept that
-# shape too. Anything else (``_final``, ``_v2``, ``_8b``) is part of the model name.
+# We emit a bare epoch; hand-made folders often use a date-time. Anything else
+# (``_final``, ``_v2``, ``_8b``) is part of the model name, not a stamp.
 _RUN_DIR_TIMESTAMP = re.compile(r"\A\d{6,}(?:[-_]\d{2,})?\Z")
 
-# ``huggingface_hub.utils.validate_repo_id`` transcribed, so this module stays stdlib-only:
-# 1-96 word/dot/dash chars, no ``--`` or ``..``, cannot start or end with ``.`` or ``-``
-# (the Hub's own regex spells that as word-boundary anchors), and cannot end with ``.git``.
-# A folder name is user-controlled, so the parse is only trusted when what falls out of it
-# is something the Hub would actually accept.
+# ``validate_repo_id`` transcribed to keep this module stdlib-only. A folder name is user
+# input, so trust the parse only when the Hub would accept what falls out of it.
 _REPO_NAME = re.compile(r"\A(?!.*(?:--|\.\.))(?![-.])[\w.-]{1,96}(?<![-.])\Z")
 
 
@@ -117,10 +113,8 @@ def model_segment_from_default_output_dir_name(output_dir_name: str) -> Optional
 def _model_segment_from_run_dir_name(output_dir_name: str) -> Optional[str]:
     """``model_segment_from_default_output_dir_name`` widened to date-time stamps.
 
-    The strict inverse gates on ``isdigit()`` because it reads folders this module wrote.
-    This one also reads folders it did not write, so it accepts ``20260101-120000`` as well
-    as a bare epoch. Everything else about the shape is the same, including the
-    ``__project-<slug>`` suffix and its escape.
+    The strict inverse gates on ``isdigit()`` because it only reads folders we wrote; this
+    one also reads folders we did not. Same shape otherwise, project suffix and escape included.
     """
     head, separator, last_segment = str(output_dir_name or "").rpartition("_")
     if not separator or not _RUN_DIR_TIMESTAMP.match(last_segment):
@@ -134,16 +128,14 @@ def _model_segment_from_run_dir_name(output_dir_name: str) -> Optional[str]:
 def base_model_from_run_dir_name(dir_name: str) -> Optional[str]:
     """``unsloth_<model>_<timestamp>`` -> ``unsloth/<model>``, else None.
 
-    The last resort when no config names a base model. It lives next to
-    ``build_default_output_dir_name`` because it is that function read backwards: keeping the
-    pair in one file is what stops the parse from drifting away from the names Studio writes.
+    The last resort when no config names a base model. It sits beside
+    ``build_default_output_dir_name`` because it is that function read backwards; keeping the
+    pair together is what stops the parse drifting from the names we write.
 
-    Returning None matters as much as returning a name. A folder with no timestamp is not one
-    Studio produced -- it is a rename, an unzipped export, or something unrelated -- and every
-    caller already has a "could not detect base model" path that asks the user. A guess would
-    instead reach the Hub: ``unsloth/`` fails ``validate_repo_id`` outright, and a truncated
-    guess like ``unsloth/llama_3`` for ``unsloth_llama_3_8b`` is worse still, because it is a
-    perfectly valid repo id that simply does not exist.
+    None matters as much as a name here. Without a timestamp the folder is not one we wrote,
+    and every caller already asks the user instead. Guessing reaches the Hub: ``unsloth/`` is
+    rejected outright, and a truncated ``unsloth/llama_3`` for ``unsloth_llama_3_8b`` is worse,
+    being a valid id that does not exist.
     """
     model_segment = _model_segment_from_run_dir_name(dir_name)
     if model_segment is None or not model_segment.startswith(_UNSLOTH_ORG_PREFIX):
