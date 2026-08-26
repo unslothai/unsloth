@@ -54,6 +54,7 @@ export interface ThreadRecord {
   title: string;
   modelType: ModelType;
   modelId?: string;
+  modelGgufVariant?: string | null;
   pairId?: string;
   projectId?: string | null;
   archived: boolean;

@@ -55,6 +55,11 @@ export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 export { CHAT_HISTORY_REVISION_KEY } from "../utils/chat-history-revision";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 
+export type ChatHistoryUpdatedDetail = {
+  thread?: ThreadRecord;
+  coalesce?: boolean;
+};
+
 // bounds the request itself so a wedged socket cannot stall every reader waiting on the write
 const THREAD_WRITE_TIMEOUT_MS = 30_000;
 
@@ -121,14 +126,16 @@ export class GenerationLengthError extends Error {
  * `coalesce` is for the per-chunk streaming path alone: it holds the cross-tab write until
  * the writes stop. Structural changes must not use it.
  */
-export function notifyChatHistoryUpdated(options?: {
-  coalesce?: boolean;
-}): void {
+export function notifyChatHistoryUpdated(
+  detail: ChatHistoryUpdatedDetail = {},
+): void {
   if (typeof window !== "undefined") {
-    const coalesce = options?.coalesce === true;
+    const coalesce = detail.coalesce === true;
     // detail lets a listener tell a chunk save from a structural change (isCoalescedHistoryEvent)
     window.dispatchEvent(
-      new CustomEvent(CHAT_HISTORY_UPDATED_EVENT, { detail: { coalesce } }),
+      new CustomEvent<ChatHistoryUpdatedDetail>(CHAT_HISTORY_UPDATED_EVENT, {
+        detail: { ...detail, coalesce },
+      }),
     );
     // The event above is same-document; a storage write is what crosses.
     publishChatHistoryRevision(coalesce);
@@ -851,7 +858,7 @@ export async function saveChatThread(
     throw new ChatThreadDeletedError(parseErrorText(response.status, body));
   }
   const savedThread = await parseJsonOrThrow<ThreadRecord>(response);
-  notifyChatHistoryUpdated();
+  notifyChatHistoryUpdated({ thread: savedThread });
   return savedThread;
 }
 
@@ -903,7 +910,7 @@ export async function updateChatThread(
     options.signal,
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);
-  if (options.notify !== false) notifyChatHistoryUpdated();
+  if (options.notify !== false) notifyChatHistoryUpdated({ thread });
   return thread;
 }
 
@@ -930,7 +937,7 @@ export async function forkChatThread(
     messages: MessageRecord[];
     containerSnapshotWarning: string | null;
   }>(response);
-  notifyChatHistoryUpdated();
+  notifyChatHistoryUpdated({ thread: data.thread });
   return data;
 }
 

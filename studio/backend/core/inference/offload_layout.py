@@ -22,7 +22,13 @@ _BLOCK_RE = re.compile(r"^blk\.(\d+)\.(.+)$")
 
 # Sparse MoE experts: only expert_used_count of expert_count read per token, so
 # host traffic is a small fraction of their size. The cheap thing to spill.
-_MOE_EXPERT_RE = re.compile(r"^ffn_(up|gate|down)_exps\.weight$")
+# Fused (ffn_gate_up_exps, cohere2moe/deepseek2/dots3note) and chunked
+# (ffn_*_chexps, grovemoe) spellings are experts too: created per expert and
+# dispatched with GGML_OP_MUL_MAT_ID, so read just as sparsely as the split form.
+# NOT ffn_routed_up/down: kimi-k3 creates it {n_embd, n_embd_latent} with no
+# expert axis and plain GGML_OP_MUL_MAT, so every token crosses it -- spilling it
+# would send a hot tensor to the host at the rate reserved for cold ones.
+_MOE_EXPERT_RE = re.compile(r"^ffn_(up|gate|down|gate_up)_(exps|chexps)\.weight$")
 # Dense FFN. Fully activated: every byte crosses the bus every token.
 _DENSE_FFN_RE = re.compile(r"^ffn_(up|gate|down)\.weight$")
 
@@ -262,7 +268,7 @@ def _layout_from_reader(reader) -> ModelLayout:
     # unless a draft is engaged, so an -ot naming them moves nothing: measured,
     # spilling only blk.<nextn> leaves the host buffer at exactly token_embd and the
     # device buffer unchanged. Counting them spillable would credit bytes that can
-    # never be freed. Studio prices the drafter separately anyway.
+    # never be freed. Unsloth prices the drafter separately anyway.
     all_block_indices = set(spill) | set(resident)
     block_indices = sorted(i for i in all_block_indices if i < n_layers)
     has_excluded = any(i >= n_layers for i in all_block_indices)
@@ -308,7 +314,9 @@ def spill_pattern_for(layout: ModelLayout, indices: Optional[list[int]] = None) 
     ``\\.weight$`` likewise keeps ``ffn_(up|gate|down)\\.`` from matching
     ``ffn_gate_inp.weight``.
     """
-    body = "ffn_(up|gate|down)_exps" if layout.is_moe else "ffn_(up|gate|down)"
+    # Same set _MOE_EXPERT_RE selected, or the plan credits itself bytes the
+    # emitted pattern never moves.
+    body = "ffn_(up|gate|down|gate_up)_(exps|chexps)" if layout.is_moe else "ffn_(up|gate|down)"
     if indices is None:
         block = r"\d+"
     else:

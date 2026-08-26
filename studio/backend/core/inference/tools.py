@@ -41,7 +41,7 @@ from .context_window import _RESULT_NOTICE_RESERVE
 # The window of the model THIS request is served by, set by execute_tool for the call's
 # duration. Left unset, the budget falls back to the process-global probe, which is right
 # for the local loops and wrong for anything else: an external-provider request runs
-# Studio's tool loop without touching a resident GGUF, so inheriting that GGUF's window
+# Unsloth's tool loop without touching a resident GGUF, so inheriting that GGUF's window
 # let a small resident model truncate pages for a large cloud model, and a large resident
 # model hand the full 16,000 characters to a small OpenAI-compatible endpoint.
 _UNSET_CONTEXT_TOKENS = object()
@@ -4561,8 +4561,12 @@ def _render_html_reaches_network(arguments: dict) -> bool:
 # to pause them and their safety needs no argument scan. render_html is handled
 # separately above because a networked canvas does need approval.
 # search_conversation only reads this chat's own past turns, so auto mode would otherwise
-# prompt for approval on every call.
-_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base", "search_conversation"})
+# prompt for approval on every call. deep_research runs no code and reaches nothing either: it
+# only reports that the user's own armed research is starting, and without it here
+# is_high_risk_tool_call's unknown-name default would prompt on every handoff.
+_ALWAYS_SAFE_TOOLS = frozenset(
+    {"web_search", "search_knowledge_base", "search_conversation", "deep_research"}
+)
 
 
 def is_always_safe_tool(name: str) -> bool:
@@ -6827,7 +6831,7 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     operator's cached creds, and the temp vars at _sandbox_temp_dir just inside
     it. PYTHONPATH carries only the sandbox sitecustomize shim directory.
 
-    PATH starts with the Studio interpreter / venv and OS system dirs so
+    PATH starts with the Unsloth interpreter / venv and OS system dirs so
     ``python``/``pip`` stay pinned. On Windows only, Git-for-Windows install
     dirs from the host PATH are appended so bare ``git`` resolves (#7317).
     User-writable host PATH entries (venv, ``node_modules/.bin``, etc.) are
@@ -9142,7 +9146,7 @@ def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
                 marker = _marker_owner(target)
                 if marker is not None and owner in (None, marker):
                     continue
-            # Studio's own, like the marker above: a spill is truncated tool output this
+            # Unsloth's own, like the marker above: a spill is truncated tool output this
             # process wrote and deliberately kept off the file cards, so counting one as
             # the user's content leaves an unreachable sandbox behind, reported as holding
             # files the user never created. Only the artifacts themselves, by the name
@@ -10240,10 +10244,10 @@ _FULL_ACCESS_SUBSTITUTIONS = (
     # so there is nothing false to remove; state the capability instead. "the
     # user's own machine" is narrowed at the same time: --secure and -H 0.0.0.0
     # are documented remote modes (README), and the tools run on the host serving
-    # Studio, which is then not the device the user is looking at.
+    # Unsloth, which is then not the device the user is looking at.
     # _TERMINAL_SHELL_NOTE is carried through unchanged except here: its Git Bash
     # branch promises a detached program's window appears on the user's desktop,
-    # which only holds while Studio is local.
+    # which only holds while Unsloth is local.
     (
         "opens a window on the user's desktop.",
         "opens a window on that machine's desktop, which the user sees only if "
@@ -10622,6 +10626,58 @@ ALL_TOOLS = [
     SEARCH_CONVERSATION_TOOL,
 ]
 
+# Deliberately an ordinary tool with an ordinary result. Studio runs three tool loops -- one for
+# llama.cpp, one for safetensors, one for external providers -- and only a plain result behaves
+# the same in all three. The client starts the run off the tool events every loop already
+# publishes, so nothing here needs to know a research run exists.
+#
+# Never in ALL_TOOLS: it is offered only when the composer armed research.
+#
+# The client keys the handoff on this opening rather than on tool_end alone: a denied, skipped,
+# truncated or budget-exhausted call is closed by the same event, and only the result says the
+# call actually ran.
+DEEP_RESEARCH_STARTED_MARKER = "Deep Research has started"
+DEEP_RESEARCH_STARTED = (
+    f"{DEEP_RESEARCH_STARTED_MARKER} on that question. Reply with one short sentence saying you "
+    "are looking into it. Do not answer the question yourself and do not call this tool again; "
+    "the researched report arrives separately."
+)
+
+DEEP_RESEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "deep_research",
+        "description": (
+            "Start Deep Research on the user's question: a multi-step web investigation that "
+            "gathers current sources and writes a cited report, replacing your reply. The user "
+            "turned this on because they want researched answers, so call it for any question "
+            "about the world -- facts, events, laws, products, papers, prices, comparisons, "
+            "anything that may have changed since your training -- even when you think you know "
+            "the answer. Do not answer such questions from memory.\n"
+            "Do not call it for a message with no question in it, such as a hello or a thanks, or "
+            "for a request to write or transform text the user supplied.\n"
+            "If the topic is too vague to research well, do not call this yet: ask one short "
+            "clarifying question, then call it once the user has narrowed it down.\n"
+            "The question you pass is what gets researched, so make it specific and "
+            "self-contained: fold in what the conversation established rather than repeating "
+            "the user's words."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "The specific, self-contained question to research. Not the user's raw "
+                        "message unless it already reads as one."
+                    ),
+                },
+            },
+            "required": ["question"],
+        },
+    },
+}
+
 
 # OpenAI's function.name regex; MCP names that violate it would 400 the whole
 # request, so validate up front and skip with a warning.
@@ -10930,6 +10986,10 @@ def execute_tool(
             ),
             name,
         )
+    if name == "deep_research":
+        if not str(arguments.get("question") or "").strip():
+            return "Error: deep_research needs a question to investigate."
+        return DEEP_RESEARCH_STARTED
     if name == "web_search":
         return _fit_result_to_room(
             _web_search(
@@ -12671,7 +12731,7 @@ _MAX_PROBE_CHARS_PER_TOKEN = 256
 #
 # Keyed on the resident llama-server process, because the count depends on the EFFECTIVE
 # chat template and the managed fields cannot reconstruct it: user pass-through args are
-# appended verbatim after Studio's own flags (`llama_cpp.py`, "User pass-through args go
+# appended verbatim after Unsloth's own flags (`llama_cpp.py`, "User pass-through args go
 # last") and llama.cpp is last-wins, so `--chat-template` in extra args renders through a
 # template `_chat_template_override` never sees. Reload the same GGUF into the same window
 # with only those args changed and every managed field matches while the rendering does
@@ -14820,7 +14880,7 @@ def _killpg_captured(pgid) -> None:
         _tag, pid, identity = pgid
         # Fail closed: this runs long after the capture, so without a verified
         # identity the pid may be someone else's now. The job object still takes
-        # the whole tree when Studio exits, which is the safe half to keep.
+        # the whole tree when Unsloth exits, which is the safe half to keep.
         if identity is not None:
             _windows_taskkill_tree(pid, identity)
         return
@@ -15125,7 +15185,7 @@ _SPILL_MAX_TOTAL_BYTES = 64 * 1024 * 1024
 # Exactly the names `_spill_full_output` generates: twelve hex characters of a content
 # digest. The prune below deletes what it matches, and the sandbox is the user's own
 # directory -- a session may open on one that already holds a folder of this name, and
-# anything in it that Studio did not write is not Studio's to remove.
+# anything in it that Unsloth did not write is not Unsloth's to remove.
 _SPILL_NAME_RE = re.compile(r"[0-9a-f]{12}\.txt")
 # Written once, when this process creates the spill directory. Ownership is RECORDED
 # rather than inferred from the names inside: a sandbox can be a project the user opened,
@@ -15135,7 +15195,7 @@ _SPILL_RECORD_HEADER = "unsloth-studio tool output "
 # One lock per spill root. Appending a spill and rewriting the manifest after a prune are
 # a read-modify-write over one shared file, and a project's chats share a sandbox: two
 # calls spilling at once could otherwise have the pruner drop the entry the other just
-# appended, leaving a file nothing counts, prunes, or recognises as Studio's.
+# appended, leaving a file nothing counts, prunes, or recognises as Unsloth's.
 _SPILL_LOCKS: "dict[str, threading.Lock]" = {}
 _SPILL_LOCKS_GUARD = threading.Lock()
 
@@ -15147,12 +15207,12 @@ def _spill_lock(root: str) -> "threading.Lock":
 
 
 def _spill_records_dir() -> str:
-    """Where the spill manifests live: Studio's own storage, NOT the sandbox.
+    """Where the spill manifests live: Unsloth's own storage, NOT the sandbox.
 
     The sandbox is a directory tool code writes to, so nothing kept inside it can be
     evidence about the sandbox. A marker file there was replaceable by a link, and once it
     is a plain file the model can rewrite its contents and name the user's own files as
-    Studio's, which turns the cleanup into a delete and the prune into an unlink. Held
+    Unsloth's, which turns the cleanup into a delete and the prune into an unlink. Held
     beside the other records this file already keeps outside the sandboxes.
     """
     try:
@@ -15256,7 +15316,7 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
 
     Returns the stamp of what was installed, or None if nothing was. The stamp is taken
     here rather than re-read from the path afterwards, because by then another call can
-    have replaced the file and the record would name its content as Studio's.
+    have replaced the file and the record would name its content as Unsloth's.
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if not _DIR_FD_WRITES:
@@ -15464,7 +15524,7 @@ def _record_spill(root: str, relative: str, stamp: str, digest: str) -> None:
 
     Not re-read from the path: between the install and this, another call sharing the
     sandbox can replace the file, and stating the path then records that call's content as
-    Studio's, which a later prune or cleanup would delete. The writer knows what it put
+    Unsloth's, which a later prune or cleanup would delete. The writer knows what it put
     there, so it says so.
     """
     try:
@@ -15639,7 +15699,7 @@ def _unlink_verified_spill(root: str, path: str, owned: "dict[str, tuple[str, st
     Moved to a private name first. A rename is atomic, so from that point the inode this
     verifies is the inode this deletes: a sandbox writer that replaces the original name
     afterwards replaces nothing that is on its way out. Verifying and then unlinking by
-    name cannot promise that, because the manifest lock orders Studio's own threads and
+    name cannot promise that, because the manifest lock orders Unsloth's own threads and
     the thing racing here is the sandbox.
 
     Checked again under the private name, and put back if it no longer matches, since at
@@ -16000,7 +16060,7 @@ _MAX_SNAPSHOT_DIRS = 2000  # nor a directory-writing one stall the next call
 def _user_path_parts(parts: "list[str]", root: "str | None" = None) -> "list[str]":
     """The segments _MAX_SANDBOX_PATH_SEGMENTS applies to.
 
-    The scratch container is Studio's, not a name the model chose, and on
+    The scratch container is Unsloth's, not a name the model chose, and on
     Windows it is what /tmp resolves to, so charging it a segment would drop one
     level of the /tmp artifacts served before the workdir stopped being %TEMP%.
 
@@ -16031,7 +16091,7 @@ def _servable_segment(name: str) -> bool:
     return not any("\ud800" <= ch <= "\udfff" for ch in name)
 
 
-# Studio's own bookkeeping, written by the sandbox sitecustomize. One exact
+# Unsloth's own bookkeeping, written by the sandbox sitecustomize. One exact
 # name we write ourselves, not a pattern reserved over names a tool may pick.
 _INTERNAL_SANDBOX_FILES = frozenset({".unsloth_sandbox_remap.json", _SANDBOX_MARKER})
 

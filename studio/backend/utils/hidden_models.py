@@ -29,7 +29,7 @@ _DEFAULT_EMBEDDING_REPO_IDS = {
     "unsloth/bge-small-en-v1.5-GGUF",
 }
 # Local copies do not always retain the repo id. Keep a narrow basename
-# fallback for Studio's static default embedder only; configured custom repos
+# fallback for Unsloth's static default embedder only; configured custom repos
 # remain exact-match-only.
 _DEFAULT_EMBEDDING_PATH_BASENAMES = {"bge-small-en-v1.5"}
 # Curated dictation checkpoints (STT, never chat), hidden from the chat
@@ -59,7 +59,7 @@ _HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_ST
 
 
 def is_curated_stt_repo_id(value: str | None) -> bool:
-    """True only for Studio's exact curated STT Hub repositories.
+    """True only for Unsloth's exact curated STT Hub repositories.
 
     Still hidden from chat, but task-scoped inventory consumers need the real cache rows
     so the Audio page need not reimplement size, format, variants and lifecycle.

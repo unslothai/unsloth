@@ -30,7 +30,7 @@
 # two shapes cost within a few percent of each other. It is that two kernels
 # took BOTH of the account's concurrent sessions and locked
 # kaggle-t4-studio-gpu-ci.yml, which shares the account, out entirely. One
-# kernel leaves the second session for Studio.
+# kernel leaves the second session for Unsloth.
 #
 # A fifth leg, `grpo` (Qwen3-4B through a vLLM engine), is written and NOT
 # wired: its vLLM standby path hits an intermittent illegal memory access on
@@ -79,9 +79,9 @@
 # 50 of those 60 go to CI and the last 10 are held for human use. That 50 is
 # SHARED with kaggle-t4-studio-gpu-ci.yml, which is the expensive leg: ~0.75
 # GPU-h per launch against this one's ~0.25, on a larger eligible event stream.
-# The split is Studio 35, this leg 15, and the reserves below are what enforce
+# The split is Unsloth 35, this leg 15, and the reserves below are what enforce
 # the priority rather than a comment: this leg stands down at 40h spent
-# account-wide, Studio runs on to 50h. A change to either rate is a change to
+# account-wide, Unsloth runs on to 50h. A change to either rate is a change to
 # both budget blocks.
 #
 # This workflow is allotted 15 GPU-h/week of it, held in four independent layers:
@@ -93,7 +93,7 @@
 #      to start unless what remains covers this run's worst case PLUS a 20h
 #      reserve. Against a 60h account that reserve makes the 15h allowance a
 #      HARD ceiling rather than an average, whatever the sampling rate does.
-#      It is 10 higher than the Studio leg's 10 on purpose: the two share one
+#      It is 10 higher than the Unsloth leg's 10 on purpose: the two share one
 #      account and the cheap leg is the one that should yield the tail of the
 #      week to the expensive one rather than race it for the same hours.
 #   4. A concurrency check. Kaggle caps concurrent batch GPU kernels at 2 per
@@ -153,7 +153,7 @@
 #   against the 15 GPU-h allowance: 5% to 14% of the 60h account.
 #
 #   An earlier revision of this block ran 40% for ~23 GPU-h/week, sized against
-#   a 40h allowance from before the Studio leg existed. Two legs at ~23 each is
+#   a 40h allowance from before the Unsloth leg existed. Two legs at ~23 each is
 #   46 of the 50 CI is allowed, with the whole margin gone on the cheaper one.
 #   15% is that rate re-solved against the 15h share, not a throttle applied to
 #   a rate that was still correct.
@@ -358,7 +358,7 @@ jobs:
       # account budget is 60h, so refusing to start below 20h remaining means
       # this leg can never have spent more than 40h in a week, whatever the
       # sampling estimate above got wrong. It is deliberately 10 above the
-      # Studio leg's 10, which is what makes this the leg that yields: the
+      # Unsloth leg's 10, which is what makes this the leg that yields: the
       # lower of the two reserves is what implements "CI may use up to 50 of
       # the 60 hours". Raise it to throttle harder, but not above roughly 45 or
       # it never runs at all on a week with any other usage.
@@ -463,10 +463,10 @@ jobs:
     # The group is per WORKFLOW now, where it used to be one string shared with
     # kaggle-t4-studio-gpu-ci.yml. Sharing it was correct while this job pushed
     # TWO kernels: that took both of the account's concurrent sessions, so
-    # Studio had to queue rather than race the cap and lose a push. This job now
+    # Unsloth had to queue rather than race the cap and lose a push. This job now
     # packs every leg into one kernel and holds one session, which leaves the
-    # second for Studio -- and a shared group would keep Studio locked out of a
-    # seat that is now free. Measured before the change: Studio's run
+    # second for Unsloth -- and a shared group would keep Unsloth locked out of a
+    # seat that is now free. Measured before the change: Unsloth's run
     # 32607617804 sat queued about 40 minutes behind notebook run 32607621452.
     #
     # This only stays safe while each workflow pushes ONE kernel. Two workflows

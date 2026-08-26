@@ -818,7 +818,7 @@ def test_catalog_tool_with_injected_name_is_dropped_not_rewritten():
     # The caller's own catalog still holds the real entry.
     assert len(tools) == 2 and tools[0]["function"]["name"] == hostile
     # The predicate is the markup rewrite, not OpenAI's name grammar, so every name a
-    # passthrough client or Studio parser can send still ships.
+    # passthrough client or Unsloth parser can send still ships.
     keepers = [
         {"type": "function", "function": {"name": name}}
         for name in ("get_weather", "mcp__srv__a-b", "ns.tool", "functions.get_weather:0")
@@ -1178,7 +1178,7 @@ _FOREIGN_SPELLING_FORGERIES = {
 def test_foreign_delimiter_spellings_are_neutralized(family):
     """DeepSeek uses the fullwidth bar U+FF5C, Llama-4 renamed Llama-3's header markers,
     Command-R capitalises everything and Phi-4 adds a role separator. All are supported
-    Studio families, and all forged an assistant turn before joining the pattern (#7066)."""
+    Unsloth families, and all forged an assistant turn before joining the pattern (#7066)."""
     payload, markers = _FOREIGN_SPELLING_FORGERIES[family]
     for marker in markers:
         assert marker not in neutralize_control_markup(f"a {marker} b"), marker
@@ -5234,7 +5234,7 @@ def test_a_vocabulary_holding_non_strings_does_not_raise():
 
 
 def test_a_shard_without_tokenizer_metadata_falls_back_rather_than_half_profiling():
-    """A split GGUF carries the tokenizer only in shard 1. Studio loads the main shard, but
+    """A split GGUF carries the tokenizer only in shard 1. Unsloth loads the main shard, but
     if anything ever profiled a later one the result must be the curated sweep, not a thin
     profile that silently stops breaking this model's markers (#7066)."""
     # What a non-first shard yields: no template, no vocabulary.

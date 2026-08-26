@@ -234,14 +234,16 @@ def test_control_is_not_pinned_by_an_override_the_candidates_never_name():
     """linux_webkit.rs returns PreserveEnvironment on an inherited
     WEBKIT_DISABLE_DMABUF_RENDERER or WEBKIT_DMABUF_RENDERER_FORCE_SHM, honours
     WEBKIT_FORCE_DMABUF_RENDERER as the NVIDIA patch's opt-out, and reads
-    UNSLOTH_WEBKIT_RENDERER_WORKAROUND as its own claim on values it set itself. None of
-    those four are in CANDIDATES, so a set derived from CANDIDATES leaves them active and
-    they pin every launch including the control."""
+    UNSLOTH_WEBKIT_RENDERER_WORKAROUND as its own claim on values it set itself, and takes
+    UNSLOTH_WEBKIT_DISABLE_COMPOSITING as an instruction either way. None of them are in
+    CANDIDATES, so a set derived from CANDIDATES leaves them active and they pin every
+    launch including the control."""
     base = {
         "WEBKIT_DISABLE_DMABUF_RENDERER": "1",
         "WEBKIT_DMABUF_RENDERER_FORCE_SHM": "1",
         "WEBKIT_FORCE_DMABUF_RENDERER": "1",
         "UNSLOTH_WEBKIT_RENDERER_WORKAROUND": "WEBKIT_DISABLE_DMABUF_RENDERER",
+        "UNSLOTH_WEBKIT_DISABLE_COMPOSITING": "1",
         "GDK_BACKEND": "x11",
         "PATH": "/usr/bin",
     }
@@ -263,6 +265,25 @@ def test_the_app_marker_is_recorded_so_a_stale_claim_is_visible():
     explain a launch that preserved the environment."""
     import inspect
     assert "UNSLOTH_WEBKIT_RENDERER_WORKAROUND" in inspect.getsource(freeze.exec_env)
+
+
+def test_every_setting_the_app_reads_is_one_the_reporter_clears():
+    """The list above is hand-maintained, so it goes stale the moment linux_webkit.rs learns
+    a new UNSLOTH_WEBKIT_* setting: an inherited value pins every launch including the
+    control, and the report reads clean without having compared anything. Reading the names
+    back out of the Rust, rather than restating them, is what makes adding one fail here."""
+    import re
+
+    source = (REPO_ROOT / "studio" / "src-tauri" / "src" / "linux_webkit.rs").read_text(
+        encoding = "utf-8"
+    )
+    settings = set(re.findall(r'"(UNSLOTH_WEBKIT_[A-Z_]+)"', source))
+    assert settings, "no settings found; the pattern above stopped matching the Rust"
+    missing = sorted(settings - set(freeze.RENDERER_OVERRIDE_VARS))
+    assert missing == [], (
+        f"{missing} steer the app but survive candidate_env(), so an inherited value pins "
+        f"every launch including the control. Add them to RENDERER_OVERRIDE_VARS."
+    )
 
 
 def test_ports_cover_the_range_the_desktop_actually_uses():
@@ -334,7 +355,7 @@ def test_busy_port_is_not_taken_as_permission_to_stop_a_live_studio(monkeypatch)
 
 
 def test_main_aborts_instead_of_killing_a_running_studio(monkeypatch, capsys, tmp_path):
-    """The end to end shape of the above: a Studio backend already answering, with nobody
+    """The end to end shape of the above: an Unsloth backend already answering, with nobody
     to ask, must reach no candidate at all, so nothing is ever killed."""
     launched = []
     monkeypatch.setattr(freeze, "studio_backend_pids", lambda: [4321])

@@ -35,7 +35,7 @@ class ProviderRegistryEntry(BaseModel):
     )
     supports_studio_tools: bool = Field(
         False,
-        description = "Whether Studio runs its own tool loop (search/code/MCP/RAG) against this provider",
+        description = "Whether Unsloth runs its own tool loop (search/code/MCP/RAG) against this provider",
     )
     hidden: bool = Field(
         False,
