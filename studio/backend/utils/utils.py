@@ -612,13 +612,16 @@ def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
         from hub.utils import download_manifest
         from hub.utils.hf_cache_state import repo_cache_dir_has_incomplete_blobs
 
-        if download_manifest.has_cancel_marker(
-            "model", repo_id, None, hub_cache = hub_cache
-        ) or repo_cache_dir_has_incomplete_blobs(repo_dir):
+        if download_manifest.has_cancel_marker("model", repo_id, None, hub_cache = hub_cache):
             return False
         manifest = download_manifest.read_manifest("model", repo_id, None, hub_cache = hub_cache)
         if manifest is not None:
+            # This exact full-snapshot plan is stronger evidence than an
+            # unrelated .incomplete blob left under the repository by another
+            # revision or scoped GGUF job.
             return download_manifest.verify_against_disk(manifest, snapshot).ok
+        if repo_cache_dir_has_incomplete_blobs(repo_dir):
+            return False
 
         from hub.utils.inventory_scan import snapshot_holds_a_complete_payload
 

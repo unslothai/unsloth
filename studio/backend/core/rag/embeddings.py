@@ -1004,5 +1004,39 @@ def dim(model_name: str | None = None) -> int:
 
 
 def token_counter(model_name: str | None = None) -> Callable[[str], int]:
-    """Callable counting tokens with the embedder's own tokenizer."""
-    return _get_backend().token_counter(model_name = model_name)
+    """Callable counting tokens with the embedder's own tokenizer.
+
+    Chunking keeps this callable for the whole document. An explicit unload can
+    retire its llama backend between two calls, so lazily reacquire the newly
+    published backend only for that precise lifecycle failure. Other tokenizer
+    errors still propagate unchanged.
+    """
+    backend = _get_backend()
+    state = (backend, backend.token_counter(model_name = model_name))
+    counter_lock = threading.Lock()
+
+    def _count(text: str) -> int:
+        nonlocal state
+        served_backend, served_count = state
+        try:
+            return served_count(text)
+        except RuntimeError:
+            if not (
+                _is_llama_backend(served_backend) and getattr(served_backend, "_closed", False)
+            ):
+                raise
+        with counter_lock:
+            # Another counting thread may already have replaced the retired
+            # counter while this one was leaving it.
+            if state[0] is served_backend:
+                replacement = _get_backend()
+                if replacement is served_backend:
+                    raise RuntimeError("llama-server embedding backend was unloaded")
+                state = (
+                    replacement,
+                    replacement.token_counter(model_name = model_name),
+                )
+            retry = state[1]
+        return retry(text)
+
+    return _count

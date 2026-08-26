@@ -6,6 +6,7 @@ import hashlib
 import re
 import threading
 import time
+from contextvars import ContextVar
 from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
@@ -1971,16 +1972,47 @@ def _embedding_gguf_candidates(model: str) -> list[str]:
 # not proof of provenance, so an unsloth/ pick only ever downloads from unsloth.
 _GGUF_MIRROR_SEARCH_LIMIT = 25
 _GGUF_LIST_DEADLINE_S = 20.0
+_EMBEDDING_RESOLVE_DEADLINE: ContextVar[float | None] = ContextVar(
+    "embedding-resolve-deadline", default = None
+)
+
+
+def _call_with_embedding_resolve_budget(fn, *, name: str):
+    """Run one remote probe inside the resolution's single time budget."""
+    deadline = _EMBEDDING_RESOLVE_DEADLINE.get()
+    timeout = (
+        _GGUF_LIST_DEADLINE_S
+        if deadline is None
+        else max(0.0, min(_GGUF_LIST_DEADLINE_S, deadline - time.monotonic()))
+    )
+    if timeout <= 0:
+        raise TimeoutError("embedding model resolution deadline expired")
+    from utils.utils import call_with_deadline
+
+    return call_with_deadline(fn, timeout, name = name)
+
+
+def _with_embedding_resolve_budget(fn):
+    """Give one GET/PUT resolution a deadline shared by every Hub fallback."""
+
+    @functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        if _EMBEDDING_RESOLVE_DEADLINE.get() is not None:
+            return fn(*args, **kwargs)
+        marker = _EMBEDDING_RESOLVE_DEADLINE.set(time.monotonic() + _GGUF_LIST_DEADLINE_S)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _EMBEDDING_RESOLVE_DEADLINE.reset(marker)
+
+    return _wrapped
 
 
 def _list_repo_files_bounded(repo: str, hf_token: Optional[str]) -> list[str]:
     """List a Hub repo without letting a blackholed route pin Settings forever."""
     from huggingface_hub import list_repo_files
-    from utils.utils import call_with_deadline
-
-    return call_with_deadline(
+    return _call_with_embedding_resolve_budget(
         lambda: list_repo_files(repo, token = hf_token),
-        _GGUF_LIST_DEADLINE_S,
         name = "embed-settings-repo-listing",
     )
 
@@ -2071,8 +2103,7 @@ def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[
     if not base:
         return None
     try:
-        from utils.utils import call_with_deadline
-        hits = call_with_deadline(
+        hits = _call_with_embedding_resolve_budget(
             lambda: list(
                 HfApi().list_models(
                     search = base,
@@ -2083,7 +2114,6 @@ def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[
                     token = hf_token,
                 )
             ),
-            _GGUF_LIST_DEADLINE_S,
             name = "embed-settings-model-search",
         )
     except Exception:  # noqa: BLE001 - offline or rate limited
@@ -2219,7 +2249,10 @@ def _hf_files_size(repo: str, files: list[str], hf_token: Optional[str]) -> Opti
     try:
         from huggingface_hub import model_info
 
-        info = model_info(repo, files_metadata = True, token = hf_token)
+        info = _call_with_embedding_resolve_budget(
+            lambda: model_info(repo, files_metadata = True, token = hf_token),
+            name = "embed-settings-file-size",
+        )
         wanted = set(files)
         total = sum(
             sibling.size or 0 for sibling in (info.siblings or []) if sibling.rfilename in wanted
@@ -2235,7 +2268,10 @@ def _hf_snapshot_size(repo: str, hf_token: Optional[str]) -> Optional[int]:
         from huggingface_hub import model_info
         from hub.utils.snapshot_filters import snapshot_download_size
 
-        info = model_info(repo, files_metadata = True, token = hf_token)
+        info = _call_with_embedding_resolve_budget(
+            lambda: model_info(repo, files_metadata = True, token = hf_token),
+            name = "embed-settings-snapshot-size",
+        )
         total = snapshot_download_size(info.siblings or [])
         return total or None
     except Exception:  # noqa: BLE001 - size is advisory, never a blocker
@@ -2252,6 +2288,7 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
         return False
 
 
+@_with_embedding_resolve_budget
 def _resolve_embedding_model_plan(
     resolved: str, token: Optional[str]
 ) -> EmbeddingModelResolveResponse:
@@ -2277,11 +2314,13 @@ def _resolve_embedding_model_plan(
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved, backend = backend, cached = True
             )
+        cached = hf_cache_snapshot_is_loadable(resolved)
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
             backend = backend,
             download_repo = resolved,
-            cached = hf_cache_snapshot_is_loadable(resolved),
+            cached = cached,
+            size_bytes = None if cached else _hf_snapshot_size(resolved, token),
         )
 
     # A local .gguf (file or folder) is already the artifact; nothing to fetch.

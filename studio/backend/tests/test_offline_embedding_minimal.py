@@ -314,6 +314,33 @@ def test_snapshot_manifest_requires_every_expected_file(monkeypatch, hf_cache):
     assert hf_cache_snapshot_is_loadable("org/manifest-partial") is False
 
 
+def test_verified_snapshot_manifest_ignores_unrelated_incomplete_blob(monkeypatch, hf_cache):
+    _make_cache(
+        hf_cache,
+        "org/manifest-complete",
+        {"config.json": "{}", "model.safetensors": "weights"},
+    )
+    from hub.utils import download_manifest
+
+    manifest = download_manifest.Manifest(
+        repo_type = "model",
+        repo_id = "org/manifest-complete",
+        variant = None,
+        started_at = "",
+        expected_files = (
+            download_manifest.ExpectedFile(path = "config.json", size = 2),
+            download_manifest.ExpectedFile(path = "model.safetensors", size = 7),
+        ),
+    )
+    monkeypatch.setattr(download_manifest, "read_manifest", lambda *a, **k: manifest)
+    monkeypatch.setattr(
+        "hub.utils.hf_cache_state.repo_cache_dir_has_incomplete_blobs",
+        lambda repo_dir: True,
+    )
+
+    assert hf_cache_snapshot_is_loadable("org/manifest-complete") is True
+
+
 def test_sentence_transformer_module_shards_must_be_complete(hf_cache):
     _make_cache(
         hf_cache,

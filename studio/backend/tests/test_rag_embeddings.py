@@ -169,6 +169,40 @@ def test_token_counter_enables_parallelism_only_during_call(monkeypatch):
     assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"  # restored after
 
 
+def test_token_counter_reacquires_backend_retired_between_chunk_calls(monkeypatch):
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    retired = LlamaServerBackend()
+    replacement = LlamaServerBackend()
+    monkeypatch.setattr(embeddings, "_get_backend", lambda: retired)
+    count = embeddings.token_counter("org/embedder")
+
+    retired._closed = True
+    monkeypatch.setattr(embeddings, "_get_backend", lambda: replacement)
+    monkeypatch.setattr(
+        replacement,
+        "_post",
+        lambda path, payload: {"tokens": [1, 2, 3]},
+    )
+
+    assert count("the next chunk") == 3
+
+
+def test_token_counter_does_not_hide_non_lifecycle_errors(monkeypatch):
+    class _BrokenCounterBackend:
+        _closed = False
+
+        def token_counter(self, *, model_name = None):
+            def _raise(_text):
+                raise RuntimeError("invalid tokenizer response")
+
+            return _raise
+
+    monkeypatch.setattr(embeddings, "_get_backend", lambda: _BrokenCounterBackend())
+    with pytest.raises(RuntimeError, match = "invalid tokenizer response"):
+        embeddings.token_counter()("chunk")
+
+
 def test_sentence_transformer_load_uses_live_cache(monkeypatch, tmp_path):
     observed = {}
 

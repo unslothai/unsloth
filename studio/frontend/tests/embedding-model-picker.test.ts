@@ -144,10 +144,15 @@ test("the button follows a transfer started anywhere", () => {
   // Keyed off the shared manager, so a download begun from the Hub disables it too.
   assert.match(SECTION, /useDownloadManagerStore\(\(state\) =>/);
   assert.match(SECTION, /jobKeyOf\(/);
+  assert.match(SECTION, /const fullSnapshotJobKey =/);
+  assert.match(SECTION, /fullSnapshotDownloadState === "running"/);
 });
 
 test("download completion refreshes the resolved cache state", () => {
-  assert.match(SECTION, /downloadState !== "complete"/);
+  assert.match(
+    SECTION,
+    /downloadState !== "complete" &&\s*fullSnapshotDownloadState !== "complete"/,
+  );
   assert.match(
     SECTION,
     /Promise\.all\(\[\s*resolveEmbeddingModel\(savedModel,[\s\S]*refreshCachedRepos\(\)/,

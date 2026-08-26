@@ -257,16 +257,31 @@ export function DocumentsRagSection(): ReactElement {
             : null,
         )
       : null;
+  const fullSnapshotJobKey =
+    resolution?.downloadRepo && !resolution.cached
+      ? jobKeyOf(DOWNLOAD_KIND.MODEL, resolution.downloadRepo, null)
+      : null;
   const downloadState = useDownloadManagerStore((state) =>
     downloadJobKey ? (state.jobs[downloadJobKey]?.state ?? null) : null,
   );
+  const fullSnapshotDownloadState = useDownloadManagerStore((state) =>
+    fullSnapshotJobKey ? (state.jobs[fullSnapshotJobKey]?.state ?? null) : null,
+  );
   const downloading =
-    downloadState === "running" || downloadState === "cancelling";
+    downloadState === "running" ||
+    downloadState === "cancelling" ||
+    fullSnapshotDownloadState === "running" ||
+    fullSnapshotDownloadState === "cancelling";
 
   // The original resolve correctly said uncached. Once the shared manager
   // completes, ask again so the status/button and picker dots reflect disk.
   useEffect(() => {
-    if (downloadState !== "complete" || !savedModel) return;
+    if (
+      (downloadState !== "complete" &&
+        fullSnapshotDownloadState !== "complete") ||
+      !savedModel
+    )
+      return;
     let live = true;
     void Promise.all([
       resolveEmbeddingModel(savedModel, { hfToken: hfToken || undefined }),
@@ -282,7 +297,13 @@ export function DocumentsRagSection(): ReactElement {
     return () => {
       live = false;
     };
-  }, [downloadState, savedModel, hfToken, refreshCachedRepos]);
+  }, [
+    downloadState,
+    fullSnapshotDownloadState,
+    savedModel,
+    hfToken,
+    refreshCachedRepos,
+  ]);
   const canDownload = Boolean(
     resolution && !resolution.cached && resolution.downloadRepo,
   );

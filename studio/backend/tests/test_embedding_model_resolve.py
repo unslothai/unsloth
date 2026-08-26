@@ -59,6 +59,19 @@ def test_sentence_transformers_backend_points_at_the_model_repo(client, monkeypa
     assert body["error"] is None
 
 
+def test_uncached_sentence_transformers_plan_reports_snapshot_size(client, monkeypatch):
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
+    monkeypatch.setattr(settings, "_hf_snapshot_size", lambda repo, token: 987_654)
+    import utils.utils as utils
+
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: False)
+
+    body = _resolve(client, "org/uncached-st").json()
+    assert body["backend"] == "sentence-transformers"
+    assert body["cached"] is False
+    assert body["size_bytes"] == 987_654
+
+
 def test_resolution_selects_the_backend_for_the_new_model_not_the_old_one(client, monkeypatch):
     seen = []
     monkeypatch.setattr(
@@ -252,6 +265,46 @@ def test_repo_file_listing_uses_a_deadline(monkeypatch):
         "timeout": settings._GGUF_LIST_DEADLINE_S,
         "name": "embed-settings-repo-listing",
     }
+
+
+def test_resolution_shares_one_deadline_across_every_remote_fallback(monkeypatch):
+    import huggingface_hub
+    import utils.utils as utils
+
+    now = [100.0]
+    timeouts = []
+
+    class _Api:
+        def list_models(self, **kwargs):
+            return []
+
+    def _bounded(fn, timeout, name):
+        timeouts.append(timeout)
+        result = fn()
+        now[0] += 6.0
+        return result
+
+    monkeypatch.setattr(settings.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(utils, "call_with_deadline", _bounded)
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda *a, **k: [])
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
+    monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda model: False)
+    monkeypatch.setattr(settings, "_local_gguf_backend_error", lambda model: None)
+    monkeypatch.setattr(
+        settings,
+        "_embedding_gguf_candidates",
+        lambda model: ["acme/one", "acme/two", "acme/three"],
+    )
+    monkeypatch.setattr(
+        settings, "_cached_embedding_gguf", lambda candidates, require_variant: None
+    )
+    monkeypatch.setattr(settings, "_sentence_transformers_fallback_allowed", lambda model: False)
+
+    plan = settings._resolve_embedding_model_plan("acme/embed", None)
+
+    assert plan.error is not None
+    assert timeouts == pytest.approx([20.0, 14.0, 8.0, 2.0])
 
 
 def _no_gguf_anywhere(monkeypatch):
