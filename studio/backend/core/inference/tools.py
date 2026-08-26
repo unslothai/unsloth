@@ -10972,45 +10972,56 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                         text = merged_text
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
 
-    def retrieve(*, max_tokens = None, **scope):
-        if max_tokens is not None and max_tokens <= 0:
-            return None
-        attempt = top_k
-        while True:
-            found = search_for_autoinject(query = query, top_k = attempt, **scope)
-            if not found or max_tokens is None or max(1, len(found[0]) // 4) <= max_tokens:
-                return found
-            if attempt <= 1:
-                return None
-            attempt = max(1, attempt // 2)
+    def _fits(candidate_text, max_tokens) -> bool:
+        return not max_tokens or max_tokens <= 0 or max(1, len(candidate_text) // 4) <= max_tokens
 
-    # An oversized thread attachment is mandatory grounding: search it alone,
-    # without the optional-autoinject relevance floor, then add project context
-    # only if the combined result still fits.
+    def retrieve(*, max_tokens = None, **scope):
+        """Top-K retrieval, trimmed from the tail until it fits ``max_tokens``.
+
+        A missing or non-positive budget means "no budget to enforce here", not
+        "inject nothing": on the mandatory-grounding path the alternative is
+        dropping the attachment from the request, which is the bug this branch
+        exists to fix. The last passage is kept even when it alone overflows,
+        for the same reason.
+        """
+        found = search_for_autoinject(query = query, top_k = top_k, **scope)
+        if not found:
+            return None
+        hit_text, hit_sources = found
+        while len(hit_sources) > 1 and not _fits(hit_text, max_tokens):
+            hit_sources = hit_sources[:-1]
+            hit_text = render_sources(hit_sources)
+        return hit_text, hit_sources
+
+    # An oversized thread attachment is mandatory grounding: when normal
+    # auto-injection is off, search it alone, without the optional-autoinject
+    # relevance floor, then add project context only if the combined result
+    # still fits. The whole-document budget is enforced on that path alone --
+    # with auto-injection on, retrieval stays the single combined unbudgeted
+    # search it was, so a small context or a long thread cannot silently switch
+    # RAG off.
     if text is None and (enabled or whole_doc_requested):
         try:
-            if whole_doc_requested:
+            if whole_doc_requested and not enabled:
                 found = retrieve(
                     max_tokens = budget,
                     scope_thread_id = thread_id,
-                    min_dense_score = floor if enabled else None,
+                    min_dense_score = None,
                     **_scope_retrieval_kwargs(rag_scope),
                 )
                 project_id = rag_scope.get("project_id")
-                if project_id:
+                if found and project_id:
                     proj = retrieve(
                         max_tokens = budget,
                         scope_project_id = project_id,
                         min_dense_score = floor,
                         **_scope_retrieval_kwargs(rag_scope),
                     )
-                    if found and proj:
+                    if proj:
                         merged = found[1] + proj[1]
                         merged_text = render_sources(merged)
-                        if max(1, len(merged_text) // 4) <= budget:
+                        if _fits(merged_text, budget):
                             found = merged_text, merged
-                    elif proj:
-                        found = proj
             else:
                 found = retrieve(
                     scope_kb_id = rag_scope.get("kb_id"),
