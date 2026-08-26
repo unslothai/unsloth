@@ -3,6 +3,7 @@
 
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { cn } from "@/lib/utils";
+import { autoscrollDelta, clipSpan } from "./autoscroll";
 import { insertionIndex } from "./reorder";
 import { GripVerticalIcon, XIcon } from "lucide-react";
 import {
@@ -100,6 +101,21 @@ function nextUid(): string {
   return `i${uidSeq}`;
 }
 
+// Every ancestor a drag could scroll, nearest first. The whole chain, not just
+// the nearest: the list sits inside the dialog's own scroller, so a drag that
+// runs the inner one out has to hand off to the outer one.
+function findScrollParents(el: HTMLElement | null): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  let node = el?.parentElement ?? null;
+  while (node) {
+    const overflowY = getComputedStyle(node).overflowY;
+    // Scrollability is checked per frame instead: rows grow as you type.
+    if (overflowY === "auto" || overflowY === "scroll") out.push(node);
+    node = node.parentElement;
+  }
+  return out;
+}
+
 // Rows are keyed by a synthetic uid, not array index: index keys would swap the
 // values under the caret on reorder and break the animation.
 export function SortablePromptItems({
@@ -140,8 +156,8 @@ export function SortablePromptItems({
   // animates one transform per row rather than animating layout.
   useLayoutEffect(() => {
     // Layout offsets, not client rects: a rect moves with the scroll position,
-    // so scrolling the pane between reorders would bake that distance into
-    // every transform and jump the whole list.
+    // so scrolling between reorders (autoscroll does it every frame) would be
+    // baked into every transform and jump the whole list.
     const next = new Map<string, number>();
     rowRefs.current.forEach((el, uid) => next.set(uid, el.offsetTop));
 
@@ -211,6 +227,8 @@ export function SortablePromptItems({
     if (!draggingUid) return;
     const container = containerRef.current;
     if (!container) return;
+    const scrollers = findScrollParents(container);
+    let raf = 0;
 
     const evaluate = () => {
       const order = uidsRef.current;
@@ -227,6 +245,33 @@ export function SortablePromptItems({
       const to = insertionIndex(boxes, from, localY);
       if (to !== from) applyOrder(from, to);
     };
+
+    // Holding near an edge scrolls and re-runs the hit-test; pointerdown
+    // suppresses the browser's own gesture, so nothing else would scroll.
+    // Walks outwards, so running the inner pane out hands off to the dialog.
+    const tick = () => {
+      for (let i = 0; i < scrollers.length; i++) {
+        const scroller = scrollers[i];
+        const limit = scroller.scrollHeight - scroller.clientHeight;
+        if (limit <= 0) continue;
+        const span = clipSpan(scroller.getBoundingClientRect(), [
+          ...scrollers.slice(i + 1).map((el) => el.getBoundingClientRect()),
+          { top: 0, bottom: window.innerHeight },
+        ]);
+        if (!span) continue;
+        const delta = autoscrollDelta(pointerYRef.current, span.top, span.bottom);
+        if (delta === 0) continue;
+        const before = scroller.scrollTop;
+        const next = Math.max(0, Math.min(limit, before + delta));
+        // Already at that end: leave it to the ancestor rather than stalling.
+        if (next === before) continue;
+        scroller.scrollTop = next;
+        evaluate();
+        break;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
 
     const endDrag = () => {
       pointerIdRef.current = null;
@@ -261,6 +306,7 @@ export function SortablePromptItems({
     // Release entirely outside the page, where no move follows to catch it.
     window.addEventListener("blur", endDrag);
     return () => {
+      cancelAnimationFrame(raf);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onPointerEnd);
       window.removeEventListener("pointercancel", onPointerEnd);

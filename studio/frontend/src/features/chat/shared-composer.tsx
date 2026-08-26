@@ -93,7 +93,13 @@ import {
   exportConversationCsv,
   exportConversationMarkdown,
 } from "./prompt-storage/prompt-storage-dialog";
-import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
+import {
+  listPromptEntries,
+  listPromptLists,
+  type PromptEntry,
+  type PromptListEntry,
+} from "./api/prompts-api";
+import { PromptKindPill } from "./prompt-storage/prompt-kind-pill";
 import { McpComposerButton } from "./mcp-composer-button";
 import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "./permission-mode-select";
@@ -566,6 +572,8 @@ export function SharedComposer({
   const textRef = useRef(text);
   const pendingImagesRef = useRef(pendingImages);
   const pendingAudioRef = useRef(pendingAudio);
+  // Audio files still being read into base64, which pendingAudio cannot see yet.
+  const audioDecodingRef = useRef(0);
   useEffect(() => {
     textRef.current = text;
     pendingImagesRef.current = pendingImages;
@@ -576,15 +584,35 @@ export function SharedComposer({
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
+  const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
+  // Sequence, so two overlapping opens cannot land out of order and leave the
+  // menu showing the older library.
+  const recentSeqRef = useRef(0);
   const refreshRecentPrompts = useCallback(async () => {
+    recentSeqRef.current += 1;
+    const seq = recentSeqRef.current;
     try {
       const rows = await listPromptEntries();
+      if (seq !== recentSeqRef.current) return;
       const byRecent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
       // Pinned prompts take over the submenu; fall back to the 3 most recent.
       const pinnedIds = usePlusMenuPrefsStore.getState().pinnedPromptIds;
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
+      // Drop the rows rather than keep serving them: an entry deleted elsewhere
+      // stays clickable otherwise, and selecting a list runs its cached items.
+      if (seq === recentSeqRef.current) setRecentPrompts([]);
+    }
+    try {
+      // Lists only appear here when explicitly bookmarked: running one fires a
+      // whole queue of prompts, so it is not something to surface by default.
+      const rows = await listPromptLists();
+      if (seq !== recentSeqRef.current) return;
+      const pinnedIds = usePlusMenuPrefsStore.getState().pinnedListIds;
+      setRecentLists(rows.filter((l) => pinnedIds.includes(l.id)));
+    } catch {
+      if (seq === recentSeqRef.current) setRecentLists([]);
     }
   }, []);
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
@@ -960,10 +988,21 @@ export function SharedComposer({
             audioSizeError ??= sizeError;
             continue;
           }
-          fileToBase64(file).then((base64) => {
-            setPendingAudio({ name: file.name, base64, contentType: file.type });
-            setPendingAudioStore(base64, file.name);
-          });
+          // Counted from here, not from when it resolves: until then the audio
+          // is staged but invisible to pendingAudio, so a list started in the
+          // gap passes the attachment guard and then picks it up mid-queue.
+          audioDecodingRef.current += 1;
+          fileToBase64(file)
+            .then((base64) => {
+              setPendingAudio({ name: file.name, base64, contentType: file.type });
+              setPendingAudioStore(base64, file.name);
+            })
+            .catch(() => {
+              toast.error("Could not read that audio file.");
+            })
+            .finally(() => {
+              audioDecodingRef.current -= 1;
+            });
           continue;
         }
         // video_base64 targets the single loaded GGUF, so at most one side of
@@ -1950,6 +1989,68 @@ export function SharedComposer({
     { enabled: chatActive },
   );
 
+  // Shared by the storage dialog's Run button and the bookmarked lists in the
+  // "+" menu, so both entry points queue a list the same way.
+  const runPromptList = useCallback(
+    (items: string[]) => {
+      const filtered = items.filter((p) => p.trim());
+      if (!filtered.length) return;
+      // Ordinary sends gate on `busy` and `isDictating`; this path must too, or
+      // it clobbers the queue refs and sends over a run already in flight.
+      // `busy` alone is not enough: `running` only refreshes on the 200ms poll,
+      // so ask the handles directly the way that poll does.
+      const liveRunning =
+        busy || Object.values(handlesRef.current).some((h) => h.isRunning());
+      if (liveRunning || isQueueRunningRef.current) {
+        toast.error("Wait for the current response to finish");
+        return;
+      }
+      if (isDictating) {
+        toast.error("Finish dictating before running a list");
+        return;
+      }
+      // send() picks up whatever is staged, so only the first prompt would carry
+      // the attachment. Refuse rather than clear: it is the user's, not ours.
+      if (
+        pendingImagesRef.current.length > 0 ||
+        pendingAudioRef.current ||
+        audioDecodingRef.current > 0
+      ) {
+        toast.error("Remove the staged attachment before running a list", {
+          description: "Only the first prompt in the list would carry it.",
+        });
+        return;
+      }
+      const hasCompareHandles = Boolean(
+        handlesRef.current["model1"] || handlesRef.current["model2"],
+      );
+      const isGeneralizedCompare =
+        hasCompareHandles && Boolean(model1?.id && model2?.id);
+      if (hasCompareHandles && !isGeneralizedCompare) {
+        toast.error("Pick a model in each pane to compare", {
+          description:
+            "Use the model dropdown above each pane, then send your prompt.",
+        });
+        return;
+      }
+      setPromptStorageOpen(false);
+      queueRef.current = filtered;
+      queueIndexRef.current = 0;
+      isQueueRunningRef.current = true;
+      setIsQueueRunning(true);
+      setQueueProgress({ current: 1, total: filtered.length });
+      toast(`Prompt 1 / ${filtered.length}`, {
+        description:
+          filtered[0].length > 80 ? `${filtered[0].slice(0, 80)}…` : filtered[0],
+      });
+      setText(filtered[0]);
+      setTimeout(() => {
+        sendRef.current?.();
+      }, 100);
+    },
+    [busy, isDictating, handlesRef, model1?.id, model2?.id],
+  );
+
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
   // level; the rest fall into the "More" overflow submenu. Core items (photos,
   // web search, code) and "More" itself live outside this map.
@@ -1992,18 +2093,29 @@ export function SharedComposer({
           collisionPadding={16}
           className="unsloth-plus-menu w-[208px]"
         >
+          {/* Keys are namespaced: prompts and lists are separate tables, so the
+              two id spaces can collide and these render as siblings. */}
           {recentPrompts.map((p) => (
             <DropdownMenuItem
-              key={p.id}
+              key={`prompt:${p.id}`}
               onSelect={() => {
                 setText(p.text);
                 requestAnimationFrame(() => textareaRef.current?.focus());
               }}
             >
               <span className="truncate">{p.name}</span>
+              <PromptKindPill kind="prompt" />
             </DropdownMenuItem>
           ))}
-          {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+          {recentLists.map((l) => (
+            <DropdownMenuItem key={`list:${l.id}`} onSelect={() => runPromptList(l.items)}>
+              <span className="truncate">{l.name}</span>
+              <PromptKindPill kind="list" count={l.items.length} />
+            </DropdownMenuItem>
+          ))}
+          {recentPrompts.length > 0 || recentLists.length > 0 ? (
+            <DropdownMenuSeparator />
+          ) : null}
           <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
             All saved prompts…
           </DropdownMenuItem>
@@ -2137,33 +2249,7 @@ export function SharedComposer({
           setText(t);
           requestAnimationFrame(() => textareaRef.current?.focus());
         }}
-        onRunList={(items) => {
-          const filtered = items.filter((p) => p.trim());
-          if (!filtered.length) return;
-          const hasCompareHandles = Boolean(
-            handlesRef.current["model1"] || handlesRef.current["model2"],
-          );
-          const isGeneralizedCompare =
-            hasCompareHandles && Boolean(model1?.id && model2?.id);
-          if (hasCompareHandles && !isGeneralizedCompare) {
-            toast.error("Pick a model in each pane to compare", {
-              description:
-                "Use the model dropdown above each pane, then send your prompt.",
-            });
-            return;
-          }
-          setPromptStorageOpen(false);
-          queueRef.current = filtered;
-          queueIndexRef.current = 0;
-          isQueueRunningRef.current = true;
-          setIsQueueRunning(true);
-          setQueueProgress({ current: 1, total: filtered.length });
-          toast(`Prompt 1 / ${filtered.length}`, {
-            description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
-          });
-          setText(filtered[0]);
-          setTimeout(() => { sendRef.current?.(); }, 100);
-        }}
+        onRunList={runPromptList}
       />
       {/* Gemini-style drop affordance, mirrored from the single composer. */}
       <div

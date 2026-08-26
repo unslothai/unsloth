@@ -107,8 +107,11 @@ import {
 } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import {
   listPromptEntries,
+  listPromptLists,
   type PromptEntry,
+  type PromptListEntry,
 } from "@/features/chat/api/prompts-api";
+import { PromptKindPill } from "@/features/chat/prompt-storage/prompt-kind-pill";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
@@ -5838,13 +5841,22 @@ const ComposerToolsMenu: FC<{
   const messageCount = useAuiState(({ thread }) => thread.messages.length);
   const exportDisabled = incognito || !activeThreadId || messageCount === 0;
   const { startQueue } = useContext(PromptQueueContext);
+  const { overlay: generatedImageOverlay } = useGeneratedImageOverlay();
+  const menuIsDictating = useAuiState((s) => s.composer.dictation != null);
 
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
 
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
+  const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
+  // Sequence, so two overlapping opens cannot land out of order and leave the
+  // menu showing the older library.
+  const recentSeqRef = useRef(0);
   const refreshRecentPrompts = useCallback(async () => {
+    recentSeqRef.current += 1;
+    const seq = recentSeqRef.current;
     try {
       const rows = await listPromptEntries();
+      if (seq !== recentSeqRef.current) return;
       const byRecent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
       // Pinned prompts take over the submenu; fall back to the 3 most recent
       // when nothing is pinned.
@@ -5852,8 +5864,62 @@ const ComposerToolsMenu: FC<{
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
+      // Drop the rows rather than keep serving them: an entry deleted elsewhere
+      // stays clickable otherwise, and selecting a list runs its cached items.
+      if (seq === recentSeqRef.current) setRecentPrompts([]);
+    }
+    try {
+      // Lists only appear here when explicitly bookmarked: running one fires a
+      // whole queue of prompts, so it is not something to surface by default.
+      const rows = await listPromptLists();
+      if (seq !== recentSeqRef.current) return;
+      const pinnedIds = usePlusMenuPrefsStore.getState().pinnedListIds;
+      setRecentLists(rows.filter((l) => pinnedIds.includes(l.id)));
+    } catch {
+      if (seq === recentSeqRef.current) setRecentLists([]);
     }
   }, []);
+
+  // Shared by the storage dialog's Run button and the bookmarked lists in the
+  // "+" menu, so both entry points queue a list the same way.
+  // `fromDialog`: queue setup is async, and on abort only a dialog-started run
+  // should reopen it. A menu-started one would throw a modal over the chat.
+  const runPromptList = useCallback(
+    (items: string[], fromDialog = false) => {
+      // The plus menu stays live while recording, and a queue starting under it
+      // blocks the transcript send, then overwrites the composer with the first
+      // queued prompt, which spends the held send on nothing.
+      if (menuIsDictating) {
+        toast.error("Finish dictating before running a list");
+        return;
+      }
+      // The composer sits above the image overlay, so this stays clickable mid
+      // edit. Submitting rewrites the prompt and closes the overlay; startQueue
+      // appends the text as-is, hitting the image or eating the reference.
+      if (generatedImageOverlay) {
+        toast.error("Close the image editor before running a list", {
+          description: "Saved lists cannot be applied to a generated image.",
+        });
+        return;
+      }
+      const started = startQueue(items, undefined, () => {
+        if (fromDialog) setPromptStorageOpen(true);
+        toast.info("Saved list was not queued", {
+          description: "The chat changed before the queue was ready. Try again.",
+        });
+      });
+      if (started) {
+        setPromptStorageOpen(false);
+        return;
+      }
+      // startQueue refuses synchronously when queueing is unavailable and skips
+      // onAborted, so without this both entry points fail silently.
+      toast.error("Couldn't queue that list here", {
+        description: "Open a chat first, then run the list.",
+      });
+    },
+    [startQueue, generatedImageOverlay, menuIsDictating, setPromptStorageOpen],
+  );
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
   // level; the rest fall into the "More" overflow submenu. The core items
@@ -5902,15 +5968,26 @@ const ComposerToolsMenu: FC<{
           collisionPadding={16}
           className="unsloth-plus-menu w-[208px]"
         >
+          {/* Keys are namespaced: prompts and lists are separate tables, so the
+              two id spaces can collide and these render as siblings. */}
           {recentPrompts.map((p) => (
             <DropdownMenuItem
-              key={p.id}
+              key={`prompt:${p.id}`}
               onSelect={() => aui.composer().setText(p.text)}
             >
               <span className="truncate">{p.name}</span>
+              <PromptKindPill kind="prompt" />
             </DropdownMenuItem>
           ))}
-          {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+          {recentLists.map((l) => (
+            <DropdownMenuItem key={`list:${l.id}`} onSelect={() => runPromptList(l.items)}>
+              <span className="truncate">{l.name}</span>
+              <PromptKindPill kind="list" count={l.items.length} />
+            </DropdownMenuItem>
+          ))}
+          {recentPrompts.length > 0 || recentLists.length > 0 ? (
+            <DropdownMenuSeparator />
+          ) : null}
           <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
             All saved prompts…
           </DropdownMenuItem>
@@ -6042,17 +6119,7 @@ const ComposerToolsMenu: FC<{
       onUse={(text) => {
         aui.composer().setText(text);
       }}
-      onRunList={(items) => {
-        const started = startQueue(items, undefined, () => {
-          setPromptStorageOpen(true);
-          toast.info("Saved list was not queued", {
-            description: "The chat changed before the queue was ready. Try again.",
-          });
-        });
-        if (started) {
-          setPromptStorageOpen(false);
-        }
-      }}
+      onRunList={(items) => runPromptList(items, true)}
     />
     <DropdownMenu
       onOpenChange={(open) => {
