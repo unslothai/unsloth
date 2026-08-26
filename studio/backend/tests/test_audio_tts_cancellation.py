@@ -3,17 +3,72 @@
 
 import asyncio
 import base64
+import importlib
 import queue
+import sys
 import threading
 import time
+import types
+from unittest.mock import MagicMock
 
 import pytest
 
-import routes.inference as inference_route
-from core.inference import orchestrator as orchestrator_module
-from core.inference.orchestrator import InferenceOrchestrator
-from core.inference.worker import _handle_generate_audio, _prepare_generate_audio
-from models.inference import ChatCompletionRequest
+_STUBBED: list[str] = []
+
+
+def _stub_if_missing(name, attrs):
+    """Register a stub for a dep the backend pytest job does not install.
+
+    Same helper and reason as test_safetensors_reasoning_stream.py and
+    test_audio_type_inconclusive.py: the peft-gated test below imports
+    ``core.inference.inference``, which imports ``unsloth`` at module scope, and this
+    job installs peft but not unsloth. That import used to be unreachable here because
+    the peft gate skipped; now that peft IS installed the gate opens, and the import
+    only worked because collection of test_safetensors_reasoning_stream.py had already
+    cached the module. Running this file on its own failed. A real install is left alone.
+    """
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001 - unusable here either way, so stub it
+        pass
+    _STUBBED.append(name)
+    mod = types.ModuleType(name)
+    mod.__spec__ = None
+    for attr in attrs:
+        setattr(mod, attr, MagicMock())
+    sys.modules[name] = mod
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, mod)
+
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+_stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+
+# Build it while the stubs are live, then drop them, as the sibling files do: a stub
+# left in sys.modules is a cross-file leak that
+# test_audio_type_inconclusive.py::test_the_stubs_do_not_outlive_this_module asserts
+# against. The peft gate below still decides whether the test runs.
+try:
+    import core.inference.inference  # noqa: E402,F401
+except ImportError:  # pragma: no cover - the real dep set imports fine
+    pass
+
+for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)
+
+import routes.inference as inference_route  # noqa: E402
+from core.inference import orchestrator as orchestrator_module  # noqa: E402
+from core.inference.orchestrator import InferenceOrchestrator  # noqa: E402
+from core.inference.worker import (  # noqa: E402
+    _handle_generate_audio,
+    _prepare_generate_audio,
+)
+from models.inference import ChatCompletionRequest  # noqa: E402
 
 
 def _bare_orchestrator():

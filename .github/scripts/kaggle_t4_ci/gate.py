@@ -95,20 +95,30 @@ MAX_CONCURRENT_GPU_KERNELS = 2
 # whatever the arithmetic below would allow.
 ALLOWED_IN_FLIGHT_FOREIGN_KERNELS = 0
 
-# How many kernels one invocation pushes: both of Kaggle's slots, up from the
-# single kernel this workflow used to run. The second slot is not spare capacity
-# to be grabbed, it is capacity taken only when the account is otherwise IDLE,
-# which the survey establishes immediately beforehand. Willingness to compete
-# with a human is still zero; what changed is the payload, since four legs are
-# worth running and two kernels x two T4s is the only shape that fits them. Legs
-# split across two sessions would be compared across two images and two hours,
-# and for control/canary that comparison is the entire instrument.
+# How many of Kaggle's slots one invocation takes. ONE, and it is the default
+# rather than a per-workflow override because it is now true of both callers.
+#
+# This was 2 while the notebook leg ran four legs as two kernels of two, one leg
+# per T4. That shape took BOTH of the account's slots, which had two costs. The
+# account is shared with human use, so a run held every seat there was. And
+# kaggle-t4-studio-gpu-ci.yml is on the same account: with no slot left it could
+# not push at all, and the shared concurrency group meant it did not even try
+# until the notebook job had finished (measured: Unsloth's run 32607617804 queued
+# about 40 minutes behind notebook run 32607621452).
+#
+# The legs did not have to be split to fit. They now queue INSIDE one kernel --
+# one worker per card, a card taking its next leg when the previous one exits --
+# so four legs fit in one session. That is strictly better for the thing the old
+# comment here worried about: it said legs "split across two sessions would be
+# compared across two images and two hours, and for control/canary that
+# comparison is the entire instrument", and one kernel makes such a split
+# impossible rather than merely avoided by careful pairing.
 #
 # The residual risk, a foreign kernel starting BETWEEN the survey and the push,
 # is not new and is handled where it lands: the launcher recognises Kaggle's
 # capacity rejection (CAPACITY_MARKERS) and reports it as infra, exiting 0.
 # Ours is the push that arrives second, so a human's is never the one rejected.
-KERNELS_PER_INVOCATION = 2
+KERNELS_PER_INVOCATION = 1
 
 # Kernel states that mean a session is occupying one of those slots.
 BUSY_STATES = {"QUEUED", "RUNNING"}
