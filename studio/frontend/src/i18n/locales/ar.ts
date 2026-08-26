@@ -1218,6 +1218,15 @@ export const ar = {
       docs: "التوثيق",
       agentDocs: "فتح توثيق إعداد {agent}",
       copyGeneratedCommand: "نسخ الأمر المُنشأ",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "يتطلب Codex نموذج GGUF يقدّمه llama-server. أما الوكلاء الآخرون فيمكنهم استخدام النماذج المبنية على transformers أيضًا؛ احذف ‎--model لاستخدام النموذج المُحمَّل بالفعل في Unsloth.",
       subagent: {
