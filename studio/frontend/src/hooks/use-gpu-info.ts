@@ -19,6 +19,9 @@ import {
   getCachedSystemInfo,
   subscribeSystemInfo,
 } from "./use-system";
+import { inferenceBackendFromSystem } from "./gpu-backend";
+
+export { inferenceBackendFromSystem } from "./gpu-backend";
 
 export {
   pinnableGpuContext,
@@ -69,7 +72,10 @@ function toGpuInfo(
   // CPU/RAM exist even on GPU-less hosts (e.g. Mac), so populate them on every
   // path: unified-memory math still needs a RAM budget to work with.
   const base = {
-    backend: data?.device_backend ?? "",
+    backend:
+      source === "inference_gpu"
+        ? inferenceBackendFromSystem(data)
+        : (data?.device_backend ?? ""),
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,

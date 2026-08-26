@@ -2940,6 +2940,35 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
     }.get((cache_type or "f16").strip().lower(), 2.0)
 
 
+# These scalar cache types use the CPU reference path for KV operations on the
+# affected CUDA/HIP llama.cpp builds.
+_GPU_UNACCELERATED_CACHE_TYPES = frozenset({"q4_1", "q5_0", "q5_1", "iq4_nl"})
+
+
+def _kv_cache_gpu_fallback_warning(
+    cache_type_kv: Optional[str],
+    gpu_memory_mode: str,
+    gpu_layers: int,
+    inference_backend: Optional[str],
+) -> Optional[str]:
+    """Warn for an affected scalar cache on a GPU-backed inference launch."""
+    if inference_backend not in {"cuda", "hip"}:
+        return None
+    if gpu_memory_mode == "manual" and gpu_layers == 0:
+        return None
+    if gpu_memory_mode not in {"auto", "manual"}:
+        return None
+    # Manual Auto still delegates placement to llama.cpp's GPU fitter.
+    normalized = (cache_type_kv or "").strip().lower()
+    if normalized not in _GPU_UNACCELERATED_CACHE_TYPES:
+        return None
+    return (
+        f"KV cache type {normalized} may lack GPU acceleration on this "
+        "CUDA/HIP llama.cpp build and fall back to CPU, causing high CPU load. "
+        "q8_0 is a safer quantized option."
+    )
+
+
 def _pad_kv_cells(cells: int) -> int:
     return ((cells + 255) // 256) * 256
 
@@ -19483,6 +19512,33 @@ class LlamaCppBackend:
                     )
                     self._cache_type_kv = cache_type_kv
                     logger.info(f"KV cache type: {cache_type_kv}")
+                    inference_backend = next(
+                        (
+                            name
+                            for name in ("cuda", "hip")
+                            if name in self._installed_ggml_backends(binary)
+                        ),
+                        None,
+                    )
+                    if intent.cpu_fallback:
+                        inference_backend = None
+                    advisory_cache_type = (
+                        intent.cache_type_kv
+                        if (
+                            _extras_cache is None
+                            and not _cache_type_from_env
+                            and cache_type_kv == intent.cache_type_kv
+                        )
+                        else None
+                    )
+                    gpu_fallback_warning = _kv_cache_gpu_fallback_warning(
+                        advisory_cache_type,
+                        gpu_memory_mode,
+                        gpu_layers,
+                        inference_backend,
+                    )
+                    if gpu_fallback_warning:
+                        logger.warning(gpu_fallback_warning)
                 else:
                     # An env-only type is left inherited (untouched) so an
                     # asymmetric K/V env reaches the child as set.

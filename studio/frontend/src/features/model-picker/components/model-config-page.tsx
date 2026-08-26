@@ -43,6 +43,8 @@ import {
   reconcileGpuSelection,
   useGpuDevices,
 } from "@/hooks/use-gpu-info";
+import { useLlamaCppBackend } from "@/hooks/use-llama-backend";
+import { shouldWarnKvCacheGpuFallback } from "@/features/model-picker/model-config/kv-cache-gpu-warning";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
@@ -1100,6 +1102,15 @@ function GgufAdvancedSettings({
       : N_BATCH_LLAMA_DEFAULT;
   const ubatchExceedsBatch =
     config.nUbatch != null && config.nUbatch > effectiveBatch;
+  const llamaBackend = useLlamaCppBackend();
+  const kvCacheWarningId = useId();
+  const kvCacheGpuWarning = shouldWarnKvCacheGpuFallback({
+    backend: llamaBackend,
+    cacheType: config.kvCacheDtype ?? KV_CACHE_DTYPE_DEFAULT,
+    gpuMemoryMode: config.gpuMemoryMode ?? "auto",
+    gpuLayers: config.gpuLayers,
+    isDiffusion,
+  });
   return (
     <>
       <div className={ROW_CLASS}>
@@ -1122,6 +1133,7 @@ function GgufAdvancedSettings({
             icon={ChevronDownStandardIcon}
             iconClassName="size-3.5"
             className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
+            aria-describedby={kvCacheGpuWarning ? kvCacheWarningId : undefined}
           >
             <SelectValue />
           </SelectTrigger>
@@ -1137,6 +1149,15 @@ function GgufAdvancedSettings({
           </SelectContent>
         </Select>
       </div>
+      {kvCacheGpuWarning ? (
+        <p
+          id={kvCacheWarningId}
+          className="text-ui-11 leading-snug text-amber-500"
+        >
+          This cache type may fall back to CPU on CUDA/HIP, causing high CPU
+          load. q8_0 is a safer quantized option.
+        </p>
+      ) : null}
 
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
