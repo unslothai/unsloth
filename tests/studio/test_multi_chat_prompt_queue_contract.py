@@ -881,12 +881,12 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
     )
 
     # The pane knows it is hidden.
-    assert "backgrounded: boolean;" in autosave, (
-        "ThreadBackendAutosave has to be told, like every other sync component here"
-    )
-    assert "backgrounded={backgrounded}" in RUNTIME_PROVIDER, (
-        "and the provider has to pass it, or the prop is inert"
-    )
+    assert (
+        "backgrounded: boolean;" in autosave
+    ), "ThreadBackendAutosave has to be told, like every other sync component here"
+    assert (
+        "backgrounded={backgrounded}" in RUNTIME_PROVIDER
+    ), "and the provider has to pass it, or the prop is inert"
 
     # Read at publish time, not captured when the save was queued: the save that publishes
     # may have been scheduled while the pane was on screen and resolve long after Compare
@@ -895,9 +895,9 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
     assert "backgroundedRef.current = backgrounded;" in autosave
 
     # The publication is what is gated -- and ONLY the publication.
-    assert "!backgroundedRef.current &&" in autosave, (
-        "the active-thread publication must be gated on the pane being visible"
-    )
+    assert (
+        "!backgroundedRef.current &&" in autosave
+    ), "the active-thread publication must be gated on the pane being visible"
     publish_at = autosave.index("store.setActiveThreadId(remoteId)")
     guard_at = autosave.index("!backgroundedRef.current")
 
@@ -908,9 +908,9 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
         "the publication must also stand down while this provider's own New Chat switch is "
         "still resolving"
     )
-    assert "switchState.landedAttempt !== switchState.attempt" in autosave, (
-        "the in-flight window is attempt != landedAttempt, not merely activeNonce being set"
-    )
+    assert (
+        "switchState.landedAttempt !== switchState.attempt" in autosave
+    ), "the in-flight window is attempt != landedAttempt, not merely activeNonce being set"
     assert guard_at < publish_at, "the guard has to come before the write it guards"
 
     # The save itself is untouched: gating it would defeat the PR, which exists so a run
@@ -938,12 +938,12 @@ def test_the_history_adapters_publish_stands_down_with_the_autosaves():
         "\n  // Always register the adapter so the mic stays clickable",
     )
 
-    assert "store.setActiveThreadId(remoteId);" in append, (
-        "this test is about the history adapter's publication; if it moved, follow it"
-    )
-    assert "!backgroundedRef?.current &&" in append, (
-        "the history adapter's publication needs the same visibility gate as the autosave's"
-    )
+    assert (
+        "store.setActiveThreadId(remoteId);" in append
+    ), "this test is about the history adapter's publication; if it moved, follow it"
+    assert (
+        "!backgroundedRef?.current &&" in append
+    ), "the history adapter's publication needs the same visibility gate as the autosave's"
     assert "!switchInFlight" in append, (
         "...and the same stand-down while a New Chat switch this provider started is still "
         "resolving; see the autosave test for why mainThreadId cannot be trusted in that gap"
