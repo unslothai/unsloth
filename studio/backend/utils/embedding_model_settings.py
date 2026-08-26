@@ -102,6 +102,31 @@ def get_stored_download_pending(model: str) -> bool:
     return stored[4] if stored[1] == model else False
 
 
+def clear_stored_download_pending(model: str) -> bool:
+    """Retire the pending marker for ``model`` once its weights are on disk.
+
+    Nothing else clears it: the picker re-resolves after a transfer but does not
+    save again, so without this the marker outlives the download it described and
+    pins that model cache-only forever. A later eviction then reads as "not
+    downloaded yet" and only re-picking the model would recover. Callers are the
+    loaders, at the point where they have just proven the cache is complete.
+    """
+    stored = _get_stored_state()
+    if stored[1] != model or not stored[4]:
+        return False
+    from storage.studio_db import upsert_app_settings
+
+    resolution = {
+        "model": stored[1],
+        "gguf_repo": stored[2],
+        "backend": stored[3],
+        "download_pending": False,
+    }
+    upsert_app_settings({EMBEDDING_RESOLUTION_SETTING_KEY: resolution})
+    _invalidate_cache()
+    return True
+
+
 def get_stored_embedding_model() -> str | None:
     """The persisted override, or None when unset/invalid."""
     return _get_stored_state()[0]

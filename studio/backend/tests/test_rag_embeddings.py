@@ -786,3 +786,80 @@ def test_crashing_torch_falls_back_to_llama_server(monkeypatch):
     embeddings._reset_backend()
 
     assert isinstance(embeddings._get_backend(), _SentinelLlamaBackend)
+
+
+def test_encode_reacquires_a_backend_retired_between_batches(monkeypatch):
+    """`release_backend` promises the next embed rebuilds. Without a reacquire here
+    that promise held only for `token_counter`, and pressing Unload mid-ingestion
+    failed the document being indexed instead of continuing it."""
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    retired = LlamaServerBackend()
+    replacement = LlamaServerBackend()
+    retired._closed = True
+    served = np.zeros((1, 4), dtype = np.float32)
+    monkeypatch.setattr(
+        replacement,
+        "encode",
+        lambda texts, **kwargs: served,
+    )
+    backends = iter([retired, replacement])
+    monkeypatch.setattr(embeddings, "_get_backend", lambda: next(backends))
+
+    assert embeddings.encode(["chunk"]) is served
+    # The identity must name the backend that actually produced the vectors.
+    assert embeddings._served_by.backend is replacement
+
+
+def test_encode_does_not_hide_a_non_lifecycle_runtime_error(monkeypatch):
+    class _BrokenBackend:
+        _closed = False
+
+        def encode(self, texts, **kwargs):
+            raise RuntimeError("llama-server returned no embedding")
+
+    monkeypatch.setattr(embeddings, "_get_backend", lambda: _BrokenBackend())
+    with pytest.raises(RuntimeError, match = "returned no embedding"):
+        embeddings.encode(["chunk"])
+
+
+def test_encode_surfaces_the_unload_when_no_replacement_is_published(monkeypatch):
+    from core.rag.embed_llama_server import LlamaServerBackend
+
+    retired = LlamaServerBackend()
+    retired._closed = True
+    monkeypatch.setattr(embeddings, "_get_backend", lambda: retired)
+    with pytest.raises(RuntimeError, match = "was unloaded"):
+        embeddings.encode(["chunk"])
+
+
+def test_the_token_counter_follows_an_unloaded_sentence_transformer(monkeypatch):
+    """The tokenizer used to be captured when the counter was built and held for the
+    whole document, so it kept counting through an unload that reported the model
+    gone. Reading it per call under the compute lock mirrors `_st_encode`."""
+    looked_up = []
+
+    class _Tok:
+        def __init__(self, n):
+            self.n = n
+
+        def encode(self, text, add_special_tokens = False):
+            return list(range(self.n))
+
+    class _Model:
+        def __init__(self, n):
+            self.tokenizer = _Tok(n)
+
+    models = [_Model(3), _Model(7)]
+
+    def _get(model_name = None):
+        looked_up.append(model_name)
+        return models[min(len(looked_up) - 1, 1)]
+
+    monkeypatch.setattr(embeddings, "_get", _get)
+    count = embeddings._st_token_counter("org/embedder")
+
+    assert looked_up == [], "the lookup must not happen before the first call"
+    assert count("first") == 3
+    assert count("second") == 7
+    assert looked_up == ["org/embedder", "org/embedder"]

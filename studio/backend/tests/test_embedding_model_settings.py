@@ -107,3 +107,25 @@ def test_pending_download_is_stored_with_the_same_atomic_resolution(settings_sto
     assert ems.get_stored_download_pending("org/embedder") is True
     assert ems.get_stored_download_pending("org/another") is False
     assert settings_store[ems.EMBEDDING_RESOLUTION_SETTING_KEY]["download_pending"] is True
+
+
+def test_a_completed_transfer_retires_the_pending_marker(settings_store):
+    """Nothing else clears it: the picker re-resolves after a download but does not
+    save again, so a marker left behind pins the model cache-only for good and a
+    later cache eviction reads as "never downloaded"."""
+    ems.set_rag_embedding_model(
+        "org/embedder",
+        gguf_repo = "org/embedder-conversion",
+        backend = "llama-server",
+        download_pending = True,
+    )
+
+    assert ems.clear_stored_download_pending("org/embedder") is True
+    assert ems.get_stored_download_pending("org/embedder") is False
+    # The rest of the resolution survives: the loader still opens what was fetched.
+    assert ems.get_stored_gguf_repo("org/embedder") == "org/embedder-conversion"
+    assert ems.get_stored_backend("org/embedder") == "llama-server"
+    # Idempotent, and never touches another model's record.
+    assert ems.clear_stored_download_pending("org/embedder") is False
+    assert ems.clear_stored_download_pending("org/another") is False
+    assert ems.get_stored_gguf_repo("org/embedder") == "org/embedder-conversion"
