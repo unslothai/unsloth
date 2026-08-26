@@ -174,11 +174,11 @@ def test_token_counter_reacquires_backend_retired_between_chunk_calls(monkeypatc
 
     retired = LlamaServerBackend()
     replacement = LlamaServerBackend()
-    monkeypatch.setattr(embeddings, "_get_backend", lambda: retired)
+    monkeypatch.setattr(embeddings, "_get_backend", lambda *_a, **_k: retired)
     count = embeddings.token_counter("org/embedder")
 
     retired._closed = True
-    monkeypatch.setattr(embeddings, "_get_backend", lambda: replacement)
+    monkeypatch.setattr(embeddings, "_get_backend", lambda *_a, **_k: replacement)
     monkeypatch.setattr(
         replacement,
         "_post",
@@ -198,7 +198,7 @@ def test_token_counter_does_not_hide_non_lifecycle_errors(monkeypatch):
 
             return _raise
 
-    monkeypatch.setattr(embeddings, "_get_backend", lambda: _BrokenCounterBackend())
+    monkeypatch.setattr(embeddings, "_get_backend", lambda *_a, **_k: _BrokenCounterBackend())
     with pytest.raises(RuntimeError, match = "invalid tokenizer response"):
         embeddings.token_counter()("chunk")
 
@@ -804,7 +804,7 @@ def test_encode_reacquires_a_backend_retired_between_batches(monkeypatch):
         lambda texts, **kwargs: served,
     )
     backends = iter([retired, replacement])
-    monkeypatch.setattr(embeddings, "_get_backend", lambda: next(backends))
+    monkeypatch.setattr(embeddings, "_get_backend", lambda *_a, **_k: next(backends))
 
     assert embeddings.encode(["chunk"]) is served
     # The identity must name the backend that actually produced the vectors.
@@ -818,7 +818,7 @@ def test_encode_does_not_hide_a_non_lifecycle_runtime_error(monkeypatch):
         def encode(self, texts, **kwargs):
             raise RuntimeError("llama-server returned no embedding")
 
-    monkeypatch.setattr(embeddings, "_get_backend", lambda: _BrokenBackend())
+    monkeypatch.setattr(embeddings, "_get_backend", lambda *_a, **_k: _BrokenBackend())
     with pytest.raises(RuntimeError, match = "returned no embedding"):
         embeddings.encode(["chunk"])
 
@@ -828,7 +828,7 @@ def test_encode_surfaces_the_unload_when_no_replacement_is_published(monkeypatch
 
     retired = LlamaServerBackend()
     retired._closed = True
-    monkeypatch.setattr(embeddings, "_get_backend", lambda: retired)
+    monkeypatch.setattr(embeddings, "_get_backend", lambda *_a, **_k: retired)
     with pytest.raises(RuntimeError, match = "was unloaded"):
         embeddings.encode(["chunk"])
 

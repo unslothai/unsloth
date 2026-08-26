@@ -36,6 +36,14 @@ def settings_store(monkeypatch):
     monkeypatch.setattr(
         studio_db, "upsert_app_settings", lambda settings: store.update(settings) or store
     )
+
+    def _cas(key, expected, value):
+        if store.get(key) != expected:
+            return False
+        store[key] = value
+        return True
+
+    monkeypatch.setattr(studio_db, "compare_and_set_app_setting", _cas)
     ems._invalidate_cache()
     yield store
     ems._invalidate_cache()
@@ -129,3 +137,25 @@ def test_a_completed_transfer_retires_the_pending_marker(settings_store):
     assert ems.clear_stored_download_pending("org/embedder") is False
     assert ems.clear_stored_download_pending("org/another") is False
     assert ems.get_stored_gguf_repo("org/embedder") == "org/embedder-conversion"
+
+
+def test_a_concurrent_save_is_not_reverted_by_a_late_pending_clear(settings_store):
+    """The loader reads model A's pending resolution, the user saves model B, and
+    only then does the clear land. A plain upsert would put A's record back beside
+    B's override, leaving B to re-derive a backend and a companion it never
+    resolved. The write is conditional on the record it read."""
+    ems.set_rag_embedding_model(
+        "org/a", gguf_repo = "org/a-GGUF", backend = "llama-server", download_pending = True
+    )
+    stale = ems._get_stored_state()          # A's loader has read it
+    assert stale[1] == "org/a" and stale[4] is True
+    ems.set_rag_embedding_model(
+        "org/b", gguf_repo = "org/b-GGUF", backend = "sentence-transformers"
+    )
+    ems._cached = (0.0, stale)               # its 2s snapshot still says A
+
+    assert ems.clear_stored_download_pending("org/a") is False
+    ems._invalidate_cache()
+    assert ems.get_stored_gguf_repo("org/b") == "org/b-GGUF"
+    assert ems.get_stored_backend("org/b") == "sentence-transformers"
+    assert ems.get_stored_gguf_repo("org/a") is None

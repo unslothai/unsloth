@@ -3886,6 +3886,40 @@ def get_app_settings(keys: list[str]) -> dict[str, Any]:
         conn.close()
 
 
+def compare_and_set_app_setting(key: str, expected: Any, value: Any) -> bool:
+    """Write ``value`` to ``key`` only while it still holds ``expected``.
+
+    A read-then-upsert cannot express "clear this flag": another save committing
+    in the gap is silently reverted by the write that follows it. Comparing inside
+    one immediate transaction makes a losing update a no-op instead. Returns
+    whether the write happened.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT value_json FROM app_settings WHERE key = ?", (key,)
+        ).fetchone()
+        current = _json_loads(row["value_json"], None) if row is not None else None
+        if current != expected:
+            conn.rollback()
+            return False
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (key, json.dumps(value), datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
 def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
     if not settings:
         return {}

@@ -62,6 +62,8 @@ def test_sentence_transformers_backend_points_at_the_model_repo(client, monkeypa
 def test_uncached_sentence_transformers_plan_reports_snapshot_size(client, monkeypatch):
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
     monkeypatch.setattr(settings, "_hf_snapshot_size", lambda repo, token: 987_654)
+    # The repo has to publish something loadable before a size means anything.
+    monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: ["model.safetensors"])
     import utils.utils as utils
 
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: False)
@@ -70,6 +72,23 @@ def test_uncached_sentence_transformers_plan_reports_snapshot_size(client, monke
     assert body["backend"] == "sentence-transformers"
     assert body["cached"] is False
     assert body["size_bytes"] == 987_654
+
+
+def test_a_repo_with_no_loadable_checkpoint_is_refused_not_offered(client, monkeypatch):
+    """`is_embedding_model` gates on the Hub's tags, so a feature-extraction repo
+    publishing only GGUF reaches the direct sentence-transformers branch. Offering
+    it as a snapshot download ends in a transfer SentenceTransformer cannot open."""
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
+    monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
+    import utils.utils as utils
+
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: False)
+
+    body = _resolve(client, "org/gguf-only").json()
+    assert body["backend"] == "sentence-transformers"
+    assert body["download_repo"] is None
+    assert body["cached"] is False
+    assert "no checkpoint this backend can load" in body["error"]
 
 
 def test_resolution_selects_the_backend_for_the_new_model_not_the_old_one(client, monkeypatch):

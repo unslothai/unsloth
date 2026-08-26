@@ -114,15 +114,22 @@ def clear_stored_download_pending(model: str) -> bool:
     stored = _get_stored_state()
     if stored[1] != model or not stored[4]:
         return False
-    from storage.studio_db import upsert_app_settings
+    from storage.studio_db import compare_and_set_app_setting
 
-    resolution = {
+    expected = {
         "model": stored[1],
         "gguf_repo": stored[2],
         "backend": stored[3],
-        "download_pending": False,
+        "download_pending": True,
     }
-    upsert_app_settings({EMBEDDING_RESOLUTION_SETTING_KEY: resolution})
+    # Conditional, not a plain upsert: a save for another model committing between
+    # the read above and this write would otherwise be reverted, putting this
+    # model's resolution back beside the other one's override and leaving that
+    # model to re-derive a backend and a companion repo it never resolved.
+    if not compare_and_set_app_setting(
+        EMBEDDING_RESOLUTION_SETTING_KEY, expected, {**expected, "download_pending": False}
+    ):
+        return False
     _invalidate_cache()
     return True
 

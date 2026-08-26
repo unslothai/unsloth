@@ -853,18 +853,25 @@ def _dispose_replaced_backend(old, new = None) -> None:
             logger.warning("replaced embedding backend shutdown failed", exc_info = True)
 
 
-def _get_backend():
+def _get_backend(model_name: str | None = None):
     """The process-wide embedding backend for ``config.EMBED_BACKEND``, built once.
     Cached by the resolved choice, so ``auto`` detection runs only on a miss and a
-    config or saved-model change rebuilds it."""
+    config or saved-model change rebuilds it.
+
+    ``model_name`` is the model the caller is embedding for, defaulting to the live
+    setting. A job pins its model once and passes it down, and per-model stored
+    backends mean two models can resolve differently: reading the setting here
+    instead would let a Settings change mid-job build the NEW model's backend while
+    ``encode_with_identity`` goes on labelling the vectors with the pinned one.
+    """
     global _backend, _backend_key, _forced_backend_key, _forced_backend_model
     raw = _raw_backend()
     old = None
     new = None
     with _backend_lock:
-        model = config.effective_embedding_model()
+        model = model_name or config.effective_embedding_model()
         forced = _forced_backend_key if _forced_backend_model == model else None
-        key = forced or (_resolve_auto_for_model() if raw in _AUTO_ALIASES else raw)
+        key = forced or (_resolve_auto_for_model(model) if raw in _AUTO_ALIASES else raw)
         if _backend is not None and _backend_key == _backend_cache_key(raw, key):
             return _backend
         old = _backend
@@ -1060,7 +1067,7 @@ def encode_with_identity(
 
 def warm(model_name: str | None = None) -> None:
     """Eagerly load the embedder so the first real request isn't slow."""
-    _get_backend().warm(model_name = model_name)
+    _get_backend(model_name).warm(model_name = model_name)
 
 
 def encode(
@@ -1076,14 +1083,14 @@ def encode(
     same way ``token_counter`` does for a counter held across chunks. Without it
     ``release_backend`` fails the in-flight document rather than rebuilding for it.
     """
-    backend = _get_backend()
+    backend = _get_backend(model_name)
     _served_by.backend = backend
     try:
         return backend.encode(texts, model_name = model_name, normalize = normalize)
     except RuntimeError:
         if not (_is_llama_backend(backend) and getattr(backend, "_closed", False)):
             raise
-    replacement = _get_backend()
+    replacement = _get_backend(model_name)
     if replacement is backend:
         raise RuntimeError("llama-server embedding backend was unloaded")
     _served_by.backend = replacement
@@ -1092,7 +1099,7 @@ def encode(
 
 def dim(model_name: str | None = None) -> int:
     """Embedding dimension for the (loaded) model."""
-    return _get_backend().dim(model_name = model_name)
+    return _get_backend(model_name).dim(model_name = model_name)
 
 
 def token_counter(model_name: str | None = None) -> Callable[[str], int]:
@@ -1103,7 +1110,7 @@ def token_counter(model_name: str | None = None) -> Callable[[str], int]:
     published backend only for that precise lifecycle failure. Other tokenizer
     errors still propagate unchanged.
     """
-    backend = _get_backend()
+    backend = _get_backend(model_name)
     state = (backend, backend.token_counter(model_name = model_name))
     counter_lock = threading.Lock()
 
@@ -1121,7 +1128,7 @@ def token_counter(model_name: str | None = None) -> Callable[[str], int]:
             # Another counting thread may already have replaced the retired
             # counter while this one was leaving it.
             if state[0] is served_backend:
-                replacement = _get_backend()
+                replacement = _get_backend(model_name)
                 if replacement is served_backend:
                     raise RuntimeError("llama-server embedding backend was unloaded")
                 state = (

@@ -2288,6 +2288,21 @@ def _resolve_embedding_model_plan(
                 embedding_model = resolved, backend = backend, cached = True
             )
         cached = hf_cache_snapshot_is_loadable(resolved)
+        if not cached and _st_weight_files(resolved, token) is None:
+            # is_embedding_model gates on the Hub's tags, so a repo tagged for
+            # feature-extraction that publishes only GGUF (or no loadable
+            # checkpoint at all) reaches here and would be offered as a snapshot
+            # download that SentenceTransformer cannot open once it lands. The
+            # llama-to-ST fallback already proves the weights exist before
+            # planning; this path is the one that did not.
+            return EmbeddingModelResolveResponse(
+                embedding_model = resolved,
+                backend = backend,
+                error = (
+                    f"No sentence-transformers weights found in {resolved!r}. "
+                    "The repository publishes no checkpoint this backend can load."
+                ),
+            )
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
             backend = backend,
