@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  isChatGenerativeHubModel,
   isClassifierOrRerankerHubModel,
   isSpeechOnlyHubModel,
 } from "../src/features/settings/lib/agent-hub-model.ts";
@@ -36,9 +37,7 @@ test("the default model demonstrates reasoning effort without sampling flags", (
     assert.ok(!flags.includes(samplingFlag));
   }
   assert.ok(
-    TAB.includes(
-      "modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO)",
-    ),
+    TAB.includes("modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO)"),
   );
   assert.equal(
     en.settings.agents.automaticSettingsNote,
@@ -62,12 +61,42 @@ test("the model dropdown loads live trending GGUFs", () => {
   assert.ok(request.includes('sortBy: "trendingScore"'));
   assert.ok(request.includes('sortDirection: "desc"'));
   assert.ok(request.includes("keepUnsupportedTags: false"));
+  assert.ok(TAB.includes("isChatGenerativeHubModel(model)"));
   assert.ok(TAB.includes("!isEmbeddingHubModel(model)"));
   assert.ok(TAB.includes("EMBEDDING_TAGS.has(tag.toLowerCase())"));
   assert.ok(TAB.includes("!isSpeechOnlyHubModel(model)"));
   assert.ok(TAB.includes("!isClassifierOrRerankerHubModel(model)"));
   assert.ok(TAB.includes("mergeModelOrder(trendingModels, models)"));
   assert.ok(TAB.includes("[...primary, ...fallback]"));
+});
+
+test("the agent feed admits only declared chat-generation pipelines", () => {
+  for (const pipelineTag of [
+    "text-generation",
+    "conversational",
+    "image-text-to-text",
+    "audio-text-to-text",
+    "any-to-any",
+  ]) {
+    assert.equal(isChatGenerativeHubModel({ pipelineTag }), true);
+  }
+  for (const pipelineTag of [
+    "fill-mask",
+    "audio-classification",
+    "voice-activity-detection",
+    "feature-extraction",
+    "question-answering",
+    "image-classification",
+    "text-to-speech",
+    "text-classification",
+  ]) {
+    assert.equal(isChatGenerativeHubModel({ pipelineTag }), false);
+  }
+  assert.equal(
+    isChatGenerativeHubModel({ pipelineTag: "  TEXT-GENERATION " }),
+    true,
+  );
+  assert.equal(isChatGenerativeHubModel({}), true);
 });
 
 test("the agent feed excludes speech-only model tasks", () => {

@@ -62,6 +62,7 @@ import {
 import { SettingsSection } from "../components/settings-section";
 import { psSingle, shSingle } from "../components/usage-examples";
 import {
+  isChatGenerativeHubModel,
   isClassifierOrRerankerHubModel,
   isSpeechOnlyHubModel,
 } from "../lib/agent-hub-model.ts";
@@ -776,6 +777,7 @@ export function AgentsTab() {
         .filter(
           (model) =>
             model.isGguf &&
+            isChatGenerativeHubModel(model) &&
             !isEmbeddingHubModel(model) &&
             !isSpeechOnlyHubModel(model) &&
             !isClassifierOrRerankerHubModel(model),
