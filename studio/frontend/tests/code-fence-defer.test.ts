@@ -30,17 +30,61 @@ const MARKDOWN_TEXT = readFileSync(
   "utf8",
 );
 
-test("the latch is only ever set to true", () => {
+/*
+ * THIS GUARD USED TO SAY "the latch is only ever set to true", AND IT NO LONGER CAN.
+ *
+ * The eviction flag in `code-fence-evict.ts` exists precisely to add the edge this forbade,
+ * because a one-way latch bounds the standing span count at MOUNT and not over a SESSION: every
+ * fence the reader scrolls past keeps its spans for the rest of the mount. What made the previous
+ * viewport gate measure slower than doing nothing was not the existence of the edge, it was
+ * evicting on the complement of the latch predicate, at one boundary, from the scroll handler.
+ *
+ * So the invariant is narrowed rather than dropped, to the two parts that still hold:
+ *
+ *   1. There is exactly ONE clear in the file, and it is the eviction register's.
+ *   2. It is unreachable unless the flag is on, so an install that has not asked for eviction gets
+ *      the one-way latch this guard originally described, unchanged.
+ *
+ * The band, budget, dwell and refusals that keep the edge from churning are not source-checked
+ * here at all. They are pure functions in `code-fence-evict.ts` and `tests/code-fence-evict.test.ts`
+ * RUNS them, including the control that shows the anti-churn invariant is not a tautology.
+ */
+test("the latch is cleared in exactly one place, and only when eviction is on", () => {
   const writes = SOURCE.match(/setLatched\([^)]*\)/g) ?? [];
   assert.ok(writes.length > 0, "expected at least one write to the latch");
-  for (const write of writes) {
+  const clears = writes.filter((write) => write !== "setLatched(true)");
+  for (const clear of clears) {
     assert.equal(
-      write,
-      "setLatched(true)",
-      `the latch must never be cleared; found ${write}. A downgrade edge is what made the ` +
-        "previous viewport gate measure slower than doing nothing.",
+      clear,
+      "setLatched(false)",
+      `the only write that is not a latch must be a clear; found ${clear}`,
     );
   }
+  assert.equal(
+    clears.length,
+    1,
+    "one clear, in the eviction register. A second one is a downgrade edge nobody reviewed.",
+  );
+
+  const register = SOURCE.slice(
+    SOURCE.indexOf("THE EVICTION REGISTER. See the block comment"),
+    SOURCE.indexOf("return reached;"),
+  );
+  assert.ok(register.length > 200, "the eviction register must still be where this looks for it");
+  assert.ok(
+    register.includes("setLatched(false)"),
+    "the clear must live in the eviction register and nowhere else",
+  );
+  assert.ok(
+    register.includes("if (!enabled || !evicting || !latched || streaming) return;"),
+    "and it must be unreachable with the flag off, so today's behaviour is exactly preserved",
+  );
+  // PRECONDITION for the line above: `evicting` has to be the flag, not a constant somebody left
+  // true. Without this the early return could be there and mean nothing.
+  assert.ok(
+    /const evicting = enabled && CAN_OBSERVE && fenceEvictMode\(\) === "evict";/.test(SOURCE),
+    "`evicting` must be the resolved flag",
+  );
 });
 
 
@@ -193,8 +237,20 @@ test("a nested scroller is gated by the outermost one as well", () => {
     "watched only for fences that actually have a nested scroller, and only one element",
   );
   assert.ok(
-    !/setGeneration\(0\)|setLatched\(false\)/.test(SOURCE),
+    !/setGeneration\(0\)/.test(SOURCE),
     "the rebind must stay one-way: it can withhold a latch, never clear one",
+  );
+  // The rebind specifically. The file does contain one `setLatched(false)` now, in the eviction
+  // register; what must not happen is the ResizeObserver path acquiring one, because that would
+  // put a downgrade on a pane resize, which is a gesture that costs nothing today.
+  const rebind = SOURCE.slice(
+    SOURCE.indexOf("let resize: ResizeObserver | undefined;"),
+    SOURCE.indexOf("return () => {"),
+  );
+  assert.ok(rebind.length > 100, "the rebind must still be where this looks for it");
+  assert.ok(
+    !rebind.includes("setLatched"),
+    "a pane resize may rebind the gates; it may never change the latch",
   );
 
   // The conjunction, run rather than described: a fence inside a pane's window while the pane is

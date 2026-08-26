@@ -14,6 +14,18 @@ import {
 import { flushSync } from "react-dom";
 
 import { type FenceMode, resolveFenceMode } from "./code-fence-mode";
+import {
+  type EvictCandidate,
+  type FenceEvictMode,
+  PASS_INTERVAL_MS,
+  REACH_BAND,
+  type ScrollerBand,
+  nextPassDelayMs,
+  passIsDue,
+  planEviction,
+  resolveFenceEvictMode,
+  withinBand,
+} from "./code-fence-evict";
 
 /*
  * MONOTONIC fence highlighting: a fence is rendered as a plain shell until the
@@ -82,6 +94,27 @@ export const fenceMode = (): FenceMode =>
 const readBuildFlag = (): string => {
   try {
     return import.meta.env.VITE_UNSLOTH_DEFER_FENCE_HIGHLIGHT ?? "";
+  } catch {
+    return "";
+  }
+};
+
+/*
+ * The eviction decision lives in `code-fence-evict.ts`, for the same reason and in the same shape:
+ * a JSX-free, `import.meta`-free `.ts` whose every row is RUN by `tests/code-fence-evict.test.ts`.
+ * It ships OFF, so nothing below this line changes for an install that has not asked for it.
+ */
+export { type FenceEvictMode, resolveFenceEvictMode } from "./code-fence-evict";
+
+export const fenceEvictMode = (): FenceEvictMode =>
+  resolveFenceEvictMode(
+    (globalThis as Record<string, unknown>).__UNSLOTH_EVICT_FENCE_HIGHLIGHT__,
+    readBuildEvictFlag(),
+  );
+
+const readBuildEvictFlag = (): string => {
+  try {
+    return import.meta.env.VITE_UNSLOTH_EVICT_FENCE_HIGHLIGHT ?? "";
   } catch {
     return "";
   }
@@ -263,6 +296,9 @@ const lastScrollTop = new WeakMap<EventTarget, number>();
 let scrollWatched = false;
 
 const onScroll = (event: Event): void => {
+  // The eviction pass never runs from here; a scroll only says that positions have moved. When a
+  // pass is already scheduled this is one boolean, so a continuous scroll pays nothing for it.
+  if (latchedFences.size > 0) scheduleEvictionPass();
   if (unreached.size === 0) return;
   const target = event.target;
   if (target === null) return;
@@ -288,9 +324,152 @@ const watchScrolling = (): void => {
 };
 
 const unwatchScrolling = (): void => {
-  if (!scrollWatched || unreached.size > 0 || typeof document === "undefined") return;
+  if (
+    !scrollWatched
+    || unreached.size > 0
+    || latchedFences.size > 0
+    || typeof document === "undefined"
+  ) {
+    return;
+  }
   scrollWatched = false;
   document.removeEventListener("scroll", onScroll, { capture: true });
+};
+
+/*
+ * THE EVICTION REGISTER, and the one edge in this file that is not one-way.
+ *
+ * Everything above bounds the span count at MOUNT: a fence that the reader never reaches is never
+ * tokenized. It does not bound it over a SESSION. Every fence the reader scrolls past latches and
+ * keeps its spans for the rest of the mount, so on a long thread the standing count converges on
+ * the number deferral was supposed to avoid, and the standing count is the cost: 63 mutations over
+ * 5 s at 16,958 elements read 18.9 fps against 49 mutations at 22,789 elements reading 14.6 fps,
+ * fps against mutation count at r = -0.88. That sign says having spans costs, not making them.
+ *
+ * So a fence that is now FAR outside the viewport gives its highlighting back and returns to the
+ * same plain shell it started as. OFF BY DEFAULT (`code-fence-evict.ts`, `SHIP_DEFAULT = "off"`),
+ * so an install that has not asked for this sees exactly the behaviour described above.
+ *
+ * WHY THIS IS NOT THE BIDIRECTIONAL GATE THIS FILE'S HEADER REJECTS. That one evicted on the
+ * complement of the latch predicate, at a single boundary, from the scroll handler. Three things
+ * are different, all of them in `code-fence-evict.ts` where they can be run as tests:
+ *
+ *   1. A WIDER BAND. The latch band is one root height; eviction needs three. A fence that is
+ *      given back is at least two root heights outside the band that would take it again, so the
+ *      reader has to scroll two viewports back before anything is rebuilt. There is no boundary
+ *      for a resting reader to oscillate across.
+ *   2. NO WORK IN THE SCROLL EVENT. A scroll schedules one idle callback and nothing else. The
+ *      pass runs when the main thread is free, never inside the frames that are already dropping.
+ *   3. A BUDGET AND A DWELL. At most `EVICT_BUDGET` fences per pass, furthest first, and only
+ *      fences that have been highlighted for `DWELL_MS`. Scrolling fast through a thread cannot
+ *      unmount what it built two frames ago, and one pass cannot unmount a whole thread.
+ *
+ * `planEviction` also refuses outright while a selection is live or a print is in force. See there.
+ */
+type LatchedFence = {
+  node: HTMLElement;
+  /*
+   * Resolved ONCE, when the fence latched, rather than re-walked every pass.
+   *
+   * It can go stale the same way the observer roots can, when `reasoning.tsx` drops `max-h-64` and
+   * its pane stops being a scroller. Stale here is safe in the direction that matters: the pane's
+   * box becomes the whole trace, so the band is enormous and nothing inside it is ever far enough
+   * out to be given back. A stale root withholds evictions; it cannot cause one.
+   */
+  near: HTMLElement | null;
+  latchedAt: number;
+  unlatch: () => void;
+};
+
+const latchedFences = new Set<LatchedFence>();
+
+let lastEvictionPass: number | null = null;
+let evictionScheduled = false;
+
+const nowMs = (): number =>
+  typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+
+/** The same two numbers `inBand` reads, so both bands are measured against one rectangle. */
+const bandOf = (scroller: HTMLElement | null): ScrollerBand => {
+  const bounds = scroller?.getBoundingClientRect();
+  return bounds
+    ? { top: bounds.top, height: bounds.height }
+    : { top: 0, height: window.innerHeight };
+};
+
+/*
+ * A LIVE SELECTION STOPS THE PASS, because giving a fence back unmounts its subtree and a range
+ * anchored inside that subtree dies with it. A reader who selects a long thread and then copies
+ * would get a document that changed under the selection, which is the one thing the shell's
+ * character-for-character equality with the block cannot cover.
+ */
+const selectionIsLive = (): boolean => {
+  if (typeof document === "undefined" || typeof document.getSelection !== "function") {
+    return false;
+  }
+  const selection = document.getSelection();
+  return selection !== null && selection.rangeCount > 0 && !selection.isCollapsed;
+};
+
+/** `upgradeEverythingForPrint` latches the whole document on purpose. Do not race it. */
+const printIsInForce = (): boolean =>
+  typeof window !== "undefined"
+  && Boolean(window.matchMedia?.("print")?.matches);
+
+const runEvictionPass = (): void => {
+  evictionScheduled = false;
+  if (latchedFences.size === 0) return;
+  const at = nowMs();
+  if (!passIsDue(at, lastEvictionPass)) {
+    // Not due yet, so wait out the remainder rather than dropping the pass. `passIsDue` is true
+    // once that timer fires, so this cannot loop.
+    scheduleEvictionPass(PASS_INTERVAL_MS - (at - (lastEvictionPass ?? at)));
+    return;
+  }
+  lastEvictionPass = at;
+  const fences = [...latchedFences];
+  const candidates: EvictCandidate[] = fences.map((fence, id) => {
+    const rect = fence.node.getBoundingClientRect();
+    return {
+      id,
+      rect: { top: rect.top, bottom: rect.bottom },
+      band: bandOf(fence.near),
+      latchedAt: fence.latchedAt,
+      // A streaming fence is never registered here, so this is a restatement of that rather than
+      // a second source of truth. `code-fence-evict.ts` still runs the row.
+      streaming: false,
+    };
+  });
+  const plan = planEviction(candidates, at, {
+    selectionLive: selectionIsLive(),
+    printing: printIsInForce(),
+  });
+  for (const id of plan) {
+    const fence = fences[id];
+    latchedFences.delete(fence);
+    fence.unlatch();
+  }
+  // A pass is scheduled BY a scroll, so without this eviction would only progress while the reader
+  // is moving: the budget would cap a scrolled-through thread part way and the rest would stand
+  // until the next gesture. `null` is the resting state and asks for no timer at all.
+  const next = nextPassDelayMs(candidates, at, plan.length);
+  if (next !== null) scheduleEvictionPass(next);
+};
+
+const scheduleEvictionPass = (delayMs?: number): void => {
+  if (evictionScheduled || typeof globalThis === "undefined") return;
+  evictionScheduled = true;
+  if (delayMs !== undefined) {
+    setTimeout(runEvictionPass, Math.max(0, delayMs));
+    return;
+  }
+  const idle = (globalThis as Record<string, unknown>).requestIdleCallback as
+    | ((cb: () => void, options?: { timeout: number }) => number)
+    | undefined;
+  if (typeof idle === "function") idle(runEvictionPass, { timeout: PASS_INTERVAL_MS });
+  else setTimeout(runEvictionPass, PASS_INTERVAL_MS);
 };
 
 /*
@@ -460,13 +639,21 @@ const outermostScrollerOf = (node: HTMLElement): HTMLElement | null => {
   return found;
 };
 
-/** Is `node` inside `scroller`'s box grown by one of its own heights, the observer's margin? */
+/**
+ * Is `node` inside `scroller`'s box grown by one of its own heights, the observer's margin?
+ *
+ * The arithmetic lives in `code-fence-evict.ts` so that the LATCH band and the EVICT band are the
+ * same function at two widths rather than two copies that can drift apart. That file's tests run
+ * `withinBand(rect, band, REACH_BAND)` against a literal transcription of what this used to
+ * compute, over a grid, so the refactor is checked rather than asserted.
+ */
 const inBand = (node: HTMLElement, scroller: HTMLElement | null): boolean => {
-  const bounds = scroller?.getBoundingClientRect();
-  const top = bounds ? bounds.top : 0;
-  const height = bounds ? bounds.height : window.innerHeight;
   const rect = node.getBoundingClientRect();
-  return rect.bottom > top - height && rect.top < top + height * 2;
+  return withinBand(
+    { top: rect.top, bottom: rect.bottom },
+    bandOf(scroller),
+    REACH_BAND,
+  );
 };
 
 /**
@@ -492,6 +679,9 @@ export function useFenceReached(
   // against the element that clips this fence now. Never read for anything else.
   const [generation, setGeneration] = useState(0);
   const reached = !enabled || !CAN_OBSERVE || streaming || latched;
+  // Read here rather than threaded through the caller, so `markdown-text.tsx` keeps the call shape
+  // its own guards pin and an install with the flag off produces the identical component tree.
+  const evicting = enabled && CAN_OBSERVE && fenceEvictMode() === "evict";
   const warmRef = useRef(warm);
   useEffect(() => {
     warmRef.current = warm;
@@ -632,6 +822,43 @@ export function useFenceReached(
       unwatchScrolling();
     };
   }, [reached, host, generation]);
+
+  /*
+   * THE EVICTION REGISTER. See the block comment on `latchedFences` for why this edge exists and
+   * why it is not the bidirectional gate this file's header rejects.
+   *
+   * This is the ONLY place in this file that clears a latch, and it cannot run at all unless the
+   * flag is on: with `evicting` false the effect takes its early return, nothing is registered, no
+   * pass is ever scheduled, and `reached` behaves exactly as it did before this existed.
+   *
+   * A STREAMING FENCE IS NOT REGISTERED. It is the block the reader is watching, and the layout
+   * effect above latches it precisely so that finishing the stream cannot take its colours back.
+   * Registering it would hand that job to a timer instead.
+   *
+   * The cleanup deregisters, so a fence that unmounts, or a session that turns the flag off,
+   * leaves nothing behind for a pass to walk.
+   */
+  useEffect(() => {
+    if (!enabled || !evicting || !latched || streaming) return;
+    const node = host.current;
+    if (!node) return;
+    const registered: LatchedFence = {
+      node,
+      near: scrollerOf(node),
+      latchedAt: nowMs(),
+      unlatch: () => setLatched(false),
+    };
+    latchedFences.add(registered);
+    // The pass reads positions, so it has to hear about scrolling; and it is scheduled once here
+    // so that a fence latched by a jump or a print is considered even if the reader never scrolls
+    // that scroller again.
+    watchScrolling();
+    scheduleEvictionPass();
+    return () => {
+      latchedFences.delete(registered);
+      unwatchScrolling();
+    };
+  }, [enabled, evicting, latched, streaming, host]);
 
   return reached;
 }
