@@ -818,7 +818,12 @@ LEGS: dict[str, Leg] = {
 # starts at 492.7s. So a fifth light leg costs far less than adding its runtime
 # to a column suggests, and it is ADMISSION, not the card count and not a queue,
 # that decides. A fifth HEAVY leg would be a different question entirely.
-MAX_LEGS_PER_KERNEL = 5
+# Raised 5 -> 6 for the multi_gpu leg, the cheapest addition yet: it co-tenants
+# on BOTH cards at 1.2GB each rather than taking one, so it consumes no card
+# outright and never enters the card queue.
+#
+# Whether the makespan holds is a MEASUREMENT, not this comment.
+MAX_LEGS_PER_KERNEL = 6
 
 # Legs defined here and deliberately NOT run, with the reason. A leg is unwired
 # rather than deleted when the payload is right and the environment is not, so
@@ -840,32 +845,6 @@ UNWIRED: dict[str, str] = {
         "latest-everything leg there is, so if the vision leg ever has to come "
         "out for a reason of its own, this is what goes back in that hour "
         "instead of being reconstructed from a commit message."
-    ),
-    "multi_gpu": (
-        "STILL UNKNOWN: whether a 4bit Qwen3-0.6B TRAINS with both cards "
-        "visible, and where accelerate puts the weights when it can choose.\n"
-        "Every measurement this repo has of a two-card load is a load and not "
-        "a train: unsloth-probe-vision-recon-c76ea3 saw Qwen3.5-2B split "
-        "897.7MB on cuda:0 and 1017.1MB on cuda:1 with both T4s visible, and "
-        "that probe never called a trainer. A sharded model trains through "
-        "accelerate's hooks or it does not, and guessing which would be "
-        "guessing about the exact thing the leg is for.\n"
-        "THE RULES ARE DELIBERATELY NOT ASSERTING IT. multi_gpu_failures "
-        "checks what is deterministic from DEVICE_COUNT -- the torch_gpu_device "
-        "binding, the stream and buffer array lengths, the rotary cache slots "
-        "-- and RECORDS parameters_by_device rather than requiring a spread. A "
-        "rule written before the answer is a rule written to match whatever "
-        "happens.\n"
-        "ONE SESSION ANSWERS IT, and the leg is built by the real "
-        "--legs multi_gpu path so the probe runs the shipped code rather than "
-        "an imitation. Wire it when a run reports passed true; if training a "
-        "sharded model fails, that is a finding worth filing and the leg gets "
-        "an explicit device_map instead.\n"
-        "NOT A BLOCKER, and worth saying because it looks like one: the "
-        "llama.cpp two-card tensor split is NOT part of this leg and cannot "
-        "be. install_llama_cpp fetches the CPU bundle for the notebook legs -- "
-        "unsloth-probe-full-concurrent-417238 has this model's llama-bench "
-        "reporting `backend CPU` -- so a split assertion there could not fail."
     ),
     "latest_compile": (
         "STILL UNKNOWN: nothing about the leg. It is GREEN end to end and is "
@@ -1034,7 +1013,12 @@ UNWIRED: dict[str, str] = {
 # vision_failures [] and kernel_failures [], at 2.84GB peak reserved -- so it
 # co-tenants comfortably rather than displacing anything.
 KERNELS: tuple[tuple[str, ...], ...] = (
-    ("canary", "control", "gptoss", "vision_fla_compile", "default"),
+    # multi_gpu LAST, and the position is not arbitrary. It is the only
+    # all-card leg, so it never enters the card queue at all -- ORDER filters it
+    # out and it gets its own lane -- but ORDER is still what the report is
+    # ordered by, and reading it beside the legs it runs beside is what a reader
+    # wants.
+    ("canary", "control", "gptoss", "vision_fla_compile", "default", "multi_gpu"),
 )
 
 

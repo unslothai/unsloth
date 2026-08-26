@@ -416,7 +416,21 @@ def _drive_packed(
 # Renamed from ALL_LEGS when the Default leg made the kernel five: a name that
 # counts is a name that goes stale silently, and two assertions below had
 # already hardcoded the 4 to match it.
-ALL_LEGS = list(KERNELS[0])
+# The legs that enter the CARD QUEUE, which is what every scheduling rule in
+# this file is about. An all-card leg is deliberately not one of them: ORDER
+# filters it out and it gets its own lane, so feeding it to a rule about who
+# shares a card asks that rule a question it was not written to answer.
+#
+# It is not merely irrelevant, it actively misleads. With `multi_gpu` included
+# the co-tenancy rule below went red, and the cause was two things at once: the
+# all-card leg really does take one of the four slots, AND the free slot then
+# landed on card 1, whose seed worker sleeps out a 5s start stagger that dwarfs
+# the 0.4s stub durations. On hardware the legs run 400-700s and that stagger is
+# noise. Diagnosing it as "co-tenancy is broken" would have been wrong.
+#
+# What the all-card leg genuinely costs is asserted separately, below.
+ALL_LEGS = [n for n in KERNELS[0] if not LEGS[n].all_cards]
+ALL_KERNEL_LEGS = list(KERNELS[0])
 
 
 def test_losing_tmp_drops_the_kernel_back_to_one_leg_per_card(tmp_path):

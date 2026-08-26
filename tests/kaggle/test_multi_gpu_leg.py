@@ -267,7 +267,13 @@ def test_it_does_not_export_a_gguf_and_the_reason_is_recorded():
     buy a claim four other legs already make."""
     leg = legs.LEGS["multi_gpu"]
     assert "--export-gguf" not in leg.args
-    assert "backend CPU" in legs.UNWIRED["multi_gpu"] or "CPU bundle" in legs.UNWIRED["multi_gpu"]
+    # The reason travels with the decision. A leg that simply lacks a flag
+    # invites someone to add it back in the hour they notice.
+    source = (ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "legs.py").read_text(
+        encoding = "utf-8"
+    )
+    entry = source.split('"multi_gpu": Leg(')[1].split("),\n    \"")[0]
+    assert "backend CPU" in entry or "CPU bundle" in entry
 
 
 # --------------------------------------------------------- driver scheduling
@@ -315,11 +321,42 @@ def test_the_reservation_is_all_or_nothing():
     source = _driver_source()
     body = source.split("def _admit_all(name):")[1].split("def _release_all")[0]
     check, commit = body.split("for g in range(N_GPU):")[1:3]
-    # Every rejection happens in the FIRST loop, before any card is charged.
-    assert "return False" in check
-    assert "return False" not in commit
+    # Every rejection happens BEFORE any card is charged. `None` rather than
+    # False because the admission now returns which card carries the count.
+    assert "return None" in check
+    assert "return None" not in commit
     assert "card_load[g] += want" in commit
     assert "card_load[g] += want" not in check
+
+
+def test_the_count_is_charged_to_ONE_card_and_the_vram_to_every_card():
+    """The two ledgers track different things and the split is load-bearing.
+
+    `card_load` is memory, and an all-card leg really does hold a CUDA context
+    on each card -- 1.2 GB measured on unsloth-probe-multigpu-r2-a280e2.
+    `card_count` is a proxy for 4-vCPU CONTENTION; `MAX_LEGS_PER_CARD`'s own
+    comment says the legs "contend for CORES long before they contend for
+    memory". An all-card leg is ONE process, so charging it a slot on both
+    cards counts one process twice.
+
+    The first version did exactly that, and the driver simulation then showed
+    NO card holding two legs at once -- the co-tenancy that makes a fifth and
+    sixth leg affordable, gone. It would have paid for this leg by cancelling
+    the feature that makes it free.
+    """
+    source = _driver_source()
+    body = source.split("def _admit_all(name):")[1].split("def _release_all")[0]
+    commit = body.split("counted = min(")[1]
+    assert "for g in range(N_GPU):\n            card_load[g] += want" in commit
+    assert "card_count[counted] += 1" in commit
+    assert "card_count[g] += 1" not in commit, (
+        "the count is charged per card, so one process is counted twice and "
+        "the queue loses a slot on every card"
+    )
+    # And the release has to put it back on the SAME card, or the ledger drifts
+    # by one slot per all-card leg and a card silently stops taking work.
+    release = source.split("def _release_all(name, counted):")[1].split("\n\n")[0]
+    assert "card_count[counted] -= 1" in release
 
 
 def test_the_all_card_lane_is_joined_with_the_card_workers():
