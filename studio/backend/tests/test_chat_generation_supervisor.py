@@ -428,13 +428,11 @@ async def test_streamed_error_outranks_cleanup_cancellation(durable_run, monkeyp
     complete. Nobody asked to cancel, so the run has to settle as ``failed`` carrying
     the diagnostic the user needs to act on.
     """
+
     async def body(cancel_event):
         try:
             yield 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
-            yield (
-                'data: {"error": {"message": "Out of memory"}}\n\n'
-                'data: [DONE]\n\n'
-            )
+            yield 'data: {"error": {"message": "Out of memory"}}\n\ndata: [DONE]\n\n'
         finally:
             cancel_event.set()
 
