@@ -7093,9 +7093,12 @@ async def _maybe_auto_switch_model(
                 # case are different weights on a case-sensitive filesystem, and a false
                 # match here records the alias on the wrong resident model.
                 loaded_keys = [active, getattr(target_backend, "_openai_advertised_id", None)]
-                return _matches_any(target_id, loaded_keys) or _matches_any(
-                    override_id, loaded_keys
-                )
+                if _matches_any(target_id, loaded_keys):
+                    return True
+                # two scan roots can advertise one basename, so it cannot vouch for a path.
+                if _looks_like_local_path(target_id) and _looks_like_local_path(active):
+                    return False
+                return _matches_any(override_id, loaded_keys)
             if not backend.is_loaded or not backend.model_identifier:
                 return False
             loaded_keys = {backend.model_identifier.lower()}

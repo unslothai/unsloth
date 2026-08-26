@@ -142,6 +142,10 @@ def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
 
 
+async def _noop_reject(*_args, **_kwargs):
+    return None
+
+
 def _run_hook(model = "some/model"):
     asyncio.run(inference_route._maybe_auto_switch_model(model, object(), "tester"))
 
@@ -8629,6 +8633,114 @@ def test_a_gguf_only_endpoint_refuses_a_non_gguf_target_before_loading(monkeypat
     assert excinfo.value.status_code == 400
     assert calls == [], "the resident GGUF was unloaded for a swap the endpoint cannot use"
     assert llama.is_loaded is True
+
+
+def test_two_scan_roots_sharing_a_basename_do_not_answer_for_each_other(monkeypatch):
+    """A scanned directory with no repo alias is advertised under its basename, so
+    /root1/model and /root2/model both advertise "model". Accepting that shared alias as
+    proof of residency answered an explicit request for the second path with the first
+    path's weights, defeating the exact filesystem keys _build_index deliberately holds."""
+    llama = _FakeBackend("org/A-GGUF")
+    llama.is_loaded = False
+
+    class _FakeOrchestrator:
+        active_model_name = "/root1/model"
+        models = {"/root1/model": object()}
+        _openai_advertised_id = "model"
+
+    orchestrator = _FakeOrchestrator()
+    calls = []
+
+    async def _load(request, *args, **kwargs):
+        calls.append(request)
+        orchestrator.active_model_name = "/root2/model"
+        return None
+
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/root2/model", None, "model"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _noop_reject)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
+
+    asyncio.run(inference_route._maybe_auto_switch_model("/root2/model", object(), "tester"))
+    assert [getattr(c, "model_path", None) for c in calls] == [
+        "/root2/model"
+    ], "the request named the second path and was answered by the first model"
+
+
+def test_the_resident_path_still_short_circuits_its_own_request(monkeypatch):
+    # the guard above must not cost a reload when the request names the resident path.
+    llama = _FakeBackend("org/A-GGUF")
+    llama.is_loaded = False
+
+    class _FakeOrchestrator:
+        active_model_name = "/root1/model"
+        models = {"/root1/model": object()}
+        _openai_advertised_id = "model"
+
+    orchestrator = _FakeOrchestrator()
+    calls = []
+
+    async def _load(request, *args, **kwargs):
+        calls.append(request)
+        return None
+
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/root1/model", None, "model"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _noop_reject)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
+
+    asyncio.run(inference_route._maybe_auto_switch_model("/root1/model", object(), "tester"))
+    assert calls == []
+
+
+def test_a_repo_id_resident_still_matches_a_path_request_through_the_alias(monkeypatch):
+    # a repo-id resident is not a path, so the alias arm still answers a path request
+    # naming the same model rather than reloading it.
+    llama = _FakeBackend("org/A-GGUF")
+    llama.is_loaded = False
+
+    class _FakeOrchestrator:
+        active_model_name = "mlx-community/Qwen3-8B-4bit"
+        models = {"mlx-community/Qwen3-8B-4bit": object()}
+        _openai_advertised_id = None
+
+    orchestrator = _FakeOrchestrator()
+    calls = []
+
+    async def _load(request, *args, **kwargs):
+        calls.append(request)
+        return None
+
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/cache/snapshots/abc", None, "mlx-community/Qwen3-8B-4bit"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _noop_reject)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
+
+    asyncio.run(
+        inference_route._maybe_auto_switch_model("/cache/snapshots/abc", object(), "tester")
+    )
+    assert calls == []
 
 
 def test_an_audio_request_probes_audio_capability_on_a_non_gguf_target(monkeypatch):
