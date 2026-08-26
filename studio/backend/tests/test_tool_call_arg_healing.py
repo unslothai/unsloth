@@ -168,7 +168,6 @@ def test_a_call_that_ran_out_of_input_is_never_healed(raw):
 
 def _decision_for(raw: str):
     from core.inference.tool_loop_controller import ToolCallDecision
-
     coerced = coerce_tool_arguments(raw, heal = True, tool_name = "edit_file")
     return ToolCallDecision(
         action = "execute",

@@ -25370,12 +25370,9 @@ class LlamaCppBackend:
                                 )
                                 continue_final_message = True
                                 _fu_c = (
-                                    _backfill_usage_from_timings(_iter_usage, _iter_timings)
-                                    or {}
+                                    _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
                                 )
-                                _accumulated_completion_tokens += _fu_c.get(
-                                    "completion_tokens", 0
-                                )
+                                _accumulated_completion_tokens += _fu_c.get("completion_tokens", 0)
                                 _it_c = _iter_timings or {}
                                 _accumulated_predicted_ms += _it_c.get("predicted_ms", 0)
                                 _accumulated_predicted_n += _it_c.get("predicted_n", 0)

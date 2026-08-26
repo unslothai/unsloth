@@ -42,8 +42,7 @@ _HALF_AN_ANSWER = (
     # guard's line rule, which is correct of the guard and wrong of a fixture standing in
     # for streamed code: the first draft of this file tripped its own echo test.
     + "".join(
-        f"  ctx.lineTo({i * 3}, {i * 7 % 31});\n  ctx.stroke(); // segment {i}\n"
-        for i in range(40)
+        f"  ctx.lineTo({i * 3}, {i * 7 % 31});\n  ctx.stroke(); // segment {i}\n" for i in range(40)
     )
     + "  ctx.arc(6, -5, 5, 0"
 )
@@ -93,12 +92,21 @@ def _make_backend(monkeypatch, streams: list[object], payloads: list[dict]):
 
     @contextlib.contextmanager
     def fake_stream_with_retry(
-        _client, _url, payload, _cancel_event, headers = None, first_token_deadline = None
+        _client,
+        _url,
+        payload,
+        _cancel_event,
+        headers = None,
+        first_token_deadline = None,
     ):
         payloads.append(copy.deepcopy(payload))
         yield type("FakeResponse", (), {"status_code": 200, "chunks": streams.pop(0)})()
 
-    def fake_iter_text_cancellable(response, _cancel_event, first_token_deadline = None):
+    def fake_iter_text_cancellable(
+        response,
+        _cancel_event,
+        first_token_deadline = None,
+    ):
         yield from response.chunks
 
     monkeypatch.setattr(backend, "_stream_with_retry", fake_stream_with_retry)
