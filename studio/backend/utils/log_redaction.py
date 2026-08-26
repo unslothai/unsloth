@@ -597,6 +597,19 @@ class StreamingLogRedactor:
             )
             return redacted
 
+        inline_flag = _FLAG_RE.search(physical_context)
+        if (
+            inline_flag
+            and REDACTED in redacted
+            and self._ends_with_unescaped_backslash(inline_flag.group("val"))
+        ):
+            self._plain_key_indent = len(
+                re.match(r"[ \t]*", physical_context).group(0)
+            )
+            self._plain_has_value = True
+            self._plain_explicit_continuation = True
+            return redacted
+
         continued = _CONTINUED_SECRET_RE.search(redacted_context)
         if continued:
             if continued.group("block"):

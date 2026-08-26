@@ -511,6 +511,33 @@ def test_export_tracks_a_quoted_flag_secret_continuation(client):
     assert "ordinary: kept" in exported
 
 
+def test_export_tracks_an_unquoted_flag_secret_continuation(client):
+    first = "correct-horse"
+    second = "battery-staple"
+    path = _seed_server_log(f"llama --api-key {first}-\\\n{second}\nordinary: kept\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert first not in exported
+    assert second not in exported
+    assert "ordinary: kept" in exported
+
+
+def test_export_does_not_extend_flag_context_from_a_later_argument(client):
+    secret = "correct-horse"
+    visible = "ordinary-visible"
+    path = _seed_server_log(
+        f"llama --api-key {secret} --output path-\\\n{visible}\n"
+    )
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert secret not in exported
+    assert visible in exported
+
+
 def test_export_tracks_folded_cookie_pairs_after_an_inline_fragment(client):
     first = "first-session-secret"
     second = "second-refresh-secret"

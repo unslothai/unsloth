@@ -72,7 +72,6 @@ export function DebuggingTab() {
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [mode, setMode] = useState<RefreshMode>(readStoredMode);
   const [buffer, setBuffer] = useState<LogBufferState>(EMPTY_BUFFER);
-  const [realpath, setRealpath] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dropped, setDropped] = useState(false);
   // A burst larger than one response continues on the next poll, which in
@@ -85,6 +84,10 @@ export function DebuggingTab() {
   const [exporting, setExporting] = useState(false);
   const [openingFolder, setOpeningFolder] = useState(false);
   const { copied, copy } = useCopyFeedback();
+  const selectedRealpath = useMemo(
+    () => sources.find((source) => source.id === sourceId)?.realpath ?? null,
+    [sourceId, sources],
+  );
 
   // In a ref as well as state: the poll loop must not restart per line arrived.
   const cursorRef = useRef<string | null>(null);
@@ -202,7 +205,6 @@ export function DebuggingTab() {
         )
           return;
         cursorRef.current = page.cursor;
-        if (page.realpath) setRealpath(page.realpath);
         setDropped((previous) => nextDroppedState(previous, page));
         setMorePending(page.morePending);
         setStaleSession(page.fileLoggingDisabled);
@@ -234,7 +236,6 @@ export function DebuggingTab() {
     selectionRef.current += 1;
     cursorRef.current = null;
     setBuffer(EMPTY_BUFFER);
-    setRealpath(null);
     // Every notice below describes the file being left, so all of them go with
     // it. Clearing only `dropped` let a failed first read on the new source keep
     // claiming the OLD one's state, and in manual mode nothing retries: the pane
@@ -311,7 +312,7 @@ export function DebuggingTab() {
   const onOpenFolder = useCallback(async () => {
     setOpeningFolder(true);
     try {
-      await openDebugLogsFolder(realpath);
+      await openDebugLogsFolder(selectedRealpath);
     } catch (error) {
       toast.error(t("settings.debugging.openFolderError"), {
         description: error instanceof Error ? error.message : String(error),
@@ -319,7 +320,7 @@ export function DebuggingTab() {
     } finally {
       setOpeningFolder(false);
     }
-  }, [realpath, t]);
+  }, [selectedRealpath, t]);
 
   return (
     <div className="flex flex-col gap-5">
@@ -373,18 +374,18 @@ export function DebuggingTab() {
               </p>
               <code
                 className="min-w-0 flex-1 truncate text-xs text-foreground/80"
-                title={realpath ?? undefined}
+                title={selectedRealpath ?? undefined}
               >
-                {realpath ?? "-"}
+                {selectedRealpath ?? "-"}
               </code>
             </div>
             <Button
               size="sm"
               variant="ghost"
               className="shrink-0"
-              disabled={!realpath}
+              disabled={!selectedRealpath}
               aria-label={t("settings.debugging.pathCopy")}
-              onClick={() => realpath && copy(realpath)}
+              onClick={() => selectedRealpath && copy(selectedRealpath)}
             >
               <HugeiconsIcon
                 icon={copied ? Tick02Icon : Copy01Icon}
@@ -423,7 +424,9 @@ export function DebuggingTab() {
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={sources.length === 0 || !realpath || openingFolder}
+                  disabled={
+                    sources.length === 0 || !selectedRealpath || openingFolder
+                  }
                   onClick={() => void onOpenFolder()}
                 >
                   <HugeiconsIcon icon={FolderOpenIcon} className="size-3.5" />
