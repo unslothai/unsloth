@@ -54,6 +54,12 @@ def _load_real_index_env_scrub():
         ('_POLICY_OPT_OUT_ENV = "', "\n\n", 0),
         ("def _respect_pm_policy(", "\n\n\n", 0),
         ("def _relaxed_pip_policy_env(", "\n\ndef ", 0),
+        # The cross-manager gate. Extracted rather than stubbed for the same reason as the
+        # rest: these tests never set the opt-out, so it short-circuits before it can
+        # reach the policy scan, but a hand-written copy would agree with a broken
+        # original forever.
+        ("def _is_resolving_cmd(", "\n\ndef ", 0),
+        ("def _unenforceable_policy(", "\n\ndef ", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
     ):
@@ -61,6 +67,9 @@ def _load_real_index_env_scrub():
         exec(compile(src[start : src.index(end, start) + keep], str(STACK), "exec"), ns)
     assert "PIP_NO_INDEX" in ns["_UV_INDEX_ENV_VARS"], "extraction lost the pip vars"
     assert "PIP_REQUIRE_HASHES" in ns["_PM_POLICY_ENV_VARS"], "extraction lost the policy vars"
+    assert not ns["_unenforceable_policy"](["uv", "pip", "install", "x"]), (
+        "without the opt-out the gate must short-circuit before any policy scan"
+    )
     return ns["_install_env_for_cmd"]
 
 

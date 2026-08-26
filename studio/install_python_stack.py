@@ -4656,6 +4656,7 @@ _PM_POLICY_ENV_VARS = (
     "PIP_ONLY_BINARY",
     "PIP_NO_BINARY",
     "PIP_REQUIRE_HASHES",
+    "PIP_UPLOADED_PRIOR_TO",
 )
 
 
@@ -4698,6 +4699,8 @@ _HARDENED_CONFIG_KEYS = (
     "no-build-package",
     "exclude-newer",
     "exclude-newer-package",
+    # pip's own spelling of the same control, so a pip-side cutoff is detected too.
+    "uploaded-prior-to",
 )
 
 
@@ -4768,7 +4771,26 @@ def _hardened_settings_in_toml(
                     settings[key] = _toml_value_text(node[key])
         return settings
     current: "tuple[str, ...]" = ()
-    for line in text.splitlines():
+    # Join continuation lines first: tomllib is absent here, and a `no-build-package = [`
+    # spread over several lines would otherwise read as the literal value "[".
+    joined: "list[str]" = []
+    pending = ""
+    for raw_line in text.splitlines():
+        piece = raw_line.split("#", 1)[0].rstrip() if "=" in raw_line or pending else raw_line
+        if pending:
+            pending += " " + piece.strip()
+            if pending.count("[") <= pending.count("]"):
+                joined.append(pending)
+                pending = ""
+            continue
+        stripped = piece.strip()
+        if stripped.count("[") > stripped.count("]") and "=" in stripped:
+            pending = stripped
+            continue
+        joined.append(raw_line)
+    if pending:
+        joined.append(pending)
+    for line in joined:
         stripped = line.strip()
         if stripped.startswith("#") or not stripped:
             continue
@@ -4839,10 +4861,15 @@ def _hardened_uv_config_paths() -> "list[str]":
     are NOT. `./uv.toml` is kept anyway: it costs a line of output, and other uv
     subcommands this module drives may yet read it.
     """
-    candidates = []
+    if _config_value_is_on(os.environ.get("UV_NO_CONFIG", "")):
+        # --no-config: uv discovers nothing, so nothing here is policy.
+        return []
     explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
     if explicit:
-        candidates.append(explicit)
+        # --config-file is used "in place of any discovered configuration files", so the
+        # discovered set is not merely outranked, it is not read at all.
+        return _existing_files([explicit])
+    candidates = []
     if IS_WINDOWS:
         for variable in ("APPDATA", "PROGRAMDATA"):
             base = os.environ.get(variable, "")
@@ -4933,30 +4960,49 @@ def _hardened_pip_config_paths() -> "list[str]":
 _PIP_SECTION_RANK = {"global": 0, "install": 1, "download": 1, "wheel": 1}
 
 
+# The three pip subcommands this module drives. pip applies `[global]` and then the
+# command's own section, so each of these resolves separately: `[install] require-hashes
+# = true` with `[wheel] require-hashes = false` is two different policies, not one.
+_PIP_COMMANDS = ("install", "download", "wheel")
+
+
 def _hardened_settings_in_ini(text: str) -> "dict[str, str]":
-    """Hardened keys DEFINED in a pip.conf, with their values, by pip's section rules.
+    """Hardened settings from a pip.conf, resolved per subcommand then combined.
+
+    A control counts as configured if any of install/download/wheel configures it, and as
+    ON if any of them enables it: this module runs all three, and the caller only needs to
+    know whether the operator has an opinion, not which subcommand carries it.
 
     Values rather than a filtered list of on-keys, because precedence is resolved across
-    files: a later pip.conf setting `require-hashes = false` has to be able to cancel an
-    earlier one, and a caller that only ever saw the enabled keys could not do that.
+    files too: a later pip.conf setting `require-hashes = false` has to be able to cancel
+    an earlier one, and a caller that only ever saw the enabled keys could not do that.
     """
     parser = configparser.RawConfigParser()
     try:
         parser.read_string(text)
     except configparser.Error:
         return {}
-    ranked: dict[str, tuple[int, str]] = {}
-    for section in parser.sections():
-        rank = _PIP_SECTION_RANK.get(section.strip().lower())
-        if rank is None:
-            continue
+
+    def _section(name: str) -> "dict[str, str]":
+        values = {}
         for key in _HARDENED_CONFIG_KEYS:
-            if not parser.has_option(section, key):
-                continue
-            value = parser.get(section, key, fallback = "")
-            if rank >= ranked.get(key, (-1, ""))[0]:
-                ranked[key] = (rank, value)
-    return {key: value for key, (_rank, value) in ranked.items()}
+            if parser.has_option(name, key):
+                values[key] = parser.get(name, key, fallback = "")
+        return values
+
+    sections = {name.strip().lower(): name for name in parser.sections()}
+    base = _section(sections["global"]) if "global" in sections else {}
+    combined: dict[str, str] = {}
+    for command in _PIP_COMMANDS:
+        effective = dict(base)
+        if command in sections:
+            effective.update(_section(sections[command]))
+        for key, value in effective.items():
+            # An enabled value anywhere among the three wins; otherwise keep a disabled
+            # one so it can still cancel a lower-precedence file.
+            if key not in combined or _config_value_is_on(value):
+                combined[key] = value
+    return combined
 
 
 def _hardened_keys_in_ini(text: str) -> "list[str]":
@@ -4974,6 +5020,24 @@ def _read_text(path: str) -> "str | None":
         return None
 
 
+# The same control under each manager's name. This decides "has the target manager got an
+# opinion about this already", so pip's `only-binary` (wheels only) and uv's `no-build`
+# are one control, as are a policy and its package-scoped form.
+_POLICY_KEY_ALIASES = {
+    "uploaded-prior-to": "exclude-newer",
+    "exclude-newer-package": "exclude-newer",
+    "only-binary": "no-build",
+    "no-build-package": "no-build",
+    "no-binary-package": "no-binary",
+}
+
+
+def _canonical_policy_key(key: str) -> str:
+    """One name per control, whatever spelling it arrived in."""
+    name = _env_policy_key(key) if key.isupper() else key.lower()
+    return _POLICY_KEY_ALIASES.get(name, name)
+
+
 def _env_policy_key(name: str) -> str:
     """The config-file spelling of a policy environment variable.
 
@@ -4984,38 +5048,35 @@ def _env_policy_key(name: str) -> str:
 
 
 @functools.lru_cache(maxsize = 1)
-def _detected_policy() -> "tuple[tuple[str, str, str, str], ...]":
-    """(tool, source, key, value) for every hardening this host actually applies.
+def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozenset[str]]]":
+    """Everything the hardening probe found: what is ON, and what each manager has an
+    opinion about at all.
 
-    `tool` is "pip" or "uv", which is what makes this more than a display list: under the
-    opt-out the two managers have to be told about each other's policy, since neither
-    reads the other's (measured on the pinned uv 0.12.1, `uv pip install` ignores both
-    PIP_REQUIRE_HASHES and a pip.conf require-hashes). `source` is "env" for a variable,
-    otherwise the config file's basename. `value` is carried so a package-scoped policy
-    stays package-scoped when translated: promoting `PIP_ONLY_BINARY=numpy` to a global
-    `UV_NO_BUILD=1` would fail the extras step on wheel-less dependencies the operator's
-    policy actually permits.
+    The second half is what stops a deliberate difference between the two managers being
+    reported as a gap: `PIP_REQUIRE_HASHES=1` next to a uv config saying
+    `[pip] require-hashes = false` is the operator configuring them differently, not uv
+    missing a control.
 
-    Empty on an ordinary machine. Best-effort throughout: a probe that fails just
-    shortens the list.
+    Best-effort throughout: a probe that fails just shortens the answer.
     """
-    found = []
-    # An environment variable explicitly turned OFF is not hardening, but it is not
-    # nothing either: it beats every config file, so it has to cancel one that enables
-    # the same control rather than being dropped.
+    on: "list[tuple[str, str, str]]" = []
+    configured: "dict[str, set[str]]" = {"pip": set(), "uv": set()}
     cancelled: "dict[str, set[str]]" = {"pip": set(), "uv": set()}
+
+    def _record(tool: str, source: str, key: str, value: str) -> None:
+        canonical = _canonical_policy_key(key)
+        configured[tool].add(canonical)
+        if _config_value_is_on(value):
+            on.append((tool, source, key))
+        elif source == "env":
+            # pip's environment beats every config file, so an explicitly disabled
+            # variable cancels a file that enables the same control.
+            cancelled[tool].add(canonical)
+
     for name in _PM_POLICY_ENV_VARS:
         raw = os.environ.get(name)
-        if raw is None:
-            continue
-        tool = "pip" if name.startswith("PIP_") else "uv"
-        if _config_value_is_on(raw):
-            found.append((tool, "env", name, raw.strip()))
-        else:
-            cancelled[tool].add(_env_policy_key(name))
-
-    def _keep(tool: str, key: str) -> bool:
-        return key not in cancelled[tool]
+        if raw is not None:
+            _record("pip" if name.startswith("PIP_") else "uv", "env", name, raw.strip())
 
     try:
         result = subprocess.run(
@@ -5030,45 +5091,46 @@ def _detected_policy() -> "tuple[tuple[str, str, str, str], ...]":
         )
     except (OSError, subprocess.SubprocessError):
         result = None
+    pip_settings: "dict[str, tuple[str, str]]" = {}
     if result is not None and result.returncode == 0:
-        # `pip config list` prints EVERY definition, including ones a higher-precedence
-        # file overrides: a user pip.conf require-hashes=true and a venv site pip.conf
-        # require-hashes=false emit both lines, and pip enforces the second. Measured on
-        # pip 26.2.1, `config get` returns false there and the install is not
-        # hash-checked. Lines arrive in load order, so a later file wins; within a file
-        # pip applies the command section over `[global]` whatever the textual order, so
-        # the section is ranked rather than discarded.
-        effective: "dict[str, tuple[int, str]]" = {}
+        # `pip config list` prints EVERY definition, overridden ones included, in load
+        # order, so a later file wins. Within a file the command section beats [global]
+        # whatever the textual order, and each subcommand resolves separately.
+        per_command: "dict[str, dict[str, str]]" = {name: {} for name in _PIP_COMMANDS}
+        globals_: "dict[str, str]" = {}
         for line in (result.stdout or b"").decode("utf-8", "replace").splitlines():
             name, separator, raw = line.partition("=")
-            # `:env:` entries restate the environment, already handled above (including
-            # the disabled ones, which is why they can be skipped here).
+            # `:env:` entries restate the environment, already handled above.
             if not separator or name.strip().startswith(":env:"):
                 continue
             section, _, option = name.strip().rpartition(".")
-            rank = _PIP_SECTION_RANK.get(section.strip().lower(), None)
-            if option not in _HARDENED_CONFIG_KEYS or rank is None:
+            section = section.strip().lower()
+            if option not in _HARDENED_CONFIG_KEYS:
                 continue
-            if rank >= effective.get(option, (-1, ""))[0]:
-                effective[option] = (rank, raw.strip().strip("'\""))
-        for option, (_rank, value) in effective.items():
-            if _config_value_is_on(value) and _keep("pip", option):
-                found.append(("pip", "pip.conf", option, value))
+            value = raw.strip().strip("'\"")
+            if section == "global":
+                globals_[option] = value
+            elif section in per_command:
+                per_command[section][option] = value
+        for command in _PIP_COMMANDS:
+            effective = dict(globals_)
+            effective.update(per_command[command])
+            for option, value in effective.items():
+                if option not in pip_settings or _config_value_is_on(value):
+                    pip_settings[option] = ("pip.conf", value)
     else:
         # No usable pip, so read pip's files directly rather than report an ordinary
-        # machine. Only in this branch: when pip answered, it already merged them.
-        # _hardened_pip_config_paths returns them in pip's own load order, so the same
-        # last-wins resolution applies here.
-        winners: "dict[str, tuple[str, str]]" = {}
+        # machine. They come back in pip's own load order, so a later file wins.
         for path in _hardened_pip_config_paths():
             text = _read_text(path)
             if text is None:
                 continue
             for key, value in _hardened_settings_in_ini(text).items():
-                winners[key] = (os.path.basename(path), value)
-        for key, (basename, value) in winners.items():
-            if _config_value_is_on(value) and _keep("pip", key):
-                found.append(("pip", basename, key, value))
+                pip_settings[key] = (os.path.basename(path), value)
+    for key, (source, value) in pip_settings.items():
+        if _canonical_policy_key(key) not in cancelled["pip"]:
+            _record("pip", source, key, value)
+
     for path in _hardened_uv_config_paths():
         text = _read_text(path)
         if text is None:
@@ -5079,9 +5141,22 @@ def _detected_policy() -> "tuple[tuple[str, str, str, str], ...]":
             else ((), ("pip",))
         )
         for key, value in _hardened_settings_in_toml(text, tables).items():
-            if _config_value_is_on(value) and _keep("uv", key):
-                found.append(("uv", os.path.basename(path), key, value))
-    return tuple(dict.fromkeys(found))
+            if _canonical_policy_key(key) not in cancelled["uv"]:
+                _record("uv", os.path.basename(path), key, value)
+
+    return tuple(dict.fromkeys(on)), {
+        tool: frozenset(keys) for tool, keys in configured.items()
+    }
+
+
+def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
+    """(tool, source, key) for each hardening this host actually applies."""
+    return _policy_scan()[0]
+
+
+def _configured_policy_keys() -> "dict[str, frozenset[str]]":
+    """Per manager, the controls it has any setting for, enabled or not."""
+    return _policy_scan()[1]
 
 
 def _hardened_pm_policy_names() -> "tuple[str, ...]":
@@ -5089,107 +5164,83 @@ def _hardened_pm_policy_names() -> "tuple[str, ...]":
     return tuple(
         dict.fromkeys(
             key if source == "env" else f"{source} {key}"
-            for _tool, source, key, _value in _detected_policy()
+            for _tool, source, key in _detected_policy()
         )
     )
 
 
-def _policy_scope(value: str) -> "str | None":
-    """The package list a scoped policy names, or None when it covers everything.
+def _is_resolving_cmd(cmd: "list[str]") -> bool:
+    """True when this command actually resolves and installs packages.
 
-    pip spells "everything" as `:all:` and separates names with commas; uv uses a boolean
-    plus a separate `-package` variable and separates names with spaces. Both spellings
-    land here so the translation can stay scoped instead of promoting a policy about one
-    package into a policy about all of them.
+    run() routes EVERY command through _install_env_for_cmd, `patch_metadata.py` and
+    `pip check` included. Those resolve nothing, so a policy that cannot be enforced is
+    not their problem -- treating them as pip installs turned an unenforceable cutoff
+    into a hard exit on the final metadata patch, after every real step had succeeded.
     """
-    text = value.strip()
-    if text.lower() in (":all:", "1", "true", "yes", "y", "t", "on"):
-        return None
-    names = [part for part in re.split(r"[,\s]+", text) if part and part != ":all:"]
-    return " ".join(names) if names else None
+    return any(arg in ("install", "download", "wheel") for arg in cmd)
 
 
-# pip and uv spell the same controls differently and read none of each other's. Under the
-# opt-out, whichever manager runs is told the other's policy in its own spelling, or the
-# flag only holds for whichever tool the operator happened to configure. Precedent:
-# _uv_staging_plan already translates UV_NO_BINARY / UV_ONLY_BINARY into pip's spellings.
-def _translated_policy_env(cmd: "list[str]") -> "dict[str, str]":
-    """Retained policy, restated for the manager this command actually runs.
+def _unenforceable_policy(cmd: "list[str]") -> "list[str]":
+    """Retained controls the manager running this command cannot see.
 
-    Empty unless the opt-out is set. Never overrides a setting the target manager already
-    has: the operator's own spelling wins over a translation of the other one. Scopes are
-    carried through, so `PIP_ONLY_BINARY=numpy` becomes uv's package-scoped no-build and
-    not a global one that would fail the extras step on its wheel-less dependencies.
+    The opt-out promises the operator's policy is applied. pip and uv read none of each
+    other's, so when a step runs uv and the only hardening is pip's, that promise is
+    false unless something is done about it.
+
+    Restating each control in the other manager's spelling was tried and abandoned: pip
+    and uv differ on scopes (`:all:` and commas against a boolean plus a space-separated
+    `-package` variable), on per-subcommand sections, on which config files are even
+    discovered, and on which controls exist at all, and every one of those gaps became a
+    way to fail an install the operator's real policy permitted. Reporting instead is
+    smaller and cannot invent a restriction: the step stops and names the setting to add.
+
+    A control the target manager has its OWN setting for is never reported, on or off --
+    a `[pip] require-hashes = false` in uv's config is a deliberate difference between
+    the two, not a gap.
     """
-    if not _respect_pm_policy():
-        return {}
+    if not _respect_pm_policy() or not _is_resolving_cmd(cmd):
+        return []
     target = "uv" if cmd[:1] == ["uv"] else "pip"
-    source: "dict[str, str]" = {}
-    for tool, _origin, key, value in _detected_policy():
-        if tool == target:
-            continue
-        source.setdefault(_env_policy_key(key) if key.isupper() else key.lower(), value)
-    if not source:
-        return {}
-
-    overrides: dict[str, str] = {}
-    if target == "uv":
-        if "require-hashes" in source:
-            overrides["UV_REQUIRE_HASHES"] = "1"
-        # pip's only-binary is "wheels only", which uv spells as no-build.
-        for key, whole, scoped in (
-            ("only-binary", "UV_NO_BUILD", "UV_NO_BUILD_PACKAGE"),
-            ("no-binary", "UV_NO_BINARY", "UV_NO_BINARY_PACKAGE"),
-        ):
-            if key not in source:
-                continue
-            names = _policy_scope(source[key])
-            if names is None:
-                overrides[whole] = "1"
-            else:
-                overrides[scoped] = names
-    else:
-        if "require-hashes" in source:
-            overrides["PIP_REQUIRE_HASHES"] = "1"
-        for keys, target_name in (
-            (("no-build", "no-build-package", "only-binary"), "PIP_ONLY_BINARY"),
-            (("no-binary", "no-binary-package"), "PIP_NO_BINARY"),
-        ):
-            names: "list[str]" = []
-            whole = False
-            for key in keys:
-                if key not in source:
-                    continue
-                scope = _policy_scope(source[key])
-                if scope is None:
-                    whole = True
-                else:
-                    names.extend(scope.split())
-            if whole:
-                overrides[target_name] = ":all:"
-            elif names:
-                overrides[target_name] = ",".join(dict.fromkeys(names))
-        cutoff = source.get("exclude-newer", "").strip()
-        if cutoff and not os.environ.get("PIP_UPLOADED_PRIOR_TO", "").strip():
-            # An upload cutoff is a reproducibility control, and pip only grew the
-            # equivalent option in 25.3. Silently dropping it would let this install pick
-            # an artifact the retained policy excludes, so an older pip refuses instead --
-            # the same answer _uv_upload_cutoff_args gives the staging path.
-            if _pip_supports_upload_cutoff():
-                overrides["PIP_UPLOADED_PRIOR_TO"] = cutoff
-            else:
-                _safe_print(
-                    _red(
-                        f"   {_POLICY_OPT_OUT_ENV} is set and an upload cutoff "
-                        f"({cutoff}) is configured, but this pip is too old for "
-                        "--uploaded-prior-to, so the cutoff cannot be enforced here. "
-                        "Upgrade pip to 25.3 or newer, or unset the variable."
-                    )
-                )
-                sys.exit(1)
-    return {
-        name: value for name, value in overrides.items() if not os.environ.get(name, "").strip()
+    known = _configured_policy_keys().get(target, frozenset())
+    missing = {
+        key for tool, _source, key in _detected_policy()
+        if tool != target and _canonical_policy_key(key) not in known
     }
+    return sorted(missing)
+
+
+_POLICY_EQUIVALENTS = {
+    "require-hashes": ("PIP_REQUIRE_HASHES", "UV_REQUIRE_HASHES"),
+    "only-binary": ("PIP_ONLY_BINARY", "UV_NO_BUILD / UV_NO_BUILD_PACKAGE"),
+    "no-binary": ("PIP_NO_BINARY", "UV_NO_BINARY / UV_NO_BINARY_PACKAGE"),
+    "no-build": ("PIP_ONLY_BINARY", "UV_NO_BUILD"),
+    "no-build-package": ("PIP_ONLY_BINARY", "UV_NO_BUILD_PACKAGE"),
+    "no-binary-package": ("PIP_NO_BINARY", "UV_NO_BINARY_PACKAGE"),
+    "exclude-newer": ("PIP_UPLOADED_PRIOR_TO", "UV_EXCLUDE_NEWER"),
+    "exclude-newer-package": ("", "UV_EXCLUDE_NEWER_PACKAGE"),
+    "uploaded-prior-to": ("PIP_UPLOADED_PRIOR_TO", "UV_EXCLUDE_NEWER"),
+}
+
+
+def _refuse_unenforceable_policy(cmd: "list[str]", missing: "list[str]") -> None:
+    """Stop the step, naming the control and the setting that would satisfy it."""
+    target = "uv" if cmd[:1] == ["uv"] else "pip"
+    lines = []
+    for key in missing:
+        canonical = _canonical_policy_key(key)
+        pip_name, uv_name = _POLICY_EQUIVALENTS.get(canonical, ("", ""))
+        wanted = uv_name if target == "uv" else pip_name
+        lines.append(f"     {key} -> set {wanted}" if wanted else
+                     f"     {key} -> {target} has no equivalent setting")
+    _safe_print(
+        _red(
+            f"   {_POLICY_OPT_OUT_ENV} is set, but this step runs {target}, which does "
+            f"not read the following policy:\n" + "\n".join(lines) + "\n"
+            f"   Add the {target} setting above, or unset {_POLICY_OPT_OUT_ENV} to let "
+            "Unsloth install its own dependencies as it normally does."
+        )
+    )
+    sys.exit(1)
 
 
 def _announce_pm_policy() -> None:
@@ -5528,9 +5579,11 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     the price of reading the same files' security settings, and why the default is the
     opposite.
     """
+    missing = _unenforceable_policy(cmd)
+    if missing:
+        _refuse_unenforceable_policy(cmd, missing)
     if not _is_pinned_index_cmd(cmd):
-        overrides = dict(_relaxed_pip_policy_env(cmd))
-        overrides.update(_translated_policy_env(cmd))
+        overrides = _relaxed_pip_policy_env(cmd)
         if not overrides:
             return None
         env = os.environ.copy()
@@ -5546,7 +5599,6 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
             continue
         env.pop(name, None)
     if _respect_pm_policy():
-        env.update(_translated_policy_env(cmd))
         return env
     env["UV_NO_CONFIG"] = "1"
     for name in _PM_POLICY_ENV_VARS:
