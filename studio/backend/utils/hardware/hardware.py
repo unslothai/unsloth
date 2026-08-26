@@ -3627,10 +3627,16 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
     for exactly this problem, so it must keep working. Same rule the llama.cpp
     arch gate follows (#7624).
 
-    Fails open (empty set) on every uncertainty: a non-ROCm host, an arch list
-    that is unreadable or carries any non-concrete token, a UUID/MIG mask whose
-    ordinals cannot be named back to physical ids, a device whose arch cannot be
-    read, and a filter that would drop every device it could read. Never raises.
+    Fails open (empty set) on every uncertainty that spans the host: a non-ROCm
+    host, an arch list that is unreadable or carries any non-concrete token,
+    ordinals renumbered away from physical ids, a UUID/MIG mask whose ordinals
+    cannot be named back, and a filter that would drop every device it could
+    read. Never raises.
+
+    ONE device whose arch cannot be read is skipped instead, not fatal to the
+    probe: skipping leaves that card exactly as eligible as it was before this
+    gate existed, where failing the probe would put the known-uncovered cards
+    back alongside it and re-break the host in #8792.
     """
     try:
         import torch
@@ -3667,6 +3673,18 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
             return set()
         supported = set(tokens)
 
+        # An ordinal is only a physical id's ordinal while nothing has renumbered
+        # the two apart, and the visible spec does not read either renumbering:
+        # GPU_DEVICE_ORDINAL reorders at the ROCclr layer, and a ROCr mask under a
+        # HIP/CUDA one leaves the spec naming ROCr's agents while torch counts what
+        # survived both. Under ROCR="1,0" + CUDA="1" the spec says [1,0] but torch
+        # ordinal 0 is physical 0, so the map below would exclude the covered card
+        # and keep the uncovered one. Same two predicates the amd-smi VRAM
+        # translation declines on.
+        if _rocm_device_ordinal_active() or _rocm_visibility_masks_are_stacked():
+            logger.debug("Skipping torch arch gate: torch ordinals are renumbered by a mask")
+            return set()
+
         # Physical ids behind the active mask; None means UUID/MIG entries, where
         # an ordinal cannot be named back to a device, so nothing may be pinned.
         physical_ids = _get_parent_visible_gpu_spec()["numeric_ids"]
@@ -3688,6 +3706,9 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
                 if arch:
                     break
             if not arch:
+                # Left eligible, deliberately: see the docstring. Logged because
+                # it is the one path where the gate answers for part of a host.
+                logger.debug("Torch arch gate: device %s reports no arch; not gating it", ordinal)
                 continue
             readable += 1
             if arch not in supported:
@@ -4241,9 +4262,10 @@ def _rocr_relative_visibility(value: str) -> Optional[str]:
     ``prefer_rocr`` path emits.
 
     Only where ROCr is the layer in force: Linux, a numeric ROCr mask, no inherited
-    HIP mask (that one is already ROCr-relative). Ids from another space are left
-    alone. An identity mask translates to itself, so any host that never set ROCR
-    by hand is unchanged.
+    HIP mask (that one is already ROCr-relative), and a ROCm torch build, which the
+    caller establishes -- a stale ROCR var on an NVIDIA node must not move a CUDA
+    pin. Ids from another space are left alone. An identity mask translates to
+    itself, so any host that never set ROCR by hand is unchanged.
     """
     if sys.platform == "win32" or "HIP_VISIBLE_DEVICES" in os.environ:
         return None
@@ -4333,28 +4355,18 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
         logger.info("Applied gpu_ids: ZE_AFFINITY_MASK='%s'", value)
         return
 
-    # HIP indexes the agents ROCr left, so a pin stacked on an inherited ROCr mask
-    # has to carry ROCr-relative ordinals rather than physical ids. Needs no ROCm
-    # probe of its own: it is inert unless ROCR_VISIBLE_DEVICES is set, which no
-    # non-ROCm host does.
-    _relative = _rocr_relative_visibility(value)
-    if _relative is not None:
-        value = _relative
-
-    os.environ["CUDA_VISIBLE_DEVICES"] = value
-    # Keep ROCm visibility env vars in sync. Workers may call apply_gpu_ids()
-    # before detect_hardware() (IS_ROCM still False), so also mirror when the
-    # parent set a ROCm visibility var, with a torch.version.hip probe fallback.
-    _inherits_rocm_visibility = (
-        "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
-    )
-    _is_rocm = IS_ROCM or _inherits_rocm_visibility
-    if not _is_rocm:
-        # torch.version.hip is set on ROCm, None on CUDA; AMD SDK wheels may leave
-        # it unset but encode "rocm" in __version__. Broad except: never crash a worker.
+    # Settled from the BUILD, before anything is written. The ROCr translation
+    # below rewrites CUDA_VISIBLE_DEVICES, so it cannot lean on the env-var
+    # inference the HIP mirror uses: a scheduler that exports ROCR_VISIBLE_DEVICES
+    # on an NVIDIA node would then have its stale mask move a CUDA pin onto the
+    # wrong card. Same stale-mask caution _get_parent_visible_gpu_spec applies to
+    # HIP_VISIBLE_DEVICES. Build attributes only, no runtime init, like the XPU
+    # probe above; broad except so a worker never crashes here.
+    _rocm_build = IS_ROCM
+    if not _rocm_build:
         try:
             import torch as _torch
-            _is_rocm = (
+            _rocm_build = (
                 getattr(_torch.version, "hip", None) is not None
                 or "rocm" in getattr(_torch, "__version__", "").lower()
             )
@@ -4364,6 +4376,24 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
                 type(e).__name__,
                 e,
             )
+
+    # HIP indexes the agents ROCr left, so a pin stacked on an inherited ROCr mask
+    # has to carry ROCr-relative ordinals rather than physical ids.
+    if _rocm_build:
+        _relative = _rocr_relative_visibility(value)
+        if _relative is not None:
+            value = _relative
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = value
+    # Keep ROCm visibility env vars in sync. Workers may call apply_gpu_ids()
+    # before detect_hardware() (IS_ROCM still False), so also mirror when the
+    # parent set a ROCm visibility var. Wider than the build check above on
+    # purpose: writing HIP on a host that turns out to be NVIDIA is inert, where
+    # a missed mirror strands a ROCm worker.
+    _inherits_rocm_visibility = (
+        "HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ
+    )
+    _is_rocm = _rocm_build or _inherits_rocm_visibility
     if _is_rocm:
         os.environ["HIP_VISIBLE_DEVICES"] = value
         # An inherited ROCR_VISIBLE_DEVICES stays inherited: it hides agents at the

@@ -35,6 +35,16 @@ from utils.hardware.hardware import (
 # iGPU in #7669) is deliberately absent: that is the whole bug.
 GFX110X = ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
 
+# Every variable that can renumber or filter the device set. Cleared wholesale so
+# a developer's own ROCm env cannot decide what these assert.
+_MASK_VARS = (
+    "CUDA_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES",
+    "GPU_DEVICE_ORDINAL",
+    "ZE_AFFINITY_MASK",
+)
+
 
 def _props(
     arch = "",
@@ -95,14 +105,17 @@ def _fake_torch(
 @pytest.fixture
 def no_mask(monkeypatch):
     """No visibility mask set, so physical id == torch ordinal."""
-    for var in (
-        "CUDA_VISIBLE_DEVICES",
-        "HIP_VISIBLE_DEVICES",
-        "ROCR_VISIBLE_DEVICES",
-        "ZE_AFFINITY_MASK",
-    ):
+    for var in _MASK_VARS:
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setattr("utils.hardware.hardware.get_physical_gpu_count", lambda: 2)
+
+
+@pytest.fixture(autouse = True)
+def _no_device_ordinal(monkeypatch):
+    """GPU_DEVICE_ORDINAL renumbers torch ordinals and the gate refuses to work
+    behind it. Nothing here sets it deliberately, so clear it rather than let a
+    developer's own ROCm shell decide what these assert."""
+    monkeypatch.delenv("GPU_DEVICE_ORDINAL", raising = False)
 
 
 def _install(monkeypatch, torch):
@@ -234,6 +247,23 @@ class TestFailsOpen:
         )
         assert rocm_gpu_ids_without_torch_kernels() == set()
 
+    @pytest.mark.parametrize(
+        "third",
+        [_props(""), RuntimeError("cannot describe device")],
+        ids = ["no_arch_attribute", "properties_raise"],
+    )
+    def test_one_unreadable_device_does_not_spare_a_known_uncovered_one(
+        self, monkeypatch, no_mask, third
+    ):
+        # The boundary of the two above, and deliberate. An unreadable device is
+        # skipped, not fatal to the probe: skipping leaves GPU 2 exactly as
+        # eligible as it was before this gate existed, where discarding the whole
+        # answer would put the known-uncovered GPU 1 back alongside it and re-break
+        # the #8792 host. A partial answer is never worse than no answer.
+        monkeypatch.setattr("utils.hardware.hardware.get_physical_gpu_count", lambda: 3)
+        _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036"), third]))
+        assert rocm_gpu_ids_without_torch_kernels() == {1}
+
     def test_no_cuda_runtime_is_inert(self, monkeypatch, no_mask):
         _install(monkeypatch, _fake_torch([_props("gfx1036")], available = False))
         assert rocm_gpu_ids_without_torch_kernels() == set()
@@ -242,6 +272,27 @@ class TestFailsOpen:
         # ROCR/CUDA both accept UUID tokens; the ordinals cannot be mapped to
         # physical ids, so pinning would address the wrong card.
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "GPU-DEADBEEFDEADBEEF,0")
+        _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036")]))
+        assert rocm_gpu_ids_without_torch_kernels() == set()
+
+    def test_gpu_device_ordinal_renumbers_the_map_away(self, monkeypatch, no_mask):
+        # ROCclr-layer renumbering that no visibility spec here reads, so ordinal 1
+        # is not physical 1 and the id this would exclude names another card.
+        monkeypatch.setenv("GPU_DEVICE_ORDINAL", "1,0")
+        _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036")]))
+        assert rocm_gpu_ids_without_torch_kernels() == set()
+
+    def test_stacked_rocr_and_cuda_masks_renumber_the_map_away(self, monkeypatch, no_mask):
+        # ROCr leaves agents [phys2, phys0, phys1]; CUDA then keeps ROCr-relative
+        # 1 and 2, so torch ordinal 0 is phys0 and ordinal 1 is phys1. The visible
+        # spec only ever sees the ROCr mask and reports [2, 0, 1], so the uncovered
+        # ordinal 1 would be excluded under physical 0's name -- dropping the
+        # covered card and leaving the uncovered one selectable, the exact
+        # inversion of what the gate is for.
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr("utils.hardware.hardware.IS_ROCM", True)
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,0,1")
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,2")
         _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036")]))
         assert rocm_gpu_ids_without_torch_kernels() == set()
 
@@ -260,8 +311,8 @@ class TestIdSpace:
         monkeypatch.setattr(sys, "platform", platform)
         monkeypatch.setattr("utils.hardware.hardware.IS_ROCM", True)
         monkeypatch.setattr("utils.hardware.hardware.get_physical_gpu_count", lambda: 2)
-        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        for var in _MASK_VARS:
+            monkeypatch.delenv(var, raising = False)
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
         _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036")]))
 
@@ -450,3 +501,18 @@ class TestThePinLandsOnTheKeptCard:
             apply_gpu_ids([1, 3], backend = DeviceType.CUDA.value)
             assert os.environ["CUDA_VISIBLE_DEVICES"] == "1,3"
             assert "HIP_VISIBLE_DEVICES" not in os.environ
+
+    def test_a_stale_rocr_var_on_nvidia_does_not_move_the_pin(self, monkeypatch):
+        # Schedulers export both families of visibility variable, and a Linux
+        # NVIDIA node can inherit a ROCR mask that means nothing there. Reading the
+        # var's presence as "this is ROCm" would translate against it and write
+        # CUDA="0": the worker trains on NVIDIA GPU 0 while the caller asked for
+        # GPU 1. The ROCm answer has to come from the build.
+        with patch.dict(os.environ):
+            monkeypatch.setattr(sys, "platform", "linux")
+            monkeypatch.setattr("utils.hardware.hardware.IS_ROCM", False)
+            _install(monkeypatch, _fake_torch([_props("")], vendor = "nvidia"))
+            os.environ.pop("HIP_VISIBLE_DEVICES", None)
+            os.environ["ROCR_VISIBLE_DEVICES"] = "1,0"
+            apply_gpu_ids([1], backend = DeviceType.CUDA.value)
+            assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
