@@ -50,6 +50,8 @@ def test_sentence_transformers_backend_points_at_the_model_repo(client, monkeypa
     import utils.utils as utils
 
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
+    # Cached now also means "holds a checkpoint ST can open", not just "loadable".
+    monkeypatch.setattr(settings, "_cached_snapshot_has_st_weights", lambda m: True)
 
     body = _resolve(client).json()
     assert body["backend"] == "sentence-transformers"
@@ -651,3 +653,35 @@ def test_a_local_gguf_is_not_reported_as_a_ready_sentence_transformers_model(
     body = _resolve(client, str(gguf)).json()
     assert body["cached"] is False
     assert "no checkpoint this backend can load" in body["error"]
+
+
+def test_a_cached_gguf_only_repo_is_not_reported_as_a_ready_st_model(
+    client, monkeypatch, tmp_path
+):
+    """hf_cache_snapshot_is_loadable counts .gguf as a loadable weight, which is
+    right for the llama backend and wrong here: a cached feature-extraction repo
+    holding config.json and GGUF only came back cached, skipped the Hub weight
+    check and persisted an ST backend with no checkpoint to load."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model-Q8_0.gguf").write_bytes(b"GGUF")
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
+    monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
+    import utils.utils as utils
+
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+
+    assert settings._cached_snapshot_has_st_weights("org/gguf-only") is False
+
+    body = _resolve(client, "org/gguf-only").json()
+    assert body["cached"] is False
+    assert "no checkpoint this backend can load" in body["error"]
+
+    # A real cached ST snapshot on the same path still reports ready.
+    (snapshot / "model.safetensors").write_bytes(b"ST")
+    assert settings._cached_snapshot_has_st_weights("org/gguf-only") is True
+    body = _resolve(client, "org/real-st").json()
+    assert body["cached"] is True
+    assert body["error"] is None

@@ -103,7 +103,7 @@ def test_first_encode_builds_the_selected_backend_once(monkeypatch):
         def encode(self, texts, **_kwargs):
             return np.zeros((len(texts), 4), dtype = np.float32)
 
-    def _build():
+    def _build(model_name = None):
         builds.append("backend")
         return _Backend()
 
@@ -571,7 +571,7 @@ def test_replacing_a_llama_backend_shuts_it_down(monkeypatch):
     monkeypatch.setattr(
         embeddings,
         "_build_st_backend_or_fallback",
-        lambda: embeddings._SentenceTransformersBackend(),
+        lambda *_a, **_k: embeddings._SentenceTransformersBackend(),
     )
     embeddings._backend = _OldLlama()
     embeddings._backend_key = "stale"
@@ -912,3 +912,27 @@ def test_an_explicit_backend_is_not_overridden_by_a_local_gguf(monkeypatch, tmp_
     monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: True)
 
     assert embeddings.resolved_backend_for_model(str(gguf)) == "sentence-transformers"
+
+
+def test_the_st_probe_warms_the_pinned_model_not_the_live_setting(monkeypatch):
+    """_get_backend resolves for the pinned model, but the ST probe warmed
+    model_name=None, which reads the live setting. A job pinned to A while
+    Settings had moved to B probed B, so a pending or unloadable B failed the
+    valid A job (or pushed it to llama-server) before its first encode."""
+    warmed = []
+
+    class _Probe:
+        def warm(self, model_name = None):
+            warmed.append(model_name)
+
+    monkeypatch.setattr(embeddings, "_SentenceTransformersBackend", _Probe)
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "sentence-transformers")
+    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
+    monkeypatch.setattr(embeddings, "_forced_backend_model", None)
+    embeddings._reset_backend()
+    try:
+        embeddings._get_backend("org/pinned")
+    finally:
+        embeddings._reset_backend()
+
+    assert warmed == ["org/pinned"]

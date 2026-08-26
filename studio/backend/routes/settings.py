@@ -2196,6 +2196,26 @@ def _st_weight_files(model: str, hf_token: Optional[str]) -> Optional[list[str]]
     return None
 
 
+def _cached_snapshot_has_st_weights(model: str) -> bool:
+    """Whether the cached snapshot holds a checkpoint ST itself can open.
+
+    ``hf_cache_snapshot_is_loadable`` counts ``.gguf`` as a loadable weight, which
+    is right for the llama backend and wrong here: a cached feature-extraction repo
+    publishing config.json and GGUF only came back cached, skipped the Hub check
+    below, and persisted an ST backend with no checkpoint to load. No network."""
+    try:
+        from utils.utils import hf_cache_snapshot_dir
+        snapshot = hf_cache_snapshot_dir(model)
+        if snapshot is None:
+            return False
+        for path in snapshot.rglob("*"):
+            if path.suffix.lower() in _ST_WEIGHT_SUFFIXES and path.is_file():
+                return True
+        return False
+    except Exception:  # noqa: BLE001 - an unreadable cache is not a proof of weights
+        return False
+
+
 def _safetensors_plan(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
     """``(repo, files)`` for running ``model`` on sentence-transformers instead.
 
@@ -2296,7 +2316,12 @@ def _resolve_embedding_model_plan(
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved, backend = backend, cached = True
             )
-        cached = hf_cache_snapshot_is_loadable(resolved)
+        # A cached snapshot only counts if it holds a checkpoint ST can open. The
+        # shared loadable check accepts .gguf, so a cached GGUF-only repo reported
+        # ready here and skipped the Hub check below entirely.
+        cached = hf_cache_snapshot_is_loadable(resolved) and _cached_snapshot_has_st_weights(
+            resolved
+        )
         if not cached and _st_weight_files(resolved, token) is None:
             # is_embedding_model gates on the Hub's tags, so a repo tagged for
             # feature-extraction that publishes only GGUF (or no loadable

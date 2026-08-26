@@ -768,14 +768,19 @@ def _try_make_llama_backend():
     return LlamaServerBackend()
 
 
-def _build_st_backend_or_fallback():
+def _build_st_backend_or_fallback(model_name: str | None = None):
     """Build the ST backend, probing it by loading the model now. If the probe
     raises (no torch, CUDA mismatch, bad wheel) and the GGUF llama-server embedder
     is available, fall back to it. The probe runs before any vector is produced, so
-    this never mixes spaces. Re-raises if no embedder can start."""
+    this never mixes spaces. Re-raises if no embedder can start.
+
+    ``model_name`` is the model the caller pinned. Warming ``None`` reads the live
+    setting instead, so a job pinned to A while Settings had moved to B probed B:
+    a pending or unloadable B failed the valid A job, or pushed it to llama-server,
+    before its first encode."""
     backend = _SentenceTransformersBackend()
     try:
-        backend.warm(model_name = None)
+        backend.warm(model_name = model_name)
         return backend
     except (UnsafeEmbeddingModelError, EmbeddingModelDownloadRequiredError):
         raise  # policy failures must hard-fail, not change backend/download
@@ -901,7 +906,7 @@ def _get_backend(model_name: str | None = None):
             return _backend
         old = _backend
         if key in _ST_ALIASES:
-            new = _build_st_backend_or_fallback()
+            new = _build_st_backend_or_fallback(model)
         elif key in _LLAMA_ALIASES:
             # Imported lazily so the ST path never imports llama plumbing.
             from .embed_llama_server import LlamaServerBackend
