@@ -3052,7 +3052,9 @@ class FastLlamaModel:
         # Ahead of the banner, so the run stops before announcing a device count
         # it cannot honour.
         inner_training_loop = inner_training_loop.replace(
-            "debug_info =", multi_gpu_guard, 1,
+            "debug_info =",
+            multi_gpu_guard,
+            1,
         )
 
         debug_info = """n_total_devices = total_train_batch_size // \\

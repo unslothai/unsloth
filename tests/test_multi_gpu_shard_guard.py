@@ -67,7 +67,7 @@ def _guard_source() -> str:
     once the generated source is compiled. Reading it with a regex gives the
     outer layer and runs none of it.
     """
-    start = SRC.index("        multi_gpu_guard = \"\"\"")
+    start = SRC.index('        multi_gpu_guard = """')
     end = SRC.index("multi_gpu_guard = multi_gpu_guard.split", start)
     scope: dict = {}
     exec("if True:\n" + SRC[start:end], scope)
@@ -137,7 +137,9 @@ def test_the_guard_runs_BEFORE_the_banner_announces_a_device_count():
     then refusing reads as a contradiction; refusing first reads as an answer.
     """
     guard_at = SRC.index("multi_gpu_guard = ")
-    splice = SRC.index('inner_training_loop.replace(\n            "debug_info =", multi_gpu_guard, 1,\n        )')
+    splice = SRC.index(
+        'inner_training_loop.replace(\n            "debug_info =", multi_gpu_guard, 1,\n        )'
+    )
     banner_splice = SRC.index("inner_training_loop.replace(original_debug, debug_info)")
     assert guard_at < banner_splice
     # The guard is spliced in AFTER the banner is put in place, which is what
