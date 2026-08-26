@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """The diffusion runner must honour the GPU-layer split (#7574).
 
-Studio used to drop a manual GPU-layers setting on the diffusion path and pin every layer
+Unsloth used to drop a manual GPU-layers setting on the diffusion path and pin every layer
 to GPU, so a GGUF larger than VRAM OOMed in cudaMalloc with no way out.
 
 The pure helpers run directly; the wiring is checked at source level, since importing the

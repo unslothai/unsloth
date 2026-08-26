@@ -2722,6 +2722,34 @@ class TestAnthropicMessagesToolRouting:
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "tools"
 
+    def test_server_tool_choice_alias_uses_the_selected_studio_name(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [{"type": "web_fetch_20250910", "name": "web_fetch"}],
+            tool_choice = {"type": "tool", "name": "web_fetch"},
+        )
+
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        call_kind, kwargs = backend.calls[0]
+        assert call_kind == "tools"
+        assert kwargs["tool_choice"] == {"type": "function", "function": {"name": "web_search"}}
+        assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["web_search"]
+
+    def test_server_tool_choice_must_be_in_the_selected_catalog(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+            tool_choice = {"type": "tool", "name": "python"},
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        assert exc.value.status_code == 400
+        assert "python" in exc.value.detail["error"]["message"]
+        assert backend.calls == []
+
     def test_confirm_tool_calls_rejected_for_server_tools(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
@@ -3622,7 +3650,7 @@ def assert_anthropic_stream_conformant(lines):
     for name, data in events[1:]:
         assert data.get("type") == name, f"event {name} carries data.type {data.get('type')}"
         if name in ("ping", "tool_result"):
-            # tool_result is Studio's own event for a server-executed tool; real
+            # tool_result is Unsloth's own event for a server-executed tool; real
             # SDKs ignore it, and it must never claim a content block index.
             assert "index" not in data, "tool_result must not consume a block index"
             continue

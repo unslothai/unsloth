@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A run releases the Studios it acquired, and records which ones they were.
+"""A run releases the Unsloth instances it acquired, and records which ones they were.
 
 THE SIDES ARE ACQUIRED ONE AFTER THE OTHER. In a self-managed A/B the base is installed, launched
 and already serving before the treatment's clone begins, so a failure in the treatment's setup used
 to unwind past a base that nothing ever stopped: the cleanup lives in the `finally` under the cells
 and a failure during setup never reaches it. The same hole swallowed the two setup steps that leave
-by RETURNING -- the health check and the development-build gate -- with both Studios up.
+by RETURNING -- the health check and the development-build gate -- with both Unsloth instances up.
 
-An abandoned Studio is not idle. `launch_studio` detaches the server with `setsid -f`, so it keeps
-the port; Studio's own launcher then ABORTS rather than binding when it finds one of its own servers
+An abandoned Unsloth is not idle. `launch_studio` detaches the server with `setsid -f`, so it keeps
+the port; Unsloth's own launcher then ABORTS rather than binding when it finds one of its own servers
 there (`studio/backend/run.py`, `_resolve_port` with `avoid_own_studio`), the retry's server exits,
 and `wait_for_healthz` takes its 200 from the STALE process. That run measures the build the
 previous attempt installed while `run_meta` records the ref this one asked for.
@@ -87,7 +87,7 @@ def studio(monkeypatch, tmp_path):
 
     The returned dict is both the knobs (which ref fails to install, whether /healthz answers,
     whether the bundle is a production build) and the record (what was installed, launched and
-    stopped, and what the Studios looked like at the moment the first cell ran).
+    stopped, and what the Unsloth instances looked like at the moment the first cell ran).
     """
 
     state = {
@@ -231,10 +231,10 @@ def test_a_studio_the_caller_attached_is_never_stopped(studio):
 
 
 def test_a_run_that_reaches_its_cells_stops_the_studios_once_at_the_end(studio):
-    """The control that matters: an ordinary run still gets two live Studios and still cleans up.
+    """The control that matters: an ordinary run still gets two live Unsloth instances and still cleans up.
 
     The guard is a `finally` over the whole of setup, so the failure it must not have is stopping
-    the Studios on the way IN. `stopped_when_the_cells_ran` is read inside the cell runner.
+    the Unsloth instances on the way IN. `stopped_when_the_cells_ran` is read inside the cell runner.
     """
 
     args = _args(studio, "--branch", "main", "--ab", "pr-9296", "--reps", "2")
@@ -545,7 +545,7 @@ def test_a_duplicate_run_is_refused_before_it_archives_or_installs_anything(stud
     ), "the refused duplicate archived the live payload of the run it was refused in favour of"
     assert sorted(p.name for p in paths.out.glob("payload-*.jsonl")) == []
     assert studio["installed"] == [], (
-        "the duplicate installed a Studio on a machine that was already measuring, which is the "
+        "the duplicate installed an Unsloth on a machine that was already measuring, which is the "
         "contention the guard exists to prevent, paid as the cost of refusing it"
     )
     # And the directory is free again the moment the holder lets go.
@@ -761,14 +761,14 @@ def test_a_resume_under_the_same_probe_still_resumes(studio, probe):
     )
 
 
-# ── one Studio, two sides: the attached null control ────────────────────────────────────────
+# ── one Unsloth, two sides: the attached null control ────────────────────────────────────────
 
 
 class _ProviderBackend:
     """`lifecycle.register_provider`'s contract, per origin: idempotent by DISPLAY NAME.
 
     The real one deletes every existing provider whose `display_name` matches before creating the
-    replacement, so registering the pacer twice against ONE Studio destroys the id the first
+    replacement, so registering the pacer twice against ONE Unsloth destroys the id the first
     registration handed out. Modelled rather than stubbed to a constant, because that deletion is
     the whole failure.
     """
@@ -850,7 +850,7 @@ def test_an_attached_null_control_registers_one_provider_for_the_one_studio(stud
     # re-seeded both scripts with the survivor, and would fail a fix that never selects at all.
     selected = _selected_provider_ids(scripts, url)
     assert selected == set(backend.live[url])
-    assert selected, "the one Studio must still have a provider selected"
+    assert selected, "the one Unsloth must still have a provider selected"
     # And the registration itself: one backend, one registration, nothing destroyed.
     assert backend.deleted == []
     assert backend.registrations == [(url, "provider-1")]

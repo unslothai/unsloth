@@ -159,7 +159,7 @@ def test_virtual_terminal_answers_a_redirected_stream_without_compiling(name: st
     Only the redirected case is decided early, and it is decided FALSE. A redirected stdout is
     not a console, GetConsoleMode fails on a non-console handle, and the compiled path could
     only have returned false too. Anything that claimed VT here would put raw escape sequences
-    in the Studio log panel, which is a pipe.
+    in the Unsloth log panel, which is a pipe.
     """
     text = _text(name)
     start = text.index("function Enable-StudioVirtualTerminal")

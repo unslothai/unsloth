@@ -410,7 +410,7 @@ def test_this_workflows_own_leftovers_still_occupy_slots():
 
 
 def test_an_idle_account_clears_the_kernel_this_workflow_pushes():
-    """One kernel, carrying all four legs, leaving the second slot for Studio.
+    """One kernel, carrying all four legs, leaving the second slot for Unsloth.
 
     This asserted 2, when four legs meant two kernels of two and the notebook
     leg took the whole account. The legs now queue inside a single kernel, so

@@ -220,23 +220,11 @@ export const es = {
       clear: "Quitar atajo",
       reset: "Restaurar el valor predeterminado",
       resetAll: "Restablecer todo",
-      groups: {
-        general: "General",
-        chat: "Chat",
-      },
+      primarySlot: "Atajo",
+      alternateSlot: "Atajo alternativo",
+      browserReserved:
+        "Puede que tu navegador se reserve esta combinación. En la app de escritorio funciona.",
       actions: {
-        newChat: {
-          label: "Nuevo chat",
-          description: "Iniciar un chat nuevo",
-        },
-        searchChats: {
-          label: "Buscar chats",
-          description: "Abrir el diálogo de búsqueda de chats",
-        },
-        toggleSidebar: {
-          label: "Alternar barra lateral",
-          description: "Mostrar u ocultar la barra lateral",
-        },
         openSettings: {
           label: "Abrir ajustes",
           description: "Abrir el diálogo de ajustes",
@@ -244,6 +232,206 @@ export const es = {
         openKeyboardShortcuts: {
           label: "Atajos de teclado",
           description: "Abrir esta lista de atajos",
+        },
+        searchChats: {
+          label: "Buscar chats",
+          description: "Abrir el diálogo de búsqueda de chats",
+        },
+        openMcpServers: {
+          label: "Servidores MCP",
+          description: "Configurar los servidores MCP de este chat",
+        },
+        logOut: {
+          label: "Cerrar sesión",
+          description: "Salir de Unsloth",
+        },
+        approveToolRequest: {
+          label: "Aprobar solicitud",
+          description: "Permitir la llamada de herramienta en espera",
+        },
+        declineToolRequest: {
+          label: "Rechazar solicitud",
+          description: "Denegar la llamada de herramienta en espera",
+        },
+        newChat: {
+          label: "Nuevo chat",
+          description: "Iniciar un chat nuevo",
+        },
+        newTemporaryChat: {
+          label: "Nuevo chat temporal",
+          description: "Iniciar un chat que no se guarda en el historial",
+        },
+        newStandaloneChat: {
+          label: "Nuevo chat independiente",
+          description: "Iniciar un chat fuera de cualquier proyecto",
+        },
+        archiveChat: {
+          label: "Archivar chat",
+          description: "Archivar los chats seleccionados o el chat actual",
+        },
+        markChatUnread: {
+          label: "Marcar como no leído",
+          description: "Marcar como no leídos los chats seleccionados o el chat actual",
+        },
+        togglePinChat: {
+          label: "Alternar fijado",
+          description: "Fijar o desfijar los chats seleccionados o el chat actual",
+        },
+        selectAllChats: {
+          label: "Seleccionar todos los chats",
+          description: "Seleccionar todos los chats de la barra lateral",
+        },
+        clearChatSelection: {
+          label: "Borrar selección",
+          description: "Anular la selección de los chats. Escape también la anula",
+        },
+        deleteSelectedChats: {
+          label: "Eliminar los chats seleccionados",
+          description: "Eliminar todos los chats seleccionados",
+        },
+        nextRecentlyViewedChat: {
+          label: "Siguiente chat visto",
+          description: "Avanzar por los chats vistos recientemente",
+        },
+        previousRecentlyViewedChat: {
+          label: "Chat visto anterior",
+          description: "Retroceder por los chats vistos recientemente",
+        },
+        nextChat: {
+          label: "Chat siguiente",
+          description: "Ir al siguiente chat de la barra lateral",
+        },
+        previousChat: {
+          label: "Chat anterior",
+          description: "Ir al chat anterior de la barra lateral",
+        },
+        nextChatNeedingAttention: {
+          label: "Siguiente chat con actividad",
+          description: "Ir al siguiente chat generando, en cola o no leído",
+        },
+        clearAllUnreads: {
+          label: "Marcar todo como leído",
+          description: "Marcar todos los chats como leídos",
+        },
+        goToRecentChat1: {
+          label: "Ir al chat reciente 1",
+          description: "Abrir el chat 1 de Recientes",
+        },
+        goToRecentChat2: {
+          label: "Ir al chat reciente 2",
+          description: "Abrir el chat 2 de Recientes",
+        },
+        goToRecentChat3: {
+          label: "Ir al chat reciente 3",
+          description: "Abrir el chat 3 de Recientes",
+        },
+        goToRecentChat4: {
+          label: "Ir al chat reciente 4",
+          description: "Abrir el chat 4 de Recientes",
+        },
+        goToRecentChat5: {
+          label: "Ir al chat reciente 5",
+          description: "Abrir el chat 5 de Recientes",
+        },
+        goToRecentChat6: {
+          label: "Ir al chat reciente 6",
+          description: "Abrir el chat 6 de Recientes",
+        },
+        switchToChat: {
+          label: "Ir a Chat",
+          description: "Ir al espacio de trabajo de chat",
+        },
+        switchToProjects: {
+          label: "Ir a Proyectos",
+          description: "Ir al espacio de trabajo de proyectos",
+        },
+        switchToHub: {
+          label: "Ir al Hub de modelos",
+          description: "Ir al hub de modelos",
+        },
+        switchToTrain: {
+          label: "Ir a Entrenar",
+          description: "Ir al espacio de trabajo de entrenamiento",
+        },
+        switchToRecipes: {
+          label: "Ir a Recipes",
+          description: "Ir a Data Recipes",
+        },
+        switchToImages: {
+          label: "Ir a Imágenes",
+          description: "Ir al espacio de trabajo de imágenes",
+        },
+        switchToVideo: {
+          label: "Ir a Vídeo",
+          description: "Ir al espacio de trabajo de vídeo",
+        },
+        switchToAudio: {
+          label: "Ir a Audio",
+          description: "Ir al espacio de trabajo de audio",
+        },
+        switchToExport: {
+          label: "Ir a Exportar",
+          description: "Ir al espacio de trabajo de exportación",
+        },
+        toggleSidebar: {
+          label: "Alternar barra lateral",
+          description: "Mostrar u ocultar la barra lateral",
+        },
+        toggleApiMonitor: {
+          label: "Alternar actividad de API",
+          description: "Mostrar u ocultar el monitor de actividad de API",
+        },
+        openModelPicker: {
+          label: "Abrir selector de modelo",
+          description: "Elegir el modelo de este chat",
+        },
+        openProjectPicker: {
+          label: "Abrir selector de proyecto",
+          description: "Cambiar a otro proyecto desde la cabecera del chat",
+        },
+        startDictation: {
+          label: "Dictado",
+          description: "Iniciar o detener el dictado en el redactor",
+        },
+        attachFiles: {
+          label: "Adjuntar fotos y archivos",
+          description: "Añadir un adjunto al redactor",
+        },
+        sendMessage: {
+          label: "Enviar mensaje",
+          description: "Enviar lo que hay en el redactor",
+        },
+        cycleReasoningEffort: {
+          label: "Alternar esfuerzo de razonamiento",
+          description: "Recorrer los niveles de esfuerzo de razonamiento",
+        },
+        increaseReasoningEffort: {
+          label: "Aumentar esfuerzo de razonamiento",
+          description: "Subir un nivel el esfuerzo de razonamiento",
+        },
+        decreaseReasoningEffort: {
+          label: "Reducir esfuerzo de razonamiento",
+          description: "Bajar un nivel el esfuerzo de razonamiento",
+        },
+        toggleFastMode: {
+          label: "Alternar modo Fast",
+          description: "Activar o desactivar el modo Fast",
+        },
+        renameChat: {
+          label: "Renombrar chat",
+          description: "Renombrar el chat actual",
+        },
+        forkChat: {
+          label: "Bifurcar chat",
+          description: "Ramificar un chat nuevo desde el último mensaje",
+        },
+        copyChatAsMarkdown: {
+          label: "Copiar como Markdown",
+          description: "Copiar todo el chat al portapapeles como Markdown",
+        },
+        copySessionId: {
+          label: "Copiar ID de sesión",
+          description: "Copiar el ID de sesión de sandbox de este chat",
         },
       },
     },
@@ -698,9 +886,9 @@ export const es = {
           "Todo lo que aparece a continuación se calcula a partir de tu propio historial. No se recopila ni se envía nada a Unsloth.",
         retry: "Volver a intentar",
         privacyNote:
-          "Las estadísticas se calculan a partir del historial de chats y entrenamientos que guarda tu instalación de Unsloth. No se recopila nada y no se envía nada a Unsloth ni a terceros.",
+          "Las estadísticas se calculan a partir del historial local de chats, uso de la API y entrenamientos de tu instalación de Unsloth. Nunca se guardan solicitudes, respuestas ni claves de API para las estadísticas. No se envía nada a Unsloth ni a terceros.",
         emptyChats:
-          "Todavía no hay chats. Empieza una conversación y tus estadísticas aparecerán aquí.",
+          "Todavía no hay uso de chats ni de la API. Empieza una conversación o haz una solicitud autenticada a la API local.",
         lifetimeTokens: "Tokens acumulados",
         peakTokens: "Día más activo",
         longestChat: "Chat más largo",
@@ -722,6 +910,9 @@ export const es = {
         totalMessages: "Mensajes totales",
         tokensIn: "Tokens enviados",
         tokensOut: "Tokens generados",
+        totalTokens: "Tokens totales",
+        studioChatTokens: "Tokens de Unsloth Chat",
+        apiTokens: "Tokens de la API",
         cachedTokens: "Tokens en caché",
         cachedValue: "{tokens} ({percent}% de la entrada)",
         avgTokensPerChat: "Media de tokens por chat",
@@ -1175,7 +1366,7 @@ export const es = {
         title: "Búsqueda web",
         images: "Mostrar imágenes de la búsqueda web",
         imagesDescription:
-          "Permite que la búsqueda web devuelva imágenes y obtiene una por cada elemento que enumera una respuesta. Studio descarga y redimensiona las miniaturas, así que el navegador nunca contacta con los servidores de imágenes.",
+          "Permite que la búsqueda web devuelva imágenes y obtiene una por cada elemento que enumera una respuesta. Unsloth descarga y redimensiona las miniaturas, así que el navegador nunca contacta con los servidores de imágenes.",
       },
       artifacts: {
         title: "Canvas",
@@ -1197,7 +1388,7 @@ export const es = {
       exportingAction: "Exportando...",
       exportConversations: "Exportar Recientes y Proyectos",
       exportConversationsDescription:
-        "Descarga Recientes, o Recientes más los chats de proyectos, como JSONL sin procesar, CSV o JSONL de ShareGPT, combinados o por chat.",
+        "Descarga Recientes, o Recientes más los chats de proyectos, como Training JSONL, CSV o JSONL de ShareGPT, combinados o por chat. Message JSONL solo está disponible por chat.",
       exportConversationsAction: "Exportar",
       exportScopeRecents: "Recientes",
       exportScopeAll: "Recientes + Proyectos",

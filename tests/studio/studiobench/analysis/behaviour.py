@@ -464,7 +464,7 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
         extent, _reconstructed = _extent_of(row)
         # BOUNDED ABOVE AS WELL AS BELOW, and the ceiling is DERIVED rather than chosen.
         #
-        # The lower bound is what this invariant was written for: Studio's intent-aware autoscroll
+        # The lower bound is what this invariant was written for: Unsloth's intent-aware autoscroll
         # snapping a programmatic move back to the bottom leaves the gesture having covered
         # nothing. But the predicate was `fraction >= 0.9` and nothing above it, so an arm whose
         # viewport moved TWICE as far as commanded passed exactly as 1.0 did and the pair returned

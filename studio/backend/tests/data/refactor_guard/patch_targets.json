@@ -742,10 +742,6 @@
     "tests/test_consent_gate.py"
   ],
   "routes.models._cached_repo_task": [
-    "tests/test_cached_gguf_routes.py",
-    "tests/test_cached_gguf_routes.py"
-  ],
-  "routes.models._repo_gguf_task": [
     "tests/test_cached_gguf_routes.py"
   ],
   "routes.training_vram.summarize_resident_chat": [
@@ -1101,8 +1097,6 @@
     "tests/test_gguf_load_cache_reuse.py",
     "tests/test_gguf_load_cache_reuse.py",
     "tests/test_gguf_variants_local_resolution.py",
-    "tests/test_hf_cache_dangling_refs.py",
-    "tests/test_hf_cache_dangling_refs.py",
     "tests/test_hf_cache_dangling_refs.py",
     "tests/test_hf_cache_dangling_refs.py",
     "tests/test_hf_cache_dangling_refs.py",

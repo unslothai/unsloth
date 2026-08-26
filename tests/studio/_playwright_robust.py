@@ -168,7 +168,7 @@ def _require_frontend_toolchain() -> None:
     port-shuffling will help. A missing toolchain and a broken one are different failures
     and must not look the same.
 
-    This is not hypothetical. A job that installs Studio from a warm frontend-dist cache
+    This is not hypothetical. A job that installs Unsloth from a warm frontend-dist cache
     never builds the frontend, so `studio/setup.sh` skips its `npm install` and there is no
     `node_modules` for this harness to use, while the same job on a cold cache builds and
     passes. That makes the failure look like flake instead of a missing setup step.

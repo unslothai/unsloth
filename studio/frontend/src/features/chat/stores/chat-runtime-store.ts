@@ -2367,43 +2367,14 @@ export function loadedGpuMemoryFields(resp: {
   };
 }
 
-/** A pick is a GGUF: HF variant, native file, or a direct local .gguf. */
-export function hasGgufSource(x: {
-  ggufVariant?: string;
-  nativePathToken?: string;
-  isGguf?: boolean;
-}): boolean {
-  return (
-    x.ggufVariant != null || x.nativePathToken != null || x.isGguf === true
-  );
-}
-
-/** A local-disk model id: Unix absolute (/), relative (./ ../), tilde (~/),
- *  Windows drive (C:\) or UNC (\\server). Shared so the loader and the
- *  hub-repo predicate classify ids identically. */
-export function isLocalModelPath(id: string): boolean {
-  return /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(id);
-}
-
-/** An uncached HF hub repo we can download as a full snapshot (non-GGUF
- *  safetensors / MLX). Excludes GGUF sources, local paths, native files, LoRA,
- *  and external provider models so none are mis-routed into a snapshot. */
-export function isDownloadableHubRepo(x: {
-  id: string;
-  source?: string;
-  isLora?: boolean;
-  ggufVariant?: string;
-  nativePathToken?: string;
-  isGguf?: boolean;
-}): boolean {
-  return (
-    x.source === "hub" &&
-    !hasGgufSource(x) &&
-    x.isLora !== true &&
-    x.nativePathToken == null &&
-    !isLocalModelPath(x.id)
-  );
-}
+// re-exported here so every existing importer keeps its path; defined in a leaf module
+// that a test can load without pulling the whole store in.
+export {
+  hasGgufSource,
+  isDownloadableHubRepo,
+  isLocalModelPath,
+  wantsDownloadManagerStaging,
+} from "../utils/model-download-staging";
 
 type ContextUsageSnapshot = {
   promptTokens: number;
@@ -4312,7 +4283,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               specDrafterKind: null,
             }
           : {}),
-        // Switching to a connection whose provider cannot run Studio's tool
+        // Switching to a connection whose provider cannot run Unsloth's tool
         // loop disables Deep Research; a capable one keeps the user's choice.
         ...(clampsDeepResearch ? { deepResearchEnabled: false } : {}),
       };
