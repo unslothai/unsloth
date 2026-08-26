@@ -10973,25 +10973,36 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
 
     def _fits(candidate_text, max_tokens) -> bool:
-        return not max_tokens or max_tokens <= 0 or max(1, len(candidate_text) // 4) <= max_tokens
+        # Bytes, not characters: chars/4 is an English-prose rule, and one CJK
+        # character is roughly one token but three UTF-8 bytes, so it reads a
+        # Chinese or Japanese block as a quarter of its real size and admits an
+        # injection that overflows the context. Measured bytes-per-token is
+        # 4.6-4.8 for English and 3.9-4.6 for Chinese, so bytes/4 is a fair
+        # bound for both, and identical to the old estimate on pure ASCII.
+        # Exact counts are not reachable here: chunks_by_id does not select
+        # token_count, and the GGUF's tokenizer lives in llama-server.
+        if not max_tokens or max_tokens <= 0:
+            return True
+        return max(1, len(candidate_text.encode("utf-8")) // 4) <= max_tokens
+
+    def _trim(hit_text, hit_sources, max_tokens):
+        """Drop passages from the tail until the rendered block fits.
+
+        Re-renders only when something is actually dropped, so an untrimmed
+        result is returned exactly as retrieval built it. The first passage
+        survives even when it alone overflows: on the mandatory-grounding path
+        the alternative is dropping the attachment from the request, which is
+        the bug this branch exists to fix.
+        """
+        kept, rendered = list(hit_sources), hit_text
+        while len(kept) > 1 and not _fits(rendered, max_tokens):
+            kept = kept[:-1]
+            rendered = render_sources(kept)
+        return rendered, kept
 
     def retrieve(*, max_tokens = None, **scope):
-        """Top-K retrieval, trimmed from the tail until it fits ``max_tokens``.
-
-        A missing or non-positive budget means "no budget to enforce here", not
-        "inject nothing": on the mandatory-grounding path the alternative is
-        dropping the attachment from the request, which is the bug this branch
-        exists to fix. The last passage is kept even when it alone overflows,
-        for the same reason.
-        """
         found = search_for_autoinject(query = query, top_k = top_k, **scope)
-        if not found:
-            return None
-        hit_text, hit_sources = found
-        while len(hit_sources) > 1 and not _fits(hit_text, max_tokens):
-            hit_sources = hit_sources[:-1]
-            hit_text = render_sources(hit_sources)
-        return hit_text, hit_sources
+        return _trim(found[0], found[1], max_tokens) if found else None
 
     # An oversized thread attachment is mandatory grounding: when normal
     # auto-injection is off, search it alone, without the optional-autoinject
@@ -11011,17 +11022,25 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                 )
                 project_id = rag_scope.get("project_id")
                 if found and project_id:
-                    proj = retrieve(
-                        max_tokens = budget,
-                        scope_project_id = project_id,
-                        min_dense_score = floor,
-                        **_scope_retrieval_kwargs(rag_scope),
-                    )
+                    # Isolated like the whole-document companion above: the thread
+                    # grounding is already in hand, and an unavailable project index
+                    # must not send the shared handler below into discarding it.
+                    try:
+                        proj = retrieve(
+                            scope_project_id = project_id,
+                            min_dense_score = floor,
+                            **_scope_retrieval_kwargs(rag_scope),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("RAG project retrieval (fallback companion) failed: %s", exc)
+                        proj = None
                     if proj:
+                        # Trim the combination rather than the project alone, which
+                        # was never entitled to the whole budget: the tail is all
+                        # project, so this keeps the passages that fit beside the
+                        # thread result instead of dropping every one of them.
                         merged = found[1] + proj[1]
-                        merged_text = render_sources(merged)
-                        if _fits(merged_text, budget):
-                            found = merged_text, merged
+                        found = _trim(render_sources(merged), merged, budget)
             else:
                 found = retrieve(
                     scope_kb_id = rag_scope.get("kb_id"),

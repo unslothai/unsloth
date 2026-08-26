@@ -412,6 +412,98 @@ def test_build_rag_autoinject_off_does_not_inject_project_alone(rag_conn, monkey
     )
 
 
+def test_build_rag_autoinject_keeps_thread_hits_when_project_retrieval_raises(
+    rag_conn, monkeypatch
+):
+    # The project lookup is an optional companion. An unavailable project index
+    # must not discard the thread grounding already in hand, which would put the
+    # attachment right back where this fallback found it.
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
+    )
+
+    def fake_search(**kw):
+        if kw.get("scope_project_id"):
+            raise RuntimeError("project index unavailable")
+        sources = [{"citationId": 1, "filename": "thread.txt", "text": "THREAD_GROUNDING"}]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    result = inf_tools.build_rag_autoinject(
+        _convo(), {"thread_id": "t1", "project_id": "p1", "autoinject": False}
+    )
+    assert result is not None
+    assert "THREAD_GROUNDING" in _injected_text(result)
+
+
+def test_build_rag_autoinject_keeps_the_project_hits_that_fit(rag_conn, monkeypatch):
+    # Trimming the combination, not the project alone: when thread plus all of the
+    # project overflows, the passages that do fit beside the thread result are kept
+    # instead of every project passage being dropped.
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
+    )
+
+    def fake_search(**kw):
+        if kw.get("scope_project_id"):
+            sources = [
+                {"citationId": 0, "filename": "project.txt", "text": "P" * 2000} for _ in range(4)
+            ]
+        else:
+            sources = [{"citationId": 0, "filename": "thread.txt", "text": "T" * 8000}]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    injected = _injected_text(
+        inf_tools.build_rag_autoinject(
+            _convo(),
+            {
+                "thread_id": "t1",
+                "project_id": "p1",
+                "autoinject": False,
+                "context_length": 4096,
+                "response_headroom": 1024,
+            },
+        )
+    )
+    assert "T" * 8000 in injected
+    assert injected.count("P" * 2000) == 1
+
+
+def test_build_rag_autoinject_budget_counts_multibyte_text_by_bytes(rag_conn, monkeypatch):
+    # A CJK character is about one token but three UTF-8 bytes, so a character/4
+    # estimate reads this block as a quarter of its real size and admits an
+    # injection that overflows the context. ASCII is unaffected.
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
+    )
+
+    def make_search(body):
+        def fake_search(**kw):
+            sources = [{"citationId": 0, "filename": "thread.txt", "text": body} for _ in range(4)]
+            return tool.render_sources(sources), sources
+
+        return fake_search
+
+    scope = {
+        "thread_id": "t1",
+        "autoinject": False,
+        "context_length": 4096,
+        "response_headroom": 1024,
+    }
+    # Same character count either way; only the encoded size differs.
+    monkeypatch.setattr(tool, "search_for_autoinject", make_search("a" * 2000))
+    ascii_chunks = _injected_text(inf_tools.build_rag_autoinject(_convo(), scope)).count(
+        '<chunk id="'
+    )
+    monkeypatch.setattr(tool, "search_for_autoinject", make_search("漢" * 2000))
+    cjk_chunks = _injected_text(inf_tools.build_rag_autoinject(_convo(), scope)).count(
+        '<chunk id="'
+    )
+    assert ascii_chunks == 4
+    assert cjk_chunks < ascii_chunks
+
+
 def test_build_rag_autoinject_context_budget_falls_back(rag_conn, monkeypatch):
     # Runtime context can be smaller than RAG_WHOLE_DOC_MAX_TOKENS; cap whole-doc to
     # the active context and fall back to retrieval when it would overflow.
