@@ -14,9 +14,11 @@ from typing import Optional, Sequence
 from loggers import get_logger
 from utils.paths.path_utils import (
     drop_shadowed_appledouble_names as _drop_shadowed_appledouble_names,
+    file_contents_available_locally,
     has_appledouble_magic,
     is_appledouble_metadata,
 )
+from utils.models.gguf_metadata import mmproj_accepts_image
 
 logger = get_logger(__name__)
 _GGUF_MODEL_INFO_TIMEOUT_SECONDS = 5.0
@@ -1049,14 +1051,6 @@ def _resolve_gguf_dir(path: Path) -> Optional[Path]:
     return None
 
 
-_AUDIO_ONLY_MMPROJ_NAME_HINTS = ("asr", "audio", "ultravox", "voxtral", "whisper")
-
-
-def _mmproj_name_is_audio_only(root: Path, file: Path) -> bool:
-    """Best-effort audio-only signal that never opens an online-only projector."""
-    hint = f"{root.as_posix()}/{file.name}".lower()
-    tokens = frozenset(part for part in re.split(r"[^a-z0-9]+", hint) if part)
-    return any(name in tokens for name in _AUDIO_ONLY_MMPROJ_NAME_HINTS)
 
 
 def list_local_gguf_variants(
@@ -1091,13 +1085,15 @@ def list_local_gguf_variants(
         if is_imatrix_filename(file.name):
             continue
         if is_mmproj_filename(file.name):
-            # Opening an online-only projector hydrates it. Filename + nonzero
-            # metadata is intentionally permissive; recognizable audio-only
-            # families stay off the vision path, and load-time inspection makes
-            # the authoritative decision after selection.
+            # Header metadata distinguishes vision projectors from audio-only ones. Read it
+            # only when Windows reports the file fully present; opening a cloud placeholder
+            # would recall the projector during discovery.
             try:
+                info = file.stat()
                 has_vision = has_vision or (
-                    file.stat().st_size > 0 and not _mmproj_name_is_audio_only(root, file)
+                    info.st_size > 0
+                    and file_contents_available_locally(file, info)
+                    and mmproj_accepts_image(str(file))
                 )
             except OSError:
                 pass

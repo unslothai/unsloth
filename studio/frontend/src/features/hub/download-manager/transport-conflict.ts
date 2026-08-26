@@ -22,8 +22,9 @@ import {
   setConflict,
 } from "./download-manager-state";
 import { startJob } from "./poll-loop";
+import { currentRoute, showCallerToast } from "./start-toast";
 import { runtimeRegistry } from "./runtime-registry";
-import { getTransportMode } from "./transport-preference";
+import { resolveTransportMode } from "./transport-preference";
 import { ACTIVE_STATES, TRANSPORT_STATUS_TIMEOUT_MS } from "./download-manager-config";
 
 function reportConflictStartError(error: unknown): void {
@@ -127,7 +128,14 @@ async function runWithPendingStartGuard(
   // Already active or pending for the repo: only report "started" when this
   // exact request is the live transfer; a peer/snapshot/pending start has not.
   if (hasActiveOrPendingStart(req)) {
-    return isJobActiveFor(req) ? "started" : "busy";
+    if (!isJobActiveFor(req)) return "busy";
+    // Returns "started" WITHOUT running the action, so startJob never announces;
+    // now the manager owns the message, this is the only feedback there is.
+    showCallerToast(
+      jobKeyOf(req.kind, req.repoId, req.variant),
+      req.callerToast,
+    );
+    return "started";
   }
   runtimeRegistry.pendingStartRepoKeys.add(startKey);
   try {
@@ -143,8 +151,11 @@ async function runWithPendingStartGuard(
 export async function requestStart(
   req: DownloadRequest,
 ): Promise<DownloadStartOutcome> {
+  // Before the preflight below, which is two round trips the user can navigate
+  // during; read after them it would name the page they moved to.
+  const originRoute = currentRoute();
   return runWithPendingStartGuard(req, async () => {
-    let mode: TransportMode = getTransportMode();
+    let mode: TransportMode = await resolveTransportMode();
     try {
       mode = await effectiveTransportMode(mode);
     } catch (err) {
@@ -183,7 +194,9 @@ export async function requestStart(
             next: mode,
             resumable: status.resumable,
           },
-          pending: req,
+          // Without the caller's line: resolved later from the Hub, where "it'll
+          // load automatically" is a promise chat cannot keep. The notice stands.
+          pending: { ...req, callerToast: undefined },
         });
         return "conflict";
       }
@@ -208,7 +221,7 @@ export async function requestStart(
           description:
             "Starting with HTTP so an existing partial is not discarded. Switch transport to retry with Xet.",
         });
-        await startJob(req, { useXet: false });
+        await startJob(req, { useXet: false, originRoute });
         return isJobActiveFor(req) ? "started" : "error";
       }
       toast.warning("Couldn't verify existing partial download", {
@@ -216,7 +229,7 @@ export async function requestStart(
           "Starting with the selected transport. If a partial from another transport exists, it may be restarted from the beginning.",
       });
     }
-    await startJob(req, { useXet: mode === TRANSPORT.XET });
+    await startJob(req, { useXet: mode === TRANSPORT.XET, originRoute });
     return isJobActiveFor(req) ? "started" : "error";
   });
 }

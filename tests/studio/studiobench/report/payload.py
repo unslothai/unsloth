@@ -223,6 +223,23 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     # The optional surface sweep. Its own section: a surface row is a coverage fact about the UI,
     # not a timing, and folding it into `actions` would put it in front of the scorer.
     "surface": "surfaces",
+    # The comparability key. Its own section rather than `header`, for two independent reasons.
+    #
+    # First, `header` is collapsed to its FIRST row when the payload is assembled, so a second row
+    # filed there is dropped without a word. Second, the row's `fields` block is identity
+    # bookkeeping and not a measurement: `instrument_level: 0` is a true statement about how the
+    # run was instrumented, exactly like the `identity` and `config` subtrees, so the section is
+    # exempted from the bare-zero ban rather than made to fake a Measure. Left unmapped the row
+    # fell into `unknown_rows`, which nothing exempts, and the walker killed every real-path
+    # session on `$.unknown_rows[0].fields.instrument_level = 0`.
+    "comparability": "comparability",
+    # The terminal marker for a cell that did not finish. NOT `cells`, which is what the scorer
+    # reads, and NOT an exclusion source: the `cell` row it follows is emitted with
+    # `completed: false` immediately before it on the same path, and `excluded_from_rows` already
+    # turns that into a `rung_incomplete` exclusion. Filing this row as a second exclusion would
+    # count one abort twice. It exists so a reader scanning FORWARD can discard the cell's window
+    # rows, and that is all it is kept for here.
+    "cell_aborted": "aborted_cells",
 }
 
 
@@ -268,6 +285,8 @@ def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
         "cells": cells,
         "samples": sections.get("samples", []),
         "surfaces": sections.get("surfaces", []),
+        "aborted_cells": sections.get("aborted_cells", []),
+        "comparability": (sections["comparability"][0] if sections.get("comparability") else {}),
         "crashes": sections.get("crashes", []),
         "arms": [],
         "unknown_rows": unknown,

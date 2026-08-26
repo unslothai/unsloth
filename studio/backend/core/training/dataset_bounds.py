@@ -96,7 +96,7 @@ def world_size_from_rank_files(environ: Any = None) -> int:
     Only a list of ranks counts, and its length is the count. Anything else -- no such
     file, a truncated or malformed payload, some other object, an empty ring hostfile
     (which is what mlx.launch writes for a single host) -- reads as 1, the count of
-    Studio's own launch. Never raises: a row bound must not be what fails a run.
+    Unsloth's own launch. Never raises: a row bound must not be what fails a run.
 
     A path must name a regular file. mlx.launch writes a temp file, and opening
     whatever else a variable happens to name could block a run forever on a fifo.
@@ -134,7 +134,7 @@ def world_size_from_env(environ: Any = None) -> int:
     The largest wins: a torchrun launch sets WORLD_SIZE and LOCAL_WORLD_SIZE, and on
     one node they agree, while a multi-node one must be sized by the global count.
     Anything unusable (unset, empty, a stray "auto", 0, negative) reads as 1, which
-    is the count Studio's own single-process launch has.
+    is the count Unsloth's own single-process launch has.
 
     Some launchers advertise the count as a file rather than a number; see
     WORLD_SIZE_ENV_FILES.
@@ -183,7 +183,7 @@ def max_steps_dataset_rows(
 
     world_size is what the caller established (the CUDA worker also counts visible
     CUDA devices, which env cannot report); anything unusable falls back to the
-    launcher env, and that falls back to 1, which is Studio's own launch.
+    launcher env, and that falls back to 1, which is Unsloth's own launch.
     """
     steps = _positive_int(max_steps, 0)
     if steps <= 0:

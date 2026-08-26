@@ -6,7 +6,7 @@
 The probe checks 17 optional flags with _is_real before emitting them, but
 --flash-attn, --no-context-shift and --jinja were emitted unconditionally. That
 is fine for the pinned prebuilt, which has all three. It is not fine for a stale
-or user-supplied LLAMA_SERVER_PATH, which Studio explicitly supports: an unknown
+or user-supplied LLAMA_SERVER_PATH, which Unsloth explicitly supports: an unknown
 argument makes llama-server exit immediately rather than start degraded, and the
 user sees a generic startup failure.
 
@@ -327,7 +327,7 @@ class TestAFlaglessBuildIgnoresTheFlashAttentionEnv:
     """A build with no --flash-attn never reads LLAMA_ARG_FLASH_ATTN either.
 
     llama.cpp resolves each LLAMA_ARG_* variable through the common_arg that
-    declares it, so a binary predating the flag registers neither. Studio still
+    declares it, so a binary predating the flag registers neither. Unsloth still
     reads the inherited env when it records what the child is running, and a
     recorded-on flash attention under-sizes the padded V cache the resume-slot
     estimate is capped on.

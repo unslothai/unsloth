@@ -1396,7 +1396,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         guard refused an inference load that fits. Identity is the resolved path,
         so a symlink or another spelling of the same file dedupes too. A drafter
         somewhere else is charged instead of the discovered sidecar, not on top of
-        it: the loader ranks the extras path ahead of Studio's and the launch
+        it: the loader ranks the extras path ahead of Unsloth's and the launch
         appends the caller's flags last, so only one --model-draft is resident.
         """
         import os
@@ -1833,7 +1833,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
     def test_a_priced_remote_extras_drafter_is_not_charged_twice(self):
         """--spec-draft-hf names the drafter that actually loads, and it is now
         priced from its own listing, so the target repository's sidecar must NOT
-        be charged as well: _build_speculative_flags returns before Studio emits
+        be charged as well: _build_speculative_flags returns before Unsloth emits
         that sidecar, so it never becomes resident and billing it 409s a load
         that fits. (Before the remote repo was priced this test asserted the
         opposite, which was the safe reading while the drafter was charged
@@ -2202,7 +2202,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
     def test_a_bare_model_draft_overrides_the_repository_sidecar(self):
         """No --spec-type needed for the override to win: the loader ranks the
-        extras draft path ahead of Studio's and the launch appends the caller's
+        extras draft path ahead of Unsloth's and the launch appends the caller's
         flags last, so exactly one --model-draft is resident. Charging the repo's
         sidecar as well 409s a load that fits."""
         import tempfile
@@ -2240,7 +2240,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
     def test_a_cpu_pinned_discovered_sidecar_is_not_charged_vram(self):
         """-ngld 0 applies to whichever separate drafter launches, including one
-        Studio resolved itself with no draft path in the extras at all. It is then
+        Unsloth resolved itself with no draft path in the extras at all. It is then
         host-resident, so charging it against the training job's VRAM 409s a load
         that takes none."""
         import tempfile
@@ -2752,7 +2752,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
         class _FakeBackend:
             _context_length = 2048
-            _TENSOR_PARALLEL_KV_TYPES = frozenset({"f16", "bf16", "f32"})
             supports_kv_unified = True
 
             def _read_gguf_metadata(self, path):
@@ -2831,7 +2830,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, None, 4), 16.0)
             self.assertEqual(seen["n_parallel"], 4)
             self.assertTrue(seen["kv_unified"])
-            # User extras are appended after Studio's managed default.
+            # User extras are appended after Unsloth's managed default.
             r._estimate_gguf_kv_gb("m", 4096, ["--no-kv-unified"], 4)
             self.assertFalse(seen["kv_unified"])
             # An older binary without the flag keeps separate KV streams.
@@ -2854,13 +2853,15 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             ):
                 r._estimate_gguf_kv_gb("m", 4096)
             self.assertEqual(seen["cache_type"], "q4_0")
+            # Tensor mode passes the requested type through, so the budget matches it.
             r._estimate_gguf_kv_gb(
                 "m",
                 4096,
                 ["--cache-type-k", "q4_0", "--cache-type-v", "q4_0"],
                 tensor_parallel = True,
             )
-            self.assertEqual(seen["cache_type"], "f16")
+            self.assertEqual(seen["cache_type"], "q4_0")
+            # The heavier axis still wins, tensor or not.
             r._estimate_gguf_kv_gb(
                 "m",
                 4096,

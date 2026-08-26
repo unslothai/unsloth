@@ -25,6 +25,8 @@ from unsloth_cli.commands.start import (
     _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS,
     _SUBAGENT_INSTRUCTIONS,
     _merge_wslenv,
+    _prefer_windows_cmd_sibling,
+    _resolved_launch_command,
     _wsl_shim_env,
 )
 
@@ -82,7 +84,7 @@ def _result_text(stdout: str) -> str:
 
 def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> str:
     config = _config()
-    executable = shutil.which("codex")
+    executable = _prefer_windows_cmd_sibling(shutil.which("codex"))
     if executable is None:
         raise RuntimeError("`codex` is not installed or is not on PATH.")
     cancel_event = cancel_event or threading.Event()
@@ -134,7 +136,10 @@ def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> s
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
-    process = subprocess.Popen([executable, *command[1:]], **popen_kwargs)
+    # cmd.exe splits CR/LF inside `%*` and the prompt always spans lines, so
+    # resolve npm shims here rather than spawning the .cmd raw.
+    launch_command = _resolved_launch_command(executable, command[1:], child_env)
+    process = subprocess.Popen(launch_command, **popen_kwargs)
     try:
         while True:
             try:

@@ -39,7 +39,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -926,6 +926,66 @@ class RungPlan:
         return self.seeded_chars + self.streamed_chars + self.follow_up_chars
 
 
+def dollarise(text: str, salt: str) -> str:
+    """Give `text` the CURRENCY AND SHELL dollars a real reply has, deterministically.
+
+    WHAT THIS IS FOR, AND WHAT IT IS NO LONGER FOR. This was written when the frozen corpus
+    contained zero `$`, zero `\\[` and zero `\\(` across all 519,859 characters, so that
+    `preprocessLaTeX` -- which runs on the whole reply once per animation frame -- always took its
+    cheap path. That path is an early return after `text.includes("$")` fails
+    (`studio/frontend/src/lib/latex.ts`), and the two regimes are an order of magnitude apart:
+    measured over one 96,000 character reply, 15.3 ms against 281.3 ms.
+
+    CORPUS v2 CHANGED THAT AND THIS DOCSTRING WOULD OTHERWISE LIE. The frozen corpus now carries
+    well-formed LaTeX throughout, and the streamed unit is drawn from it, so the streamed reply
+    already contains `$` without this flag: 10 of them at the 10K rung and 6 at 100K, measured.
+    The early return is therefore already defeated by default, and the claim that the expensive
+    regime "has never been exercised" is dead. Anyone reaching for this flag to reach that regime
+    does not need it any more.
+
+    WHAT IT STILL DOES, which is narrower and worth stating exactly. The early return is keyed on
+    the reply BEING PROCESSED -- `preprocessLaTeX(displayText)` is called per message
+    (`components/assistant-ui/markdown-text.tsx`) -- and past it the cost is the `CURRENCY_REGEX`
+    pass, whose callback has three branches: skip inside a code region, skip inside a math region
+    just created from `\\(...\\)`, and escape everything else. v2's dollars are well-formed math,
+    so they take the SKIP branches. The dollars added here are deliberately not math: `$HOME/...`
+    inside fences exercises the code-region exclusion, and `$12.99` in prose exercises the escape
+    branch and `hasInlineMathCloser`. That is the false-positive half of the function, and it is
+    the half that rewrites the string rather than leaving it alone.
+
+    So the two mechanisms are complementary rather than redundant: v2 puts renderable math in the
+    SEEDED thread and exercises the renderer, and this puts malformed-on-purpose dollars in the
+    turn that STREAMS and exercises the heuristics, per chunk, on the path a streaming-cost metric
+    measures. Expect a far smaller effect from this flag than the 15.3-to-281.3 figure above,
+    because that transition now happens without it.
+
+    Applied to the STREAMED unit only, and never to the frozen corpus on disk: the frozen units
+    and their hashes are exactly what they were, so a run with this off is byte-identical to a run
+    of the same corpus version without it. A run with it on records the fact in its payload,
+    because a corpus difference that is not in the payload is a difference two runs will be
+    compared across without knowing.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    fenced = False
+    for index, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fenced = not fenced
+            out.append(line)
+            continue
+        # Inside a fence, shell-shaped lines. Outside it, prices in prose. Both are what a real
+        # answer contains, and they exercise different branches: the code-region scan has to
+        # EXCLUDE the first and the currency heuristic has to escape the second.
+        if fenced and index % 11 == 0:
+            out.append(f"{line}  # $HOME/{salt}{index} costs $1{index % 10}.99")
+        elif not fenced and line and index % 17 == 0:
+            out.append(f"{line} It costs ${index % 9}{index % 10}.99 or ${index % 7},200 a year.")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def _too_small(rung: str, chars_per_token: float, last_index: int, what: str) -> ValueError:
     """The one message for every way a rung can outgrow the frozen corpus.
 
@@ -939,6 +999,51 @@ def _too_small(rung: str, chars_per_token: float, last_index: int, what: str) ->
         "`python -m tests.studio.studiobench.fixture.corpus --freeze` after raising "
         "MANIFEST_CHARS_PER_TOKEN, and note that a re-freeze changes corpus_hash and so ends "
         "comparability with everything measured before it."
+    )
+
+
+def _tail_not_deliverable(
+    rung: str,
+    requested: int,
+    source_index: int,
+    deliverable: int,
+    thread_chars: int,
+    target_chars: int,
+) -> ValueError:
+    """An explicit `--stream-tail-chars` the corpus cannot actually deliver.
+
+    Deliberately an ERROR and not a shortfall field, for the same reason `_too_small` is. The
+    quantity this flag exists to vary is the ONLY variable in a reply-length experiment, so a run
+    that silently measures a fraction of it has no honest reading at all -- there is nothing to
+    caveat, the axis simply did not move.
+
+    TWO EFFECTS COMPOUND HERE and the message names both, because fixing only the one you noticed
+    leaves the other. The tail is one corpus unit and `clipped_to` returns the unit unchanged when
+    the ask exceeds it, so delivery is capped at that unit's size. And asking for MORE tail lowers
+    that cap rather than raising it: a bigger tail shrinks `seed_target`, which moves the streamed
+    turn to a lower index, and the corpus escalates in size, so the ceiling falls as the request
+    rises. At the extreme the seeded prefix is evacuated entirely and the rung's own thread goes
+    with it, while the cell keeps its rung label, its rung weight and its place in the table.
+
+    Measured before this guard existed: `--rungs 100K --stream-tail-chars 400000` delivered 15,405
+    characters of the 400,000 asked for (3.9%) on a thread of 18,122 characters against the rung's
+    397,755 (4.6%), and `--assert-liveness` returned `0 scene problems, 0 missed slots`, exit 0,
+    byte-identical to the default run -- because a saturated tail drains FASTER than the film it
+    was supposed to outlast, so the one check that could have noticed goes quieter as the input
+    gets more wrong.
+    """
+    return ValueError(
+        f"the frozen corpus cannot deliver a {requested:,} character streamed tail at the {rung} "
+        f"rung: the streamed turn is unit {source_index}, which is {deliverable:,} characters, so "
+        f"the reply would be {deliverable / requested:.1%} of the one asked for. Asking for more "
+        f"tail makes this worse rather than better, because the seeded prefix shrinks to pay for "
+        f"it and the streamed turn moves to a smaller unit -- here the thread would collapse to "
+        f"{thread_chars:,} characters against the rung's {target_chars:,}, while still being "
+        f"recorded, weighted and reported as {rung}. Ask for less, or move the same request to a "
+        f"higher rung. NOT 'at most {deliverable:,}': that is this unit's size at THIS request, "
+        f"and the ceiling RISES as the request falls, because a smaller tail leaves a longer "
+        f"seeded prefix which draws the streamed turn from a larger unit. Lower the ask until "
+        f"this stops firing rather than reading a maximum off this line."
     )
 
 
@@ -990,6 +1095,8 @@ def plan_rung(
     corpus: Corpus,
     rung: str,
     chars_per_token: float = PROVISIONAL_CHARS_PER_TOKEN,
+    stream_tail_chars: Optional[int] = None,
+    dollars: bool = False,
 ) -> RungPlan:
     """Which units are SEEDED and which one STREAMS.
 
@@ -1015,8 +1122,20 @@ def plan_rung(
     # Holding the tail constant also isolates the variable under investigation. The question is
     # what a streamed chunk costs AS A FUNCTION OF THE THREAD ALREADY ON SCREEN, and that needs
     # the chunk workload held fixed while the thread grows, not both moving together.
+    # `stream_tail_chars` overrides the constant, and is the ONLY way to vary reply length in this
+    # tool. The paragraphs above explain why the tail is pinned: the rung ladder exists to ask what
+    # a chunk costs as a function of the THREAD, and that needs the chunk workload held fixed. The
+    # consequence, which cost a whole investigation to rediscover, is that a cost scaling with the
+    # length of the reply BEING STREAMED is constant across every rung and reads as a floor. Such a
+    # mechanism is real and this ladder cannot see it at any effect size.
+    #
+    # Raising this makes the film's labels false in the way the note above describes, because the
+    # stream then outlasts the after-generation slots. That is a trade a reply-length investigation
+    # has to make deliberately, so it is a parameter and not a second constant, and `--assert-
+    # liveness` on the resulting payload is how the cost of making it shows up.
     turns = STREAM_TURNS if target_chars >= MULTI_TURN_MIN_CHARS else 1
-    tail_target = min(STREAM_TAIL_CHARS, target_chars)
+    tail_budget = STREAM_TAIL_CHARS if stream_tail_chars is None else max(1, stream_tail_chars)
+    tail_target = min(tail_budget, target_chars) if stream_tail_chars is None else tail_budget
     follow_budget = FOLLOW_UP_CHARS * (turns - 1)
     seed_target = max(0, target_chars - tail_target - follow_budget)
 
@@ -1062,8 +1181,44 @@ def plan_rung(
     # during-generation slots are timed against the opening stream, so it has to outlast them;
     # splitting the budget between turns left it draining in four seconds and those slots then ran
     # against a finished reply while still being labelled "during generation".
-    streamed = corpus.unit(len(seeded)).clipped_to(tail_target)
+    source = corpus.unit(len(seeded))
+    # THE REQUESTED TAIL HAS TO BE DELIVERABLE. Keyed on `clipped_to`'s own early return
+    # (`if chars >= self.chars: return self`) rather than on a tolerance, because the two ways a
+    # tail lands under its budget are different in kind and only one of them is a defect: clipping
+    # at a whole BLOCK boundary loses at most one block and is what keeps a prefix from ending
+    # inside a fence, while exceeding the unit loses everything above it and is unbounded. A
+    # percentage bound cannot tell those apart, and a bound nobody can derive is an unacknowledged
+    # bias rather than a tolerance.
+    #
+    # The DEFAULT path is exempt on purpose: `STREAM_TAIL_CHARS` is a ceiling the small rungs are
+    # legitimately under (the 1K rung is 4,000 characters in total, less than one tail), and that
+    # shortfall is the rung being small rather than the corpus failing to answer.
+    if stream_tail_chars is not None and tail_target >= source.chars:
+        raise _tail_not_deliverable(
+            rung,
+            tail_target,
+            len(seeded),
+            source.chars,
+            sum(u.chars for u in seeded) + source.chars + FOLLOW_UP_CHARS * (turns - 1),
+            target_chars,
+        )
+    streamed = source.clipped_to(tail_target)
     follow_ups = [corpus.unit(len(seeded) + i).clipped_to(FOLLOW_UP_CHARS) for i in range(1, turns)]
+    if dollars:
+        # The streamed turns only. The seeded prefix is rendered once at mount and never
+        # re-preprocessed, so dollars there would change the corpus without changing what the
+        # per-frame path is asked to do.
+        streamed = replace(
+            streamed,
+            reasoning = dollarise(streamed.reasoning, "r"),
+            content = dollarise(streamed.content, "c"),
+        )
+        streamed = replace(streamed, chars = len(streamed.reasoning) + len(streamed.content))
+        follow_ups = [
+            replace(u, reasoning = dollarise(u.reasoning, "r"), content = dollarise(u.content, "c"))
+            for u in follow_ups
+        ]
+        follow_ups = [replace(u, chars = len(u.reasoning) + len(u.content)) for u in follow_ups]
 
     plan = RungPlan(
         rung = rung,

@@ -150,11 +150,18 @@ QUICK = Scene(
             ("stop_generation", 20_000, 3_000),
             ("scroll_after", 23_500, 2_500),
             ("reasoning_toggle", 26_500, 4_500),
-            ("send_turn", 31_500, 4_000),
+            # 1,500 rather than 4,000, and the reason is the gap AFTER it rather than the cost of
+            # the send itself. `send_turn` is a sub-100 ms action; a 4,000 ms window to start in is
+            # not headroom, it is permission to begin the follow-up four seconds late without
+            # recording a miss. The drain runs from when the send actually fires, so every one of
+            # those four seconds comes off `message_menu`'s window: measured from the latest legal
+            # send, this film left 3,500 ms for a 4,562 ms drain. The fast film had the same shape
+            # and CI failed on it. See test_settled_actions_open_after_the_follow_up_drains.
+            ("send_turn", 31_500, 1_500),
             ("message_menu", 36_000, 3_000),
             ("copy_markdown", 39_500, 2_500),
             ("select_text", 42_500, 2_000),
-            ("send_turn", 45_000, 4_000),
+            ("send_turn", 45_000, 1_500),
             ("select_all_copy", 49_500, 6_000),
             ("composer_fill", 56_000, 2_500),
             ("model_change", 59_000, 2_500),
@@ -221,25 +228,40 @@ FAST = Scene(
             ("scroll_during_generation", 6_000, 1_200),
             ("stop_generation", 18_400, 3_000),
             ("scroll_after", 21_500, 1_200),
-            ("reasoning_toggle", 23_000, 3_500),
-            ("send_turn", 26_700, 1_500),
-            ("message_menu", 32_000, 800),
-            ("copy_markdown", 33_000, 600),
-            ("select_text", 33_800, 400),
-            ("send_turn", 34_400, 1_500),
-            ("select_all_copy", 39_500, 4_000),
-            ("composer_fill", 43_700, 600),
-            ("model_change", 44_500, 1_000),
-            ("settings", 45_700, 1_200),
-            ("image_upload", 47_100, 800),
+            # THE BUDGET IS SIZED FROM WHAT CI MEASURES, not from the null control's 2,250 ms.
+            # On the GitHub runner this action costs 4,415.9 ms and 4,434.4 ms on two consecutive
+            # jobs -- reaching the open state alone takes 2,898.8 ms there, which already exceeds
+            # the whole-action figure the 3,500 ms budget was derived from. At 3,500 it overran by
+            # 934 ms on every run, and an overrun here lands on `send_turn`, the one slot whose
+            # downstream gap is load-bearing. 5,000 ms covers the measured cost with room.
+            ("reasoning_toggle", 23_000, 5_000),
+            # MOVED OUT FROM UNDER `reasoning_toggle`, which now nominally ends at 28,000. A send
+            # slot that opens before the action before it can finish is a slot that starts late,
+            # and a send that starts late shortens the drain window of everything after it while
+            # reporting no miss of its own.
+            ("send_turn", 28_100, 1_500),
+            # THE GAP IS THE POINT, and it is measured from 29,600 -- the latest this film's send
+            # can fire -- not from 28,100. The follow-up drains in 4,562 ms nominal and 4,400 to
+            # 4,700 ms observed, so a window closing at 35,400 leaves about 1.1 s of real margin
+            # against the worst drain seen. The old packing left 38 ms, which is why CI failed on
+            # a runner no slower than the one that passed.
+            ("message_menu", 34_400, 1_000),
+            ("copy_markdown", 35_400, 600),
+            ("select_text", 36_200, 400),
+            ("send_turn", 36_800, 1_500),
+            ("select_all_copy", 41_900, 4_000),
+            ("composer_fill", 46_100, 600),
+            ("model_change", 46_900, 1_000),
+            ("settings", 48_100, 1_200),
+            ("image_upload", 49_500, 800),
             # thread_reopen 6.5 s and delete 2.5 s, not 5 s and 0.6 s. Measured at 100K the pair
             # costs about 3.2 s, but the ACTION overran its 5 s window and pushed the last slot: the
             # machine arrived at delete_message 834 ms after its 600 ms budget had already closed, so
             # on a 36 job sweep delete recorded NOT EXERCISED on the base arm of every null-control
             # cell. A last slot with no slack is a slot that measures nothing, and the film's own end
             # is the one place an overrun has nowhere to go.
-            ("thread_reopen", 48_100, 6_500),
-            ("delete_message", 54_800, 2_500),
+            ("thread_reopen", 50_500, 6_500),
+            ("delete_message", 57_200, 2_500),
         ]
     ),
 )
@@ -279,6 +301,33 @@ class SceneRunner:
             return self.page.evaluate("() => window.__sb.dom.counts()")
         except Exception as exc:  # noqa: BLE001
             return {"census_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+    def _watch_visible(self) -> None:
+        """Install the visible-region observer BEFORE the window opens.
+
+        Before, not after, because the compared set is the union of everything the viewport showed
+        during the action. An action that scrolls reveals messages and hides them again, and an
+        observer installed at the close would compare only wherever the scroll happened to stop.
+        """
+        try:
+            self.page.evaluate("() => window.__sb.parityVisible.watch()")
+        except Exception:  # noqa: BLE001
+            # A page that cannot install it still gets a structural digest; the visible-region
+            # capture reports itself absent rather than empty, which the analysis refuses.
+            pass
+
+    def _visible(self) -> dict:
+        """The visible-region capture, taken at the close and BEFORE the census and the digest.
+
+        It closes an accumulating observation rather than reading a static DOM, so it goes first;
+        see the comment at the call site for what its tail costs when it does not.
+        """
+        try:
+            got = self.page.evaluate("async () => await window.__sb.parityVisible.capture()")
+            self.page.evaluate("() => window.__sb.parityVisible.stop()")
+            return got
+        except Exception as exc:  # noqa: BLE001
+            return {"visible_attempted": False, "reason": f"{type(exc).__name__}: {exc}"}
 
     def _parity(self) -> dict:
         """A structural digest of what is on screen, for the UI-parity check across arms.
@@ -331,11 +380,38 @@ class SceneRunner:
         now_ms = (time.monotonic() - t0) * 1000
         if until_ms - now_ms < 250:
             return
-        with self.open_window(name, "stream") as window:
+        # `gap`, NOT `stream`. These windows were labelled `stream` and the label was read by
+        # people, including this project, as meaning the stream was running in them. It does not.
+        # A gap window is opened before EVERY slot, so on the standard film eighteen of them exist
+        # and only the first four contain any streaming at all; the rest are the quiet stretches
+        # between post-generation actions. Measured on a 100K cell, `stream:gap12` ran for 32.9 s
+        # at 1.6% busy with the reply finished thirty seconds earlier, and `stream:drain` -- the
+        # one window that really is about the stream -- was 7 ms long.
+        #
+        # Anyone filtering on `kind == "stream"` to find the streaming phase therefore selected
+        # mostly post-stream idle and diluted whatever they were measuring. The phase has to be
+        # detected from the SSE traffic (see instruments/streamcost.py), and this label no longer
+        # invites the mistake.
+        #
+        # The window NAME is deliberately left as `stream:gapN`. It is the join key in every
+        # payload this tool has already written and in the analysis scripts pointed at them;
+        # renaming it would break those silently, which is a worse failure than a misleading name
+        # that is now documented in INTERFACES.md and contradicted by the kind beside it.
+        # THE CENSUS IS TAKEN BEFORE THE GAP WINDOW OPENS, not at its close. Same defect as the
+        # action windows (workspace task #102) and the same fix, but the placement is different:
+        # a gap window is the QUIET stretch, and its whole purpose is to measure the page doing
+        # nothing but stream. Nineteen querySelectorAll passes over 195,000 elements at the end of
+        # it is not nothing, and it landed on the frame-rate reading for the idle phase.
+        #
+        # Before rather than after, because the gap ends the instant the next slot is due: taking
+        # it afterwards would push the action's start past its own slot and turn an instrument cost
+        # into a missed slot, which is a worse failure than the one being fixed.
+        census = self._census()
+        with self.open_window(name, "gap") as window:
+            window.note("census_before_gap", census)
             while (time.monotonic() - t0) * 1000 < until_ms:
                 time.sleep(min(0.2, max(0.01, (until_ms - (time.monotonic() - t0) * 1000) / 1000)))
             window.note("waited_to_ms", until_ms)
-            window.note("census", self._census())
 
     def _run_slot(self, slot: Slot, t0: float) -> dict:
         entry = get_action(slot.action)
@@ -371,6 +447,7 @@ class SceneRunner:
                 expect = {"t_start_ms": slot.t_start_ms, "reached_at_ms": round(now_ms, 1)},
             ).row(slot.action, window_name, self.cell.cell_id)
 
+        self._watch_visible()
         with self.open_window(window_name, "action") as window:
             ctx = ActionContext(
                 page = self.page,
@@ -389,23 +466,79 @@ class SceneRunner:
                 result = not_run(f"the action raised {type(exc).__name__}: {exc}")
             window.note("action", slot.action)
             window.note("ran", result.ran)
-            # A CENSUS PER ACTION, taken at the close of every window.
-            #
-            # Not a nicety. The end-of-cell census is taken after the film has finished, and the
-            # film ENDS with thread_reopen and delete_message -- so the "final" census of the
-            # first working run read 0 assistant messages and 0 characters, having faithfully
-            # measured a thread the benchmark had just deleted. A census per window gives the
-            # occupancy at the moment each action ran, which is the denominator every per-action
-            # cost needs anyway, and it makes the peak recoverable no matter what the last action
-            # did. Measured cost on a 1,500-element tree: 0.2ms.
-            window.note("census", self._census())
-            window.note("parity", self._parity())
 
-        over_ms = ((time.monotonic() - t0) * 1000) - deadline_ms
+        # THE CENSUS AND THE PARITY DIGEST ARE TAKEN OUTSIDE THE WINDOW. Workspace task #102.
+        #
+        # Both used to run inside the `with`, one line above this comment, on the strength of a
+        # measurement -- "0.2ms on a 1,500-element tree" -- taken on a tree three orders of
+        # magnitude smaller than the one this benchmark exists to study. At 100K+ tokens the
+        # census walks nineteen querySelectorAll passes over ~195,000 elements and the parity
+        # digest serialises 5.6 MB of structure, and every millisecond of it was being charged to
+        # the action that happened to precede it. Measured cost of the mistake:
+        #
+        #   delete_message   reported 14.3 fps, true 49.0 fps
+        #   message_menu     reported 17.1 fps, true 73.8 fps
+        #
+        # That is not a correction at the margin. It inverted the ranking of the actions this
+        # campaign is about, and it did it in the direction that makes the standing DOM look like
+        # a smaller problem than it is, because the instrument's own cost grows with exactly the
+        # quantity under investigation.
+        #
+        # They still run at the same MOMENT -- immediately after the window closes, before the
+        # scheduler starts waiting for the next slot -- so the digest and the occupancy still come
+        # from one reading of one DOM taken at the end of the action. Only the accounting moved.
+        #
+        # The consequence, stated: the emitted `window` row no longer carries them in its notes,
+        # because the row is emitted when the window closes. They live on the ACTION row, which is
+        # where every consumer already reads them from.
+        # THE DEADLINE IS SAMPLED HERE, BEFORE THE OBSERVATIONS. Moving the census and the digest
+        # out of the measured window but leaving `over_ms` to be taken after them would have left
+        # half the defect in place: an action that finished comfortably inside its budget would
+        # still be flagged `over_budget` on the strength of a multi-megabyte serialisation that is
+        # explicitly not its cost. Charging instrument time to the thing being measured is the
+        # whole of task #102, and the budget flag is not exempt from it.
+        window_closed_at = time.monotonic()
+        over_ms = ((window_closed_at - t0) * 1000) - deadline_ms
+
+        # THE VISIBLE CAPTURE GOES FIRST, AND THE ORDER IS THE MEASUREMENT. The other two read a
+        # DOM that is sitting still; this one CLOSES an observation that has been accumulating
+        # since `_watch_visible`, and every millisecond it stays open is another millisecond in
+        # which a row can scroll into view and be counted as having been visible during the
+        # action. Taken after the census and the digest, that tail was as long as those two probes
+        # take -- and they are the one thing on this path whose cost is proportional to the arm.
+        #
+        # A fully mounted arm serialises the whole thread, a windowed arm serialises the dozen
+        # rows it has mounted, so the two arms' observers stayed open for materially different
+        # intervals: the numbers above this comment are 14.3 fps against 49.0, which is the same
+        # asymmetry expressed as time. With streaming and autoscroll still running at the close of
+        # `scroll_during_generation`, the mounted arm had the longer tail in which to admit an
+        # ordinal the windowed arm never saw, and `compare_visible` has no tolerance for that --
+        # it returns DIFFER on strict set inequality of `ever_visible`. The null control cannot
+        # absorb it either, being same-build against same-build, where both sides pay the same
+        # digest and the asymmetry does not exist.
+        #
+        # Taking it first does not make the tail zero: `capture()` still waits two frames, on
+        # purpose, so a quiet action does not report an empty viewport. It makes the tail the SAME
+        # ON BOTH ARMS, which is the property the comparison actually needs.
+        visible = self._visible()
+        census = self._census()
+        parity = self._parity()
+        # The observations DO consume wall clock before the next slot, so their cost is recorded
+        # rather than dropped -- it is simply recorded as theirs.
+        observation_ms = (time.monotonic() - window_closed_at) * 1000
         row = result.row(slot.action, window_name, self.cell.cell_id)
         row["window_ms"] = window.duration_ms
-        row["census"] = window.notes.get("census")
-        row["parity"] = window.notes.get("parity")
+        # READ FROM THE LOCALS ABOVE, not from `window.notes`. The three observations were moved
+        # out of the measured window, so by the time this row is built they are values this method
+        # holds rather than notes the window carries.
+        row["census"] = census
+        row["parity"] = parity
+        row["visible"] = visible
+        # The observation cost itself, so it is never invisible again. `census_cost_ms` is the
+        # page's own timing of the walk; if this pair ever comes to dominate the film's wall clock
+        # the number is in the payload rather than in someone's hypothesis.
+        row["observation_outside_window"] = True
+        row["observation_ms"] = round(observation_ms, 1)
         # THE SCREENSHOT IS TAKEN OUTSIDE THE WINDOW, on purpose and not as a tidiness point.
         # The film runs on a wall clock and every slot has an absolute start, so an encode charged
         # to the measured window eats the gap before the next slot -- which is how an action comes

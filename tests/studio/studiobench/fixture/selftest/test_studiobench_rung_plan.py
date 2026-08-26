@@ -165,7 +165,24 @@ def test_settled_actions_open_after_the_follow_up_drains():
         last_send = None
         for slot in sorted(scene.slots, key = lambda s: s.t_start_ms):
             if slot.action == "send_turn":
-                last_send = slot.t_start_ms
+                # THE LATEST THE SEND CAN FIRE, not the earliest. The drain starts when the send
+                # actually happens, and a send slot is a WINDOW: the action may legitimately begin
+                # anywhere inside its own budget, which is precisely what it does when the slot
+                # before it overran and pushed it.
+                #
+                # Measured from the start instead, this check reported 1,538 ms of margin on the
+                # fast film where 38 ms existed, and CI then failed the way the arithmetic says it
+                # must: `reasoning_toggle` overran its 3,500 ms budget by 934 ms, `send_turn` was
+                # pushed 1,373 ms late but stayed inside its 1,500 ms budget so nothing recorded a
+                # miss, the send-to-menu gap collapsed from a nominal 5,300 ms to an actual
+                # 3,691 ms, and `message_menu` found a reply still streaming and recorded NOT RUN.
+                # Every slot was individually within budget and the film was still unrunnable.
+                #
+                # This is the same defect the rest of this branch is about, in the check rather
+                # than in the instrument: a quantity computed at a moment whose meaning is not the
+                # one the reader assumes. A margin measured from the earliest possible send is not
+                # a margin.
+                last_send = slot.t_start_ms + slot.budget_ms
             elif slot.action in SETTLED_ACTIONS and last_send is not None:
                 # The slot's WINDOW, not its start. A slot may legitimately open a little before
                 # the follow-up finishes and wait inside its own budget -- the quick film opens

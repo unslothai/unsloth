@@ -15,6 +15,7 @@ No GPU/network: only file names and sizes are inspected.
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -38,6 +39,25 @@ def _touch(path: Path) -> Path:
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(b"\0")
     return path
+
+
+def test_local_adapter_chat_capability_uses_its_local_base(tmp_path):
+    from hub.services.models.common import _classify_local_path
+
+    base = tmp_path / "whisper-base"
+    _touch(base / "model.safetensors")
+    (base / "config.json").write_text(
+        '{"model_type":"whisper","architectures":["WhisperForConditionalGeneration"]}'
+    )
+    adapter = tmp_path / "whisper-adapter"
+    _touch(adapter / "adapter_model.safetensors")
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
+
+    rows = _classify_local_path(adapter, "custom")
+
+    assert len(rows) == 1
+    assert rows[0].base_model == str(base)
+    assert models_route._local_model_can_chat(rows[0]) is False
 
 
 def test_dir_model_format_gguf_only(tmp_path):
@@ -231,7 +251,7 @@ def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
     assert [Path(r.path).name for r in models_route._scan_models_dir(root)] == ["llama"]
 
 
-# ── GGUF picker task tags without opening model weights ─────────────────────
+# ── Images picker task tag for local (non-GGUF) diffusers models ──────────────
 from models.models import LocalModelInfo  # noqa: E402
 
 
@@ -253,44 +273,63 @@ def _local(
     )
 
 
-def test_local_gguf_task_never_reads_headers_or_walks_folders(tmp_path, monkeypatch):
-    """Listing cloud placeholders must classify from names without touching GGUF contents."""
+def test_windows_cloud_recall_attributes_are_not_local():
+    from utils.paths.path_utils import file_contents_available_locally
 
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("local GGUF listing touched model contents")
+    for attribute in (0x00001000, 0x00040000, 0x00400000):
+        assert not file_contents_available_locally(
+            "unused", types.SimpleNamespace(st_file_attributes = attribute)
+        )
 
-    monkeypatch.setattr(models_route, "_gguf_architecture", forbidden)
-    monkeypatch.setattr(models_route, "_gguf_folder_task", forbidden)
+    # Unpinned is user intent, not proof that bytes are absent.
+    assert file_contents_available_locally(
+        "unused", types.SimpleNamespace(st_file_attributes = 0x00100000)
+    )
 
-    single = _touch(tmp_path / "flux1-dev-Q4_K_M.gguf")
-    single_model = _local(
-        single,
+
+def test_local_gguf_task_reads_present_header(tmp_path, monkeypatch):
+    """Fully present files retain architecture-based task detection."""
+    from hub.services.models import catalog_classification as classification
+
+    gguf = _touch(tmp_path / "generic-Q4_K_M.gguf")
+    reads = []
+    monkeypatch.setattr(classification, "file_contents_available_locally", lambda _path: True)
+    monkeypatch.setattr(
+        classification,
+        "_gguf_architecture",
+        lambda path: reads.append(path) or "llama",
+    )
+
+    model = _local(
+        gguf,
         model_format = "gguf",
         display_name = "generic",
         id = "generic-file-id",
     )
-    assert models_route._local_model_task(single_model) == "text-to-image"
 
-    folder = tmp_path / "ltx-2-bundle"
-    _touch(folder / "model-Q4_K_M.gguf")
-    folder_model = _local(
-        folder,
+    assert models_route._local_model_task(model) == "text-generation"
+    assert reads == [str(gguf)]
+
+
+def test_local_gguf_task_skips_online_only_contents(tmp_path, monkeypatch):
+    """Cloud placeholders stay discoverable by name without opening their data."""
+    from hub.services.models import catalog_classification as classification
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("local GGUF listing touched placeholder contents")
+
+    monkeypatch.setattr(classification, "file_contents_available_locally", lambda _path: False)
+    monkeypatch.setattr(classification, "_gguf_architecture", forbidden)
+
+    gguf = _touch(tmp_path / "generic-Q4_K_M.gguf")
+    model = _local(
+        gguf,
         model_format = "gguf",
         display_name = "generic",
-        id = "generic-folder-id",
-    )
-    assert models_route._local_model_task(folder_model) == models_route._VIDEO_GEN_TASK
-
-    ambiguous = _touch(tmp_path / "model-Q4_K_M.gguf")
-    assert (
-        models_route._local_model_task(
-            _local(ambiguous, model_format = "gguf", display_name = "generic", id = "generic-id")
-        )
-        is None
+        id = "generic-file-id",
     )
 
-
-# ── Images picker task tag for local (non-GGUF) diffusers models ──────────────
+    assert models_route._local_model_task(model) is None
 
 
 def test_local_task_tags_family_named_pipeline_dir(tmp_path):
@@ -396,6 +435,10 @@ def test_a_modular_pipeline_root_counts_as_a_pipeline_index(tmp_path):
     (modular / "transformer").mkdir(parents = True)
     (modular / "modular_model_index.json").write_text("{}")
     assert _local_pipeline_index(modular) is True
+    assert (
+        models_route._local_is_diffusers(_local(modular, display_name = "opaque", id = str(modular)))
+        is True
+    )
 
     conventional = tmp_path / "conventional"
     conventional.mkdir()
@@ -405,3 +448,57 @@ def test_a_modular_pipeline_root_counts_as_a_pipeline_index(tmp_path):
     neither = tmp_path / "neither"
     neither.mkdir()
     assert _local_pipeline_index(neither) is False
+
+
+def test_a_single_file_video_repo_is_flagged_diffusers(monkeypatch):
+    """_local_is_diffusers asks detect_video_family; _repo_is_diffusers must ask it too.
+
+    A cached single-file video checkpoint with no pipeline index gets no task from
+    _cached_repo_task (it returns None for an untrusted or unbuildable video family), so if
+    the diffusers flag is also missing, an inconclusive transformer config leaves can_chat
+    set -- and that is every gate the chat picker has. The video weights would be offered to
+    the text loader.
+    """
+    from types import SimpleNamespace
+
+    from core.inference.video_families import detect_video_family
+    from hub.services.models import catalog_classification as classification
+
+    repo_id = "Lightricks/LTX-Video"
+    assert detect_video_family(repo_id) is not None, "fixture assumes a known video family"
+
+    info = SimpleNamespace(repo_id = repo_id, repo_path = "/nonexistent")
+    assert classification._repo_is_diffusers(info) is True
+    # A plain chat repo must not be swept up by the same rule.
+    chat = SimpleNamespace(repo_id = "unsloth/Qwen3-0.6B", repo_path = "/nonexistent")
+    assert classification._repo_is_diffusers(chat) is False
+
+
+def test_adapter_base_is_found_in_the_cache_root_holding_the_adapter(tmp_path):
+    """An adapter listed from a legacy or previously configured root has its base cached in
+    that SAME root. Probing only the active root answered None, and None is inconclusive,
+    which leaves the adapter chat-capable -- so a Whisper LoRA reached the chat picker.
+    """
+    import json
+
+    from hub.services.models.common import _base_transformers_can_chat, _hub_cache_root_of
+
+    root = tmp_path / "legacy_hub"
+    base_snapshot = root / "models--Org--WhisperBase" / "snapshots" / ("b" * 40)
+    base_snapshot.mkdir(parents = True)
+    (base_snapshot / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "whisper",
+                "architectures": ["WhisperForConditionalGeneration"],
+            }
+        )
+    )
+    (root / "models--Org--WhisperBase" / "refs").mkdir(parents = True)
+    (root / "models--Org--WhisperBase" / "refs" / "main").write_text("b" * 40)
+
+    adapter_snapshot = root / "models--Org--SpeechLora" / "snapshots" / ("a" * 40)
+    adapter_snapshot.mkdir(parents = True)
+
+    assert _hub_cache_root_of(adapter_snapshot) == root
+    assert _base_transformers_can_chat("Org/WhisperBase", None, adapter_snapshot) is False

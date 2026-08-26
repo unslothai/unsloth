@@ -219,23 +219,11 @@ export const ru = {
       clear: "Удалить сочетание",
       reset: "Вернуть значение по умолчанию",
       resetAll: "Сбросить всё до значений по умолчанию",
-      groups: {
-        general: "Общие",
-        chat: "Чат",
-      },
+      primarySlot: "Сочетание",
+      alternateSlot: "Альтернативное сочетание",
+      browserReserved:
+        "Браузер может оставить это сочетание себе. В настольном приложении оно работает.",
       actions: {
-        newChat: {
-          label: "Новый чат",
-          description: "Начать новый чат",
-        },
-        searchChats: {
-          label: "Поиск по чатам",
-          description: "Открыть окно поиска по чатам",
-        },
-        toggleSidebar: {
-          label: "Показать/скрыть боковую панель",
-          description: "Показать или скрыть боковую панель",
-        },
         openSettings: {
           label: "Открыть настройки",
           description: "Открыть окно настроек",
@@ -243,6 +231,206 @@ export const ru = {
         openKeyboardShortcuts: {
           label: "Сочетания клавиш",
           description: "Открыть этот список сочетаний",
+        },
+        searchChats: {
+          label: "Поиск по чатам",
+          description: "Открыть окно поиска по чатам",
+        },
+        openMcpServers: {
+          label: "Серверы MCP",
+          description: "Настроить серверы MCP для этого чата",
+        },
+        logOut: {
+          label: "Выйти",
+          description: "Выйти из Unsloth",
+        },
+        approveToolRequest: {
+          label: "Одобрить запрос",
+          description: "Разрешить ожидающий вызов инструмента",
+        },
+        declineToolRequest: {
+          label: "Отклонить запрос",
+          description: "Запретить ожидающий вызов инструмента",
+        },
+        newChat: {
+          label: "Новый чат",
+          description: "Начать новый чат",
+        },
+        newTemporaryChat: {
+          label: "Новый временный чат",
+          description: "Начать чат, который не сохраняется в истории",
+        },
+        newStandaloneChat: {
+          label: "Новый отдельный чат",
+          description: "Начать чат вне какого-либо проекта",
+        },
+        archiveChat: {
+          label: "Архивировать чат",
+          description: "Архивировать выбранные чаты или текущий чат",
+        },
+        markChatUnread: {
+          label: "Отметить как непрочитанный",
+          description: "Отметить выбранные чаты или текущий чат как непрочитанные",
+        },
+        togglePinChat: {
+          label: "Закрепить или открепить",
+          description: "Закрепить или открепить выбранные чаты или текущий чат",
+        },
+        selectAllChats: {
+          label: "Выбрать все чаты",
+          description: "Выбрать все чаты на боковой панели",
+        },
+        clearChatSelection: {
+          label: "Снять выделение",
+          description: "Снять выделение с выбранных чатов. Escape тоже снимает выделение",
+        },
+        deleteSelectedChats: {
+          label: "Удалить выбранные чаты",
+          description: "Удалить все выбранные чаты",
+        },
+        nextRecentlyViewedChat: {
+          label: "Следующий просмотренный чат",
+          description: "Листать вперёд по недавно открытым чатам",
+        },
+        previousRecentlyViewedChat: {
+          label: "Предыдущий просмотренный чат",
+          description: "Листать назад по недавно открытым чатам",
+        },
+        nextChat: {
+          label: "Следующий чат",
+          description: "Перейти к следующему чату в боковой панели",
+        },
+        previousChat: {
+          label: "Предыдущий чат",
+          description: "Перейти к предыдущему чату в боковой панели",
+        },
+        nextChatNeedingAttention: {
+          label: "Следующий чат с активностью",
+          description: "Перейти к следующему генерирующему, ожидающему или непрочитанному чату",
+        },
+        clearAllUnreads: {
+          label: "Отметить всё прочитанным",
+          description: "Отметить все чаты прочитанными",
+        },
+        goToRecentChat1: {
+          label: "Перейти к недавнему чату 1",
+          description: "Открыть чат 1 в разделе «Недавние»",
+        },
+        goToRecentChat2: {
+          label: "Перейти к недавнему чату 2",
+          description: "Открыть чат 2 в разделе «Недавние»",
+        },
+        goToRecentChat3: {
+          label: "Перейти к недавнему чату 3",
+          description: "Открыть чат 3 в разделе «Недавние»",
+        },
+        goToRecentChat4: {
+          label: "Перейти к недавнему чату 4",
+          description: "Открыть чат 4 в разделе «Недавние»",
+        },
+        goToRecentChat5: {
+          label: "Перейти к недавнему чату 5",
+          description: "Открыть чат 5 в разделе «Недавние»",
+        },
+        goToRecentChat6: {
+          label: "Перейти к недавнему чату 6",
+          description: "Открыть чат 6 в разделе «Недавние»",
+        },
+        switchToChat: {
+          label: "Перейти в Чат",
+          description: "Открыть рабочую область чата",
+        },
+        switchToProjects: {
+          label: "Перейти в Проекты",
+          description: "Открыть рабочую область проектов",
+        },
+        switchToHub: {
+          label: "Перейти в Хаб моделей",
+          description: "Открыть хаб моделей",
+        },
+        switchToTrain: {
+          label: "Перейти в Обучение",
+          description: "Открыть рабочую область обучения",
+        },
+        switchToRecipes: {
+          label: "Перейти в Recipes",
+          description: "Открыть Data Recipes",
+        },
+        switchToImages: {
+          label: "Перейти в Изображения",
+          description: "Открыть рабочую область изображений",
+        },
+        switchToVideo: {
+          label: "Перейти в Видео",
+          description: "Открыть рабочую область видео",
+        },
+        switchToAudio: {
+          label: "Перейти в Аудио",
+          description: "Открыть рабочую область аудио",
+        },
+        switchToExport: {
+          label: "Перейти в Экспорт",
+          description: "Открыть рабочую область экспорта",
+        },
+        toggleSidebar: {
+          label: "Показать/скрыть боковую панель",
+          description: "Показать или скрыть боковую панель",
+        },
+        toggleApiMonitor: {
+          label: "Показать/скрыть активность API",
+          description: "Показать или скрыть монитор активности API",
+        },
+        openModelPicker: {
+          label: "Открыть выбор модели",
+          description: "Выбрать модель для этого чата",
+        },
+        openProjectPicker: {
+          label: "Открыть выбор проекта",
+          description: "Перейти к другому проекту из заголовка чата",
+        },
+        startDictation: {
+          label: "Диктовка",
+          description: "Начать или остановить диктовку в поле ввода",
+        },
+        attachFiles: {
+          label: "Прикрепить фото и файлы",
+          description: "Добавить вложение в поле ввода",
+        },
+        sendMessage: {
+          label: "Отправить сообщение",
+          description: "Отправить содержимое поля ввода",
+        },
+        cycleReasoningEffort: {
+          label: "Переключать усилие рассуждения",
+          description: "Перебрать уровни усилия рассуждения",
+        },
+        increaseReasoningEffort: {
+          label: "Увеличить усилие рассуждения",
+          description: "Поднять усилие рассуждения на один уровень",
+        },
+        decreaseReasoningEffort: {
+          label: "Уменьшить усилие рассуждения",
+          description: "Снизить усилие рассуждения на один уровень",
+        },
+        toggleFastMode: {
+          label: "Переключить режим Fast",
+          description: "Включить или выключить режим Fast",
+        },
+        renameChat: {
+          label: "Переименовать чат",
+          description: "Переименовать текущий чат",
+        },
+        forkChat: {
+          label: "Ответвить чат",
+          description: "Создать новый чат от последнего сообщения",
+        },
+        copyChatAsMarkdown: {
+          label: "Скопировать как Markdown",
+          description: "Скопировать весь чат в буфер обмена как Markdown",
+        },
+        copySessionId: {
+          label: "Скопировать ID сессии",
+          description: "Скопировать ID песочницы этого чата",
         },
       },
     },
@@ -417,6 +605,16 @@ export const ru = {
           "Использует загруженную аудиомодель (например, Orpheus)",
         engineSystem: "Системные голоса",
         engineStudio: "Загрузить модель TTS",
+        engineCustom: "Пользовательский эндпоинт",
+        engineCustomDescription:
+          "OpenAI-совместимый TTS-сервер из ваших подключений (например, Kokoro)",
+        connectionLabel: "Подключение",
+        connectionDescription:
+          "Добавьте OpenAI-совместимый сервер на вкладке «Подключения»",
+        connectionPlaceholder: "Выберите подключение",
+        customModelLabel: "Модель",
+        customVoiceDescription:
+          "Имя голоса, которое ожидает эндпоинт; по умолчанию alloy",
         modelLabel: "Модель TTS",
         modelDescription:
           "Загрузите аудиомодель из списка моделей (например, Orpheus TTS)",
@@ -567,6 +765,29 @@ export const ru = {
         loadError: "Не удалось загрузить настройку автозапуска.",
         saveError: "Не удалось обновить настройку автозапуска.",
       },
+      downloads: {
+        sectionTitle: "Загрузки",
+        transport: "Транспорт загрузки",
+        transportDescription:
+          "Как файлы моделей и наборов данных приходят с Hugging Face. HTTPS продолжает с места остановки; Xet часто быстрее при первой загрузке, но начинает файл заново после отмены.",
+        transportHint:
+          "HTTPS - это обычный TLS: его пропускают любые сети, прокси и VPN, отменённая или оборванная передача продолжается с уже сохранённых байтов, а расход памяти остаётся ровным. Xet скачивает дедуплицированные блоки, поэтому репозиторий, у которого есть общие данные с уже скачанным, может прийти намного быстрее, но ему нужен hf_xet и больше ОЗУ, а отмена отбрасывает текущий файл. Auto решает для конкретной машины: учитывает ОЗУ и то, зависал ли здесь Xet, и переходит на HTTPS.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "Стандартный TLS. Продолжает после отмены, работает в любой сети, ровный расход памяти.",
+        transportDescriptionNoResume:
+          "Как файлы моделей и наборов данных загружаются с Hugging Face. В этой установке ни один транспорт не может продолжить загрузку, поэтому отменённая загрузка начинается заново; Xet обычно быстрее при первой загрузке.",
+        httpsHintNoResume:
+          "Обычный TLS. Работает в любой сети, стабильное использование памяти. Эта установка не может продолжить отменённую загрузку.",
+        xetHint:
+          "Передача дедуплицированными блоками. Обычно быстрее при первой загрузке, начинает файл заново после отмены, требует больше памяти.",
+        autoHint:
+          "Выбирает для этой машины и переключается на HTTPS, если Xet зависает или падает.",
+        autoCurrently: "Auto использует {transport} на этой машине.",
+        xetMissing: "Xet недоступен, так как hf_xet не установлен.",
+      },
       uploads: {
         sectionTitle: "Загрузки",
         maxUploadSize: "Лимит загрузки датасета для обучения",
@@ -650,9 +871,9 @@ export const ru = {
           "Всё ниже считается по вашей собственной истории. Ничего не собирается и не отправляется в Unsloth.",
         retry: "Повторить",
         privacyNote:
-          "Статистика рассчитывается по истории чатов и обучения, которая хранится в вашей установке Unsloth. Ничего не собирается и ничего не отправляется ни в Unsloth, ни третьим лицам.",
+          "Статистика рассчитывается по локальной истории чатов, использования API и обучения в вашей установке Unsloth. Запросы, ответы и ключи API для статистики никогда не сохраняются. Ничего не отправляется ни в Unsloth, ни третьим лицам.",
         emptyChats:
-          "Чатов пока нет. Начните разговор, и статистика появится здесь.",
+          "Чатов и использования API пока нет. Начните разговор или выполните аутентифицированный запрос к локальному API.",
         lifetimeTokens: "Токенов за всё время",
         peakTokens: "Пиковый день",
         longestChat: "Самый длинный чат",
@@ -674,6 +895,9 @@ export const ru = {
         totalMessages: "Всего сообщений",
         tokensIn: "Отправлено токенов",
         tokensOut: "Сгенерировано токенов",
+        totalTokens: "Всего токенов",
+        studioChatTokens: "Токены Unsloth Chat",
+        apiTokens: "Токены API",
         cachedTokens: "Токенов из кеша",
         cachedValue: "{tokens} ({percent}% ввода)",
         avgTokensPerChat: "В среднем токенов на чат",
@@ -1127,7 +1351,7 @@ export const ru = {
         title: "Веб-поиск",
         images: "Показывать изображения из веб-поиска",
         imagesDescription:
-          "Позволяет веб-поиску возвращать изображения и подбирает по одному для каждого пункта, который перечисляет ответ. Миниатюры загружает и уменьшает Studio, поэтому браузер никогда не обращается к хостам изображений.",
+          "Позволяет веб-поиску возвращать изображения и подбирает по одному для каждого пункта, который перечисляет ответ. Миниатюры загружает и уменьшает Unsloth, поэтому браузер никогда не обращается к хостам изображений.",
       },
       artifacts: {
         title: "Canvas",
@@ -1148,7 +1372,7 @@ export const ru = {
       exportingAction: "Экспорт…",
       exportConversations: "Экспортировать «Недавние» и проекты",
       exportConversationsDescription:
-        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Raw JSONL, CSV или ShareGPT JSONL, объединённо или по чатам.",
+        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV или ShareGPT JSONL, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
       exportConversationsAction: "Экспорт",
       exportScopeRecents: "Недавние",
       exportScopeAll: "Недавние + проекты",
@@ -1580,8 +1804,8 @@ export const ru = {
       reasonNotTrainable: "Эта модель на устройстве не поддерживает обучение.",
       reasonUnsupportedFormat:
         "Этот формат модели не поддерживается для обучения.",
-      vramNeeds: "Требуется ~{est} ГБ VRAM (GPU: {total} ГБ)",
-      vramTight: "~{est} ГБ VRAM (впритык для {total} ГБ)",
+      vramNeeds: "Требуется ~{est} ГБ VRAM (GPU: {total} ГиБ)",
+      vramTight: "~{est} ГБ VRAM (впритык для {total} ГиБ)",
       vramApprox: "~{est} ГБ VRAM",
       vramOomBadge: "OOM",
       vramTightBadge: "Впритык",

@@ -55,6 +55,17 @@ from ..scoring.schema import ExcludedCell, Measure
 
 STALL_TOLERANCE_MS = 20.0
 INJECTED_STALL_MS = 120.0
+#: Milliseconds of main-thread time burned per SSE chunk when the streaming-cost injection is
+#: armed. Sized against what it has to stand in for: preprocessLaTeX over a 96,000 character reply
+#: is projected at 246 ms across a whole stream, so a per-chunk figure in the low single digits is
+#: the same ORDER as the effect the metric is meant to resolve, not a boulder it cannot miss.
+INJECTED_STREAM_COST_MS = 3.0
+#: The share of injected cost `stream_cost` must read back. Not 1.0: the metric measures the task
+#: chain from the chunk to the event loop draining, and a burn queued as a microtask lands inside
+#: that chain but the chain also contains the app's own work, so recovery is bounded below by
+#: attribution and above by nothing. Under-recovery is the failure that matters, because a metric
+#: that recovers a quarter of a known cost will under-report an unknown one by the same factor.
+MIN_STREAM_COST_RECOVERY = 0.70
 INJECTED_INPUT_DELAY_MS = 400.0
 MIN_INPUT_P95_SHIFT_MS = 350.0
 MIN_SCENE_CONTRAST_PCT = 20.0
@@ -453,6 +464,102 @@ STALL_INJECT_JS = """
   });
 }
 """
+
+#: Burns a known amount of main-thread time PER SSE CHUNK, inside the task chain that chunk
+#: starts. This is the streaming analogue of STALL_INJECT_JS: a stall injected once tests whether
+#: the frame recorder is watching the right window, and this tests whether the streaming-cost
+#: accumulator integrates a cost spread thinly across a whole stream, which is the shape of every
+#: effect it was built for and the shape a single-action metric cannot see.
+#:
+#: THE BURN IS QUEUED AS A MICROTASK, not run inline in the decode wrapper, and that is what makes
+#: the check independent of wrapper order. `add_init_script` runs scripts in the order they were
+#: added, and the instrument's own TextDecoder wrapper is installed by `Instrument.attach` after
+#: the scripts assembled in __main__. Whichever wrapper ends up outermost, a microtask queued
+#: during the decode runs after the current task's synchronous code and before the MessageChannel
+#: macrotask that closes the measured chain -- so the burn is inside the chain either way. Burning
+#: inline would land it before the accumulator timestamps the chunk under one ordering and after
+#: it under the other, and the check would silently measure nothing.
+STREAM_COST_INJECT_JS = """
+(() => {
+  if (window.__sbStreamCostInject) { return; }
+  const burnMs = %(burn_ms)f;
+  const S = { burnMs: burnMs, chunks: 0, burnedMs: 0 };
+  window.__sbStreamCostInject = S;
+  const nativeDecode = TextDecoder.prototype.decode;
+  TextDecoder.prototype.decode = function (input, options) {
+    const out = nativeDecode.call(this, input, options);
+    if (typeof out === "string" && out.length > 0 && out.length <= 65536
+        && out.indexOf("data:") >= 0) {
+      S.chunks += 1;
+      queueMicrotask(() => {
+        const started = performance.now();
+        while (performance.now() - started < burnMs) { /* spin */ }
+        S.burnedMs += performance.now() - started;
+      });
+    }
+    return out;
+  };
+})();
+"""
+
+
+def stream_cost_injection_init_script(burn_ms: float = INJECTED_STREAM_COST_MS) -> str:
+    return STREAM_COST_INJECT_JS % {"burn_ms": float(burn_ms)}
+
+
+def evaluate_stream_cost_recovery_gate(
+    base_ms_per_kchar: float | None,
+    injected_ms_per_kchar: float | None,
+    injected_total_ms: float | None,
+    streamed_chars: int | None,
+    *,
+    min_recovery: float = MIN_STREAM_COST_RECOVERY,
+) -> Gate:
+    """`stream_cost` must read back a cost this harness injected into the stream itself.
+
+    A metric that cannot see a known cost cannot see an unknown one, and this is the only check
+    that separates "the change did nothing" from "the metric is not watching". The RECOVERY
+    FRACTION is the output that matters and it is reported whether or not the gate passes: a
+    metric recovering 40% of what was injected is not broken, but every number it produces is
+    four tenths of the truth and a reader has to be told the multiplier.
+    """
+    missing = [
+        name
+        for name, value in (
+            ("the base rate", base_ms_per_kchar),
+            ("the injected rate", injected_ms_per_kchar),
+            ("the injected total", injected_total_ms),
+            ("the streamed character count", streamed_chars),
+        )
+        if value is None
+    ]
+    if missing or not streamed_chars or not injected_total_ms:
+        return Gate(
+            name = "injected_stream_cost_recovered",
+            passed = False,
+            measured = Measure.failed(
+                "fraction", "missing: " + ", ".join(missing or ["a non-zero denominator"])
+            ),
+            expected = f">= {min_recovery:.0%} of the injected cost",
+            detail = (
+                "the streaming-cost metric produced no reading on one side, so nothing can be "
+                "said about whether it can see an injected cost"
+            ),
+        )
+    observed_ms = (injected_ms_per_kchar - base_ms_per_kchar) * streamed_chars / 1000.0
+    recovery = observed_ms / injected_total_ms
+    return Gate(
+        name = "injected_stream_cost_recovered",
+        passed = recovery >= min_recovery,
+        measured = Measure.read(round(recovery, 3), "fraction"),
+        expected = f">= {min_recovery:.0%} of the injected cost",
+        detail = (
+            f"injected {injected_total_ms:.0f} ms across {streamed_chars:,} streamed characters, "
+            f"read back {observed_ms:.0f} ms ({recovery:.0%})"
+            + ("" if recovery >= min_recovery else "; the accumulator is under-attributing")
+        ),
+    )
+
 
 #: Adds a fixed delay to every keydown before the app sees it, by installing a capturing listener
 #: that blocks. Installed pre-boot so it sits ahead of every app handler.

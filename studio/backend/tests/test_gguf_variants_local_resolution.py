@@ -5,6 +5,7 @@
 
 import asyncio
 import os
+from pathlib import Path
 
 import pytest
 
@@ -72,29 +73,51 @@ def test_direct_gguf_file_in_marked_dir_still_lists_siblings(in_tmp_cwd):
     assert all(v.downloaded for v in response.variants)
 
 
-def test_variant_listing_does_not_open_projector_before_selection(in_tmp_cwd, monkeypatch):
-    """Projector capabilities are deferred with the selected model's other metadata."""
+def test_an_audio_only_projector_does_not_flag_vision(in_tmp_cwd):
+    """The picker badge reads this flag, and ultravox / Voxtral / Qwen3-ASR ship a
+    projector for audio input only."""
+    import struct
+
     (in_tmp_cwd / "config.json").write_text("{}")
     (in_tmp_cwd / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+    key = "clip.has_audio_encoder"
+    (in_tmp_cwd / "mmproj-F16.gguf").write_bytes(
+        struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+        + struct.pack("<Q", len(key))
+        + key.encode()
+        + struct.pack("<I", 7)
+        + struct.pack("<?", True)
+    )
+
+    response = _variants(os.fspath(in_tmp_cwd / "model-Q4_K_M.gguf"))
+    assert [v.quant for v in response.variants] == ["Q4_K_M"]
+    assert response.has_vision is False
+
+
+def test_online_only_projector_is_not_opened(in_tmp_cwd, monkeypatch):
+    """Projector discovery skips content only when metadata marks it unhydrated."""
+    from hub.utils import gguf
+
+    (in_tmp_cwd / "config.json").write_text("{}")
+    weight = in_tmp_cwd / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"GGUF")
     projector = in_tmp_cwd / "mmproj-F16.gguf"
     projector.write_bytes(b"online-only placeholder")
-    opened = []
-    real_open = open
 
-    def guarded_open(path, *args, **kwargs):
-        try:
-            if os.path.abspath(os.fspath(path)) == os.path.abspath(os.fspath(projector)):
-                opened.append(os.fspath(path))
-        except TypeError:
-            pass
-        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr(
+        gguf,
+        "file_contents_available_locally",
+        lambda path, stat_result = None: Path(path) != projector,
+    )
 
-    monkeypatch.setattr("builtins.open", guarded_open)
-    response = _variants(os.fspath(in_tmp_cwd / "model-Q4_K_M.gguf"))
+    def forbidden(_path):
+        raise AssertionError("online-only projector was opened")
 
-    assert [v.quant for v in response.variants] == ["Q4_K_M"]
-    assert response.has_vision is True
-    assert opened == []
+    monkeypatch.setattr(gguf, "mmproj_accepts_image", forbidden)
+    response = _variants(os.fspath(weight))
+
+    assert [variant.quant for variant in response.variants] == ["Q4_K_M"]
+    assert response.has_vision is False
 
 
 @pytest.mark.parametrize(

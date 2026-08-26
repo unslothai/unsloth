@@ -234,6 +234,23 @@ def test_disabled_tool_is_internal_noop_not_visible_tool_error():
     assert controller.active_tools() == []
 
 
+def test_forced_mismatch_keeps_the_required_tool_active():
+    controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
+    decision = controller.prepare_call(
+        _call("python", {"code": "print(1)"}),
+        allowed_tool_names = {"web_search"},
+    )
+    completion = controller.record_noop(decision)
+
+    assert decision.action == "forced_mismatch"
+    assert "required tool choice" in completion.model_message()["content"]
+    assert not controller.force_final_answer
+    assert [tool["function"]["name"] for tool in controller.active_tools()] == [
+        "web_search",
+        "python",
+    ]
+
+
 def test_render_html_success_filters_active_tools_and_repeat_is_internal():
     controller = ToolLoopController(tools = [_tool("render_html"), _tool("web_search")])
     assert [t["function"]["name"] for t in controller.active_tools()] == [

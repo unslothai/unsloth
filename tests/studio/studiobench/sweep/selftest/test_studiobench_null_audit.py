@@ -830,6 +830,43 @@ def test_an_interrupted_retry_does_not_inherit_the_completion_it_superseded(tmp_
     assert ("r100K", "settings") not in unstable, unstable
 
 
+# ── the audit has to run in the modes that ask for it ────────────────
+#
+# The audit block sat below the structural early return while reading nothing from the plan, so a
+# payload with no structural entries returned first and the audit never ran. `--mode visible` and
+# `--mode behaviour` hard-set `structural` to an empty set for every pattern, so those two could
+# never audit at all: the command exited 0 out of the ordinary visible report having silently
+# skipped the option whose promise is to FAIL unless the null decided what the result needs.
+
+
+def test_the_cli_audits_a_single_repetition_under_forced_visible_mode(tmp_path, capsys):
+    """THE DEFECT. Same payload and same expectation as the auto-mode failure test above, with
+    `--mode visible` added: the audit must still run and still fail."""
+    null_run(tmp_path, "visaudit", [("r100K", "rep0", "settings", "SAME", "SAME")])
+    rc = U.main(["--audit-null", str(tmp_path / "visaudit"), "--mode", "visible"])
+    out = capsys.readouterr().out
+    assert rc == 1, out
+    assert "NULL CONTROL AUDIT: UNDECIDED" in out, out
+
+
+def test_the_cli_audits_a_single_repetition_under_forced_behaviour_mode(tmp_path, capsys):
+    """The other forced mode, which reaches the same empty structural plan by the same line."""
+    null_run(tmp_path, "behaudit", [("r100K", "rep0", "settings", "SAME", "SAME")])
+    rc = U.main(["--audit-null", str(tmp_path / "behaudit"), "--mode", "behaviour"])
+    out = capsys.readouterr().out
+    assert rc == 1, out
+    assert "NULL CONTROL AUDIT: UNDECIDED" in out, out
+
+
+def test_a_quiet_null_still_passes_the_audit_under_a_forced_mode(tmp_path, capsys):
+    """The positive control: reaching the audit in these modes must not make it fail everything."""
+    null_run(tmp_path, "visquiet", two_reps("settings", "SAME", "SAME"))
+    rc = U.main(["--audit-null", str(tmp_path / "visquiet"), "--mode", "visible"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "NULL CONTROL AUDIT: DECIDED" in out, out
+
+
 # ── an exemption measured on another machine is not an exemption here ──
 
 
