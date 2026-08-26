@@ -29,6 +29,20 @@ GIB = 1024**3
 MIB = 1024 * 1024
 
 
+@pytest.fixture(autouse = True)
+def _discrete_host(monkeypatch):
+    """Pin the one host fact the seam reads live.
+
+    _planned_tensor_spill calls is_apple_silicon() directly, so on an arm64 Mac
+    every case in this file declines and the suite grades the runner instead of
+    the planner. Every test here means "a discrete host"; the Apple answer is
+    asserted deliberately, below.
+    """
+    import utils.hardware
+
+    monkeypatch.setattr(utils.hardware, "is_apple_silicon", lambda: False)
+
+
 class _Stub:
     """Only what the seam touches."""
 
@@ -856,7 +870,7 @@ def test_an_explicit_fit_target_declines_the_plan(extra_args, env):
     assert _plan(_Stub()) is not None, "not vacuous"
 
 
-def test_a_pass_through_adapter_is_charged_as_resident_vram(tmp_path):
+def test_a_pass_through_adapter_is_charged_as_resident_vram(tmp_path, monkeypatch):
     """LoRA and control-vector sidecars are GPU-resident and in NO other term
     here: they are created on the base layer's buffer type (llama-adapter.cpp:335,
     :67) and neither mmaps (:407). `model_size` is the base GGUF alone, so an
@@ -874,11 +888,34 @@ def test_a_pass_through_adapter_is_charged_as_resident_vram(tmp_path):
     assert not bare.spills_anything, "the base load fits on its own"
     assert with_lora.spills_anything, "3 GiB of resident adapter comes out of the same VRAM"
 
-    # Every spelling the child accumulates, including the colon-scaled form.
-    scaled = _plan(stub, free_mib = free, extra_args = ["--lora-scaled", f"{adapter}:0.5"])
-    assert scaled.spilled_blocks == with_lora.spilled_blocks
     ctrl = _plan(stub, free_mib = free, extra_args = ["--control-vector", str(adapter)])
     assert ctrl.spilled_blocks == with_lora.spilled_blocks
+
+    # The colon-scaled form, from a directory the path can be spelled relative to.
+    # An ABSOLUTE path is not usable here: on Windows it carries a drive letter,
+    # and `C:\...\adapter.gguf:0.5` is three parts to string_split, which upstream
+    # rejects outright (`parts.size() != 2` -> throw, common/arg.cpp:2944-2946).
+    # Pricing a token that never starts a child would be the wrong answer, so the
+    # test asks for the reading that exists on every platform.
+    monkeypatch.chdir(tmp_path)
+    scaled = _plan(stub, free_mib = free, extra_args = ["--lora-scaled", "adapter.gguf:0.5"])
+    assert scaled.spilled_blocks == with_lora.spilled_blocks
+
+
+def test_a_drive_lettered_scaled_adapter_is_skipped_rather_than_priced(tmp_path):
+    """The other half of the same syntax. string_split on ':' gives three parts for
+    `C:\\dir\\adapter.gguf:0.5`, so upstream throws and the child never starts;
+    there is no placement to misprice, and guessing which colon was the separator
+    would price a launch that cannot happen. Skipped, not sized, not abstained."""
+    adapter = tmp_path / "adapter.gguf"
+    adapter.write_bytes(b"\0" * (3 * GIB))
+    drive_lettered = f"C:\\dir\\adapter.gguf:0.5"
+
+    stub = _Stub()
+    free = 17 * 1024
+    plan = _plan(stub, free_mib = free, extra_args = ["--lora-scaled", drive_lettered])
+    assert plan is not None, "a form the child rejects is not the unsized-abstain case"
+    assert not plan.spills_anything, "nothing priced, so the base load still fits"
 
 
 def test_an_unreadable_adapter_abstains():
@@ -886,3 +923,17 @@ def test_an_unreadable_adapter_abstains():
     short by an unknown amount. Same answer _fits_without_paging gives."""
     assert _plan(_Stub(), extra_args = ["--lora", "/no/such/adapter.gguf"]) is None
     assert _plan(_Stub()) is not None, "not vacuous"
+
+
+def test_apple_silicon_declines_the_plan(monkeypatch):
+    """Unified memory: an -ot spill moves bytes inside one pool, so the trade does
+    not exist, and Metal keeps mmap zero copy through buffer_from_host_ptr. The
+    seam reads this from the host, so it is the one fact the autouse fixture pins
+    and the one that has to be asserted with the fixture overridden."""
+    import utils.hardware
+
+    monkeypatch.setattr(utils.hardware, "is_apple_silicon", lambda: True)
+    assert _plan(_Stub(), free_mib = 14 * 1024) is None
+
+    monkeypatch.setattr(utils.hardware, "is_apple_silicon", lambda: False)
+    assert _plan(_Stub(), free_mib = 14 * 1024) is not None, "not vacuous"
