@@ -52,7 +52,15 @@ def fresh_process(monkeypatch):
     monkeypatch.setattr(rag_db, "_schema_ready", False)
 
 
-def _doc(conn, scope, doc_id, filename, status = "completed", chunks = 3, folder_id = None):
+def _doc(
+    conn,
+    scope,
+    doc_id,
+    filename,
+    status = "completed",
+    chunks = 3,
+    folder_id = None,
+):
     store.create_document(
         conn,
         scope = scope,
@@ -99,7 +107,11 @@ CREATE TABLE chunks (
 """
 
 
-def _write_legacy_db(rag_home, schema = _ANCIENT_SCHEMA, rows = (("legacy.pdf", "project_p1"),)):
+def _write_legacy_db(
+    rag_home,
+    schema = _ANCIENT_SCHEMA,
+    rows = (("legacy.pdf", "project_p1"),),
+):
     """Put a pre-migration rag.db where the backend will find it."""
     from utils.paths import rag_db_path
 
@@ -130,7 +142,9 @@ def test_roster_reads_a_database_written_before_linked_folders_existed(rag_home,
 def test_roster_reads_a_database_missing_only_the_newer_columns(rag_home, fresh_process):
     """A2/A3/A4. project_id, embedding_model and the archive columns arrive by lazy
     ALTER. A row inserted before any of them still has to be nameable."""
-    schema = _ANCIENT_SCHEMA + """
+    schema = (
+        _ANCIENT_SCHEMA
+        + """
         CREATE TABLE linked_folder_retired_scopes (
             scope TEXT NOT NULL PRIMARY KEY, retired_at TEXT NOT NULL, purged_at TEXT
         );
@@ -140,6 +154,7 @@ def test_roster_reads_a_database_missing_only_the_newer_columns(rag_home, fresh_
             synced_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(folder_id, relative_path)
         );
     """
+    )
     _write_legacy_db(rag_home, schema = schema, rows = (("halfway.pdf", "project_p1"),))
     out = _nudge({"project_id": "p1"})
     assert '"halfway.pdf"' in out, out
@@ -322,7 +337,7 @@ def test_an_astral_character_is_not_split_by_the_cut(rag_conn):
     future move to bytes cannot silently start emitting lone surrogates."""
     from routes import inference
 
-    _doc(rag_conn, "project_p1", "d1", "\U0001F600" * (inference._RAG_ROSTER_MAX_NAME_CHARS + 10))
+    _doc(rag_conn, "project_p1", "d1", "\U0001f600" * (inference._RAG_ROSTER_MAX_NAME_CHARS + 10))
     out = _nudge({"project_id": "p1"})
     out.encode("utf-8")
     assert "�" not in out
@@ -368,6 +383,7 @@ def test_a_name_python_cannot_encode_never_reaches_the_database(rag_conn):
 # C. the async conversion
 # --------------------------------------------------------------------------------------
 
+
 def _rag_db_fds():
     """Descriptors open on rag.db right now. Counting all of /proc/self/fd would be
     measuring the event loop and the threadpool, which move on their own."""
@@ -397,10 +413,12 @@ def test_many_concurrent_reads_leak_no_database_handles(rag_conn):
         _doc(rag_conn, "project_p1", f"d{i}", f"f{i}.pdf")
 
     async def _burst(n):
-        return await asyncio.gather(*[
-            inference._apply_rag_nudge("", TOOLS, rag_scope = {"project_id": "p1"})
-            for _ in range(n)
-        ])
+        return await asyncio.gather(
+            *[
+                inference._apply_rag_nudge("", TOOLS, rag_scope = {"project_id": "p1"})
+                for _ in range(n)
+            ]
+        )
 
     for _ in range(5):
         outs = asyncio.run(_burst(200))
@@ -477,6 +495,7 @@ def test_the_read_does_not_run_on_the_event_loop(rag_conn, monkeypatch):
 # D. portability
 # --------------------------------------------------------------------------------------
 
+
 def test_roster_strip_table_covers_every_control_and_format_character():
     """The table is written out rather than derived, because deriving it costs ~90 ms of
     startup. This is what keeps the two in step.
@@ -489,9 +508,7 @@ def test_roster_strip_table_covers_every_control_and_format_character():
     """
     from routes import inference
 
-    expected = {
-        c for c in range(0x110000) if unicodedata.category(chr(c)) in ("Cc", "Cf")
-    }
+    expected = {c for c in range(0x110000) if unicodedata.category(chr(c)) in ("Cc", "Cf")}
     missing = sorted(expected - set(inference._ROSTER_STRIP))
     assert not missing, (
         f"unicodedata {unicodedata.unidata_version} classes these as Cc/Cf and the table "
@@ -544,7 +561,14 @@ def test_the_roster_needs_nothing_newer_than_the_declared_python_floor():
 
 _ACCELERATORS = [
     ("nvidia", {"CUDA_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": ""}),
-    ("amd", {"CUDA_VISIBLE_DEVICES": "", "HIP_VISIBLE_DEVICES": "0", "HSA_OVERRIDE_GFX_VERSION": "11.0.0"}),
+    (
+        "amd",
+        {
+            "CUDA_VISIBLE_DEVICES": "",
+            "HIP_VISIBLE_DEVICES": "0",
+            "HSA_OVERRIDE_GFX_VERSION": "11.0.0",
+        },
+    ),
     ("cpu", {"CUDA_VISIBLE_DEVICES": "", "HIP_VISIBLE_DEVICES": ""}),
 ]
 
@@ -589,6 +613,7 @@ def test_the_roster_touches_no_device_or_accelerator_code():
 # The count path and the completion path have to agree
 # --------------------------------------------------------------------------------------
 
+
 def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monkeypatch):
     """The whole point of the count payload carrying real ids rather than a flag is that
     the composer's context meter prices the roster the model will actually receive. If
@@ -607,18 +632,21 @@ def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monk
         return TOOLS
 
     from routes import inference as inference_routes
+
     monkeypatch.setattr(inference_routes, "_select_request_tools", _select)
 
     # Ending on an assistant turn on purpose: the route refuses to price a pending turn
     # that would retrieve, so this is the only shape where the roster reaches the meter.
-    _counted_body(_count_request(
-        [
-            {"role": "user", "content": "what files do I have?"},
-            {"role": "assistant", "content": "Two."},
-        ],
-        enable_tools = True,
-        rag_scope = {"project_id": "p1"},
-    ))
+    _counted_body(
+        _count_request(
+            [
+                {"role": "user", "content": "what files do I have?"},
+                {"role": "assistant", "content": "Two."},
+            ],
+            enable_tools = True,
+            rag_scope = {"project_id": "p1"},
+        )
+    )
     system = "".join(
         str(message.get("content", ""))
         for message in (counted.get("messages") or [])
