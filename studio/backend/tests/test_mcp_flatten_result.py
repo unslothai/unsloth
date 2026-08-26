@@ -347,3 +347,72 @@ def test_mime_parameters_are_dropped_from_the_data_url_type():
     flat = _flatten_result(_result(_image(mime = "image/png; charset=binary")))
     payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
     assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+
+def test_uri_query_and_fragment_are_not_part_of_the_name():
+    # mimetypes only stopped reading the query and fragment in 3.11.9/3.12.3/3.13
+    # (CPython gh-117217); on older supported interpreters this dropped the image.
+    for uri in (
+        "file:///out/gen.png?download=1",
+        "file:///out/gen.png#preview",
+        "file:///out/gen.png?download=1#preview",
+        "https://host/out/gen.png?sig=abc123",
+    ):
+        flat = _flatten_result(_result(_blob_resource(mime = None, uri = uri)))
+        payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+        assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}], uri
+
+
+def test_extension_only_in_the_query_is_not_an_image():
+    # the same defect in the other direction: a blob with no image extension in its
+    # path was rendered as one purely because its query named a .png
+    for uri in ("file:///out/download?name=gen.png", "file:///out/download#gen.png"):
+        assert _flatten_result(_result(_blob_resource(mime = None, uri = uri))) == "", uri
+
+
+def test_data_uri_still_resolves_its_own_type():
+    flat = _flatten_result(
+        _result(_blob_resource(mime = None, uri = "data:image/png;base64,iVBORw0KGgo="))
+    )
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+    assert _flatten_result(
+        _result(_blob_resource(mime = None, uri = "data:application/pdf;base64,JVBERi0="))
+    ) == ""
+
+
+def test_a_bare_host_is_not_a_file_name():
+    # urlsplit puts gen.png in netloc, not path; 3.10 guessed image/png from it
+    assert _flatten_result(_result(_blob_resource(mime = None, uri = "resource://gen.png"))) == ""
+    flat = _flatten_result(_result(_blob_resource(mime = None, uri = "resource://images/gen.png")))
+    assert MCP_IMAGES_SENTINEL in flat
+
+
+def test_malformed_image_types_never_reach_the_data_url():
+    # anything that survives is interpolated into data:<type>;base64, by the frontend
+    for mime in ("image/", "image//png", "image/*", "image/<script>", 'image/png"',
+                 "image/png\nX-Injected: 1"):
+        assert _flatten_result(_result(_blob_resource(mime = mime))) == "", mime
+
+
+def test_unusual_but_valid_image_types_are_kept():
+    for mime in ("image/svg+xml", "image/vnd.microsoft.icon", "image/x-icon", "image/jp2"):
+        flat = _flatten_result(_result(_blob_resource(mime = mime)))
+        payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+        assert json.loads(payload) == [{"data": PNG_B64, "mimeType": mime}], mime
+
+
+def test_snake_case_mime_attribute_is_read_too():
+    # mcp 2.x renames mimeType to mime_type and keeps camelCase only as an alias
+    block = SimpleNamespace(
+        type = "resource",
+        resource = SimpleNamespace(uri = "file:///out/gen.bin", mime_type = "image/png", blob = PNG_B64),
+    )
+    flat = _flatten_result(_result(block))
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+    direct = SimpleNamespace(type = "image", data = PNG_B64, mime_type = "image/jpeg")
+    flat = _flatten_result(_result(direct))
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/jpeg"}]

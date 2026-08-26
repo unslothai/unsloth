@@ -10,6 +10,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -18,6 +19,7 @@ import time
 import uuid
 from functools import wraps
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 from weakref import WeakKeyDictionary
 
 from loggers import get_logger
@@ -1044,34 +1046,60 @@ _IMAGE_SUBTYPES = {
 }
 
 
+# What may be interpolated into data:<type>;base64,... by tool-fallback.tsx: an
+# RFC 9110 8.3.1 token subtype, minus "*", which names a range and never a payload.
+_MEDIA_TYPE = re.compile(r"^image/[a-z0-9][a-z0-9!#$%&'^_`|~.+-]*$")
+
+
+def _uri_mime(uri: Any) -> Optional[str]:
+    """Guess a media type from a resource URI, using only the part that names it.
+
+    A query or fragment is not part of the name, and mimetypes only stopped reading
+    them in 3.11.9 / 3.12.3 / 3.13 (CPython gh-117217). Studio supports older
+    interpreters, where 'gen.png?download=1' guessed nothing while
+    'download?name=gen.png' guessed image/png -- a dropped image and a bogus one from
+    the same defect. Both are stripped here so every interpreter agrees. The scheme
+    stays so a data: URI still resolves, and a bare host is dropped because a host
+    name is not a file name."""
+    split = urlsplit(str(uri))
+    cleaned = urlunsplit((split.scheme, split.netloc if split.path else "", split.path, "", ""))
+    return mimetypes.guess_type(cleaned, strict = False)[0]
+
+
 def _image_mime(mime: Any) -> Optional[str]:
     if not isinstance(mime, str):
         return None
     # media type names are case-insensitive; data urls need only the essence
     essence = mime.partition(";")[0].strip().lower()
     if essence.startswith("image/"):
-        return essence
-    subtype = essence[len("application/") :] if essence.startswith("application/") else ""
-    mapped = _IMAGE_SUBTYPES.get(subtype)
-    if mapped:
-        return mapped
-    inferred, _ = mimetypes.guess_type(f"file:///image.{subtype}", strict = False)
-    return inferred if inferred and inferred.startswith("image/") else None
+        resolved = essence
+    else:
+        subtype = essence[len("application/") :] if essence.startswith("application/") else ""
+        resolved = _IMAGE_SUBTYPES.get(subtype) or _uri_mime(f"file:///image.{subtype}")
+    # one gate for every branch: an image type the frontend can actually put in a URL
+    return resolved if resolved and _MEDIA_TYPE.match(resolved) else None
+
+
+def _resource_mime(obj: Any) -> Any:
+    # mcp 1.x names the attribute mimeType; mcp 2.x renames it to mime_type and keeps
+    # the camelCase spelling only as a serialization alias.
+    mime = getattr(obj, "mimeType", None)
+    return mime if mime is not None else getattr(obj, "mime_type", None)
 
 
 def _block_image(block: Any) -> Optional[tuple[str, str]]:
     # embedded resources keep binary data on resource.blob
     data = getattr(block, "data", None)
-    mime = getattr(block, "mimeType", None)
+    mime = _resource_mime(block)
     if not data:
         resource = getattr(block, "resource", None)
         if resource is None:
             return None
         data = getattr(resource, "blob", None)
-        mime = getattr(resource, "mimeType", None)
+        mime = _resource_mime(resource)
         if not mime:
             uri = getattr(resource, "uri", None)
-            mime = mimetypes.guess_type(str(uri), strict = False)[0] if uri else None
+            mime = _uri_mime(uri) if uri else None
     mime = _image_mime(mime)
     if data and mime:
         return str(data), mime
