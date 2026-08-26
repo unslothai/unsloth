@@ -73,8 +73,11 @@ def test_the_nullcontext_shim_is_the_failure_this_leg_exists_for():
     whose unsloth was imported before the cards were visible, gets the shim --
     which performs NO device switch -- and would otherwise report a pass for
     coverage a pinned leg already has."""
-    facts = dict(GOOD, torch_gpu_device_is_real_switch = False,
-                 torch_gpu_device_repr = "<function torch_gpu_device at 0x7f>")
+    facts = dict(
+        GOOD,
+        torch_gpu_device_is_real_switch = False,
+        torch_gpu_device_repr = "<function torch_gpu_device at 0x7f>",
+    )
     broken = _payload().multi_gpu_failures(facts, expected_cards = 2)
     assert broken and "nullcontext" in broken[0]
 
@@ -83,10 +86,16 @@ def test_one_visible_card_fails_and_says_only_that():
     """A pinned run measures the wrong machine, so every rule after the count
     is noise. Reporting eight failures about arrays that are correctly sized
     for the one card the leg was given sends the reader after the wrong bug."""
-    facts = dict(GOOD, device_count = 1, module_device_count = 1,
-                 torch_gpu_device_is_real_switch = False,
-                 cuda_streams_len = 1, weight_buffers_len = 1,
-                 absmax_buffers_len = 1, rotary_cache_slots = 1)
+    facts = dict(
+        GOOD,
+        device_count = 1,
+        module_device_count = 1,
+        torch_gpu_device_is_real_switch = False,
+        cuda_streams_len = 1,
+        weight_buffers_len = 1,
+        absmax_buffers_len = 1,
+        rotary_cache_slots = 1,
+    )
     broken = _payload().multi_gpu_failures(facts, expected_cards = 2)
     assert len(broken) == 1
     assert "the driver pinned it" in broken[0]
@@ -118,15 +127,12 @@ def test_missing_facts_are_a_failure_rather_than_a_silence():
     payload = _payload()
     assert payload.multi_gpu_failures(None, expected_cards = 2)
     assert payload.multi_gpu_failures({}, expected_cards = 2)
-    broken = payload.multi_gpu_failures(
-        {"error": "ImportError: no unsloth"}, expected_cards = 2
-    )
+    broken = payload.multi_gpu_failures({"error": "ImportError: no unsloth"}, expected_cards = 2)
     assert broken and "could not be read" in broken[0]
 
 
 def test_a_model_entirely_off_the_gpu_fails():
-    facts = dict(GOOD, parameters_by_device = {"cpu": 596049920},
-                 cuda_devices_holding_parameters = [])
+    facts = dict(GOOD, parameters_by_device = {"cpu": 596049920}, cuda_devices_holding_parameters = [])
     assert _payload().multi_gpu_failures(facts, expected_cards = 2)
 
 
@@ -159,7 +165,8 @@ def test_the_reading_is_taken_from_the_module_and_not_recomputed():
 
     source = (SMOKE_DIR / "run_t4_smoke.py").read_text(encoding = "utf-8")
     func = next(
-        n for n in ast.walk(ast.parse(source))
+        n
+        for n in ast.walk(ast.parse(source))
         if isinstance(n, ast.FunctionDef) and n.name == "multi_gpu_facts"
     )
     body = ast.unparse(func)
@@ -249,7 +256,7 @@ def _driver_source() -> str:
 
 def test_the_all_card_payload_is_kept_out_of_the_card_queue():
     source = _driver_source()
-    assert 'ALL_CARD = (' in source
+    assert "ALL_CARD = (" in source
     assert "t4_Multi_GPU.ipynb" in source.split("ALL_CARD = ")[1][:200]
     assert "_queue = [(i, n) for i, n in enumerate(ORDER) if n not in ALL_CARD]" in source
 
@@ -311,9 +318,11 @@ def test_a_single_leg_dispatch_still_stands_down_on_one_card():
     )
     # And an ordinary one-leg dispatch is unchanged.
     other = build_kernel.build_kernel(
-        SMOKE_DIR, ("default",), unsloth_ref = "main", zoo_ref = "main",
-        extra_args = (), per_run_timeout = 3600,
+        SMOKE_DIR,
+        ("default",),
+        unsloth_ref = "main",
+        zoo_ref = "main",
+        extra_args = (),
+        per_run_timeout = 3600,
     )
-    assert "EXPECTED_GPUS = 1" in "".join(
-        "".join(c["source"]) for c in other["cells"]
-    )
+    assert "EXPECTED_GPUS = 1" in "".join("".join(c["source"]) for c in other["cells"])

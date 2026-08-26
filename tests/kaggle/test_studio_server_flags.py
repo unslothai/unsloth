@@ -27,9 +27,7 @@ SRC = PAYLOAD.read_text(encoding = "utf-8")
 
 def _func(name: str = "assert_server_flags") -> ast.FunctionDef:
     tree = ast.parse(SRC)
-    return next(
-        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name
-    )
+    return next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
 
 
 def _body() -> str:

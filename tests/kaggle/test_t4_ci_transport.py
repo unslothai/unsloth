@@ -2728,9 +2728,7 @@ def test_the_prefetch_list_matches_the_models_the_legs_actually_load():
     for leg in LEGS.values():
         loaded |= models_for(leg)
     stray = sorted(set(PREFETCH_REPOS) - loaded)
-    assert not stray, (
-        f"prefetching {stray}, which no leg loads even after LOAD_REDIRECTS"
-    )
+    assert not stray, f"prefetching {stray}, which no leg loads even after LOAD_REDIRECTS"
 
     # LOAD_REDIRECTS is only as good as its agreement with reality. If a
     # redirect stops being real, this list must stop claiming it -- or the
@@ -2744,16 +2742,13 @@ def test_the_prefetch_list_matches_the_models_the_legs_actually_load():
     # evidence is a resolved_checkpoint field in a kernel report. So a redirect
     # no payload mentions must CITE the kernel that measured it, which is
     # checkable, rather than being taken on trust.
-    sources = "".join(
-        path.read_text(encoding = "utf-8") for path in sorted(SMOKE_DIR.glob("*.py"))
-    )
+    sources = "".join(path.read_text(encoding = "utf-8") for path in sorted(SMOKE_DIR.glob("*.py")))
     legs_src = (Path(build_kernel.__file__).parent / "legs.py").read_text(encoding = "utf-8")
     for declared, actual in LOAD_REDIRECTS.items():
         if actual in sources:
             continue
         assert re.search(rf"#[^\n]*{re.escape(actual)}", legs_src) or any(
-            actual in line and line.lstrip().startswith("#")
-            for line in legs_src.splitlines()
+            actual in line and line.lstrip().startswith("#") for line in legs_src.splitlines()
         ), (
             f"LOAD_REDIRECTS says {declared} loads as {actual}, no payload "
             f"mentions {actual}, and no comment in legs.py cites the run that "

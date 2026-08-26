@@ -130,7 +130,9 @@ def test_every_redirect_target_is_prefetched_under_its_EXACT_name():
     for leg_name in wired:
         leg = legs.LEGS[leg_name]
         args = list(leg.args)
-        named = args[args.index("--model") + 1] if "--model" in args else _payload_default(leg.entry)
+        named = (
+            args[args.index("--model") + 1] if "--model" in args else _payload_default(leg.entry)
+        )
         if named is None or named not in legs.LOAD_REDIRECTS:
             continue
         target = legs.LOAD_REDIRECTS[named]

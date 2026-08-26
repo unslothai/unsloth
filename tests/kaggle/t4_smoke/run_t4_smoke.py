@@ -303,9 +303,7 @@ def train_once(args, run_index: int) -> dict:
     # AFTER the load for the same reason as the block above: the rotary caches
     # are built when the model is, so reading them before from_pretrained finds
     # nothing and reports it as an absence.
-    result_multi_gpu = (
-        multi_gpu_facts(model) if getattr(args, "require_multi_gpu", False) else None
-    )
+    result_multi_gpu = multi_gpu_facts(model) if getattr(args, "require_multi_gpu", False) else None
     if result_multi_gpu is not None:
         _log(f"multi-gpu: {json.dumps(result_multi_gpu)}")
 
@@ -902,9 +900,7 @@ def multi_gpu_facts(model) -> dict:
     except BaseException as exc:  # noqa: BLE001
         facts["parameter_walk_error"] = f"{type(exc).__name__}: {exc}"
     facts["parameters_by_device"] = by_device
-    facts["cuda_devices_holding_parameters"] = sorted(
-        d for d in by_device if d.startswith("cuda")
-    )
+    facts["cuda_devices_holding_parameters"] = sorted(d for d in by_device if d.startswith("cuda"))
 
     # The per-device rotary caches, sized by DEVICE_COUNT at construction. A
     # list of length 1 on a two-card box means the model was built while
@@ -926,8 +922,10 @@ def multi_gpu_failures(facts: dict | None, *, expected_cards: int) -> list[str]:
     a rule written to match whatever happens.
     """
     if not facts:
-        return ["the multi-GPU facts are missing, so nothing about the "
-                "DEVICE_COUNT > 1 path was measured on this run"]
+        return [
+            "the multi-GPU facts are missing, so nothing about the "
+            "DEVICE_COUNT > 1 path was measured on this run"
+        ]
     if facts.get("error"):
         return [f"unsloth.kernels.utils could not be read: {facts['error']}"]
 
@@ -1872,7 +1870,7 @@ def main() -> int:
         action = "store_true",
         default = False,
         help = "assert unsloth bound its multi-card code path, and record where "
-               "the weights landed",
+        "the weights landed",
     )
     ap.add_argument(
         # How many cards this leg was BUILT for, so the check compares against a
@@ -2293,6 +2291,7 @@ def main() -> int:
     # install_llama_cpp returns) into three files.
     if args.export_gguf:
         from gguf_export import export_failures, run_failures
+
         accept = tuple(
             q.strip() for q in (args.gguf_accept or args.gguf_quantization).split(",") if q.strip()
         )

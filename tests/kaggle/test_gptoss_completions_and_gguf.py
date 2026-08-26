@@ -310,5 +310,8 @@ def test_skipping_every_cycle_is_still_a_failure():
     src = (PAYLOAD / "run_t4_smoke.py").read_text(encoding = "utf-8")
     assert "every cycle skipped the GGUF export" in src
     # The excuse is keyed on a cycle having really exported, not on the flag.
-    assert 'exported = [run for run in runs if not (run.get("gguf_export") or {}).get("skipped")]' in src
+    assert (
+        'exported = [run for run in runs if not (run.get("gguf_export") or {}).get("skipped")]'
+        in src
+    )
     assert "for run in exported:" in src

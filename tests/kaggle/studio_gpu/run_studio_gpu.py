@@ -317,8 +317,7 @@ def gpu_inventory() -> list[str]:
     # Index into the physical rows where we can; an index nvidia-smi does not
     # have, or the UUID sentinel, still counts as one card so the COUNT stays
     # right even when the description cannot be recovered.
-    return [rows[i] if 0 <= i < len(rows) else "visible GPU (details unavailable)"
-            for i in visible]
+    return [rows[i] if 0 <= i < len(rows) else "visible GPU (details unavailable)" for i in visible]
 
 
 def log_paths(server_log: Path, studio_home: Path) -> list[Path]:
@@ -2403,7 +2402,10 @@ class Payload:
             apps_after = nvidia_compute_apps()
             detail["compute_apps"] = apps_after
             failure, measured = cli_run_gpu_failure(
-                apps_before, apps_after, baseline, settled,
+                apps_before,
+                apps_after,
+                baseline,
+                settled,
             )
             detail.update(measured)
             if failure:

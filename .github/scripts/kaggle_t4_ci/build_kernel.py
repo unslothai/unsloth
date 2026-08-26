@@ -1559,9 +1559,7 @@ def build_kernel(
     # list of which legs want every card is a second thing to keep in step, and
     # one that drifts silently -- a leg dropped from it simply gets pinned and
     # its multi-GPU assertions go looking for a second card that is not there.
-    all_card = tuple(
-        payload for payload, leg in legs_by_payload.items() if leg.all_cards
-    )
+    all_card = tuple(payload for payload, leg in legs_by_payload.items() if leg.all_cards)
     cpu_lane = after_gpu = None
     if studio:
         payloads.update(studio_payloads(**studio))
