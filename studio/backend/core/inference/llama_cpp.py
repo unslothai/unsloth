@@ -363,6 +363,7 @@ from core.inference.tool_call_parser import (
     unfinished_thought_progress as _unfinished_thought_progress,
 )
 from core.inference.passthrough_healing import nudge_enabled as _nudge_enabled
+from core.inference.repetition_guard import is_repetition_dominated
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     append_deferred_nudges,
@@ -1278,6 +1279,7 @@ _MAX_TOOL_CALLS_PER_TURN = 8
 # time reaching the same place.
 _MAX_LENGTH_CONTINUATIONS = 2
 _CONTINUE_AFTER_LENGTH_STATUS = "Continuing after a long thought..."
+_CONTINUE_TRUNCATED_ANSWER_STATUS = "Continuing the answer..."
 # Below this, a tool result carries no content: what comes back is the notice saying it was
 # cut, which costs a call and teaches the model nothing. Sized to leave a short line of real
 # output rather than to guarantee a useful one; the point is to catch the collapse to zero.
@@ -24317,6 +24319,9 @@ class LlamaCppBackend:
         # produces something visible.
         _length_continuations = 0
         _effective_enable_thinking = enable_thinking
+        # Restored once a turn gets somewhere: it is turned on to stitch ONE answer
+        # back together, not for the rest of the request.
+        _caller_continue_final_message = continue_final_message
         # Single-element lists so the nested execution scope can rebind them.
         _last_tool_result_key: list = [None]
         _identical_result_runs: list = [0]
@@ -25323,6 +25328,64 @@ class LlamaCppBackend:
                         if not _stripped:
                             _stripped = reasoning_accum.strip()
 
+                        # ── Continue an answer the window cut in half ──
+                        # The sibling case below is a turn that showed NOTHING. This one
+                        # showed real work and stopped mid-sentence: observed streaming a
+                        # 2401-byte file inline at a 4096 window, cut at `ctx.arc(6, -5, 5,`
+                        # with no closing tag. Compaction cannot help, because the room that
+                        # ran out is the reply's, not the prompt's; the answer has to be
+                        # finished across two turns instead.
+                        #
+                        # `continue_final_message` is what makes that seamless: the partial
+                        # goes back as the assistant turn to be EXTENDED, so the model picks
+                        # up mid-token rather than restarting and apologising.
+                        _partial_answer = content_accum.strip()
+                        if (
+                            _iter_finish_reason == "length"
+                            and _partial_answer
+                            and not tool_calls_acc
+                            and _length_continuations < _MAX_LENGTH_CONTINUATIONS
+                        ):
+                            # Withheld BEFORE the nudge is sent, not regretted after. A model
+                            # echoing one fragment would otherwise have the echo stitched into
+                            # the answer, which is how hermes-agent got a 60,698-char reply.
+                            if is_repetition_dominated(_partial_answer):
+                                logger.info(
+                                    "Truncated answer is repetition-dominated (%d chars); "
+                                    "keeping it as-is rather than continuing an echo",
+                                    len(_partial_answer),
+                                )
+                            else:
+                                _length_continuations += 1
+                                logger.info(
+                                    "Answer cut off at %d chars; continuing %d/%d",
+                                    len(_partial_answer),
+                                    _length_continuations,
+                                    _MAX_LENGTH_CONTINUATIONS,
+                                )
+                                append_assistant_turn(
+                                    conversation,
+                                    {"role": "assistant", "content": _partial_answer},
+                                    continue_final_message = True,
+                                )
+                                continue_final_message = True
+                                _fu_c = (
+                                    _backfill_usage_from_timings(_iter_usage, _iter_timings)
+                                    or {}
+                                )
+                                _accumulated_completion_tokens += _fu_c.get(
+                                    "completion_tokens", 0
+                                )
+                                _it_c = _iter_timings or {}
+                                _accumulated_predicted_ms += _it_c.get("predicted_ms", 0)
+                                _accumulated_predicted_n += _it_c.get("predicted_n", 0)
+                                yield {"type": "status", "text": ""}
+                                yield {
+                                    "type": "status",
+                                    "text": _CONTINUE_TRUNCATED_ANSWER_STATUS,
+                                }
+                                continue
+
                         # ── Continue a turn that ended inside its own thought ──
                         # Ahead of the re-prompt below because that one is gated on a SHORT
                         # response, and a thought that filled the window is the opposite of
@@ -25596,6 +25659,7 @@ class LlamaCppBackend:
                 # same reason: it was turned off to break one stall, not for the request.
                 _length_continuations = 0
                 _effective_enable_thinking = enable_thinking
+                continue_final_message = _caller_continue_final_message
                 _accumulated_completion_tokens += (
                     _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
                 ).get("completion_tokens", 0)

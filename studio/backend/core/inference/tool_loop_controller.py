@@ -153,12 +153,30 @@ class ToolCallDecision:
             return None
         return self.action
 
+    @property
+    def unparsed_fragment(self) -> "str | None":
+        """The raw text of a call whose JSON could not be read, if this is one.
+
+        `UNPARSED_ARGUMENTS_KEY` is plumbing between the coercion and `execute_tool`, and
+        it escaped into both places a caller looks: the tool card showed the user
+        `{"__unsloth_unparsed_arguments__": ...}`, and the replayed assistant turn taught
+        the model a key no tool declares. Both boundaries go through here instead.
+        """
+        if isinstance(self.arguments, Mapping) and UNPARSED_ARGUMENTS_KEY in self.arguments:
+            return str(self.arguments.get(UNPARSED_ARGUMENTS_KEY) or "")
+        return None
+
     def tool_start_payload(self) -> dict[str, Any]:
         """Build the payload fields for a real tool_start event."""
+        fragment = self.unparsed_fragment
+        # `raw` is the shape this module already uses for arguments it could not read into
+        # a schema, so the card shows the model's own text under a name that means
+        # something rather than an internal sentinel.
+        arguments = {"raw": fragment} if fragment is not None else self.arguments
         return {
             "tool_name": self.tool_name,
             "tool_call_id": self.tool_call_id,
-            "arguments": self.arguments,
+            "arguments": arguments,
             "provenance": self.provenance,
         }
 
@@ -168,11 +186,18 @@ class ToolCallDecision:
 
     def as_assistant_tool_call(self) -> dict[str, Any]:
         """Return an OpenAI-style tool_call with normalized arguments."""
+        fragment = self.unparsed_fragment
         tool_call: dict[str, Any] = {
             "type": "function",
             "function": {
                 "name": self.tool_name,
-                "arguments": json.dumps(
+                # Replayed verbatim when it could not be read. `arguments` is a string in
+                # this format, so the fragment IS the honest value: the model then sees
+                # what it actually sent, cut off where it was cut off, next to the error
+                # saying so. Wrapping it in a sentinel key taught it to send that key back.
+                "arguments": fragment
+                if fragment is not None
+                else json.dumps(
                     self.arguments,
                     ensure_ascii = False,
                     sort_keys = True,

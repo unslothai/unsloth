@@ -306,8 +306,16 @@ def test_thinking_comes_back_on_after_a_good_tool_round(monkeypatch):
     assert payloads[2]["chat_template_kwargs"]["enable_thinking"] is True
 
 
-def test_a_turn_that_answers_is_never_continued(monkeypatch):
-    """The trigger is an EMPTY length stop, not a length stop."""
+def test_a_turn_that_answers_is_handled_as_an_answer_not_a_stalled_thought(monkeypatch):
+    """The trigger for THIS path is an EMPTY length stop, not any length stop.
+
+    Retargeted rather than deleted. It used to assert that a turn producing content was
+    never continued at all, which was true when the stalled-thought path was the only one.
+    A truncated ANSWER is now continued too, by the sibling path in
+    `test_truncated_answer_continuation.py`, and the distinction that still matters is
+    which one takes it: resuming an answer must not switch thinking off, because thinking
+    was never the problem, and must extend the partial rather than start a fresh turn.
+    """
 
     payloads: list[dict] = []
     backend = _make_backend(
@@ -318,14 +326,17 @@ def test_a_turn_that_answers_is_never_continued(monkeypatch):
                 _sse({"content": "The first half of the answer"}),
                 _finish("length"),
                 _done(),
-            ]
+            ],
+            [_sse({"content": " and the second half."}), _done()],
         ],
         payloads,
     )
 
     events = _run(backend)
 
-    assert len(payloads) == 1
+    assert len(payloads) == 2
+    assert payloads[1].get("continue_final_message") is True
+    assert payloads[1]["chat_template_kwargs"]["enable_thinking"] is True
     assert "The first half of the answer" in "".join(_texts(events, "content"))
 
 

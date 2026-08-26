@@ -10,6 +10,7 @@ and reported back as "'old_string' and 'new_string' must both be strings" -- a t
 blaming the model for a key it never sent.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -163,6 +164,59 @@ def test_a_call_that_ran_out_of_input_is_never_healed(raw):
 
     assert coerced.healed is False
     assert coerced.arguments == {UNPARSED_ARGUMENTS_KEY: raw}
+
+
+def _decision_for(raw: str):
+    from core.inference.tool_loop_controller import ToolCallDecision
+
+    coerced = coerce_tool_arguments(raw, heal = True, tool_name = "edit_file")
+    return ToolCallDecision(
+        action = "execute",
+        tool_name = "edit_file",
+        arguments = coerced.arguments,
+        tool_call_id = "call_0",
+    )
+
+
+def test_the_sentinel_never_reaches_the_tool_card():
+    """It is plumbing between the coercion and execute_tool, and it escaped into the UI.
+
+    Reported from a live thread as a tool card reading
+    `{"__unsloth_unparsed_arguments__":"{\\"path\\":\\"flappy-bird.html\\", ...`
+    """
+    payload = _decision_for(_TRUNCATED).tool_start_payload()
+
+    assert UNPARSED_ARGUMENTS_KEY not in json.dumps(payload)
+    # The model's own text is still shown: the user needs to see what was cut off.
+    assert payload["arguments"] == {"raw": _TRUNCATED}
+
+
+def test_the_sentinel_never_reaches_the_model():
+    """Replaying it taught the model a key that no tool declares."""
+    tool_call = _decision_for(_TRUNCATED).as_assistant_tool_call()
+
+    assert UNPARSED_ARGUMENTS_KEY not in json.dumps(tool_call)
+    # `arguments` is a string in this format, so the fragment is the honest value: what
+    # was sent, cut where it was cut, alongside the error saying so.
+    assert tool_call["function"]["arguments"] == _TRUNCATED
+
+
+def test_a_readable_call_is_unaffected_at_both_boundaries():
+    from core.inference.tool_loop_controller import ToolCallDecision
+
+    decision = ToolCallDecision(
+        action = "execute",
+        tool_name = "edit_file",
+        arguments = {"path": "a.py", "edits": []},
+        tool_call_id = "call_0",
+    )
+
+    assert decision.unparsed_fragment is None
+    assert decision.tool_start_payload()["arguments"] == {"path": "a.py", "edits": []}
+    assert json.loads(decision.as_assistant_tool_call()["function"]["arguments"]) == {
+        "path": "a.py",
+        "edits": [],
+    }
 
 
 def test_a_genuine_bare_string_still_heals():
