@@ -242,7 +242,7 @@ def test_dspark_composed_argv_respects_placement_fit_decision(tmp_path, use_fit)
 
 def test_dspark_keeps_a_user_fit_flag(tmp_path):
     """A caller's --fit is theirs to set: the sidecar loads under either value,
-    so Studio has no reason to rewrite it."""
+    so Unsloth has no reason to rewrite it."""
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
@@ -848,8 +848,8 @@ def test_a_pass_through_drafter_pays_the_rollback_its_type_calls_for(
 def test_a_pass_through_spec_block_budgets_the_depth_the_build_defaults_to(
     tmp_path, requested_depth
 ):
-    # Studio emits no --spec-draft-n-max when the extras own the spec block, so
-    # the child runs at the build's own default. Budgeting Studio's 2 instead
+    # Unsloth emits no --spec-draft-n-max when the extras own the spec block, so
+    # the child runs at the build's own default. Budgeting Unsloth's 2 instead
     # under-reserves the rollback copies, which scale directly with it -- and a
     # request field carries no further than the platform default does, since
     # neither is emitted.
@@ -941,7 +941,7 @@ def test_a_post_rename_build_ignores_the_legacy_depth_variable(tmp_path, monkeyp
 
 def test_an_unreadable_help_budgets_the_deepest_shipped_draft_depth(tmp_path):
     # The probe timed out, or the help line carries no default. The child is still
-    # drafting at whatever the build defaults to, so Studio's own explicit-mode 2
+    # drafting at whatever the build defaults to, so Unsloth's own explicit-mode 2
     # would under-reserve the rollback copies by up to eight times.
     backend, gguf, _sidecar = _hybrid_reserve_backend(
         tmp_path,
@@ -1610,7 +1610,7 @@ def _offload_backend(tmp_path, *, gguf_gb, free_mib, avail_mib, monkeypatch, **k
 def test_weights_larger_than_vram_plus_ram_are_refused(tmp_path, monkeypatch):
     """The field case: a 13.3 GB GGUF on a 6 GB laptop card holding 4877 MiB free needs
     about 8.5 GB of host RAM, which a 10 GB host cannot hold. Unrefused, the mmap'd
-    remainder thrashes until the OS kills Studio and the desktop session."""
+    remainder thrashes until the OS kills Unsloth and the desktop session."""
     backend, gguf = _offload_backend(
         tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
     )
@@ -2169,7 +2169,7 @@ def test_an_unprobed_pool_still_abstains_when_nothing_was_masked(tmp_path, monke
 
 
 def test_a_gpu_less_host_running_a_cpu_only_build_still_abstains(tmp_path, monkeypatch):
-    """Studio installs a CPU-only prebuilt on a host with no GPU, so that host probes an
+    """Unsloth installs a CPU-only prebuilt on a host with no GPU, so that host probes an
     empty pool AND reports a build with no GPU backend. Letting the build state alone
     charge the whole model refused a 7.5 GB GGUF with 9 GB of RAM, which loads on main,
     and blamed GPU memory on a machine that has no GPU."""

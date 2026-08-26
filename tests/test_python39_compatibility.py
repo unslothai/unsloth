@@ -26,7 +26,7 @@ PACKAGE_ROOT = REPO_ROOT / "unsloth"
 # evaluated-union debt is ratcheted rather than fixed here: the 35 files involved include
 # FastAPI routers and pydantic models, where `from __future__ import annotations` is
 # supported but has real failure modes around class dependencies, so converting them needs
-# Studio actually booted and its routes exercised. The ratchet stops the debt growing.
+# Unsloth actually booted and its routes exercised. The ratchet stops the debt growing.
 STUDIO_UNION_DEBT = 35
 
 
@@ -341,7 +341,7 @@ def test_every_packaged_module_compiles():
 def test_studio_evaluated_unions_do_not_grow():
     """studio/ is shipped on the same floor but still carries unions that raise there.
 
-    A ratchet, not a pass: converting those files needs Studio booted and its routes
+    A ratchet, not a pass: converting those files needs Unsloth booted and its routes
     exercised, because FastAPI resolves annotations when it builds each endpoint. This
     keeps the debt from growing in the meantime.
     """

@@ -309,7 +309,7 @@ def _assert_video_precision_for_target(
     # rejected loads the runtime would run and report as fell_back -- Windows ROCm,
     # where the torchao stub kills int8 while fp8 still works.
     # A family with a HOSTED quantized conditioner never touches the generic path this gate
-    # reasons about. Studio loads that artifact itself: INT8 storage, a Hadamard rotation and an
+    # reasons about. Unsloth loads that artifact itself: INT8 storage, a Hadamard rotation and an
     # ordinary F.linear, no torchao and no fp8 tensor cores. Left to the code below, the request is
     # first rewritten int8 -> fp8 by effective_te_quant (H3 has no keep-bf16 schedule) and then
     # refused for want of hardware neither the rewrite nor the real loader needs, so a supported
@@ -1209,8 +1209,8 @@ class VideoBackend:
                 import diffusers
                 if not hasattr(diffusers, fam.transformer_class):
                     raise ValueError(
-                        "MiniMax-H3 needs the Diffusers revision bundled with this Studio "
-                        "version. Reinstall Studio dependencies and retry."
+                        "MiniMax-H3 needs the Diffusers revision bundled with this Unsloth "
+                        "version. Reinstall Unsloth dependencies and retry."
                     )
         if kind != "gguf" and not _is_trusted_video_repo(repo_id):
             raise ValueError(
@@ -4370,7 +4370,7 @@ class VideoBackend:
                     local_files_only = local_files_only,
                     # Pin the live cache root, as every other loader call does: unset, the fetch
                     # lands under huggingface_hub's import-time constant and a later cache change
-                    # re-downloads multiple GB into a root Studio no longer reads.
+                    # re-downloads multiple GB into a root Unsloth no longer reads.
                     cache_dir = hub_cache_dir(),
                     # The hosted H3 denoisers carry the PRUNED (curve-form) adaLN: the modulation is
                     # a rank-8 factorization of the time-embedding curve plus a shared table, which
@@ -4578,7 +4578,7 @@ class VideoBackend:
             )
         # cache_dir for the same reason as the token: load_components forwards extra kwargs through
         # ComponentSpec.load into each from_pretrained, and without it those ~145 GB of Hub-pinned
-        # components resolve against the import-time HF_HUB_CACHE snapshot rather than Studio's
+        # components resolve against the import-time HF_HUB_CACHE snapshot rather than Unsloth's
         # live cache folder, which the user can move.
         pipe.load_components(
             workflow = workflow,
@@ -4981,7 +4981,7 @@ class VideoBackend:
         """Validate cheaply, then run generate + gallery persist on a daemon thread.
 
         Returns at once, mirroring begin_load: a clip takes minutes to denoise, and
-        a proxy in front of Studio (secure mode's Cloudflare tunnel) caps the origin
+        a proxy in front of Unsloth (secure mode's Cloudflare tunnel) caps the origin
         response window near 100 seconds, so the HTTP call must not span the
         generation. The terminal outcome (phase "completed" with the saved gallery
         record, or "failed" with a client-safe error) is reported by

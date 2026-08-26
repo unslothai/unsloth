@@ -227,11 +227,11 @@ def _windowed_arms(spec: str, labels: list) -> set:
     """The arms `--windowed-arm` names, checked against the arms this run will actually have.
 
     A PURE ARGUMENT CHECK, WHICH IS WHY IT RUNS BEFORE ANYTHING IS STARTED. It used to run after
-    both Studio installs had been launched, the pacer bound and the browser opened -- and the
+    both Unsloth installs had been launched, the pacer bound and the browser opened -- and the
     `SystemExit` it raises for a typo (`--windowed-arm treatments`) left every one of them running,
     because the cleanup `finally` does not begin until the cell loop much further down. No
     `bundle.close()`, no `pacer.stop()`, no `stop_studio()`, no watchdog cancellation: a mistyped
-    flag cost a browser and up to two Studio servers, still holding their ports.
+    flag cost a browser and up to two Unsloth servers, still holding their ports.
     """
     names = {name.strip() for name in (spec or "").split(",") if name.strip()}
     unknown = names - set(labels)
@@ -260,11 +260,11 @@ def side_home(explicit, out, label: str, *, ab: bool) -> Path:
 def side_specs(args, ab_ref) -> list:
     """`(label, ref, attach url, port, password)` per side. One without `--ab`, two with it.
 
-    EACH SIDE CARRIES ITS OWN PASSWORD. Studio mints a bootstrap password per home, so two Studios
+    EACH SIDE CARRIES ITS OWN PASSWORD. Unsloth mints a bootstrap password per home, so two Unsloth instances
     the caller booted separately have two different ones; authenticating both with the single
     `--password` meant the base logged in and the treatment answered 401 every time, which made the
     advertised `--attach` + `--attach-b` A/B unusable unless both servers had been preconfigured
-    with the same secret. `--password-b` defaults to `--password`, so one Studio, one home or two
+    with the same secret. `--password-b` defaults to `--password`, so one Unsloth, one home or two
     homes already rotated to the bench password all behave as before.
     """
     specs = [("base", args.branch, args.attach, args.port, args.password)]
@@ -371,7 +371,7 @@ def watchdog_deadline_s(
     multi-gigabyte clone and build, which this tool itself allows 45 minutes for, against a fast
     tier's 15 minutes; an A/B does that twice, serially, before the first cell. The watchdog then
     fired during setup on a perfectly healthy run, and it fires through `os._exit`, so the `finally`
-    that stops the Studios it started never ran either. Every side this run INSTALLS adds its own
+    that stops the Unsloth instances it started never ran either. Every side this run INSTALLS adds its own
     documented budget; an attached side installs nothing and adds nothing.
 
     AND THE TIER BUDGET IS NOT THE PLAN. It is one number per tier, and three things the caller
@@ -381,7 +381,7 @@ def watchdog_deadline_s(
     film, 5,832 seconds of film before a single thread is seeded, against a deadline of
     `20 min * 3 = 3,600` seconds for an attached pair that adds no install budget. The watchdog
     hard-exited a healthy run 40% of the way through it, through `os._exit`, taking the payload's
-    remaining rows and the `finally` that stops the Studios with it. Reps 2 clears it as well once
+    remaining rows and the `finally` that stops the Unsloth instances with it. Reps 2 clears it as well once
     seeding is counted.
 
     So the measurement half is the LARGER of the tier's own budget and the planned work with the
@@ -427,18 +427,18 @@ def is_null_control(sides: list) -> bool:
     comparing a build with itself. Equal refs on two builds this run installed itself is a null
     control whatever ports they landed on.
 
-    Two ATTACHED Studios are a different matter: the refs are whatever the caller typed and the
+    Two ATTACHED Unsloth instances are a different matter: the refs are whatever the caller typed and the
     harness cannot see what is deployed at either URL, so those are only a null control when both
     sides are the same URL.
 
     WHICH IS WHY THE URL IS ASKED FIRST. That rule was stated here and then not applied: the ref
     comparison ran ahead of it, so `--attach U --attach-b U --branch main --ab fix` -- one server,
     two labels the harness cannot check -- returned False on the unequal labels before the equal
-    URL was ever looked at. One Studio measured against itself was then rendered as an ordinary
+    URL was ever looked at. One Unsloth measured against itself was then rendered as an ordinary
     A/B, free to publish temporal noise as an improvement, and `noise_floor_from_null_control` was
     skipped so nothing downstream had a floor to refuse it with. Two sides on one URL are one
     build whatever they were called. The owned case is untouched: `side_specs` gives the second
-    side `port + 1`, so two Studios this run launched never share a URL and still fall through to
+    side `port + 1`, so two Unsloth instances this run launched never share a URL and still fall through to
     the commit comparison below.
 
     AND A REF IS A POINTER, which is the rule `commit_problems` already states for `--resume` and
@@ -524,7 +524,7 @@ def stream_cost_injection_problem(specs: list, inject_ms) -> str | None:
     match the treatment's predicate and both burn the injected cost.
 
     That configuration is not a mistake the caller has to be warned off in general -- one attached
-    Studio driven twice is a null control `is_null_control` detects on purpose, and
+    Unsloth driven twice is a null control `is_null_control` detects on purpose, and
     `test_one_attached_studio_driven_twice_is_a_null_control` pins it. It is only fatal WITH the
     injection, and it is fatal quietly: `evaluate_stream_cost_recovery_gate` reads back
     `(injected_rate - base_rate) * chars`, both rates carry the burn, the difference is zero, and
@@ -560,7 +560,7 @@ def stream_cost_injection_problem(specs: list, inject_ms) -> str | None:
         f"{origins[0]}{spelling}. The injection is installed as a context init script gated on "
         f"window.location.origin, so one origin means both arms burn the cost, the difference "
         f"between them is zero and the recovery gate blames the metric for it. Point --attach and "
-        f"--attach-b at two Studios, or drop --attach and let this run install both."
+        f"--attach-b at two Unsloth instances, or drop --attach and let this run install both."
     )
 
 
@@ -570,7 +570,7 @@ def stop_owned_sides(
     *,
     keep: bool = False,
 ) -> None:
-    """Stop every Studio THIS RUN launched. An attached one belongs to the caller and is left alone.
+    """Stop every Unsloth THIS RUN launched. An attached one belongs to the caller and is left alone.
 
     `installs` is the `(install, owns)` list the acquisition loop builds, so a side that has not
     been reached yet is simply not in it. `keep` is `--keep-studio`, which asks for exactly this
@@ -657,8 +657,8 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
     _log(f"  corpus_hash {corpus.corpus_hash}")
 
     # READ NOW, BEFORE ANYTHING IS STARTED OR MOVED. The probe's source is not needed until the
-    # browser is launched, but reading it there means a path typo raises after Studio and the pacer
-    # are up and before the cleanup `finally` that would stop them is entered, so a detached Studio
+    # browser is launched, but reading it there means a path typo raises after Unsloth and the pacer
+    # are up and before the cleanup `finally` that would stop them is entered, so a detached Unsloth
     # keeps running and holds its port. The cheapest correct fix is to fail while there is nothing
     # to clean up: a missing, unreadable or non-UTF-8 file is a mistake in the invocation, and the
     # right moment to say so is the first second of the run.
@@ -682,7 +682,7 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
             return 2
 
     # EVERY A/B ARGUMENT CHECK, AHEAD OF `prepare_payload`, FOR THE REASON STATED DIRECTLY ABOVE.
-    # These three refuse the INVOCATION -- nothing they read comes from a Studio, a browser or a
+    # These three refuse the INVOCATION -- nothing they read comes from an Unsloth, a browser or a
     # payload, only `args` and `specs`, both of which exist before this function starts anything.
     # Left below the archive they cost the previous run its payload's standard path: a fresh
     # `--ab X --home H --out DIR` over a finished DIR archived `payload.jsonl` and then exited 2
@@ -696,7 +696,7 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
         if args.attach and not args.attach_b:
             _log("  --ab with --attach needs --attach-b URL: the second build has to be somewhere.")
             return 2
-        # Here rather than beside the init script it guards, because by then two Studios have been
+        # Here rather than beside the init script it guards, because by then two Unsloth instances have been
         # cloned, built and launched to run a validation that cannot say anything. See
         # `stream_cost_injection_problem`.
         injection_problem = stream_cost_injection_problem(
@@ -762,16 +762,16 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
     # EVERY SIDE THIS RUN LAUNCHED IS STOPPED WHEN THE SETUP AROUND IT FAILS. The sides are
     # acquired one after another, so the base is already SERVING while the treatment clones and
     # builds, and the cleanup that stops them both is the `finally` under the cells -- which a
-    # failure up here never reaches. The Studios are the resources that outlive this process:
+    # failure up here never reaches. The Unsloth instances are the resources that outlive this process:
     # `launch_studio` detaches the server with `setsid -f`, so an abandoned one keeps its port.
-    # It is not idle there. Studio's own launcher ABORTS rather than binding when it finds one of
+    # It is not idle there. Unsloth's own launcher ABORTS rather than binding when it finds one of
     # its own servers on the requested port (`studio/backend/run.py`, `_resolve_port` with
     # `avoid_own_studio`), so the next attempt's server exits and `wait_for_healthz` takes its 200
     # from the STALE process: that run measures the build this one installed while `run_meta`
     # records the ref it was asked for.
     #
     # A RETURN IS A FAILURE HERE TOO. The health check below and the development-build gate leave
-    # by returning, with both Studios up, which is the same abandoned server by a quieter route --
+    # by returning, with both Unsloth instances up, which is the same abandoned server by a quieter route --
     # so the guard is a `finally` on the whole of setup rather than an `except` on the install.
     setup_complete = False
     try:
@@ -782,11 +782,11 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
                 _log(f"  {label}: attaching to {side_url}")
             else:
                 home = side_home(args.home, paths.out, label, ab = bool(ab_ref))
-                _log(f"  {label}: installing Studio from {ref} into {home} (this takes a while)")
+                _log(f"  {label}: installing Unsloth from {ref} into {home} (this takes a while)")
                 side_install = install_studio(ref, home)
                 launch_studio(side_install, port, paths.out / "logs" / f"studio_{label}.log")
                 side_url, owns = side_install.base_url, True
-                _log(f"  {label}: Studio up at {side_url}")
+                _log(f"  {label}: Unsloth up at {side_url}")
             installs.append((side_install, owns))
             sides.append(
                 {
@@ -861,7 +861,7 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
         init_scripts = []
         # ONE PROVIDER PER ORIGIN, because the provider lives in the BACKEND and localStorage is
         # per-origin. An ATTACHED null control is `--attach U --attach-b U`, which `is_null_control`
-        # accepts on purpose: two sides, one Studio. Registering per SIDE there registers the pacer
+        # accepts on purpose: two sides, one Unsloth. Registering per SIDE there registers the pacer
         # twice against the same backend, and `lifecycle.register_provider` is idempotent by DISPLAY
         # NAME -- so the second registration DELETES the id the first side's seed script had already
         # captured, and that script keeps selecting the dead id on every navigation it wins (the
@@ -993,7 +993,7 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
         bundle = browser_mod.launch(
             args.engine, headless = not args.headed, init_scripts = init_scripts, log = _log
         )
-        # THE RETURN PATH for a probe installed by the hook above. Studio ships `connect-src
+        # THE RETURN PATH for a probe installed by the hook above. Unsloth ships `connect-src
         # 'self'`, so a beacon to a collector on another port is blocked by CSP before it leaves
         # the page, and the payload schema has no row for a one-off probe. The console is what is
         # left. Lines are filtered on a caller-supplied prefix so they can be recovered from the
@@ -1065,7 +1065,7 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
             "corpus_hash": corpus.corpus_hash,
             "studio_ref": args.branch if owns_studio else f"attached:{base_url}",
             # WHICH COMMIT THAT REF NAMED, so a later `--resume` can tell a continuation from
-            # a branch that moved. Empty for an attached Studio, whose build is not visible
+            # a branch that moved. Empty for an attached Unsloth, whose build is not visible
             # from here. See `commit_problems`.
             "studio_commit": sides[0].get("commit") or "",
             "bundle": verdict.as_dict(),
@@ -1488,10 +1488,10 @@ def _probe_init_scripts(path: str, source: str) -> list[str]:
 
     NO `eval`, AND THAT IS THE WHOLE POINT. This used to hand the file to indirect eval as a
     string, so that a malformed probe degraded to a caught `SyntaxError` instead of taking the
-    scene scripts with it. Studio serves `script-src 'self'` with no `'unsafe-eval'`
+    scene scripts with it. Unsloth serves `script-src 'self'` with no `'unsafe-eval'`
     (`studio/backend/main.py::_build_csp`), and `runtime/browser.py::default_engine` picks WEBKIT
     on both Linux and macOS, so on the DEFAULT engine that eval was refused by CSP and the probe
-    never installed at all. Measured against a page served with Studio's own header:
+    never installed at all. Measured against a page served with Unsloth's own header:
 
         chromium   indirect eval runs;      a bad init script leaves the other init scripts alone
         firefox    indirect eval runs;      a bad init script leaves the other init scripts alone
@@ -2005,7 +2005,7 @@ def identity_problems(recorded: dict, requested: dict) -> list:
 def resolved_commits(sides: list) -> dict:
     """The commits the sides of THIS run were actually installed from. `""` when unknowable.
 
-    Unknowable for an attached Studio: the caller pointed this harness at a URL and nothing about
+    Unknowable for an attached Unsloth: the caller pointed this harness at a URL and nothing about
     what is deployed behind it is visible from here, which is why `studio_ref` folds an attached
     base down to that URL instead.
     """
@@ -2267,7 +2267,7 @@ def prepare_payload(
     the arm and the repetition -- not the tier, the cadence, the instrument level, the corpus or
     either ref. So resuming after changing one of those skips cells that measured something else:
     at the extreme, `--branch main --ab other --resume` into a directory holding a finished
-    `main -> fix` run installs and launches two Studios, skips every cell, exits 0, and leaves the
+    `main -> fix` run installs and launches two Unsloth instances, skips every cell, exits 0, and leaves the
     OLD comparison standing in `ab.md` for somebody to read as the answer for `other`.
     """
     if not resume:
@@ -2414,7 +2414,7 @@ def recorded_ladder(path) -> list:
 
 
 def report_only(args) -> int:
-    """Score and render a payload that already exists. No browser, no Studio, no network.
+    """Score and render a payload that already exists. No browser, no Unsloth, no network.
 
     Separate from `run` so a payload produced on somebody else's desktop reports identically here,
     which is the whole point of shipping a single-file benchmark: the numbers come back as a file
@@ -2708,7 +2708,7 @@ def parse_args(argv: list):
     ap.add_argument(
         "--attach",
         metavar = "URL",
-        help = "drive a Studio that is already running instead of installing one",
+        help = "drive an Unsloth that is already running instead of installing one",
     )
     ap.add_argument(
         "--resume", action = "store_true", help = "skip cells already completed in the output payload"
@@ -2722,7 +2722,7 @@ def parse_args(argv: list):
         "--attach-b",
         metavar = "URL",
         dest = "attach_b",
-        help = "the treatment side's already-running Studio, when --ab is used "
+        help = "the treatment side's already-running Unsloth, when --ab is used "
         "together with --attach",
     )
     ap.add_argument(
@@ -2852,10 +2852,10 @@ def parse_args(argv: list):
         choices = ["chromium", "webkit", "firefox"],
         help = "default matches the platform's desktop webview family",
     )
-    ap.add_argument("--branch", default = "main", help = "Studio ref to install when not attaching")
+    ap.add_argument("--branch", default = "main", help = "Unsloth ref to install when not attaching")
     ap.add_argument("--home", help = "UNSLOTH_STUDIO_HOME for an install")
     ap.add_argument("--port", type = int, default = 5399)
-    # `unsloth`, not `admin`. Studio's first run prints "DEFAULT ADMIN ACCOUNT CREATED / username:
+    # `unsloth`, not `admin`. Unsloth's first run prints "DEFAULT ADMIN ACCOUNT CREATED / username:
     # unsloth", and the wrong one answers 401 with a message about resetting the PASSWORD, which
     # sends you looking in the wrong place.
     ap.add_argument("--username", default = "unsloth")
@@ -2864,8 +2864,8 @@ def parse_args(argv: list):
         "--password-b",
         dest = "password_b",
         default = "",
-        help = "the treatment Studio's password, when --ab is used together with --attach-b. "
-        "Two Studios booted separately mint two different bootstrap passwords, so one "
+        help = "the treatment Unsloth's password, when --ab is used together with --attach-b. "
+        "Two Unsloth instances booted separately mint two different bootstrap passwords, so one "
         "--password cannot authenticate both. Defaults to --password",
     )
     ap.add_argument("--out", help = "output directory")

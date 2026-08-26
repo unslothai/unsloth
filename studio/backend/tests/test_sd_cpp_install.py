@@ -280,7 +280,7 @@ def test_install_downloads_verifies_extracts(tmp_path, monkeypatch):
     sd_cli = install(install_dir = tmp_path)
     assert sd_cli.name == "sd-cli" and sd_cli.is_file()
     assert not (tmp_path / name).exists()  # archive cleaned up after extract
-    # The ownership marker lets the uninstaller delete a Studio-installed sd.cpp while keeping a user's own checkout.
+    # The ownership marker lets the uninstaller delete an Unsloth-installed sd.cpp while keeping a user's own checkout.
     assert (tmp_path / ".unsloth-studio-owned").is_file()
 
 
@@ -295,7 +295,7 @@ def test_install_into_empty_dir_claims_ownership(tmp_path, monkeypatch):
 
 
 def test_install_into_nonempty_unowned_dir_is_refused(tmp_path, monkeypatch):
-    # A pre-existing, non-empty directory Studio did not create must not be extracted into; install() refuses up front.
+    # A pre-existing, non-empty directory Unsloth did not create must not be extracted into; install() refuses up front.
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
     target = tmp_path / "stable-diffusion.cpp"
@@ -303,7 +303,7 @@ def test_install_into_nonempty_unowned_dir_is_refused(tmp_path, monkeypatch):
     user_file = target / "USER_WORK"
     user_file.write_text("keep", encoding = "utf-8")
 
-    with pytest.raises(RuntimeError, match = "not a Studio-managed directory"):
+    with pytest.raises(RuntimeError, match = "not an Unsloth-managed directory"):
         install(install_dir = target)
 
     # The user's directory is left exactly as it was: file intact, no marker, nothing extracted.
@@ -335,7 +335,7 @@ def test_install_sha256_mismatch_raises_and_cleans_up(tmp_path, monkeypatch):
 
 def test_partial_install_failure_is_reclaimed_on_retry(tmp_path, monkeypatch):
     # A crash AFTER extraction leaves the target non-empty. Because ownership is marked BEFORE the partial writes, the retry
-    # recognises the debris as ours and re-extracts instead of tripping the "not a Studio-managed directory" refusal.
+    # recognises the debris as ours and re-extracts instead of tripping the "not an Unsloth-managed directory" refusal.
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
     target = tmp_path / "sdcpp"
@@ -670,7 +670,7 @@ def test_safe_extractall_rejects_a_symlink_at_a_reserved_installer_path(tmp_path
 
 
 def test_safe_extractall_rejects_a_symlink_onto_a_reserved_installer_path(tmp_path):
-    # The marker exists before extraction on any root Studio owns, so a link to it resolves
+    # The marker exists before extraction on any root Unsloth owns, so a link to it resolves
     # to a file and _locate_sd_cli reports an empty one as the executable.
     target = tmp_path / "install"
     target.mkdir()
@@ -1070,7 +1070,7 @@ def test_safe_extractall_extracts_normal_members(tmp_path):
 
 
 def test_find_sd_cpp_binary_honors_studio_home(tmp_path, monkeypatch):
-    # A binary installed under a custom Studio root must be discovered without also setting UNSLOTH_SD_CPP_PATH.
+    # A binary installed under a custom Unsloth root must be discovered without also setting UNSLOTH_SD_CPP_PATH.
     from core.inference import sd_cpp_engine as eng
 
     monkeypatch.delenv("SD_CLI_PATH", raising = False)
@@ -1084,7 +1084,7 @@ def test_find_sd_cpp_binary_honors_studio_home(tmp_path, monkeypatch):
 
 
 def test_managed_root_is_under_the_studio_home_like_every_other_component(tmp_path, monkeypatch):
-    """The sd.cpp tree installs *under* the Studio home, not beside it.
+    """The sd.cpp tree installs *under* the Unsloth home, not beside it.
 
     llama.cpp (``default_managed_llama_dir``), whisper.cpp and node all place their tree at
     ``<studio home>/<component>``. sd.cpp used the home's *parent*, which put the tree outside the
@@ -1127,7 +1127,7 @@ def test_the_legacy_sibling_tree_is_adopted_only_when_it_carries_the_marker(tmp_
 
     Back-compat is marker-gated on purpose: the old location is ``<home>/../stable-diffusion.cpp``,
     which for a relative home is the working directory, so an unmarked match there is far more
-    likely to be someone's clone than a previous Studio install."""
+    likely to be someone's clone than a previous Unsloth install."""
     from core.inference import sd_cpp_engine as eng
 
     monkeypatch.delenv("SD_CLI_PATH", raising = False)
@@ -1664,7 +1664,7 @@ def test_unrunnable_binary_in_an_unmarked_root_is_kept_because_install_would_ref
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: False)
 
     def _refuse(**_kwargs):
-        raise RuntimeError("sd.cpp install target already exists and is not a Studio-managed dir")
+        raise RuntimeError("sd.cpp install target already exists and is not an Unsloth-managed dir")
 
     stub = types.ModuleType("install_sd_cpp_prebuilt")
     stub.install = _refuse
@@ -1745,7 +1745,7 @@ def _managed_tree(
     monkeypatch,
     accelerator = None,
 ):
-    """A Studio-owned install tree, optionally carrying an install record."""
+    """An Unsloth-owned install tree, optionally carrying an install record."""
     root = tmp_path / "sd-home" / "stable-diffusion.cpp"
     (root / "sd-bin").mkdir(parents = True)
     (root / ".unsloth-studio-owned").touch()
@@ -1788,7 +1788,7 @@ def test_a_cpu_install_is_reinstalled_when_cuda_is_requested(tmp_path, monkeypat
 def test_a_legacy_sibling_install_is_read_from_its_own_root(tmp_path, monkeypatch):
     """The accelerator record belongs to the tree the binary is in.
 
-    A tree an older build installed BESIDE the Studio home is still found by the finder, but the
+    A tree an older build installed BESIDE the Unsloth home is still found by the finder, but the
     current managed root is now under the home and holds nothing. Reading the record from there
     reports the install as unrecorded, and unrecorded reads as a mismatch for a GPU target: the
     matching CUDA bundle already on disk would be downloaded again on every load."""
@@ -2462,7 +2462,7 @@ def test_an_unreadable_record_does_not_retire_the_memo(tmp_path, monkeypatch):
 
 def test_an_external_record_update_retires_the_memo(tmp_path, monkeypatch):
     """The memo speaks only for the record it could not replace. Once the installer CLI or another
-    Studio rewrites that file, the file is the newer answer -- otherwise this process would keep
+    Unsloth rewrites that file, the file is the newer answer -- otherwise this process would keep
     reporting its own stale accelerator and treat the other one's CUDA binaries as a CPU match."""
     root = tmp_path / "sd"
     root.mkdir()
@@ -2830,7 +2830,7 @@ def test_a_re_found_cli_goes_through_the_usability_gate(tmp_path, monkeypatch):
 
 def test_a_cancelled_request_leaves_the_install_wait(tmp_path, monkeypatch):
     """The caller holds the generate lock across this wait, so a cancel or unload that could not
-    get out of it reads as a hung Studio for up to the whole 900s while nothing has even started.
+    get out of it reads as a hung Unsloth for up to the whole 900s while nothing has even started.
     Nothing notifies the condition on cancel, so the wait has to re-check rather than block once."""
     import core.inference.sd_cpp_backend as bk
 
@@ -2924,7 +2924,7 @@ def test_a_failure_before_the_sweep_is_an_ordinary_install_failure(tmp_path, mon
 
 
 def _owned_tree_holding(tmp_path, rel: str) -> Path:
-    """A Studio-owned install dir already carrying a previous bundle's sd-cli at ``rel``."""
+    """An Unsloth-owned install dir already carrying a previous bundle's sd-cli at ``rel``."""
     (tmp_path / ".unsloth-studio-owned").touch()
     old = tmp_path / rel
     old.parent.mkdir(parents = True, exist_ok = True)
@@ -3174,7 +3174,7 @@ def test_the_legacy_lookup_uses_the_lexical_parent_of_a_symlinked_home(tmp_path,
 
 
 def test_a_serverless_install_does_not_fall_back_to_the_legacy_server(tmp_path, monkeypatch):
-    """The finder also probes the tree beside the Studio home, so when the bundle just installed
+    """The finder also probes the tree beside the Unsloth home, so when the bundle just installed
     ships no sd-server the hit can be the legacy one, built for another accelerator. Returning it
     ran a forced CUDA load on the old CPU build instead of the one-shot CLI."""
     import core.inference.sd_cpp_backend as bk
@@ -3201,7 +3201,7 @@ def test_a_serverless_install_does_not_fall_back_to_the_legacy_server(tmp_path, 
 
 
 def test_a_serverless_install_is_not_downloaded_again_on_every_later_load(tmp_path, monkeypatch):
-    """Rejecting the legacy server is only half the answer. The tree beside the Studio home keeps
+    """Rejecting the legacy server is only half the answer. The tree beside the Unsloth home keeps
     that mismatched server, so the next load found it again, judged the accelerator changed and
     reinstalled the bundle already sitting in the current root -- once per model load, forever.
     The completed matching install in that root is the authoritative one: serverless, not stale."""

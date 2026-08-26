@@ -225,7 +225,7 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     _MANAGED_LLAMA_CPP_PATH = _STUDIO_ROOT_RESOLVED / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
-    # A CLI/desktop launcher may already have exported Studio's own install path.
+    # A CLI/desktop launcher may already have exported Unsloth's own install path.
     # Classify by the canonical value so that inherited default remains editable.
     from utils.llama_cpp_path_settings import mark_managed_llama_cpp_path
 
@@ -746,7 +746,24 @@ async def lifespan(app: FastAPI):
         "lifespan startup completed in %.1fms",
         (_time.perf_counter() - _lifespan_started) * 1000,
     )
+    # Persist only terminal scalar usage from authenticated third-party API
+    # requests. The monitor itself stays storage-agnostic until the production
+    # lifespan is ready, which keeps imports and unit tests deterministic.
+    from core.inference.api_monitor import api_monitor as _api_monitor
+    from storage.api_usage_db import (
+        acquire_api_usage_writer as _acquire_api_usage_writer,
+        enqueue_api_usage as _enqueue_api_usage,
+        release_api_usage_writer as _release_api_usage_writer,
+    )
+
+    _api_usage_writer_lease = _acquire_api_usage_writer()
+    _api_usage_callback_lease = _api_monitor.acquire_terminal_callback(_enqueue_api_usage)
     yield
+
+    # Remove only this lifespan's callback. A concurrently live sibling keeps
+    # both the monitor sink and the shared serialized writer. The final owner
+    # drains accepted receipts off the event loop before stopping the worker.
+    _api_monitor.release_terminal_callback(_api_usage_callback_lease)
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
@@ -757,6 +774,8 @@ async def lifespan(app: FastAPI):
     _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
     if _invalidate_detection is not None:
         _invalidate_detection()
+
+    await asyncio.to_thread(_release_api_usage_writer, _api_usage_writer_lease)
 
     from core.inference.openai_codex_auth import shutdown_flows
 
@@ -979,7 +998,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 # Swagger UI and ReDoc, on FastAPI's own paths but served entirely from this origin.
 # FastAPI's built-in pages load ~2.3 MB of JavaScript from cdn.jsdelivr.net and start it with
 # an inline script. localStorage is origin-scoped, not path-scoped, so anything running on
-# /docs can read the Studio tokens session.ts keeps there and call the API as that user. The
+# /docs can read the Unsloth tokens session.ts keeps there and call the API as that user. The
 # bundles are vendored under assets/docs_ui (pinned + digest-checked by
 # tests/test_docs_ui_assets.py) and the inline init runs off the same per-response nonce the
 # bootstrap script uses, so script-src stays 'self' and works offline as a bonus.
@@ -1370,7 +1389,7 @@ app.include_router(inference_router, prefix = "/api/inference", tags = ["inferen
 # Unsloth-only inference endpoints (cancel, etc.) are not on the /v1 OpenAI-compat prefix.
 app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
 
-# Studio-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
+# Unsloth-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
 app.include_router(video_router, prefix = "/api/inference", tags = ["inference"])
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
@@ -1709,7 +1728,7 @@ async def health_check(request: Request):
         "desktop_manageability_version": 2,
         "supports_desktop_auth": True,
         "supports_desktop_backend_ownership": True,
-        # Opaque per-install id; launchers reject sibling Studios on the same port.
+        # Opaque per-install id; launchers reject sibling Unsloth instances on the same port.
         "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),

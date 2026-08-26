@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 //
-// The selector adapter for the REAL Studio chat UI.
+// The selector adapter for the REAL Unsloth chat UI.
 //
 // The salvaged action JS from playwright_heavy_thread.py calls `window.__heavyThread`, an API the
 // smoke fixture exported. The shipping app exports nothing of the kind, so the actions are ported
@@ -170,7 +170,7 @@
     // WHICH MESSAGES ARE STILL BEING WRITTEN, read from the app's own published state rather than
     // guessed at from `isRunning()` plus "it is probably the last one".
     //
-    // assistant-ui gives every text part a status and Studio serialises it: markdown-text.tsx
+    // assistant-ui gives every text part a status and Unsloth serialises it: markdown-text.tsx
     // renders `<div data-status={status.type}>` around the Streamdown tree, so a part that is
     // still arriving reads `data-status="running"` and a finished one reads `"complete"`. The
     // reasoning pane publishes the same fact as `aria-busy` on `[data-slot="reasoning-content"]`
@@ -727,7 +727,7 @@
       //
       // The contract is about INTENT, and intent is re-expressed by coming back: a user who
       // scrolls up is detached until they return to the end, at which point they are following
-      // again. That is the same re-attachment Studio's own intent-aware autoscroll implements.
+      // again. That is the same re-attachment Unsloth's own intent-aware autoscroll implements.
       // Only checked here, on the way out of a deliberate gesture, so the app silently pulling
       // the viewport down on its own is still scored as a yank rather than laundered into a
       // re-attachment.

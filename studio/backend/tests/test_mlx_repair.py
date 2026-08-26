@@ -139,7 +139,7 @@ def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
         assert pkg in cmd
     assert created_paths and not Path(created_paths[0]).exists()
     # The install mirrors the main installer by relaxing the transformers pin via
-    # UV_OVERRIDE so a current mlx-vlm can coexist with the Studio Transformers pin.
+    # UV_OVERRIDE so a current mlx-vlm can coexist with the Unsloth Transformers pin.
     env = captured["env"]
     assert env is not None
     assert env.get("UV_OVERRIDE", "").endswith("overrides-darwin-arm64.txt")
