@@ -674,6 +674,51 @@ class TestTheMetadataRepairCannotStrandThePackage:
         assert cleanup == "" and args[-1] == "unsloth-zoo"
 
 
+class TestTheOptOutKeepsRestrictiveIndexSettings:
+    """The pinned branch scrubs the index variables so a stale mirror cannot answer a
+    torch repair (#6898), and that survives the opt-out on purpose. PIP_NO_INDEX is the
+    exception: it only ever REMOVES sources, so scrubbing it let a pinned command reach
+    the network on a host that had said not to.
+    """
+
+    CMD = ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+
+    def _env(self, extra):
+        with mock.patch.dict(os.environ, dict(extra, PATH = "/usr/bin"), clear = True):
+            return ips._install_env_for_cmd(list(self.CMD))
+
+    def test_the_default_path_still_scrubs_everything(self):
+        env = self._env({"PIP_NO_INDEX": "1", "PIP_FIND_LINKS": "/wheels"})
+        assert "PIP_NO_INDEX" not in env and "PIP_FIND_LINKS" not in env
+
+    def test_the_opt_out_keeps_no_index_and_its_find_links(self):
+        """Kept as a pair: PIP_FIND_LINKS is the only source left once PIP_NO_INDEX is
+        honoured, so dropping it would leave the step with nowhere to resolve from."""
+        env = self._env(
+            {
+                "UNSLOTH_RESPECT_PM_POLICY": "1",
+                "PIP_NO_INDEX": "1",
+                "PIP_FIND_LINKS": "/wheels",
+                "PIP_INDEX_URL": "https://mirror/simple",
+            }
+        )
+        assert env["PIP_NO_INDEX"] == "1"
+        assert env["PIP_FIND_LINKS"] == "/wheels"
+        # The ADDITIVE mirror is still scrubbed: that is the provenance control.
+        assert "PIP_INDEX_URL" not in env
+
+    def test_find_links_alone_is_still_scrubbed_under_the_opt_out(self):
+        """Without PIP_NO_INDEX it merely ADDS a source, which is what the scrub is for."""
+        env = self._env({"UNSLOTH_RESPECT_PM_POLICY": "1", "PIP_FIND_LINKS": "/wheels"})
+        assert "PIP_FIND_LINKS" not in env
+
+    def test_a_disabled_no_index_does_not_keep_anything(self):
+        env = self._env(
+            {"UNSLOTH_RESPECT_PM_POLICY": "1", "PIP_NO_INDEX": "0", "PIP_FIND_LINKS": "/w"}
+        )
+        assert "PIP_NO_INDEX" not in env and "PIP_FIND_LINKS" not in env
+
+
 class TestHardenedPolicyIsAnnounced:
     """The relaxation is defensible; doing it silently is not.
 
@@ -716,6 +761,18 @@ class TestHardenedPolicyIsAnnounced:
     def test_env_restatements_from_pip_config_are_not_double_counted(self):
         names = self._names({"PIP_REQUIRE_HASHES": "1"}, ":env:.require-hashes='true'\n")
         assert names == ("PIP_REQUIRE_HASHES",)
+
+    def test_false_disables_the_upload_cutoff(self):
+        """The cutoff is a date, but uv takes `false` for it as "no cutoff": measured on
+        the pinned uv 0.12.1, UV_EXCLUDE_NEWER=false installs the current release while
+        a date filters it. Reading `false` as a cutoff put a security notice in front of
+        an operator who had switched the control off."""
+        assert self._names({"UV_EXCLUDE_NEWER": "false"}) == ()
+        assert self._names({"UV_EXCLUDE_NEWER": "2005-01-01T00:00:00Z"}) == (
+            "UV_EXCLUDE_NEWER",
+        )
+        # Still not a boolean elsewhere: a package list keeps package names.
+        assert self._names({"PIP_ONLY_BINARY": "false"}) == ("PIP_ONLY_BINARY",)
 
     def test_uv_policy_is_reported_from_the_variables_uv_reads(self):
         """uv has no command that prints its resolved configuration, so the notice

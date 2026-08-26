@@ -4762,6 +4762,12 @@ _BOOLEAN_POLICY_KEYS = ("require-hashes", "no-build")
 # What clears a control of either kind.
 _EMPTY_POLICY_VALUES = ("", ":none:")
 
+# The upload cutoff is a date, but uv accepts `false` for it as "no cutoff": measured on
+# the pinned uv 0.12.1, UV_EXCLUDE_NEWER=false installs the current release while a date
+# filters it. Reading `false` as a cutoff put a security notice in front of an operator
+# who had switched the control off.
+_FALSE_DISABLES_KEYS = ("exclude-newer", "exclude-newer-package", "uploaded-prior-to")
+
 
 def _policy_key_spelling(key: str) -> str:
     """A policy key as its config-file spelling, whichever form it arrived in."""
@@ -4778,7 +4784,7 @@ def _config_value_is_on(value: str, key: "str | None" = None) -> bool:
     if text in _EMPTY_POLICY_VALUES:
         return False
     if key is not None and _policy_key_spelling(key) not in _BOOLEAN_POLICY_KEYS:
-        return True
+        return not (text == "false" and _policy_key_spelling(key) in _FALSE_DISABLES_KEYS)
     return text not in _OFF_VALUES
 
 
@@ -5240,12 +5246,22 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
         env.update(overrides)
         return env
     env = os.environ.copy()
+    # PIP_NO_INDEX only ever REMOVES sources, so under the opt-out it is kept along with
+    # the PIP_FIND_LINKS it leaves as the sole source. Scrubbing it let a pinned command
+    # reach the network on a host that had said not to, which is the opposite of what
+    # this branch scrubs the ADDITIVE mirror variables for. If the pinned artifact is
+    # not in find-links the step fails, which is what the opt-out promises.
+    keep_offline = _respect_pm_policy() and _config_value_is_on(
+        os.environ.get("PIP_NO_INDEX", "")
+    )
     for name in _UV_INDEX_ENV_VARS:
         # UV_CONFIG_FILE is an index variable only incidentally: measured, a file named
         # by it carrying `[pip] require-hashes = true` fails a pinned install, and
         # dropping it lets the same install through. Under the opt-out it is the
         # operator's policy file, so it stays.
         if name == "UV_CONFIG_FILE" and _respect_pm_policy():
+            continue
+        if keep_offline and name in ("PIP_NO_INDEX", "PIP_FIND_LINKS"):
             continue
         env.pop(name, None)
     if _respect_pm_policy():
