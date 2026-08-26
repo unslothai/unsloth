@@ -70,9 +70,7 @@ def test_embedding_model_controls_stack_on_the_narrowest_viewports():
             in (source := path.read_text(encoding = "utf-8"))
             # The fixed width has to give way at the breakpoint. flex-1 did that
             # for the combobox; the picker trigger takes the full row instead.
-            and (
-                "max-[360px]:w-full" in source or "max-[360px]:flex-1" in source
-            )
+            and ("max-[360px]:w-full" in source or "max-[360px]:flex-1" in source)
         )
     ]
     assert missing == []

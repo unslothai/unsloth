@@ -655,9 +655,7 @@ def test_a_local_gguf_is_not_reported_as_a_ready_sentence_transformers_model(
     assert "no checkpoint this backend can load" in body["error"]
 
 
-def test_a_cached_gguf_only_repo_is_not_reported_as_a_ready_st_model(
-    client, monkeypatch, tmp_path
-):
+def test_a_cached_gguf_only_repo_is_not_reported_as_a_ready_st_model(client, monkeypatch, tmp_path):
     """hf_cache_snapshot_is_loadable counts .gguf as a loadable weight, which is
     right for the llama backend and wrong here: a cached feature-extraction repo
     holding config.json and GGUF only came back cached, skipped the Hub weight

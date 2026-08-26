@@ -2205,6 +2205,7 @@ def _cached_snapshot_has_st_weights(model: str) -> bool:
     below, and persisted an ST backend with no checkpoint to load. No network."""
     try:
         from utils.utils import hf_cache_snapshot_dir
+
         snapshot = hf_cache_snapshot_dir(model)
         if snapshot is None:
             return False
