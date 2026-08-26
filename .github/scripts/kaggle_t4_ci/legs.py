@@ -564,6 +564,14 @@ LEGS: dict[str, Leg] = {
             "--require-multi-gpu",
             "--expected-cards",
             "2",
+            # Both cards VISIBLE, weights on ONE. Measured on
+            # unsloth-probe-multigpu-r1-18beab: with two T4s visible accelerate
+            # sharded this model 232849408 params on cuda:0 and 155582464 on
+            # cuda:1, unsloth announced `Num GPUs used = 2`, and step 0 died at
+            # unsloth/models/llama.py:972 with `index is on cuda:0, different
+            # from other tensors on cuda:1`. Sharded training is broken
+            # upstream; the bindings this leg exists to cover are not.
+            "--single-device",
             # NO --export-gguf, and this is a measurement rather than a saving.
             # The bundle `install_llama_cpp` fetches for the notebook legs is
             # the CPU one: on unsloth-probe-full-concurrent-417238 this exact

@@ -326,3 +326,106 @@ def test_a_single_leg_dispatch_still_stands_down_on_one_card():
         per_run_timeout = 3600,
     )
     assert "EXPECTED_GPUS = 1" in "".join("".join(c["source"]) for c in other["cells"])
+
+
+def test_the_weights_go_on_one_card_while_both_stay_visible():
+    """The two halves of the leg's configuration, and they pull opposite ways.
+
+    Visibility is what makes unsloth's DEVICE_COUNT > 1 bindings live, so the
+    leg must NOT be pinned. Placement is what makes training work, because a
+    sharded model does not train: on unsloth-probe-multigpu-r1-18beab
+    accelerate split Qwen3-0.6B across both T4s and step 0 died at
+    unsloth/models/llama.py:972 with `index is on cuda:0, different from other
+    tensors on cuda:1`.
+
+    Dropping `--single-device` puts a red in front of every PR for an upstream
+    fault; dropping `all_cards` silently turns the leg into a duplicate of
+    Default. Both are asserted here because either alone reads as configured.
+    """
+    leg = legs.LEGS["multi_gpu"]
+    assert leg.all_cards is True
+    assert "--single-device" in leg.args
+
+
+def test_single_device_reaches_the_child_and_sets_a_device_map():
+    import ast
+
+    source = (SMOKE_DIR / "run_t4_smoke.py").read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    train = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "train_once"
+    )
+    body = ast.unparse(train)
+    assert "single_device" in body
+    assert "'device_map'] = {'': 0}" in body or '"device_map"] = {"": 0}' in body
+    # The CYCLE loads the model, so a parent that parsed this and kept it would
+    # shard anyway and the leg would die exactly as the probe did.
+    #
+    # The APPEND, not the string. `"--single-device" in unparse(main)` was the
+    # first version of this and it survived deleting the forwarding outright,
+    # because `ap.add_argument("--single-device", ...)` is in the same function
+    # -- an assertion satisfied by its own surrounding text.
+    main = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "main"
+    )
+    assert "cmd.append('--single-device')" in ast.unparse(main), (
+        "the flag is parsed but never forwarded, so the cycle child loads "
+        "sharded and dies at step 0 exactly as the probe did"
+    )
+
+
+def test_a_crash_mid_cycle_still_reports_what_was_measured():
+    """The probe measured everything this leg asserts, logged it in full, and
+    then LOST it: the cycle died in trainer.train(), wrote no report, and the
+    leg reported `multi_gpu: null` while the driver log held every number.
+
+    Reading the report alone said the measurement had not been taken, which is
+    the difference between "we did not look" and "we looked and it was fine".
+    """
+    import ast
+
+    source = (SMOKE_DIR / "run_t4_smoke.py").read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    facts = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "multi_gpu_facts"
+    )
+    # Stashed as soon as there is anything to stash, not on the way out: a
+    # reading that lives only in a frame being unwound is a reading nobody has.
+    published = ast.unparse(facts)
+    assert "global _LAST_MULTI_GPU_FACTS" in published
+    assert "_LAST_MULTI_GPU_FACTS = facts" in published
+
+    main = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "main"
+    )
+    child = ast.unparse(main)
+    assert "except BaseException as exc" in child
+    assert "'multi_gpu': _LAST_MULTI_GPU_FACTS" in child
+    # A partial report must be impossible to mistake for a completed cycle, and
+    # the crash must still propagate -- swallowing it would turn a dead cycle
+    # into a green one.
+    assert "'partial': True" in child
+    assert "'cycle_error'" in child
+    assert "\n            raise" in child
+
+
+def test_the_stash_is_populated_by_the_real_function_before_it_can_fail():
+    """Driven, not read. `multi_gpu_facts` walks the model, and a model that
+    raises mid-walk must still leave the device count behind."""
+    payload = _payload()
+    payload._LAST_MULTI_GPU_FACTS = None
+
+    class _Exploding:
+        def named_parameters(self):
+            raise RuntimeError("boom")
+
+        def modules(self):
+            return []
+
+    facts = payload.multi_gpu_facts(_Exploding())
+    assert payload._LAST_MULTI_GPU_FACTS is facts
+    assert "device_count" in payload._LAST_MULTI_GPU_FACTS

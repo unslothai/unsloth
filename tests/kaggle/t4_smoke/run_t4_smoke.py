@@ -269,11 +269,33 @@ def train_once(args, run_index: int) -> dict:
     # float16 unconditionally: T4 is sm_75 and has no bf16. Pinned rather than
     # left to the loader so the local reproduction and the Kaggle run take the
     # same numeric path wherever they can share one.
+    load_kwargs: dict = {}
+    if getattr(args, "single_device", False):
+        # Both cards stay VISIBLE -- that is the point of the multi_gpu leg, and
+        # what makes unsloth's DEVICE_COUNT > 1 bindings live -- but the weights
+        # go on one, because a SHARDED model does not train.
+        #
+        # Measured on unsloth-probe-multigpu-r1-18beab: with two T4s visible
+        # accelerate split Qwen3-0.6B 232849408 params on cuda:0 and 155582464
+        # on cuda:1, unsloth printed `Num GPUs used = 2`, and step 0 died in
+        # unsloth/models/llama.py:972 --
+        #
+        #   inputs_embeds = self.embed_tokens(input_ids)
+        #   RuntimeError: Expected all tensors to be on the same device, but got
+        #   index is on cuda:0, different from other tensors on cuda:1
+        #
+        # That is an upstream bug and it is filed. Training a sharded model here
+        # would put a red in front of every PR for a fault no reader of this
+        # repo can fix, which is how a check gets switched off before the day it
+        # is right. The binding coverage -- the whole reason this leg exists --
+        # does not depend on it.
+        load_kwargs["device_map"] = {"": 0}
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model,
         max_seq_length = args.max_seq_length,
         load_in_4bit = True,
         dtype = torch.float16,
+        **load_kwargs,
     )
     load_seconds = time.time() - t0
     # Which repository, and which commit of it. `load_in_4bit=True` redirects
@@ -846,6 +868,12 @@ def batched_generation_failures(batch: dict | None, model: str | None = None) ->
     return out
 
 
+# Set by multi_gpu_facts as soon as it has an answer, so a crash LATER in the
+# cycle still reports what was measured. A reading that exists only inside a
+# frame that is being unwound is a reading nobody has.
+_LAST_MULTI_GPU_FACTS: dict | None = None
+
+
 def multi_gpu_facts(model) -> dict:
     """What unsloth BOUND, given how many cards this process can see.
 
@@ -869,7 +897,9 @@ def multi_gpu_facts(model) -> dict:
     """
     import torch
 
+    global _LAST_MULTI_GPU_FACTS
     facts: dict = {"device_count": torch.cuda.device_count()}
+    _LAST_MULTI_GPU_FACTS = facts
     try:
         from unsloth.kernels import utils as _kernel_utils
     except BaseException as exc:  # noqa: BLE001
@@ -1873,6 +1903,16 @@ def main() -> int:
         "the weights landed",
     )
     ap.add_argument(
+        # Keep every card VISIBLE and put the WEIGHTS on one. See the comment at
+        # the from_pretrained call: sharded training is broken upstream, and the
+        # DEVICE_COUNT > 1 bindings this leg exists to cover do not need it.
+        "--single-device",
+        dest = "single_device",
+        action = "store_true",
+        default = False,
+        help = "load with device_map={'': 0} while leaving both cards visible",
+    )
+    ap.add_argument(
         # How many cards this leg was BUILT for, so the check compares against a
         # declaration rather than against whatever the session happened to give
         # it. Reading device_count() on both sides of the comparison is how a
@@ -1920,7 +1960,29 @@ def main() -> int:
 
     # Child mode: exactly one cycle, report to disk, no assertions.
     if args.cycle >= 0:
-        run = train_once(args, args.cycle)
+        try:
+            run = train_once(args, args.cycle)
+        except BaseException as exc:
+            # A crash mid-cycle must not take the readings taken BEFORE it down
+            # with it. On kernel unsloth-probe-multigpu-r1-18beab the multi-card
+            # facts were gathered, logged in full, and then lost: the cycle died
+            # in trainer.train() and wrote no report at all, so the leg reported
+            # `multi_gpu: null` while the driver log held every number. Reading
+            # the report alone said the measurement had not been taken.
+            #
+            # The partial report carries the error, so it can never be mistaken
+            # for a completed cycle: `cycle_error` is what the parent's own
+            # "cycle N did not complete" failure is already keyed on.
+            partial = {
+                "run_index": args.cycle,
+                "cycle_error": f"{type(exc).__name__}: {exc}"[:2000],
+                "partial": True,
+                "multi_gpu": _LAST_MULTI_GPU_FACTS,
+            }
+            (outdir / "cycle_report.json").write_text(
+                json.dumps(partial, indent = 2), encoding = "utf-8"
+            )
+            raise
         for entry in run["metrics"]:
             _log(
                 f"    step {entry['step']}  loss={entry['loss']!r}  "
@@ -2020,6 +2082,8 @@ def main() -> int:
             cmd.append("--kernel-provenance")
         if args.require_multi_gpu:
             cmd.append("--require-multi-gpu")
+        if args.single_device:
+            cmd.append("--single-device")
         if args.force_sdpa:
             cmd.append("--force-sdpa")
         if args.strict_deterministic:
