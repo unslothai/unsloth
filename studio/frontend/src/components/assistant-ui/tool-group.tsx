@@ -10,6 +10,7 @@ import {
 } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import {
   toolOutputKey,
   useToolPaneScope,
@@ -242,6 +243,9 @@ const ToolGroupImpl: FC<
   const messageRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
+  const collapseByDefault = useChatPreferencesStore(
+    (state) => state.collapseToolActivityByDefault,
+  );
   // Force the group open when any call is receiving tool_output events.
   const toolLiveOutput = useChatRuntimeStore((s) => s.toolLiveOutput);
   const paneScope = useToolPaneScope();
@@ -270,8 +274,9 @@ const ToolGroupImpl: FC<
   if (hasPendingConfirmation || hasLiveOutput) forcedOpenRef.current = true;
   const forceOpen =
     hasPendingConfirmation ||
-    (hasLiveOutput && messageRunning) ||
-    (forcedOpenRef.current && messageRunning);
+    (!collapseByDefault &&
+      ((hasLiveOutput && messageRunning) ||
+        (forcedOpenRef.current && messageRunning)));
 
   // Render single calls, canvases, and Python scripts directly so their
   // persistent content never hides in a collapsed group.

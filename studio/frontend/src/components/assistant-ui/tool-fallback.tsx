@@ -9,6 +9,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import {
   formatMcpToolName,
@@ -34,6 +35,7 @@ import {
   type ElementType,
   memo,
   useCallback,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -59,8 +61,22 @@ function ToolFallbackRoot({
   ...props
 }: ToolFallbackRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
-  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+  const collapseByDefault = useChatPreferencesStore(
+    (state) => state.collapseToolActivityByDefault,
+  );
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(
+    () => defaultOpen && !collapseByDefault,
+  );
   const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
+
+  // Enabling the preference also quiets a tool card that is already running.
+  // Later manual opens remain untouched because this effect only reacts to the
+  // preference changing.
+  useEffect(() => {
+    if (collapseByDefault) {
+      setUncontrolledOpen(false);
+    }
+  }, [collapseByDefault]);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : uncontrolledOpen;

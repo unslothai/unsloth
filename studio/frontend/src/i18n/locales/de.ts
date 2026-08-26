@@ -1370,6 +1370,9 @@ export const de = {
         collapseByDefault: "Denken standardmäßig einklappen",
         collapseByDefaultDescription:
           "Das Denken bleibt eingeklappt, während das Modell denkt, statt automatisch aufzuklappen. Zum Lesen einen Block ausklappen.",
+        collapseToolActivityByDefault: "Tool-Aktivität standardmäßig einklappen",
+        collapseToolActivityByDefaultDescription:
+          "Tool-Eingaben und -Ausgaben bleiben während der Ausführung eingeklappt. Zum Prüfen eine Tool-Zeile ausklappen.",
       },
       webSearch: {
         title: "Websuche",

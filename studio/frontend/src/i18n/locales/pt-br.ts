@@ -1349,6 +1349,9 @@ export const ptBR = {
         collapseByDefault: "Recolher o raciocínio por padrão",
         collapseByDefaultDescription:
           "Mantém o raciocínio recolhido enquanto o modelo pensa, em vez de abri-lo automaticamente. Expanda um bloco para lê-lo.",
+        collapseToolActivityByDefault: "Recolher atividade de ferramentas por padrão",
+        collapseToolActivityByDefaultDescription:
+          "Mantém entradas e saídas das ferramentas recolhidas durante a execução. Expanda uma linha para inspecioná-la.",
       },
       webSearch: {
         title: "Busca na web",

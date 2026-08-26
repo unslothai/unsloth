@@ -5,6 +5,7 @@
 
 import { Spinner } from "@/components/ui/spinner";
 import { authFetch } from "@/features/auth";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 
 import { SandboxFiles } from "./sandbox-files-view";
 import { isSandboxFileList, type SandboxFile } from "./sandbox-files";
@@ -179,6 +180,20 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   // written even while the args status still reads as streaming.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const isWriting = isWritingCode && !awaitingApproval;
+  const collapseByDefault = useChatPreferencesStore(
+    (state) => state.collapseToolActivityByDefault,
+  );
+  const scriptCell = code ? (
+    <div className="mt-1 pl-5">
+      <ToolCodeCell
+        label="script"
+        code={code}
+        language="python"
+        downloadName="script.py"
+        streaming={isWriting}
+      />
+    </div>
+  ) : null;
 
   return (
     // Status, output and images collapse from history; the executed script
@@ -191,18 +206,9 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
         status={status}
         icon={CodeIcon}
       />
-      {code && (
-        <div className="mt-1 pl-5">
-          <ToolCodeCell
-            label="script"
-            code={code}
-            language="python"
-            downloadName="script.py"
-            streaming={isWriting}
-          />
-        </div>
-      )}
+      {!collapseByDefault && scriptCell}
       <ToolFallbackContent>
+        {collapseByDefault && scriptCell}
         <div className="border-l-2 border-muted-foreground/20 pl-2">
           {/* Output */}
           {isRunning ? (

@@ -11,7 +11,7 @@ import { GlobeIcon } from "lucide-react";
 
 import { isSearchImagesToolResult } from "@/features/chat";
 import { stringifyToolResult } from "@/lib/strip-ansi";
-import { memo, useEffect, useState } from "react";
+import { memo } from "react";
 import { SearchImageThumb } from "./search-image";
 import { Source, SourceIcon, SourceTitle } from "./sources";
 import { toolArgText } from "./tool-arg-text";
@@ -20,6 +20,7 @@ import {
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { useToolActivityOpen } from "./use-tool-activity-open";
 
 interface ParsedSource {
   title: string;
@@ -139,14 +140,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
         (p as { text: string }).text.length > 0,
     ),
   );
-  const [open, setOpen] = useState(isRunning);
-  useEffect(() => {
-    if (isRunning) {
-      setOpen(true);
-    } else if (hasText) {
-      setOpen(false);
-    }
-  }, [isRunning, hasText]);
+  const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>

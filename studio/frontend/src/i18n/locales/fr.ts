@@ -1367,6 +1367,9 @@ export const fr = {
         collapseByDefault: "Replier la réflexion par défaut",
         collapseByDefaultDescription:
           "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",
+        collapseToolActivityByDefault: "Replier l’activité des outils par défaut",
+        collapseToolActivityByDefaultDescription:
+          "Garde les entrées et sorties des outils repliées pendant leur exécution. Dépliez une ligne d’outil pour l’examiner.",
       },
       webSearch: {
         title: "Recherche web",
