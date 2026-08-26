@@ -371,32 +371,73 @@ _MAMBA2_MIXER_KERNEL_ATTRS = (
 )
 
 
-def _iter_mixer_kernel_globals(module):
-    """Global dicts ``cuda_kernels_forward`` actually LOAD_GLOBALs from.
+def _code_loads_fused(code) -> bool:
+    """True if this code object (or a nested const) LOAD_GLOBALs a fused kernel."""
+    if code is None:
+        return False
+    names = getattr(code, "co_names", ())
+    if any(name in _MAMBA2_FUSED_NAMES for name in names):
+        return True
+    for const in getattr(code, "co_consts", ()):
+        if inspect.iscode(const) and _code_loads_fused(const):
+            return True
+    return False
 
-    transformers 5.5 Nemotron-H resolves ``mamba_split_conv1d_scan_combined``
-    in ``__init__`` via ``lazy_load_kernel`` / ``resolve_internal_import`` and
-    then calls it with hardcoded ``seq_idx=None``. Unsloth compiles that method
-    into ``unsloth_compiled_cache``; the live kernel is the name in *that*
-    function's ``__globals__``, which is not necessarily ``mamba_ssm``'s export.
+
+def _iter_fused_load_globals(module):
+    """``__globals__`` dicts of callables that LOAD_GLOBAL a fused Mamba2 kernel.
+
+    Unsloth compiles ``NemotronHMamba2Mixer.forward`` into
+    ``unsloth_compiled_cache`` as ``NemotronHMamba2Mixer_forward``, which still
+    calls ``self.cuda_kernels_forward``. That method is exec'd in the compiled
+    module and LOAD_GLOBALs ``mamba_split_conv1d_scan_combined`` from *its*
+    globals, not from ``mamba_ssm``.
     """
     seen: set[int] = set()
-    candidates = []
+    callables = []
     for attr in _MAMBA2_MIXER_KERNEL_ATTRS:
-        candidates.append(getattr(module, attr, None))
-        candidates.append(getattr(type(module), attr, None))
-    for fn in candidates:
+        callables.append(getattr(module, attr, None))
+        callables.append(getattr(type(module), attr, None))
+    modeling = inspect.getmodule(type(module))
+    if modeling is not None:
+        namespace = getattr(modeling, "__dict__", None)
+        if isinstance(namespace, dict):
+            callables.extend(namespace.values())
+    for fn in callables:
         if not callable(fn):
             continue
         try:
             fn = inspect.unwrap(fn)
         except Exception:
             pass
-        globs = getattr(fn, "__globals__", None)
+        raw = getattr(fn, "__func__", fn)
+        code = getattr(raw, "__code__", None)
+        globs = getattr(raw, "__globals__", None)
         if not isinstance(globs, dict) or id(globs) in seen:
             continue
+        if not _code_loads_fused(code):
+            continue
         seen.add(id(globs))
-        yield fn, globs
+        yield raw, globs
+
+
+def _rebind_dict_referrers(orig, wrapped) -> None:
+    """Replace ``orig`` with ``wrapped`` in every dict that still holds it."""
+    if orig is None or wrapped is orig:
+        return
+    try:
+        import gc
+    except Exception:
+        return
+    for obj in gc.get_referrers(orig):
+        if type(obj) is not dict:
+            continue
+        for key, value in list(obj.items()):
+            if value is orig:
+                try:
+                    obj[key] = wrapped
+                except Exception:
+                    continue
 
 
 def _resolve_mamba2_fused(module):
@@ -413,7 +454,7 @@ def _resolve_mamba2_fused(module):
         fn = getattr(module, name, None)
         if callable(fn):
             return fn, ("instance", None, name)
-    for _fn, globs in _iter_mixer_kernel_globals(module):
+    for _fn, globs in _iter_fused_load_globals(module):
         for name in _MAMBA2_FUSED_NAMES:
             cand = globs.get(name)
             if callable(cand):
@@ -507,21 +548,30 @@ def _wrap_mamba2_fused_call(
     *,
     on_module = None,
     attr_name = None,
+    varlen_slot = None,
 ):
     """Inject packed ``seq_idx`` into the fused conv1d+scan kernel.
 
     ``mixers`` is the list of Mamba2 modules sharing this kernel. On a packed
-    forward they all stash the same boundary metadata.
+    forward they all stash the same boundary metadata. ``varlen_slot`` is a
+    1-element list set by the outer model.forward wrapper so injection still
+    works if PEFT/compile replaced mixer instances after patch time.
     """
 
     @wraps(orig)
     def fused_fn(*args, **kwargs):
-        donors = [m for m in mixers if getattr(m, "_unsloth_varlen", None) is not None]
-        if donors:
+        varlen = varlen_slot[0] if varlen_slot else None
+        if varlen is None:
+            donors = [
+                m for m in mixers if getattr(m, "_unsloth_varlen", None) is not None
+            ]
+            if donors:
+                varlen = donors[0]._unsloth_varlen
+        if varlen is not None:
             if kwargs.get("seq_idx") is None:
-                kwargs["seq_idx"] = donors[0]._unsloth_varlen[1]
+                kwargs["seq_idx"] = varlen[1]
             if kwargs.get("seq_idx") is not None:
-                for mixer in donors:
+                for mixer in mixers:
                     mixer._unsloth_varlen_fused_hit = True
         return orig(*args, **kwargs)
 
@@ -777,15 +827,19 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         module._unsloth_varlen_wrapped = True
 
     wrapped_fused: dict[int, Any] = {}
+    varlen_slot: list = [None]
 
     def _ensure_mamba2_fused_wrapped(fn):
         if fn is None:
             return None
         wrapped = wrapped_fused.get(id(fn))
         if wrapped is None:
-            wrapped = _wrap_mamba2_fused_call(fn, mamba2_modules)
+            wrapped = _wrap_mamba2_fused_call(
+                fn, mamba2_modules, varlen_slot = varlen_slot
+            )
             wrapped_fused[id(fn)] = wrapped
             _rebind_mamba2_fused_aliases(fn, wrapped)
+            _rebind_dict_referrers(fn, wrapped)
         return wrapped
 
     for module in mamba2_modules:
@@ -810,7 +864,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         elif kind == "globals" and wrapped is not None:
             globs, name = loc[1], loc[2]
             globs[name] = wrapped
-        for _meth, globs in _iter_mixer_kernel_globals(module):
+        for _meth, globs in _iter_fused_load_globals(module):
             for name in _MAMBA2_FUSED_NAMES:
                 cand = globs.get(name)
                 if callable(cand):
@@ -862,7 +916,11 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_conv_hit = False
                     module._unsloth_varlen_scan_hit = False
                     module._unsloth_varlen_fused_hit = False
-            out = forward_orig(*args, **kwargs)
+            varlen_slot[0] = varlen
+            try:
+                out = forward_orig(*args, **kwargs)
+            finally:
+                varlen_slot[0] = None
             # Runtime dispatch handshake: on the first packed forward, confirm the
             # load-bearing kernels ran. Gated-delta needs conv+scan; Mamba2 needs
             # the fused conv1d+scan. Partial dispatch leaves cross-sequence

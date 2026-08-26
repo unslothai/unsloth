@@ -649,6 +649,62 @@ def cuda_kernels_forward(self, hidden_states, cache_params=None, attention_mask=
     assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
 
 
+def test_patch_mamba2_varlen_rewrites_bytecode_load_global(monkeypatch):
+    # Unsloth compiles mixer methods into unsloth_compiled_cache as free
+    # functions whose co_names include mamba_split_conv1d_scan_combined.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import types
+
+    compiled = types.ModuleType("unsloth_compiled_cache.NemotronHMamba2Mixer")
+    ns = compiled.__dict__
+    ns["__name__"] = compiled.__name__
+    exec(
+        """
+def mamba_split_conv1d_scan_combined(*args, seq_idx=None, **kwargs):
+    mamba_split_conv1d_scan_combined.calls.append(seq_idx)
+    return args[0]
+mamba_split_conv1d_scan_combined.calls = []
+def NemotronHMamba2Mixer_cuda_kernels_forward(self, hidden_states, cache_params=None, attention_mask=None):
+    return mamba_split_conv1d_scan_combined(hidden_states, seq_idx=None)
+""",
+        ns,
+    )
+    sys.modules[compiled.__name__] = compiled
+
+    class _CompiledNemotronHMamba2Mixer(_FakeNemotronHMamba2Mixer):
+        def __init__(self):
+            super().__init__()
+            del self.mamba2_split_conv1d_scan_combined
+            self.cuda_kernels_forward = types.MethodType(
+                ns["NemotronHMamba2Mixer_cuda_kernels_forward"], self
+            )
+
+        def forward(self, hidden_states, **kwargs):
+            return self.cuda_kernels_forward(hidden_states)
+
+    _CompiledNemotronHMamba2Mixer.__module__ = compiled.__name__
+
+    class _CompiledModel(_FakeMamba2Model):
+        def __init__(self):
+            super().__init__()
+            self.mixer = _CompiledNemotronHMamba2Mixer()
+
+    try:
+        model = _CompiledModel()
+        assert patch_hybrid_linear_attention_varlen(model) is True
+        ns["mamba_split_conv1d_scan_combined"].calls.clear()
+        model(
+            input_ids = torch.zeros(1, 6, dtype = torch.long),
+            packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+            use_cache = False,
+        )
+        seq_idx = ns["mamba_split_conv1d_scan_combined"].calls[-1]
+        assert seq_idx is not None
+        assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
+    finally:
+        sys.modules.pop(compiled.__name__, None)
+
+
 def test_patch_mamba2_varlen_no_fused_dispatch_aborts(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
 
