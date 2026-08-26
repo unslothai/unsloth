@@ -3996,11 +3996,14 @@ export function createOpenAIStreamAdapter(
       }
       // Started only when the model hands this turn off, never on the toggle alone: arming
       // research offers it the tool, and it decides whether the message wants researching.
-      const startDeepResearch = async function* (researchQuestion: string) {
+      const startDeepResearch = async function* (
+        researchQuestion: string,
+        transitionSignal: AbortSignal = abortSignal,
+      ) {
         if (runtime.modelLoading) {
           toast.info("Waiting for model to finish loading…");
           try {
-            await waitForModelReady(abortSignal);
+            await waitForModelReady(transitionSignal);
           } catch (error) {
             throw error;
           }
@@ -4010,7 +4013,7 @@ export function createOpenAIStreamAdapter(
             ReturnType<typeof resolveQueuedEmptyLocalModel>
           >;
           try {
-            resolution = await resolveQueuedEmptyLocalModel(abortSignal);
+            resolution = await resolveQueuedEmptyLocalModel(transitionSignal);
           } catch (error) {
             throw error;
           }
@@ -4148,6 +4151,7 @@ export function createOpenAIStreamAdapter(
           params.systemVariables,
           readThreadRecord,
         );
+        if (transitionSignal.aborted) return;
         const ragScope =
           runtime.ragEnabled || projectRagEnabled
             ? runtime.ragEnabled && runtime.ragSource.type === "kb"
@@ -6892,7 +6896,7 @@ export function createOpenAIStreamAdapter(
             // failed acknowledgement would have said is lost. Not after Stop.
             if (deepResearchHandoff.question !== null && !runSignal.aborted) {
               try {
-                yield* startDeepResearch(deepResearchHandoff.question);
+                yield* startDeepResearch(deepResearchHandoff.question, runSignal);
                 return;
               } catch (researchError) {
                 toast.error("Deep research could not start", {
@@ -6910,7 +6914,7 @@ export function createOpenAIStreamAdapter(
         // replaces this reply. Not after Stop: the user ended the turn before it got there.
         if (deepResearchHandoff.question !== null && !runSignal.aborted) {
           try {
-            yield* startDeepResearch(deepResearchHandoff.question);
+            yield* startDeepResearch(deepResearchHandoff.question, runSignal);
           } catch (error) {
             // The reply the model already wrote stays; the user can send again.
             toast.error("Deep research could not start", {

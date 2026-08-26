@@ -3805,6 +3805,32 @@ def test_stopped_run_is_repointed_at_a_newer_message(research_home):
     assert research_db.has_thread_claim("thread-1") is True
 
 
+def test_migrated_history_does_not_hide_the_claim_owner_s_stopped_run(research_home):
+    _create()
+    conn = studio_db.get_connection()
+    try:
+        conn.executemany(
+            """INSERT INTO research_runs
+               (id, owner_subject, thread_id, user_message_id, status, config_json,
+                created_at, updated_at, completed_at, error_message)
+               VALUES (?, ?, 'thread-1', 'user-1', ?, '{}', ?, ?, ?, ?)""",
+            [
+                ("legacy-completed", "alice", "completed", 1, 1, 1, None),
+                ("legacy-superseded", "bob", "failed", 2, 2, 2, "Superseded"),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _cancel_run()
+
+    assert research_db.research_spent("thread-1") is False
+    reused = _rebind(_new_user_message())
+    assert reused is not None
+    assert reused["id"] == "run-1"
+    assert reused["status"] == "planning"
+
+
 def test_repointed_run_starts_a_fresh_attempt_clock(research_home, monkeypatch):
     _create()
     _cancel_run()

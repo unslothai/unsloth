@@ -413,7 +413,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "const visibleRoute = window.location.href" in CHAT_ADAPTER
     assert "window.location.href === visibleRoute" in CHAT_ADAPTER
     assert "trackQueuedSettings: false" in CHAT_ADAPTER
-    assert CHAT_ADAPTER.count("await resolveQueuedEmptyLocalModel(abortSignal)") >= 2
+    assert "await resolveQueuedEmptyLocalModel(transitionSignal)" in CHAT_ADAPTER
+    assert "await resolveQueuedEmptyLocalModel(abortSignal)" in CHAT_ADAPTER
     assert "persist: !options?.preserveVisibleSettings" in CHAT_ADAPTER
     assert "beginModelLoading()" in CHAT_ADAPTER
     assert "endModelLoading(lifecycleLease)" in CHAT_ADAPTER

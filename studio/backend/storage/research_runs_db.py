@@ -292,15 +292,20 @@ def _unbind_assistant_locked(
 
 
 def _stopped_run_locked(conn: sqlite3.Connection, thread_id: str) -> sqlite3.Row | None:
-    """The thread's one run, when it was stopped and can be re-pointed at a new question."""
-    runs = conn.execute(
-        "SELECT id, status, owner_subject, plan_revision, assistant_message_id "
-        "FROM research_runs WHERE thread_id=?",
+    """The claim owner's latest run, when stopped and available for a new question."""
+    run = conn.execute(
+        """SELECT r.id, r.status, r.owner_subject, r.plan_revision, r.assistant_message_id
+           FROM research_thread_claims AS c
+           JOIN research_runs AS r
+             ON r.thread_id=c.thread_id AND r.owner_subject=c.owner_subject
+           WHERE c.thread_id=?
+           ORDER BY r.created_at DESC, r.id DESC
+           LIMIT 1""",
         (thread_id,),
-    ).fetchall()
-    if len(runs) != 1 or runs[0]["status"] != "cancelled":
+    ).fetchone()
+    if run is None or run["status"] != "cancelled":
         return None
-    return runs[0]
+    return run
 
 
 def research_spent(thread_id: str) -> bool:

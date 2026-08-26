@@ -85,7 +85,7 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     research = adapter.split("const startDeepResearch = async function*", 1)[1].split(
         "const sandboxSessionId", 1
     )[0]
-    assert "await resolveQueuedEmptyLocalModel(abortSignal)" in research
+    assert "await resolveQueuedEmptyLocalModel(transitionSignal)" in research
     assert "queuedEmptyModelRuntime = resolution.modelRuntime" in research
     assert "signal: researchFollowController.signal" in adapter
     assert "beginExternalResearchFollow(" in adapter
@@ -106,6 +106,22 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert "prompt," not in create_block
     assert "instructions: researchInstructions" in create_block
     assert "resolveChatInstructions" in adapter
+
+
+def test_research_handoff_transition_honors_the_original_run_stop() -> None:
+    adapter = source("features/chat/api/chat-adapter.ts")
+    research = adapter.split("const startDeepResearch = async function*", 1)[1].split(
+        "const deepResearchHandoff = newDeepResearchHandoff();", 1
+    )[0]
+
+    assert "transitionSignal: AbortSignal = abortSignal" in research
+    assert "await waitForModelReady(transitionSignal)" in research
+    assert "await resolveQueuedEmptyLocalModel(transitionSignal)" in research
+    registered = research.index("runtime.registerThreadServerCancel(threadKey, researchServerCancel);")
+    assert research.rfind("if (transitionSignal.aborted) return;", 0, registered) >= 0
+    assert adapter.count(
+        "startDeepResearch(deepResearchHandoff.question, runSignal)"
+    ) == 2
 
 
 def test_research_reasoning_effort_is_clamped_to_the_loaded_model() -> None:
@@ -428,4 +444,4 @@ def test_a_tool_that_ran_starts_its_run_even_if_the_reply_never_finished() -> No
     adapter = source("features/chat/api/chat-adapter.ts")
     stream_error = adapter.split("} catch (streamError) {", 1)[1].split("throw streamError;", 1)[0]
     assert "deepResearchHandoff.question !== null && !runSignal.aborted" in stream_error
-    assert "yield* startDeepResearch(deepResearchHandoff.question)" in stream_error
+    assert "yield* startDeepResearch(deepResearchHandoff.question, runSignal)" in stream_error
