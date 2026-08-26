@@ -4833,6 +4833,17 @@ def _hardened_settings_in_toml(
         if not separator:
             continue
         key = key.strip().strip("\"'")
+        if "." in key:
+            # A dotted key is the inline spelling of a table: `pip.require-hashes = true`
+            # at the root is `[pip] require-hashes = true`, which uv enforces. Treated as
+            # one literal key it matched nothing and the policy was dropped.
+            head, _, tail = key.rpartition(".")
+            path = current + tuple(
+                part.strip().strip("\"'") for part in head.split(".") if part.strip()
+            )
+            if path not in tables:
+                continue
+            key = tail.strip().strip("\"'")
         if key in _HARDENED_CONFIG_KEYS:
             raw = raw.strip()
             if re.fullmatch(r"\[\s*\]|\{\s*\}", raw):
@@ -5068,16 +5079,26 @@ def _combine_pip_commands(
     return combined
 
 
+def _pip_slot(command: str) -> str:
+    """The name a pip subcommand's own configured-policy set is kept under."""
+    return f"pip:{command}"
+
+
+def _resolve_pip_sections(
+    pooled: "dict[str, dict[str, tuple[str, str]]]",
+) -> "dict[str, dict[str, tuple[str, str]]]":
+    """pip's own resolution, per subcommand: `[global]` first, then its own section."""
+    return {
+        command: dict(pooled.get("global", {}), **pooled.get(command, {}))
+        for command in _PIP_COMMANDS
+    }
+
+
 def _combine_pip_sections(
     pooled: "dict[str, dict[str, tuple[str, str]]]",
 ) -> "dict[str, tuple[str, str]]":
-    """pip's own resolution: `[global]` first, then the command's own section."""
-    return _combine_pip_commands(
-        {
-            command: dict(pooled.get("global", {}), **pooled.get(command, {}))
-            for command in _PIP_COMMANDS
-        }
-    )
+    """The three subcommands' resolved settings, combined into one answer."""
+    return _combine_pip_commands(_resolve_pip_sections(pooled))
 
 
 def _hardened_settings_in_ini(text: str) -> "dict[str, str]":
@@ -5149,10 +5170,18 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
     Best-effort throughout: a probe that fails just shortens the answer.
     """
     on: "list[tuple[str, str, str]]" = []
-    configured: "dict[str, set[str]]" = {"pip": set(), "uv": set()}
+    # Slots, not tools: pip resolves each subcommand separately, so `[download]
+    # only-binary = :all:` is not an opinion about `pip install`. Crediting pip with it
+    # let a fallback `pip install` proceed as though the operator's control were covered
+    # when that command was in fact unrestricted.
+    configured: "dict[str, set[str]]" = {
+        slot: set() for slot in ("uv",) + tuple(_pip_slot(name) for name in _PIP_COMMANDS)
+    }
     cancelled: "dict[str, set[str]]" = {"pip": set(), "uv": set()}
 
-    def _record(tool: str, source: str, key: str, value: str) -> None:
+    def _record(
+        tool: str, source: str, key: str, value: str, slots: "tuple[str, ...]"
+    ) -> None:
         if source == "env" and not value.strip():
             # pip drops empty environment values before applying precedence, so
             # PIP_ONLY_BINARY='' neither enables a control nor cancels a pip.conf that
@@ -5161,7 +5190,8 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
             # cancellation suppressed a policy that was still fully in force.
             return
         canonical = _canonical_policy_key(key)
-        configured[tool].add(canonical)
+        for slot in slots:
+            configured[slot].add(canonical)
         if _config_value_is_on(value):
             on.append((tool, source, key))
         elif source == "env":
@@ -5169,6 +5199,7 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
             # variable cancels a file that enables the same control.
             cancelled[tool].add(canonical)
 
+    all_pip_slots = tuple(_pip_slot(name) for name in _PIP_COMMANDS)
     for name in _PM_POLICY_ENV_VARS:
         raw = os.environ.get(name)
         if raw is None:
@@ -5176,7 +5207,15 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
         if name.startswith("UV_") and name not in _UV_ENFORCED_ENV_VARS:
             # uv ignores it, so it is not policy. See _UV_ENFORCED_ENV_VARS.
             continue
-        _record("pip" if name.startswith("PIP_") else "uv", "env", name, raw.strip())
+        is_pip = name.startswith("PIP_")
+        # A variable applies to every pip subcommand, unlike a config section.
+        _record(
+            "pip" if is_pip else "uv",
+            "env",
+            name,
+            raw.strip(),
+            all_pip_slots if is_pip else ("uv",),
+        )
 
     try:
         result = subprocess.run(
@@ -5191,7 +5230,7 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
         )
     except (OSError, subprocess.SubprocessError):
         result = None
-    pip_settings: "dict[str, tuple[str, str]]" = {}
+    pooled: "dict[str, dict[str, tuple[str, str]]]" = {name: {} for name in _PIP_SECTIONS}
     if result is not None and result.returncode == 0:
         # `pip config list` prints EVERY definition, overridden ones included, in load
         # order, so a later file wins. Within a file the command section beats [global]
@@ -5219,14 +5258,12 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
             }
             for name in _PIP_SECTIONS
         }
-        pip_settings.update(_combine_pip_sections(pooled))
     else:
         # No usable pip, so read pip's files directly rather than report an ordinary
         # machine. They come back in pip's own load order, so a later file wins -- within
         # a section, which is why every file's sections are pooled and only resolved
         # against each other at the end. Collapsing a file before reading the next let a
         # low-priority setting erase a higher-priority one pip still applies.
-        pooled: "dict[str, dict[str, tuple[str, str]]]" = {name: {} for name in _PIP_SECTIONS}
         for path in _hardened_pip_config_paths():
             text = _read_text(path)
             if text is None:
@@ -5234,30 +5271,46 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
             source = os.path.basename(path)
             for name, values in _hardened_pip_sections(text).items():
                 pooled[name].update({key: (source, value) for key, value in values.items()})
-        pip_settings.update(_combine_pip_sections(pooled))
-    for key, (source, value) in pip_settings.items():
+    # The `on` list comes from the three combined, so the notice names each control once;
+    # the configured sets stay per subcommand, since that is what decides whether a given
+    # command can enforce it.
+    per_command_settings = _resolve_pip_sections(pooled)
+    for key, (source, value) in _combine_pip_commands(per_command_settings).items():
         if _canonical_policy_key(key) not in cancelled["pip"]:
-            _record("pip", source, key, value)
+            _record("pip", source, key, value, ())
+    for command in _PIP_COMMANDS:
+        for key in per_command_settings[command]:
+            canonical = _canonical_policy_key(key)
+            if canonical not in cancelled["pip"]:
+                configured[_pip_slot(command)].add(canonical)
 
     # uv's files come back lowest precedence first, so a higher one simply overwrites:
     # a project `[tool.uv.pip] require-hashes = false` is uv's effective answer even
     # where the user config turned it on, and reporting the user value regardless made
     # a later pip step refuse over a gap uv was not actually enforcing.
-    uv_settings: "dict[str, tuple[str, str, str]]" = {}
+    #
+    # Keyed on the literal key, not the canonical one: `no-build` and
+    # `no-build-package` are one CONTROL but two SETTINGS, and collapsing them into one
+    # slot let a `no-build-package = []` erase a `no-build = true` sitting beside it in
+    # the same file. Canonicalising is for comparing controls, not for storing them.
+    uv_settings: "dict[str, tuple[str, str]]" = {}
+    explicit_uv = os.environ.get("UV_CONFIG_FILE", "").strip()
     for path in _hardened_uv_config_paths():
         text = _read_text(path)
         if text is None:
             continue
+        # Schema by provenance, not by name: a file named by UV_CONFIG_FILE is parsed as
+        # a standalone uv.toml whatever it is called, so an explicit file that happens to
+        # be named pyproject.toml still has its policy read from the root tables.
+        is_pyproject = os.path.basename(path) == "pyproject.toml" and path != explicit_uv
         tables = (
-            (("tool", "uv"), ("tool", "uv", "pip"))
-            if os.path.basename(path) == "pyproject.toml"
-            else ((), ("pip",))
+            (("tool", "uv"), ("tool", "uv", "pip")) if is_pyproject else ((), ("pip",))
         )
         for key, value in _hardened_settings_in_toml(text, tables).items():
-            uv_settings[_canonical_policy_key(key)] = (os.path.basename(path), key, value)
-    for canonical, (source, key, value) in uv_settings.items():
-        if canonical not in cancelled["uv"]:
-            _record("uv", source, key, value)
+            uv_settings[key] = (os.path.basename(path), value)
+    for key, (source, value) in uv_settings.items():
+        if _canonical_policy_key(key) not in cancelled["uv"]:
+            _record("uv", source, key, value, ("uv",))
 
     return tuple(dict.fromkeys(on)), {tool: frozenset(keys) for tool, keys in configured.items()}
 
@@ -5290,7 +5343,15 @@ def _is_resolving_cmd(cmd: "list[str]") -> bool:
     not their problem -- treating them as pip installs turned an unenforceable cutoff
     into a hard exit on the final metadata patch, after every real step had succeeded.
     """
-    return any(arg in ("install", "download", "wheel") for arg in cmd)
+    return any(arg in _PIP_COMMANDS for arg in cmd)
+
+
+def _pip_subcommand(cmd: "list[str]") -> str:
+    """Which of install / download / wheel this command runs."""
+    for arg in cmd:
+        if arg in _PIP_COMMANDS:
+            return arg
+    return "install"
 
 
 def _unenforceable_policy(cmd: "list[str]") -> "list[str]":
@@ -5314,7 +5375,11 @@ def _unenforceable_policy(cmd: "list[str]") -> "list[str]":
     if not _respect_pm_policy() or not _is_resolving_cmd(cmd):
         return []
     target = "uv" if cmd[:1] == ["uv"] else "pip"
-    known = _configured_policy_keys().get(target, frozenset())
+    # For pip, the subcommand being run and not pip in general: `[download] only-binary`
+    # is not an opinion about `pip install`, and treating it as one let a fallback
+    # install proceed as though the control were covered.
+    slot = "uv" if target == "uv" else _pip_slot(_pip_subcommand(cmd))
+    known = _configured_policy_keys().get(slot, frozenset())
     missing = {
         key
         for tool, _source, key in _detected_policy()
@@ -5383,8 +5448,9 @@ def _announce_pm_policy() -> None:
         f"Package manager hardening detected ({listed}). Unsloth relaxes it for its own "
         "dependency installs only -- the shipped requirements are unhashed and a few have "
         "no wheel at any version -- and never for your other pip commands. On the steps "
-        "that pin an index it is set aside in full; on the few that do not, only pip's "
-        "require-hashes is, so an upload cutoff or a uv setting still applies there. Set "
+        "that pin an index it is set aside in full; on the few that do not, pip's "
+        "require-hashes is relaxed and the handful of packages with no wheel are allowed "
+        "to build from source, while an upload cutoff or a uv setting still applies. Set "
         f"{_POLICY_OPT_OUT_ENV}=1 to keep your policy in force everywhere instead.",
         _cyan,
     )

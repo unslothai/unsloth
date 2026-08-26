@@ -1412,6 +1412,58 @@ class TestDetectionMatchesWhatTheManagersActuallyEnforce:
             ]
         assert paths.index("C:/u/pip/pip.ini") < paths.index("C:/a/pip/pip.ini"), paths
 
+    def test_a_package_scoped_key_does_not_erase_its_global_twin(self, tmp_path):
+        """`no-build` and `no-build-package` are one CONTROL but two SETTINGS. Storing
+        them under the canonical name let an empty `no-build-package = []` beside an
+        active `no-build = true` erase it, and uv still refuses source builds there."""
+        config = tmp_path / "uv.toml"
+        config.write_text("no-build = true\nno-build-package = []\n", encoding = "utf-8")
+        assert self._names({}, uv_files = [str(config)]) == ("uv.toml no-build",)
+
+    def test_an_explicit_config_file_is_read_as_a_standalone_uv_toml(self, tmp_path):
+        """uv parses the file named by UV_CONFIG_FILE with the uv.toml schema whatever it
+        is called, so choosing the schema from the basename lost the policy of an
+        explicit file that happened to be named pyproject.toml."""
+        explicit = tmp_path / "pyproject.toml"
+        explicit.write_text("no-build = true\n", encoding = "utf-8")
+        assert self._names(
+            {"UV_CONFIG_FILE": str(explicit)}, uv_files = [str(explicit)]
+        ) == ("pyproject.toml no-build",)
+        # A DISCOVERED pyproject.toml keeps the [tool.uv] schema, where a root key is
+        # some other tool's setting and not uv policy.
+        assert self._names({}, uv_files = [str(explicit)]) == ()
+
+    def test_a_dotted_key_is_a_table_in_the_legacy_parser(self):
+        """`pip.require-hashes = true` at the root of a uv.toml is the inline spelling of
+        `[pip] require-hashes = true`, which uv enforces. Read as one literal key it
+        matched nothing and the policy was dropped on 3.9 and 3.10."""
+        with mock.patch.object(ips, "_tomllib", None):
+            assert ips._hardened_keys_in_toml(
+                "pip.require-hashes = true\n", ((), ("pip",))
+            ) == ["require-hashes"]
+            # A dotted key naming a table we do not read stays ignored.
+            assert ips._hardened_keys_in_toml(
+                "other.require-hashes = true\n", ((), ("pip",))
+            ) == []
+
+    def test_a_download_only_section_is_not_an_opinion_about_install(self, tmp_path):
+        """pip resolves each subcommand separately, so `[download] only-binary = :all:`
+        does not restrict `pip install`. Pooling the three let a fallback install run as
+        though the operator's control were covered when that command was unrestricted."""
+        config = tmp_path / "pip.conf"
+        config.write_text("[download]\nonly-binary = :all:\n", encoding = "utf-8")
+        ips._policy_scan.cache_clear()
+        with (
+            mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True),
+            mock.patch.object(ips.subprocess, "run", mock.Mock(side_effect = OSError())),
+            mock.patch.object(ips, "_hardened_pip_config_paths", lambda: [str(config)]),
+            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: []),
+        ):
+            keys = ips._configured_policy_keys()
+            assert "no-build" in keys["pip:download"]
+            assert "no-build" not in keys["pip:install"], keys
+        ips._policy_scan.cache_clear()
+
     def test_an_inline_comment_is_not_part_of_the_value(self):
         """The pre-3.11 fallback had already stripped the comment and then appended the
         raw line anyway, so `no-build = false # disabled` read as the value
