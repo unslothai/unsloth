@@ -46,14 +46,16 @@ def test_a_local_directory_is_never_remapped(monkeypatch, tmp_path):
     assert mlx_bnb_base_repo("unsloth/model-bnb-4bit") is None
 
 
-def test_substitutions_cover_a_loras_base_and_skip_repos_already_watched():
+def test_substitutions_cover_a_loras_base():
     swaps = mlx_bnb_substitutions(["me/my-lora", "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit"])
     assert swaps == [
         ("unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit", "unsloth/Meta-Llama-3.1-8B-Instruct")
     ]
 
     already_watched = ["unsloth/gemma-3-4b-it-bnb-4bit", "unsloth/gemma-3-4b-it"]
-    assert mlx_bnb_substitutions(already_watched) == []
+    assert mlx_bnb_substitutions(already_watched) == [
+        ("unsloth/gemma-3-4b-it-bnb-4bit", "unsloth/gemma-3-4b-it")
+    ]
 
 
 def _standard_host(monkeypatch, device):
@@ -84,10 +86,70 @@ def test_chat_only_hosts_are_untouched(monkeypatch):
     assert defaults_mod.get_default_models() == defaults_mod.DEFAULT_MODELS_GGUF
 
 
-def test_worker_watches_the_repo_mlx_downloads():
-    source = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
-    assert "mlx_bnb_substitutions(watch_repos)" in source
-    assert "watch_repos.append(mlx_base)" in source
+@pytest.mark.parametrize(
+    "identifier,base_model,is_lora,expected",
+    [
+        (
+            "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit",
+            None,
+            False,
+            ["unsloth/Qwen2-VL-2B-Instruct"],
+        ),
+        (
+            "me/my-lora",
+            "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit",
+            True,
+            ["me/my-lora", "unsloth/Qwen2-VL-2B-Instruct"],
+        ),
+        (
+            "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit",
+            "unsloth/Qwen2-VL-2B-Instruct",
+            True,
+            ["unsloth/Qwen2-VL-2B-Instruct"],
+        ),
+    ],
+)
+def test_worker_only_watches_the_repositories_mlx_downloads(
+    monkeypatch, identifier, base_model, is_lora, expected
+):
+    from types import SimpleNamespace
+
+    import core.inference.worker as worker_mod
+    import utils.hf_xet_fallback as fallback_mod
+
+    model_config = SimpleNamespace(
+        identifier = identifier,
+        base_model = base_model,
+        is_lora = is_lora,
+    )
+    captured = {}
+
+    class StopEvent:
+        def set(self):
+            pass
+
+    class ResponseQueue:
+        def put(self, response):
+            pass
+
+    class Backend:
+        device = "mlx"
+
+        def load_model(self, **kwargs):
+            return False
+
+    def start_watchdog(**kwargs):
+        captured.update(kwargs)
+        return StopEvent()
+
+    monkeypatch.setattr(worker_mod, "_build_model_config", lambda config: model_config)
+    monkeypatch.setattr(worker_mod, "_resolve_lora_4bit", lambda model, requested: False)
+    monkeypatch.setattr(worker_mod, "_run_security_gates", lambda *args, **kwargs: True)
+    monkeypatch.setattr(fallback_mod, "start_watchdog", start_watchdog)
+
+    worker_mod._handle_load(Backend(), {"model_name": identifier}, ResponseQueue())
+
+    assert captured["repo_ids"] == expected
 
 
 def test_the_host_rule_only_fires_on_mlx(monkeypatch):

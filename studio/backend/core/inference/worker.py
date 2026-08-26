@@ -410,8 +410,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # The MLX loader downloads these bases rather than the bnb repos it was handed,
         # so they are what the stall watchdog must measure and what the log must name.
         if getattr(backend, "device", None) == "mlx":
-            for requested, mlx_base in mlx_bnb_substitutions(watch_repos):
-                watch_repos.append(mlx_base)
+            substitutions = mlx_bnb_substitutions(watch_repos)
+            replacements = dict(substitutions)
+            watch_repos = list(dict.fromkeys(replacements.get(repo, repo) for repo in watch_repos))
+            for requested, mlx_base in substitutions:
                 _send_response(
                     resp_queue,
                     {

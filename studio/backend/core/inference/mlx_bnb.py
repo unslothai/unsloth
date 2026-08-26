@@ -45,12 +45,9 @@ def mlx_host_bnb_base_repo(model_name: Optional[str]) -> Optional[str]:
 
 def mlx_bnb_substitutions(repos: Iterable[str]) -> list[tuple[str, str]]:
     """``(requested, base)`` for every repo in *repos* MLX will swap out."""
-    requested = list(repos)
-    known = set(requested)
     swaps = []
-    for repo in requested:
+    for repo in repos:
         base = mlx_bnb_base_repo(repo)
-        if base and base not in known:
-            known.add(base)
+        if base:
             swaps.append((repo, base))
     return swaps
