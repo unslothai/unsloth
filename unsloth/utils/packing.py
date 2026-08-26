@@ -481,44 +481,20 @@ def _iter_mamba2_install_namespaces(mamba2_modules):
 
 
 def _mamba2_handshake_debug(modules) -> str:
-    """Short dump of the live mixer call so a failed handshake is diagnosable."""
-    lines = []
-    for module in modules[:1]:
-        cls = type(module)
-        lines.append(f"cls={cls.__name__} module={getattr(cls, '__module__', None)}")
-        lines.append(
-            f"training={getattr(module, 'training', None)} "
-            f"use_mem_eff_path={getattr(module, 'use_mem_eff_path', None)}"
-        )
-        modeling = inspect.getmodule(cls)
-        globs = getattr(modeling, "__dict__", {}) if modeling is not None else {}
-        lines.append(f"is_fast_path_available={globs.get('is_fast_path_available', '<missing>')}")
-        compiled_fwd = globs.get(f"{cls.__name__}_forward") if isinstance(globs, dict) else None
-        if callable(compiled_fwd):
-            code = getattr(compiled_fwd, "__code__", None)
-            lines.append(f"{cls.__name__}_forward co_names={getattr(code, 'co_names', None)}")
-        for attr in _MAMBA2_MIXER_KERNEL_ATTRS:
-            fn = getattr(module, attr, None)
-            if not callable(fn):
-                continue
-            try:
-                raw = inspect.unwrap(getattr(fn, "__func__", fn))
-            except Exception:
-                raw = fn
-            code = getattr(raw, "__code__", None)
-            fn_globs = getattr(raw, "__globals__", {})
-            keys = sorted(
-                k
-                for k in (fn_globs or {})
-                if "mamba" in k.lower() or "split" in k.lower() or "fast_path" in k.lower()
-            )
-            lines.append(f"{attr} co_names={getattr(code, 'co_names', None)}")
-            lines.append(f"{attr} glob_keys={keys}")
-            try:
-                lines.append(inspect.getsource(raw)[:600])
-            except Exception as exc:
-                lines.append(f"{attr} source={exc}")
-    return "\n".join(lines)
+    """One-line summary of why the packed dispatch handshake failed."""
+    if not modules:
+        return ""
+    module = modules[0]
+    cls = type(module)
+    modeling = inspect.getmodule(cls)
+    globs = getattr(modeling, "__dict__", {}) if modeling is not None else {}
+    return (
+        f"Mixer {cls.__name__} from {getattr(cls, '__module__', None)}: "
+        f"is_fast_path_available={globs.get('is_fast_path_available', '<missing>')} "
+        f"fused_hit={getattr(module, '_unsloth_varlen_fused_hit', None)} "
+        f"conv_hit={getattr(module, '_unsloth_varlen_conv_hit', None)} "
+        f"scan_hit={getattr(module, '_unsloth_varlen_scan_hit', None)}"
+    )
 
 
 def _call_as_packed_mamba2_prefill(fn, args, kwargs):
