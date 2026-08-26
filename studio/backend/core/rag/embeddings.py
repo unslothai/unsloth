@@ -455,6 +455,16 @@ def _get(model_name: str | None = None):
                         f"Embedding model {name!r} is not downloaded yet. "
                         "Finish its Settings download before indexing documents."
                     )
+                if download_pending:
+                    # Proven complete just above: retire the marker rather than
+                    # leaving this model cache-only for the life of the install.
+                    try:
+                        from utils.embedding_model_settings import (
+                            clear_stored_download_pending,
+                        )
+                        clear_stored_download_pending(name)
+                    except Exception:  # noqa: BLE001 - a settings write must not fail a load
+                        pass
                 snapshot = hf_cache_snapshot_dir(name)
                 if snapshot is not None:
                     # Load from the local snapshot dir: a local path never touches the Hub, so
@@ -536,11 +546,15 @@ def _st_dim(model_name: str | None = None) -> int:
 def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
     """Token counter using the model's tokenizer, under the compute lock (the same
     fast tokenizer backs encode and isn't thread-safe), with rayon enabled for the
-    call. Mirrors ``_st_encode``."""
-    tok = _get(model_name).tokenizer
+    call. Mirrors ``_st_encode``: admission and model lookup are one lease, so the
+    tokenizer is read per call inside the lock rather than captured here. Chunking
+    holds this callable for a whole document, and a tokenizer captured up front
+    outlives the unload that retired it -- counting on with weights nobody can
+    reach, while the endpoint reports the model as gone."""
 
     def _count(t: str) -> int:
         with _compute_lock:
+            tok = _get(model_name).tokenizer
             os.environ["TOKENIZERS_PARALLELISM"] = "true"
             try:
                 return len(tok.encode(t, add_special_tokens = False))
@@ -917,7 +931,7 @@ def release_backend() -> bool:
     return True
 
 
-def active_backend_is_llama() -> bool:
+def active_backend_is_llama(model_name: str | None = None) -> bool:
     """True when this process actually embeds via the llama-server (GGUF) backend.
 
     Reflects the ACTUAL built backend once one exists: an ``auto`` install that
@@ -925,9 +939,13 @@ def active_backend_is_llama() -> bool:
     runtime (``_build_st_backend_or_fallback`` on a torch/CUDA load failure, or
     ``_switch_to_llama_fallback`` on an encode failure) loads only inert GGUF, so
     callers gating on the ST pickle must see llama here. Before any backend is
-    built, defers to the resolver (``auto`` -> ``_resolve_auto()``, else the raw
-    key) exactly as a fresh process would. Never raises: a backend probe must not
-    block saving a model."""
+    built, defers to the resolver (``auto`` -> ``_resolve_auto_for_model()``, else
+    the raw key) exactly as a fresh process would.
+
+    ``model_name`` names the model to resolve for, defaulting to the live setting.
+    A caller embedding under a model pinned for the length of a job passes it, so
+    the answer cannot drift when the setting changes underneath that job. Never
+    raises: a backend probe must not block saving a model."""
     try:
         with _backend_lock:
             backend = _backend
@@ -942,7 +960,7 @@ def active_backend_is_llama() -> bool:
                 return False
             return isinstance(backend, LlamaServerBackend)
         raw = (config.EMBED_BACKEND or "auto").strip().lower()
-        key = _resolve_auto_for_model() if raw in _AUTO_ALIASES else raw
+        key = _resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw
         return key in _LLAMA_ALIASES
     except Exception:  # noqa: BLE001 - a backend probe must never block saving
         return False
@@ -966,6 +984,12 @@ def _identity_backend_is_llama(name: str) -> bool:
     is different: ``_get_backend`` will replace a resident backend whose cache key
     no longer matches the stored per-model resolution, so admission/deduplication
     must predict that replacement before the first encode happens.
+
+    ``name`` is threaded into the probe rather than left to default: it may be a
+    model pinned for the length of one job (a linked-folder reconcile resolves the
+    model once and embeds every file under it), and re-reading the live setting per
+    file would let a Settings change mid-job tag two files in one folder with two
+    different identities.
     """
     try:
         raw = _raw_backend()
@@ -976,10 +1000,10 @@ def _identity_backend_is_llama(name: str) -> bool:
         resolved = forced or (_resolve_auto_for_model(name) if raw in _AUTO_ALIASES else raw)
         expected_key = _backend_cache_key(raw, resolved)
         if backend is None or cached_key == expected_key:
-            return active_backend_is_llama()
+            return active_backend_is_llama(name)
         return resolved in _LLAMA_ALIASES
     except Exception:  # noqa: BLE001 - identity prediction must not block ingestion
-        return active_backend_is_llama()
+        return active_backend_is_llama(name)
 
 
 def embedding_identity(model_name: str | None = None) -> str:
@@ -1035,10 +1059,25 @@ def encode(
     model_name: str | None = None,
     normalize: bool = True,
 ):
-    """Embed texts into an (N, dim) float32 numpy array."""
+    """Embed texts into an (N, dim) float32 numpy array.
+
+    An explicit unload can retire the llama backend between resolving it and using
+    it, so that one lifecycle failure reacquires the newly published backend, the
+    same way ``token_counter`` does for a counter held across chunks. Without it
+    ``release_backend`` fails the in-flight document rather than rebuilding for it.
+    """
     backend = _get_backend()
     _served_by.backend = backend
-    return backend.encode(texts, model_name = model_name, normalize = normalize)
+    try:
+        return backend.encode(texts, model_name = model_name, normalize = normalize)
+    except RuntimeError:
+        if not (_is_llama_backend(backend) and getattr(backend, "_closed", False)):
+            raise
+    replacement = _get_backend()
+    if replacement is backend:
+        raise RuntimeError("llama-server embedding backend was unloaded")
+    _served_by.backend = replacement
+    return replacement.encode(texts, model_name = model_name, normalize = normalize)
 
 
 def dim(model_name: str | None = None) -> int:

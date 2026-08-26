@@ -610,7 +610,7 @@ def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
         except Exception:
             pass
         from hub.utils import download_manifest
-        from hub.utils.hf_cache_state import repo_cache_dir_has_incomplete_blobs
+        from hub.utils.hf_cache_state import snapshot_has_broken_symlinks
 
         if download_manifest.has_cancel_marker("model", repo_id, None, hub_cache = hub_cache):
             return False
@@ -620,7 +620,13 @@ def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
             # unrelated .incomplete blob left under the repository by another
             # revision or scoped GGUF job.
             return download_manifest.verify_against_disk(manifest, snapshot).ok
-        if repo_cache_dir_has_incomplete_blobs(repo_dir):
+        # No manifest: caches predating managed downloads have none, and every
+        # model already on disk before this build is one of them. Judge THIS
+        # snapshot's own links, not every blob in a cache directory it shares --
+        # a stray .incomplete from another revision or a scoped GGUF job used to
+        # condemn a model that was fully present, which then persisted as a
+        # pending download and refused to index.
+        if snapshot_has_broken_symlinks(snapshot):
             return False
 
         from hub.utils.inventory_scan import snapshot_holds_a_complete_payload

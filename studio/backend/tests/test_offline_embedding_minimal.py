@@ -1045,3 +1045,32 @@ def test_get_online_omits_local_files_only(monkeypatch):
     _install_fake_sentence_transformers(monkeypatch, captured)
     embeddings._get("org/online")
     assert captured["local_files_only"] is False
+
+
+def test_an_unrelated_incomplete_blob_does_not_condemn_a_complete_snapshot(hf_cache):
+    """The blob directory is shared by every revision and every scoped GGUF job in
+    the repo, and caches predating managed downloads carry no manifest to appeal to.
+    A stray partial from one of those used to make a model that was entirely on disk
+    report as not downloaded, which the settings save then persisted as a pending
+    transfer and the loader refused to index."""
+    snapshot = _make_cache(
+        hf_cache, "org/stray-blob", {"config.json": "{}", "model.safetensors": "x"}
+    )
+    blobs = Path(snapshot).parent.parent / "blobs"
+    blobs.mkdir(parents = True, exist_ok = True)
+    (blobs / "0badc0ffee.incomplete").write_text("half a file from another revision")
+
+    assert hf_cache_snapshot_is_loadable("org/stray-blob") is True
+
+
+def test_a_snapshot_linking_to_an_unfinished_blob_is_still_pending(hf_cache):
+    """The narrowing above must not lose the case it was guarding: a link this
+    snapshot owns whose blob has not been finalized."""
+    snapshot = Path(
+        _make_cache(hf_cache, "org/dangling", {"config.json": "{}", "model.safetensors": "x"})
+    )
+    weights = snapshot / "model.safetensors"
+    weights.unlink()
+    weights.symlink_to(snapshot.parent.parent / "blobs" / "deadbeef")
+
+    assert hf_cache_snapshot_is_loadable("org/dangling") is False
