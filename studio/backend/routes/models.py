@@ -3692,154 +3692,166 @@ async def get_kv_cache_estimate(
     null for ngram, which drafts from the generated text and costs no VRAM, and
     for models with no drafter -- the caller draws no segment either way.
     """
-    null = {
-        "kv_bytes": None,
-        "weights_bytes": None,
-        "native_context": None,
-        "spec_bytes": None,
-        "n_ctx": None,
-    }
-    try:
-        from utils.models.model_config import is_local_path
-
-        is_local = is_local_path(repo_id)
-        path, weights_bytes = _resolve_quant_gguf(repo_id, quant, is_local)
-        if not path:
-            return null
-
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        be = LlamaCppBackend.__new__(LlamaCppBackend)
-        for attr in (
-            "_context_length",
-            "_n_layers",
-            "_n_kv_heads",
-            "_n_heads",
-            "_embedding_length",
-            "_kv_key_length",
-            "_kv_value_length",
-            "_kv_lora_rank",
-            "_sliding_window",
-            "_sliding_window_pattern",
-            "_ssm_inner_size",
-            "_full_attention_interval",
-            "_key_length_mla",
-            "_n_kv_heads_by_layer",
-            "_kv_key_length_swa",
-            "_kv_value_length_swa",
-            "_shared_kv_layers",
-            "_nextn_predict_layers",
-        ):
-            setattr(be, attr, None)
-        be._model_identifier = "kv-estimate"
-        be._read_gguf_metadata(path)
-
-        # With no pinned context a GGUF loads at its own native length, which
-        # only the metadata we just read knows. Defaulting here saves the caller
-        # a round trip spent discovering the number it then asks about.
-        # Mirror _resolve_parallel_slots: an omitted count means the server's
-        # standing slot count, not one slot. The KV estimator scales per-slot
-        # padding, so assuming 1 understates a default load.
-        if n_parallel is None:
-            state = getattr(getattr(request, "app", None), "state", None)
-            n_parallel = getattr(state, "llama_parallel_slots", 1) or 1
-
-        n_ctx = n_ctx or be._context_length
-        if not n_ctx or n_ctx < 1:
-            return null
-
-        kv = be._estimate_kv_cache_bytes(n_ctx, cache_type_kv, n_parallel = n_parallel)
-
-        # Only the MTP modes reserve memory; ngram is free. "auto" may or may
-        # not resolve to MTP, and the estimator returns None when it doesn't.
-        # Guarded separately: the MTP path reads more metadata than the KV path,
-        # and a model it can't size should still get its KV bar rather than
-        # dropping the whole response to nulls.
-        spec = None
-        if (speculative_type or "").lower() in ("mtp", "mtp+ngram", "auto"):
-            try:
-                from core.inference.llama_cpp import (
-                    _auto_mode_drops_mtp,
-                    _extract_model_size_b,
-                    _is_mtp_model_name,
-                    _mla_mtp_auto_enabled,
-                )
-
-                drafter_path, drafter_bytes = _resolve_mtp_drafter(
-                    path, search_root = repo_id if is_local else None
-                )
-                # Auto declines MTP on a sub-3B embedded head, where the
-                # per-token cost regresses; a separate drafter is exempt. Pricing
-                # a reserve the load will not take would overstate the bar and
-                # could warn OOM on a model that fits.
-                _mode = (speculative_type or "").lower()
-
-                # Same reason, one level down: llama-server only takes the MTP
-                # path when it advertises a --spec-type mtp token, and the loader
-                # declines on an inconclusive probe too. Both cover the
-                # separate-drafter path, which is emitted behind the same gate.
-                # Probes are cached on (path, mtime), so this stays cheap.
-                _binary_lacks_mtp = not (be.probe_server_capabilities() or {}).get("mtp_token")
-                # Auto also declines an MLA embedded head (GLM/DeepSeek/Kimi):
-                # that path keeps a duplicated full target-KV context and runs
-                # slower than no speculation, so it is off unless opted into.
-                # A separate drafter is unaffected, as is a non-MLA head.
-                _auto_drops_mla = (
-                    _mode == "auto"
-                    and be._kv_lora_rank is not None
-                    and bool(be._nextn_predict_layers)
-                    and not drafter_path
-                    and not _mla_mtp_auto_enabled()
-                )
-                # The loader's own precondition (is_mtp_model): a model with no
-                # embedded head, no MTP name and no separate drafter cannot run
-                # MTP at all, so llama-server gets --spec-default and reserves
-                # nothing. Without this check _estimate_mtp_overhead_bytes still
-                # charges its target-side terms, and because
-                # mtp_keeps_target_ctx defaults to True -- deliberately, so an
-                # unsure caller over-reserves -- every MLA model was billed a
-                # second full f16 copy of its own KV. That is the whole cache
-                # again, which is the largest way this bar could be wrong, and it
-                # is wrong in the direction that warns OOM on a model that loads.
-                _not_an_mtp_model = not (
-                    bool(be._nextn_predict_layers)
-                    or _is_mtp_model_name(repo_id, path)
-                    or bool(drafter_path)
-                )
-                if (
-                    _binary_lacks_mtp
-                    or _auto_drops_mla
-                    or _not_an_mtp_model
-                    or _auto_mode_drops_mtp(
-                        _mode,
-                        _extract_model_size_b(repo_id),
-                        has_separate_drafter = bool(drafter_path),
-                    )
-                ):
-                    pass
-                else:
-                    spec = be._estimate_mtp_overhead_bytes(
-                        n_ctx,
-                        # Draft K/V types are independent of the main cache and
-                        # default to f16 at load; leaving them unset keeps this
-                        # from underpricing a quantized-main-cache setup.
-                        drafter_path = drafter_path,
-                        draft_weights_bytes = drafter_bytes,
-                        n_parallel = n_parallel,
-                    )
-            except Exception as e:
-                logger.debug(f"mtp overhead estimate failed for '{repo_id}' {quant}: {e}")
-
-        return {
-            "kv_bytes": int(kv) if kv else None,
-            "weights_bytes": weights_bytes or None,
-            "native_context": be._context_length,
-            "spec_bytes": int(spec) if spec else None,
-            "n_ctx": int(n_ctx),
+    # The header read, the HF cache walk in _resolve_quant_gguf, the drafter
+    # lookup and the capability probe are all blocking disk work, and this
+    # route is called once per visible row. Run it in a worker so a long model
+    # list cannot stall the streamed tokens of a chat in the same process.
+    # n_ctx and n_parallel are bound as arguments rather than closed over: the
+    # body assigns to both (defaulting them), which would otherwise make them
+    # locals of this function and raise before either default could be applied.
+    def _estimate(
+        n_ctx: Optional[int] = n_ctx, n_parallel: Optional[int] = n_parallel
+    ) -> dict:
+        null = {
+            "kv_bytes": None,
+            "weights_bytes": None,
+            "native_context": None,
+            "spec_bytes": None,
+            "n_ctx": None,
         }
-    except Exception as e:
-        logger.debug(f"kv-cache-estimate failed for '{repo_id}' {quant}: {e}")
-        return null
+        try:
+            from utils.models.model_config import is_local_path
+
+            is_local = is_local_path(repo_id)
+            path, weights_bytes = _resolve_quant_gguf(repo_id, quant, is_local)
+            if not path:
+                return null
+
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            be = LlamaCppBackend.__new__(LlamaCppBackend)
+            for attr in (
+                "_context_length",
+                "_n_layers",
+                "_n_kv_heads",
+                "_n_heads",
+                "_embedding_length",
+                "_kv_key_length",
+                "_kv_value_length",
+                "_kv_lora_rank",
+                "_sliding_window",
+                "_sliding_window_pattern",
+                "_ssm_inner_size",
+                "_full_attention_interval",
+                "_key_length_mla",
+                "_n_kv_heads_by_layer",
+                "_kv_key_length_swa",
+                "_kv_value_length_swa",
+                "_shared_kv_layers",
+                "_nextn_predict_layers",
+            ):
+                setattr(be, attr, None)
+            be._model_identifier = "kv-estimate"
+            be._read_gguf_metadata(path)
+
+            # With no pinned context a GGUF loads at its own native length, which
+            # only the metadata we just read knows. Defaulting here saves the caller
+            # a round trip spent discovering the number it then asks about.
+            # Mirror _resolve_parallel_slots: an omitted count means the server's
+            # standing slot count, not one slot. The KV estimator scales per-slot
+            # padding, so assuming 1 understates a default load.
+            if n_parallel is None:
+                state = getattr(getattr(request, "app", None), "state", None)
+                n_parallel = getattr(state, "llama_parallel_slots", 1) or 1
+
+            n_ctx = n_ctx or be._context_length
+            if not n_ctx or n_ctx < 1:
+                return null
+
+            kv = be._estimate_kv_cache_bytes(n_ctx, cache_type_kv, n_parallel = n_parallel)
+
+            # Only the MTP modes reserve memory; ngram is free. "auto" may or may
+            # not resolve to MTP, and the estimator returns None when it doesn't.
+            # Guarded separately: the MTP path reads more metadata than the KV path,
+            # and a model it can't size should still get its KV bar rather than
+            # dropping the whole response to nulls.
+            spec = None
+            if (speculative_type or "").lower() in ("mtp", "mtp+ngram", "auto"):
+                try:
+                    from core.inference.llama_cpp import (
+                        _auto_mode_drops_mtp,
+                        _extract_model_size_b,
+                        _is_mtp_model_name,
+                        _mla_mtp_auto_enabled,
+                    )
+
+                    drafter_path, drafter_bytes = _resolve_mtp_drafter(
+                        path, search_root = repo_id if is_local else None
+                    )
+                    # Auto declines MTP on a sub-3B embedded head, where the
+                    # per-token cost regresses; a separate drafter is exempt. Pricing
+                    # a reserve the load will not take would overstate the bar and
+                    # could warn OOM on a model that fits.
+                    _mode = (speculative_type or "").lower()
+
+                    # Same reason, one level down: llama-server only takes the MTP
+                    # path when it advertises a --spec-type mtp token, and the loader
+                    # declines on an inconclusive probe too. Both cover the
+                    # separate-drafter path, which is emitted behind the same gate.
+                    # Probes are cached on (path, mtime), so this stays cheap.
+                    _binary_lacks_mtp = not (be.probe_server_capabilities() or {}).get("mtp_token")
+                    # Auto also declines an MLA embedded head (GLM/DeepSeek/Kimi):
+                    # that path keeps a duplicated full target-KV context and runs
+                    # slower than no speculation, so it is off unless opted into.
+                    # A separate drafter is unaffected, as is a non-MLA head.
+                    _auto_drops_mla = (
+                        _mode == "auto"
+                        and be._kv_lora_rank is not None
+                        and bool(be._nextn_predict_layers)
+                        and not drafter_path
+                        and not _mla_mtp_auto_enabled()
+                    )
+                    # The loader's own precondition (is_mtp_model): a model with no
+                    # embedded head, no MTP name and no separate drafter cannot run
+                    # MTP at all, so llama-server gets --spec-default and reserves
+                    # nothing. Without this check _estimate_mtp_overhead_bytes still
+                    # charges its target-side terms, and because
+                    # mtp_keeps_target_ctx defaults to True -- deliberately, so an
+                    # unsure caller over-reserves -- every MLA model was billed a
+                    # second full f16 copy of its own KV. That is the whole cache
+                    # again, which is the largest way this bar could be wrong, and it
+                    # is wrong in the direction that warns OOM on a model that loads.
+                    _not_an_mtp_model = not (
+                        bool(be._nextn_predict_layers)
+                        or _is_mtp_model_name(repo_id, path)
+                        or bool(drafter_path)
+                    )
+                    if (
+                        _binary_lacks_mtp
+                        or _auto_drops_mla
+                        or _not_an_mtp_model
+                        or _auto_mode_drops_mtp(
+                            _mode,
+                            _extract_model_size_b(repo_id),
+                            has_separate_drafter = bool(drafter_path),
+                        )
+                    ):
+                        pass
+                    else:
+                        spec = be._estimate_mtp_overhead_bytes(
+                            n_ctx,
+                            # Draft K/V types are independent of the main cache and
+                            # default to f16 at load; leaving them unset keeps this
+                            # from underpricing a quantized-main-cache setup.
+                            drafter_path = drafter_path,
+                            draft_weights_bytes = drafter_bytes,
+                            n_parallel = n_parallel,
+                        )
+                except Exception as e:
+                    logger.debug(f"mtp overhead estimate failed for '{repo_id}' {quant}: {e}")
+
+            return {
+                "kv_bytes": int(kv) if kv else None,
+                "weights_bytes": weights_bytes or None,
+                "native_context": be._context_length,
+                "spec_bytes": int(spec) if spec else None,
+                "n_ctx": int(n_ctx),
+            }
+        except Exception as e:
+            logger.debug(f"kv-cache-estimate failed for '{repo_id}' {quant}: {e}")
+            return null
+
+    return await asyncio.to_thread(_estimate)
 
 
 @router.get("/gguf-variants", response_model = GgufVariantsResponse)
