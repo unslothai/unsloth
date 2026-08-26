@@ -109,7 +109,7 @@ interface PanelBoundaryState {
 /**
  * A panel fetch can fail (offline, or an entry bundle naming chunks a `dist/` rewrite
  * replaced). Nothing above this root-mounted dialog catches, so unguarded that unmounts
- * all of Studio rather than one panel.
+ * all of Unsloth rather than one panel.
  *
  * Reload rather than retry: React and the browser's module map both cache the failed
  * import, so re-importing rethrows with no new request (whatwg/html#6768), while

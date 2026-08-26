@@ -345,7 +345,7 @@ def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     # The same contract has to hold on every rung of that helper's fallback: a
     # confirmed image, never a command line. Its Win32_Process rung exists because a
     # host that cannot compile the native helper would otherwise find no running
-    # processes and overwrite a venv Studio has open (issue #9140).
+    # processes and overwrite a venv Unsloth has open (issue #9140).
     image = _extract(r"    function Get-StudioProcessImagePath \{.*?\n    \}\n", source)
     assert ".CommandLine" not in image
     assert "ExecutablePath" in image
@@ -738,7 +738,7 @@ def test_unicode_custom_root_mutex_name_matches_python(tmp_path: Path, shell: st
 
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     helpers = _mutex_helpers(source)
-    custom_root = tmp_path / "Studio-ß"
+    custom_root = tmp_path / "Unsloth-ß"
     custom_root.mkdir()
     script = f"""
 $ErrorActionPreference = "Stop"

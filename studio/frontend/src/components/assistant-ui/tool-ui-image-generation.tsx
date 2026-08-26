@@ -44,7 +44,7 @@ interface ImageGenerationArgs {
  * Straight off the wire, like the args above. Only `image_b64` is type-guarded
  * before use; `size`, `quality` and `background` are copied verbatim from the
  * provider (external_provider.py:5883) and on the Gemini path so is `image_mime`
- * (:4481). Studio takes a user-set `base_url`, so none of them is ours.
+ * (:4481). Unsloth takes a user-set `base_url`, so none of them is ours.
  */
 interface ImageGenerationResult {
   image_b64?: string;

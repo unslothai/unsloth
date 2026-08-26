@@ -441,7 +441,15 @@ test("a recording is stopped at the sidecar's duration and size limits", () => {
   );
   assert.match(
     audioPageSource,
-    /window\.setTimeout\(\s*\(\) => stopAtLimit\("duration"\),\s*RECORDING_MAX_SECONDS \* 1000,/,
+    /window\.setTimeout\(\s*\(\) => stopAtLimit\("duration"\),\s*maxSeconds \* 1000,/,
+  );
+  // Uncompressed WAV on the PCM capture path (#9543) reaches the byte cap well
+  // before the 30 minute one, so the duration enforced is the lower of the two.
+  // Without this the recorder ran to 30 minutes and the upload was refused,
+  // losing audio the user had already recorded.
+  assert.match(
+    audioPageSource,
+    /const maxSeconds =\s*recorder instanceof PcmRecorder\s*\?\s*Math\.min\(\s*RECORDING_MAX_SECONDS,\s*recorder\.secondsWithin\(RECORDING_MAX_BYTES\),\s*\)\s*:\s*RECORDING_MAX_SECONDS;/,
   );
   assert.match(audioPageSource, /window\.clearTimeout\(durationTimer\);/);
 });

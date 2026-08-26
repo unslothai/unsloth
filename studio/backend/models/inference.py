@@ -1790,7 +1790,7 @@ class ChatCompletionRequest(BaseModel):
             "returns a 400 with code=context_length_exceeded. 'truncate_middle' is "
             "limited to client-tool or response_format passthrough and retries after "
             "keeping the first and recent turns. 'truncate_oldest' provides a rolling "
-            "window for plain and Studio-tool chats by dropping complete oldest turns. "
+            "window for plain and Unsloth-tool chats by dropping complete oldest turns. "
             "Both truncation policies preserve system messages and tool-call groups."
         ),
     )
@@ -1807,12 +1807,12 @@ class ChatCompletionRequest(BaseModel):
     run_tools_locally: Optional[bool] = Field(
         None,
         description = (
-            "[x-unsloth] Execute the selected tools on the Studio host instead of "
+            "[x-unsloth] Execute the selected tools on the Unsloth host instead of "
             "asking the provider to run its own hosted builtins. Only meaningful "
             "for providers that ship hosted tools of the same name (OpenAI, "
             "Gemini, Kimi, OpenRouter), where 'web_search' alone is ambiguous: "
             "the same request means hosted search to a client written before "
-            "Studio ran tools for external providers. Omitted keeps the hosted "
+            "Unsloth ran tools for external providers. Omitted keeps the hosted "
             "behaviour, so an older client is unaffected."
         ),
     )

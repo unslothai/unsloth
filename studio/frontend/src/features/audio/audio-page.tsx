@@ -53,6 +53,11 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import {
+  PcmRecorder,
+  type SegmentRecorder,
+  createAudioRecorder,
+} from "@/features/chat/adapters/pcm-recorder";
+import {
   SttModelNotDownloadedError,
   StudioModelDictationAdapter,
   fetchSttStatus,
@@ -348,7 +353,7 @@ export function AudioPage({
   fallbackClipRef.current = fallbackClip;
   const loadingMoreRef = useRef(false);
   const galleryRefreshGeneration = useRef(0);
-  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recorderRef = useRef<SegmentRecorder | null>(null);
   const recordStreamRef = useRef<MediaStream | null>(null);
   const discardRecordingRef = useRef(false);
   const selectedSttRepoRef = useRef<string | null>(selectedSttRepo);
@@ -1035,7 +1040,7 @@ export function AudioPage({
           await startSttDownload(sidecarKey, hfApiToken(getHfToken()), engine);
           // STT owns its specialized transfer, but the existing mirror gives
           // it the same global Downloads row, progress and Cancel action as
-          // every other Studio model download. Do not reset an adopted row.
+          // every other Unsloth model download. Do not reset an adopted row.
           if (!isTrackingSttDownload(sidecarKey, engine)) {
             trackSttDownload(sidecarKey, {
               // Audio owns the final load through its active/selection
@@ -1642,7 +1647,17 @@ export function AudioPage({
         return;
       }
       recordStreamRef.current = stream;
-      const recorder = new MediaRecorder(stream);
+      const recorder = createAudioRecorder(stream);
+      // WAV is uncompressed, so on the PCM path the byte cap is reached long
+      // before the 30 minute one. Express it as a duration the timer below
+      // already enforces, rather than letting the upload be refused.
+      const maxSeconds =
+        recorder instanceof PcmRecorder
+          ? Math.min(
+              RECORDING_MAX_SECONDS,
+              recorder.secondsWithin(RECORDING_MAX_BYTES),
+            )
+          : RECORDING_MAX_SECONDS;
       const chunks: Blob[] = [];
       let recordedBytes = 0;
       let limitHit: "duration" | "size" | null = null;
@@ -1654,7 +1669,7 @@ export function AudioPage({
         limitHit = reason;
         toast.warning(
           reason === "duration"
-            ? `Recording stopped at the ${RECORDING_MAX_SECONDS / 60} minute limit.`
+            ? `Recording stopped at the ${Math.floor(maxSeconds / 60)} minute limit.`
             : "Recording stopped: it reached the maximum upload size.",
         );
         try {
@@ -1665,7 +1680,7 @@ export function AudioPage({
       };
       const durationTimer = window.setTimeout(
         () => stopAtLimit("duration"),
-        RECORDING_MAX_SECONDS * 1000,
+        maxSeconds * 1000,
       );
       recorder.addEventListener("dataavailable", (event) => {
         if (event.data.size > 0) {
@@ -2118,7 +2133,7 @@ export function AudioPage({
                   hint={
                     recordingSupported
                       ? "Record a clip and it is transcribed when you stop."
-                      : "This browser cannot record. Open Studio over https or on localhost, or upload a file below."
+                      : "This browser cannot record. Open Unsloth over https or on localhost, or upload a file below."
                   }
                 >
                   <Button

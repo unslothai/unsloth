@@ -24,6 +24,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import {
+  COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
   type FineTuneFormat,
   archiveAllChatItems,
@@ -834,7 +835,7 @@ export function DataTab() {
                     {t(`settings.chat.${label}`)}
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="w-56">
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
                       <DropdownMenuItem
                         key={`${scope}-m-${fmt}`}
                         onSelect={() =>
