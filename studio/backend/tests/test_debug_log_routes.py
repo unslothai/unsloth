@@ -393,12 +393,13 @@ def test_export_masks_a_tuple_style_continued_cookie(client):
     assert "ordinary: kept" in exported
 
 
-def test_export_masks_a_pem_private_key_block(client):
+@pytest.mark.parametrize("label", ["PRIVATE KEY", "PGP PRIVATE KEY BLOCK"])
+def test_export_masks_a_pem_private_key_block(client, label):
     key_body = "PRIVATEKEYBODYSHOULDNOTSURVIVE"
     path = _seed_server_log(
-        "-----BEGIN PRIVATE KEY-----\n"
+        f"-----BEGIN {label}-----\n"
         f"{key_body}\n"
-        "-----END PRIVATE KEY-----\n"
+        f"-----END {label}-----\n"
         "ordinary: kept\n"
     )
 
@@ -408,6 +409,43 @@ def test_export_masks_a_pem_private_key_block(client):
     assert key_body not in exported
     assert "BEGIN PRIVATE KEY" not in exported
     assert "END PRIVATE KEY" not in exported
+    assert "ordinary: kept" in exported
+
+
+def test_export_keeps_private_key_state_after_an_oversized_record(client):
+    from utils.debug_log_export import EXPORT_READ_BYTES
+
+    key_body = "OVERSIZEDPEMBODYSHOULDNOTSURVIVE"
+    path = _seed_server_log(
+        "x" * EXPORT_READ_BYTES
+        + "-----BEGIN PRIVATE KEY-----\n"
+        + key_body
+        + "\n-----END PRIVATE KEY-----\nordinary: kept\n"
+    )
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert key_body not in exported
+    assert "END PRIVATE KEY" not in exported
+    assert "ordinary: kept" in exported
+
+
+def test_export_tracks_a_quoted_cookie_after_an_oversized_record(client):
+    from utils.debug_log_export import EXPORT_READ_BYTES
+
+    second = "SECONDCOOKIEPARTSECRET"
+    path = _seed_server_log(
+        "x" * EXPORT_READ_BYTES
+        + ' Cookie: "session=FIRST\n'
+        + second
+        + '"\nordinary: kept\n'
+    )
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert second not in exported
     assert "ordinary: kept" in exported
 
 

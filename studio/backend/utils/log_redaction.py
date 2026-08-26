@@ -52,7 +52,7 @@ _SECRET_KEYS = (
     # cannot fire before "_access" or "Access"), and an AWS secret key has no
     # prefix of its own for a shape rule to catch.
     "secret[-_]?access[-_]?key|shared[-_]?access[-_]?key|access[-_]?key|"
-    "account[-_]?key|pwd|"
+    "account[-_]?key|private[-_]?key(?:[-_]?data)?|pwd|"
     "password|passwd|passphrase|secret"
 )
 
@@ -192,9 +192,9 @@ _OMITTED_CONTEXT_RE = re.compile(
 _OMITTED_QUOTED_START_RE = re.compile(
     r"(?i)(?:"
     + _KEY_START
-    + r"(?:"
+    + r"(?:(?:"
     + _SECRET_KEYS
-    + r")\b[\"']?\s*[:=]\s*|--(?:"
+    + r")|(?:set-)?cookie)\b[\"']?\s*[:=]\s*|--(?:"
     + _SECRET_KEYS
     + r")\s+)(?P<quote>[\"'])"
 )
@@ -239,15 +239,16 @@ _COOKIE_RE = re.compile(
 _NON_SECRET_SENTINELS = frozenset({"none", "null"})
 _YAML_BLOCK_MARKER_RE = re.compile(r"[|>](?:[1-9][+-]?|[+-][1-9]?|[+-])?")
 _PRIVATE_KEY_BLOCK_RE = re.compile(
-    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----.*?"
+    r"-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----",
     re.IGNORECASE | re.DOTALL,
 )
 _PRIVATE_KEY_BEGIN_RE = re.compile(
-    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----",
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----",
     re.IGNORECASE,
 )
 _PRIVATE_KEY_END_RE = re.compile(
-    r"-----END [A-Z0-9 ]*PRIVATE KEY-----",
+    r"-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----",
     re.IGNORECASE,
 )
 
@@ -529,6 +530,18 @@ class StreamingLogRedactor:
             )
         )
 
+    @staticmethod
+    def omitted_record_private_key_state(text: str, active: bool = False) -> bool:
+        """Track private-key armor while an oversized record is discarded."""
+        events = [
+            (match.start(), True) for match in _PRIVATE_KEY_BEGIN_RE.finditer(text)
+        ] + [
+            (match.start(), False) for match in _PRIVATE_KEY_END_RE.finditer(text)
+        ]
+        for _, is_begin in sorted(events):
+            active = is_begin
+        return active
+
     @classmethod
     def omitted_record_continuation_kind(
         cls,
@@ -575,6 +588,9 @@ class StreamingLogRedactor:
         self._plain_key_indent = 0
         self._plain_has_value = False
         self._plain_explicit_continuation = False
+
+    def mark_omitted_private_key_block(self) -> None:
+        self._private_key_block = True
 
     @staticmethod
     def omitted_record_quote_state(

@@ -338,6 +338,18 @@ def test_connection_string_secret_fields_are_masked(field):
     assert masked == f"Endpoint=sb://example;{field}=<redacted>;Retry=3"
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["private_key", "private-key", "privateKey", "private-key-data"],
+)
+def test_private_key_fields_are_masked(field):
+    secret = "BASE64KEYSECRET123"
+    line = f'credentials: {{"{field}":"{secret}","name":"kept"}}'
+    masked = redact_log_text(line)
+    assert secret not in masked
+    assert '"name":"kept"' in masked
+
+
 # A colorized writer puts an escape between the key and its value. Every rule is
 # anchored on a word boundary or lookbehind, and the "m" ending "\x1b[36m" is a
 # word character, so the anchor stopped matching and the credential went out in
