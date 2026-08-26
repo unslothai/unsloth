@@ -517,6 +517,26 @@ function isPrivateLanHost(hostname: string): boolean {
   return /^f[cd][0-9a-f]*:/i.test(host) || /^fe[89ab][0-9a-f]*:/i.test(host);
 }
 
+// The backend refuses keyless for any Host that names something rather than addressing
+// the socket (`keyless_api_access._host_authority_is_direct`), so a snippet is only
+// honest when the base is a literal or `localhost`. Without this, a launch bound to a
+// hostname -- `unsloth studio -H box.local`, or simply browsing Studio by its machine
+// name -- still rendered `Bearer not-needed` against a URL that answers 401, because
+// `exposure === "private_lan"` is computed from the RESOLVED address and says nothing
+// about how the caller spelled it.
+function isIpLiteralHost(hostname: string): boolean {
+  const host = normalizeHost(hostname).toLowerCase();
+  const ipv4 = host.split(".");
+  if (
+    ipv4.length === 4 &&
+    ipv4.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+  ) {
+    return true;
+  }
+  // normalizeHost has already stripped the URL brackets from an IPv6 authority
+  return host.includes(":") && /^[0-9a-f:.]+$/i.test(host);
+}
+
 function keylessBaseEligible(
   base: string,
   scope: KeylessApiAccessScope,
@@ -528,6 +548,7 @@ function keylessBaseEligible(
   try {
     const host = normalizeHost(new URL(base).hostname);
     if (isLoopbackHost(host)) return true;
+    if (!isIpLiteralHost(host)) return false;
     return (
       scope === "inference" &&
       (isPrivateLanHost(host) || exposure === "private_lan")

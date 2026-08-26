@@ -306,25 +306,63 @@ def _full_scope_transport_allowed(request: Any, app_state: Any) -> bool:
     )
 
 
+def _repeated_header(request: Any, name: bytes) -> bool:
+    """Whether the raw ASGI headers carry ``name`` more than once.
+
+    ``Headers.get()`` returns the first of a repeated header, so a predicate built on it
+    decides on one value while an intermediary may have acted on another. `Host` and
+    `Sec-Fetch-Site` are both security relevant here, so an ambiguous request is refused
+    rather than resolved -- the same rule `asgi_request_is_keyless` already applies to a
+    repeated `Authorization`. h11 rejects a repeated `Host` itself, httptools does not,
+    and neither rejects a repeated `Sec-Fetch-Site`, so this cannot be left to the parser.
+    """
+    try:
+        headers = request.scope.get("headers") or ()
+        return sum(1 for key, _ in headers if key.lower() == name) > 1
+    except Exception:
+        return True
+
+
 def _browser_initiated_elsewhere(request: Any) -> bool:
     """Whether a page on another site made this request, as the browser reports it.
 
     ``Origin`` cannot say: no browser attaches it to a same-origin GET or to a
     cross-site GET in ``no-cors`` mode, and such a fetch at
-    ``http://127.0.0.1:<port>`` does arrive, since only Chromium holds it back with
-    Private Network Access. ``Sec-Fetch-Site`` is set on every request whatever the
-    mode, and the ``Sec-`` prefix makes it a forbidden header name, so a page cannot
-    forge it. Absence stays admitted: curl, the OpenAI SDKs and Safari before 16.4
-    send nothing, and serving them is the point of the setting.
+    ``http://127.0.0.1:<port>`` does arrive, since Chromium's Local Network Access
+    (Chrome 141, enforced from 142, replacing the earlier Private Network Access) is the
+    only thing holding it back and Firefox and Safari have shipped no equivalent.
+    ``Sec-Fetch-Site`` is set on every request to a URL the browser considers
+    *potentially trustworthy*, and the ``Sec-`` prefix makes it a forbidden header name,
+    so a page cannot forge it. Absence stays admitted: curl, the OpenAI SDKs and Safari
+    before 16.4 send nothing, and serving them is the point of the setting.
+
+    Two limits are worth stating, because the header is weaker than it first appears:
+
+    * Absence only *means* "not a browser" where the URL is potentially trustworthy.
+      `_host_authority_is_direct` is what keeps the authority inside that set; on the
+      plain-HTTP private-LAN limb no such URL exists, so this predicate is structurally
+      inert there and the `Origin` check above is the only browser signal left.
+    * ``none`` is not admitted. The comment it used to carry -- "the user typing the URL,
+      which no page can cause" -- is true of a page and false of a server: ``none`` is
+      computed before the redirect chain is walked, so an attacker-controlled 302 from a
+      user-initiated navigation lands here still saying ``none``. Measured live: Firefox
+      153 and WebKit 26.5 both deliver it. Nobody types an API route into an address bar,
+      so refusing it costs nothing.
     """
+    if _repeated_header(request, b"sec-fetch-site"):
+        return True
     try:
         site = request.headers.get("sec-fetch-site")
     except Exception:
-        return True
+        return True  # unreadable headers: deny
     if site is None:
         return False
-    # `none` is the user typing the URL or opening a bookmark, which no page can cause.
-    return site.strip().lower() not in ("same-origin", "none")
+    return site.strip().lower() != "same-origin"
+
+
+def _port_suffix_is_numeric(suffix: str) -> bool:
+    """Whether ``suffix`` is a well formed ``:<port>`` tail, the only tail an authority has."""
+    return len(suffix) > 1 and suffix[0] == ":" and suffix[1:].isdigit()
 
 
 def _host_authority_is_direct(request: Any) -> bool:
@@ -334,27 +372,70 @@ def _host_authority_is_direct(request: Any) -> bool:
     ``evil.example`` re-pointed at ``127.0.0.1`` keeps its own origin, so every
     signal above reads as a local client and the response is readable by the page.
     ``Host`` still differs, being the name the page was served from. A direct client
-    sends the literal address or ``localhost``; only a rebound page sends a domain.
+    sends the literal address or ``localhost``; anything else is a name, whether a
+    rebound domain or a legitimate mDNS / internal-DNS / reverse-proxy alias -- keyless
+    declines both, matching `lan_access_settings`, which likewise never trusts a name.
     Absent stays admitted: HTTP/1.0 callers send none and no browser omits it.
-    """
-    from utils.lan_access_settings import _normalized_ip
 
+    The literal is matched as written rather than canonicalised, because this predicate
+    and the browser have to agree on what "loopback" spells. Two families are refused
+    for exactly that reason, both measured reaching a ``127.0.0.1`` listener while the
+    browser sent no ``Sec-Fetch-*`` at all, since neither is inside the potentially
+    trustworthy set (``127.0.0.0/8`` and ``::1/128``):
+
+    * IPv4-mapped IPv6 -- ``[::ffff:127.0.0.1]``, ``[::ffff:7f00:1]``. Chromium 151,
+      Firefox 153 and WebKit 26.5 all sent the request with no Fetch Metadata.
+    * the unspecified addresses ``0.0.0.0`` and ``[::]``, which connect to loopback on
+      Linux. Chromium sent these with no Fetch Metadata too.
+
+    Canonicalising them, as a general purpose address normaliser would, is what turned
+    absence-means-not-a-browser into a bypass, so the parsing is done here rather than
+    through `lan_access_settings._normalized_ip`, whose leniency is correct for the
+    socket addresses it was written for and wrong for an authority off the wire.
+    """
+    import ipaddress
+
+    if _repeated_header(request, b"host"):
+        return False
     try:
         host = request.headers.get("host")
     except Exception:
-        return False
+        return False  # unreadable headers: deny
     if not host:
         return True
     host = host.strip()
-    if host.startswith("["):  # [::1] or [::1]:port, rejecting junk after the bracket
+    if host.startswith("["):
         end = host.find("]")
-        if end == -1 or (host[end + 1 :] and not host[end + 1 :].startswith(":")):
+        if end == -1:
             return False
-        host = host[1:end]
-    elif host.count(":") == 1:
-        host = host.split(":", 1)[0]
-    host = host.lower().rstrip(".")
-    return host == "localhost" or _normalized_ip(host) is not None
+        suffix = host[end + 1 :]
+        if suffix and not _port_suffix_is_numeric(suffix):
+            return False
+        try:
+            address = ipaddress.IPv6Address(host[1:end])
+        except ValueError:
+            return False
+    else:
+        literal, separator, suffix = host.partition(":")
+        if separator and not _port_suffix_is_numeric(":" + suffix):
+            return False
+        literal = literal.lower()
+        # Exactly `localhost`, with no trailing root-label dot. Secure Contexts lists
+        # `localhost.` as trustworthy, but WebKit's check is a plain string compare with
+        # no trailing-dot handling, and measured on WebKit 26.5 a page dialling
+        # `http://localhost.:<port>` sends no `Sec-Fetch-*` at all while Chromium 151 and
+        # Firefox 153 both send `cross-site`. Admitting the dotted form would reopen the
+        # same absence-means-not-a-browser gap on Safari alone. No client spells it.
+        if literal == "localhost":
+            return True
+        try:
+            # Unbracketed IPv6 is not a legal authority, so IPv4 only here.
+            address = ipaddress.IPv4Address(literal)
+        except ValueError:
+            return False
+    if address.is_unspecified:
+        return False
+    return getattr(address, "ipv4_mapped", None) is None
 
 
 def keyless_transport_allowed(request: Any, scope: str) -> bool:
@@ -473,5 +554,14 @@ def asgi_request_is_keyless(asgi_scope) -> bool:
         return True
     if len(authorization) != 1:
         return False
-    scheme, separator, token = authorization[0].partition(" ")
-    return bool(separator and scheme.lower() == "bearer" and token in APPROVED_DUMMY_BEARERS)
+    # The same parser the dependency uses, rather than a second hand-rolled split. They
+    # disagreed on `Authorization: bearer  not-needed`: `partition(" ")` leaves the token
+    # as " not-needed" and reported not-keyless, while the dependency collapsed the extra
+    # space, admitted the dummy, and returned KeylessBearer. The request was therefore
+    # keyless to every route and not-keyless to `KeylessToolPolicyMiddleware`, which is
+    # what decides whether to clamp the tool grant -- so that one shape reached keyless
+    # admission carrying an unclamped tool policy. Sharing the parser removes the class.
+    from fastapi.security.utils import get_authorization_scheme_param
+
+    scheme, token = get_authorization_scheme_param(authorization[0])
+    return bool(scheme.lower() == "bearer" and token in APPROVED_DUMMY_BEARERS)

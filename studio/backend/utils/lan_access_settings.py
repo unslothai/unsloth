@@ -274,12 +274,22 @@ def _public_urls(urls: list[str], resolved_addresses: tuple[str, ...] = ()) -> l
 
 
 def _has_keyless_lan_url(urls: list[str]) -> bool:
+    """Whether any of these URLs is one a keyless caller can actually reach.
+
+    Resolution alone is not enough. `keyless_api_access._host_authority_is_direct`
+    refuses a `Host` that names anything, so a launch bound to a hostname produces a URL
+    that resolves to a private address and is still refused. Reporting it as eligible is
+    what made the LAN panel and the usage examples advertise `Bearer not-needed` against
+    a URL that answers 401, so the literal is required here too.
+    """
     from urllib.parse import urlparse
     for url in urls:
         parsed = urlparse(url)
-        if parsed.hostname and _all_addresses_are(
-            parsed.hostname, parsed.port or 80, _private_non_loopback
-        ):
+        if not parsed.hostname:
+            continue
+        if _normalized_ip(parsed.hostname) is None:
+            continue
+        if _all_addresses_are(parsed.hostname, parsed.port or 80, _private_non_loopback):
             return True
     return False
 
