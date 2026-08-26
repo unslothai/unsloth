@@ -1542,6 +1542,14 @@ def build_kernel(
     # they are what the cards are freed FOR, not more work to schedule onto
     # them.
     expected_gpus = min(len(payloads), SESSION_GPUS)
+    # An all-card leg needs SESSION_GPUS whatever the payload count is. Without
+    # this a single-leg dispatch (`--legs multi_gpu`) derives 1, the shortfall
+    # guard is satisfied by a one-card allocation, and the run proceeds to fail
+    # inside the payload on `device_count() == 2` -- a capacity fact reported as
+    # a payload verdict, which is precisely the confusion the guard's own
+    # comment says it exists to prevent.
+    if any(leg.all_cards for leg in legs_by_payload.values()):
+        expected_gpus = SESSION_GPUS
     # Opt in. On run 32689629906 the wheels helped the leg that runs ALONE and
     # cost the three that run concurrently, and that run moved the caches at the
     # same time, so the effect is not yet attributable to either. Off by default

@@ -285,3 +285,35 @@ def test_the_all_card_lane_is_joined_with_the_card_workers():
     assert source.index("for t in all_card_threads:") < source.index(
         "if AFTER_GPU and not AFTER_GPU_CONCURRENT:"
     )
+
+
+def test_a_single_leg_dispatch_still_stands_down_on_one_card():
+    """`expected_gpus = min(len(payloads), SESSION_GPUS)` derives 1 for a
+    one-leg kernel, which is right for every leg but this one.
+
+    An all-card leg on a one-card allocation is an INFRASTRUCTURE fact, and
+    without this it arrives as a payload failure on `device_count() == 2` --
+    the exact confusion the shortfall guard's own comment says it exists to
+    prevent.
+    """
+    notebooks = build_kernel.build_kernel(
+        SMOKE_DIR,
+        ("multi_gpu",),
+        unsloth_ref = "main",
+        zoo_ref = "main",
+        extra_args = (),
+        per_run_timeout = 3600,
+    )
+    source = "".join("".join(c["source"]) for c in notebooks["cells"])
+    assert "EXPECTED_GPUS = 2" in source, (
+        "a one-leg multi_gpu dispatch accepts a single card, so the leg would "
+        "fail inside the payload instead of standing the kernel down"
+    )
+    # And an ordinary one-leg dispatch is unchanged.
+    other = build_kernel.build_kernel(
+        SMOKE_DIR, ("default",), unsloth_ref = "main", zoo_ref = "main",
+        extra_args = (), per_run_timeout = 3600,
+    )
+    assert "EXPECTED_GPUS = 1" in "".join(
+        "".join(c["source"]) for c in other["cells"]
+    )
