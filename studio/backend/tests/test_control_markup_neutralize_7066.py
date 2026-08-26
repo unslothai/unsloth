@@ -3123,6 +3123,12 @@ def _ctrl_parse(path):
     return tree
 
 
+#: Names whose identity the resolver depends on, so an assignment that rebinds one is followed
+#: like an ``as`` import. Anything else stays unaliased: a blanket ``x = y`` map would make
+#: unrelated locals answer to a trusted name.
+_CTRL_TRACKED_CALLABLES = frozenset(_CATALOG_PRODUCERS | {"ToolLoopController"})
+
+
 def _ctrl_aliases(tree):
     """``as`` bindings, so ``neutralize_tool_descriptions as _neutralize_...`` still counts.
 
@@ -3134,6 +3140,17 @@ def _ctrl_aliases(tree):
             for alias in node.names:
                 if alias.asname:
                     aliases[alias.asname] = alias.name.rsplit(".", 1)[-1]
+    # `controller_cls = ToolLoopController` then `controller_cls(tools = raw)` is the same call,
+    # and it would otherwise not be a controller site at all -- so the whole guard, including the
+    # site enumeration below, would skip it.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target, value = node.targets[0], node.value
+        name = value.attr if isinstance(value, ast.Attribute) else getattr(value, "id", None)
+        name = aliases.get(name, name)
+        if isinstance(target, ast.Name) and name in _CTRL_TRACKED_CALLABLES:
+            aliases[target.id] = name
     return aliases
 
 
@@ -3265,6 +3282,14 @@ def _ctrl_sweep_carries_profile(call):
     return not (isinstance(profile, ast.Constant) and profile.value is None)
 
 
+def _ctrl_defining_scope(name, scopes):
+    """The innermost scope in *scopes* that binds *name*, which is the one Python would use."""
+    for scope in scopes:
+        if name in _ctrl_bindings(scope) or name in _ctrl_params(scope):
+            return scope
+    return None
+
+
 def _ctrl_sweep_roots(
     expr,
     scopes,
@@ -3287,7 +3312,9 @@ def _ctrl_sweep_roots(
                 if keyword.arg == "tools":
                     catalog = keyword.value
             if isinstance(catalog, ast.Name):
-                roots.add(catalog.id)
+                # The BINDING, not the spelling. An inner helper whose parameter shadows the name
+                # the outer scope swept is a different catalog wearing the same identifier.
+                roots.add((catalog.id, _ctrl_defining_scope(catalog.id, scopes)))
         for argument in list(expr.args) + [k.value for k in expr.keywords]:
             roots |= _ctrl_sweep_roots(argument, scopes, aliases, seen)
         return roots
@@ -3297,11 +3324,15 @@ def _ctrl_sweep_roots(
             roots |= _ctrl_sweep_roots(part, scopes, aliases, seen)
         return roots
     if isinstance(expr, ast.Name) and expr.id not in seen:
-        for scope in scopes:
+        for depth, scope in enumerate(scopes):
             bindings = _ctrl_bindings(scope)
             if expr.id in bindings:
+                # The binding's OWN scope chain from here outward. Reading it in the call site's
+                # chain would resolve the sweep's argument against an inner name that shadows it,
+                # which is the confusion the scope in each root exists to prevent.
+                outward = scopes[depth:]
                 for value in bindings[expr.id]:
-                    roots |= _ctrl_sweep_roots(value, scopes, aliases, seen | {expr.id})
+                    roots |= _ctrl_sweep_roots(value, outward, aliases, seen | {expr.id})
                 break
     return roots
 
@@ -3327,7 +3358,7 @@ def _ctrl_guard_proves_empty(test, taken_when_true, roots, scopes):
     # The non-gating branch has to be the one taken when the catalog is FALSY.
     if negated != taken_when_true:
         return False
-    return isinstance(test, ast.Name) and test.id in roots
+    return isinstance(test, ast.Name) and (test.id, _ctrl_defining_scope(test.id, scopes)) in roots
 
 
 def _ctrl_resolve(expr, scopes, aliases, module, seen):
@@ -3431,14 +3462,18 @@ def _ctrl_resolve(expr, scopes, aliases, module, seen):
                         False,
                     )
             if known:
-                gates = False
+                # EVERY binding has to gate, not just one. A conditional expression carries a
+                # predicate that can prove there is nothing to authorize; a set of separate
+                # assignments carries none, so `catalog = None` followed by
+                # `if enabled: catalog = sweep(...)` leaves the unrestricted path reachable.
+                gates = True
                 for value in bindings[expr.id]:
                     ok, why, value_gates = _ctrl_resolve(
                         value, scopes, aliases, module, seen | {expr.id}
                     )
                     if not ok:
                         return False, f"{expr.id} -> {why}", False
-                    gates = gates or value_gates
+                    gates = gates and value_gates
                 return True, f"{expr.id} is sanitized", gates
             if expr.id in _ctrl_params(scope):
                 allowed = _SANITIZED_BY_CONTRACT.get(
@@ -3590,6 +3625,24 @@ def test_the_resolver_holds_the_shapes_that_look_sanitized_on_one_path():
         "ToolLoopController(tools = None if not tools else c)\n"
     )
     assert ok and gates
+    # SEPARATE ASSIGNMENTS carry no predicate, so a reachable None binding is not excused by a
+    # swept one somewhere else.
+    ok, _why, gates = _ctrl_resolve_source(
+        f"c = None\nif enabled:\n    c = {swept}\nToolLoopController(tools = c)\n"
+    )
+    assert ok and not gates
+    # A SHADOWED ROOT is a different catalog wearing the same identifier, so the emptiness proof
+    # must not carry across the scope that shadows it.
+    ok, _why, gates = _ctrl_resolve_source(
+        f"safe = {swept}\n"
+        "def make(tools):\n    ToolLoopController(tools = None if not tools else safe)\n"
+    )
+    assert ok and not gates
+    # AN ALIASED CONSTRUCTOR is still a controller site, or the guard never sees it at all.
+    ok, why, _gates = _ctrl_resolve_source(
+        "controller_cls = ToolLoopController\ncontroller_cls(tools = tools)\n"
+    )
+    assert not ok
     # A LAMBDA PARAMETER shadows the outer proof at runtime, so it must shadow it here.
     ok, why, _gates = _ctrl_resolve_source(
         f"safe = {swept}\nfactory = lambda safe: ToolLoopController(tools = safe)\n"
