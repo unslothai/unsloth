@@ -21,6 +21,11 @@ A stall has two shapes, and they need different capture mechanisms:
   acquiring the GIL, so when the beats stop, it fires mid-stall and writes the frame
   every thread is actually in -- including the one sitting on the GIL.
 
+Diagnostic tooling, so it is off unless UNSLOTH_STUDIO_STALL_WATCHDOG=1: a normal
+desktop run carries neither the extra thread nor the faulthandler timer. The mac
+smoke workflow sets the env for every phase, which is where #9712's stalls were
+observed.
+
 Dumps go to the stderr file descriptor: the CI workflow redirects it to the
 ``logs/*.log`` it uploads, and the desktop launcher captures the child's pipe. A
 direct terminal launch shows dumps on the console but its on-disk session log
@@ -58,7 +63,7 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_STALL_WATCHDOG"
+ENABLE_ENV_VAR = "UNSLOTH_STUDIO_STALL_WATCHDOG"
 
 BEAT_INTERVAL_S = 2.5
 # Passing runs of the mac smoke report worst-case route latency around 50ms, with
@@ -287,8 +292,8 @@ _watchdog_lock = threading.Lock()
 def start_stall_watchdog(
     loop: asyncio.AbstractEventLoop, *, suppress: Optional[Callable[[], bool]] = None
 ) -> Optional[StallWatchdog]:
-    """Start the process-wide watchdog. Returns None when disabled by env."""
-    if os.environ.get(DISABLE_ENV_VAR) == "1":
+    """Start the process-wide watchdog. Returns None unless the env opts in."""
+    if os.environ.get(ENABLE_ENV_VAR) != "1":
         return None
     global _watchdog
     with _watchdog_lock:

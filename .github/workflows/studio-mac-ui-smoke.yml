@@ -136,6 +136,10 @@ jobs:
       GGUF_VARIANT: UD-Q4_K_XL
       GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18896'
+      # The backend stall watchdog (#9712) is diagnostic and off by default; arm
+      # it for every phase here so the next stall leaves a thread dump in that
+      # phase's server log.
+      UNSLOTH_STUDIO_STALL_WATCHDOG: '1'
       HF_HOME: ${{ github.workspace }}/hf-cache
       # GitHub's macOS runners expose a PARAVIRTUAL Metal device, and Unsloth refuses to
       # offload to it because paravirtual Apple GPUs return corrupt output. The absorbed

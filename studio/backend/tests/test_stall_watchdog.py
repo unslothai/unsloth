@@ -308,14 +308,16 @@ def test_no_dump_while_suppressed(loop_in_thread, tmp_path):
     )
 
 
-def test_the_disable_env_var_means_no_thread(loop_in_thread, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_STALL_WATCHDOG", "1")
+def test_off_unless_the_env_opts_in(loop_in_thread, monkeypatch):
+    """Diagnostic tooling: a desktop run must carry neither the thread nor the
+    faulthandler timer, so nothing starts without the env the CI workflow sets."""
+    monkeypatch.delenv("UNSLOTH_STUDIO_STALL_WATCHDOG", raising = False)
     assert start_stall_watchdog(loop_in_thread) is None
     assert not any(t.name == "stall-watchdog" for t in threading.enumerate())
 
 
 def test_start_and_stop_manage_one_process_wide_instance(loop_in_thread, monkeypatch):
-    monkeypatch.delenv("UNSLOTH_STUDIO_DISABLE_STALL_WATCHDOG", raising = False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_STALL_WATCHDOG", "1")
     first = start_stall_watchdog(loop_in_thread)
     try:
         assert first is not None
@@ -346,4 +348,14 @@ def test_the_lifespan_wires_it_in():
     assert "stop_stall_watchdog()" in source, (
         "main.py never retires the watchdog, so shutdown's deliberate blocking "
         "reads as a stall and dumps into the exit log"
+    )
+
+    workflow = (
+        _BACKEND_DIR.parent.parent
+        / ".github" / "workflows" / "studio-mac-ui-smoke.yml"
+    )
+    assert workflow.is_file(), f"{workflow} moved; update this guard"
+    assert "UNSLOTH_STUDIO_STALL_WATCHDOG" in workflow.read_text(encoding = "utf-8"), (
+        "the watchdog is opt-in and the mac smoke workflow no longer opts in; the "
+        "one place #9712 stalls have been seen runs without it"
     )
