@@ -64,6 +64,7 @@ import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
 import {
   newDeepResearchHandoff,
   readDeepResearchToolEvent,
+  shouldStartDirectDeepResearch,
 } from "../utils/deep-research-handoff";
 import {
   consumeQueuedChatRunSettings,
@@ -4296,6 +4297,7 @@ export function createOpenAIStreamAdapter(
         }
       };
       const deepResearchHandoff = newDeepResearchHandoff();
+      const continuation = readContinuationRequest(runConfig);
       const deepResearchArmed =
         runtime.deepResearchEnabled &&
         !options.pairId &&
@@ -4466,9 +4468,26 @@ export function createOpenAIStreamAdapter(
         ragAutoInject,
         ragAutoInjectMinScore,
       } = runtime;
-      // A model that cannot call tools cannot hand the turn off, so arming research still starts
-      // it outright. No question is passed: the run reads the user's message, exactly as before.
-      if (deepResearchArmed && !supportsTools) {
+      const latestUserMessage = [...messages]
+        .reverse()
+        .find((message) => message.role === "user");
+      const hasResearchableText = Boolean(
+        latestUserMessage &&
+          collectTextParts(latestUserMessage).some(
+            (text) => text.trim().length > 0,
+          ),
+      );
+      // A model that cannot call tools cannot hand a text turn off, so arming research still
+      // starts it outright. Continuations and attachment-only multimodal turns must reach the
+      // model instead: the former resumes its partial, and the latter has no valid question.
+      if (
+        shouldStartDirectDeepResearch({
+          armed: deepResearchArmed,
+          supportsTools,
+          isContinuation: continuation !== null,
+          hasResearchableText,
+        })
+      ) {
         yield* startDeepResearch("");
         return;
       }
@@ -4672,7 +4691,6 @@ export function createOpenAIStreamAdapter(
 
       // The run's messages stop at the user turn (this is a sibling branch), so the
       // partial is appended here for the backend to resume.
-      const continuation = readContinuationRequest(runConfig);
       if (continuation) {
         outboundMessages.push({
           role: "assistant",

@@ -77,7 +77,7 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert 'toolEvent.tool_name === "deep_research"' in adapter
     assert "readDeepResearchToolEvent(deepResearchHandoff, toolEvent)" in adapter
     assert "if (deepResearchHandoff.question !== null && !runSignal.aborted)" in adapter
-    assert "if (deepResearchArmed && !supportsTools)" in adapter
+    assert "shouldStartDirectDeepResearch({" in adapter
     # Armed research asks for Studio's tool loop on the external body too. Without it the
     # turn proxies through, the model is never offered the tool, and arming does nothing.
     assert "projectRagEnabled ||" in adapter
@@ -402,6 +402,21 @@ def test_the_handoff_uses_the_turn_that_asked_for_it() -> None:
     assert "withResolvedModel(sendTimeRuntime)" in research
     # Only the empty-model resolution, which happens inside this call, may override it.
     assert "useChatRuntimeStore.getState()" not in research
+
+
+def test_the_toolless_fallback_never_steals_a_continuation_or_attachment_only_turn() -> None:
+    adapter = source("features/chat/api/chat-adapter.ts")
+    fallback = adapter.split("const latestUserMessage = [...messages]", 1)[1].split(
+        "// Project sources auto-scope", 1
+    )[0]
+
+    assert "collectTextParts(latestUserMessage)" in fallback
+    assert "(text) => text.trim().length > 0" in fallback
+    assert "isContinuation: continuation !== null" in fallback
+    assert "hasResearchableText," in fallback
+    assert adapter.index("const continuation = readContinuationRequest(runConfig);") < adapter.index(
+        "shouldStartDirectDeepResearch({"
+    )
 
 
 def test_a_tool_that_ran_starts_its_run_even_if_the_reply_never_finished() -> None:

@@ -39,6 +39,21 @@ export function newDeepResearchHandoff(): DeepResearchHandoff {
   };
 }
 
+/** Whether an armed turn must bypass a model that cannot make the handoff itself. */
+export function shouldStartDirectDeepResearch({
+  armed,
+  supportsTools,
+  isContinuation,
+  hasResearchableText,
+}: {
+  armed: boolean;
+  supportsTools: boolean;
+  isContinuation: boolean;
+  hasResearchableText: boolean;
+}): boolean {
+  return armed && !supportsTools && !isContinuation && hasResearchableText;
+}
+
 /**
  * Fold one `deep_research` tool event into the handoff.
  *
