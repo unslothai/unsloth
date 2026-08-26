@@ -9538,11 +9538,11 @@ def canonicalize_web_search_arguments(arguments) -> dict:
     """Rewrite alias keys to ``query`` / ``url`` for duplicate detection and status."""
     args = dict(arguments) if isinstance(arguments, dict) else {}
     query, url = _resolve_web_search_args(args)
+    if url:
+        return {"url": url}
     canonical: dict = {}
     if query:
         canonical["query"] = query
-    if url:
-        canonical["url"] = url
     if "image_queries" in args:
         canonical["image_queries"] = args["image_queries"]
     return canonical

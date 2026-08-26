@@ -181,6 +181,38 @@ def test_web_search_alias_args_share_the_duplicate_key():
     assert not duplicate.should_execute
 
 
+def test_web_search_url_mode_ignores_unused_args_for_duplicate_key():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    first = controller.prepare_call(
+        _call(
+            "web_search",
+            {
+                "url": "https://example.com/page",
+                "query": "unused",
+                "image_queries": ["unused"],
+            },
+            "call_a",
+        )
+    )
+    assert first.arguments == {"url": "https://example.com/page"}
+    controller.record_result(first, "page")
+
+    duplicate = controller.prepare_call(
+        _call(
+            "web_search",
+            {
+                "href": "https://example.com/page",
+                "query": "different",
+                "image_queries": ["different"],
+            },
+            "call_b",
+        )
+    )
+    assert duplicate.action == "duplicate"
+    assert duplicate.arguments == first.arguments
+    assert duplicate.key == first.key
+
+
 def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge():
     controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
     first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
