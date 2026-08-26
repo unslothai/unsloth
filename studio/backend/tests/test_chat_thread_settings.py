@@ -24,6 +24,7 @@ from routes.chat_history import (  # noqa: E402
     ChatThreadPatch,
     ChatThreadSettings,
     _settings_write_from_patch,
+    readable_thread_settings,
     thread_from_row,
 )
 from storage import studio_db  # noqa: E402
@@ -668,3 +669,35 @@ def test_an_older_build_drops_only_the_sampling_it_cannot_read():
         {"toolsEnabled": True, "temperature": 0.3, "somethingNewer": "?"}
     )
     assert kept == {"toolsEnabled": True, "temperature": 0.3}
+
+
+def test_a_chat_carries_its_own_sampling_seed():
+    """The seed sits with the sliders the snapshot already carries, so without it a pin
+    taken in one chat fixes the draw for every other chat on the same model."""
+    assert ChatThreadSettings.model_validate({"seed": 3407}).seed == 3407
+    assert ChatThreadSettings.model_validate({"seed": 0}).seed == 0
+    assert ChatThreadSettings.model_validate({"seed": 2**32 - 2}).seed == 2**32 - 2
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        # bool subclasses int, so lax mode would store either as a pin the user never set.
+        True,
+        False,
+        -1,
+        2**32 - 1,  # llama.cpp's "draw one" sentinel, not a value a pin can name.
+        2**32,
+        1.5,
+    ],
+)
+def test_a_thread_seed_takes_the_same_range_as_the_installation_copy(seed):
+    with pytest.raises(ValidationError):
+        ChatThreadSettings.model_validate({"seed": seed})
+
+
+def test_a_cleared_seed_stays_in_the_stored_snapshot():
+    """null is the clear, not an absence: dropping the key would let the installation pin
+    come back for the one chat the user deliberately unpinned."""
+    assert readable_thread_settings({"seed": None}) == {"seed": None}
+    assert ChatThreadSettings.model_validate({"seed": None}).seed is None

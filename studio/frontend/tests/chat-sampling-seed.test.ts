@@ -26,6 +26,11 @@ import {
   MAX_SAMPLING_SEED,
   modelReadsSamplingSeed,
 } from "../src/features/chat/types/runtime.ts";
+import {
+  THREAD_SCOPED_PARAM_KEYS,
+  isThreadScopedSettingKey,
+  sanitizeThreadScopedSettings,
+} from "../src/features/chat/utils/thread-scoped-settings.ts";
 
 // Dynamic, unlike the two above: preset-policy value-imports ../types/runtime without an
 // extension, and a static import resolves before registerBundlerResolver's hook is live.
@@ -270,4 +275,30 @@ test("the request drops a seed the loaded model cannot use", () => {
   // The same summary the body already reads isGguf from for context_overflow, so
   // "is this a GGUF" cannot be answered two ways inside one request.
   assert.match(adapter, /activeModel\?\.isGguf === true/);
+});
+
+test("the seed belongs to the chat, not the installation", () => {
+  // Every other per-turn sampling control travels with the conversation. Left out, a pin
+  // taken in one chat would fix the draw for every other chat opened on the same model,
+  // and reopening the first could not bring its own value back.
+  assert.ok(THREAD_SCOPED_PARAM_KEYS.includes("seed"));
+  assert.equal(isThreadScopedSettingKey("seed"), true);
+});
+
+test("a chat stores a cleared seed rather than dropping the key", () => {
+  assert.deepEqual(sanitizeThreadScopedSettings({ seed: null }), { seed: null });
+  assert.deepEqual(sanitizeThreadScopedSettings({ seed: 3407 }), { seed: 3407 });
+  // The bound the panel and the installation copy already share, applied to the snapshot
+  // a chat writes: a row from another client meets only this.
+  for (const bad of [-1, 1.5, MAX_SAMPLING_SEED + 1, true, "3407"]) {
+    assert.deepEqual(sanitizeThreadScopedSettings({ seed: bad }), {}, String(bad));
+  }
+});
+
+test("a cleared seed is not read as a missing key", () => {
+  const store = read("../src/features/chat/stores/chat-runtime-store.ts");
+  const helper = slice(store, "function firstSetThreadScopedValue", "\n}");
+  // `??` would fall through a cleared seed's null to the installation default, putting
+  // the pin back on the one chat that dropped it. Only undefined means "not set".
+  assert.match(helper, /values\.find\(\(value\) => value !== undefined\)/);
 });

@@ -687,8 +687,12 @@ test("the in-memory defaults follow the model defaults that were just written", 
     note,
     /if \(isHeldThreadScopedField\(key\)\) \{\s*hydratedDefaultsByHeldField\.set\(key, value\);/,
   );
-  // and it is the fallback apply() actually reads
-  assert.match(store, /stored\?\.\[key\] \?\? globalThreadScopedDefaults\?\.\[key\]/);
+  // and it is the fallback apply() actually reads. Not ??: a cleared seed is stored as
+  // null, and ?? would read that as a missing key and hand back the installation pin.
+  assert.match(
+    store,
+    /firstSetThreadScopedValue\(\s*stored\?\.\[key\],\s*globalThreadScopedDefaults\?\.\[key\],/,
+  );
 });
 
 // setCheckpoint replays the destination model's remembered params without going through
@@ -730,7 +734,7 @@ test("the model being left does not remember the open chat's values", () => {
   );
   assert.match(
     strip,
-    /remembered\?\.\[key\] \?\?\s*globalThreadScopedDefaults\?\.\[key\]/,
+    /firstSetThreadScopedValue\(\s*remembered\?\.\[key\],\s*globalThreadScopedDefaults\?\.\[key\],/,
   );
   // and for a held key neither of those may exist yet, so the sample taken when the
   // window opened is the pre-edit value.

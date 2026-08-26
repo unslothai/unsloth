@@ -121,10 +121,22 @@ class ChatThreadSettings(BaseModel):
     minP: Optional[float] = Field(default = None, ge = 0, le = 1)
     repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
     presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
+    # Same ceiling as the installation-wide copy: llama.cpp reads the seed as a uint32
+    # and spends 0xFFFFFFFF on its "draw one" sentinel.
+    seed: Optional[int] = Field(default = None, ge = 0, le = 2**32 - 2)
     # Not length-capped, like the installation-wide copy: truncating here would
     # silently change what the chat runs with.
     systemPrompt: Optional[str] = None
     systemVariables: Optional[str] = None
+
+    @field_validator("seed", mode = "before")
+    @classmethod
+    def _no_boolean_seed(cls, value: Any) -> Any:
+        # Same contract as ChatInferenceSettings: bool subclasses int, so lax mode
+        # would store `true` as a pin of 1 the user never set.
+        if isinstance(value, bool):
+            raise ValueError("Expected a number, got a boolean.")
+        return value
 
 
 class ChatThread(BaseModel):
