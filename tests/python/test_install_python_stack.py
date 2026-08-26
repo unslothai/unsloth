@@ -7,8 +7,6 @@ import contextlib
 import importlib
 import inspect
 import io
-import hashlib
-import pathlib
 import os
 import re
 import shutil
