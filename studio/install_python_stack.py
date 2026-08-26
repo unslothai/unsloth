@@ -4707,16 +4707,20 @@ def _config_value_is_on(value: str) -> bool:
 
 
 def _toml_value_is_on(value: object) -> bool:
-    """The same test for an already-parsed TOML value.
+    """The same test for a TOML value, parsed or still in its source spelling.
 
     `no-build = false` is an ordinary machine, and a list policy switched off is spelled
-    as the empty list, so neither may be reported as active hardening.
+    as the empty list, so neither may be reported as active hardening. The empty-collection
+    spellings are handled as text too, because the regex fallback never parses them.
     """
     if isinstance(value, bool):
         return value
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple, dict)):
         return bool(value)
-    return _config_value_is_on(str(value))
+    text = str(value).strip()
+    if re.fullmatch(r"\[\s*\]|\{\s*\}", text):
+        return False
+    return _config_value_is_on(text)
 
 
 def _hardened_keys_in_toml(text: str, tables: "tuple[tuple[str, ...], ...]") -> "list[str]":
@@ -4747,11 +4751,27 @@ def _hardened_keys_in_toml(text: str, tables: "tuple[tuple[str, ...], ...]") -> 
                 if key in node and _toml_value_is_on(node[key]):
                     found.append(key)
         return found
-    for key in _HARDENED_CONFIG_KEYS:
-        # Line-anchored so a commented-out setting, or the same word inside a longer key,
-        # is not reported as active policy.
-        match = re.search(rf"^[ \t]*{re.escape(key)}[ \t]*=[ \t]*(.*)$", text, re.MULTILINE)
-        if match and _toml_value_is_on(match.group(1).strip().strip("\"'")):
+    # The fallback tracks table headers rather than scanning the whole document, so a
+    # `[tool.other] no-build = true` in a pyproject is not read as uv policy the way a
+    # flat search would read it.
+    current: "tuple[str, ...]" = ()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or not stripped:
+            continue
+        header = re.match(r"^\[\[?([^]]*)\]\]?$", stripped)
+        if header:
+            current = tuple(
+                part.strip().strip("\"'") for part in header.group(1).split(".") if part.strip()
+            )
+            continue
+        if current not in tables:
+            continue
+        key, separator, raw = stripped.partition("=")
+        if not separator:
+            continue
+        key = key.strip().strip("\"'")
+        if key in _HARDENED_CONFIG_KEYS and _toml_value_is_on(raw.strip().strip("\"'")):
             found.append(key)
     return found
 
@@ -4829,7 +4849,21 @@ def _hardened_pip_config_paths() -> "list[str]":
             if base:
                 candidates.append(os.path.join(base, "pip", name))
     else:
-        candidates.append(os.path.join("/etc", "xdg", "pip", name))
+        # Global is EVERY entry of XDG_CONFIG_DIRS, not just the default: measured with
+        # pip 26, `XDG_CONFIG_DIRS=/a:/b pip config debug` enumerates /a/pip/pip.conf and
+        # /b/pip/pip.conf. macOS reads its global set from XDG_DATA_DIRS instead, falling
+        # back to /Library/Application Support.
+        directories = os.environ.get(
+            "XDG_DATA_DIRS" if IS_MACOS else "XDG_CONFIG_DIRS", ""
+        ).strip()
+        if directories:
+            for directory in directories.split(os.pathsep):
+                if directory.strip():
+                    candidates.append(os.path.join(directory.strip(), "pip", name))
+        elif IS_MACOS:
+            candidates.append(os.path.join("/Library", "Application Support", "pip", name))
+        else:
+            candidates.append(os.path.join("/etc", "xdg", "pip", name))
         candidates.append(os.path.join("/etc", name))
         home = os.path.expanduser("~")
         xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
@@ -4871,15 +4905,20 @@ def _read_text(path: str) -> "str | None":
 
 
 @functools.lru_cache(maxsize = 1)
-def _hardened_pm_policy_names() -> "tuple[str, ...]":
-    """Human-readable names for the package-manager hardening this host has configured.
+def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
+    """(tool, source, key) for every package-manager hardening this host has configured.
 
-    Empty on an ordinary machine, which is the common case and the reason the notice is
-    silent by default. Best-effort throughout: this decides what to PRINT, never what to
-    run, so a probe that fails just shortens the list.
+    `tool` is "pip" or "uv", which is what makes this more than a display list: under the
+    opt-out the two managers have to be told about each other's policy, since neither
+    reads the other's (measured on the pinned uv 0.12.1, `uv pip install` ignores both
+    PIP_REQUIRE_HASHES and a pip.conf require-hashes). `source` is "env" for a variable,
+    otherwise the config file's basename.
+
+    Empty on an ordinary machine. Best-effort throughout: a probe that fails just
+    shortens the list.
     """
     found = [
-        name
+        ("pip" if name.startswith("PIP_") else "uv", "env", name)
         for name in _PM_POLICY_ENV_VARS
         if _config_value_is_on(os.environ.get(name, ""))
     ]
@@ -4904,7 +4943,7 @@ def _hardened_pm_policy_names() -> "tuple[str, ...]":
                 continue
             option = name.strip().rpartition(".")[2]
             if option in _HARDENED_CONFIG_KEYS and _config_value_is_on(raw.strip().strip("'\"")):
-                found.append(f"pip.conf {option}")
+                found.append(("pip", "pip.conf", option))
     else:
         # No usable pip, so read pip's files directly rather than report an ordinary
         # machine. Only in this branch: when pip answered, it already merged them.
@@ -4913,7 +4952,7 @@ def _hardened_pm_policy_names() -> "tuple[str, ...]":
             if text is None:
                 continue
             for key in _hardened_keys_in_ini(text):
-                found.append(f"{os.path.basename(path)} {key}")
+                found.append(("pip", os.path.basename(path), key))
     for path in _hardened_uv_config_paths():
         text = _read_text(path)
         if text is None:
@@ -4924,8 +4963,67 @@ def _hardened_pm_policy_names() -> "tuple[str, ...]":
             else ((), ("pip",))
         )
         for key in _hardened_keys_in_toml(text, tables):
-            found.append(f"{os.path.basename(path)} {key}")
+            found.append(("uv", os.path.basename(path), key))
     return tuple(dict.fromkeys(found))
+
+
+def _hardened_pm_policy_names() -> "tuple[str, ...]":
+    """The detected policy, as the notice prints it."""
+    return tuple(dict.fromkeys(
+        key if source == "env" else f"{source} {key}"
+        for _tool, source, key in _detected_policy()
+    ))
+
+
+# pip and uv spell the same three controls differently and read none of each other's.
+# Under the opt-out, whichever manager runs is told the other's policy in its own
+# spelling, or the flag only holds for whichever tool the operator happened to configure.
+# Precedent: _uv_staging_plan already translates UV_NO_BINARY / UV_ONLY_BINARY into their
+# pip spellings for the same reason.
+def _translated_policy_env(cmd: "list[str]") -> "dict[str, str]":
+    """Retained policy, restated for the manager this command actually runs.
+
+    Empty unless the opt-out is set. Never overrides a setting the target manager already
+    has: the operator's own spelling always wins over a translation of the other one.
+    """
+    if not _respect_pm_policy():
+        return {}
+    target = "uv" if cmd[:1] == ["uv"] else "pip"
+    source_keys = {
+        key.lower() for tool, _source, key in _detected_policy() if tool != target
+    }
+    if not source_keys:
+        return {}
+
+    def _on(*names: str) -> bool:
+        return any(
+            name.lower() in source_keys or name.lower().replace("_", "-") in source_keys
+            for name in names
+        )
+
+    overrides: dict[str, str] = {}
+    if target == "uv":
+        if _on("PIP_REQUIRE_HASHES", "require-hashes"):
+            overrides["UV_REQUIRE_HASHES"] = "1"
+        # pip's only-binary is "wheels only", which uv spells as no-build.
+        if _on("PIP_ONLY_BINARY", "only-binary"):
+            overrides["UV_NO_BUILD"] = "1"
+        if _on("PIP_NO_BINARY", "no-binary"):
+            overrides["UV_NO_BINARY"] = "1"
+    else:
+        if _on("UV_REQUIRE_HASHES", "require-hashes"):
+            overrides["PIP_REQUIRE_HASHES"] = "1"
+        if _on("UV_NO_BUILD", "UV_NO_BUILD_PACKAGE", "no-build", "no-build-package"):
+            overrides["PIP_ONLY_BINARY"] = ":all:"
+        if _on("UV_NO_BINARY", "UV_NO_BINARY_PACKAGE", "no-binary", "no-binary-package"):
+            overrides["PIP_NO_BINARY"] = ":all:"
+        if _on("UV_ONLY_BINARY", "UV_ONLY_BINARY_PACKAGE", "only-binary"):
+            overrides["PIP_ONLY_BINARY"] = ":all:"
+    return {
+        name: value
+        for name, value in overrides.items()
+        if not os.environ.get(name, "").strip()
+    }
 
 
 def _announce_pm_policy() -> None:
@@ -5265,16 +5363,24 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     opposite.
     """
     if not _is_pinned_index_cmd(cmd):
-        relaxed = _relaxed_pip_policy_env(cmd)
-        if not relaxed:
+        overrides = dict(_relaxed_pip_policy_env(cmd))
+        overrides.update(_translated_policy_env(cmd))
+        if not overrides:
             return None
         env = os.environ.copy()
-        env.update(relaxed)
+        env.update(overrides)
         return env
     env = os.environ.copy()
     for name in _UV_INDEX_ENV_VARS:
+        # UV_CONFIG_FILE is an index variable only incidentally: measured, a file named
+        # by it carrying `[pip] require-hashes = true` fails a pinned install, and
+        # dropping it lets the same install through. Under the opt-out it is the
+        # operator's policy file, so it stays.
+        if name == "UV_CONFIG_FILE" and _respect_pm_policy():
+            continue
         env.pop(name, None)
     if _respect_pm_policy():
+        env.update(_translated_policy_env(cmd))
         return env
     env["UV_NO_CONFIG"] = "1"
     for name in _PM_POLICY_ENV_VARS:
