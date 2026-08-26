@@ -21906,7 +21906,9 @@ class LlamaCppBackend:
                 # Clear first, or a swap into a model without video inherits
                 # the previous server's answer.
                 self._has_video_input = False
-                self._reconcile_effective_ctx_with_server()
+                # The explicit override, not the field fallback: only a flag after
+                # Studio's own -c can allocate past the fit, so it is the ceiling.
+                self._reconcile_effective_ctx_with_server(ctx_override or 0)
                 if self._kv_cache_context_total is not None:
                     self._n_ubatch = min(
                         self._n_ubatch,
@@ -24517,28 +24519,56 @@ class LlamaCppBackend:
         n_ctx = settings.get("n_ctx")
         return int(n_ctx) if n_ctx else None
 
-    def _reconcile_effective_ctx_with_server(self) -> None:
-        """Adopt the server's real ``n_ctx`` when it is below Unsloth's value.
+    def _reconcile_effective_ctx_with_server(self, requested_n_ctx: int = 0) -> None:
+        """Adopt the server's real ``n_ctx`` within an explicit requested ceiling.
 
         Keeps ``context_length`` (load response, status route, passthrough
         ``max_tokens`` ceiling) honest; clients sized to the requested value
-        would otherwise hit ``exceed_context_size_error`` 400s early.
+        would otherwise hit ``exceed_context_size_error`` 400s early. A trailing
+        pass-through ``--ctx-size`` can also make the server larger than Studio's
+        pre-launch VRAM-fit estimate; publish that confirmed allocation without
+        advertising beyond the user's resolved explicit request.
+
+        ``requested_n_ctx`` is the EXPLICIT pass-through override (0 when absent),
+        not ``resolve_requested_ctx``'s field fallback: only a flag emitted after
+        Studio's own ``-c`` can allocate past the fit, so gating on the flag keeps
+        llama.cpp's context padding from being published as an override that does
+        not exist.
+
+        ``_max_context_length`` deliberately stays put: /props confirms what was
+        ALLOCATED, not that it fits VRAM without spilling, so the "may use system
+        RAM" warning is right and ``max_context_length < context_length`` is legal.
         """
         actual_n_ctx = self._query_server_n_ctx()
         if not actual_n_ctx or actual_n_ctx <= 0:
             return
         slots = 1 if self._kv_cache_unified else self.effective_parallel_slots
         self._kv_cache_context_total = actual_n_ctx * slots
-        if self._effective_context_length and actual_n_ctx < self._effective_context_length:
+        effective_n_ctx = self._effective_context_length
+        if not effective_n_ctx:
+            # Same ceiling as the raise below, or a missing seed would advertise
+            # past the explicit request.
+            self._effective_context_length = (
+                min(actual_n_ctx, requested_n_ctx) if requested_n_ctx > 0 else actual_n_ctx
+            )
+            return
+        if actual_n_ctx < effective_n_ctx:
             logger.warning(
                 "llama-server allocated a smaller per-request context than "
-                f"requested ({self._effective_context_length} -> {actual_n_ctx}; "
+                f"requested ({effective_n_ctx} -> {actual_n_ctx}; "
                 "memory fit or --parallel slot split); clients must treat "
                 f"{actual_n_ctx} as the real context window."
             )
             self._effective_context_length = actual_n_ctx
-        elif not self._effective_context_length:
-            self._effective_context_length = actual_n_ctx
+            return
+        if requested_n_ctx > effective_n_ctx:
+            confirmed_n_ctx = min(actual_n_ctx, requested_n_ctx)
+            if confirmed_n_ctx > effective_n_ctx:
+                logger.info(
+                    "llama-server confirmed a larger per-request context from "
+                    f"the explicit override ({effective_n_ctx} -> {confirmed_n_ctx})."
+                )
+                self._effective_context_length = confirmed_n_ctx
 
     # ── Message building (OpenAI format) ──────────────────────────
 

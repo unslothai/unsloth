@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -743,6 +743,29 @@ def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) ->
     """
     override = parse_ctx_override(args)
     return override if override is not None else fallback_n_ctx
+
+
+def matches_explicit_ctx_override(args: Optional[Iterable[str]], n_ctx: Any) -> bool:
+    """Whether a pass-through ``-c``/``--ctx-size`` matches the context the caller
+    is already sending as a first-class field.
+
+    Context is the one first-class field whose load-time value is a VRAM-fit
+    TARGET, so a matching flag is not a stale shadow but the user's standing
+    decision to run past the estimated threshold. Both strippers ask here rather
+    than mirroring the test, so auto-switch and /load inheritance cannot drift.
+
+    False for anything unconfirmable, which is the pre-existing strip: no flag, a
+    malformed one, or a non-positive/non-int ``n_ctx``. That last case is real --
+    override rows are coerced on write but returned verbatim on read, so a row
+    from an older build can hold any JSON type and must not raise here.
+    """
+    if isinstance(n_ctx, bool) or not isinstance(n_ctx, int) or n_ctx <= 0:
+        return False
+    try:
+        return parse_ctx_override(args) == n_ctx
+    except ValueError:
+        # Malformed extras are refused at the boundary; this must not raise here.
+        return False
 
 
 def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Optional[str]:
