@@ -1130,7 +1130,14 @@ def derive_unstable(
             # subtree. It can still lower `undetermined`, which is the direction that only ever
             # narrows the excuse set.
             "unstable": bool(d and (n - settled[action]) >= min_observations),
-            "undetermined": n < min_observations,
+            # THE SAME COUNT `unstable` WAS DECIDED ON, once anything has differed. Leaving this
+            # on the raw total made the mixed state -- one real DIFFER beside one settled match --
+            # read as "decided, and stable": not unstable, not undetermined. `cross_check` then
+            # files a declared action under `declared_stable_in_practice`, whose stated meaning is
+            # that the null never saw it differ, on a run where it differed once. With nothing
+            # differing there is no classification to make and the total is the right count, which
+            # is the case this change exists for.
+            "undetermined": (n - settled[action] if d else n) < min_observations,
         }
     return out
 

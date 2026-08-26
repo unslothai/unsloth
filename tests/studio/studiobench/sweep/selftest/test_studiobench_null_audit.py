@@ -1632,9 +1632,13 @@ def test_a_settled_match_cannot_supply_the_observation_that_mints_an_exemption()
     assert row["observations"] == 2
     assert row["differed"] == 1
     assert row[P.SETTLED_MATCH] == 1
-    # Decided, because two readings answered; NOT unstable, because only one of them compared.
-    assert row["undetermined"] is False
+    # NOT unstable, because only one of the two readings compared anything. And not "decided,
+    # and stable" either: one differing comparison is the single flake `min_observations` exists
+    # for, so once anything has differed the same count decides both. Left on the raw total this
+    # would reach `cross_check` as `declared_stable_in_practice`, whose stated meaning is that the
+    # null never saw this action differ, on a run where it differed once.
     assert row["unstable"] is False
+    assert row["undetermined"] is True
     # Two complete comparisons still classify exactly as before.
     both = P.derive_unstable([("keystroke", differ), ("keystroke", differ)])["keystroke"]
     assert both["unstable"] is True
