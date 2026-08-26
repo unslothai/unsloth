@@ -84,6 +84,24 @@ interface HastNode {
 /** The marker. Read by `index.css`, and by nothing else. */
 export const MATH_BLOCK_CLASS = "aui-math-block";
 
+/*
+ * The class the stylesheet contains DISPLAY maths by, added AFTER KaTeX has run and only to
+ * displays that carry no equation number. `katex.css` resets `katexEqnNo` on `body` and increments
+ * it in `.katex .eqn-num::before`, and style containment, which `content-visibility: auto` applies
+ * unconditionally, scopes that increment to each contained display. Measured on Chromium: three
+ * numbered displays read (1) (2) (3) with the feature off and (1) (1) (1) with it on. The same
+ * fixture on WebKitGTK 2.50.4 does NOT reproduce it, 0 differing pixels, so this is engine
+ * dependent and Chromium is the engine most of the web UI runs in.
+ *
+ * A `:has()` rule would express this in CSS alone and is exactly what must not be used: two
+ * `:has()` rules were the measured owner of the whole 500K scroll cost on Chromium, fixed in #9669.
+ * So the renderer decides, and the stylesheet names a plain class.
+ */
+export const MATH_DISPLAY_CLASS = "aui-math-display";
+
+/** KaTeX's two equation-number markers, from `katex.css`. */
+const EQN_NUM_CLASSES = new Set(["eqn-num", "mml-eqn-num"]);
+
 /** What survives `rehype-sanitize` on a maths `code` element. See the header. */
 const MATH_CLASS = "language-math";
 
@@ -246,6 +264,58 @@ type Attacher = (
  * to the original. Returning ONE attacher matters: Streamdown appends this value to its rehype
  * list as a single entry, where an array would be read as an `[attacher, options]` tuple.
  */
+/** Does this subtree carry a KaTeX equation number? */
+const hasEquationNumber = (node: HastNode): boolean => {
+  if (node.type === "element" && classListOf(node).some((c) => EQN_NUM_CLASSES.has(c))) {
+    return true;
+  }
+  for (const child of node.children ?? []) {
+    if (hasEquationNumber(child)) return true;
+  }
+  return false;
+};
+
+/**
+ * Run AFTER KaTeX. Two jobs, both about the equation counter:
+ *
+ *   1. Give every `.katex-display` WITHOUT an equation number the class the stylesheet contains by.
+ *      A numbered one is left alone and simply does not take containment.
+ *   2. Take `MATH_BLOCK_CLASS` back off any block that turned out to contain a numbered display.
+ *      `markMathBlocks` runs before KaTeX, when a display is still
+ *      `<pre><code class="language-math">` and no `.eqn-num` exists to see, so a blockquote or div
+ *      holding both inline maths and a numbered display would otherwise scope the counter from
+ *      above and break the numbering just as effectively.
+ *
+ * Returns how many displays were marked and how many blocks were unmarked, which is what makes
+ * this testable without a browser.
+ */
+export const guardEquationNumbers = (tree: HastNode): { marked: number; unmarked: number } => {
+  let marked = 0;
+  let unmarked = 0;
+  const visit = (node: HastNode): void => {
+    if (node.type === "element") {
+      const classes = classListOf(node);
+      if (classes.includes("katex-display") && !hasEquationNumber(node)) {
+        const properties: HastProperties = node.properties ?? {};
+        node.properties = properties;
+        if (!classes.includes(MATH_DISPLAY_CLASS)) {
+          properties.className = [...classes, MATH_DISPLAY_CLASS];
+          marked += 1;
+        }
+      }
+      if (classes.includes(MATH_BLOCK_CLASS) && hasEquationNumber(node)) {
+        const properties: HastProperties = node.properties ?? {};
+        node.properties = properties;
+        properties.className = classes.filter((c) => c !== MATH_BLOCK_CLASS);
+        unmarked += 1;
+      }
+    }
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit(tree);
+  return { marked, unmarked };
+};
+
 export const withMathBlockMarker = (mathRehypePlugin: unknown): Attacher => {
   const [attacher, options] = (
     Array.isArray(mathRehypePlugin) ? mathRehypePlugin : [mathRehypePlugin]
@@ -254,7 +324,10 @@ export const withMathBlockMarker = (mathRehypePlugin: unknown): Attacher => {
     const renderMaths = attacher.call(this, options);
     return (tree: HastNode, file: unknown) => {
       markMathBlocks(tree);
-      return renderMaths ? renderMaths(tree, file) : undefined;
+      const rendered = renderMaths ? renderMaths(tree, file) : undefined;
+      // After KaTeX, because equation numbers do not exist until it has run.
+      guardEquationNumbers(tree);
+      return rendered;
     };
   };
 };

@@ -7,6 +7,8 @@ import test from "node:test";
 
 import {
   MATH_BLOCK_CLASS,
+  MATH_DISPLAY_CLASS,
+  guardEquationNumbers,
   markMathBlocks,
   withMathBlockMarker,
 } from "../src/components/assistant-ui/math-block-marker.ts";
@@ -287,4 +289,94 @@ test("the composed attacher also accepts a bare attacher with no options", () =>
   transform(root([paragraph]), {});
   assert.equal(ran, 1);
   assert.ok(marked(paragraph));
+});
+
+/*
+ * EQUATION NUMBERS. `katex.css` resets `katexEqnNo` on `body` and increments it in
+ * `.katex .eqn-num::before`. Style containment, which `content-visibility: auto` applies
+ * unconditionally, scopes that increment per contained display. Measured on Chromium: three
+ * numbered displays read (1) (2) (3) off and (1) (1) (1) on. The same fixture on WebKitGTK 2.50.4
+ * does NOT reproduce it, 0 differing pixels against 120 for the list-marker case photographed in
+ * the same frame, so the probe could see counter breakage and this engine simply does not do it.
+ * Chromium is the engine most of the web UI runs in, so it decides.
+ *
+ * `guardEquationNumbers` runs AFTER KaTeX, because none of this markup exists before it.
+ */
+
+const withClass = (tag: string, className: string, children: HastNode[] = []): HastNode => {
+  const node = el(tag, children);
+  node.properties = { className: [className] };
+  return node;
+};
+
+test("a display with no equation number gets the display class", () => {
+  const display = withClass("span", "katex-display", [withClass("span", "katex")]);
+  const tree = root([display]);
+
+  assert.deepEqual(guardEquationNumbers(tree), { marked: 1, unmarked: 0 });
+  assert.ok(classesOf(display).includes(MATH_DISPLAY_CLASS));
+  assert.ok(classesOf(display).includes("katex-display"), "and keeps its own class");
+});
+
+test("a display WITH an equation number does not", () => {
+  const numbered = withClass("span", "katex-display", [
+    withClass("span", "katex", [withClass("span", "eqn-num")]),
+  ]);
+  const tree = root([numbered]);
+
+  assert.deepEqual(guardEquationNumbers(tree), { marked: 0, unmarked: 0 });
+  assert.equal(classesOf(numbered).includes(MATH_DISPLAY_CLASS), false);
+});
+
+test("the MathML equation number counts too", () => {
+  // `katex.css` has two counters, `katexEqnNo` and `mmlEqnNo`, and only one of them appears in a
+  // given output mode. Missing either would leave half the configurations broken.
+  const numbered = withClass("span", "katex-display", [
+    withClass("span", "katex", [withClass("span", "mml-eqn-num")]),
+  ]);
+  assert.deepEqual(guardEquationNumbers(root([numbered])), { marked: 0, unmarked: 0 });
+  assert.equal(classesOf(numbered).includes(MATH_DISPLAY_CLASS), false);
+});
+
+test("a marked block holding a numbered display is UNMARKED", () => {
+  // `markMathBlocks` runs before KaTeX, when a display is still `<pre><code>` and no `.eqn-num`
+  // exists to see. A blockquote holding both inline maths and a numbered display would otherwise
+  // scope the counter from above and break the numbering just as effectively as containing the
+  // display itself would.
+  const numbered = withClass("span", "katex-display", [
+    withClass("span", "katex", [withClass("span", "eqn-num")]),
+  ]);
+  const quote = el("blockquote", [numbered]);
+  quote.properties = { className: [MATH_BLOCK_CLASS] };
+  const tree = root([quote]);
+
+  const counts = guardEquationNumbers(tree);
+  assert.equal(counts.unmarked, 1);
+  assert.equal(classesOf(quote).includes(MATH_BLOCK_CLASS), false, "the block loses containment");
+});
+
+test("a marked block holding an UNNUMBERED display keeps its class", () => {
+  // The control for the row above: without this, an implementation that unmarked every block
+  // holding any display at all would pass and would give up containment it did not need to.
+  const plain = withClass("span", "katex-display", [withClass("span", "katex")]);
+  const quote = el("blockquote", [plain]);
+  quote.properties = { className: [MATH_BLOCK_CLASS] };
+
+  const counts = guardEquationNumbers(root([quote]));
+  assert.equal(counts.unmarked, 0);
+  assert.ok(classesOf(quote).includes(MATH_BLOCK_CLASS));
+  assert.ok(classesOf(plain).includes(MATH_DISPLAY_CLASS), "and the display is still contained");
+});
+
+test("running the guard twice adds nothing the second time", () => {
+  // Streamdown re-renders a settled body on every mount, so the pass has to be idempotent or the
+  // class list grows without bound.
+  const display = withClass("span", "katex-display", [withClass("span", "katex")]);
+  const tree = root([display]);
+  guardEquationNumbers(tree);
+  assert.deepEqual(guardEquationNumbers(tree), { marked: 0, unmarked: 0 });
+  assert.equal(
+    classesOf(display).filter((c) => c === MATH_DISPLAY_CLASS).length,
+    1,
+  );
 });

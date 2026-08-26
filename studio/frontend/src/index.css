@@ -2640,7 +2640,13 @@ html[data-chat-font] .aui-root {
 		content-visibility: auto;
 		contain-intrinsic-size: auto 8.5rem;
 	}
-	html[data-math-block-containment="on"] .aui-thread-root .katex-display {
+	/* `.aui-math-display`, not `.katex-display`, because a display carrying an equation number must
+	   NOT take containment: style containment scopes `katexEqnNo` and Chromium then renders every
+	   numbered equation as (1). The renderer adds this class after KaTeX has run, to the displays
+	   that have no number. A `:has()` rule would say the same thing in CSS and is precisely what
+	   must not be used here, since two `:has()` rules were the measured owner of the 500K scroll
+	   cost on Chromium (#9669). */
+	html[data-math-block-containment="on"] .aui-thread-root .aui-math-display {
 		content-visibility: auto;
 		contain-intrinsic-size: auto 3rem;
 	}

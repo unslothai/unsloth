@@ -5,7 +5,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { MATH_BLOCK_CLASS } from "../src/components/assistant-ui/math-block-marker.ts";
+import {
+  MATH_BLOCK_CLASS,
+  MATH_DISPLAY_CLASS,
+} from "../src/components/assistant-ui/math-block-marker.ts";
 import {
   MATH_BLOCK_CONTAINMENT_ATTRIBUTE,
   MATH_BLOCK_CONTAINMENT_ON,
@@ -80,9 +83,27 @@ test("the stylesheet rule names the class, the attribute and both declarations",
 
   assert.ok(marked.includes(`.${MATH_BLOCK_CLASS}`), "names the marker class");
   assert.ok(
-    display.includes(".katex-display"),
-    "names display maths, which needs no marker",
+    display.includes(`.${MATH_DISPLAY_CLASS}`),
+    "names the display class the renderer adds after KaTeX has run",
   );
+  assert.equal(
+    display.includes(".katex-display"),
+    false,
+    "and NOT `.katex-display` itself: a display carrying an equation number must not take " +
+      "containment, because style containment scopes `katexEqnNo` and Chromium then renders " +
+      "every numbered equation as (1). Measured, and engine dependent: the same fixture on " +
+      "WebKitGTK 2.50.4 does not reproduce it.",
+  );
+  for (const rule of rules) {
+    // Scoped to THESE rules rather than to the file, which carries other `:has()` rules that #9669
+    // deliberately narrowed to direct children rather than removing.
+    assert.equal(
+      rule.includes(":has("),
+      false,
+      "the exemption is NOT expressed with `:has()` here, which was the measured owner of the " +
+        "whole 500K scroll cost on Chromium (#9669); the renderer decides instead",
+    );
+  }
 
   /*
    * THE TWO PLACEHOLDERS ARE DIFFERENT, AND THAT IS THE POINT. A marked block is a PARAGRAPH of
