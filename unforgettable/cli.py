@@ -294,10 +294,14 @@ def _cmd_admit(args: argparse.Namespace, db_path: Path) -> int:
     if outcome.error_kind == ERROR_UNKNOWN:
         return _unknown_id(args.id)
     if outcome.error_kind == ERROR_REFUSED:
-        print(
-            ADMIT_STATUS_REFUSED.format(status=outcome.error_detail),
-            file=sys.stderr,
-        )
+        detail = outcome.error_detail or ""
+        if detail.startswith("dissonance:"):
+            print(f"admit refused: {detail} (use --force)", file=sys.stderr)
+        else:
+            print(
+                ADMIT_STATUS_REFUSED.format(status=detail),
+                file=sys.stderr,
+            )
         return UNKNOWN_ID_EXIT
     if outcome.error_kind == ERROR_BLOCKED:
         print(VOTER_DENIED.format(reason=outcome.error_detail), file=sys.stderr)
@@ -332,7 +336,8 @@ def _cmd_compact(args: argparse.Namespace, db_path: Path) -> int:
     if dry_run is None:
         print(APPLY_CONFLICT, file=sys.stderr)
         return APPLY_CONFLICT_EXIT
-    report = run_compact(db_path, dry_run=dry_run)
+    older = getattr(args, "older_than", None)
+    report = run_compact(db_path, dry_run=dry_run, older_than_days=older)
     _print_json(asdict(report))
     return 0
 
@@ -780,6 +785,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         help="Mutate memory.db. Refused when combined with --dry-run.",
+    )
+    compact_p.add_argument(
+        "--older-than",
+        type=int,
+        default=None,
+        metavar="DAYS",
+        help="Reject stale proposed WHO/infer rows older than DAYS (default 30).",
     )
     compact_p.set_defaults(func=_cmd_compact)
 

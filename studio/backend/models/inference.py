@@ -1532,6 +1532,29 @@ class ChatCompletionRequest(BaseModel):
             "Falls back to UNFORGETTABLE_PLANNER_MODEL, then the inner model."
         ),
     )
+    filter: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Unforgettable filter judge: on|off. When on (default), "
+            "a one-shot supervisor strips coercive and manipulative language "
+            "from the user prompt and keeps the technical remainder. "
+            "UNFORGETTABLE_FILTER=off disables."
+        ),
+    )
+    filter_model: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Unforgettable: model id for the filter complete. "
+            "Falls back to UNFORGETTABLE_FILTER_MODEL, then the inner model."
+        ),
+    )
+    user_label: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Unforgettable: optional speaker label for this operator "
+            "(copied onto speaker_label when the speaker is user)."
+        ),
+    )
     voter_model: Optional[str] = Field(
         None,
         description = (

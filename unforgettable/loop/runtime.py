@@ -27,6 +27,12 @@ _episode_id: ContextVar[Optional[str]] = ContextVar("unforgettable_episode_id", 
 _namespace: ContextVar[str] = ContextVar("unforgettable_namespace", default=DEFAULT_NAMESPACE_ID)
 _contact: ContextVar[str] = ContextVar("unforgettable_contact", default="world")
 _traces: ContextVar[Optional[list[ToolTrace]]] = ContextVar("unforgettable_traces", default=None)
+_filter_stripped: ContextVar[tuple] = ContextVar(
+    "unforgettable_filter_stripped", default=()
+)
+_user_label: ContextVar[Optional[str]] = ContextVar(
+    "unforgettable_user_label", default=None
+)
 
 
 def current_db_path() -> Optional[str]:
@@ -47,6 +53,22 @@ def current_contact() -> str:
 
 def current_traces() -> list:
     return list(_traces.get() or [])
+
+
+def current_filter_stripped() -> tuple:
+    return _filter_stripped.get() or ()
+
+
+def set_filter_stripped(spans: tuple) -> None:
+    _filter_stripped.set(tuple(spans or ()))
+
+
+def current_user_label() -> Optional[str]:
+    return _user_label.get()
+
+
+def set_user_label(label: Optional[str]) -> None:
+    _user_label.set(label)
 
 
 def note_tool_result(name: str, arguments: dict, result: str) -> None:

@@ -76,6 +76,10 @@ Statuses: `active`, `superseded`, `deprecated`, `proposed`, `rejected`.
 
 Provenance (trust, lower weight first at retrieve): `world` 0, `mixed` 1, `human` 2, `sim` 3, `infer` 4.
 
+Speaker (who asserted the row; runner-assigned, tools cannot self-certify `user`): `world`, `sim`, `user`, `model`, `other`. Optional `speaker_label` names which operator or document. `warrant` is internal proof; empty means unbacked.
+
+Typology class (retrieve rank, lower first): WHAT world 0, WHAT mixed 1, WHAT sim 2, WHAT backed text 3, WHO user 4, WHO other 5, WHO model 6. `kind=directive` is always WHO user. Unbacked user/other claims are force-proposed. Retrieve drops a WHO hit that shares `normalize_title()` with a retrieved WHAT hit.
+
 `admit()` total order is locked (`agents/admissions.py:46-67`):
 
 1. namespace deny → rejected (**no row is inserted**)
@@ -200,7 +204,7 @@ Production modules only. Tests are listed in §5. Plans under `plans/` are chart
 | `__main__.py` | `python -m unforgettable` → `cli.main` |
 | `cli.py` | argparse inspect / compact / compile / pack / train / eval / promote / rollback / review / mine. `compact` and `pack` preview unless `--apply`. Thin wrap of `operators.py`. |
 | `operators.py` | Shared admit / reject / review / mine / compile / promote / `summarize_store` used by CLI and Studio. Does not change `admit()` predicates. |
-| `constants.py` | Kinds, statuses, provenances, namespace defaults, `PROVENANCE_WEIGHT` |
+| `constants.py` | Kinds, statuses, provenances, speakers, typology class, namespace defaults, `PROVENANCE_WEIGHT` |
 | `host.py` | `Host` protocol, `GenerateRequest` / `GenerateResult` / `ToolTrace`, run-action / supervise constants |
 | `supervisor.py` | Approver (vote/mine) and planner: config, prompts, parse, `HttpSupervisor` |
 | `LICENSE` | Apache 2.0 text |
@@ -215,9 +219,9 @@ Production modules only. Tests are listed in §5. Plans under `plans/` are chart
 | `db.py` | Per-call SQLite connections, WAL, `foreign_keys=ON`, lazy `ensure_schema` |
 | `schema.py` | `namespaces`, `records`, FTS5, `admissions_log`, `rollouts`, `compiled`, `compiled_blocked`, `retrieve_uses`, `inject_stats`, `packs`, `pack_items`, `adapters` |
 | `records.py` | CRUD, supersede (one transaction), deprecate, admissions log, rollouts, retrieve_uses, inject_stats |
-| `search.py` | FTS5 MATCH (AND + stopwords), then provenance-weight sort |
+| `search.py` | FTS5 MATCH (AND + stopwords), then typology-class then provenance-weight sort |
 | `titles.py` | `normalize_title()` shared by compact and gate eyes |
-| `compact.py` | Deterministic hygiene: empty proposed, title-dedupe, fold superseded chains |
+| `compact.py` | Deterministic hygiene: empty proposed, stale proposed WHO/infer, title-dedupe, fold superseded chains |
 | `compile.py` | Standing membership cache; live format of B; sticky `uncompile` |
 | `trajectories.py` | Graded rollout retrieve (episode FTS + join); never injects episode bodies |
 
@@ -270,7 +274,7 @@ Production modules only. Tests are listed in §5. Plans under `plans/` are chart
 | `__init__.py` | Eyes façade |
 | `protocols.py` | `RecognizedFailure`, `WorldEyes` / `SimEyes` / `GateEyes`, `Contradiction` |
 | `basic.py` | Tool-result eyes, runner fingerprints, user phrases, `grade_run_action` |
-| `gate.py` | Title-contradiction scan, `review_write`, `LogGateEyes` |
+| `gate.py` | Title-contradiction scan, WHO-vs-WHAT dissonance, `review_write`, `LogGateEyes` |
 | `probes.py` | `Probe:` procedures; CLI and post-extract run |
 
 ### 3.9 `sidecar/` — C
@@ -296,7 +300,7 @@ Production modules only. Tests are listed in §5. Plans under `plans/` are chart
 
 `get_connection` (`store/db.py:37`) opens a per-call connection, enables WAL + FK, and runs `ensure_schema` once per resolved path under a lock.
 
-`records` is the soul of B (Phase 1). Later phases add tables with `CREATE TABLE IF NOT EXISTS` — no `ALTER` on `records` except additive missing columns (`schema.py:161`). FTS5 (`record_fts`) indexes title+body; `record_id` is stored UNINDEXED and maintained in Python (`records._rewrite_fts`).
+`records` is the soul of B (Phase 1). Later phases add tables with `CREATE TABLE IF NOT EXISTS` — no `ALTER` on `records` except additive missing columns (`schema.py` `_add_missing_columns`, including `speaker`, `speaker_label`, `warrant`). FTS5 (`record_fts`) indexes title+body; `record_id` is stored UNINDEXED and maintained in Python (`records._rewrite_fts`).
 
 Supersede (`records.supersede_record`, `store/records.py`) marks the old row superseded and inserts the successor **in one connection**. Handlers run `review_write` + `admit` first and pass the resulting status (`tools/handlers.py` `_supersede`). A proposed row cannot be laundered to active by superseding, even with a more trusted provenance. Rejected rows cannot be superseded. Title/body are clipped to `RECORD_TITLE_CHARS` / `RECORD_BODY_CHARS`.
 
@@ -304,7 +308,7 @@ Supersede (`records.supersede_record`, `store/records.py`) marks the old row sup
 
 ### 4.2 Retrieve and standing compile
 
-Default retrieve kinds exclude `episode` (`agents/retriever.py` `DEFAULT_RETRIEVE_KINDS`). Search tokenizes the query, drops a small stoplist, and ANDs quoted terms (`store/search.py` `_match_query`). Hits are filtered, then sorted by `PROVENANCE_WEIGHT` then FTS rank.
+Default retrieve kinds exclude `episode` (`agents/retriever.py` `DEFAULT_RETRIEVE_KINDS`). Search tokenizes the query, drops a small stoplist, and ANDs quoted terms (`store/search.py` `_match_query`). Hits are filtered, then sorted by typology class, then `PROVENANCE_WEIGHT`, then FTS rank. `retrieve()` then drops WHO rows whose normalized title collides with a WHAT hit in the same bundle.
 
 `RetrievePolicy` (`retriever.py:43`): `max_records=6`, `max_chars=2400`, `snippet_chars=280`, `high_stakes` (world only drops sim/infer), `max_twin_notes` (1 world / 3 sim), `contact`, `exclude_ids`. After FTS, compiled ids are dropped; `top_k` over-fetches by `len(exclude_ids)` so standing members do not starve retrieve.
 
@@ -372,7 +376,7 @@ Chat completions and tool argument blobs are not training gold. Preference pairs
 
 `inspect_tool_result` / `grade_run_action` (`eyes/basic.py`) share fingerprints. Studio world strings (`Execution timed out after`, `Execution cancelled.`, `Blocked command(s) for safety:`, `Execution error:`, `No command provided.`) are failures on `python`/`terminal`, not success.
 
-`review_write` (`eyes/gate.py`) forces proposed when a new **claim** shares a normalized title with an active claim of a different normalized body. Procedures are not gated that way (compact title-dedupes them).
+`review_write` (`eyes/gate.py`) forces proposed when a new **claim** or **procedure** shares a normalized title with an active peer of a different normalized body, when a WHO row shares a title with an active WHAT row (`dissonance: contradicts {id}`), or when an unbacked user/other claim has no warrant. Operator `admit` of a still-colliding WHO row needs `--force`.
 
 `require_confirm_retry` (`throne/policy.py:46`): `confirm_retry is False` wins; else True; else `stakes=="high"`; else `permission_mode=="ask"`. Studio product default `auto` does **not** show a retry card.
 
@@ -402,6 +406,7 @@ Not the MemoryWheels outer wheel. Two optional jobs, separately configured, defa
 |-----|--------|-----------|--------|
 | **Approver** | `UNFORGETTABLE_VOTER=off\|advisory\|binding` + `UNFORGETTABLE_SUPERVISOR_URL` | CLI `admit` / `compile` / `promote` / `review` / `mine` | Votes after local select, before promote. Binding deny blocks unless `--force`. `episode` rows are skipped. New mine drafts stay `proposed` `infer`. |
 | **Planner** | `EpisodeRequest.planner` (`on`/`off`); Studio copies payload or `UNFORGETTABLE_PLANNER` | `episode.run` before first generate; refresh on `RETRY_WORLD` | Temporary A suffix. Fail-open. Not written to B. |
+| **Filter** | `EpisodeRequest.filter` (`on`/`off`, default on); `UNFORGETTABLE_FILTER` | `episode.run` before first generate; cached spans on `memory_write` | Strips coercive/manipulative spans, keeps remainder in A. Empty remainder → ENTER_SIM + confirm. Fail-open skip. Not an LLM rewrite of compact. |
 
 `HttpSupervisor` POSTs `{purpose, model, messages, max_tokens}` and reads `{text}`. `StudioHost.supervise` uses the loaded inner generate with tools off.
 
@@ -409,7 +414,7 @@ Not the MemoryWheels outer wheel. Two optional jobs, separately configured, defa
 
 ## 5. Automated tests
 
-Apache suite: **260** CPU tests under `unforgettable/tests/`, no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`. `test_sidecar_gpu.py` is extra and skips unless CUDA torch and cached `--base` weights are present.
+Apache suite: **274** CPU tests under `unforgettable/tests/` (ignore `test_sidecar_gpu.py`), no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`. `test_sidecar_gpu.py` is extra and skips unless CUDA torch and cached `--base` weights are present.
 
 | File | What it locks |
 |------|----------------|
@@ -417,9 +422,9 @@ Apache suite: **260** CPU tests under `unforgettable/tests/`, no GPU, tmp SQLite
 | `test_virtual_model.py` | `unforgettable` / `unforgettable/<id>` alias strip; nested `unforgettable/unforgettable` |
 | `test_store.py` | Schema CRUD, supersede history, deprecate hidden from search, world > infer rank |
 | `test_admissions.py` | Locked `admit()` order including bookkeeping vs force_proposed vs sim procedure |
-| `test_gate.py` | Contradiction `review_write`, conflicting write stays proposed, admissions log |
-| `test_retrieve.py` | Char budget, high-stakes, episode exclusion, twin cap, sim contact, exclude compiled |
-| `test_compact.py` | Dedupe kinds, namespace isolation, empty proposed age, fold chains, dry-run |
+| `test_gate.py` | Contradiction `review_write`, conflicting write stays proposed, WHO-vs-WHAT dissonance, admissions log |
+| `test_retrieve.py` | Char budget, high-stakes, episode exclusion, twin cap, sim contact, exclude compiled, WHO collision drop |
+| `test_compact.py` | Dedupe kinds, namespace isolation, empty proposed age, stale proposed infer, fold chains, dry-run |
 | `test_compile.py` | Hits, probes/test-command/sim/proposed refuse, sticky uncompile, refresh after deprecate, standing caps |
 | `test_trajectories.py` | Episode FTS join, ranking, high-stakes drop, no episode body, cap 2 |
 | `test_extract.py` | LLM drafts proposed infer, parse-fail, provenance overwrite, skip without `complete` |
@@ -428,7 +433,7 @@ Apache suite: **260** CPU tests under `unforgettable/tests/`, no GPU, tmp SQLite
 | `test_rims_throne.py` | Clone ignore list, same-path refuse, dest-inside-src refuse, symlink copy, `decide()` fail→sim→retry, confirm matrix |
 | `test_probes.py` | Prefix identity, CLI `--run`, episode cap 3, skip without sim/`run_action` |
 | `test_tools.py` | Tool names, CRUD, admit log id, supersede stays proposed, compact/compile dry-run defaults, compile-with-id needs hits |
-| `test_supervisor.py` | Vote/mine parse, env config, request-scoped planner, binding vs advisory, HTTP POST shape |
+| `test_supervisor.py` | Vote/mine/filter parse, env config, request-scoped planner, binding vs advisory, HTTP POST shape |
 | `test_cli.py` | Subcommands, `--db`, compact/pack `--apply`, admit `--force`, voter admit/review/mine, fake train, honest eval, promote/rollback |
 | `test_episode.py` | Happy path + drift + enter_sim + user phrase + harness + timeout + confirm + standing + re-retrieve + compile + adapter shrink; FakeHost |
 | `test_stream_forward.py` | `on_chunk` forwarded into `GenerateRequest` |
@@ -487,16 +492,16 @@ Root `pytest` is **not** enough: `[tool.pytest.ini_options] testpaths = ["tests/
 
 ```bash
 # from repo root; pythonpath already includes "."
-python -m pytest unforgettable/tests
+python -m pytest unforgettable/tests --ignore=unforgettable/tests/test_sidecar_gpu.py
 
 # quieter / fail-fast
-python -m pytest unforgettable/tests -q --tb=short
+python -m pytest unforgettable/tests --ignore=unforgettable/tests/test_sidecar_gpu.py -q --tb=short
 
 # one module
 python -m pytest unforgettable/tests/test_episode.py -q
 ```
 
-Expect **260 passed** (the GPU file skips). Runtime is a few seconds on a laptop. On a CUDA box with `unsloth/Qwen3.5-4B` cached, `test_sidecar_gpu.py` adds SFT and preference passes (~1–2 minutes each).
+Expect the Apache suite green (the GPU file skips). Runtime is a few seconds on a laptop. On a CUDA box with `unsloth/Qwen3.5-4B` cached, `test_sidecar_gpu.py` adds SFT and preference passes (~1–2 minutes each).
 
 If the environment has no `pytest` in the project venv:
 
@@ -540,7 +545,7 @@ python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" promote <adapter-id
 
 - `unforgettable` imports with no Studio on `sys.path`.
 - `import unforgettable.sidecar` does not import `unsloth` or `torch`.
-- `pytest unforgettable/tests` 260 passed.
+- `pytest unforgettable/tests --ignore=unforgettable/tests/test_sidecar_gpu.py` 274 passed.
 - FakeHost happy path: world fail → sim → world ok → `error_fix` **proposed**, sim **removed**.
 - FakeHost drift path: sim ok + world retry fail → active `twin_note`, sim **kept**.
 - Empty adapter set / no `adapter_id` leaves Phase 4 inject unchanged.

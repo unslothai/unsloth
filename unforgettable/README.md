@@ -25,6 +25,33 @@ Default motion (the “act path”):
 
 World remains the judge of record. Sim-only dynamics are not auto-promoted to world truth.
 
+## What vs who (Layer B typology)
+
+Not every row in B is the same kind of truth. Retrieval ranks **what happened or can be shown** above **who asserted it**. Directives are one WHO shape, not the whole typology.
+
+Two axes on each record (additive columns, not new kinds):
+
+| Axis | Field | Meaning |
+|------|--------|---------|
+| Speaker | `speaker` | Who asserted it: `world` / `sim` (graded contact), `user` (this operator), `model` (extract), `other` (quoted / third party). `speaker_label` names which user or document. |
+| Warrant | `warrant` | Internal proof or explanation. Empty means unbacked. |
+
+Derived class (not stored as a kind):
+
+| Class | When |
+|-------|------|
+| **WHAT — world result** | `speaker=world` (eyes/grade) |
+| **WHAT — mixed** | World-leg mixed provenance |
+| **WHAT — sim result** | `speaker=sim` |
+| **WHAT — backed text** | Non-empty `warrant`, any speaker (a fact that explains itself) |
+| **WHO — user** | Unbacked assertion or `kind=directive` from this operator |
+| **WHO — other** | Unbacked third-party hearsay |
+| **WHO — model** | Unbacked infer |
+
+Retrieve sort is `(typology class, provenance, FTS rank)`. A WHO row that shares a title with a retrieved WHAT row is dropped from the inject so both tokens never share the completion path. Unbacked user claims stay **proposed** (candidate facts). Tools cannot self-certify `speaker=user` or mint `provenance=world` for an unbacked user assertion.
+
+A filter judge (`Host.supervise("filter")`, default on) strips coercive and manipulative language from the user prompt and keeps the technical remainder. Pure coercion (empty remainder) enters sim and requires confirm before world retry.
+
 ## Requirements
 
 - Python 3.9–3.14
@@ -63,12 +90,15 @@ Optional extras on the same request (also first-class fields on Studio’s chat 
 | `skip_standing` | Skip compiled standing inject |
 | `planner` | `"on"` asks a larger supervisor model for a temporary plan (this episode only) |
 | `planner_model` | Model id for that planner complete (else `UNFORGETTABLE_PLANNER_MODEL`, else the inner model) |
+| `filter` | `"off"` disables the coercion/manipulation judge (default on; `UNFORGETTABLE_FILTER=off`) |
+| `filter_model` | Model id for that filter complete (else `UNFORGETTABLE_FILTER_MODEL`, else the inner model) |
+| `user_label` | Optional speaker label for this operator |
 
 The inner model can call memory tools. Durable facts must go through those tools — chat history is not B, and a successful generate is stored as a short grade, not the full completion.
 
 | Tool | Role |
 |------|------|
-| `memory_write` | Remember (kind, title, body, provenance) |
+| `memory_write` | Remember (kind, title, body, provenance; optional speaker, warrant) |
 | `memory_search` / `memory_get` | Look up |
 | `memory_supersede` | Correct; old row kept as history |
 | `memory_deprecate` | Archive (excluded from default retrieve) |
@@ -96,6 +126,7 @@ python -m unforgettable review              # approval voter over proposed rows
 python -m unforgettable mine                # batch voter + optional new proposed drafts
 python -m unforgettable compact             # preview (default)
 python -m unforgettable compact --apply     # mutate
+python -m unforgettable compact --older-than 30 --apply   # stale proposed WHO/infer
 python -m unforgettable compiled
 python -m unforgettable load                # standing / retrieve / traj chars
 python -m unforgettable rollouts --contact sim
@@ -120,9 +151,9 @@ python -m unforgettable rollback
 
 Promote never merges into base weights. Rollback discards the promoted row; files stay on disk.
 
-### Optional supervisor (approver + planner)
+### Optional supervisor (approver + planner + filter)
 
-A larger model can judge promotions and (separately) sketch a plan for one episode. It is not trained. It does not replace `admit()` or the act/sim policy.
+A larger model can judge promotions, sketch a plan for one episode, and filter coercive/manipulative language from the user prompt. It is not trained. It does not replace `admit()` or the act/sim policy. The filter is default on when `host.supervise` exists; empty replies fail open (keep the original text).
 
 ```bash
 export UNFORGETTABLE_VOTER=advisory   # or binding (deny blocks admit/promote)

@@ -18,12 +18,20 @@ from datetime import datetime, timedelta, timezone
 
 from unforgettable.store.compact import (
     COMPACT_DEDUPE_KINDS,
+    COMPACT_STALE_REASON,
     EMPTY_PROPOSED_AGE_DAYS,
     KEEP_SUPERSEDED_ANCESTORS,
+    STALE_PROPOSED_AGE_DAYS,
     run_compact,
 )
 from unforgettable.store.db import get_connection
-from unforgettable.store.records import get_record, insert_record, list_records, supersede_record
+from unforgettable.store.records import (
+    get_record,
+    insert_record,
+    list_admissions,
+    list_records,
+    supersede_record,
+)
 
 
 def _age_created_at(record_id: str, db_path, *, days: int) -> None:
@@ -187,6 +195,57 @@ def test_same_title_directives_stay_active(db_path):
     )
     run_compact(db_path)
     _assert_both_active(db_path, first, second)
+
+
+def test_compact_stale_proposed_infer(db_path):
+    stale = insert_record(
+        kind="claim",
+        title="Old infer noise",
+        body="a long unadmitted guess about the pump",
+        provenance="infer",
+        speaker="model",
+        status="proposed",
+        db_path=db_path,
+    )
+    user_who = insert_record(
+        kind="claim",
+        title="User guess",
+        body="I think the rate is 12",
+        provenance="infer",
+        speaker="user",
+        status="proposed",
+        db_path=db_path,
+    )
+    keep_fix = insert_record(
+        kind="error_fix",
+        title="Error then fix: traceback",
+        body="Tried: traceback\nThen: tests passed",
+        provenance="world",
+        status="proposed",
+        db_path=db_path,
+    )
+    fresh = insert_record(
+        kind="claim",
+        title="Fresh infer",
+        body="yesterday's draft",
+        provenance="infer",
+        status="proposed",
+        db_path=db_path,
+    )
+    _age_created_at(stale["id"], db_path, days=STALE_PROPOSED_AGE_DAYS + 1)
+    _age_created_at(user_who["id"], db_path, days=STALE_PROPOSED_AGE_DAYS + 1)
+    _age_created_at(keep_fix["id"], db_path, days=STALE_PROPOSED_AGE_DAYS + 1)
+    report = run_compact(db_path)
+    assert stale["id"] in report.emptied
+    assert user_who["id"] in report.emptied
+    assert keep_fix["id"] not in report.emptied
+    assert fresh["id"] not in report.emptied
+    assert get_record(stale["id"], db_path=db_path)["status"] == "rejected"
+    assert get_record(keep_fix["id"], db_path=db_path)["status"] == "proposed"
+    reasons = [row.get("reason") or "" for row in list_admissions(db_path=db_path)]
+    assert any(COMPACT_STALE_REASON in reason for reason in reasons)
+    preview = run_compact(db_path, dry_run=True, older_than_days=1)
+    assert preview.dry_run is True
 
 
 def test_old_empty_proposed_is_rejected(db_path):

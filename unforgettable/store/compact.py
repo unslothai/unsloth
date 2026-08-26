@@ -20,17 +20,20 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from unforgettable.constants import PROVENANCE_WEIGHT
+from unforgettable.constants import PROVENANCE_WEIGHT, is_who
 
 from .records import list_records, set_record_status
 from .titles import normalize_title
 
 EMPTY_PROPOSED_AGE_DAYS = 7
+STALE_PROPOSED_AGE_DAYS = 30
 KEEP_SUPERSEDED_ANCESTORS = 2
 COMPACT_DEDUPE_KINDS = frozenset({"claim", "procedure", "entity"})
 EMPTY_PROPOSED_BODIES = frozenset({"", "todo", "(empty)"})
 UNKNOWN_PROVENANCE_WEIGHT = 99
 COMPACT_EMPTY_REASON = "compact: empty proposed"
+COMPACT_STALE_REASON = "compact: stale proposed"
+KEEP_STALE_ERROR_FIX_PROVENANCE = frozenset({"world", "mixed"})
 
 
 @dataclass(frozen=True)
@@ -41,17 +44,25 @@ class CompactReport:
     dry_run: bool
 
 
-def run_compact(db_path=None, *, dry_run: bool = False) -> CompactReport:
+def run_compact(
+    db_path=None, *, dry_run: bool = False, older_than_days: Optional[int] = None
+) -> CompactReport:
     records = list_records(db_path=db_path)
     now = datetime.now(timezone.utc)
-    emptied = _empty_proposed_ids(records, now=now)
+    empty_ids = _empty_proposed_ids(records, now=now)
+    stale_ids = _stale_proposed_ids(
+        records, now=now, older_than_days=older_than_days
+    )
+    emptied = list(dict.fromkeys([*empty_ids, *stale_ids]))
+    empty_set = set(empty_ids)
     deduped = _dedupe_pairs(records)
     folded = _fold_ids(records)
     if not dry_run:
         for rid in emptied:
-            set_record_status(
-                rid, "rejected", reason=COMPACT_EMPTY_REASON, db_path=db_path
+            reason = (
+                COMPACT_EMPTY_REASON if rid in empty_set else COMPACT_STALE_REASON
             )
+            set_record_status(rid, "rejected", reason=reason, db_path=db_path)
         for loser_id, winner_id in deduped:
             set_record_status(
                 loser_id,
@@ -87,6 +98,30 @@ def _empty_proposed_ids(records: list[dict[str, Any]], *, now: datetime) -> list
 
 def _is_empty_proposed_body(body: Optional[str]) -> bool:
     return (body or "").strip() in EMPTY_PROPOSED_BODIES
+
+
+def _stale_proposed_ids(
+    records: list[dict[str, Any]],
+    *,
+    now: datetime,
+    older_than_days: Optional[int],
+) -> list[str]:
+    days = STALE_PROPOSED_AGE_DAYS if older_than_days is None else int(older_than_days)
+    if days < 1:
+        days = STALE_PROPOSED_AGE_DAYS
+    ids: list[str] = []
+    for rec in records:
+        if rec["status"] != "proposed":
+            continue
+        if _is_empty_proposed_body(rec.get("body")):
+            continue
+        if rec.get("kind") == "error_fix" and rec.get("provenance") in KEEP_STALE_ERROR_FIX_PROVENANCE:
+            continue
+        if not (is_who(rec) or rec.get("provenance") == "infer"):
+            continue
+        if _is_at_least_days_old(rec.get("created_at"), days, now=now):
+            ids.append(rec["id"])
+    return ids
 
 
 def _dedupe_pairs(records: list[dict[str, Any]]) -> list[tuple[str, str]]:

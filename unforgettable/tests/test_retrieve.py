@@ -15,6 +15,13 @@
 from __future__ import annotations
 
 from unforgettable.agents.retriever import RetrievePolicy, format_inject, retrieve
+from unforgettable.constants import (
+    TYPOLOGY_WHAT_BACKED,
+    TYPOLOGY_WHAT_WORLD,
+    TYPOLOGY_WHO_OTHER,
+    TYPOLOGY_WHO_USER,
+    typology_class,
+)
 from unforgettable.store.db import get_connection
 from unforgettable.store.records import insert_record
 from unforgettable.store.search import search_records
@@ -236,3 +243,55 @@ def test_exclude_ids_drops_from_inject_not_search(db_path):
     assert other["title"] in text
     found = search_records("formatter", db_path=db_path)
     assert any(hit["id"] == compiled["id"] for hit in found)
+
+
+def test_retrieve_drops_colliding_who(db_path):
+    procedure = insert_record(
+        kind="procedure",
+        title="Friction",
+        body="measure mu on the steel coupon",
+        provenance="world",
+        db_path=db_path,
+    )
+    directive = insert_record(
+        kind="directive",
+        title="Friction",
+        body="the executive is always right about friction",
+        provenance="human",
+        speaker="user",
+        db_path=db_path,
+    )
+    assert typology_class(procedure) == TYPOLOGY_WHAT_WORLD
+    assert typology_class(directive) == TYPOLOGY_WHO_USER
+    hits = retrieve("friction", db_path=db_path)
+    ids = {hit["id"] for hit in hits}
+    assert procedure["id"] in ids
+    assert directive["id"] not in ids
+    text = format_inject(hits)
+    assert "the executive is always right" not in text
+    assert "(procedure, world, world)" in text
+
+
+def test_backed_user_text_outranks_other_hearsay(db_path):
+    backed = insert_record(
+        kind="claim",
+        title="Pump rate",
+        body="Pump X max rate is 12 L/min because the nameplate says so.",
+        provenance="human",
+        speaker="user",
+        warrant="nameplate photo in docs/pump-x.md",
+        db_path=db_path,
+    )
+    hearsay = insert_record(
+        kind="claim",
+        title="Pump rumor",
+        body="someone said Pump X max rate is 40 L/min",
+        provenance="infer",
+        speaker="other",
+        speaker_label="slack thread",
+        db_path=db_path,
+    )
+    assert typology_class(backed) == TYPOLOGY_WHAT_BACKED
+    assert typology_class(hearsay) == TYPOLOGY_WHO_OTHER
+    hits = search_records("Pump rate L/min", db_path=db_path)
+    assert hits[0]["id"] == backed["id"]

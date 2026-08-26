@@ -18,7 +18,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from unforgettable.constants import is_what, is_who, speaker_of
 from unforgettable.store.search import search_records
+from unforgettable.store.titles import normalize_title
 
 # Episode summaries are last-run logs, not standing knowledge.
 DEFAULT_RETRIEVE_KINDS = frozenset(
@@ -80,8 +82,26 @@ def retrieve(
     hits = hits[: policy.max_records]
     capped = _cap_twin_notes(hits, policy.max_twin_notes)
     if policy.contact == "sim":
-        return _prefer_sim_lessons(capped)
-    return capped
+        capped = _prefer_sim_lessons(capped)
+    return _drop_colliding_who(capped)
+
+
+def _drop_colliding_who(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    what_titles = {
+        normalize_title(rec.get("title") or "")
+        for rec in records
+        if is_what(rec)
+    }
+    if not what_titles:
+        return records
+    return [
+        rec
+        for rec in records
+        if not (
+            is_who(rec)
+            and normalize_title(rec.get("title") or "") in what_titles
+        )
+    ]
 
 
 def _is_sim_lesson(rec: dict[str, Any]) -> bool:
@@ -142,7 +162,11 @@ def _clip_text(text: str, limit: int) -> str:
 
 def _record_block(rec: dict[str, Any], snippet_chars: int) -> str:
     age = _age_note(rec.get("updated_at"))
-    line = f"- [{rec['id'][:8]}] ({rec['kind']}, {rec['provenance']}) {rec['title']}{age}"
+    speaker = speaker_of(rec)
+    line = (
+        f"- [{rec['id'][:8]}] ({rec['kind']}, {rec['provenance']}, {speaker}) "
+        f"{rec['title']}{age}"
+    )
     body = (rec.get("body") or "").strip()
     if not body:
         return line

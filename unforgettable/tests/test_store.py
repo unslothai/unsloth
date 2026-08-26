@@ -40,6 +40,22 @@ def test_schema_and_crud(db_path):
     assert loaded is not None
     assert loaded["kind"] == "claim"
     assert loaded["status"] == "active"
+    assert loaded["speaker"] == "world"
+    assert loaded["warrant"] == ""
+
+
+def test_unbacked_user_claim_cannot_mint_world(db_path):
+    rec = insert_record(
+        kind="claim",
+        title="Rate is twelve",
+        body="the rate is 12",
+        provenance="world",
+        speaker="user",
+        db_path=db_path,
+    )
+    loaded = get_record(rec["id"], db_path=db_path)
+    assert loaded["provenance"] == "infer"
+    assert loaded["speaker"] == "user"
 
 
 def test_supersede_keeps_history(db_path):

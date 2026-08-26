@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from unforgettable import VIRTUAL_MODEL_ID, inner_model_id, is_virtual_model
-from unforgettable.supervisor import coerce_planner_flag
+from unforgettable.supervisor import coerce_filter_flag, coerce_planner_flag
 from unforgettable.host import (
     EXTRACT_MAX_TOKENS,
     RUN_ACTION_CLIP,
@@ -622,6 +622,12 @@ class StudioHost:
                 or os.environ.get("UNFORGETTABLE_PLANNER_MODEL")
                 or None
             )
+        if purpose == "filter":
+            return (
+                getattr(self.payload, "filter_model", None)
+                or os.environ.get("UNFORGETTABLE_FILTER_MODEL")
+                or None
+            )
         if purpose in {"vote", "mine"}:
             return (
                 getattr(self.payload, "voter_model", None)
@@ -636,6 +642,13 @@ def _planner_from_payload(payload) -> str | None:
     if flag is None:
         flag = os.environ.get("UNFORGETTABLE_PLANNER")
     return coerce_planner_flag(flag)
+
+
+def _filter_from_payload(payload) -> str | None:
+    flag = getattr(payload, "filter", None)
+    if flag is None:
+        flag = os.environ.get("UNFORGETTABLE_FILTER")
+    return coerce_filter_flag(flag)
 
 
 async def handle_chat_completions(payload, request, current_subject: str, inner: Callable):
@@ -664,6 +677,13 @@ async def handle_chat_completions(payload, request, current_subject: str, inner:
             or os.environ.get("UNFORGETTABLE_PLANNER_MODEL")
             or None
         ),
+        filter = _filter_from_payload(payload),
+        filter_model = (
+            getattr(payload, "filter_model", None)
+            or os.environ.get("UNFORGETTABLE_FILTER_MODEL")
+            or None
+        ),
+        user_label = getattr(payload, "user_label", None),
     )
     if payload.stream:
         queue: asyncio.Queue = asyncio.Queue()

@@ -45,7 +45,15 @@ class GateEyes(Protocol):
     def contradictions(self, db_path=None) -> list[Contradiction]: ...
 
     def review_write(
-        self, *, kind: str, title: str, body: str, provenance: str, db_path=None
+        self,
+        *,
+        kind: str,
+        title: str,
+        body: str,
+        provenance: str,
+        db_path=None,
+        speaker: str | None = None,
+        warrant: str | None = None,
     ) -> str:
         """Return '' or a reason to force proposed."""
         ...

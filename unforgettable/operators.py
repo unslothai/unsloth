@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from unforgettable.constants import ADMIT_FROM_STATUSES
-from unforgettable.eyes.gate import contradictions
+from unforgettable.eyes.gate import colliding_what, contradictions
 from unforgettable.sidecar.adapters import get_adapter, list_adapters, promote_adapter
 from unforgettable.store.compile import count_compiled, pin_compiled
 from unforgettable.store.db import default_db_path
@@ -133,6 +133,16 @@ def admit_record(
             error_kind=ERROR_REFUSED,
             error_detail=existing["status"],
         )
+    if not force and existing["status"] in ADMIT_FROM_STATUSES:
+        peer = colliding_what(existing, db_path=db_path)
+        if peer is not None:
+            return OperatorOutcome(
+                ok=False,
+                code=UNKNOWN_ID_EXIT,
+                record=existing,
+                error_kind=ERROR_REFUSED,
+                error_detail=f"dissonance: contradicts {peer['id']}",
+            )
     voted = maybe_vote(
         existing, db_path=db_path, force=force, host=host, config=config
     )

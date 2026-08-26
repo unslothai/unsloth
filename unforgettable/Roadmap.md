@@ -29,6 +29,7 @@ These are supervisor jobs, **not** a rename of the MemoryWheels outer wheel (B +
 |---------|--------|----------------|
 | **Approver model** | **Complete.** | Optional vote after local select, before promote. `UNFORGETTABLE_VOTER=off\|advisory\|binding`. CLI `admit` / `compile` / `promote` wrap a vote; `review` batches proposed rows; `mine` is the same voter over proposed + rollouts + admissions and may insert new **proposed** drafts. Binding deny blocks unless `--force`. `episode` rows are skipped. Host seam: `supervise("vote"\|"mine")` or `HttpSupervisor` at `UNFORGETTABLE_SUPERVISOR_URL`. |
 | **Planner model** | **Complete.** | Runtime-selectable temporary overlay. `EpisodeRequest.planner=on` (Studio payload or `UNFORGETTABLE_PLANNER`). One `supervise("plan")` before the first generate; refresh on `RETRY_WORLD` only. Injected as working-memory A. Fail-open. Not written to B. |
+| **Filter judge** | **Complete.** | `supervise("filter")` before first generate. Strips coercive and manipulative spans; keeps the technical remainder. Empty remainder enters sim and requires confirm. Default on; fail-open skip. Compact still does not LLM-rewrite. |
 
 ### What “complete” still left named
 
@@ -88,7 +89,7 @@ Parked in MemPhase2, 3, 4, and 5 as “a later tiny PR … one-line `admit()` ch
 `GenerateRequest.adapter_path` on a PEFT dir becomes `payload.use_adapter`. The worker `load_adapter`s for that generate and restores. Remaining hole: GGUF inners cannot take a PEFT LoRA (fail-open).
 
 **9. Scheduled compact**
-Parked every phase since MemPhase2 (“explicit-only; revisit if proposed pile-up is real”). Trigger ideas already named: weekly job, or after N proposed rows. Must stay deterministic (`store/compact.py`), must default to dry-run / operator confirm, must **not** run inside `episode.run`. A Studio cron or a CLI `compact --apply --older-than` wrapper is enough.
+`--older-than` is **shipped** on `compact` (stale proposed WHO/infer, default 30 days; world/mixed `error_fix` kept). Still explicit-only, dry-run default, not inside `episode.run`. A Studio cron / weekly job remains optional.
 
 **10. Directive TTL**
 MemoryWheels §7.2: directives may carry “scope and TTL optional.” Never implemented. Additive column (or a body convention plus a compact/retrieve filter). Exclude expired directives from default retrieve; do not hard-delete.
@@ -105,7 +106,7 @@ MemPhase3 open question 7: “no, not in v1.” The hook is already there (`revi
 `--recipe preference` on `UnslothTrainBackend` calls TRL `DPOTrainer` (imported after Unsloth). Fake path still writes `pairs.jsonl`. SFT/distill do not import DPO. GPU-box only; CI stays on the fake backend.
 
 **14. Contradiction / supersession UX**
-MemoryWheels §15. CLI `contradictions` already exists. Next fruit: print a warning from `compact --dry-run` / `admissions`, then a thin inspect view (titles, both bodies, `admit` / `reject` / `supersede` actions). A Studio memory browser is the same job with a frontend — see item 16.
+**Partial.** Gate covers claims, procedures, and WHO-vs-WHAT dissonance. CLI `contradictions` lists both. Operator `admit` of a colliding WHO row needs `--force`. Remaining fruit: print a warning from `compact --dry-run` / `admissions`, then a thin inspect view (titles, both bodies, `admit` / `reject` / `supersede` actions).
 
 **15. Numeric twin-drift / auto-distrust**
 MemPhase2 A7: write the note only; “no calibration loop, no numeric drift estimate, no auto-distrust of prior sim claims.” Next step that is still small: if an episode writes a `twin_note`, force-propose same-episode sim `procedure` / `claim` rows (or exclude them from sim-biased retrieve). Auto-calibration science stays Phase 6.

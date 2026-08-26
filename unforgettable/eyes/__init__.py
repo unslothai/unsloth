@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from .basic import inspect_tool_result
-from .gate import LogGateEyes, contradictions, review_write
+from .gate import LogGateEyes, colliding_what, contradictions, review_write
 from .protocols import Contradiction, GateEyes, RecognizedFailure, SimEyes, WorldEyes
 
 __all__ = [
@@ -23,6 +23,7 @@ __all__ = [
     "RecognizedFailure",
     "SimEyes",
     "WorldEyes",
+    "colliding_what",
     "contradictions",
     "inspect_tool_result",
     "review_write",

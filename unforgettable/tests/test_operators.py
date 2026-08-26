@@ -66,6 +66,32 @@ def test_admit_record_refuses_active_without_force(db_path):
     assert outcome.error_detail == "active"
 
 
+def test_admit_colliding_who_needs_force(db_path):
+    what = insert_record(
+        kind="procedure",
+        title="Deploy window",
+        body="deploy on Tuesday after tests",
+        provenance="world",
+        db_path=db_path,
+    )
+    who = insert_record(
+        kind="directive",
+        title="Deploy window",
+        body="ship whenever the exec says",
+        provenance="human",
+        speaker="user",
+        status="proposed",
+        db_path=db_path,
+    )
+    outcome = admit_record(who["id"], db_path=db_path)
+    assert not outcome.ok
+    assert outcome.error_kind == ERROR_REFUSED
+    assert what["id"] in (outcome.error_detail or "")
+    forced = admit_record(who["id"], force=True, db_path=db_path)
+    assert forced.ok
+    assert get_record(who["id"], db_path=db_path)["status"] == "active"
+
+
 def test_admit_record_unknown_id(db_path):
     outcome = admit_record("missing", db_path=db_path)
     assert not outcome.ok

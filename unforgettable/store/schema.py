@@ -53,6 +53,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             supersedes_id TEXT,
             source_episode_id TEXT,
             contact_tag TEXT,
+            speaker TEXT NOT NULL DEFAULT 'model',
+            speaker_label TEXT,
+            warrant TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (namespace_id) REFERENCES namespaces(id),
@@ -62,6 +65,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_records_status ON records(status);
         CREATE INDEX IF NOT EXISTS idx_records_kind ON records(kind);
         CREATE INDEX IF NOT EXISTS idx_records_provenance ON records(provenance);
+        CREATE INDEX IF NOT EXISTS idx_records_speaker ON records(speaker);
 
         CREATE TABLE IF NOT EXISTS admissions_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,7 +180,25 @@ def _add_missing_columns(conn: sqlite3.Connection) -> None:
         "supersedes_id": "TEXT",
         "source_episode_id": "TEXT",
         "contact_tag": "TEXT",
+        "speaker": "TEXT NOT NULL DEFAULT 'model'",
+        "speaker_label": "TEXT",
+        "warrant": "TEXT",
     }
+    added = set()
     for name, decl in extras.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE records ADD COLUMN {name} {decl}")
+            added.add(name)
+    if "speaker" in added:
+        conn.execute(
+            """
+            UPDATE records SET speaker = CASE
+                WHEN kind = 'directive' THEN 'user'
+                WHEN provenance = 'world' THEN 'world'
+                WHEN provenance = 'sim' THEN 'sim'
+                WHEN provenance = 'mixed' THEN 'world'
+                WHEN provenance = 'human' THEN 'user'
+                ELSE 'model'
+            END
+            """
+        )

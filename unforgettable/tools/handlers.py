@@ -27,15 +27,25 @@ from unforgettable.agents.retriever import (
 from unforgettable.constants import (
     DEFAULT_NAMESPACE_ID,
     SEARCH_TOP_K_MAX,
+    SPEAKER_MODEL,
+    SPEAKER_SIM,
+    SPEAKER_USER,
+    SPEAKER_WORLD,
+    SPEAKERS,
     TOOL_WRITE_KINDS,
+    coerce_unbacked_user_provenance,
+    resolve_speaker,
 )
 from unforgettable.eyes.gate import review_write
 from unforgettable.loop.runtime import (
     current_contact,
     current_db_path,
     current_episode_id,
+    current_filter_stripped,
     current_namespace,
+    current_user_label,
 )
+from unforgettable.supervisor import apply_stripped_spans
 from unforgettable.store.compact import CompactReport, run_compact
 from unforgettable.store.compile import (
     get_compiled,
@@ -76,6 +86,30 @@ def _coerce_tool_provenance(claimed: str) -> str:
     if current_contact() == "sim" and provenance == "world":
         return "sim"
     return provenance
+
+
+def _coerce_tool_speaker(claimed: str, *, kind: str, provenance: str) -> str:
+    """Tools cannot self-certify the operator; sim contact cannot claim world."""
+    if kind == "directive":
+        return SPEAKER_USER
+    if claimed == SPEAKER_USER:
+        return SPEAKER_MODEL
+    if current_contact() == "sim" and claimed == SPEAKER_WORLD:
+        return SPEAKER_SIM
+    if claimed in SPEAKERS:
+        return claimed
+    return resolve_speaker(
+        speaker=None,
+        provenance=provenance,
+        kind=kind,
+        contact_tag=current_contact(),
+    )
+
+
+def _optional_text(args: dict[str, Any], key: str) -> str:
+    if key not in args or args.get(key) is None:
+        return ""
+    return str(args.get(key) or "")
 
 
 def _tool_namespace() -> str:
@@ -119,6 +153,22 @@ def _write(args: dict[str, Any], *, db_path) -> str:
         return EPISODE_KIND_REFUSED
     if kind not in TOOL_WRITE_KINDS:
         return f"Error: unknown kind {kind!r}"
+    stripped = current_filter_stripped()
+    if stripped:
+        filtered = apply_stripped_spans(body, stripped)
+        if not filtered:
+            return "Error: write body was stripped as coercion or manipulation"
+        body = filtered
+    speaker = _coerce_tool_speaker(
+        _optional_text(args, "speaker"), kind=kind, provenance=provenance
+    )
+    warrant = _optional_text(args, "warrant")
+    speaker_label = _optional_text(args, "speaker_label") or None
+    if speaker == SPEAKER_USER and not speaker_label:
+        speaker_label = current_user_label()
+    provenance = coerce_unbacked_user_provenance(
+        provenance, speaker=speaker, warrant=warrant
+    )
     namespace = _tool_namespace()
     review_reason = review_write(
         kind=kind,
@@ -126,6 +176,8 @@ def _write(args: dict[str, Any], *, db_path) -> str:
         body=body,
         provenance=provenance,
         db_path=db_path,
+        speaker=speaker,
+        warrant=warrant,
     )
     rid = str(uuid.uuid4())
     decision = admit(
@@ -156,6 +208,9 @@ def _write(args: dict[str, Any], *, db_path) -> str:
             namespace_id=namespace,
             source_episode_id=current_episode_id(),
             contact_tag=current_contact(),
+            speaker=speaker,
+            speaker_label=speaker_label,
+            warrant=warrant,
             record_id=rid,
             db_path=db_path,
         )
@@ -244,12 +299,39 @@ def _supersede(args: dict[str, Any], *, db_path) -> str:
     else:
         new_title = str(new_title)
     new_prov = _coerce_tool_provenance(str(args.get("provenance") or old["provenance"]))
+    body_text = str(body)
+    stripped = current_filter_stripped()
+    if stripped:
+        filtered = apply_stripped_spans(body_text, stripped)
+        if not filtered:
+            return "Error: write body was stripped as coercion or manipulation"
+        body_text = filtered
+    speaker = _coerce_tool_speaker(
+        _optional_text(args, "speaker") or old.get("speaker") or "",
+        kind=old["kind"],
+        provenance=new_prov,
+    )
+    warrant = (
+        _optional_text(args, "warrant")
+        if "warrant" in args
+        else (old.get("warrant") or "")
+    )
+    speaker_label = (
+        _optional_text(args, "speaker_label")
+        if "speaker_label" in args
+        else old.get("speaker_label")
+    )
+    new_prov = coerce_unbacked_user_provenance(
+        new_prov, speaker=speaker, warrant=warrant
+    )
     review_reason = review_write(
         kind=old["kind"],
         title=new_title,
-        body=str(body),
+        body=body_text,
         provenance=new_prov,
         db_path=db_path,
+        speaker=speaker,
+        warrant=warrant,
     )
     new_id = str(uuid.uuid4())
     # Supersede corrects; it must not promote a proposed extract to active.
@@ -276,13 +358,16 @@ def _supersede(args: dict[str, Any], *, db_path) -> str:
     try:
         rec = supersede_record(
             rid,
-            body=str(body),
+            body=body_text,
             title=new_title,
             provenance=new_prov,
             source_episode_id=current_episode_id(),
             status=decision.status,
             new_id=new_id,
             contact_tag=current_contact(),
+            speaker=speaker,
+            speaker_label=speaker_label or None,
+            warrant=warrant,
             db_path=db_path,
         )
     except (KeyError, ValueError) as exc:
@@ -319,7 +404,16 @@ def _compact(args: dict[str, Any], *, db_path) -> str:
     dry_run = args.get("dry_run", True)
     if dry_run is None:
         dry_run = True
-    report = run_compact(db_path=db_path, dry_run=bool(dry_run))
+    older = args.get("older_than")
+    older_than_days = None
+    if older is not None and older != "":
+        try:
+            older_than_days = int(older)
+        except (TypeError, ValueError):
+            older_than_days = None
+    report = run_compact(
+        db_path=db_path, dry_run=bool(dry_run), older_than_days=older_than_days
+    )
     return json.dumps(_report_payload(report), indent=2)
 
 

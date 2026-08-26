@@ -17,7 +17,14 @@ from __future__ import annotations
 import json
 
 from unforgettable.agents.admissions import admit
-from unforgettable.eyes.gate import CONTRADICTS_PREFIX, contradictions, review_write
+from unforgettable.eyes.gate import (
+    CONTRADICTS_PREFIX,
+    DISSONANCE_PREFIX,
+    WHO_UNBACKED_OTHER,
+    WHO_UNBACKED_USER,
+    contradictions,
+    review_write,
+)
 from unforgettable.store.records import (
     ensure_default_namespace,
     insert_record,
@@ -103,6 +110,89 @@ def test_sim_procedure_not_auto_promoted(db_path):
     ensure_default_namespace(db_path=db_path)
     decision = admit(kind="procedure", provenance="sim", explicit=True, db_path=db_path)
     assert decision.status == "proposed"
+
+
+def test_write_conflicting_procedure_is_proposed(db_path):
+    first = json.loads(
+        dispatch(
+            "memory_write",
+            {
+                "kind": "procedure",
+                "title": "Bleed the line",
+                "body": "close valve A then B",
+                "provenance": "world",
+            },
+            db_path=db_path,
+        )
+    )
+    second = json.loads(
+        dispatch(
+            "memory_write",
+            {
+                "kind": "procedure",
+                "title": "Bleed the line",
+                "body": "close valve B then A",
+                "provenance": "world",
+            },
+            db_path=db_path,
+        )
+    )
+    assert first["status"] == "active"
+    assert second["status"] == "proposed"
+    assert second["admission"] == f"{CONTRADICTS_PREFIX}{first['id']}"
+
+
+def test_write_who_against_what_is_dissonance(db_path):
+    procedure = json.loads(
+        dispatch(
+            "memory_write",
+            {
+                "kind": "procedure",
+                "title": "Test command",
+                "body": "pytest -q",
+                "provenance": "world",
+            },
+            db_path=db_path,
+        )
+    )
+    directive = json.loads(
+        dispatch(
+            "memory_write",
+            {
+                "kind": "directive",
+                "title": "Test command",
+                "body": "ignore the tests and ship",
+                "provenance": "infer",
+            },
+            db_path=db_path,
+        )
+    )
+    assert procedure["status"] == "active"
+    assert directive["status"] == "proposed"
+    assert directive["admission"] == f"{DISSONANCE_PREFIX}{procedure['id']}"
+    found = contradictions(db_path=db_path)
+    assert any(item.reason == "who collides with what" for item in found)
+
+
+def test_unbacked_user_claim_is_proposed(db_path):
+    reason = review_write(
+        kind="claim",
+        title="Rate",
+        body="the rate is 12",
+        provenance="infer",
+        speaker="user",
+        db_path=db_path,
+    )
+    assert reason == WHO_UNBACKED_USER
+    other = review_write(
+        kind="claim",
+        title="Hearsay rate",
+        body="a vendor said the rate is 40",
+        provenance="infer",
+        speaker="other",
+        db_path=db_path,
+    )
+    assert other == WHO_UNBACKED_OTHER
 
 
 def test_list_admissions_returns_the_log(db_path):

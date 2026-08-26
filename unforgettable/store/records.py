@@ -27,7 +27,12 @@ from unforgettable.constants import (
     RECORD_BODY_CHARS,
     RECORD_TITLE_CHARS,
     ROLLOUT_SUMMARY_CHARS,
+    SPEAKER_LABEL_CHARS,
+    SPEAKERS,
     STATUSES,
+    WARRANT_CHARS,
+    coerce_unbacked_user_provenance,
+    resolve_speaker,
 )
 
 from .db import get_connection
@@ -112,6 +117,9 @@ def insert_record(
     supersedes_id: Optional[str] = None,
     source_episode_id: Optional[str] = None,
     contact_tag: Optional[str] = None,
+    speaker: Optional[str] = None,
+    speaker_label: Optional[str] = None,
+    warrant: Optional[str] = None,
     record_id: Optional[str] = None,
     db_path=None,
 ) -> dict[str, Any]:
@@ -123,6 +131,20 @@ def insert_record(
         raise ValueError(f"unknown provenance: {provenance}")
     title = _clip(title, RECORD_TITLE_CHARS)
     body = _clip(body, RECORD_BODY_CHARS)
+    contact = contact_tag or provenance
+    resolved_speaker = resolve_speaker(
+        speaker=speaker,
+        provenance=provenance,
+        kind=kind,
+        contact_tag=contact,
+    )
+    if resolved_speaker not in SPEAKERS:
+        raise ValueError(f"unknown speaker: {resolved_speaker}")
+    warrant_text = _clip(warrant or "", WARRANT_CHARS)
+    provenance = coerce_unbacked_user_provenance(
+        provenance, speaker=resolved_speaker, warrant=warrant_text
+    )
+    label = _clip(speaker_label or "", SPEAKER_LABEL_CHARS) or None
     ensure_default_namespace(db_path=db_path)
     ns = namespace_id or DEFAULT_NAMESPACE_ID
     if get_namespace(ns, db_path=db_path) is None:
@@ -136,8 +158,8 @@ def insert_record(
             INSERT INTO records(
                 id, namespace_id, kind, status, title, body, provenance,
                 confidence, supersedes_id, source_episode_id, contact_tag,
-                created_at, updated_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                speaker, speaker_label, warrant, created_at, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 rid,
@@ -150,7 +172,10 @@ def insert_record(
                 confidence,
                 supersedes_id,
                 source_episode_id,
-                contact_tag or provenance,
+                contact,
+                resolved_speaker,
+                label,
+                warrant_text,
                 now,
                 now,
             ),
@@ -321,6 +346,9 @@ def supersede_record(
     status: str = "active",
     new_id: Optional[str] = None,
     contact_tag: Optional[str] = None,
+    speaker: Optional[str] = None,
+    speaker_label: Optional[str] = None,
+    warrant: Optional[str] = None,
     db_path=None,
 ) -> dict[str, Any]:
     old = get_record(record_id, db_path=db_path)
@@ -331,6 +359,24 @@ def supersede_record(
     new_prov = provenance or old["provenance"]
     if new_prov not in PROVENANCES:
         raise ValueError(f"unknown provenance: {new_prov}")
+    contact = contact_tag if contact_tag is not None else new_prov
+    resolved_speaker = resolve_speaker(
+        speaker=speaker if speaker is not None else old.get("speaker"),
+        provenance=new_prov,
+        kind=old["kind"],
+        contact_tag=contact,
+    )
+    if resolved_speaker not in SPEAKERS:
+        raise ValueError(f"unknown speaker: {resolved_speaker}")
+    warrant_text = _clip(
+        warrant if warrant is not None else (old.get("warrant") or ""),
+        WARRANT_CHARS,
+    )
+    new_prov = coerce_unbacked_user_provenance(
+        new_prov, speaker=resolved_speaker, warrant=warrant_text
+    )
+    label = speaker_label if speaker_label is not None else old.get("speaker_label")
+    label = _clip(label or "", SPEAKER_LABEL_CHARS) or None
     rid = new_id or str(uuid.uuid4())
     now = _now()
     new_title = _clip(title if title is not None else old["title"], RECORD_TITLE_CHARS)
@@ -346,8 +392,8 @@ def supersede_record(
             INSERT INTO records(
                 id, namespace_id, kind, status, title, body, provenance,
                 confidence, supersedes_id, source_episode_id, contact_tag,
-                created_at, updated_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                speaker, speaker_label, warrant, created_at, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 rid,
@@ -360,7 +406,10 @@ def supersede_record(
                 old.get("confidence"),
                 record_id,
                 source_episode_id or old.get("source_episode_id"),
-                contact_tag if contact_tag is not None else new_prov,
+                contact,
+                resolved_speaker,
+                label,
+                warrant_text,
                 now,
                 now,
             ),

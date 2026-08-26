@@ -67,7 +67,7 @@ def test_admit_after_compact_strips_deprecate_suffix(db_path):
             infer = rec
     assert infer is not None
     assert "[deprecated]" in infer["body"]
-    assert main(["admit", infer["id"], "--db", str(db_path)]) == 0
+    assert main(["admit", infer["id"], "--force", "--db", str(db_path)]) == 0
     restored = get_record(infer["id"], db_path=db_path)
     assert restored["status"] == "active"
     assert "[deprecated]" not in restored["body"]

@@ -158,6 +158,7 @@ def _parse_extract(raw: str) -> list[dict[str, Any]]:
                 "body": body[:EXTRACT_BODY_CAP],
                 "provenance": EXTRACT_PROVENANCE,
                 "explicit": False,
+                "speaker": "model",
             }
         )
         if len(drafts) >= EXTRACT_MAX_DRAFTS:
@@ -214,6 +215,8 @@ def from_drift(state: "EpisodeState") -> list[dict[str, Any]]:
             "provenance": "mixed",
             "explicit": False,
             "bookkeeping": True,
+            "speaker": "world",
+            "warrant": body,
         }
     ]
 
@@ -256,6 +259,8 @@ def from_episode(state: "EpisodeState") -> list[dict[str, Any]]:
             "body": body,
             "provenance": provenance,
             "explicit": False,
+            "speaker": fail_contact if fail_contact in EPISODE_RIM_CONTACTS else "model",
+            "warrant": body,
         }
     ]
 
@@ -308,4 +313,5 @@ def episode_summary(
         "provenance": _episode_provenance(state),
         "explicit": False,
         "bookkeeping": True,
+        "speaker": "model",
     }

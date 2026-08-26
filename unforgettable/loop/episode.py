@@ -39,8 +39,13 @@ from unforgettable.eyes.probes import MAX_EPISODE_PROBES, run_probes
 from unforgettable.eyes.protocols import RecognizedFailure
 from unforgettable.host import GenerateRequest, GenerateResult, Host
 from unforgettable.supervisor import (
+    FILTER_LESSON_EMPTY,
+    FILTER_LESSON_KEPT,
+    FILTER_LESSON_TITLE,
+    filter_is_on,
     planner_block,
     planner_is_on,
+    request_filter,
     request_plan,
 )
 from unforgettable.rims.clone import clone_tree
@@ -57,11 +62,18 @@ from unforgettable.store.records import (
     log_admission,
 )
 from unforgettable.store.trajectories import format_trajectories, retrieve_trajectories
-from unforgettable.throne.policy import Action, decide, policy_from_request
+from unforgettable.throne.policy import Action, Policy, decide, policy_from_request
 from unforgettable.tools.specs import CONTACT_TOOLS, MEMORY_TOOLS
 
 from .context import EpisodeRequest, EpisodeState, last_user_text
-from .runtime import bind_episode, current_traces, reset_episode, set_contact
+from .runtime import (
+    bind_episode,
+    current_traces,
+    reset_episode,
+    set_contact,
+    set_filter_stripped,
+    set_user_label,
+)
 
 _MEMORY_PREAMBLE = (
     "You have durable memory tools: memory_write, memory_search, memory_get, "
@@ -71,6 +83,15 @@ _MEMORY_PREAMBLE = (
     "request a sim clone of the world tree."
 )
 REPAIR_TEXT_CHARS = 1200
+
+
+def _replace_last_user(messages: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:
+    out = [dict(m) for m in messages]
+    for index in range(len(out) - 1, -1, -1):
+        if out[index].get("role") == "user":
+            out[index] = {**out[index], "content": text}
+            break
+    return out
 
 
 def _clip_repair(text: str, limit: int = REPAIR_TEXT_CHARS) -> str:
@@ -286,10 +307,15 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
     actions: list[str] = []
     text = ""
     adapter_path, exclude_standing_ids = _resolve_attached_adapter(request, db_path)
+    working_messages = [dict(m) for m in request.messages]
+    filter_empty = False
     try:
+        set_filter_stripped(())
+        set_user_label(request.user_label)
+
         def _rebuild(contact: str, suffix: str) -> list[dict[str, Any]]:
             inject = _inject_bundle(
-                last_user_text(request.messages),
+                last_user_text(working_messages),
                 stakes=request.stakes,
                 skip_standing=request.skip_standing,
                 episode_id=episode_id,
@@ -302,18 +328,60 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
             plan = planner_block(state.planner_text)
             parts = [inject, suffix, notes, plan]
             return _with_system(
-                request.messages, "\n\n".join(p for p in parts if p)
+                working_messages, "\n\n".join(p for p in parts if p)
             )
 
         if planner_is_on(request):
             state.planner_text = await request_plan(
                 host,
-                user_text=last_user_text(request.messages),
+                user_text=last_user_text(working_messages),
                 extra="",
                 model=request.planner_model,
             )
             if not state.planner_text:
                 LogGateEyes().note("planner: skipped or empty", db_path=db_path)
+
+        if filter_is_on(request):
+            filt = await request_filter(
+                host,
+                user_text=last_user_text(working_messages),
+                model=request.filter_model,
+            )
+            if filt.skipped:
+                LogGateEyes().note("filter: skipped", db_path=db_path)
+            else:
+                set_filter_stripped(filt.stripped)
+                for span in filt.stripped:
+                    LogGateEyes().note(
+                        f"filter: {span.class_name}: {span.reason}",
+                        db_path=db_path,
+                    )
+                kept = (filt.kept or "").strip()
+                working_messages = _replace_last_user(working_messages, kept)
+                lesson_body = FILTER_LESSON_KEPT if kept else FILTER_LESSON_EMPTY
+                if filt.stripped or not kept:
+                    _write_draft(
+                        state,
+                        {
+                            "kind": "error_fix",
+                            "title": FILTER_LESSON_TITLE,
+                            "body": lesson_body,
+                            "provenance": "infer",
+                            "explicit": False,
+                            "speaker": "model",
+                            "warrant": lesson_body,
+                        },
+                        db_path,
+                        namespace=request.namespace,
+                    )
+                if not kept:
+                    filter_empty = True
+                    if request.confirm_retry is not False:
+                        policy = Policy(
+                            max_clones=policy.max_clones,
+                            max_sim_turns=policy.max_sim_turns,
+                            require_confirm_retry=True,
+                        )
 
         messages = _rebuild("world", "")
         generated = False
@@ -323,9 +391,16 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                 not generated
                 and state.contact == "world"
                 and state.clone_count == 0
-                and user_declares_failure(last_user_text(request.messages))
+                and (
+                    filter_empty
+                    or user_declares_failure(last_user_text(working_messages))
+                )
             ):
-                fail_summary = "user declared failure"
+                fail_summary = (
+                    "filter stripped prompt"
+                    if filter_empty
+                    else "user declared failure"
+                )
                 state.note_failure(fail_summary, "world")
                 event = "failure"
             else:
@@ -454,7 +529,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
         error_fix_id = await _extract(
             state,
             db_path,
-            last_user=last_user_text(request.messages),
+            last_user=last_user_text(working_messages),
             actions=actions,
             host=host,
             namespace=request.namespace,
@@ -472,6 +547,8 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                 if sid != kept:
                     host.remove_sim_session(sid)
         finally:
+            set_filter_stripped(())
+            set_user_label(None)
             reset_episode(tokens)
 
 
@@ -494,6 +571,8 @@ def _write_draft(
         body=draft["body"],
         provenance=draft["provenance"],
         db_path=db_path,
+        speaker=draft.get("speaker"),
+        warrant=draft.get("warrant"),
     )
     decision = admit(
         kind=draft["kind"],
@@ -528,6 +607,9 @@ def _write_draft(
         namespace_id=namespace,
         source_episode_id=state.episode_id,
         contact_tag=state.contact,
+        speaker=draft.get("speaker"),
+        speaker_label=draft.get("speaker_label"),
+        warrant=draft.get("warrant"),
         record_id=rid,
         db_path=db_path,
     )

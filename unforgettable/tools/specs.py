@@ -50,6 +50,26 @@ MEMORY_WRITE = {
                         "the runner treats that as infer. Sim contact cannot claim world."
                     ),
                 },
+                "speaker": {
+                    "type": "string",
+                    "enum": ["world", "sim", "user", "model", "other"],
+                    "description": (
+                        "Who asserted this. Tools cannot claim user; that "
+                        "becomes model. Sim contact cannot claim world. "
+                        "Directives are stored as speaker=user."
+                    ),
+                },
+                "speaker_label": {
+                    "type": "string",
+                    "description": "Optional which-user or which-document label.",
+                },
+                "warrant": {
+                    "type": "string",
+                    "description": (
+                        "Internal proof or explanation. Empty means unbacked. "
+                        "Unbacked user/other claims stay proposed."
+                    ),
+                },
                 "namespace": {"type": "string"},
             },
             "required": ["kind", "title", "body", "provenance"],
@@ -103,6 +123,9 @@ MEMORY_SUPERSEDE = {
                 "body": {"type": "string"},
                 "title": {"type": "string"},
                 "provenance": {"type": "string"},
+                "speaker": {"type": "string"},
+                "speaker_label": {"type": "string"},
+                "warrant": {"type": "string"},
             },
             "required": ["id", "body"],
         },

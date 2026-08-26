@@ -44,6 +44,7 @@ def test_defaults_are_off(monkeypatch, tmp_path):
     monkeypatch.delenv("UNFORGETTABLE_PLANNER", raising=False)
     settings = unforgettable_settings.get_unforgettable_settings()
     assert settings["planner"] == "off"
+    assert settings["filter"] == "on"
     assert settings["voter"] == "off"
     assert settings["skip_standing"] is False
     assert settings["namespace"] == "default"

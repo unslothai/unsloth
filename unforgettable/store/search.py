@@ -21,6 +21,7 @@ from unforgettable.constants import (
     ACTIVE_RETRIEVE_STATUSES,
     PROVENANCE_WEIGHT,
     SEARCH_FTS_SCAN_CAP,
+    typology_class,
 )
 
 from .db import get_connection
@@ -112,6 +113,6 @@ def search_records(
             continue
         fts_rank = float(row["rank"])
         weight = PROVENANCE_WEIGHT.get(rec["provenance"], 9)
-        scored.append((weight, fts_rank, rec))
-    scored.sort(key=lambda item: (item[0], item[1]))
-    return [item[2] for item in scored[:top_k]]
+        scored.append((typology_class(rec), weight, fts_rank, rec))
+    scored.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [item[3] for item in scored[:top_k]]

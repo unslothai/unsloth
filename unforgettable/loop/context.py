@@ -52,6 +52,9 @@ class EpisodeRequest:
     shrink_standing: Optional[bool] = None
     planner: Optional[str] = None
     planner_model: Optional[str] = None
+    filter: Optional[str] = None
+    filter_model: Optional[str] = None
+    user_label: Optional[str] = None
 
 
 @dataclass
