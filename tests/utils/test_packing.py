@@ -713,7 +713,11 @@ def test_patch_mamba2_varlen_overwrites_stale_compiled_import(monkeypatch):
     import sys
     import types
 
-    def stale(*args, seq_idx = None, **kwargs):
+    def stale(
+        *args,
+        seq_idx = None,
+        **kwargs,
+    ):
         stale.calls.append(seq_idx)
         return args[0] if args else None
 
@@ -728,7 +732,12 @@ def test_patch_mamba2_varlen_overwrites_stale_compiled_import(monkeypatch):
             super().__init__()
             self.mamba2_split_conv1d_scan_combined = real
 
-        def cuda_kernels_forward(self, hidden_states, cache_params = None, attention_mask = None):
+        def cuda_kernels_forward(
+            self,
+            hidden_states,
+            cache_params = None,
+            attention_mask = None,
+        ):
             return compiled.mamba_split_conv1d_scan_combined(hidden_states, seq_idx = None)
 
         def forward(self, hidden_states, **kwargs):
