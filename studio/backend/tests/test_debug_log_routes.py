@@ -397,10 +397,7 @@ def test_export_masks_a_tuple_style_continued_cookie(client):
 def test_export_masks_a_pem_private_key_block(client, label):
     key_body = "PRIVATEKEYBODYSHOULDNOTSURVIVE"
     path = _seed_server_log(
-        f"-----BEGIN {label}-----\n"
-        f"{key_body}\n"
-        f"-----END {label}-----\n"
-        "ordinary: kept\n"
+        f"-----BEGIN {label}-----\n{key_body}\n-----END {label}-----\nordinary: kept\n"
     )
 
     response = client.get("/api/settings/debug/logs/export")
@@ -436,10 +433,7 @@ def test_export_tracks_a_quoted_cookie_after_an_oversized_record(client):
 
     second = "SECONDCOOKIEPARTSECRET"
     path = _seed_server_log(
-        "x" * EXPORT_READ_BYTES
-        + ' Cookie: "session=FIRST\n'
-        + second
-        + '"\nordinary: kept\n'
+        "x" * EXPORT_READ_BYTES + ' Cookie: "session=FIRST\n' + second + '"\nordinary: kept\n'
     )
 
     response = client.get("/api/settings/debug/logs/export")
@@ -642,9 +636,7 @@ def test_export_tracks_an_unquoted_flag_secret_continuation(client):
 def test_export_does_not_extend_flag_context_from_a_later_argument(client):
     secret = "correct-horse"
     visible = "ordinary-visible"
-    path = _seed_server_log(
-        f"llama --api-key {secret} --output path-\\\n{visible}\n"
-    )
+    path = _seed_server_log(f"llama --api-key {secret} --output path-\\\n{visible}\n")
 
     response = client.get("/api/settings/debug/logs/export")
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:

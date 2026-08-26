@@ -137,9 +137,7 @@ _ESCAPED_QUOTED_KV_RE = re.compile(
     r"(?P<rest>[^\r\n]*)"
 )
 _QUOTED_HEADER_PAIR_RE = re.compile(
-    r"(?i)(?P<key_bytes>b)?(?P<key_quote>[\"'])(?P<key>(?:"
-    + _SECRET_KEYS
-    + r"|(?:set-)?cookie))"
+    r"(?i)(?P<key_bytes>b)?(?P<key_quote>[\"'])(?P<key>(?:" + _SECRET_KEYS + r"|(?:set-)?cookie))"
     r"(?P=key_quote)(?P<sep>\s*,\s*)(?P<value_bytes>b)?(?P<quote>[\"'])"
     r"(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
 )
@@ -168,9 +166,7 @@ _CONTINUED_SECRET_RE = re.compile(
     r"(?i)^(?P<indent>[ \t]*)" + _KEY_START + r"(?:" + _SECRET_KEYS + r")\b[\"']?\s*[:=]\s*"
     r"(?P<block>[|>](?:[1-9][+-]?|[+-][1-9]?)?)?\s*(?:#.*)?$"
 )
-_CONTINUED_ENV_RE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*$"
-)
+_CONTINUED_ENV_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*$")
 _CONTINUED_COOKIE_RE = re.compile(r"(?i)^(?P<indent>[ \t]*)(?:set-)?cookie[\"']?\s*[:=]\s*$")
 _CONTINUED_COOKIE_PAIR_RE = re.compile(
     r"(?i)^(?P<indent>[ \t]*).*?(?P<quote>[\"'])(?:set-)?cookie(?P=quote)\s*,\s*$"
@@ -361,8 +357,7 @@ def _redact_escaped_quoted_kv(match: re.Match[str]) -> str:
             if is_cookie and not _COOKIE_PAIR_RE.match(value.strip()):
                 return match.group(0)
             return (
-                f"{match.group('key')}{match.group('sep')}{REDACTED}"
-                f"\\{quote}{rest[index + 1:]}"
+                f"{match.group('key')}{match.group('sep')}{REDACTED}" f"\\{quote}{rest[index + 1:]}"
             )
     # An exact secret key with an unterminated serialized value is still
     # sensitive. Mask the remainder rather than leaking it for malformed logs.
@@ -411,11 +406,7 @@ def _redact_auth_assignment(match: re.Match[str]) -> str:
         boundary = _AUTH_ADJACENT_FIELD_RE.search(rest)
         if boundary is not None:
             rest, tail = rest[: boundary.start()].rstrip(), rest[boundary.start() :]
-    masked = (
-        f"{scheme}{sep}{REDACTED}"
-        if scheme.lower() in _SCHEMES and rest.strip()
-        else REDACTED
-    )
+    masked = f"{scheme}{sep}{REDACTED}" if scheme.lower() in _SCHEMES and rest.strip() else REDACTED
     return f"{match.group('key')}{match.group('sep')}{quote}{masked}{quote}{tail}"
 
 
@@ -537,9 +528,7 @@ class StreamingLogRedactor:
     @staticmethod
     def omitted_record_private_key_state(text: str, active: bool = False) -> bool:
         """Track private-key armor while an oversized record is discarded."""
-        events = [
-            (match.start(), True) for match in _PRIVATE_KEY_BEGIN_RE.finditer(text)
-        ] + [
+        events = [(match.start(), True) for match in _PRIVATE_KEY_BEGIN_RE.finditer(text)] + [
             (match.start(), False) for match in _PRIVATE_KEY_END_RE.finditer(text)
         ]
         for _, is_begin in sorted(events):
@@ -713,9 +702,7 @@ class StreamingLogRedactor:
             if self._cookie_has_value and indent <= self._cookie_key_indent:
                 self._cookie_key_indent = None
                 self._cookie_has_value = False
-            elif self._cookie_has_value or _COOKIE_PAIR_RE.match(
-                redacted.lstrip().lstrip("'\"")
-            ):
+            elif self._cookie_has_value or _COOKIE_PAIR_RE.match(redacted.lstrip().lstrip("'\"")):
                 self._cookie_has_value = True
                 return self._masked_record(redacted)
             else:
@@ -747,9 +734,7 @@ class StreamingLogRedactor:
             and REDACTED in redacted
             and self._ends_with_unescaped_backslash(inline_flag.group("val"))
         ):
-            self._plain_key_indent = len(
-                re.match(r"[ \t]*", physical_context).group(0)
-            )
+            self._plain_key_indent = len(re.match(r"[ \t]*", physical_context).group(0))
             self._plain_has_value = True
             self._plain_explicit_continuation = True
             return redacted

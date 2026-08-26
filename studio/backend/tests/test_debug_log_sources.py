@@ -90,9 +90,7 @@ def test_a_symlink_out_of_the_log_dir_is_not_readable(tmp_path):
     assert link.name not in labels
 
 
-def test_a_symlinked_family_directory_outside_the_studio_root_is_not_scanned(
-    tmp_path, monkeypatch
-):
+def test_a_symlinked_family_directory_outside_the_studio_root_is_not_scanned(tmp_path, monkeypatch):
     root = tmp_path / "studio"
     outside = tmp_path / "unrelated"
     (root / "logs").mkdir(parents = True)
