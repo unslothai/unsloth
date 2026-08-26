@@ -40,8 +40,10 @@ def _extract_create_studio_shortcuts() -> str:
         if i <= eof or line != "}":
             continue
         candidate = "\n".join(lines[start : i + 1]) + "\n"
-        if subprocess.run(["sh", "-n"], input = candidate, text = True,
-                          capture_output = True).returncode == 0:
+        if (
+            subprocess.run(["sh", "-n"], input = candidate, text = True, capture_output = True).returncode
+            == 0
+        ):
             return candidate
     raise AssertionError("could not slice create_studio_shortcuts from install.sh")
 
@@ -1021,7 +1023,6 @@ def test_install_sh_never_reads_a_non_regular_id_path(tmp_path):
     assert "OUT=[]" in res.stdout, f"a FIFO must read as no id, got {res.stdout!r}"
 
 
-
 @pytest.mark.skipif(os.name != "posix", reason = "runs the POSIX installer function")
 def test_create_studio_shortcuts_end_to_end_never_embeds_a_planted_id(tmp_path):
     """The REAL create_studio_shortcuts, not a reconstruction of it.
@@ -1037,7 +1038,8 @@ def test_create_studio_shortcuts_end_to_end_never_embeds_a_planted_id(tmp_path):
         d.mkdir(parents = True)
     marker = tmp_path / "PWNED"
     (studio_home / "share" / "studio_install_id").write_text(
-        f"x'; touch {marker}; exit 0 #", encoding = "utf-8")
+        f"x'; touch {marker}; exit 0 #", encoding = "utf-8"
+    )
     exe = tmp_path / "bin" / "unsloth"
     exe.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
     exe.chmod(0o755)
@@ -1053,8 +1055,12 @@ def test_create_studio_shortcuts_end_to_end_never_embeds_a_planted_id(tmp_path):
         + f'\ncreate_studio_shortcuts "{exe}" "linux"\n'
     )
     res = subprocess.run(
-        ["sh", "-c", script], text = True, capture_output = True, timeout = 300,
-        env = dict(os.environ, HOME = str(home)), cwd = str(tmp_path),
+        ["sh", "-c", script],
+        text = True,
+        capture_output = True,
+        timeout = 300,
+        env = dict(os.environ, HOME = str(home)),
+        cwd = str(tmp_path),
     )
     assert res.returncode == 0, f"installer step failed: {res.stderr[-400:]}"
 
@@ -1072,6 +1078,7 @@ def test_create_studio_shortcuts_end_to_end_never_embeds_a_planted_id(tmp_path):
 
     subprocess.run(["sh", "-c", f". {launcher}"], capture_output = True, timeout = 60)
     assert not marker.exists(), "the planted id executed as launcher code"
+
 
 def test_install_sh_never_bakes_a_planted_id_into_the_launcher(tmp_path):
     """A pre-planted studio_install_id must be regenerated, not embedded.
