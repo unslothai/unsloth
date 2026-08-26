@@ -4178,18 +4178,15 @@ class _QuarantinedMetadata:
 def _staged_restore_args(name: str, staged: str) -> "tuple[list[str], str]":
     """pip arguments that reinstall `name` from the staged wheel directory.
 
-    By default the wheel is named as a bare requirement and pip resolves it out of
-    `--find-links`. Under the opt-out that is rejected: require-hashes wants every
-    requirement pinned with `==` and carrying a hash, and a bare name is neither. The
-    restore runs AFTER the uninstall loop has already deleted the package records, so
-    failing there leaves the core package gone -- measured, pip answers "In
-    --require-hashes mode, all requirements must have their versions pinned with ==".
+    By default the wheel is a bare requirement resolved out of `--find-links`. Under the
+    opt-out require-hashes rejects that, and the restore runs AFTER the uninstall loop
+    has deleted the package records, so failing there leaves the core package gone.
 
-    The staged wheel is a local file this installer just built, so its hash is knowable.
-    Under the opt-out the restore is written into a requirements file carrying the real
-    sha256 of that exact artifact, which satisfies the policy honestly instead of
-    relaxing it for this one command or abandoning the repair. Measured: pip accepts it
-    and installs under PIP_REQUIRE_HASHES=1.
+    The staged wheel is a local file this installer just built, so its hash is knowable:
+    the restore goes through a requirements file carrying the real sha256, satisfying
+    the policy instead of relaxing it for one command or abandoning the repair.
+    Measured on pip 26.2.1, both directions -- accepted under PIP_REQUIRE_HASHES=1, and
+    "THESE PACKAGES DO NOT MATCH THE HASHES" once the wheel is altered.
 
     Returns (arguments, a temporary requirements file to delete, or "").
     """
@@ -4707,38 +4704,29 @@ _PM_POLICY_ENV_VARS = (
 )
 
 
-# Of the uv variables above, the ones uv actually reads. Measured against the pinned uv
-# 0.12.1: UV_REQUIRE_HASHES and UV_EXCLUDE_NEWER change the outcome, while UV_NO_BUILD,
-# UV_NO_BUILD_PACKAGE, UV_ONLY_BINARY and UV_NO_BINARY are ignored -- the same source
-# directory installs with any of them set and is refused by the matching --no-build /
-# --no-binary flag or a uv.toml carrying it. `uv help pip install` documents no `[env:]`
-# spelling for those four either.
-#
-# They stay in the strip list above, since removing a variable uv ignores costs nothing.
-# They must not count as DETECTED policy though: reporting one as hardening uv applies
-# both puts a false line in the notice and, worse, lets it stand in for a control uv
-# would really enforce, hiding a genuine cross-manager gap under the opt-out.
+# Of the uv variables above, the ones uv actually reads. Measured on the pinned uv
+# 0.12.1: only these two change the outcome; UV_NO_BUILD, UV_NO_BUILD_PACKAGE,
+# UV_ONLY_BINARY and UV_NO_BINARY are ignored, and `uv help pip install` documents no
+# `[env:]` spelling for them. They stay in the strip list, which costs nothing, but must
+# not be REPORTED, or the notice names policy uv does not apply.
 _UV_ENFORCED_ENV_VARS = ("UV_REQUIRE_HASHES", "UV_EXCLUDE_NEWER")
 
 
 def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
     """Overrides that stop a hardened user pip config failing the installer's own pip.
 
-    Empty for anything that is not a `pip install` / `pip download` / `pip wheel` this
-    module drives, every `uv` command included, so the "non-pinned installs inherit the
-    caller env unchanged" contract holds on a machine with no hostile pip config.
-    `wheel` is in that set because the duplicate-metadata repair stages its replacement
-    with `pip wheel`, where require-hashes applies exactly as it does to install: an
-    unpinned name is rejected before anything is built, so the repair would abort on a
-    hardened machine and leave the conflict it exists to remove.
+    Empty for anything that is not a `pip install` / `download` / `wheel` this module
+    drives, `uv` included, so non-pinned installs inherit the caller env unchanged.
+    `wheel` is in the set because the duplicate-metadata repair stages its replacement
+    with it, and require-hashes rejects an unpinned name there before anything is built.
 
-    `require-hashes = true` makes pip reject any requirement without a --hash, which is
-    every requirements file we ship; that is what took the pip FALLBACK down in #8530
-    once uv had failed. pip applies env vars AFTER config files, so PIP_REQUIRE_HASHES=0
-    overrides it while pip.conf's index-url, trusted-host, cert and proxy stay in force.
+    `require-hashes = true` rejects any requirement without a --hash, which is every
+    requirements file we ship; that took the pip FALLBACK down in #8530 once uv had
+    failed. pip applies env vars AFTER config files, so PIP_REQUIRE_HASHES=0 overrides
+    it while pip.conf's index-url, trusted-host, cert and proxy stay in force.
 
-    Empty under UNSLOTH_RESPECT_PM_POLICY, so an operator who would rather the install
-    stop than proceed unhashed gets exactly that.
+    Empty under UNSLOTH_RESPECT_PM_POLICY: an operator who would rather the install stop
+    than proceed unhashed gets exactly that.
     """
     if _respect_pm_policy():
         return {}
@@ -4829,22 +4817,17 @@ _PIP_COMMANDS = ("install", "download", "wheel")
 def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
     """(tool, source, key) for each hardening this host has configured.
 
-    ADVISORY, and deliberately narrow. It reports what the two managers can be ASKED
-    about -- the policy environment variables, and pip's own `pip config list` output --
-    and does not go looking through their configuration files.
+    ADVISORY, and deliberately narrow: it reports what the managers can be ASKED about,
+    the policy environment variables and pip's own `pip config list`, and does not read
+    their config files. Doing that means reimplementing pip's and uv's configuration
+    resolution -- discovery order, per-subcommand sections, precedence, XDG against
+    Darwin paths, uv workspace roots, UV_PROJECT / UV_WORKING_DIR / UV_CONFIG_FILE, and
+    a TOML parser for the interpreters with no tomllib. It was built here and removed:
+    an unbounded surface that nothing in the fix depends on.
 
-    Reading those files means reimplementing pip's and uv's configuration resolution:
-    discovery order, per-subcommand sections, precedence between them, XDG against
-    Darwin paths, uv workspace roots, UV_PROJECT / UV_WORKING_DIR / UV_CONFIG_FILE
-    interactions, and a TOML parser for the interpreters with no tomllib. That was
-    tried here and it is an unbounded surface: each round of review found another true
-    difference from the real thing, and some of those corrections introduced their own.
-    Nothing in the actual fix depends on it, so it asks instead of emulating.
-
-    The cost is that a pip.conf-only policy is invisible while the venv has no pip yet,
-    which is the state uv leaves a fresh venv in. The consequence of a miss is a line
-    absent from a notice, never a changed install: the opt-out withholds the relaxations
-    mechanically, whether or not anything was detected.
+    So a pip.conf-only policy is invisible while the venv has no pip yet, which is how
+    uv leaves a fresh one. A miss costs a line in a notice, never an install: the
+    opt-out withholds the relaxations whether or not anything was detected.
     """
     on: "list[tuple[str, str, str]]" = []
     cancelled: "set[str]" = set()
@@ -5231,8 +5214,8 @@ def _pip_supports_upload_cutoff() -> bool:
 def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     """Return an env with the uv index vars stripped for a pinned-index install.
 
-    None (inherit env) when the command does NOT pin an index, so ordinary installs honour
-    the user's mirror. For pinned commands, the uv index/backend vars are removed,
+    None (inherit env) when the command does NOT pin an index, so ordinary installs
+    honour the user's mirror. For pinned commands the uv index/backend vars are removed,
     UV_NO_CONFIG=1 set (a discovered uv.toml outranks the CLI pin), and PIP_CONFIG_FILE
     pointed at os.devnull for the pip fallback. Mirrors install.sh's gate (#6898).
 
@@ -5241,16 +5224,14 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     the package-scoped --no-binary in _sdist_only_build_args() instead.
 
     Under UNSLOTH_RESPECT_PM_POLICY the pinned branch still scrubs the INDEX variables --
-    the pin is itself a provenance control and the opt-out is not a request to weaken it
-    -- but the policy variables survive, pip.conf is left readable, and uv's config
-    discovery is left on, so require-hashes, no-build and only-binary apply to the pinned
-    installs too. Config discovery has to stay on: measured on the pinned uv 0.12.1, a
-    user `~/.config/uv/uv.toml` with `[pip] require-hashes = true` fails a pinned install
-    and UV_NO_CONFIG=1 makes it succeed, so setting it would discard the very control the
-    opt-out promises. The cost is symmetric on both tools: an `extra-index-url` in
-    pip.conf, or an `[[index]]` in that uv.toml, can still add a candidate source. That is
-    the price of reading the same files' security settings, and why the default is the
-    opposite.
+    the pin is itself a provenance control -- but the policy variables survive, pip.conf
+    stays readable and uv's config discovery stays on, so the operator's controls apply
+    to pinned installs too. Discovery has to stay on: measured on the pinned uv 0.12.1, a
+    user uv.toml `[pip] require-hashes = true` fails a pinned install and UV_NO_CONFIG=1
+    makes it succeed, so setting it would discard the control the opt-out promises. The
+    cost is symmetric: an `extra-index-url` in pip.conf, or an `[[index]]` in that
+    uv.toml, can still add a candidate source. That is the price of reading the same
+    files' security settings, and why the default is the opposite.
     """
     if not _is_pinned_index_cmd(cmd):
         overrides = _relaxed_pip_policy_env(cmd)
