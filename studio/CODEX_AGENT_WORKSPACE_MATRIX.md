@@ -6,9 +6,11 @@ Local branch: `feat/codex-agent-workspace`
 
 Feature source commit: `3af2f62e6d72564b2fa0840ca491a48817f12c3d`
 
-Upstream merge commit: `eb04d095b9f99c47ab3c6d4776a81046b2697d3f`
+Latest source hardening commit: `59995084d`
 
-Fetched `upstream/main`: `14ffa5988b961664feb5670818d8ed7ee686582c`
+Upstream merge commit: `1b4d48ffadc2e7e6c624e98cdacac212b38a04c3`
+
+Fetched `upstream/main`: `60d2a636ba0332e3faac78cdcc091f815ca72c6f`
 
 The feature branch contains that upstream tip through a normal merge and is reviewable ordinary source. Publication state and remote CI must be verified on PR #9673 after each push. Nothing in this document claims that a packaged build, physical platform, live provider, or release candidate has passed.
 
@@ -25,7 +27,7 @@ Status meanings:
 | Gate | Result | Evidence or remaining gate |
 | --- | --- | --- |
 | G0: reviewable feature diff | PASS on feature branch | Python, TypeScript, React, Rust, tests, workflow, and documentation are committed as ordinary source. Verify the live PR head and changed-file count after publication. |
-| G1: current with upstream main | PASS at snapshot | Merge commit `eb04d095b` contains fetched `upstream/main` at `14ffa5988`. Refresh immediately before publication. |
+| G1: current with upstream main | PASS at snapshot | Merge commit `1b4d48ffa` contains fetched `upstream/main` at `60d2a636b`. Refresh immediately before publication. |
 | G2: ordinary source changes | PASS | Recovery payload files and the unsafe restore workflow are removed. The replacement is directly reviewable source. |
 | G3: backend, frontend, and Tauri wiring | PASS locally | Native folder selection, signed grants, persistence, project context, agent workflow routes, and the Agent Workspace panel are connected. |
 | G4: feature-specific automation | PASS for the merged feature suites | Exact local counts are recorded below. Full repository, remote CI, packaged app, and live runtime results are not implied. |
@@ -156,10 +158,13 @@ Process-local writer slots coordinate Studio operations. They do not serialize a
 
 The following local results were recorded after merging the fetched upstream tip. Overlapping focused reruns are identified and must not be added to the consolidated counts:
 
-- Consolidated backend workspace suite: 491 passed, 5 host-specific skips. The skips are four Windows-only handle and process-tree checks plus one Linux-only AF_UNIX check on the local macOS host.
-- The two initially suspect cancellation and macOS confinement cases were rerun outside the Codex host sandbox: 2 passed. This overlaps the consolidated backend suite.
+- Post-merge backend workspace suite before the final Deep Research handoff: 493 passed, 5 host-specific skips. The skips are four Windows-only handle and process-tree checks plus one Linux-only AF_UNIX check on the local macOS host.
+- Final Deep Research, project-context, storage, and hardening gates: 415 adjacent backend tests passed before the last transactional tightening, followed by 162 affected tests passed on the final source. Durable context now requires the named internal workflow plus matching run, owner, project, and snapshot identity.
+- The cancellation and macOS confinement cases that failed only inside the restricted host sandbox were rerun outside that boundary on the final source: 2 passed.
+- The combined pre-agent schema, API usage, managed-root identity, agent-state, cascade, and foreign-key migration gate: 32 passed.
 - Project persistence regression pair after updating legacy mocks: 65 passed. This overlaps the consolidated backend suite.
-- Full frontend Node test suite: 5,193 passed, 0 failed.
+- Provider, research, and tool-loop compatibility suite: 1,042 passed after installing the locally missing Pillow test dependency.
+- Full frontend Node test suite on the final source: 5,288 passed, 0 failed.
 - Frontend production build: passed. Vite reported existing chunk-size and mixed dynamic-import warnings.
 - Frontend TypeScript typecheck: passed.
 - Targeted ESLint: passed.
