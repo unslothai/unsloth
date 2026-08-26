@@ -2568,12 +2568,15 @@ html[data-chat-font] .aui-root {
 
 	/* Off-screen maths costs a full RenderLayer walk on every scroll event.
 	 *
-	 * OFF BY DEFAULT. `main.tsx` sets this attribute only when
+	 * ON BY DEFAULT, AND ENGINE-GATED. `main.tsx` sets this attribute only when
 	 * `resolveMathBlockMode` says "contain", and `SHIP_DEFAULT` in
-	 * `math-block-mode.ts` is "off", so an ordinary install never arms this rule
-	 * and moving that one line is the whole of turning it on. It is a rendering
-	 * change gated by configuration precisely so it can be measured and reverted
-	 * without a revert.
+	 * `math-block-mode.ts` is now "contain", so an ordinary install DOES arm this
+	 * rule -- but only where `engineFindsSkippedContent()` passes, which feature
+	 * detects `anchor-name` as a proxy for the WebKit release carrying the
+	 * find-in-page fix (webkit.org/b/283846). On an engine below that bar the
+	 * gate returns "off" and these rules never apply. `VITE_UNSLOTH_MATH_BLOCK`
+	 * and `__UNSLOTH_MATH_BLOCK__` override both ways at build and at runtime, so
+	 * it is still revertible by configuration rather than by a revert.
 	 *
 	 * THE MECHANISM. On WebKitGTK, which is what Studio and Desktop render
 	 * through on Linux, `RenderLayerScrollableArea::scrollTo` reaches

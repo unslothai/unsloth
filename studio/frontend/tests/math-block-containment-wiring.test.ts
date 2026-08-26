@@ -33,6 +33,9 @@ const read = (relative: string): string =>
 const MARKDOWN_TEXT = read("../src/components/assistant-ui/markdown-text.tsx");
 const INDEX_CSS = read("../src/index.css");
 const MAIN_TSX = read("../src/main.tsx");
+const MATH_BLOCK_MODE = read(
+  "../src/components/assistant-ui/math-block-mode.ts",
+);
 
 test("the marker is composed onto the maths plugin", () => {
   assert.ok(
@@ -149,6 +152,51 @@ test("the rule is armed by nothing except that attribute", () => {
   assert.ok(
     INDEX_CSS.indexOf("content-visibility: auto;") > gateAt,
     "and the first of them sits after the gate",
+  );
+});
+
+test("no comment anywhere claims this feature ships off", () => {
+  // THIS HAS NOW GONE WRONG THREE TIMES. Flipping `SHIP_DEFAULT` to "contain" left prose in
+  // `math-block-mode.ts`, `main.tsx` and `index.css` still saying the feature defaults to off;
+  // fixing "all three" then missed a SECOND block in `index.css`, because the fix was a grep for
+  // the passage already known about rather than for every statement of the default. A comment
+  // that documents the opposite of the shipped behaviour is what someone diagnosing a rendering
+  // problem or attempting a rollback will read and believe, so it is worth a test rather than
+  // another round of care.
+  //
+  // Deliberately a search of the WHOLE text of each file, comments included, rather than of the
+  // one block a previous fix touched.
+  const STALE = [
+    /OFF BY DEFAULT/i,
+    /never arms this rule/i,
+    /which is why this ships off/i,
+    /`SHIP_DEFAULT`[^.]{0,80}is\s+"off"/i,
+  ];
+  for (const [name, text] of [
+    ["index.css", INDEX_CSS],
+    ["main.tsx", MAIN_TSX],
+    ["math-block-mode.ts", MATH_BLOCK_MODE],
+  ] as const) {
+    for (const pattern of STALE) {
+      assert.ok(
+        !pattern.test(text),
+        `${name} still documents the old off-by-default behaviour (${pattern})`,
+      );
+    }
+  }
+
+  // ANTI-VACUITY. The four patterns above are only meaningful if this file's text is actually
+  // being searched; a bad path would make every assertion above pass on an empty string.
+  for (const [name, text] of [
+    ["index.css", INDEX_CSS],
+    ["main.tsx", MAIN_TSX],
+    ["math-block-mode.ts", MATH_BLOCK_MODE],
+  ] as const) {
+    assert.ok(text.length > 500, `PRECONDITION: ${name} was actually read`);
+  }
+  assert.ok(
+    /SHIP_DEFAULT[^\n]*=[^\n]*"contain"/.test(MATH_BLOCK_MODE),
+    "PRECONDITION: the shipped default really is `contain`, or this test is defending the wrong claim",
   );
 });
 
