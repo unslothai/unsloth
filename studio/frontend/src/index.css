@@ -758,14 +758,17 @@ html[data-chat-font] .aui-root {
 	content: "";
 	position: absolute;
 	z-index: -1;
-	/* Overhang into the p-6 gutter so the accent wraps the content with the
-	   same 12px padding the row's py-3 gives vertically, while the gutter
-	   keeps an equal gap outside it. */
-	inset-block: 0;
-	inset-inline: -0.75rem;
+	/* Bare targets (titles, descriptions, labels) carry no padding of their
+	   own, so overhang 12px on every side for an even wrap. Self-padded rows
+	   opt out below: their py-3 already provides the block-axis padding. */
+	inset: -0.75rem;
 	border-radius: 12px;
 	animation: settings-search-hit 1.6s ease-out;
 	pointer-events: none;
+}
+/* Rows pad themselves py-3, so only overhang into the p-6 gutter. */
+.settings-search-hit[data-settings-row]::before {
+	inset-block: 0;
 }
 @keyframes settings-search-hit {
 	0%,
