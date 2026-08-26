@@ -516,6 +516,146 @@ class TestHardenedPipConfigRelaxation:
             assert name in seen["cmd"], "the fallback lost the source-build exemptions"
 
 
+class TestOperatorCanKeepTheirPolicy:
+    """UNSLOTH_RESPECT_PM_POLICY=1 turns every relaxation above off.
+
+    The relaxations exist because the shipped requirements cannot satisfy a
+    require-hashes / only-binary policy at all, so enforcing one means the install
+    FAILS. That is a legitimate answer for an operator who set the policy deliberately,
+    but only they can make the call, so it is an explicit opt-in rather than the default.
+    """
+
+    HOSTILE = TestHardenedPipConfigRelaxation.HOSTILE
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes"])
+    def test_the_pip_fallback_keeps_hash_mode(self, value):
+        with mock.patch.dict(os.environ, dict(self.HOSTILE, UNSLOTH_RESPECT_PM_POLICY = value)):
+            assert (
+                ips._install_env_for_cmd(["python", "-m", "pip", "install", "-r", "extras.txt"])
+                is None
+            ), "the opt-out must leave the child env untouched"
+
+    @pytest.mark.parametrize("value", ["", "0", "false", "no"])
+    def test_off_and_unset_spellings_keep_the_default(self, value):
+        with mock.patch.dict(os.environ, dict(self.HOSTILE, UNSLOTH_RESPECT_PM_POLICY = value)):
+            env = ips._install_env_for_cmd(["python", "-m", "pip", "install", "-r", "extras.txt"])
+        assert env is not None and env["PIP_REQUIRE_HASHES"] == "0"
+
+    def test_source_build_exemptions_are_withdrawn(self):
+        """The --no-binary exemptions exist ONLY to override a user no-build, so under
+        the opt-out there is nothing left for them to do."""
+        with mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}):
+            assert ips._sdist_only_build_args(*ips.SDIST_ONLY_PACKAGES) == []
+
+    def test_pinned_installs_keep_policy_but_still_scrub_the_index(self):
+        """The pin is itself a provenance control: honouring a hash policy must not be
+        read as permission to let an inherited mirror answer a pinned torch repair."""
+        with mock.patch.dict(
+            os.environ,
+            dict(
+                self.HOSTILE,
+                UNSLOTH_RESPECT_PM_POLICY = "1",
+                PIP_EXTRA_INDEX_URL = "https://mirror.corp/simple",
+                UV_INDEX_URL = "https://mirror.corp/simple",
+            ),
+        ):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env is not None
+        for name in ("PIP_REQUIRE_HASHES", "PIP_ONLY_BINARY", "UV_NO_BUILD", "UV_EXCLUDE_NEWER"):
+            assert env[name] == self.HOSTILE[name], f"{name} must survive the opt-out"
+        assert "PIP_CONFIG_FILE" not in env, "pip.conf carries the policy; it must be read"
+        for name in ("PIP_EXTRA_INDEX_URL", "UV_INDEX_URL"):
+            assert name not in env, f"{name} must still be scrubbed from a pinned install"
+
+    def test_the_parent_environment_is_never_mutated(self):
+        with mock.patch.dict(os.environ, dict(self.HOSTILE, UNSLOTH_RESPECT_PM_POLICY = "1")):
+            ips._install_env_for_cmd(["python", "-m", "pip", "install", "x"])
+            ips._sdist_only_build_args("openai-whisper")
+            assert os.environ["UNSLOTH_RESPECT_PM_POLICY"] == "1"
+            assert os.environ["PIP_REQUIRE_HASHES"] == "1"
+
+
+class TestHardenedPolicyIsAnnounced:
+    """The relaxation is defensible; doing it silently is not.
+
+    An operator who configured require-hashes and watched the install succeed anyway had
+    no way to learn that their control had been set aside. The notice names the settings
+    it found and the variable that keeps them.
+    """
+
+    def _names(self, env: dict, pip_config: str = ""):
+        ips._hardened_pm_policy_names.cache_clear()
+        result = mock.Mock(returncode = 0, stdout = pip_config.encode())
+        with (
+            mock.patch.dict(os.environ, env, clear = True),
+            mock.patch.object(ips.subprocess, "run", return_value = result),
+            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: []),
+        ):
+            try:
+                return ips._hardened_pm_policy_names()
+            finally:
+                ips._hardened_pm_policy_names.cache_clear()
+
+    def test_an_ordinary_machine_says_nothing(self):
+        assert self._names({}) == ()
+
+    def test_a_policy_env_var_is_reported(self):
+        assert "PIP_REQUIRE_HASHES" in self._names({"PIP_REQUIRE_HASHES": "1"})
+
+    def test_a_disabled_policy_is_not_reported(self):
+        """PIP_REQUIRE_HASHES=0 is the absence of the policy, not the presence of it."""
+        assert self._names({"PIP_REQUIRE_HASHES": "0", "PIP_NO_BINARY": ""}) == ()
+
+    def test_pip_config_hardening_is_reported(self):
+        names = self._names({}, "global.require-hashes='true'\nglobal.index-url='https://m/s'\n")
+        assert "pip.conf require-hashes" in names
+        assert not any("index-url" in name for name in names), "a mirror is not hardening"
+
+    def test_env_restatements_from_pip_config_are_not_double_counted(self):
+        names = self._names({"PIP_REQUIRE_HASHES": "1"}, ":env:.require-hashes='true'\n")
+        assert names == ("PIP_REQUIRE_HASHES",)
+
+    def test_uv_config_hardening_is_reported(self, tmp_path):
+        config = tmp_path / "uv.toml"
+        config.write_text("# no-build = true\nno-build = true\n", encoding = "utf-8")
+        ips._hardened_pm_policy_names.cache_clear()
+        with (
+            mock.patch.dict(os.environ, {}, clear = True),
+            mock.patch.object(ips.subprocess, "run", side_effect = OSError),
+            mock.patch.object(ips, "_hardened_uv_config_paths", lambda: [str(config)]),
+        ):
+            names = ips._hardened_pm_policy_names()
+        ips._hardened_pm_policy_names.cache_clear()
+        assert names == ("uv.toml no-build",)
+
+    def test_the_notice_names_the_opt_out(self, capsys):
+        with (
+            mock.patch.object(ips, "_hardened_pm_policy_names", lambda: ("PIP_REQUIRE_HASHES",)),
+            mock.patch.dict(os.environ, {}, clear = True),
+        ):
+            ips._announce_pm_policy()
+        out = capsys.readouterr().out
+        assert "PIP_REQUIRE_HASHES" in out and "UNSLOTH_RESPECT_PM_POLICY" in out
+
+    def test_the_opt_out_notice_warns_that_steps_will_fail(self, capsys):
+        with (
+            mock.patch.object(ips, "_hardened_pm_policy_names", lambda: ("PIP_REQUIRE_HASHES",)),
+            mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True),
+        ):
+            ips._announce_pm_policy()
+        assert "will fail" in capsys.readouterr().out
+
+    def test_nothing_is_printed_on_an_ordinary_machine(self, capsys):
+        with (
+            mock.patch.object(ips, "_hardened_pm_policy_names", lambda: ()),
+            mock.patch.dict(os.environ, {}, clear = True),
+        ):
+            ips._announce_pm_policy()
+        assert capsys.readouterr().out == ""
+
+
 class TestProgressLineNotes:
     """_progress() leaves the cursor mid-line, so anything printed between two
     progress steps must close that line first. Before centralising this, a real

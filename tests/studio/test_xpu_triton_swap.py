@@ -50,6 +50,9 @@ def _load_real_index_env_scrub():
         # at CALL time, so omitting either only shows up as a NameError once a test
         # actually invokes the scrub.
         ("_PM_POLICY_ENV_VARS = (", "\n)\n", 2),
+        # The opt-out gate both of the functions below consult.
+        ('_POLICY_OPT_OUT_ENV = "', "\n\n", 0),
+        ("def _respect_pm_policy(", "\n\n\n", 0),
         ("def _relaxed_pip_policy_env(", "\n\ndef ", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
