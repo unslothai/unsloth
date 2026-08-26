@@ -351,6 +351,45 @@ def test_export_masks_every_record_of_a_multiline_quoted_secret(client):
     assert "ordinary: kept" in exported
 
 
+@pytest.mark.parametrize("name", ["MYSQL_PWD", "AWS_ACCESS_KEY_ID"])
+def test_export_masks_continued_classified_environment_values(client, name):
+    secret = "NOTSTANDARDSECRET123"
+    path = _seed_server_log(f"{name}=\n  {secret}\nordinary: kept\n")
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert secret not in exported
+    assert "ordinary: kept" in exported
+
+
+def test_export_preserves_siblings_after_an_indented_quoted_secret_key(client):
+    secret = "correct-horse-battery-staple"
+    path = _seed_server_log(
+        f'  "password":\n    {secret}\n  "request_id": "req-42"\n  "status": 500\n'
+    )
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert secret not in exported
+    assert '  "request_id": "req-42"' in exported
+    assert '  "status": 500' in exported
+
+
+def test_export_masks_a_tuple_style_continued_cookie(client):
+    secret = "abc123SESSIONSECRET"
+    path = _seed_server_log(
+        f"headers=[('Cookie',\n  'unsloth_session={secret}')]\nordinary: kept\n"
+    )
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert secret not in exported
+    assert "ordinary: kept" in exported
+
+
 def test_export_treats_doubled_yaml_single_quotes_as_escapes(client):
     first = "correct"
     second = "it''s still secret"

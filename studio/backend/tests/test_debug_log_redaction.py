@@ -50,6 +50,10 @@ SECRETS = [
         "git clone https://dan:ghp_ABCDEFGHIJKLMNOPQRST0123@github.com/x/y",
         "ghp_ABCDEFGHIJKLMNOPQRST0123",
     ),
+    (
+        "git clone https://opaquecredential123@private.example/repo",
+        "opaquecredential123",
+    ),
     ("redis://:correct-horse-battery@localhost:6379/0", "correct-horse-battery"),
     ("password: hunter2hunter2", "hunter2hunter2"),
     ("password: correct horse battery staple", "correct horse battery staple"),
@@ -311,6 +315,18 @@ def test_studio_secret_environment_inventory_is_masked(name):
     secret = "opaque-environment-secret"
     line = f"{name}={secret} python server.py"
     assert redact_log_text(line) == f"{name}=<redacted> python server.py"
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["AccountKey", "SharedAccessKey", "AccessKey", "Pwd"],
+)
+def test_connection_string_secret_fields_are_masked(field):
+    secret = "VerySecretValue123"
+    line = f"Endpoint=sb://example;{field}={secret};Retry=3"
+    masked = redact_log_text(line)
+    assert secret not in masked
+    assert masked == f"Endpoint=sb://example;{field}=<redacted>;Retry=3"
 
 
 # A colorized writer puts an escape between the key and its value. Every rule is

@@ -51,7 +51,8 @@ _SECRET_KEYS = (
     # Neither is reachable through the bare "secret" alternative (the trailing \b
     # cannot fire before "_access" or "Access"), and an AWS secret key has no
     # prefix of its own for a shape rule to catch.
-    "secret[-_]?access[-_]?key|"
+    "secret[-_]?access[-_]?key|shared[-_]?access[-_]?key|access[-_]?key|"
+    "account[-_]?key|pwd|"
     "password|passwd|secret"
 )
 
@@ -81,9 +82,8 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), REDACTED),
     # JWTs, including the desktop access token
     (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}"), REDACTED),
-    # user:password@host in a URL. The username may be empty (Redis commonly
-    # uses redis://:password@host), but the colon and password are required.
-    (re.compile(r"://[^/\s:@]*:[^/\s@]+@"), "://" + REDACTED + "@"),
+    # URL userinfo may be user:password, :password (Redis), or a token alone.
+    (re.compile(r"://[^/\s@]+@"), "://" + REDACTED + "@"),
     # Presigned URL parameters. Bare "key" is deliberately absent: in an object
     # storage URL it names the object, and blanking it hides WHICH download
     # failed. Google's ?key=AIza... is caught by the AIza rule above.
@@ -128,7 +128,7 @@ _UNTERMINATED_QUOTED_KV_RE = re.compile(
 _PLAIN_SCALAR_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)"
-    r"(?P<val>[^\"'\s|>,}\]][^\"'\r\n,}\]]*)"
+    r"(?P<val>[^\"'\s|>,;}\]][^\"'\r\n,;}\]]*)"
 )
 _ESCAPED_QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>(?:" + _SECRET_KEYS + r"|(?:set-)?cookie))\b"
@@ -142,7 +142,7 @@ _QUOTED_HEADER_PAIR_RE = re.compile(
 )
 _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
-    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<val>[^\"'\s,}\]]+)"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<val>[^\"'\s,;}\]]+)"
 )
 _QUOTED_FLAG_RE = re.compile(
     r"(?i)(?P<key>--(?:" + _SECRET_KEYS + r"))"
@@ -165,7 +165,13 @@ _CONTINUED_SECRET_RE = re.compile(
     r"(?i)^(?P<indent>[ \t]*)" + _KEY_START + r"(?:" + _SECRET_KEYS + r")\b[\"']?\s*[:=]\s*"
     r"(?P<block>[|>](?:[1-9][+-]?|[+-][1-9]?)?)?\s*(?:#.*)?$"
 )
+_CONTINUED_ENV_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<key>[A-Z_][A-Z0-9_]*)\s*=\s*$"
+)
 _CONTINUED_COOKIE_RE = re.compile(r"(?i)^(?P<indent>[ \t]*)(?:set-)?cookie[\"']?\s*[:=]\s*$")
+_CONTINUED_COOKIE_PAIR_RE = re.compile(
+    r"(?i)^(?P<indent>[ \t]*).*?(?P<quote>[\"'])(?:set-)?cookie(?P=quote)\s*,\s*$"
+)
 _INLINE_COOKIE_RE = re.compile(
     r"(?i)^(?P<indent>[ \t]*)(?:set-)?cookie[\"']?\s*[:=]\s*[\"']?(?P<value>\S.*)$"
 )
@@ -578,7 +584,7 @@ class StreamingLogRedactor:
         if not prefix.strip():
             return prefix + text[start:]
         sequence = re.fullmatch(r"(?P<indent>[ \t]*)-\s+", prefix)
-        indent = ""
+        indent = re.match(r"[ \t]*", prefix).group(0)
         if sequence:
             whitespace = sequence.group("indent")
             indent = whitespace + " " * (len(prefix) - len(whitespace))
@@ -637,7 +643,9 @@ class StreamingLogRedactor:
             if self._cookie_has_value and indent <= self._cookie_key_indent:
                 self._cookie_key_indent = None
                 self._cookie_has_value = False
-            elif self._cookie_has_value or _COOKIE_PAIR_RE.match(redacted.lstrip()):
+            elif self._cookie_has_value or _COOKIE_PAIR_RE.match(
+                redacted.lstrip().lstrip("'\"")
+            ):
                 self._cookie_has_value = True
                 return self._masked_record(redacted)
             else:
@@ -693,9 +701,17 @@ class StreamingLogRedactor:
                 self._plain_explicit_continuation = False
             return redacted
 
+        continued_env = _CONTINUED_ENV_RE.search(redacted_context)
+        if continued_env and is_secret_env_name(continued_env.group("key")):
+            self._plain_key_indent = len(continued_env.group("indent"))
+            self._plain_has_value = False
+            self._plain_explicit_continuation = False
+            return redacted
+
         cookie = _CONTINUED_COOKIE_RE.search(redacted_context)
-        if cookie:
-            self._cookie_key_indent = len(cookie.group("indent"))
+        cookie_pair = _CONTINUED_COOKIE_PAIR_RE.search(redacted_context)
+        if cookie or cookie_pair:
+            self._cookie_key_indent = len((cookie or cookie_pair).group("indent"))
             self._cookie_has_value = False
             return redacted
 
