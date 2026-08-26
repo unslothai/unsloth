@@ -64,6 +64,62 @@ def test_load_model_index_from_local_path(tmp_path):
     assert _load_model_index(str(tmp_path)) == {"is_distilled": True, "patch_size": 2}
 
 
+def test_load_model_index_wraps_truncated_local_json(tmp_path):
+    (tmp_path / "model_index.json").write_text('{"patch_size":', encoding = "utf-8")
+
+    with pytest.raises(ValueError, match = r"model_index\.json.*local model directory") as exc_info:
+        _load_model_index(str(tmp_path))
+
+    assert isinstance(exc_info.value.__cause__, json.JSONDecodeError)
+
+
+def test_load_model_index_wraps_invalid_utf8(tmp_path):
+    (tmp_path / "model_index.json").write_bytes(b'\xff{"patch_size": 2}')
+
+    with pytest.raises(ValueError, match = r"model_index\.json.*local model directory") as exc_info:
+        _load_model_index(str(tmp_path))
+
+    assert isinstance(exc_info.value.__cause__, UnicodeDecodeError)
+
+
+def test_load_model_index_accepts_utf8_bom(tmp_path):
+    (tmp_path / "model_index.json").write_bytes(b'\xef\xbb\xbf{"patch_size": 2}')
+
+    assert _load_model_index(str(tmp_path)) == {"patch_size": 2}
+
+
+def test_load_model_index_rejects_non_object_json(tmp_path):
+    (tmp_path / "model_index.json").write_text("[]", encoding = "utf-8")
+
+    with pytest.raises(
+        ValueError, match = r"model_index\.json.*must contain a JSON object"
+    ) as exc_info:
+        _load_model_index(str(tmp_path))
+
+    assert exc_info.value.__cause__ is None
+
+
+def test_load_model_index_missing_local_file(tmp_path):
+    with pytest.raises(FileNotFoundError, match = r"model_index\.json not found in local model dir"):
+        _load_model_index(str(tmp_path))
+
+
+def test_load_model_index_wraps_malformed_hub_cache_content(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    downloaded = tmp_path / "downloaded-model_index.json"
+    downloaded.write_text('{"patch_size":', encoding = "utf-8")
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda *_args, **_kwargs: str(downloaded)
+    )
+
+    with pytest.raises(ValueError, match = r"model_index\.json.*Hub/cache") as exc_info:
+        _load_model_index("krea/Krea-2-Turbo", local_files_only = True)
+
+    assert str(downloaded) in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, json.JSONDecodeError)
+
+
 # ── pipeline assembly threads the model_index init config ────────────────────
 
 

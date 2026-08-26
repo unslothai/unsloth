@@ -104,6 +104,18 @@ def load_krea2_text_encoder(
     return Qwen3VLModel.from_pretrained(repo_id, config = config, dtype = dtype, **kwargs)
 
 
+def _read_model_index(path: Path, source: str) -> dict[str, Any]:
+    try:
+        model_index = json.loads(path.read_text(encoding = "utf-8-sig"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"Unable to read valid model_index.json from {source} at {path}: {exc}"
+        ) from exc
+    if not isinstance(model_index, dict):
+        raise ValueError(f"model_index.json from {source} at {path} must contain a JSON object")
+    return model_index
+
+
 def _load_model_index(
     repo_id: str,
     hf_token: Optional[str] = None,
@@ -116,7 +128,7 @@ def _load_model_index(
         is_local_dir = root.is_dir()
         local = root / "model_index.json"
         if local.is_file():
-            return json.loads(local.read_text(encoding = "utf-8"))
+            return _read_model_index(local, f"local model directory {root}")
     except OSError:
         pass
     if is_local_dir:
@@ -131,7 +143,7 @@ def _load_model_index(
         local_files_only = local_files_only,
         cache_dir = _live_cache_dir(),
     )
-    return json.loads(Path(path).read_text(encoding = "utf-8"))
+    return _read_model_index(Path(path), f"Hub/cache for {repo_id}")
 
 
 def load_krea2_pipeline(
