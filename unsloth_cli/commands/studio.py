@@ -3840,9 +3840,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         fetched = _fetch_installer(installer_name, verbose = verbose)
         if fetched is not None and _run_fetched_installer_bash(fetched, args, env):
             return
-    bundled = _installers_on_disk(
-        [root / installer_name for root in _bundled_installer_roots()]
-    )
+    bundled = _installers_on_disk([root / installer_name for root in _bundled_installer_roots()])
     if any(_run_installer_bash(script, args, env) for script in bundled):
         return
     _skip_launcher_refresh(installer_name)

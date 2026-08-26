@@ -43,7 +43,11 @@ class _Result:
     returncode = 0
 
 
-def _posix(monkeypatch, tmp_path, bundled = ()):
+def _posix(
+    monkeypatch,
+    tmp_path,
+    bundled = (),
+):
     """POSIX refresh with no checkout in sight, the shape of a wheel install. The tests run
     from a clone, so _PACKAGE_ROOT would otherwise short-circuit every fetch, and the
     interpreter running them may have a real <data>/share/unsloth to fall through to.
@@ -145,7 +149,9 @@ def test_an_unreachable_origin_falls_back_to_the_bundled_installer(monkeypatch, 
     studio = _posix(monkeypatch, tmp_path, bundled = [root])
     monkeypatch.setattr(studio, "_fetch_installer", lambda *a, **k: None)
     runs = []
-    monkeypatch.setattr(studio.subprocess, "run", lambda argv, **kw: runs.append(list(argv)) or _Result())
+    monkeypatch.setattr(
+        studio.subprocess, "run", lambda argv, **kw: runs.append(list(argv)) or _Result()
+    )
     studio._refresh_desktop_shortcuts()
     assert runs == [["bash", str(root / "install.sh"), "--shortcuts-only"]]
 
@@ -186,7 +192,9 @@ def test_no_remote_installer_pins_the_refresh_to_the_bundled_copy(monkeypatch, t
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("the opt-out must not fetch")),
     )
     runs = []
-    monkeypatch.setattr(studio.subprocess, "run", lambda argv, **kw: runs.append(list(argv)) or _Result())
+    monkeypatch.setattr(
+        studio.subprocess, "run", lambda argv, **kw: runs.append(list(argv)) or _Result()
+    )
     studio._refresh_desktop_shortcuts()
     assert runs == [["bash", str(root / "install.sh"), "--shortcuts-only"]]
 
