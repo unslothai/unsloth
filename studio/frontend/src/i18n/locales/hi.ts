@@ -821,6 +821,8 @@ export const hi = {
         downloadingDescription:
           "प्रगति डाउनलोड पैनल में दिखती है। पूरा होने पर इंडेक्सिंग इसका उपयोग करेगी।",
         downloadFailed: "डाउनलोड शुरू नहीं हो सका",
+        downloadConflict: "इस डाउनलोड को Hub से फिर से शुरू करें",
+        downloadBusy: "डाउनलोड पहले से चल रहा है",
       },
       storage: {
         sectionTitle: "स्टोरेज",

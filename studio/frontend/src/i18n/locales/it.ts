@@ -812,6 +812,8 @@ export const it = {
         downloadingDescription:
           "L'avanzamento è nel pannello dei download. L'indicizzazione lo userà al termine.",
         downloadFailed: "Impossibile avviare il download",
+        downloadConflict: "Riprendi questo download dall'Hub",
+        downloadBusy: "Download già in corso",
       },
       storage: {
         sectionTitle: "Archiviazione",

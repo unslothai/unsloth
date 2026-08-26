@@ -814,6 +814,8 @@ export const ko = {
         downloading: "{model} 다운로드 중",
         downloadingDescription: "진행 상황은 다운로드 패널에 표시됩니다. 완료되면 색인에 사용됩니다.",
         downloadFailed: "다운로드를 시작할 수 없습니다",
+        downloadConflict: "Hub에서 이 다운로드를 재개하세요",
+        downloadBusy: "이미 다운로드가 진행 중입니다",
       },
       storage: {
         sectionTitle: "저장소",

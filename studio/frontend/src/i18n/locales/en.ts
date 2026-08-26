@@ -819,6 +819,8 @@ export const en = {
         downloadingDescription:
           "Progress is in the downloads panel. Indexing uses it once it lands.",
         downloadFailed: "Couldn't start the download",
+        downloadConflict: "Resume this download from the Hub",
+        downloadBusy: "Download already in progress",
       },
       storage: {
         sectionTitle: "Storage",

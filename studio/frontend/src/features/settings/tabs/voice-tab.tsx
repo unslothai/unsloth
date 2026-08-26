@@ -586,12 +586,6 @@ export function VoiceTab() {
           if (download.model && !isTrackingSttDownload(download.model)) {
             trackSttDownload(download.model);
           }
-          const bytes = download.bytes_done ?? 0;
-          // Compare before adopting: assigning first made this test itself, so
-          // a straight switch priced the new run over the old one's samples.
-          if (download.model !== watchedDownloadRef.current) {
-            // A different model's counter is a different run.
-          }
           watchedDownloadRef.current = download.model;
           // Keep the status line fresh.
           window.setTimeout(() => {
@@ -730,7 +724,6 @@ export function VoiceTab() {
       setSttDownloadStarting(false);
     }
   };
-
 
   const warmSttModel = async () => {
     setSttPhase("loading");

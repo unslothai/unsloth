@@ -178,6 +178,10 @@ export function EmbeddingModelPicker({
                   {/* Same green dot the Hub marks an on-device row with. */}
                   {cachedModels?.has(item.id) ? (
                     <span
+                      // A bare span is generic, and ARIA-in-HTML forbids naming
+                      // one, so Safari and Firefox drop the label and the dot goes
+                      // unannounced. Same role the Hub's own on-device dot carries.
+                      role="img"
                       aria-label={t("settings.general.rag.onDevice")}
                       className="size-[5px] shrink-0 rounded-full bg-status-success"
                     />

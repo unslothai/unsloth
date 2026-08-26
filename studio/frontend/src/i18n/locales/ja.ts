@@ -805,6 +805,8 @@ export const ja = {
         downloading: "{model} をダウンロード中",
         downloadingDescription: "進捗はダウンロードパネルに表示されます。完了後にインデックス作成で使用されます。",
         downloadFailed: "ダウンロードを開始できませんでした",
+        downloadConflict: "このダウンロードは Hub から再開してください",
+        downloadBusy: "ダウンロードはすでに進行中です",
       },
       storage: {
         sectionTitle: "ストレージ",

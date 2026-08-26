@@ -839,6 +839,8 @@ export const fr = {
         downloadingDescription:
           "La progression s'affiche dans le panneau des téléchargements. L'indexation l'utilisera une fois terminé.",
         downloadFailed: "Impossible de démarrer le téléchargement",
+        downloadConflict: "Reprenez ce téléchargement depuis le Hub",
+        downloadBusy: "Téléchargement déjà en cours",
       },
       storage: {
         sectionTitle: "Stockage",

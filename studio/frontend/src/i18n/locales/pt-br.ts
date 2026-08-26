@@ -828,6 +828,8 @@ export const ptBR = {
         downloadingDescription:
           "O progresso aparece no painel de downloads. A indexação vai usá-lo quando terminar.",
         downloadFailed: "Não foi possível iniciar o download",
+        downloadConflict: "Retome este download pelo Hub",
+        downloadBusy: "Download já em andamento",
       },
       storage: {
         sectionTitle: "Armazenamento",

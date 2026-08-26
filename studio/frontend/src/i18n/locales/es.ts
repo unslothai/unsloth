@@ -836,6 +836,8 @@ export const es = {
         downloadingDescription:
           "El progreso está en el panel de descargas. La indexación lo usará cuando termine.",
         downloadFailed: "No se pudo iniciar la descarga",
+        downloadConflict: "Reanuda esta descarga desde el Hub",
+        downloadBusy: "La descarga ya está en curso",
       },
       storage: {
         sectionTitle: "Almacenamiento",

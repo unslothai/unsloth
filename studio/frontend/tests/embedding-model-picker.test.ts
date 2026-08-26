@@ -199,7 +199,21 @@ test("a rejected save cannot retain its download plan", () => {
 });
 
 test("every download-manager non-start outcome gets feedback", () => {
+  // requestStart refuses by returning an outcome rather than throwing, so a
+  // non-start is silent unless this caller speaks. Every branch must, and the
+  // three do not mean the same thing: "conflict" is resumable from the Hub and
+  // "busy" is a sibling transfer already running, so reporting either as
+  // "couldn't start the download" sends the user hunting for a fault that the
+  // downloads panel is, at that moment, showing them the answer to.
   assert.match(SECTION, /if \(outcome === "started"\)[\s\S]*else \{/);
+  assert.match(
+    SECTION,
+    /outcome === "conflict"[\s\S]*toast\.info\(t\("settings\.general\.rag\.downloadConflict"\)\)/,
+  );
+  assert.match(
+    SECTION,
+    /outcome === "busy"[\s\S]*toast\.info\(t\("settings\.general\.rag\.downloadBusy"\)\)/,
+  );
   assert.match(
     SECTION,
     /toast\.error\(t\("settings\.general\.rag\.downloadFailed"\)\)/,

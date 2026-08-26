@@ -233,9 +233,18 @@ export function DocumentsRagSection(): ReactElement {
           }),
           { description: t("settings.general.rag.downloadingDescription") },
         );
+      } else if (outcome === "conflict") {
+        // Not a failure: an earlier partial used a different transport and the
+        // Hub's own card is where it gets resumed. Saying "couldn't start" sends
+        // the user looking for a problem instead of for the row that fixes it.
+        toast.info(t("settings.general.rag.downloadConflict"));
+      } else if (outcome === "busy") {
+        // The repo is occupied by a sibling transfer, which the downloads panel
+        // is already showing. Reselect once it lands.
+        toast.info(t("settings.general.rag.downloadBusy"));
       } else {
-        // requestStart turns refused starts into outcomes rather than throws.
-        // Every non-start therefore needs feedback from this caller.
+        // requestStart turns refused starts into outcomes rather than throws, so
+        // every remaining non-start still needs feedback from this caller.
         toast.error(t("settings.general.rag.downloadFailed"));
       }
     } catch (error) {

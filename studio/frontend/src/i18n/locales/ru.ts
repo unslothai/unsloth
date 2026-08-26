@@ -822,6 +822,8 @@ export const ru = {
         downloadingDescription:
           "Прогресс виден на панели загрузок. После завершения он будет использован для индексации.",
         downloadFailed: "Не удалось начать загрузку",
+        downloadConflict: "Возобновите эту загрузку в Hub",
+        downloadBusy: "Загрузка уже выполняется",
       },
       storage: {
         sectionTitle: "Хранилище",
