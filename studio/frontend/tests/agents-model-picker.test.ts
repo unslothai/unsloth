@@ -9,6 +9,7 @@ import {
   isClassifierOrRerankerHubModel,
   isSpeechOnlyHubModel,
 } from "../src/features/settings/lib/agent-hub-model.ts";
+import { en } from "../src/i18n/locales/en.ts";
 
 const TAB = readFileSync(
   fileURLToPath(
@@ -17,27 +18,27 @@ const TAB = readFileSync(
   "utf-8",
 );
 
-test("the default model uses its recommended thinking settings", () => {
+test("the default model relies on automatic recommended settings", () => {
   assert.ok(
     TAB.includes('const EXAMPLE_MODEL_REPO = "unsloth/Qwen3.8-27B-GGUF";'),
   );
   assert.ok(TAB.includes('const EXAMPLE_MODEL_VARIANT = "UD-Q4_K_XL";'));
-  const start = TAB.indexOf("const EXAMPLE_MODEL_OPTIONS");
-  const options = TAB.slice(start, TAB.indexOf("].join", start));
-  for (const option of [
-    "--context-length 32768",
-    "--temperature 1.0",
-    "--top-p 0.95",
-    "--top-k 20",
-    "--min-p 0.0",
-    "--reasoning-effort medium",
-  ]) {
-    assert.ok(options.includes(option), `${option} is in the default command`);
-  }
+  assert.ok(!TAB.includes("EXAMPLE_MODEL_OPTIONS"));
   assert.ok(
-    TAB.includes("modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO)"),
+    TAB.includes('const modelArgs = attachOnly ? "" : selectedModelArgs;'),
   );
-  assert.ok(!options.includes("--presence-penalty"));
+  assert.equal(
+    en.settings.agents.automaticSettingsNote,
+    "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+  );
+  assert.equal(
+    en.settings.agents.configurationNote,
+    "You can also adjust any configuration. See further below or",
+  );
+  assert.equal(en.settings.agents.configurationDocs, "docs");
+  assert.equal(en.settings.agents.configurationFlagsSuffix, "for flags.");
+  assert.ok(TAB.includes("href={FLAGS_DOCS_URL}"));
+  assert.ok(TAB.includes("#flags--options"));
 });
 
 test("the model dropdown loads live trending GGUFs", () => {
@@ -131,7 +132,9 @@ test("model selection matching ignores Hub repository casing", () => {
   assert.ok(TAB.includes("modelKey(model) === modelKey(selectedModel)"));
 });
 
-test("an adopted resident model does not receive example load overrides", () => {
+test("an adopted resident model does not use a cached load ID", () => {
   assert.ok(TAB.includes("const selectedModelIsActive"));
-  assert.ok(TAB.includes("!selectedModelIsActive"));
+  assert.ok(
+    TAB.includes("const cachedLoadId = selectedModelIsActive\n    ? null"),
+  );
 });

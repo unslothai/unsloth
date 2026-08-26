@@ -68,16 +68,9 @@ import {
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
+const FLAGS_DOCS_URL = `${DOCS_URL}#flags--options`;
 const EXAMPLE_MODEL_REPO = "unsloth/Qwen3.8-27B-GGUF";
 const EXAMPLE_MODEL_VARIANT = "UD-Q4_K_XL";
-const EXAMPLE_MODEL_OPTIONS = [
-  "--context-length 32768",
-  "--temperature 1.0",
-  "--top-p 0.95",
-  "--top-k 20",
-  "--min-p 0.0",
-  "--reasoning-effort medium",
-].join(" ");
 const MODEL_RESULT_LIMIT = 7;
 const STATUS_POLL_MS = 5000;
 const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
@@ -854,14 +847,7 @@ export function AgentsTab() {
     selectedVariant && !suffixVariant
       ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsShell)}`
       : `--model ${commandModelArg}`;
-  const selectedModelOptions =
-    modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO) &&
-    !selectedModelIsActive
-      ? EXAMPLE_MODEL_OPTIONS
-      : "";
-  const modelArgs = attachOnly
-    ? ""
-    : [selectedModelArgs, selectedModelOptions].filter(Boolean).join(" ");
+  const modelArgs = attachOnly ? "" : selectedModelArgs;
   // No key is passed: the CLI caches an explicit one per base, overwriting a working
   // saved key. Omitting it replays the saved key; the remote section covers first setup.
   const commandOs = isWindowsShell ? "windows" : "unix";
@@ -1619,12 +1605,27 @@ export function AgentsTab() {
           <span className="text-xs font-medium text-foreground">
             {t("settings.agents.generatedCommand")}
           </span>
+          <p className="text-ui-11 leading-relaxed text-muted-foreground">
+            {t("settings.agents.automaticSettingsNote")}
+          </p>
           <CopyableCode
             value={command}
             copyLabel={t("settings.agents.copyGeneratedCommand")}
             copied={copied}
             onCopy={handleCopy}
           />
+          <p className="text-ui-11 leading-relaxed text-muted-foreground">
+            {t("settings.agents.configurationNote")}{" "}
+            <a
+              href={FLAGS_DOCS_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              {t("settings.agents.configurationDocs")}
+            </a>{" "}
+            {t("settings.agents.configurationFlagsSuffix")}
+          </p>
         </div>
 
         <SubagentSection
