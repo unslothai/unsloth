@@ -551,10 +551,17 @@ mod tests {
         let mut tracker = vec![0u8; 1084];
         tracker[1080..].copy_from_slice(b"M.K.");
         std::fs::write(&binary, tracker).unwrap();
+        let markerless = directory.path().join("classic.mod");
+        let mut soundtracker = vec![0u8; 600 + 1024 + 8];
+        soundtracker[43] = 4;
+        soundtracker[45] = 64;
+        soundtracker[470] = 1;
+        soundtracker[471] = 120;
+        std::fs::write(&markerless, soundtracker).unwrap();
         let text = directory.path().join("go.mod");
         std::fs::write(&text, b"module example.com/project\n").unwrap();
 
-        let files = read_clipboard_files(vec![binary, text]).unwrap();
+        let files = read_clipboard_files(vec![binary, markerless, text]).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "go.mod");
         assert_eq!(files[0].mime_type, "text/plain");

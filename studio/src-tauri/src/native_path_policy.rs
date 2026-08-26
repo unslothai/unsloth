@@ -123,7 +123,6 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "vcf",
     "eml",
     "mbox",
-    "m3u",
     "m3u8",
     "pls",
     // Stylesheets and web templates
@@ -381,22 +380,129 @@ const TRACKER_MOD_MAGICS: &[&[u8; 4]] = &[
     b"CD81", b"CD61", b"FLT4", b"FLT8", b"EXO4", b"EXO8", b".M.K", b"WARD", b"M\0\0\0", b"8\0\0\0",
 ];
 
-/// Tracker MODs put a four-byte format marker at byte offset 1080.
+const SOUNDTRACKER_HEADER_BYTES: usize = 600;
+const SOUNDTRACKER_PATTERN_BYTES: usize = 1024;
+const SOUNDTRACKER_MAX_PATTERN_ERRORS: usize = 22;
+const SOUNDTRACKER_PERIODS: &[u16] = &[
+    856, 808, 762, 720, 678, 640, 604, 570, 538, 508, 480, 453, 428, 404, 381, 360, 339, 320, 302,
+    285, 269, 254, 240, 226, 214, 202, 190, 180, 170, 160, 151, 143, 135, 127, 120, 113, 763, 679,
+    641, 571, 539, 509, 429, 340, 321, 300, 286, 270, 227, 191, 162,
+];
+
+fn big_endian_word(bytes: &[u8], offset: usize) -> usize {
+    usize::from(bytes[offset]) * 256 + usize::from(bytes[offset + 1])
+}
+
+fn soundtracker_pattern_end(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < SOUNDTRACKER_HEADER_BYTES {
+        return None;
+    }
+
+    let mut sample_bytes = 0usize;
+    for sample in 0..15 {
+        let offset = 20 + sample * 30;
+        let length_words = big_endian_word(bytes, offset + 22);
+        let finetune = bytes[offset + 24];
+        let volume = bytes[offset + 25];
+        let loop_start = big_endian_word(bytes, offset + 26);
+        let loop_length = big_endian_word(bytes, offset + 28);
+        if volume > 0x40
+            || finetune & 0xf0 != 0
+            || length_words > 0x8000
+            || loop_length > 0x8000
+            || (loop_start >> 1) > length_words
+            || (length_words > 0 && (loop_start >> 1) == length_words)
+            || (length_words == 0 && loop_start > 0)
+        {
+            return None;
+        }
+        sample_bytes = sample_bytes.checked_add(length_words * 2)?;
+    }
+    if sample_bytes < 8 {
+        return None;
+    }
+
+    let song_length = usize::from(bytes[470]);
+    if song_length == 0 || song_length > 128 {
+        return None;
+    }
+    let mut max_pattern = 0usize;
+    let mut max_used_pattern = 0usize;
+    for (index, pattern) in bytes[472..600].iter().copied().enumerate() {
+        let pattern = usize::from(pattern);
+        if pattern > 0x7f {
+            return None;
+        }
+        max_pattern = max_pattern.max(pattern);
+        if index < song_length {
+            max_used_pattern = max_used_pattern.max(pattern);
+        }
+    }
+
+    let mut pattern_count = max_pattern + 1;
+    let used_pattern_count = max_used_pattern + 1;
+    let mut expected_size = SOUNDTRACKER_HEADER_BYTES
+        .checked_add(pattern_count.checked_mul(SOUNDTRACKER_PATTERN_BYTES)?)?
+        .checked_add(sample_bytes)?;
+    let used_expected_size = SOUNDTRACKER_HEADER_BYTES
+        .checked_add(used_pattern_count.checked_mul(SOUNDTRACKER_PATTERN_BYTES)?)?
+        .checked_add(sample_bytes)?;
+    if bytes.len() < expected_size && bytes.len() == used_expected_size {
+        pattern_count = used_pattern_count;
+        expected_size = used_expected_size;
+    }
+    let pattern_end = SOUNDTRACKER_HEADER_BYTES
+        .checked_add(pattern_count.checked_mul(SOUNDTRACKER_PATTERN_BYTES)?)?;
+    (bytes.len() >= expected_size.saturating_mul(93) / 100 && bytes.len() >= pattern_end)
+        .then_some(pattern_end)
+}
+
+fn has_soundtracker_pattern_data(bytes: &[u8], pattern_end: usize) -> bool {
+    let Some(patterns) = bytes.get(SOUNDTRACKER_HEADER_BYTES..pattern_end) else {
+        return false;
+    };
+    let mut errors = 0usize;
+    for event in patterns.chunks_exact(4) {
+        let sample = (event[0] & 0xf0) | (event[2] >> 4);
+        let period = (u16::from(event[0] & 0x0f) << 8) | u16::from(event[1]);
+        if sample > 15 {
+            errors += 1;
+            if errors > SOUNDTRACKER_MAX_PATTERN_ERRORS {
+                return false;
+            }
+        }
+        if period != 0 && !SOUNDTRACKER_PERIODS.contains(&period) {
+            errors += 1;
+            if errors > SOUNDTRACKER_MAX_PATTERN_ERRORS {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Detect marker-bearing MODs and earlier 15-sample Soundtracker modules.
 pub fn is_binary_tracker_mod(path: &Path, bytes: &[u8]) -> bool {
-    if !has_extension(path, "mod") || bytes.len() < 1084 {
+    if !has_extension(path, "mod") {
         return false;
     }
-    let marker = &bytes[1080..1084];
-    TRACKER_MOD_MAGICS
-        .iter()
-        .any(|candidate| marker == candidate.as_slice())
-        || (marker[0].is_ascii_digit() && marker[0] != b'0' && &marker[1..] == b"CHN")
-        || (marker[0].is_ascii_digit()
-            && marker[0] != b'0'
-            && marker[1].is_ascii_digit()
-            && (&marker[2..] == b"CH" || &marker[2..] == b"CN"))
-        || (&marker[..3] == b"TDZ" && marker[3].is_ascii_digit() && marker[3] != b'0')
-        || (&marker[..3] == b"FA0" && (b'4'..=b'8').contains(&marker[3]))
+    if let Some(marker) = bytes.get(1080..1084) {
+        if TRACKER_MOD_MAGICS
+            .iter()
+            .any(|candidate| marker == candidate.as_slice())
+            || (marker[0].is_ascii_digit() && marker[0] != b'0' && &marker[1..] == b"CHN")
+            || (marker[0].is_ascii_digit()
+                && marker[0] != b'0'
+                && marker[1].is_ascii_digit()
+                && (&marker[2..] == b"CH" || &marker[2..] == b"CN"))
+            || (&marker[..3] == b"TDZ" && marker[3].is_ascii_digit() && marker[3] != b'0')
+            || (&marker[..3] == b"FA0" && (b'4'..=b'8').contains(&marker[3]))
+        {
+            return true;
+        }
+    }
+    soundtracker_pattern_end(bytes)
+        .is_some_and(|pattern_end| has_soundtracker_pattern_data(bytes, pattern_end))
 }
 
 fn bmff_box_payloads<'a>(data: &'a [u8], wanted: &[u8; 4]) -> Vec<&'a [u8]> {
@@ -1170,10 +1276,26 @@ mod tests {
         tracker[1080..].copy_from_slice(b"M.K.");
         assert!(is_binary_tracker_mod(Path::new("track.mod"), &tracker));
 
+        let mut soundtracker = vec![0u8; 600 + 1024 + 8];
+        soundtracker[43] = 4; // Four big-endian words of sample data.
+        soundtracker[45] = 64;
+        soundtracker[470] = 1;
+        soundtracker[471] = 120;
+        assert!(is_binary_tracker_mod(
+            Path::new("classic.mod"),
+            &soundtracker
+        ));
+
         let mut go_mod = b"module example.com/project\n".to_vec();
         go_mod.resize(1200, b' ');
         assert!(!is_binary_tracker_mod(Path::new("go.mod"), &go_mod));
         assert!(!is_binary_tracker_mod(Path::new("track.bin"), &tracker));
+    }
+
+    #[test]
+    fn legacy_m3u_is_not_advertised_as_utf8_text() {
+        assert!(!TEXT_ATTACHMENT_EXTS.contains(&"m3u"));
+        assert!(TEXT_ATTACHMENT_EXTS.contains(&"m3u8"));
     }
 
     // The composer takes audio uploads, so a dropped one has to classify too.

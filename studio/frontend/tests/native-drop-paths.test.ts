@@ -778,6 +778,15 @@ test("tracker MOD binaries are distinguished from text module files", async () =
     await isBinaryTrackerModule(new File([tracker], "track.mod")),
     true,
   );
+  const soundtracker = new Uint8Array(600 + 1024 + 8);
+  soundtracker[43] = 4; // Four big-endian words of sample data.
+  soundtracker[45] = 64;
+  soundtracker[470] = 1;
+  soundtracker[471] = 120;
+  assert.equal(
+    await isBinaryTrackerModule(new File([soundtracker], "classic.mod")),
+    true,
+  );
   assert.equal(
     await isBinaryTrackerModule(
       new File(["module example.com/project\n".padEnd(1200, " ")], "go.mod"),
@@ -788,6 +797,11 @@ test("tracker MOD binaries are distinguished from text module files", async () =
     await isBinaryTrackerModule(new File([tracker], "track.bin")),
     false,
   );
+});
+
+test("legacy M3U playlists are not advertised as UTF-8 text", () => {
+  assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".m3u"), false);
+  assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".m3u8"), true);
 });
 
 test("UTF-16 registry exports are decoded before attachment", async () => {

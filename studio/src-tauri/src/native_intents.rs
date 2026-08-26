@@ -968,16 +968,24 @@ mod tests {
 
     #[test]
     fn tracker_mod_read_is_rejected() {
-        let path = temp_path("track").with_extension("mod");
         let mut tracker = vec![0u8; 1084];
         tracker[1080..].copy_from_slice(b"M.K.");
-        fs::write(&path, tracker).unwrap();
-        let (_state, entry) = attachment_entry(&path);
-        let Err(error) = read_attachment_payload(&entry) else {
-            panic!("expected tracker MOD read to fail");
-        };
-        assert!(error.contains("Tracker .mod"));
-        let _ = fs::remove_file(path);
+        let mut soundtracker = vec![0u8; 600 + 1024 + 8];
+        soundtracker[43] = 4;
+        soundtracker[45] = 64;
+        soundtracker[470] = 1;
+        soundtracker[471] = 120;
+
+        for (name, bytes) in [("track", tracker), ("classic", soundtracker)] {
+            let path = temp_path(name).with_extension("mod");
+            fs::write(&path, bytes).unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let Err(error) = read_attachment_payload(&entry) else {
+                panic!("expected tracker MOD read to fail");
+            };
+            assert!(error.contains("Tracker .mod"));
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[test]

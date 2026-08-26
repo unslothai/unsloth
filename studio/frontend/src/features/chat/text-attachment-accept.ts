@@ -82,7 +82,6 @@ export const TEXT_ATTACHMENT_EXTENSIONS = [
   ".vcf",
   ".eml",
   ".mbox",
-  ".m3u",
   ".m3u8",
   ".pls",
   // Stylesheets and web templates
@@ -392,21 +391,169 @@ const TRACKER_MOD_MAGICS = new Set([
   "M\0\0\0",
   "8\0\0\0",
 ]);
+const TRACKER_SINGLE_CHANNEL_MAGIC_RE = /^[1-9]CHN$/;
+const TRACKER_DOUBLE_CHANNEL_MAGIC_RE = /^[1-9][0-9](?:CH|CN)$/;
+const TRACKER_TAKE_MAGIC_RE = /^TDZ[1-9]$/;
+const TRACKER_DIGITAL_MAGIC_RE = /^FA0[4-8]$/;
 
-/** Tracker MODs put a four-byte format marker at byte offset 1080. */
-export async function isBinaryTrackerModule(file: File): Promise<boolean> {
-  if (!file.name.toLowerCase().endsWith(".mod") || file.size < 1084) {
+const SOUNDTRACKER_HEADER_BYTES = 600;
+const SOUNDTRACKER_PATTERN_BYTES = 1024;
+const SOUNDTRACKER_MAX_PATTERN_ERRORS = 22;
+const SOUNDTRACKER_PERIODS = new Set([
+  856, 808, 762, 720, 678, 640, 604, 570, 538, 508, 480, 453, 428, 404,
+  381, 360, 339, 320, 302, 285, 269, 254, 240, 226, 214, 202, 190, 180,
+  170, 160, 151, 143, 135, 127, 120, 113, 763, 679, 641, 571, 539, 509,
+  429, 340, 321, 300, 286, 270, 227, 191, 162,
+]);
+
+function bigEndianWord(bytes: Uint8Array, offset: number): number {
+  return bytes[offset] * 256 + bytes[offset + 1];
+}
+
+function soundtrackerSampleBytes(header: Uint8Array): number | null {
+  let sampleBytes = 0;
+  for (let sample = 0; sample < 15; sample += 1) {
+    const offset = 20 + sample * 30;
+    const lengthWords = bigEndianWord(header, offset + 22);
+    const finetune = header[offset + 24];
+    const volume = header[offset + 25];
+    const loopStart = bigEndianWord(header, offset + 26);
+    const loopLength = bigEndianWord(header, offset + 28);
+    if (
+      volume > 0x40 ||
+      (finetune & 0xf0) !== 0 ||
+      lengthWords > 0x8000 ||
+      loopLength > 0x8000 ||
+      (loopStart >>> 1) > lengthWords ||
+      (lengthWords > 0 && (loopStart >>> 1) === lengthWords) ||
+      (lengthWords === 0 && loopStart > 0)
+    ) {
+      return null;
+    }
+    sampleBytes += lengthWords * 2;
+  }
+  return sampleBytes >= 8 ? sampleBytes : null;
+}
+
+function soundtrackerPatternCounts(
+  header: Uint8Array,
+): { all: number; used: number } | null {
+  const songLength = header[470];
+  if (songLength === 0 || songLength > 128) {
+    return null;
+  }
+  let maxPattern = 0;
+  let maxUsedPattern = 0;
+  for (let index = 0; index < 128; index += 1) {
+    const pattern = header[472 + index];
+    if (pattern > 0x7f) {
+      return null;
+    }
+    maxPattern = Math.max(maxPattern, pattern);
+    if (index < songLength) {
+      maxUsedPattern = Math.max(maxUsedPattern, pattern);
+    }
+  }
+  return { all: maxPattern + 1, used: maxUsedPattern + 1 };
+}
+
+function soundtrackerPatternEnd(
+  header: Uint8Array,
+  fileSize: number,
+): number | null {
+  if (header.length < SOUNDTRACKER_HEADER_BYTES) {
+    return null;
+  }
+
+  const sampleBytes = soundtrackerSampleBytes(header);
+  const patternCounts = soundtrackerPatternCounts(header);
+  if (sampleBytes === null || patternCounts === null) {
+    return null;
+  }
+
+  let patternCount = patternCounts.all;
+  const usedPatternCount = patternCounts.used;
+  let expectedSize =
+    SOUNDTRACKER_HEADER_BYTES +
+    patternCount * SOUNDTRACKER_PATTERN_BYTES +
+    sampleBytes;
+  const usedExpectedSize =
+    SOUNDTRACKER_HEADER_BYTES +
+    usedPatternCount * SOUNDTRACKER_PATTERN_BYTES +
+    sampleBytes;
+  // Some old files leave junk orders past the declared song length.
+  if (fileSize < expectedSize && fileSize === usedExpectedSize) {
+    patternCount = usedPatternCount;
+    expectedSize = usedExpectedSize;
+  }
+  // Known Soundtracker files can have truncated trailing sample data, but the
+  // complete pattern area must still be present.
+  const patternEnd =
+    SOUNDTRACKER_HEADER_BYTES + patternCount * SOUNDTRACKER_PATTERN_BYTES;
+  return fileSize >= Math.floor((expectedSize * 93) / 100) &&
+    fileSize >= patternEnd
+    ? patternEnd
+    : null;
+}
+
+function hasSoundtrackerPatternData(
+  bytes: Uint8Array,
+  patternEnd: number,
+): boolean {
+  if (bytes.length < patternEnd) {
     return false;
   }
-  const marker = new Uint8Array(await file.slice(1080, 1084).arrayBuffer());
-  const magic = String.fromCharCode(...marker);
-  return (
-    TRACKER_MOD_MAGICS.has(magic) ||
-    /^[1-9]CHN$/.test(magic) ||
-    /^[1-9][0-9](?:CH|CN)$/.test(magic) ||
-    /^TDZ[1-9]$/.test(magic) ||
-    /^FA0[4-8]$/.test(magic)
+  let errors = 0;
+  for (
+    let offset = SOUNDTRACKER_HEADER_BYTES;
+    offset < patternEnd;
+    offset += 4
+  ) {
+    const sample = (bytes[offset] & 0xf0) | (bytes[offset + 2] >>> 4);
+    const period = ((bytes[offset] & 0x0f) << 8) | bytes[offset + 1];
+    if (sample > 15) {
+      errors += 1;
+      if (errors > SOUNDTRACKER_MAX_PATTERN_ERRORS) {
+        return false;
+      }
+    }
+    if (period !== 0 && !SOUNDTRACKER_PERIODS.has(period)) {
+      errors += 1;
+      if (errors > SOUNDTRACKER_MAX_PATTERN_ERRORS) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/** Detect marker-bearing MODs and earlier 15-sample Soundtracker modules. */
+export async function isBinaryTrackerModule(file: File): Promise<boolean> {
+  if (!file.name.toLowerCase().endsWith(".mod")) {
+    return false;
+  }
+  const prefix = new Uint8Array(await file.slice(0, 1084).arrayBuffer());
+  if (prefix.length >= 1084) {
+    const magic = String.fromCharCode(...prefix.subarray(1080, 1084));
+    if (
+      TRACKER_MOD_MAGICS.has(magic) ||
+      TRACKER_SINGLE_CHANNEL_MAGIC_RE.test(magic) ||
+      TRACKER_DOUBLE_CHANNEL_MAGIC_RE.test(magic) ||
+      TRACKER_TAKE_MAGIC_RE.test(magic) ||
+      TRACKER_DIGITAL_MAGIC_RE.test(magic)
+    ) {
+      return true;
+    }
+  }
+
+  const patternEnd = soundtrackerPatternEnd(prefix, file.size);
+  if (patternEnd === null) {
+    return false;
+  }
+  const patterns = new Uint8Array(
+    await file.slice(0, patternEnd).arrayBuffer(),
   );
+  return hasSoundtrackerPatternData(patterns, patternEnd);
 }
 
 const GETTEXT_HEADER_SCAN_BYTES = 64 * 1024;
