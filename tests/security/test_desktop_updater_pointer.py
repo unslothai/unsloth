@@ -31,7 +31,7 @@ STABLE_ASSETS = tuple(f"Unsloth-Desktop-{suffix}" for suffix in SUFFIXES)
 
 # A `gh` that keeps state, so a PATCH is observable in the next read and an
 # unmodelled call is a loud failure rather than a silent success.
-FAKE_GH = r'''#!/usr/bin/env python3
+FAKE_GH = r"""#!/usr/bin/env python3
 import json, os, pathlib, sys
 
 state_path = pathlib.Path(os.environ["FAKE_STATE"])
@@ -112,7 +112,7 @@ if argv[:1] == ["api"]:
 
 sys.stderr.write("fake gh: unmodelled invocation %r\n" % (argv,))
 sys.exit(2)
-'''
+"""
 
 
 def _step(name):
@@ -167,8 +167,11 @@ def _release(
 
 
 def _manifest(tag, *, legacy = False):
-    base = f"Unsloth-Desktop-{tag.removeprefix('v').replace('.', '_').replace('-', '_')}" \
-        if legacy else "Unsloth-Desktop"
+    base = (
+        f"Unsloth-Desktop-{tag.removeprefix('v').replace('.', '_').replace('-', '_')}"
+        if legacy
+        else "Unsloth-Desktop"
+    )
     prefix = f"https://github.com/{REPOSITORY}/releases/download/{tag}/"
     return {
         "version": tag,
@@ -180,7 +183,14 @@ def _manifest(tag, *, legacy = False):
     }
 
 
-def _world(tmp_path, *, releases, manifests, latest, race_latest = None):
+def _world(
+    tmp_path,
+    *,
+    releases,
+    manifests,
+    latest,
+    race_latest = None,
+):
     state = {"releases": releases, "manifests": manifests, "latest": latest}
     if race_latest:
         state["race_latest"] = race_latest
@@ -276,6 +286,7 @@ def _latest_of(tmp_path):
 
 # ------------------------------------------------------------------ the gate
 
+
 def _run_gate(tmp_path, *, release_tag, assets, repair_pointer):
     state_path = _world(
         tmp_path,
@@ -348,6 +359,7 @@ def test_the_gate_fails_closed_when_the_release_cannot_be_read(tmp_path):
 
 
 # ---------------------------------------------------------------- the repair
+
 
 def test_the_newest_complete_desktop_release_is_restored_without_copying_assets(tmp_path):
     result, commands = _run(
@@ -453,8 +465,12 @@ def test_a_prebuilt_release_holding_the_pointer_is_repaired(tmp_path):
         tmp_path,
         release_tag = "b8475",
         releases = [
-            _release("b8475", release_id = 8475, assets = ["llama-b8475-bin-ubuntu-x64.zip"],
-                     published_at = "2026-04-01T00:00:00Z"),
+            _release(
+                "b8475",
+                release_id = 8475,
+                assets = ["llama-b8475-bin-ubuntu-x64.zip"],
+                published_at = "2026-04-01T00:00:00Z",
+            ),
             _release("v0.1.52-beta", release_id = 52, published_at = "2026-03-01T00:00:00Z"),
         ],
         manifests = {"v0.1.52-beta": _manifest("v0.1.52-beta")},
@@ -470,8 +486,9 @@ def test_the_highest_version_wins_over_a_later_publish_time(tmp_path):
         tmp_path,
         release_tag = "v0.1.54-beta",
         releases = [
-            _release("v0.1.54-beta", release_id = 54, complete = False,
-                     published_at = "2026-05-01T00:00:00Z"),
+            _release(
+                "v0.1.54-beta", release_id = 54, complete = False, published_at = "2026-05-01T00:00:00Z"
+            ),
             _release("v0.1.52-beta", release_id = 52, published_at = "2026-04-01T00:00:00Z"),
             _release("v0.1.53-beta", release_id = 53, published_at = "2026-03-01T00:00:00Z"),
         ],
@@ -515,8 +532,7 @@ def test_a_manifest_naming_a_missing_bundle_is_refused(tmp_path):
         release_tag = "v0.1.53-beta",
         releases = [
             _release("v0.1.53-beta", release_id = 53, complete = False),
-            _release("v0.1.52-beta", release_id = 52,
-                     drop = ("Unsloth-Desktop-ARM64.app.tar.gz",)),
+            _release("v0.1.52-beta", release_id = 52, drop = ("Unsloth-Desktop-ARM64.app.tar.gz",)),
         ],
         manifests = {"v0.1.52-beta": _manifest("v0.1.52-beta")},
     )
@@ -656,8 +672,9 @@ def test_a_pointer_moved_by_someone_else_after_the_patch_fails_loudly(tmp_path):
         releases = [
             _release("v0.1.53-beta", release_id = 53, complete = False),
             _release("v0.1.52-beta", release_id = 52),
-            _release("v0.1.55-beta", release_id = 55, published_at = "2026-07-01T00:00:00Z",
-                     complete = False),
+            _release(
+                "v0.1.55-beta", release_id = 55, published_at = "2026-07-01T00:00:00Z", complete = False
+            ),
         ],
         manifests = {"v0.1.52-beta": _manifest("v0.1.52-beta")},
         race_latest = "v0.1.55-beta",

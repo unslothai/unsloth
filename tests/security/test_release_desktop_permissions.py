@@ -264,7 +264,7 @@ def test_the_updater_workflow_skips_releases_without_desktop_bundles():
     assert gate["id"] == "gate"
     assert gate["env"]["REPAIR_POINTER"] == "${{ inputs.repair_pointer }}"
     # A repair dispatch must never be turned away by the state it exists to repair.
-    assert '[ "$REPAIR_POINTER" = \'true\' ]' in gate["run"]
+    assert "[ \"$REPAIR_POINTER\" = 'true' ]" in gate["run"]
     assert "grep -q '^Unsloth-Desktop-'" in gate["run"]
     # An unreadable release must not look like one that simply has no bundles.
     assert "refusing to advance the channel" in gate["run"]
