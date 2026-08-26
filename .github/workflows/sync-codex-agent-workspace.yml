@@ -1,0 +1,61 @@
+name: Sync Codex agent workspace with upstream
+
+on:
+  push:
+    branches:
+      - feat/codex-agent-workspace
+    paths:
+      - .github/workflows/sync-codex-agent-workspace.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge current upstream main
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "PhilipJohnBasile"
+          git config user.email "1419847+PhilipJohnBasile@users.noreply.github.com"
+          git remote add upstream https://github.com/unslothai/unsloth.git
+          git fetch --no-tags upstream main
+
+          set +e
+          git merge --no-ff --no-commit upstream/main
+          merge_rc=$?
+          set -e
+
+          if [ "$merge_rc" -ne 0 ]; then
+            echo "conflicted=true" >> "$GITHUB_OUTPUT"
+            git diff --name-only --diff-filter=U | tee /tmp/conflicted-files.txt
+            tar --exclude=.git -czf /tmp/codex-agent-merge-conflicts.tar.gz .
+            exit 0
+          fi
+
+          echo "conflicted=false" >> "$GITHUB_OUTPUT"
+          git rm .github/workflows/sync-codex-agent-workspace.yml
+          git commit -m "Merge upstream main into Codex agent workspace"
+          git push origin HEAD:feat/codex-agent-workspace
+
+      - name: Upload conflict workspace
+        if: steps.merge.outputs.conflicted == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-agent-merge-conflicts
+          path: |
+            /tmp/conflicted-files.txt
+            /tmp/codex-agent-merge-conflicts.tar.gz
+          retention-days: 1
+
+      - name: Fail on unresolved conflicts
+        if: steps.merge.outputs.conflicted == 'true'
+        run: exit 1
