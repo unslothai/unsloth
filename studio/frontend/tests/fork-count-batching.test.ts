@@ -379,9 +379,12 @@ test("a chat created in the app asks for its fork counts", async (t) => {
 
 test("a temporary chat is the one thread that never asks", async (t) => {
   // ensureThreadRecord marks an incognito thread and returns without writing a row, so its
-  // forks cannot exist and the request can only 404 -- once on mount and again on every
-  // history event, which streaming raises per chunk. The saved chat beside it still asks:
-  // the guard is the row, not the `__LOCALID_` prefix both of them carry.
+  // forks cannot exist and the answer is known before asking -- once on mount and again on
+  // every history event, which streaming raises per chunk. The saved chat beside it still
+  // asks: the guard is the row, not the `__LOCALID_` prefix both of them carry.
+  //
+  // Known, not an error: the backend answers an unknown thread 200 with an empty map,
+  // because fork_counts_for_thread groups chat_threads and never looks the source up.
   mock.timers.enable({ apis: ["setTimeout"] });
   t.after(() => mock.timers.reset());
   const { store, requests } = freshStore({ m1: 2 }, ["__LOCALID_temp"]);
