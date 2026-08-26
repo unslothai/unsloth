@@ -9930,7 +9930,10 @@ EDIT_FILE_TOOL = {
             "no two may overlap. Each must match exactly one place unless that "
             "entry sets replace_all; if any entry matches none or several you get "
             "an error and NOTHING is written. Paths are relative to the working "
-            "directory."
+            "directory. A successful call means the file on disk now contains "
+            "what you sent, so do not read it back to confirm: re-reading a file "
+            "you just wrote pays for the same content twice, and on a small "
+            "context window it can leave no room for the answer."
         ),
         "parameters": {
             "type": "object",

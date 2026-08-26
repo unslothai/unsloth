@@ -12,6 +12,7 @@ import atexit
 import contextlib
 import errno
 import functools
+import hashlib
 import json
 import logging
 import math
@@ -355,6 +356,8 @@ from core.inference.tool_call_parser import (
     is_reprompt_restatement as _is_reprompt_restatement,
     is_short_intent_without_action as _is_short_intent_without_action,
     continue_after_length_message as _continue_after_length_message,
+    repeated_result_message as _repeated_result_message,
+    starved_result_message as _starved_result_message,
     reprompt_to_act_message as _reprompt_to_act_message,
     thinking_exhausted_message as _thinking_exhausted_message,
     unfinished_thought_progress as _unfinished_thought_progress,
@@ -1275,6 +1278,16 @@ _MAX_TOOL_CALLS_PER_TURN = 8
 # time reaching the same place.
 _MAX_LENGTH_CONTINUATIONS = 2
 _CONTINUE_AFTER_LENGTH_STATUS = "Continuing after a long thought..."
+# Below this, a tool result carries no content: what comes back is the notice saying it was
+# cut, which costs a call and teaches the model nothing. Sized to leave a short line of real
+# output rather than to guarantee a useful one; the point is to catch the collapse to zero.
+_MIN_USEFUL_RESULT_TOKENS = 64
+# How many times one tool may return a byte-identical result before the model is told the
+# call is not going to change. Follows OpenClaw's tool-loop detection, which keys on the
+# RESULT rather than the arguments and never intervenes while results are still changing:
+# the arguments varied on every one of the 18 calls observed here, so an argument-keyed
+# guard would have watched the whole thing happen.
+_MAX_IDENTICAL_TOOL_RESULTS = 3
 # How far back the classifier looks for llama.cpp's argument-parsing error. It
 # prints one and exits, so it is always at the end; generous enough to survive a
 # usage hint printed after it, small enough that a 10 MB unterminated line (which
@@ -24304,6 +24317,10 @@ class LlamaCppBackend:
         # produces something visible.
         _length_continuations = 0
         _effective_enable_thinking = enable_thinking
+        # Single-element lists so the nested execution scope can rebind them.
+        _last_tool_result_key: list = [None]
+        _identical_result_runs: list = [0]
+        _starved_call: list = [False]
 
         # Reserve extra iterations for re-prompts so they don't consume the
         # caller's tool-call budget; only when tool iterations are allowed.
@@ -26103,12 +26120,73 @@ class LlamaCppBackend:
                                             _pending_args = 2 * estimate_messages_tokens_dense(
                                                 _pending_msgs
                                             )
-                                    kwargs["result_budget_tokens"] = tool_result_budget(
+                                    _result_budget = tool_result_budget(
                                         self._effective_context_length,
                                         max_tokens,
                                         _spent + _pending_args,
                                     ) // (len(_pending) + 1)
+                                    # A budget at or near zero means the call cannot deliver
+                                    # anything: the result is cut to a notice saying it was
+                                    # cut, which reads to the model as a fresh failure rather
+                                    # than a wall, so it tries again. Observed at a 4096
+                                    # window, reading a 2401-byte file back: six of the last
+                                    # eight calls priced at zero and returned the same
+                                    # 109-char notice, and the turn went on 18 calls.
+                                    #
+                                    # Room is exactly what compaction reclaims, so spend it
+                                    # here before the call rather than after the turn is lost.
+                                    if (
+                                        _result_budget < _MIN_USEFUL_RESULT_TOKENS
+                                        and self._effective_context_length
+                                    ):
+                                        _roomier, _n_roomier = (
+                                            compact_completed_tool_arguments(
+                                                conversation, protect_last = 1
+                                            )
+                                        )
+                                        if _n_roomier:
+                                            conversation[:] = _roomier
+                                            try:
+                                                _spent_after = self.count_chat_tokens(
+                                                    neutralize_control_markup_in_messages(
+                                                        conversation,
+                                                        _markup_cache,
+                                                        self.markup_profile,
+                                                    ),
+                                                    None,
+                                                    safe_tools,
+                                                    strict = True,
+                                                    chat_template_kwargs = _reasoning_kw,
+                                                )
+                                            except Exception:
+                                                logger.debug(
+                                                    "result budget rescue: count failed",
+                                                    exc_info = True,
+                                                )
+                                                _spent_after = None
+                                            if _spent_after is not None:
+                                                _rescued = tool_result_budget(
+                                                    self._effective_context_length,
+                                                    max_tokens,
+                                                    _spent_after + _pending_args,
+                                                ) // (len(_pending) + 1)
+                                                logger.info(
+                                                    "Result budget for %s was %d; compacted "
+                                                    "%d completed call(s) and it is now %d",
+                                                    decision.tool_name,
+                                                    _result_budget,
+                                                    _n_roomier,
+                                                    _rescued,
+                                                )
+                                                _result_budget = max(_result_budget, _rescued)
+                                    kwargs["result_budget_tokens"] = _result_budget
                                     _last_result_budget[0] = kwargs["result_budget_tokens"]
+                                    # Known before the tool runs, so there is no reason to
+                                    # spend calls rediscovering it: the repeat guard below
+                                    # would reach the same conclusion three calls later.
+                                    _starved_call[0] = (
+                                        _result_budget < _MIN_USEFUL_RESULT_TOKENS
+                                    )
                                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
                                     if accepts_kwarg(execute_tool, "conversation_token_counter"):
                                         # The admission check estimates a result's size by
@@ -26179,6 +26257,49 @@ class LlamaCppBackend:
                         _last_result_budget[0],
                         len(result) if isinstance(result, str) else -1,
                     )
+                    # The window priced this result at nothing before the call ran, so the
+                    # model is told now rather than after three calls prove it.
+                    if _starved_call[0] and isinstance(result, str):
+                        _starved_call[0] = False
+                        logger.info(
+                            "%s ran with a result budget below %d; telling the model the "
+                            "window cannot carry the result",
+                            decision.tool_name,
+                            _MIN_USEFUL_RESULT_TOKENS,
+                        )
+                        result = _starved_result_message(decision.tool_name, result)
+
+                    # ── No-progress guard: the same answer, over and over ──
+                    # Keyed on the RESULT, not the arguments. In the turn this came from,
+                    # the arguments differed every time (different line ranges of one file)
+                    # while the answer was the same 109-char truncation notice, so an
+                    # argument-keyed guard would have watched all 18 calls go by. OpenClaw
+                    # keys on the result for the same reason and never fires while results
+                    # are still changing, which is what makes this safe for polling.
+                    if isinstance(result, str):
+                        _result_key = (decision.tool_name, hashlib.sha1(
+                            result.encode("utf-8", "replace")
+                        ).hexdigest())
+                        if _result_key == _last_tool_result_key[0]:
+                            _identical_result_runs[0] += 1
+                        else:
+                            _last_tool_result_key[0] = _result_key
+                            _identical_result_runs[0] = 1
+                        if _identical_result_runs[0] >= _MAX_IDENTICAL_TOOL_RESULTS:
+                            logger.info(
+                                "%s returned the same result %d times; saying so instead of "
+                                "letting the turn spend itself repeating it",
+                                decision.tool_name,
+                                _identical_result_runs[0],
+                            )
+                            # Told, not silently stopped. The model can still finish the
+                            # task another way, and hard-stopping a turn that is otherwise
+                            # healthy would trade one dead end for a worse one.
+                            result = _repeated_result_message(
+                                decision.tool_name, _identical_result_runs[0], result
+                            )
+                            _identical_result_runs[0] = 0
+                            _last_tool_result_key[0] = None
                     completion = tool_controller.record_result(decision, result)
                     resolved_provisional_tool_call_ids.add(decision.tool_call_id)
                     # A real execution opens the post-tool phase; carrying the pre-tool

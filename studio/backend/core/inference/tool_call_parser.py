@@ -284,6 +284,37 @@ def unfinished_thought_progress(reasoning: str) -> str:
     return f"Where I had got to:\n{tail}"
 
 
+def starved_result_message(tool_name: str, result: str) -> str:
+    """Appended when the window priced this call's result at nothing before it ran.
+
+    Said on the FIRST such call rather than after a run of identical ones: the pricing is
+    known before the tool executes, so waiting for the repeat guard to notice costs several
+    calls to learn something already computed.
+    """
+    return (
+        f"{result}\n\n"
+        f"[The context window had no room for this result, so {tool_name} returned little "
+        "or nothing regardless of what it found. Reading again, or in smaller pieces, will "
+        "not help while the window is this full. Work from what you already have, or say "
+        "what you need and let the user decide.]"
+    )
+
+
+def repeated_result_message(tool_name: str, times: int, last_result: str) -> str:
+    """Appended to a result the tool has now returned unchanged several times.
+
+    The last result is kept rather than replaced: it may be the truncation notice that
+    caused the repeats, and dropping it would leave the model with less than it had.
+    """
+    return (
+        f"{last_result}\n\n"
+        f"[{tool_name} has now returned exactly this {times} times. Calling it again with "
+        "different arguments will not change the answer. If the result is a truncation "
+        "notice, the window has no room to carry this content: work from what you already "
+        "have, or tell the user what you need instead of reading it again.]"
+    )
+
+
 def thinking_exhausted_message(context_length: Optional[int] = None) -> str:
     """Shown when even a thinking-off retry produced nothing visible.
 
