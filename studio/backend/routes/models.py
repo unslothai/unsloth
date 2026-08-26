@@ -3602,51 +3602,56 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
     return None, 0
 
 
-# Drafter discovery runs on the request path, so its walk gets a bound like the
-# other GGUF scans here.
-_DRAFTER_SCAN_TIMEOUT_SECONDS = 2.0
-
-
-def _resolve_mtp_drafter(main_gguf_path: str) -> tuple[Optional[str], int]:
-    """Sibling MTP drafter GGUF for a resolved main quant, or (None, 0).
+def _resolve_mtp_drafter(
+    main_gguf_path: str, search_root: Optional[str] = None
+) -> tuple[Optional[str], int]:
+    """Separate MTP drafter GGUF for a resolved main quant, or (None, 0).
 
     Some repos ship the drafter as its own file beside the weights (Gemma 4's
     ``mtp-*.gguf``). The main GGUF has no ``nextn_predict_layers`` in that case,
     so the estimator's embedded-head path returns None and the reserve reads as
     zero unless we hand it the drafter.
 
-    Matches what ``_download_mtp`` actually fetches: the companion sitting beside
-    the weights, never a nested one. The higher-precision copies under ``MTP/``
-    are for explicit selection and the loader skips them, so pricing one here
-    would charge a drafter the model will not load. Non-recursive for the same
-    reason -- and it keeps a request-path helper off a directory walk. Candidates
-    are sorted so two hosts agree. Never raises: a drafter we cannot find just
-    costs a segment.
+    Delegates to the two resolvers the LOAD path already uses, rather than
+    scanning for a drafter itself: ``_companion_snapshot_sibling`` with the
+    loader's own ``_pick_mtp`` for an HF snapshot, and ``detect_mtp_file`` for a
+    local folder, which is what ``model_config`` calls when it builds the launch.
+    A bespoke scan here is how the estimate ends up pricing a different file from
+    the one llama-server opens: ``_pick_mtp`` is root-level and prefix-matched, so
+    it cannot be fooled by a directory that happens to be named ``mtp``, it finds
+    the snapshot-root companion when the weights sit in a quant subdirectory, it
+    sorts on relative strings rather than ``Path`` objects (whose ordering is
+    case-folded on Windows and not on POSIX, so two hosts really can disagree),
+    and it rejects an incomplete split set. Never raises: a drafter we cannot
+    find just costs a segment.
     """
     try:
-        from core.inference.llama_cpp import _is_mtp_only_drafter_path
-
-        main = Path(main_gguf_path)
-        root = main.parent
-        if not root.is_dir():
-            return None, 0
-
-        drafters = sorted(
-            f
-            for f in root.iterdir()
-            if f != main
-            and f.is_file()
-            and _is_gguf_filename(f.name)
-            and _is_mtp_only_drafter_path(str(f))
+        from core.inference.llama_cpp import (
+            _companion_snapshot_sibling,
+            _pick_mtp,
+            _snapshot_dir_of,
         )
-        for f in drafters:
-            try:
-                return str(f), f.stat().st_size
-            except OSError:
-                continue  # unreadable; try the next rather than report 0 bytes
+
+        if _snapshot_dir_of(main_gguf_path) is not None:
+            # An HF snapshot. ``_download_mtp`` resolves through ``_pick_mtp``,
+            # which is root-level only, so the ``MTP/`` precision copies are not
+            # auto-fetched and must not be priced: charging one would report a
+            # reserve for a drafter the load will not open.
+            drafter = _companion_snapshot_sibling(main_gguf_path, _pick_mtp)
+        else:
+            # A local folder, where the load path (model_config) pairs the drafter
+            # to the weight by name so a multi-model folder cannot attach a foreign
+            # one, and does accept the ``MTP/`` copy when no root drafter exists.
+            # No ``accept`` filter: the load path's one enforces a native-lease
+            # boundary, which a read-only estimate does not cross.
+            from utils.models.model_config import detect_mtp_file
+
+            drafter = detect_mtp_file(main_gguf_path, search_root = search_root)
+        if not drafter:
+            return None, 0
+        return drafter, Path(drafter).stat().st_size
     except Exception:
-        pass
-    return None, 0
+        return None, 0
 
 
 @router.get("/kv-cache-estimate")
@@ -3756,10 +3761,13 @@ async def get_kv_cache_estimate(
                 from core.inference.llama_cpp import (
                     _auto_mode_drops_mtp,
                     _extract_model_size_b,
+                    _is_mtp_model_name,
                     _mla_mtp_auto_enabled,
                 )
 
-                drafter_path, drafter_bytes = _resolve_mtp_drafter(path)
+                drafter_path, drafter_bytes = _resolve_mtp_drafter(
+                    path, search_root = repo_id if is_local else None
+                )
                 # Auto declines MTP on a sub-3B embedded head, where the
                 # per-token cost regresses; a separate drafter is exempt. Pricing
                 # a reserve the load will not take would overstate the bar and
@@ -3783,16 +3791,32 @@ async def get_kv_cache_estimate(
                     and not drafter_path
                     and not _mla_mtp_auto_enabled()
                 )
+                # The loader's own precondition (is_mtp_model): a model with no
+                # embedded head, no MTP name and no separate drafter cannot run
+                # MTP at all, so llama-server gets --spec-default and reserves
+                # nothing. Without this check _estimate_mtp_overhead_bytes still
+                # charges its target-side terms, and because
+                # mtp_keeps_target_ctx defaults to True -- deliberately, so an
+                # unsure caller over-reserves -- every MLA model was billed a
+                # second full f16 copy of its own KV. That is the whole cache
+                # again, which is the largest way this bar could be wrong, and it
+                # is wrong in the direction that warns OOM on a model that loads.
+                _not_an_mtp_model = not (
+                    bool(be._nextn_predict_layers)
+                    or _is_mtp_model_name(repo_id, path)
+                    or bool(drafter_path)
+                )
                 if (
                     _binary_lacks_mtp
                     or _auto_drops_mla
+                    or _not_an_mtp_model
                     or _auto_mode_drops_mtp(
                         _mode,
                         _extract_model_size_b(repo_id),
                         has_separate_drafter = bool(drafter_path),
                     )
                 ):
-                    drafter_path = None
+                    pass
                 else:
                     spec = be._estimate_mtp_overhead_bytes(
                         n_ctx,
