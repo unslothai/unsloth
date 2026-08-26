@@ -264,14 +264,61 @@ def nvidia_compute_apps() -> dict[int, int] | None:
     return parse_compute_apps(proc.stdout)
 
 
+def visible_device_indices() -> list[int] | None:
+    """The physical card indices CUDA_VISIBLE_DEVICES exposes, or None if unset.
+
+    An empty string is a deliberate "no cards", which is different from unset
+    and must not read as "all of them".
+    """
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return None
+    out: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except ValueError:
+            # A UUID form (GPU-xxxx) selects a card this cannot map to an
+            # nvidia-smi row index. Returning None would report every card as
+            # usable, which is the failure being fixed, so an unparseable entry
+            # counts as one card rather than as all of them.
+            out.append(-1)
+    return out
+
+
 def gpu_inventory() -> list[str]:
+    """The cards THIS PROCESS can use, not the cards the box has.
+
+    `nvidia-smi` enumerates PHYSICAL devices and ignores CUDA_VISIBLE_DEVICES,
+    and reading it as "what is available" produced a false claim on kernel
+    unsloth-probe-full-concurrent-417238. build_kernel.py pins every payload
+    with `CUDA_VISIBLE_DEVICES = str(gpu_index)`, and under --studio-concurrent
+    that includes Studio -- so the run recorded `cards_visible: 2` and
+    `tensor_split_over_two_cards: True` for a server that had ONE card, and sent
+    `tensor_split: [1.0, 1.0]` asking llama.cpp to split across a device that
+    was not there. It loaded anyway, so the assertion passed green.
+
+    That field exists precisely to stop a check keeping its name while testing
+    less. It was sized from the wrong instrument and did exactly that.
+    """
     proc = run(
         ["nvidia-smi", "--query-gpu=name,memory.total,compute_cap", "--format=csv,noheader"],
         timeout = 60,
     )
     if proc.returncode != 0:
         return []
-    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    rows = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    visible = visible_device_indices()
+    if visible is None:
+        return rows
+    # Index into the physical rows where we can; an index nvidia-smi does not
+    # have, or the UUID sentinel, still counts as one card so the COUNT stays
+    # right even when the description cannot be recovered.
+    return [rows[i] if 0 <= i < len(rows) else "visible GPU (details unavailable)"
+            for i in visible]
 
 
 def log_paths(server_log: Path, studio_home: Path) -> list[Path]:
@@ -394,7 +441,33 @@ class Payload:
     # ---------------------------------------------------------------- report
 
     def record(self, name: str, passed: bool, detail: dict) -> bool:
-        entry = {"name": name, "passed": bool(passed), **detail}
+        # Per-assertion wall clock, because this payload is now the longest
+        # thing in the kernel and nothing said where the time went. Measured on
+        # unsloth-probe-full-concurrent-417238: 1487.5s across 19 assertions,
+        # and the report carried no breakdown at all, so every question about
+        # shortening Studio was guesswork.
+        #
+        # It is elapsed-since-the-previous-record, NOT a timer around the
+        # assertion body, and the name says so. The assertions run back to
+        # back, so the two are the same to within the bookkeeping between them;
+        # the first entry measures from process start, which is the setup
+        # before any assertion and is worth seeing rather than hiding.
+        #
+        # Both reads are `getattr` with a default: `record` is driven directly
+        # by several CPU guards against stub objects that have no clock, and a
+        # hard `self.started` turns every one of them into an AttributeError
+        # about timing instead of a result about the rule they test.
+        now = time.time()
+        started = getattr(self, "started", now)
+        previous = getattr(self, "_last_record_at", started)
+        self._last_record_at = now
+        entry = {
+            "name": name,
+            "passed": bool(passed),
+            "seconds_since_previous": round(now - previous, 1),
+            "at_seconds": round(now - started, 1),
+            **detail,
+        }
         self.assertions.append(entry)
         for reason in detail.get("failures", []) or []:
             self.failures.append(f"{name}: {reason}")

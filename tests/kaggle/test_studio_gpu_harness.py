@@ -2394,3 +2394,47 @@ def test_no_studio_assertion_is_wired_to_a_constant_branch():
             if isinstance(node, ast.If) and isinstance(node.test, ast.Constant):
                 offenders.append(f"{func.name}: if {ast.unparse(node.test)}")
     assert offenders == [], f"assertions wired to a constant: {offenders}"
+
+
+def test_every_assertion_carries_its_own_wall_clock():
+    """Studio is the longest payload in the kernel and had no breakdown.
+
+    On unsloth-probe-full-concurrent-417238 `studio_test` ran 1487.5s -- the
+    single largest item on the critical path -- and the report carried 19
+    assertions with no timing on any of them, so "where does Studio's time go"
+    could only be answered by buying another session.
+
+    Driven rather than grepped: a rule that only checked for a `time.time()`
+    call passes on a payload that computes the number and drops it.
+    """
+    import importlib.util
+    import types
+
+    payload = PAYLOAD_DIR / "run_studio_gpu.py"
+    spec = importlib.util.spec_from_file_location("_studio_payload_timing", payload)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    runner = types.SimpleNamespace(
+        assertions = [],
+        failures = [],
+        started = module.time.time() - 5.0,
+        record = None,
+    )
+    record = module.Payload.record.__get__(runner, module.Payload)
+    module.log = lambda *a, **k: None
+    record("first", True, {})
+    record("second", True, {"failures": []})
+
+    names = [a["name"] for a in runner.assertions]
+    assert names == ["first", "second"]
+    # The first entry measures from process start, which is the setup before
+    # any assertion -- 5s here -- and is exactly the slice that would otherwise
+    # be invisible.
+    assert runner.assertions[0]["seconds_since_previous"] >= 5.0
+    # The second measures from the first, not from the start, or every entry
+    # would read as the whole run so far and the breakdown would be useless.
+    assert runner.assertions[1]["seconds_since_previous"] < 1.0
+    # And an absolute position, so a reader can line the report up against the
+    # driver's own interval for the payload.
+    assert runner.assertions[1]["at_seconds"] >= runner.assertions[0]["at_seconds"]

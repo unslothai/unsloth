@@ -199,3 +199,87 @@ def test_it_runs_between_gpu_inference_and_training():
 def test_the_context_default_is_the_one_the_brief_asks_for():
     assert '"--studio-ctx",' in SRC
     assert "default = 2048," in SRC
+
+
+def _payload_module():
+    """The real payload, imported by path so the rules DRIVE it.
+
+    Every rule above this point reads the source with `ast`, which is the right
+    instrument for "does the branch exist" and the wrong one for "does it answer
+    correctly". The bug below was invisible to all of them: the code was
+    exactly as written and the value it produced was false.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_studio_payload_flags", PAYLOAD)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _with_smi(module, monkeypatch, rows: str, visible: str | None):
+    class _Proc:
+        returncode = 0
+        stdout = rows
+
+    monkeypatch.setattr(module, "run", lambda *a, **k: _Proc())
+    if visible is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
+
+
+TWO_ROWS = "Tesla T4, 15360 MiB, 7.5\nTesla T4, 15360 MiB, 7.5\n"
+
+
+def test_a_pinned_payload_does_not_see_both_cards(monkeypatch):
+    """The exact reading from unsloth-probe-full-concurrent-417238.
+
+    nvidia-smi lists two T4s. build_kernel.py:835 pinned this payload to card 0
+    with CUDA_VISIBLE_DEVICES. The report recorded `cards_visible: 2` and
+    `tensor_split_over_two_cards: True` and sent `tensor_split: [1.0, 1.0]` to a
+    one-card server, which loaded anyway -- so the assertion passed green while
+    asking llama.cpp to split across a device that was not there.
+    """
+    module = _payload_module()
+    _with_smi(module, monkeypatch, TWO_ROWS, "0")
+    assert len(module.gpu_inventory()) == 1
+
+
+def test_an_unpinned_payload_still_sees_every_card(monkeypatch):
+    """The other direction, and it is the one the two-card claim depends on: a
+    leg that is deliberately NOT pinned must still report both cards, or real
+    multi-GPU coverage would be reported as single-card."""
+    module = _payload_module()
+    _with_smi(module, monkeypatch, TWO_ROWS, None)
+    assert len(module.gpu_inventory()) == 2
+    _with_smi(module, monkeypatch, TWO_ROWS, "0,1")
+    assert len(module.gpu_inventory()) == 2
+
+
+def test_an_empty_setting_means_no_cards_rather_than_all_of_them(monkeypatch):
+    """CUDA_VISIBLE_DEVICES="" is a deliberate "no GPU" and is not the same as
+    unset. Reading it as unset would report a full inventory on a session that
+    has no card at all, which preflight exists to catch."""
+    module = _payload_module()
+    _with_smi(module, monkeypatch, TWO_ROWS, "")
+    assert module.gpu_inventory() == []
+
+
+def test_a_uuid_selection_still_counts_the_cards(monkeypatch):
+    """CUDA_VISIBLE_DEVICES may name GPU-<uuid> rather than an index. The
+    description cannot be recovered from an nvidia-smi row, but the COUNT is
+    what tensor_split is sized from, so it must stay right."""
+    module = _payload_module()
+    _with_smi(module, monkeypatch, TWO_ROWS, "GPU-abcdef12")
+    assert len(module.gpu_inventory()) == 1
+
+
+def test_the_split_is_sized_from_the_visible_cards_and_not_from_nvidia_smi():
+    """The link between the fix and the flag. `tensor_split` is built from
+    `gpu_inventory()`, so a rule that only tested the helper would leave the
+    request free to be sized from anything."""
+    body = _body()
+    assert "cards = gpu_inventory()" in body
+    assert "[1.0] * max(1, len(cards))" in body
+    assert 'detail["tensor_split_over_two_cards"] = len(cards) >= 2' in body
