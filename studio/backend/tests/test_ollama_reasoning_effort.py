@@ -27,13 +27,8 @@ def _capture_body(provider_type: str, model: str, **kwargs) -> dict:
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content.decode())
-        sse = (
-            'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\n'
-            "data: [DONE]\n\n"
-        )
-        return httpx.Response(
-            200, content = sse, headers = {"content-type": "text/event-stream"}
-        )
+        sse = 'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\n' "data: [DONE]\n\n"
+        return httpx.Response(200, content = sse, headers = {"content-type": "text/event-stream"})
 
     ep_mod._http_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
     client = ExternalProviderClient(

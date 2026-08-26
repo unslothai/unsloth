@@ -601,9 +601,7 @@ _OLLAMA_REASONING_EFFORT_ALIASES = {
 
 
 def _apply_ollama_reasoning_controls(
-    body: dict[str, Any],
-    enable_thinking: Optional[bool],
-    reasoning_effort: Optional[str],
+    body: dict[str, Any], enable_thinking: Optional[bool], reasoning_effort: Optional[str]
 ) -> None:
     """Map Studio thinking controls onto Ollama's ``reasoning_effort`` field.
 
