@@ -23410,6 +23410,19 @@ async def anthropic_messages(
         if _full_access:
             openai_tools = apply_full_access_tool_descriptions(openai_tools)
 
+        server_tool_choice = openai_tool_choice
+        if isinstance(server_tool_choice, dict):
+            forced_function = server_tool_choice.get("function")
+            forced_name = (
+                forced_function.get("name") if isinstance(forced_function, dict) else None
+            )
+            canonical_name = _STUDIO_ANTHROPIC_TOOL_ALIASES.get(forced_name)
+            if canonical_name:
+                server_tool_choice = {
+                    "type": "function",
+                    "function": {"name": canonical_name},
+                }
+
         # Build tool-use system prompt nudge (same logic as /chat/completions)
         _nudge = _build_tool_action_nudge(
             tools = openai_tools,
@@ -23454,7 +23467,7 @@ async def anthropic_messages(
                 max_tool_iterations = 25,
                 auto_heal_tool_calls = True,
                 nudge_tool_calls = payload.nudge_tool_calls,
-                tool_choice = openai_tool_choice,
+                tool_choice = server_tool_choice,
                 tool_call_timeout = 300,
                 session_id = payload.session_id,
                 thread_id = payload.thread_id,

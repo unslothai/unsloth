@@ -2722,6 +2722,23 @@ class TestAnthropicMessagesToolRouting:
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "tools"
 
+    def test_server_tool_choice_alias_uses_the_selected_studio_name(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [{"type": "web_fetch_20250910", "name": "web_fetch"}],
+            tool_choice = {"type": "tool", "name": "web_fetch"},
+        )
+
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        call_kind, kwargs = backend.calls[0]
+        assert call_kind == "tools"
+        assert kwargs["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "web_search"},
+        }
+        assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["web_search"]
+
     def test_confirm_tool_calls_rejected_for_server_tools(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
