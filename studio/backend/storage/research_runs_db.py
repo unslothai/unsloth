@@ -552,7 +552,8 @@ def create_and_bind_terminal_fallback(
     status: str,
     sources: list[dict] | None = None,
     completion_worker_id: str | None = None,
-) -> tuple[str, bool]:
+    expected_attempt: int | None = None,
+) -> tuple[str | None, bool]:
     """Discover a frontend message or atomically create exactly one fallback."""
     if status not in TERMINAL_STATUSES:
         raise ValueError(status)
@@ -562,6 +563,9 @@ def create_and_bind_terminal_fallback(
         run = conn.execute("SELECT * FROM research_runs WHERE id=?", (run_id,)).fetchone()
         if run is None:
             raise KeyError(run_id)
+        if expected_attempt is not None and int(run["retry_count"]) != expected_attempt:
+            conn.commit()
+            return None, False
         can_prepare_completion = (
             completion_worker_id is not None
             and status == "completed"

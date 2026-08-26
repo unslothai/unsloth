@@ -4119,6 +4119,39 @@ def test_terminal_write_cannot_cross_a_rebind_after_the_worker_guard(research_ho
     assert "Research cancelled." not in json.dumps(reply["content"])
 
 
+def test_terminal_fallback_cannot_cross_a_no_placeholder_rebind(research_home, monkeypatch):
+    from core import research_runs as worker
+
+    _create(assistant_message_id = None)
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    research_db.request_cancel("run-1")
+    claimed = research_db.claim_next(supervisor.worker_id)
+    assert claimed is not None
+
+    async def cancelled_plan(run):
+        raise worker.RunCancelled()
+
+    original_update = worker._update_assistant
+    rebound = False
+
+    def rebind_after_guard(*args, **kwargs):
+        nonlocal rebound
+        if not rebound:
+            rebound = True
+            assert _rebind(_new_user_message(), assistant_message_id = None) is not None
+        return original_update(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor, "_plan", cancelled_plan)
+    monkeypatch.setattr(worker, "_update_assistant", rebind_after_guard)
+    asyncio.run(supervisor._process(claimed))
+
+    current = research_db.get_run("run-1")
+    assert current is not None and current["status"] == "planning"
+    assert current["retryCount"] == 1
+    assert current["assistantMessageId"] is None
+    assert studio_db.get_chat_message("thread-1", "research-run-1") is None
+
+
 def test_terminal_write_cannot_cross_a_retry_after_the_worker_guard(research_home, monkeypatch):
     from core import research_runs as worker
 

@@ -776,7 +776,10 @@ def _update_assistant(
             status = status,
             sources = sources,
             completion_worker_id = completion_worker_id,
+            expected_attempt = int(run.get("retryCount") or 0),
         )
+        if not message_id:
+            return
     existing = get_chat_message(run["threadId"], message_id) or {}
     content = existing.get("content") if isinstance(existing.get("content"), list) else []
     # Only replace this worker's text/source parts; retain artifacts, reasoning, and other extensions.
