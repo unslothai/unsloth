@@ -12,6 +12,7 @@ import test from "node:test";
 import {
   aggregateGpuMemoryTotalGb,
   gpuMemoryTotalsGb,
+  systemRamAvailableOutsideSharedPoolGb,
 } from "../src/hooks/gpu-vram.ts";
 
 test("dedicated and shared split the aggregate (#9242)", () => {
@@ -41,6 +42,12 @@ test("a shared pool counts once even when several devices report it", () => {
     shared: 12.15,
     total: 20.15,
   });
+});
+
+test("host RAM outside a shared pool remains available for CPU offload", () => {
+  assert.equal(systemRamAvailableOutsideSharedPoolGb(40, 12.15), 27.85);
+  assert.equal(systemRamAvailableOutsideSharedPoolGb(8, 12.15), 0);
+  assert.equal(systemRamAvailableOutsideSharedPoolGb(40, 0), 40);
 });
 
 test("all-dedicated systems report zero shared", () => {

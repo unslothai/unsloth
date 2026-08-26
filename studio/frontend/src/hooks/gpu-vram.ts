@@ -63,6 +63,13 @@ export function gpuMemoryTotalsGb(
   };
 }
 
+export function systemRamAvailableOutsideSharedPoolGb(
+  availableGb: number,
+  sharedPoolGb: number,
+): number {
+  return Math.max(0, availableGb - sharedPoolGb);
+}
+
 function roundToDevicePrecision(value: number): number {
   return Math.round(value * 100) / 100;
 }
