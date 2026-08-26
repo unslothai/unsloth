@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any
+from typing import Any, Optional
 
 EMBEDDING_MODEL_SETTING_KEY = "rag_embedding_model"
 # The GGUF repo the picker resolved for that model. Stored so the loader opens
@@ -33,7 +33,10 @@ MAX_EMBEDDING_MODEL_LENGTH = 512
 # of hitting sqlite each time. Writes invalidate immediately in-process; other
 # readers converge within the TTL.
 _CACHE_TTL_S = 2.0
-_StoredState = tuple[str | None, str | None, str | None, str | None, bool]
+# typing.Optional, not `str | None`: `from __future__ import annotations` defers
+# annotations, but a type ALIAS is evaluated at import, and PEP 604 unions need
+# 3.10 while the packaged floor is 3.9.
+_StoredState = tuple[Optional[str], Optional[str], Optional[str], Optional[str], bool]
 # (override model, resolved model, GGUF repo, backend, download pending)
 _cached: tuple[float, _StoredState] | None = None
 # Bumped on every write/invalidate. A reader captures it before the DB read and
