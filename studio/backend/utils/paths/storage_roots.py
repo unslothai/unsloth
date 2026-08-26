@@ -298,15 +298,12 @@ def lmstudio_model_dirs() -> list[Path]:
     """Return LM Studio model directories that exist on disk."""
     candidates: list[str | Path] = []
 
-    # LM Studio settings.json custom downloads folder
     downloads = _lmstudio_downloads_folder()
     if downloads:
         candidates.append(downloads)
 
-    # LM Studio default models directory (all platforms)
     candidates.append(Path.home() / ".lmstudio" / "models")
-
-    # Legacy LM Studio cache location
+    # Legacy cache location.
     candidates.append(Path.home() / ".cache" / "lm-studio" / "models")
 
     return _existing_dirs(candidates, resolve = False)
@@ -337,17 +334,13 @@ def well_known_model_dirs() -> list[Path]:
     generic fallbacks.
     """
     candidates: list[str | Path] = []
-
-    # LM Studio (reuses the logic above, including settings.json override)
     candidates.extend(lmstudio_model_dirs())
-
-    # Ollama -- user-level and common system-wide install paths
     candidates.extend(ollama_model_dirs())
 
-    # HF hub cache root (separate from the explicit HF cache chip)
+    # HF hub cache root, separate from the explicit HF cache chip.
     candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
 
-    # Generic "my models" spots users drop things into
+    # Generic "my models" spots users drop things into.
     for name in ("models", "Models"):
         candidates.append(Path.home() / name)
 
