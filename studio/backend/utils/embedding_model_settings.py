@@ -133,9 +133,7 @@ def set_rag_embedding_model(value: Any, gguf_repo: Any = None) -> str:
     # reset affordance) honest.
     stored = parsed if parsed != default_embedding_model() else None
     repo = _coerce_embedding_model(gguf_repo) if stored else None
-    upsert_app_settings(
-        {EMBEDDING_MODEL_SETTING_KEY: stored, EMBEDDING_GGUF_SETTING_KEY: repo}
-    )
+    upsert_app_settings({EMBEDDING_MODEL_SETTING_KEY: stored, EMBEDDING_GGUF_SETTING_KEY: repo})
     _invalidate_cache()
     return parsed
 
@@ -144,8 +142,6 @@ def reset_rag_embedding_model() -> str:
     """Clear the override; returns the (env/default) model now in effect."""
     from storage.studio_db import upsert_app_settings
 
-    upsert_app_settings(
-        {EMBEDDING_MODEL_SETTING_KEY: None, EMBEDDING_GGUF_SETTING_KEY: None}
-    )
+    upsert_app_settings({EMBEDDING_MODEL_SETTING_KEY: None, EMBEDDING_GGUF_SETTING_KEY: None})
     _invalidate_cache()
     return default_embedding_model()

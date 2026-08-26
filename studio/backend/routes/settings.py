@@ -1924,7 +1924,6 @@ class EmbeddingModelResolveResponse(BaseModel):
 def _embedding_gguf_candidates(model: str) -> list[str]:
     """Repos the loader would try for ``model``'s GGUF, in its order."""
     from core.rag import config as rag_config
-
     return rag_config.gguf_repo_candidates(model)
 
 
@@ -2085,9 +2084,7 @@ def resolve_embedding_model(
             download_repo = candidates[0],
             cached = True,
         )
-    plan = _remote_embedding_gguf_plan(candidates, token) or _search_hub_for_gguf(
-        resolved, token
-    )
+    plan = _remote_embedding_gguf_plan(candidates, token) or _search_hub_for_gguf(resolved, token)
     if plan is None:
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
