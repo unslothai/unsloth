@@ -860,7 +860,10 @@ def test_install_sh_rejects_an_id_holding_a_nul_byte(tmp_path):
     assert "OUT=[" + "d" * 64 + "]" in res.stdout, "a clean id must still be reused"
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root reads regardless of mode bits")
+@pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0,
+    reason = "needs POSIX mode bits, and root reads regardless of them",
+)
 def test_install_sh_refuses_an_unreadable_existing_id(tmp_path):
     """An id we cannot READ must not be treated as malformed and replaced.
 
@@ -900,6 +903,7 @@ def test_install_sh_refuses_an_unreadable_existing_id(tmp_path):
     assert id_file.read_text() == "b" * 64, "the unreadable id must survive untouched"
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "no FIFOs on this platform")
 def test_install_sh_never_reads_a_non_regular_id_path(tmp_path):
     """A FIFO at the id path must not park the installer on the open.
 
