@@ -42,9 +42,8 @@ import { createHighlighter } from "shiki";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
 register("./shiki-tokenization-resolver.mjs", import.meta.url);
-const { createCodePlugin, MIN_INCREMENTAL_CHARS } = await import(
-  "../src/components/assistant-ui/code-plugin.ts"
-);
+const { createCodePlugin, MIN_INCREMENTAL_CHARS, TOKENIZE_LIMITS } =
+  await import("../src/components/assistant-ui/code-plugin.ts");
 const { tokenized } = await import("./shiki-tokenization-counter.mts");
 
 const THEMES: [ThemeInput, ThemeInput] = ["github-light", "github-dark"];
@@ -70,41 +69,6 @@ const highlightOnce = (
       resolve,
     );
     if (immediate) resolve(immediate);
-  });
-
-/*
- * THE SAME CALL, BUT WAITING FOR THE TOKENIZED ANSWER RATHER THAN THE FIRST ONE.
- *
- * `highlightOnce` takes the synchronous return, which is right during the streaming loop and wrong
- * for the final correctness check -- a real Windows CI failure. A grown fence past
- * `MIN_INCREMENTAL_CHARS` called again inside `REFRESH_MS` gets `approximateResult` back
- * synchronously and the real tokens LATER via the callback, so the deepEqual compared approximate
- * tokens, all coloured `#005CC5`, against the reference.
- *
- * No sleep length fixes it: `settle()` counts from when this test resumed, the throttle counts from
- * the plugin's `lastTokenizedAt`, and a trailing refresh can push that timestamp past the sleep.
- * So prefer the callback; if the plugin tokenized it never calls back, and the immediate value is
- * adopted once the refresh window has provably passed. The assertion is unchanged and just as
- * strict, only its input stops depending on machine load.
- */
-const highlightTokenized = (
-  plugin: ReturnType<typeof createCodePlugin>,
-  code: string,
-): Promise<HighlightResult> =>
-  new Promise((resolve) => {
-    let settled = false;
-    const finish = (result: HighlightResult) => {
-      if (settled) return;
-      settled = true;
-      resolve(result);
-    };
-    const immediate = plugin.highlight(
-      { code, language: LANGUAGE, themes: THEMES },
-      finish,
-    );
-    // SETTLE_MS is longer than REFRESH_MS, so a queued refresh has fired by the time this runs; if
-    // none was queued, `immediate` was already the tokenized result.
-    if (immediate) setTimeout(() => finish(immediate), SETTLE_MS);
   });
 
 test("a streaming fence is tokenized once, not once per update", async () => {
@@ -135,7 +99,7 @@ test("a streaming fence is tokenized once, not once per update", async () => {
     updates += 1;
   }
   await settle();
-  last = await highlightTokenized(plugin, SOURCE);
+  last = await highlightOnce(plugin, SOURCE);
 
   assert.ok(
     updates >= 12,
@@ -170,6 +134,61 @@ test("a streaming fence is tokenized once, not once per update", async () => {
     reference.codeToTokens(SOURCE, {
       lang: "typescript",
       themes: { light: "github-light", dark: "github-dark" },
+      ...TOKENIZE_LIMITS,
+    }).tokens,
+  );
+});
+
+/*
+ * WHAT MADE THE ASSERTION ABOVE FAIL ON WINDOWS ONE RUN IN TWENTY.
+ *
+ * Shiki abandons a line once `tokenizeTimeLimit` of wall clock has gone by and emits the rest of it
+ * as one uncoloured token. Dual themes are two passes with two budgets and only the first compiles
+ * the grammar's regexes, so a slow enough host returns the light theme plain and the dark theme
+ * correct -- and the plugin then commits that line and never tokenizes it again. Neither side of the
+ * comparison was safe: CI produced diffs with the plugin degraded, diffs with the reference
+ * degraded, and diffs with both on different lines.
+ *
+ * Racing `Date.now` reproduces an overrun on any machine, without waiting for one: every elapsed
+ * check clears any finite limit, and `tokenizeTimeLimit: 0` skips the check entirely. Which tokens
+ * a real overrun loses depends on where in the line it lands, so this pins the invariant rather
+ * than one signature -- the wall clock must not reach the output at all. The plugin's own throttle
+ * reads `performance.now`, so it is unaffected.
+ */
+test("tokenization does not degrade when the tokenizer overruns the wall clock", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const prefix = SOURCE.slice(0, MIN_INCREMENTAL_CHARS + 500);
+
+  await highlightOnce(plugin, prefix);
+  // Leave the throttle window so the grown fence takes the tokenizing path.
+  await settle();
+
+  const realNow = Date.now;
+  let result: HighlightResult;
+  try {
+    let elapsed = 0;
+    Date.now = () => realNow() + (elapsed += 60_000);
+    result = plugin.highlight({
+      code: SOURCE,
+      language: LANGUAGE,
+      themes: THEMES,
+    }) as HighlightResult;
+  } finally {
+    Date.now = realNow;
+  }
+
+  assert.ok(result, "the grown fence should tokenize synchronously here");
+  const reference = await createHighlighter({
+    themes: THEMES,
+    langs: ["typescript"],
+    engine: createJavaScriptRegexEngine({ forgiving: true }),
+  });
+  assert.deepEqual(
+    result.tokens,
+    reference.codeToTokens(SOURCE, {
+      lang: "typescript",
+      themes: { light: "github-light", dark: "github-dark" },
+      ...TOKENIZE_LIMITS,
     }).tokens,
   );
 });
