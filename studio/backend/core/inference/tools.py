@@ -10973,23 +10973,20 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
 
     def _fits(candidate_text, max_tokens) -> bool:
-        # Bytes, not characters: chars/4 is an English-prose rule, and one CJK
-        # character is roughly one token but three UTF-8 bytes, so it reads a
-        # Chinese or Japanese block as a quarter of its real size and admits an
-        # injection that overflows the context. Measured bytes-per-token is
-        # 4.6-4.8 for English and 3.9-4.6 for Chinese, so bytes/4 is a fair
-        # bound for both, and identical to the old estimate on pure ASCII.
-        # Exact counts are not reachable here: chunks_by_id does not select
-        # token_count, and the GGUF's tokenizer lives in llama-server.
-        # No budget was computed (the estimate itself failed) means there is
-        # nothing to enforce. A budget of zero is the opposite: it is a measured
-        # "no room left", so nothing fits and _trim falls back to the single
-        # mandatory passage rather than keeping the whole top-K.
+        # A budget of None means the estimate itself failed, so there is nothing
+        # to enforce. Zero is the opposite: a measured "no room left", where
+        # nothing fits and _trim falls back to the single mandatory passage
+        # rather than keeping the whole top-K.
         if max_tokens is None:
             return True
         if max_tokens <= 0:
             return False
-        return max(1, len(candidate_text.encode("utf-8")) // 4) <= max_tokens
+        # The house estimator for this exact hazard: a block that lands in the
+        # current tool exchange, which the window is not allowed to evict. It
+        # charges non-ASCII a token per character rather than the shared
+        # four-characters-per-token rule, which reads CJK at a quarter of its
+        # real size. Same value as that rule on pure ASCII.
+        return _conversation_search_tokens(candidate_text) <= max_tokens
 
     def _trim(hit_text, hit_sources, max_tokens):
         """Drop passages from the tail until the rendered block fits.
