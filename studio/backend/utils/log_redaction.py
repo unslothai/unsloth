@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 
-from utils.secret_env import is_secret_env_name
+from utils.secret_env import SECRET_ENV_NAMES, SECRET_ENV_PREFIXES, is_secret_env_name
 
 REDACTED = "<redacted>"
 
@@ -109,7 +109,7 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 _QUOTED_VALUE = r"(?:\\.|(?!(?P=quote))[^\\\n])*"
 _UNTERMINATED_QUOTED_VALUE = _QUOTED_VALUE + r"\\?"
 _ENV_ASSIGNMENT_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?P<key>[A-Z_][A-Z0-9_]*)"
+    r"(?<![A-Za-z0-9_])(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
     r"(?P<sep>=)(?:(?P<quote>[\"'])(?P<quoted>"
     + _QUOTED_VALUE
     + r")(?P=quote)|(?P<val>(?:\\[^\r\n]|[^\s\\])+))"
@@ -166,7 +166,7 @@ _CONTINUED_SECRET_RE = re.compile(
     r"(?P<block>[|>](?:[1-9][+-]?|[+-][1-9]?)?)?\s*(?:#.*)?$"
 )
 _CONTINUED_ENV_RE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<key>[A-Z_][A-Z0-9_]*)\s*=\s*$"
+    r"^(?P<indent>[ \t]*)(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*$"
 )
 _CONTINUED_COOKIE_RE = re.compile(r"(?i)^(?P<indent>[ \t]*)(?:set-)?cookie[\"']?\s*[:=]\s*$")
 _CONTINUED_COOKIE_PAIR_RE = re.compile(
@@ -274,10 +274,37 @@ def _redact_kv(match: re.Match[str]) -> str:
 
 def _redact_env_assignment(match: re.Match[str]) -> str:
     """Mask Studio-recognized secret env vars without consuming a command."""
-    if not is_secret_env_name(match.group("key")):
+    key = match.group("key")
+    if not _is_shell_secret_env_name(key):
         return match.group(0)
     quote = match.group("quote") or ""
-    return f"{match.group('key')}{match.group('sep')}{quote}{REDACTED}{quote}"
+    return f"{key}{match.group('sep')}{quote}{REDACTED}{quote}"
+
+
+def _is_shell_secret_env_name(name: str) -> bool:
+    """Apply the env classifier without treating model token metadata as env."""
+    if not is_secret_env_name(name):
+        return False
+    upper = name.upper()
+    if name == upper or upper in SECRET_ENV_NAMES:
+        return True
+    if any(upper.startswith(prefix) for prefix in SECRET_ENV_PREFIXES):
+        return True
+    if name.lower() in {"password", "passwd", "pwd", "secret"}:
+        return False
+    strong_markers = (
+        "API_KEY",
+        "APIKEY",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "CREDENTIAL",
+        "PRIVATE_KEY",
+        "AUTH",
+        "CONNSTR",
+        "CONNECTIONSTRING",
+    )
+    return any(marker in upper for marker in strong_markers)
 
 
 def _redact_quoted_kv(match: re.Match[str]) -> str:
@@ -480,7 +507,7 @@ class StreamingLogRedactor:
         if _OMITTED_CONTEXT_RE.search(text) is not None:
             return True
         return any(
-            is_secret_env_name(match.group("key"))
+            _is_shell_secret_env_name(match.group("key"))
             for match in re.finditer(
                 r"(?<![A-Za-z0-9_])(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=",
                 text,
@@ -702,7 +729,7 @@ class StreamingLogRedactor:
             return redacted
 
         continued_env = _CONTINUED_ENV_RE.search(redacted_context)
-        if continued_env and is_secret_env_name(continued_env.group("key")):
+        if continued_env and _is_shell_secret_env_name(continued_env.group("key")):
             self._plain_key_indent = len(continued_env.group("indent"))
             self._plain_has_value = False
             self._plain_explicit_continuation = False

@@ -292,6 +292,10 @@ def test_the_fields_after_a_masked_header_survive(line, expected):
             r"DATABASE_PASSWORD=abc\ def python server.py",
             "DATABASE_PASSWORD=<redacted> python server.py",
         ),
+        (
+            "rediscli_auth=abc123SECRET python server.py",
+            "rediscli_auth=<redacted> python server.py",
+        ),
         ('{"password":"null"}', '{"password":"<redacted>"}'),
         ("password='None'", "password='<redacted>'"),
     ],

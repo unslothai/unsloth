@@ -351,7 +351,10 @@ def test_export_masks_every_record_of_a_multiline_quoted_secret(client):
     assert "ordinary: kept" in exported
 
 
-@pytest.mark.parametrize("name", ["MYSQL_PWD", "AWS_ACCESS_KEY_ID"])
+@pytest.mark.parametrize(
+    "name",
+    ["MYSQL_PWD", "AWS_ACCESS_KEY_ID", "rediscli_auth"],
+)
 def test_export_masks_continued_classified_environment_values(client, name):
     secret = "NOTSTANDARDSECRET123"
     path = _seed_server_log(f"{name}=\n  {secret}\nordinary: kept\n")
