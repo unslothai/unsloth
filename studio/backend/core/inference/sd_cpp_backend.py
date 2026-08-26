@@ -2842,3 +2842,9 @@ def get_sd_cpp_backend() -> SdCppDiffusionBackend:
     if _sd_cpp_backend is None:
         _sd_cpp_backend = SdCppDiffusionBackend()
     return _sd_cpp_backend
+
+
+def generation_in_flight() -> bool:
+    """Read the active-generation marker without constructing or locking the backend."""
+    backend = _sd_cpp_backend
+    return backend is not None and backend._gen is not None

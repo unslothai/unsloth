@@ -89,9 +89,9 @@ def test_auto_reports_http_when_hf_xet_is_missing(monkeypatch):
 def test_capabilities_carry_the_partial_resume_verdict(monkeypatch):
     """The card labels a partial from this. huggingface_hub >= 1.18 refetches an interrupted file
     from zero, so a byte-resume must not be offered there."""
-    monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda: False)
+    monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda _root = None: False)
     assert download_registry.get_download_transport_capabilities().partials_resumable is False
-    monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda: True)
+    monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda _root = None: True)
     assert download_registry.get_download_transport_capabilities().partials_resumable is True
 
 
@@ -845,3 +845,55 @@ def test_the_capabilities_probe_agrees_about_a_forced_verdict(monkeypatch):
     caps = download_registry.get_download_transport_capabilities(probe = True)
     assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
     assert "RAM free" in (caps.auto_reason or "")
+
+
+def test_the_ram_gate_can_be_asked_for_without_the_probe(monkeypatch):
+    """The settings row states what the NEXT download will pick, and the download path probes.
+    Without this it read the health cache but skipped the free-RAM half, so it said "Auto is
+    using Xet" on a machine whose next download resolves to HTTP."""
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+    fake.xet_health = fake.cached_xet_health
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities(ram_gate = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    assert "2.0GB RAM free" in caps.auto_reason
+
+    # And the default is unchanged: an ordinary poll still must not read free RAM.
+    assert (
+        download_registry.get_download_transport_capabilities().auto_resolves_to
+        == download_registry.TRANSPORT_XET
+    )
+
+
+def test_the_ram_gate_loads_health_instead_of_reading_an_empty_cache(monkeypatch):
+    """A fresh backend has no cached verdict, so the cache reads as the optimistic Xet while the
+    next download loads a persisted unhealthy one and picks HTTP. The settings row states what
+    that download will do, so it has to load the same verdict -- without the live probe."""
+    seen: list[tuple[str, bool]] = []
+
+    class _Health:
+        use_xet = False
+        reason = "persisted: CAS unreachable"
+
+    def _cached(*, probe = True):
+        seen.append(("cached", probe))
+        return None
+
+    def _loading(*, probe = True):
+        seen.append(("loading", probe))
+        return _Health()
+
+    stub = _types.ModuleType("utils.hf_xet_fallback")
+    stub.cached_xet_health = _cached
+    stub.xet_health = _loading
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", stub)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities(ram_gate = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    # Loaded, but NOT probed: the live check stays with a real download start.
+    assert seen == [("loading", False)]

@@ -72,11 +72,20 @@ def _evict_video() -> None:
 _EVICTORS = {CHAT: _evict_chat, DIFFUSION: _evict_diffusion, VIDEO: _evict_video}
 
 
+class GpuOwnerBusyError(RuntimeError):
+    """Raised when an ownership transfer is configured to refuse eviction."""
+
+    def __init__(self, owner: str):
+        self.owner = owner
+        super().__init__(f"GPU is owned by {owner}")
+
+
 def acquire_for(
     owner: str,
     register: Optional[Callable[[], Any]] = None,
     *,
     expected_current: Optional[tuple[Optional[str], int]] = None,
+    allow_evict: bool = True,
 ) -> Any:
     """Make ``owner`` the sole GPU owner, evicting the other if it holds it.
 
@@ -93,6 +102,8 @@ def acquire_for(
         if expected_current is not None and (_owner, _owner_epoch) != expected_current:
             raise OwnerChangedError("The resident GPU model changed; retry the load.")
         if _owner is not None and _owner != owner:
+            if not allow_evict:
+                raise GpuOwnerBusyError(_owner)
             logger.info("gpu_arbiter: evicting %s for %s", _owner, owner)
             _EVICTORS[_owner]()
         _owner = owner

@@ -6754,6 +6754,68 @@ def _is_trusted_windows_program_dir(path: str) -> bool:
     return False
 
 
+# not dot-named: the walks skip dot-dirs, which would hide a model's /tmp write.
+# not "tmp": too common in a workspace, and adopting one is what broke the walks.
+_SANDBOX_TEMP_DIRNAME = "unsloth-tmp"
+
+
+def _sandbox_temp_dir(workdir: str) -> str:
+    """The scratch directory for a sandboxed child, created when missing.
+
+    Inside the workdir, not the workdir itself: Git for Windows mounts /tmp at
+    %TEMP% (the msys2 ``usertemp`` fstab entry), so pointing TEMP at the workdir
+    made /tmp its shortest POSIX name and ``pwd`` printed /tmp, leaving the user
+    no way to find the real folder (#8892). One level down still sits where the
+    listings reach, so a /tmp write is offered exactly as before.
+
+    Falls back to the workdir when the name is unusable, since a TMPDIR that
+    does not exist breaks every tempfile call in the child. os.mkdir, never
+    os.makedirs, so a workdir deleted mid-call is not silently recreated.
+    """
+    temp_dir = os.path.join(workdir, _SANDBOX_TEMP_DIRNAME)
+    try:
+        os.mkdir(temp_dir, 0o700)
+    except FileExistsError:
+        if not _reusable_sandbox_temp_dir(temp_dir, workdir):
+            return workdir
+    except OSError:
+        return workdir
+    return temp_dir
+
+
+def _is_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
+    """Whether *temp_dir* is the workdir's own scratch directory.
+
+    Exact stored spelling, because the walks read the name off os.walk: on a
+    case-insensitive volume (default APFS, every NTFS) our lowercase probe lands
+    on a directory stored as ``TMP``, and realpath does not canonicalise case.
+    And the real directory, not a link or junction to one, since os.walk does
+    not follow links and the artifacts would land where both walks skip.
+    """
+    try:
+        with os.scandir(workdir) as entries:
+            if not any(entry.name == _SANDBOX_TEMP_DIRNAME for entry in entries):
+                return False
+        # realpath, not islink: a Windows junction is not a link to either.
+        if os.path.realpath(temp_dir) != os.path.join(
+            os.path.realpath(workdir), _SANDBOX_TEMP_DIRNAME
+        ):
+            return False
+    except OSError:
+        return False
+    return os.path.isdir(temp_dir)
+
+
+def _reusable_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
+    """Whether an existing entry may serve as the scratch directory.
+
+    Identity plus writability, since tempfile abandons an unwritable TMPDIR for
+    the platform default. Path accounting asks _is_sandbox_temp_dir instead:
+    which directory a segment sits in does not depend on writability.
+    """
+    return _is_sandbox_temp_dir(temp_dir, workdir) and os.access(temp_dir, os.W_OK | os.X_OK)
+
+
 def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
@@ -6761,8 +6823,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows
     SystemRoot and a minimal PATHEXT) reach the child; all credential vars
     (HF_TOKEN, AWS_*, etc.) are absent. HOME points at the sandbox workdir so SDKs can't read the
-    operator's cached creds. PYTHONPATH carries only the sandbox sitecustomize
-    shim directory.
+    operator's cached creds, and the temp vars at _sandbox_temp_dir just inside
+    it. PYTHONPATH carries only the sandbox sitecustomize shim directory.
 
     PATH starts with the Studio interpreter / venv and OS system dirs so
     ``python``/``pip`` stay pinned. On Windows only, Git-for-Windows install
@@ -6809,10 +6871,11 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
 
+    temp_dir = _sandbox_temp_dir(workdir)
     env = {
         "PATH": os.pathsep.join(deduped),
         "HOME": workdir,
-        "TMPDIR": workdir,
+        "TMPDIR": temp_dir,
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
@@ -6829,8 +6892,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
         # Windows tempfile / native SDKs honour TEMP/TMP, not TMPDIR; without
         # these a child falls back to GetTempPath and writes outside the workdir.
-        env["TEMP"] = workdir
-        env["TMP"] = workdir
+        env["TEMP"] = temp_dir
+        env["TMP"] = temp_dir
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
         pathext = ".EXE;.COM"
         if git_ext and git_ext not in (".EXE", ".COM"):
@@ -6995,8 +7058,8 @@ def _is_secret_env_value(value: str) -> bool:
 
 
 def _build_bypass_env(workdir: str) -> dict[str, str]:
-    """Env for bypass exec: full host env minus credential vars, with HOME/TMPDIR
-    repointed at the workdir so SDKs cannot read cached creds.
+    """Env for bypass exec: full host env minus credential vars, with HOME at the
+    workdir and TMPDIR just inside it so SDKs cannot read cached creds.
 
     Stripping the child env is necessary but not sufficient (a same-UID child can
     read the parent's env via procfs), so callers also harden the parent (see
@@ -7009,12 +7072,13 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
         and not _is_secret_env_value(v)
         and not _is_cred_location_env_name(k)
     }
+    temp_dir = _sandbox_temp_dir(workdir)
     env["HOME"] = workdir
-    env["TMPDIR"] = workdir
+    env["TMPDIR"] = temp_dir
     # Windows tempfile / SDKs honour TEMP/TMP, not TMPDIR; repoint all three so
     # the bypassed tool writes under the per-session sandbox dir on every OS.
-    env["TEMP"] = workdir
-    env["TMP"] = workdir
+    env["TEMP"] = temp_dir
+    env["TMP"] = temp_dir
     # sitecustomize path shim (see _build_safe_env). Bypass inherits the
     # operator's PYTHONPATH, so prepend rather than replace.
     inherited_pythonpath = env.get("PYTHONPATH", "")
@@ -7272,7 +7336,6 @@ def _session_in_flight(session_id: "str | None"):
         # rename away. Only this session waits; every other chat is untouched.
         while key in _removing_sessions:
             _sessions_free.wait()
-        first = _active_sessions.get(key, 0) == 0
         _active_sessions[key] = _active_sessions.get(key, 0) + 1
     try:
         yield
@@ -7286,22 +7349,23 @@ def _session_in_flight(session_id: "str | None"):
                     _removing_sessions.add(key)
             else:
                 _active_sessions[key] -= 1
-        if not pending:
-            return
-        # Outside the lock: deciding whether the tree holds files can take
-        # seconds, and no other chat could start a call meanwhile. This session
-        # stays closed, so nothing starts in the directory being removed.
-        try:
-            for pending_id, pending_files in pending.items():
-                if _thread_exists(pending_id, unknown = True):
-                    # Recreated while that call ran: this delete belongs to the
-                    # chat that went, and the folder is the new one's now.
-                    continue
-                _remove_session_sandbox_locked(pending_id, pending_files)
-        finally:
-            with _sessions_free:
-                _removing_sessions.discard(key)
-                _sessions_free.notify_all()
+        # Not `if not pending: return` -- a return here swallows whatever the
+        # tool raised, and the caller reports it as an unknown tool instead.
+        if pending:
+            # Outside the lock: deciding whether the tree holds files can take
+            # seconds, and no other chat could start a call meanwhile. This
+            # session stays closed, so nothing starts in the directory removed.
+            try:
+                for pending_id, pending_files in pending.items():
+                    if _thread_exists(pending_id, unknown = True):
+                        # Recreated while that call ran: this delete belongs to
+                        # the chat that went, the folder is the new one's now.
+                        continue
+                    _remove_session_sandbox_locked(pending_id, pending_files)
+            finally:
+                with _sessions_free:
+                    _removing_sessions.discard(key)
+                    _sessions_free.notify_all()
 
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
@@ -9609,8 +9673,8 @@ def _to_full_access(description: str, tool_name: str) -> str:
     Handing a model the sandboxed text in that mode makes it answer "I am
     sandboxed and cannot see your files" to a question one tool call would have
     answered. Untouched clauses are the ones still true in both modes: the
-    workdir is the per-session dir either way (_build_bypass_env repoints HOME /
-    TMPDIR / TEMP / TMP at it), and so is the download-link note.
+    workdir is the per-session dir either way (_build_bypass_env repoints HOME at
+    it and TMPDIR / TEMP / TMP just inside it), and so is the download-link note.
     """
     clause = _FULL_ACCESS_CLAUSE[tool_name]
     for sandboxed, full_access in _FULL_ACCESS_SUBSTITUTIONS:
@@ -10962,6 +11026,9 @@ _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
 # Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections
 # stripped during conversion; 512 KB still reaches article content.
 _MAX_FETCH_BYTES = 512 * 1024
+# "%" is safe so an already-encoded URL is not re-encoded into %25.
+_IRI_PATH_SAFE = "/%:@!$&'()*+,;="
+_IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"
 # PDF cross-reference data lives at EOF, so extraction needs the whole body.
 _MAX_PDF_FETCH_BYTES = 10 * 1024 * 1024
 _MAX_WEB_PDF_PAGES = 50
@@ -11498,7 +11565,7 @@ def _fetch_url_raw(
 
     try:
         from urllib.error import HTTPError as _HTTPError
-        from urllib.parse import urljoin, urlunparse
+        from urllib.parse import quote, urljoin, urlunparse
 
         max_bytes = _MAX_FETCH_BYTES
         current_url = url
@@ -11510,6 +11577,12 @@ def _fetch_url_raw(
             if budget_error is not None:
                 return budget_error, "", ""
             cp = urlparse(current_url)
+            # http.client rejects a non-ASCII selector outright.
+            cp = cp._replace(
+                path = quote(cp.path, safe = _IRI_PATH_SAFE),
+                params = quote(cp.params, safe = _IRI_PATH_SAFE),
+                query = quote(cp.query, safe = _IRI_QUERY_SAFE),
+            )
             # Bracket IPv6 so the netloc stays a valid URL.
             validated_netloc = f"[{current_host}]" if ":" in current_host else current_host
             if cp.port:
@@ -15260,6 +15333,27 @@ _MAX_SNAPSHOT_FILES = 2000  # a shard-writing script must not blow up the result
 _MAX_SNAPSHOT_DIRS = 2000  # nor a directory-writing one stall the next call
 
 
+def _user_path_parts(parts: "list[str]", root: "str | None" = None) -> "list[str]":
+    """The segments _MAX_SANDBOX_PATH_SEGMENTS applies to.
+
+    The scratch container is Studio's, not a name the model chose, and on
+    Windows it is what /tmp resolves to, so charging it a segment would drop one
+    level of the /tmp artifacts served before the workdir stopped being %TEMP%.
+
+    *root* is for callers that resolve the path afterwards. The walks read the
+    stored spelling off os.walk and never follow links; the download route
+    resolves, and without the root a link named unsloth-tmp (or a wrong-case
+    entry on NTFS or APFS) would take the discount for a tree neither walk lists.
+    """
+    if not parts or parts[0] != _SANDBOX_TEMP_DIRNAME:
+        return parts
+    if root is not None and not _is_sandbox_temp_dir(
+        os.path.join(root, _SANDBOX_TEMP_DIRNAME), root
+    ):
+        return parts
+    return parts[1:]
+
+
 # The same allowlist the download route applies per segment, so a name that
 # route would refuse never reaches a file chip.
 _SERVABLE_SEGMENT_RE = re.compile(r"\A[^/\\\x00-\x1f]{1,255}\Z")
@@ -15378,7 +15472,8 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
         if visited > _MAX_SNAPSHOT_DIRS:
             return snapshot
         # depth 0 is the workdir itself, whose files are one segment.
-        depth = base[len(workdir) :].count(os.sep)
+        relative = base[len(workdir) :].strip(os.sep)
+        depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
         # Dot-directories stay out: .git, .cache and friends are where the noise
         # lives. Dot-FILES are reported, since .gitignore is a real artifact.
         dirs[:] = (

@@ -118,6 +118,149 @@
     overheadMs: 0,
     decodeCalls: 0,
     everStreamed: false,
+    // CUMULATIVE characters of assistant text this page has been SENT, counted off the wire.
+    // Never reset by `reset()`: the denominator a window wants is the growth across it, which is
+    // the difference of two readings of this, and resetting it per window would make every
+    // reading zero.
+    wireChars: 0,
+    wireFrames: 0,
+    wireParseFailures: 0,
+  };
+  // The incremental SSE buffer. A decode() call is a slice of the socket, not an SSE frame: one
+  // call can carry three frames and half of a fourth. Whatever is left after the last blank line
+  // stays here until the rest of it arrives.
+  //
+  // PER DECODER, NOT PER PAGE. A `TextDecoder` belongs to ONE response: the app builds a new one
+  // beside its own `buffer` for every streaming request, so no legitimate frame ever spans two of
+  // them. A single page-wide buffer therefore did not model reassembly, it modelled the socket,
+  // and `stop_generation` exists to cut a socket mid-frame. The abandoned JSON tail then had no
+  // `\n\n` to close it, so the next response's first chunk was glued behind it, the merged part
+  // failed `startsWith("data:")` and was skipped by `continue` WITHOUT counting a parse failure --
+  // the silently short denominator this file's own comments call the unacceptable outcome. Worse,
+  // the residue never cleared, so `pending_chars` stayed above zero and `reply_chars_scoreable`
+  // refused EVERY window from the abort onwards, and once non-empty it pulled unrelated decoder
+  // traffic in through the `pending.length > 0` branch below.
+  //
+  // Keyed weakly, so a finished response's buffer is collected with its decoder rather than
+  // retained. Within one response the same decoder is reused for every `decode(chunk, {stream:
+  // true})` call, so a genuine split still reassembles exactly as before.
+  const DECODER_STATE = new WeakMap();
+  //: How many times a frame that was ALREADY BUFFERED when a decode call began was completed and
+  //: counted. Cumulative and never reset, for the same reason `wireChars` is not: a window wants
+  //: the growth across it. This is what turns "a buffer was pending when the window opened" into
+  //: "characters that arrived before this window were counted inside it", which is the thing that
+  //: actually makes the denominator wrong. A buffer left behind by an ABORTED response never
+  //: completes, so it never increments this and never costs the next response its reading.
+  //:
+  //: PER DECODER, alongside `pending`, and it was page-global on `S` until it was not. `close`
+  //: pairs the buffer pending AT THE OPEN with the flushes carried ACROSS the window, and those
+  //: were read at two scopes: the buffer belonged to one decoder, the counter to all of them.
+  //: `stop_generation` leaves the old decoder holding half a frame and `send_turn` follows it in
+  //: all three shipped schedules, so if that NEW response was itself split -- ordinary, and
+  //: likeliest exactly when the renderer is jammed -- its own split moved the shared counter and
+  //: the window was refused for a stale buffer that never flushed. Measured before this change: a
+  //: two-chunk reply after an abort delivered all 13 of its characters inside the window and was
+  //: refused, while the same traffic without the abort was accepted. The loss is biased against
+  //: the most expensive windows, in the flattering direction.
+  const CARRIED_BY_ID = new Map();
+  //: A bounded history, on the same discipline as `MAX_PENDING_CHARS`. `close` asks about the
+  //: decoder pending when the window OPENED, which by then may be neither active nor alive, so
+  //: the count cannot live only in the `WeakMap`. Keyed by an integer and holding no reference to
+  //: any `TextDecoder`, so it cannot defeat the weak scoping above, and trimmed so a long film
+  //: cannot grow it without limit.
+  const MAX_DECODER_HISTORY = 64;
+  let DECODER_SEQ = 0;
+  const noteCarried = (st) => {
+    st.carriedFlushes += 1;
+    CARRIED_BY_ID.set(st.id, st.carriedFlushes);
+    while (CARRIED_BY_ID.size > MAX_DECODER_HISTORY) {
+      CARRIED_BY_ID.delete(CARRIED_BY_ID.keys().next().value);
+    }
+  };
+  //: The carried count of a NAMED decoder, or of whichever one is active when no name is given.
+  //: A decoder that never carried a frame is absent from the map and answers 0, which is the same
+  //: answer it would have given had it still been alive.
+  const carriedFor = (id) => {
+    if (typeof id !== "number") return active.carriedFlushes;
+    return CARRIED_BY_ID.get(id) || 0;
+  };
+  const newState = () => ({
+    pending: "",
+    markerTail: "",
+    carriedFlushes: 0,
+    id: (DECODER_SEQ += 1),
+  });
+  const stateFor = (decoder) => {
+    let st = DECODER_STATE.get(decoder);
+    if (!st) {
+      st = newState();
+      DECODER_STATE.set(decoder, st);
+    }
+    return st;
+  };
+  //: The decoder that most recently delivered a chunk, which is the stream a window is measuring.
+  //: `wireIntegrity` reports THIS buffer: half a frame of the response being measured is a short
+  //: denominator and must refuse the window, while half a frame of a response that was aborted
+  //: three slots ago says nothing about it.
+  //: Built by `newState()` rather than by hand: a sentinel missing any field a real decoder state
+  //: carries reads `undefined` on a window that opens before the first stream, and `undefined` is
+  //: not zero. Its id comes from the same sequence, so `carriedFor` answers about it like any other.
+  let active = newState();
+  //: The decoder holding a speculative marker fragment, if any, and there is only ever one worth
+  //: holding. A fragment is at most four characters and lives on the decoder that produced it, but
+  //: it has to be REPORTED whoever holds it: a decoder whose first chunk is "dat" has not been
+  //: identified as the stream yet, and leaving its fragment out of `wireIntegrity` would be the
+  //: instrument saying nothing was outstanding while a frame was. Erring the other way costs at
+  //: most four characters of unrelated traffic marking a window unscoreable, which is the
+  //: direction this file has always chosen. It is dropped as soon as some OTHER decoder is
+  //: identified as the stream, so an unrelated chunk that happened to end in "data" cannot leave a
+  //: permanent residue behind it.
+  let markerHold = null;
+  const setMarkerTail = (st, frag) => {
+    st.markerTail = frag;
+    if (frag) markerHold = st;
+    else if (markerHold === st) markerHold = null;
+  };
+  const heldMarkerChars = () =>
+    active.markerTail.length +
+    (markerHold && markerHold !== active ? markerHold.markerTail.length : 0);
+  // A frame is a few hundred bytes. If this ever grows past a sane bound the stream is not what
+  // we think it is, and dropping the buffer is better than growing it without limit inside a hook
+  // that runs fourteen times a second.
+  const MAX_PENDING_CHARS = 262144;
+
+  // ── the frame marker, and the halves of it a split can leave ──────────────────────────────────
+  //
+  // The socket can cut a frame ANYWHERE, including inside these five characters: one decode()
+  // returns "da" and the next "ta: {...}\n\n". Neither chunk contains the marker, so the detector
+  // below saw two unrelated chunks, discarded both, and lost the frame WITHOUT counting a parse
+  // failure -- which left the wire character count short with nothing anywhere to say so, and
+  // `reply_chars_scoreable` reporting the window as sound. The denominator going quietly short
+  // inflates every cost-per-character above it, and it goes short exactly when the renderer is
+  // jammed and chunks arrive ragged, which is the moment the instrument exists to measure.
+  const SSE_MARKER = "data:";
+  // The fragment of the marker the last chunk MIGHT have ended on. At most four characters ("d",
+  // "da", "dat", "data"), so this cannot become the memory hazard MAX_PENDING_CHARS guards
+  // `pending` against: buffering whole unrelated TextDecoder chunks on the chance that one of them
+  // is an SSE frame would be a worse bug than the one being fixed.
+  // Lives in the per-decoder state above, for the same reason `pending` does.
+
+  //: The longest tail of `s` that is a PROPER PREFIX of the marker, or "".
+  const partialMarkerTail = (s) => {
+    for (let n = Math.min(SSE_MARKER.length - 1, s.length); n > 0; n -= 1) {
+      if (s.endsWith(SSE_MARKER.slice(0, n))) return SSE_MARKER.slice(0, n);
+    }
+    return "";
+  };
+
+  //: Does `s` CONTINUE the marker that `frag` started? This is what keeps a speculative fragment
+  //: harmless. Unrelated traffic ending in "d" would otherwise be glued onto the front of the next
+  //: chunk, and a real frame arriving there would become "ddata: {...}", which does not start with
+  //: the marker and would be skipped in silence -- the same defect one step to the left.
+  const continuesMarker = (frag, s) => {
+    const rest = SSE_MARKER.slice(frag.length);
+    const n = Math.min(rest.length, s.length);
+    return n > 0 && s.slice(0, n) === rest.slice(0, n);
   };
 
   const now = () => performance.now();
@@ -157,6 +300,72 @@
   const chan = new MessageChannel();
   chan.port1.onmessage = closeChain;
 
+  // ── the wire-side character counter ───────────────────────────────────────────────────────
+  //
+  // THIS REPLACES AN O(DOCUMENT) READ THAT BIASED THE COMPARISON, and the bias only became
+  // visible once an arm existed that changes the size of the document.
+  //
+  // The denominator used to be read from the DOM: `querySelectorAll('[data-role="assistant"]')`,
+  // last element, `textContent.length`, at both ends of every window. That is O(the whole
+  // document) regardless of how few elements match, and it measured 3.9 ms per call against
+  // 42,000 elements -- 38.8 ms per cell at 10K and 289.6 ms at 100K. The file's own note said it
+  // "is identical on both arms of an A/B and cancels in a paired ratio". That was true of every
+  // arm this project had ever run, and it is FALSE for a virtualised one: an arm whose entire
+  // purpose is to put a tenth of the elements in the document pays a tenth of this cost, so the
+  // instrument hands the treatment a saving it did not earn, in the direction that flatters
+  // exactly the hypothesis under test. Nothing measured on such an arm could be quoted while that
+  // read was in the paired path.
+  //
+  // Counting off the wire removes it rather than balancing it. Both arms are fed by the SAME
+  // pacer -- that is a design invariant of runtime/ab.py, not a coincidence -- so the bytes are
+  // identical by construction and this counter is identical by construction. It is O(the chunk),
+  // about fourteen chunks a second, and independent of the thread's size, the rung and the arm.
+  //
+  // It is also a BETTER denominator than the one it replaces. The DOM read measured the last
+  // assistant message, so a `send_turn` mid-film made the reading shrink and the window's growth
+  // unmeasurable ("it is a different message"). Characters delivered in the window is the
+  // quantity the cost per character actually wants, and it does not care how many messages they
+  // were spread over.
+  const countDeltaChars = (st, text, carriedMarker) => {
+    const carried = st.pending.length > 0 || Boolean(carriedMarker);
+    st.pending += text;
+    if (st.pending.length > MAX_PENDING_CHARS) {
+      S.wireParseFailures += 1;
+      st.pending = "";
+      return;
+    }
+    // Frames are separated by a blank line. Anything after the last one is incomplete.
+    const parts = st.pending.split("\n\n");
+    st.pending = parts.pop();
+    // Something that was in the buffer before this call just became a counted frame. A window
+    // whose OPEN saw a non-empty buffer is only wrong if this happens inside it.
+    if (carried && parts.length > 0) noteCarried(st);
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith("data:")) continue;
+      const body = line.slice(5).trim();
+      if (body === "" || body === "[DONE]") continue;
+      try {
+        const frame = JSON.parse(body);
+        const choices = frame && frame.choices;
+        if (!choices || !choices.length) continue;
+        const delta = choices[0].delta || {};
+        // Both fields, and both are counted. `_gguf_chat_delta_line` emits reasoning as
+        // `reasoning_content` WITH `content: ""` beside it, so summing them is not double
+        // counting; it is the two halves of one turn.
+        const content = typeof delta.content === "string" ? delta.content.length : 0;
+        const reasoning =
+          typeof delta.reasoning_content === "string" ? delta.reasoning_content.length : 0;
+        S.wireChars += content + reasoning;
+        S.wireFrames += 1;
+      } catch (err) {
+        // COUNTED, NOT SWALLOWED. A parse failure means the denominator is short by an unknown
+        // amount, and a silently short denominator inflates every cost-per-character above it.
+        S.wireParseFailures += 1;
+      }
+    }
+  };
+
   const noteSse = () => {
     S.sseChunks += 1;
     S.everStreamed = true;
@@ -180,11 +389,84 @@
     const t = now();
     S.decodeCalls += 1;
     if (typeof out === "string" && out.length > 0) {
-      // A chunk at or under the cap is its own head, so nothing is allocated on the ordinary path
-      // and the ordinary path is unchanged. Over the cap, v8 slices a string by reference rather
-      // than by copy, so the head costs no walk of the payload either.
-      const head = out.length <= MAX_SSE_CHUNK_CHARS ? out : out.slice(0, MAX_SSE_CHUNK_CHARS);
-      if (head.indexOf("data:") >= 0) noteSse();
+      // Reassembly state belongs to THIS decoder. Whether this decoder is also the stream being
+      // MEASURED is not known yet -- that is decided below, once the chunk has been looked at --
+      // and promoting it here handed `active` to any decoder in the page. An unrelated one has an
+      // empty buffer, so `wireIntegrity` then reported nothing outstanding while an SSE decoder
+      // held half a frame: the window closing there published a denominator short by that frame
+      // with a clean bill of health, and the window the suffix landed in was handed the whole
+      // frame and accepted it. A response that was aborted mid-frame keeps its half frame to
+      // itself.
+      const st = stateFor(this);
+      // The fragment the previous chunk ended on, but only if THIS chunk continues it. A split
+      // inside the marker is repaired here rather than in the buffer, so a fragment that turns out
+      // to be ordinary text ending in "d" is dropped instead of corrupting the frame behind it.
+      // `markerTail` is only ever set when `pending` is empty, so the two can never both hold a
+      // half of the same frame.
+      const carriedMarker = Boolean(st.markerTail && continuesMarker(st.markerTail, out));
+      const chunk = carriedMarker ? st.markerTail + out : out;
+      setMarkerTail(st, "");
+      // THE BOUND IS ON THE SCAN, NOT ON THE PAYLOAD. A chunk at or under the cap is its own head,
+      // so nothing is allocated on the ordinary path and the ordinary path is unchanged. Over the
+      // cap, v8 slices a string by reference rather than by copy, so the head costs no walk of the
+      // payload either. Both things the cap was for survive: the search stays bounded by a constant
+      // that grows with neither the payload nor the rung, and a bundle, a blob or a paste still has
+      // to put the marker in its first MAX_SSE_CHUNK_CHARS characters to be mistaken for a stream.
+      // What does NOT survive is the old rejection: a read carries everything the browser buffered
+      // since the last one, so a stall past about two seconds at fast cadence hands the app one
+      // well-formed 97,500 character batch, and dropping it took the largest burst of the stream
+      // out of `sseChunks`, `lastSseAt` and the `deltaTaskMs` numerator at the moment a stall makes
+      // it largest.
+      const head = chunk.length <= MAX_SSE_CHUNK_CHARS ? chunk : chunk.slice(0, MAX_SSE_CHUNK_CHARS);
+      const looksSse = head.indexOf(SSE_MARKER) >= 0;
+      // A CONTINUATION IS STREAM TRAFFIC, AND IT STARTS A TASK CHAIN LIKE ANY OTHER CHUNK.
+      // `noteSse` was gated on the marker alone while the counter below was gated on
+      // `looksSse || pending`, so the tail of a frame the socket cut inside its JSON body was
+      // COUNTED in the denominator and charged to nothing. The three quantities it skipped are
+      // the three the batched-read note above names: `sseChunks`, `lastSseAt` and the
+      // `deltaTaskMs` numerator. When the suffix lands on a later task the first half rendered
+      // nothing and its chain has already closed, so the render the suffix does start is charged
+      // to no window at all, and `stream_delta_cost_ms_per_kchar` is biased DOWNWARD exactly as
+      // fragmentation rises -- the mirror of the denominator defect the comment below describes,
+      // and in the flattering direction. A stale `lastSseAt` also lets `replyChars` decide the
+      // stream has gone idle and return `null` for a window still carrying it.
+      const continuesFrame = st.pending.length > 0;
+      if (looksSse || continuesFrame) noteSse();
+      // `looksSse || pending` and not just `looksSse`. THE SECOND HALF OF A SPLIT FRAME CONTAINS
+      // NO "data:" -- it is the tail of a JSON body and a blank line -- so gating the counter on
+      // that marker dropped the whole frame whenever the socket cut one in two. Found by
+      // test_the_counter_survives_a_frame_split_across_two_decode_calls, which is precisely the
+      // condition the instrument exists to measure: chunks arrive ragged when the renderer is
+      // jammed, so the denominator would have gone quietly short exactly where the numerator went
+      // up, and the cost per character would have been overstated at the worst moment.
+      //
+      // Once a partial frame is held, every subsequent chunk is fed until it completes. Unrelated
+      // TextDecoder traffic can therefore land in the buffer; it cannot be counted, because it
+      // will not parse as a frame, and it is bounded by MAX_PENDING_CHARS and reported through
+      // wire_parse_failures rather than absorbed.
+      //
+      // AND THE CHUNK THAT IS NEITHER is kept only as far as it could be the START of a marker.
+      // That is the third case, the one a complete-marker test cannot see: "da" carries no marker
+      // and completes no buffered frame, and discarding it loses the frame that arrives next.
+      // The whole chunk is fed to the counter and only the SCAN was bounded above: the denominator
+      // is characters delivered, so counting a batched read's head would understate it by exactly
+      // the amount a stall made it large.
+      // AND ONLY NOW IS THIS DECODER THE ONE A WINDOW IS MEASURING: it either carries the relay's
+      // framing or is completing a frame of its own. A decoder that is neither cannot take
+      // `active` away from one that is.
+      if (looksSse || continuesFrame) {
+        // A fragment held by a DIFFERENT decoder cannot be part of this stream, and this one is
+        // the stream. Dropped rather than carried, so unrelated traffic that ended in "data"
+        // cannot report an outstanding frame for the rest of the cell.
+        if (markerHold && markerHold !== st) setMarkerTail(markerHold, "");
+        active = st;
+        countDeltaChars(st, chunk, carriedMarker);
+      } else {
+        // A speculative fragment is kept on the decoder that produced it, and it is reported
+        // through `wireIntegrity` only if that decoder is the active stream. Unrelated traffic
+        // ending in "d" is therefore held without ever claiming to be an outstanding frame.
+        setMarkerTail(st, partialMarkerTail(chunk));
+      }
     }
     S.overheadMs += now() - t;
     return out;
@@ -294,15 +576,63 @@
       return out;
     },
 
-    // Read the streamed reply's length WITHOUT draining anything. Called at window open and
-    // window close, so the denominator is the growth across the window.
-    // `force` is passed at window CLOSE when the window turned out to carry traffic, so a
-    // window whose open-read was skipped is not silently given a null close-read as well.
-    replyChars(force) {
+    // THE DENOMINATOR, read off the wire. O(1): it returns a counter the decode hook maintains.
+    // Called at window open and window close, so the window's growth is the difference.
+    //
+    // Cumulative since page load and monotonic, so unlike the DOM reading it replaces there is no
+    // "the reply shrank, so it is a different message" case to handle: characters delivered only
+    // ever go up.
+    // The two things that can make `wireChars` short by an unknown amount, read at the same O(1)
+    // cost as the counter itself so a window boundary can capture both ends.
+    // `forId` names the decoder to answer about, which `close` passes back from what `open`
+    // sampled. WHOSE BUFFER AND WHOSE FLUSH HAVE TO BE THE SAME DECODER, and reading the active
+    // one at both ends does not make them so: the decoder pending at the open can complete its
+    // carried frame inside the window and be replaced as active before the close, and comparing
+    // the two ends' ids would call that a mismatch and discard the very carry it looks for.
+    // Naming the decoder answers regardless of who is active now, so a window that really did
+    // count characters delivered before it opened is still refused.
+    wireIntegrity(forId) {
+      // The marker fragment counts as buffered, because it is: the frame it begins has not been
+      // counted yet, so a window closing on it has a denominator that is short by that frame. The
+      // cost of being honest here is that a stray one to four characters of unrelated traffic can
+      // mark a window unscoreable, which is the direction to err in -- an unscoreable window is
+      // "we could not tell", and a silently short denominator is "it was fine".
+      return {
+        failures: S.wireParseFailures,
+        pending_chars: active.pending.length + heldMarkerChars(),
+        // WHICH decoder the two numbers above are about, so the close can ask about the same one.
+        decoder_id: active.id,
+        // Read as a DELTA across the window by `StreamCostInstrument.close`, so a buffer that was
+        // pending at the open refuses the window only when ITS OWN frame was completed inside it.
+        carried_flushes: carriedFor(forId),
+      };
+    },
+    replyChars() {
+      return S.wireChars;
+    },
+
+    // The OLD reading, kept as a cross-check and NEVER called inside a measured window. See
+    // `end_cell` in streamcost.py: it runs once per cell, after the film, where its cost is
+    // charged to nothing.
+    //
+    // Worth keeping rather than deleting, because the two numbers answer different questions and
+    // a disagreement between them is a finding: the wire count is what the app was SENT and the
+    // DOM count is what it RENDERED. On a windowed arm they are expected to disagree, by exactly
+    // the messages that are not mounted.
+    replyCharsDom(force) {
       const t = now();
       const n = replyChars(Boolean(force));
       S.overheadMs += now() - t;
       return n;
+    },
+
+    wireStats() {
+      return {
+        wire_chars: S.wireChars,
+        wire_frames: S.wireFrames,
+        wire_parse_failures: S.wireParseFailures,
+        wire_pending_chars: active.pending.length + heldMarkerChars(),
+      };
     },
 
     reset() {

@@ -228,7 +228,8 @@ def test_only_the_route_pads(route):
 def test_preview_awaits_the_gated_load(route):
     """preview.py is the one in-process caller; it must bypass the padding."""
     src = (_backend_root / "routes" / "preview.py").read_text(encoding = "utf-8")
-    assert "load_model_gated(" in src
+    # Preview has its own gated coroutine (slot-ownership guards + the same lifecycle gate).
+    assert "load_model_for_preview(" in src
     assert re.search(r"\bawait load_model\(", src) is None, (
         "preview must not await the padded /load route: its StreamingResponse "
         "returns before the checkpoint is loaded"

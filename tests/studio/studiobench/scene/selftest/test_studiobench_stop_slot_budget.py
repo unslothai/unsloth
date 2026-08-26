@@ -210,6 +210,12 @@ class _Page:
             return self.composer
         if "messageCount" in script:
             return self.messages
+        # The thread's length as well as the mounted count. `stop_generation` proves its own turn
+        # was added by `threadTotal()`, so that a windowed arm whose window refills is not read as
+        # a send that added nothing and left with nothing to clean up. This page models a fully
+        # mounted arm, where the two are the same number.
+        if "threadTotal" in script:
+            return self.messages
         if "assistantChars" in script:
             return 9_200
         raise AssertionError(f"the page was asked something this shim does not model: {script}")
@@ -585,4 +591,53 @@ def test_the_reserve_is_still_the_whole_of_what_its_two_halves_reserve():
     assert (
         OWN_TURN_RESERVE_MS - 80 - OWN_TURN_FIXED_AFTER_SEND_MS - OWN_TURN_STOP_POLL_MS
         == OWN_TURN_START_POLL_MS
+    )
+
+
+# ── the same give-up path, on an arm that mounts a window ────────────────────────────────────
+
+
+class _WindowedPage(_Page):
+    """A thread whose MOUNTED count never moves because the window refills as it grows.
+
+    `threadTotal()` is `aria-setsize`, the store's declaration of how long the thread is;
+    `messageCount()` is how much of it is in the DOM. On the shipped build they are the same
+    number and nothing here is visible. On an arm whose whole purpose is to mount less of the
+    thread they are not, and a before/after taken on the mounted count answers "the thread did not
+    grow" to a send that worked.
+    """
+
+    WINDOW = 2
+
+    def evaluate(
+        self,
+        script,
+        arg = None,
+    ):
+        if arg is None and "messageCount" in script:
+            self.charge()
+            return self.WINDOW
+        return super().evaluate(script, arg)
+
+
+@pytest.mark.parametrize("scene", [FAST, QUICK, STANDARD], ids = lambda s: s.name)
+def test_a_turn_given_up_on_is_taken_back_on_an_arm_that_mounts_a_window(monkeypatch, scene):
+    """THE DEFECT. `STOP_CLEANUP_JS` already asks `threadTotal()`, but the guard deciding whether
+    to RUN it compared `messageCount()` before the send with `messageCount()` after. A windowed
+    mount holds that number still while the thread grows, so the cleanup was never called at all
+    and the throwaway turn -- with its stream still running -- was handed to every later action
+    window and to the final census."""
+
+    stop, _nxt, _slack = _stop_slot(scene)
+    settled = _thread_a_measured_turn_leaves(monkeypatch, stop.budget_ms)
+    clock = _Clock()
+    page = _WindowedPage(clock, 0.0, start_ms = stop.budget_ms - 1_000)
+    result = _drive(page, monkeypatch, clock, stop.budget_ms)
+
+    assert result.ran is False
+    assert page.composer == "", "the send went through, so the box is empty"
+    assert page.deleted == 1, "the turn it had already sent was never deleted"
+    assert page.messages == settled, (
+        f"{scene.name}: a give-up on a windowed arm left the thread at {page.messages} messages, "
+        f"where a measured turn leaves it at {settled}"
     )

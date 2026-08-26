@@ -328,6 +328,25 @@ def _stream_windows(windows: Sequence[Mapping[str, Any]]) -> tuple[list[Mapping[
                 str(sc.get("reply_chars_delta_reason") or "the reply's growth was not measurable")
             )
             continue
+        # THE INSTRUMENT'S OWN VERDICT ON ITS DENOMINATOR, and it is consulted here because this is
+        # the only place that can act on it. `instruments/streamcost.py` marks a window unscoreable
+        # when an SSE frame failed to parse inside it or an unterminated frame was still buffered
+        # at its close -- and per the HTML standard an event is dispatched only at the blank line
+        # that terminates it, so those characters have not been counted and cannot be recovered.
+        # The delta is therefore short by an unknown amount, and every cost-per-character divided
+        # by it comes out inflated. Publishing the flag and then summing the delta anyway left the
+        # official metrics derived from a denominator the instrument had already disowned.
+        #
+        # `is False` and not falsiness: a payload recorded before the flag existed carries no key
+        # at all, and those windows are admitted exactly as they were rather than voided wholesale.
+        if sc.get("reply_chars_scoreable") is False:
+            reject(
+                str(
+                    sc.get("reply_chars_unscoreable_reason")
+                    or "the instrument marked this window's wire character count unscoreable"
+                )
+            )
+            continue
         if int(delta) < MIN_STREAM_CHARS_PER_WINDOW:
             reject(f"the reply grew by fewer than {MIN_STREAM_CHARS_PER_WINDOW} characters")
             continue

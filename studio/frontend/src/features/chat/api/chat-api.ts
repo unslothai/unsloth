@@ -38,6 +38,7 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import { publishChatHistoryRevision } from "../utils/chat-history-revision";
 import {
   type GgufVariantsRequestOptions,
   ggufVariantsQuery,
@@ -46,7 +47,15 @@ import {
 import { assertCompletedPaddedBody } from "./padded-response";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
+// Bumped alongside that event so other tabs, which never receive it, can drop caches
+// they built from a history this one has just changed.
+export { CHAT_HISTORY_REVISION_KEY } from "../utils/chat-history-revision";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
+
+export type ChatHistoryUpdatedDetail = {
+  thread?: ThreadRecord;
+  coalesce?: boolean;
+};
 
 // bounds the request itself so a wedged socket cannot stall every reader waiting on the write
 const THREAD_WRITE_TIMEOUT_MS = 30_000;
@@ -108,9 +117,25 @@ export class GenerationLengthError extends Error {
   }
 }
 
-export function notifyChatHistoryUpdated(): void {
+/**
+ * Announces a history change to this document and, through localStorage, to the others.
+ *
+ * `coalesce` is for the per-chunk streaming path alone: it holds the cross-tab write until
+ * the writes stop. Structural changes must not use it.
+ */
+export function notifyChatHistoryUpdated(
+  detail: ChatHistoryUpdatedDetail = {},
+): void {
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+    const coalesce = detail.coalesce === true;
+    // detail lets a listener tell a chunk save from a structural change (isCoalescedHistoryEvent)
+    window.dispatchEvent(
+      new CustomEvent<ChatHistoryUpdatedDetail>(CHAT_HISTORY_UPDATED_EVENT, {
+        detail: { ...detail, coalesce },
+      }),
+    );
+    // The event above is same-document; a storage write is what crosses.
+    publishChatHistoryRevision(coalesce);
   }
 }
 
@@ -833,7 +858,7 @@ export async function saveChatThread(
     throw new ChatThreadDeletedError(parseErrorText(response.status, body));
   }
   const savedThread = await parseJsonOrThrow<ThreadRecord>(response);
-  notifyChatHistoryUpdated();
+  notifyChatHistoryUpdated({ thread: savedThread });
   return savedThread;
 }
 
@@ -842,6 +867,12 @@ export interface UpdateChatThreadOptions {
   expectedTitle?: string;
   /** And only while this is still the thread's opening user message. */
   expectedOpeningMessageId?: string;
+  /**
+   * Off for one update inside a bulk action, which announces itself once at the end. Every
+   * notification is a synchronous localStorage write that wakes the other tabs, so Archive
+   * All would otherwise send one per thread.
+   */
+  notify?: boolean;
   /** Give up on the write; used to stand a superseded settings PATCH down. */
   signal?: AbortSignal;
 }
@@ -879,7 +910,7 @@ export async function updateChatThread(
     options.signal,
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);
-  notifyChatHistoryUpdated();
+  if (options.notify !== false) notifyChatHistoryUpdated({ thread });
   return thread;
 }
 
@@ -906,7 +937,7 @@ export async function forkChatThread(
     messages: MessageRecord[];
     containerSnapshotWarning: string | null;
   }>(response);
-  notifyChatHistoryUpdated();
+  notifyChatHistoryUpdated({ thread: data.thread });
   return data;
 }
 
@@ -1067,6 +1098,7 @@ export async function getChatMessage(
 
 export async function saveChatMessage(
   message: MessageRecord,
+  options: { coalesce?: boolean } = {},
 ): Promise<MessageRecord> {
   const response = await authFetch(
     `/api/chat/threads/${encodeURIComponent(message.threadId)}/messages/${encodeURIComponent(message.id)}`,
@@ -1077,7 +1109,9 @@ export async function saveChatMessage(
     },
   );
   const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
-  notifyChatHistoryUpdated();
+  // Coalescing is the streaming autosave's alone, since it lands here per chunk. A manual
+  // edit is one deliberate change and publishes at once.
+  notifyChatHistoryUpdated({ coalesce: options.coalesce === true });
   return savedMessage;
 }
 
@@ -1098,7 +1132,9 @@ export async function syncChatMessages(
     },
   );
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
-  notifyChatHistoryUpdated();
+  // Pruning is how a message is deleted, which no other tab should keep matching for a
+  // whole unrelated generation. Without it this is the batched streaming autosave.
+  notifyChatHistoryUpdated({ coalesce: options.pruneMissing !== true });
   return data.messages;
 }
 

@@ -121,6 +121,47 @@ be cleared as well as its scatter.
 
 If you run waves, **each wave carries its own null control.** Wave 0's floor is not wave 1's floor.
 
+#### What a null control cannot do
+
+**A null control cannot detect a bias it shares.**
+
+This is the companion to "a check that comes back clean against code you believe is broken is
+usually a hole in the check", and it is the specific hole that a null control has.
+
+A null runs one build against itself. Any skew that is **symmetric between the two sides cancels
+exactly**, so the null reads flat and appears to certify the metric. It has certified only that the
+metric is *repeatable*. It has said nothing about whether the metric is *comparable*.
+
+The case that taught this, in full, because the shape matters more than the story:
+
+`highlight_spans_while_open` counted `pre span` on the first frame where every reasoning pane's
+`data-state` read `open`. Its null control was **0.0% at 100K and 500K, exact to the span, with
+0.0% within-arm spread** -- about as clean as a null control ever comes back. It was adopted
+*because* of that null, to replace a measure whose null swung 70%.
+
+Across two real arms it was 41% wrong. `data-state` flips when the collapse state changes, not when
+the content it reveals has mounted, and the distance between those two frames depends on the
+collapse mechanism -- which was the thing being compared. Settled, both arms mount 74,250 spans.
+Read at the flip, one arm reads 74,917 and the other 44,075.
+
+The null never had a chance: it served one bundle on both sides, so the same timing skew sat on both
+sides of its ratio and divided out.
+
+So, before you trust a flat null:
+
+- Ask what the measurement's terminating condition is, and whether that condition means the same
+  thing on both arms. A moment defined by app state is not a fixed moment when the app state
+  machine is what changed.
+- Prefer a terminating condition defined by the **quantity you are measuring going quiet** over one
+  defined by a signal that merely correlates with it.
+- A null control tests repeatability. To test comparability you need an arm where you know the
+  answer: a deliberately broken build, or an independent measurement of the same quantity by
+  another route.
+
+`scoring/payload_rules.py` carries the rules that came out of this, and
+`scoring/selftest/test_studiobench_payload_rules.py` pins the four numbers that were published and
+withdrawn before they were written down.
+
 ### Gate 2: sign consistency
 
 Every paired ratio must fall on the same side of 1.0. If three repetitions say faster and one says
@@ -133,8 +174,63 @@ were junk.
 
 ## 4. Parity: prove you did not change what is rendered
 
-A performance change that alters what the user sees is a different pull request with a different
-review. Run the parity digest, which takes a normalised structural DOM signature per action window
+### The policy, and the three exemptions
+
+**UI and UX idempotency is required for every change, with exactly three exemptions:**
+
+1. **A deliberate difference accepted for a dramatic performance improvement.** This is a decision
+   somebody makes on the record with the number attached, not a default. If you are relying on it,
+   say so in the pull request and say what the difference is.
+2. **A difference that exists only OFF SCREEN.** This one is a definition rather than a judgement:
+   rendering only what is visible is an accepted technique, not a parity violation.
+3. **Select-all need not select all, PROVIDED copy stays complete.** Copy may be implemented as
+   "emit the whole thread as markdown, or as plain text, read from the source" rather than as a
+   faithful reproduction of a DOM selection.
+   - **Completeness of the copied content is REQUIRED.** Silent truncation is data loss.
+   - **Visual selection fidelity is NOT required.**
+
+   This is what makes deferral and virtualization cheap: the copy path stops depending on what is
+   mounted. Do not reject a design on the grounds that it breaks DOM-based select-all.
+
+No exemption removes the need for a floor. An exemption changes what counts as a pass; it does
+not make an unmeasured claim into a measured one, so the null control still has to run on the same
+scale. The third carries a condition on top of that, and the condition is the required half: an
+exemption you are relying on for the selection does not excuse the copy.
+
+**A bare "PARITY OK" reads far stronger than any of the three modes can support**, which is why
+each mode prints the CLAIM it is making and the POLICY it is judging against, and why you should
+read both before quoting a pass:
+
+| mode | what a pass means | can it grant the off-screen exemption? |
+|---|---|---|
+| `--mode digest` | the thread root and declared overlays serialise identically, on screen and off | no, it does not know what was on screen |
+| `--mode visible` | every message the viewport showed is present and identical, and every difference lies off screen | **yes** -- this is the mode that can say so |
+| `--mode behaviour` | scroll extent matches and the invariants a windowed mount breaks first still hold | no, and it says nothing about appearance |
+
+No mode grants exemption 3 off a digest. `--mode behaviour` is the only one that speaks to it,
+through `clipboard_carries_the_whole_thread`, which scores the copy against the THREAD rather than
+against the other arm -- that is the required half. Where a payload carries no readable
+`select_all_copy`, the gate records that the exemption exists and does not grant it.
+
+**And it scores it by LENGTH, not by content.** Each arm's `clipboard_chars` is divided by the
+thread's own visible text and has to land inside `MIN_CLIPBOARD_COVERAGE`-`MAX_CLIPBOARD_COVERAGE`;
+the copied characters are never compared. That is not an oversight to be fixed by comparing them.
+The base arm's clipboard is the DOM's RENDERED TEXT and a store-based copy is markdown SOURCE, so
+the two are different serialisations of one conversation and a character comparison fails on a
+CORRECT build -- the only way to make it pass would be to normalise until it stopped testing
+anything. The band is where the strength is, and it is two-sided for that reason: the lower bound
+refused truncation measured at 0.61 of the thread, the upper bound refused the substitution its
+first fix turned into, measured at 2.16. A copy that rewrote content while landing inside the band
+would not be caught, so `--mode behaviour` prints the band it is enforcing next to its claim and
+does not use the bare word "complete".
+
+The digest is **sidebar-blind and layout-blind**: run against a real sidebar-drag change it reported
+0 of 34 differing pairs, and so did its own null control. So a digest pass is not a statement that
+the UI is unchanged.
+
+### The digest itself
+
+Run the parity digest, which takes a normalised structural DOM signature per action window
 on both arms and compares them.
 
 What the digest **can** see: tag structure, `data-slot`, `data-state`, `data-role`, classes, text.
@@ -275,6 +371,88 @@ build a reply-length axis rather than quote a rung comparison that cannot see yo
 Related: rank frames by **slope, not size**. `findNextMatchSync` is the second-largest frame at the
 100K rung at 1,365 ms, and it is a floor, not a cause: it grows at 3.52x against a 3.83x aggregate.
 Optimising it would shave a constant off a curve whose shape is set elsewhere.
+
+### A stress action is not a user journey
+
+`reasoning_toggle` runs at **2.2 fps** at the 100K rung, with a p95 frame of 2,084 ms. It is the
+worst number this harness produces, and it has been quoted as though it described what a user feels.
+It does not.
+
+The action opens **every reasoning pane in the thread in one gesture**: 10 panes, materialising
+74,917 highlight spans, 2,143 ms to open and 805 ms to close. No user does that. A user expands one
+pane. So 2.2 fps is a legitimate measurement of a deliberate worst case and an illegitimate answer
+to "how slow is opening a reasoning pane". **We do not currently have that second number**, and a
+single-pane variant is the cheapest way to get it: the blocker is not the action, it is that the
+film is a fixed-duration slot schedule, so a new slot shifts every existing window and voids
+comparability against every payload already on disk. Add it as a registered action first and run it
+in a purpose-built film; fold it into the standard scene only at the next corpus or tier bump, when
+the payloads are being invalidated anyway.
+
+The general rule: before quoting any action's number as a user-facing latency, read what the action
+actually does. Several of them are stress gestures by design, because a stress gesture is the only
+way to make a mechanism's slope visible above the noise.
+
+### What the fixture over- and under-states
+
+The corpus is not a real thread and it is shaped differently from one in two directions that do not
+cancel.
+
+- **Span density is 4.69 characters per highlight span against the generator's 5.6 target**, so the
+  fixture carries about **19% more highlight spans per character of code** than it is meant to.
+  Every syntax-highlighting number in this campaign, including the fence-deferral arm's `pre span`
+  and LayoutObjects reductions, is measured against that inflated span count and **overstates the
+  win by roughly that much**. Read those numbers with this beside them.
+- The corpus reaches its rung with **too few, uniformly large messages**: at the 100K rung the nine
+  assistant turns run 11,374 to 126,203 characters with a median of 36,215, and none is small. Real
+  threads carry many short turns. The total size is right; the distribution is not.
+- Because there are 18 messages rather than the hundreds a real thread of that size would hold,
+  **per-message chrome is about 1.5% of the fixture's DOM against roughly 14% of a real one**. So
+  the fixture **understates** total DOM size, which is the conservative direction for any change
+  that reduces element counts.
+
+Anything **per-message** (menus, hover targets, avatars, action bars, virtualization row overhead)
+is therefore measured on a document that has far too few of them, and should not be extrapolated
+from this corpus without saying so.
+
+### One home per arm, or the A/B compares a build against itself
+
+`install_studio` derives its repo checkout from the home directory, so **two arms sharing one
+`--home` share one checkout**. The second install overwrites the first and both arms then serve
+whichever build was installed last. Every number downstream is then a comparison of a build with
+itself: parity matches, invariants agree, timings sit on top of each other, and none of it means
+anything.
+
+It is invisible in the payload, and it looks like the result you were hoping not to get. Two runs
+of the same pair reported **716 ms and 718 ms** for base and treatment in one, and **2,583 ms and
+2,614 ms** in the other -- nearly equal *within* each run and 3.6x apart *between* them, because
+each run was internally uniform and the two runs were serving different builds. Read as a
+within-run comparison it says the change does nothing. The difference was sitting between the runs
+the whole time.
+
+`--ab` now refuses `--home` outright. Left to itself the harness gives each arm its own
+`studio_home_<label>` under `--out`, which is what you want.
+
+**The general rule this is an instance of:** before believing a null result, confirm the two arms
+could have differed. A comparison that was structurally incapable of showing a difference will
+report agreement with total confidence.
+
+### One engine per comparison
+
+Nothing in the payload format stops you from scoring a Chromium arm against a WebKit one. The engine
+is recorded in the run-level `platform` header and **not** on the cell rows, and both `sweep/ab.py`
+and `sweep/floor_table.py` pool shards by glob without looking at it. A directory glob such as
+`outputs/sbench_v*` will happily merge the two.
+
+This has produced exactly one wrong kind of number so far, and it is the worst kind: Playwright's
+WebKit never performs a clipboard copy on Control+C, so `select_all_copy` measured the harness's own
+250 ms settle and reported it as `copy_ms` -- 258.5 ms at 1K, 258.8 ms at 10K, 263.9 ms at 100K
+across 43 rows. A hundredfold change in the quantity under study moved the "measurement" by 2%,
+because it was measuring a `sleep`. Chromium reads about 1,538 ms for the same action at 100K. A
+stable wrong number is much harder to catch than a missing one.
+
+The action now refuses instead: a clipboard sentinel is written before the keystroke, and if it
+survives the row is **NOT RUN** with a reason, on any engine, with no engine list to maintain. Until
+`ab.py` and `floor_table.py` check the header too, **check it yourself** before pooling shards.
 
 ## Ablation: correlation to causation
 
@@ -491,3 +669,56 @@ confound unless you contain it:
 - Anything that did not run, said plainly.
 
 A result quoted without its floor will be asked for its floor.
+
+## Recorded negative result: do not virtualize the message list
+
+Somebody proposes this roughly once a campaign, and the argument is good: a 100K thread stands
+64,707 elements in the DOM, most of them off screen, so mount a window instead. It was built, it
+was measured at the 100K rung on the standard tier with a concurrent in-band null control, and it
+was rejected. The measurements are here so the next person can decide from evidence rather than
+rebuild it to find out.
+
+**It buys what it says it buys.** 54,015 elements against the base arm's 64,707. `select_all_copy`
+went from 6.1 to 31.6 fps, a p95 frame of 2,284 ms down to 58 ms. Headline 28.2% faster, weighted.
+
+**It costs the thing the campaign exists to fix.** `send_turn` went from 61.1 to 37.3 fps, with the
+p95 frame rising from 34.0 ms to 374.8 ms, while the concurrent null moved -3.9% on the same
+window. Reproduced on two independent runs. Streaming at long context is the whole complaint, and
+this made it worse by more than anything else on the page got better.
+
+The mechanism, measured rather than guessed. It is NOT per-chunk: every `stream:gap*` window, the
+windows in which the reply is actually streaming into a growing last row, is flat (+0.2%, -0.1%,
++0.6%). It is a ONE-TIME cost at the first append into a freshly opened thread: the eight treatment
+readings alternate 13.2, 58.9, 13.7, 62.0, 14.6, 59.8, 14.7, 60.9 fps, two sends per cell, first
+expensive and second free. A direct probe put the cost in RECALC STYLE (60 ms against the base
+arm's 14 ms) and not in layout (2 ms on both) and not in measurement callbacks (2 ResizeObserver
+callbacks, 3 style writes). Appending to a windowed, end-anchored list re-renders and re-positions
+every mounted row; the unvirtualized path appends one node and touches nothing that already exists.
+The first append also resolves size estimates that are badly wrong: `estimateSize` is 460 px and
+the fixture's mounted rows measure a median of 2,379 px, a mean of 5,146 px and a maximum of
+21,132 px.
+
+**It loses the thread.** On the treatment arm the census goes from 12 mounted messages to 0 at the
+`model_change` slot and never recovers: 2,107 elements for the remaining four slots of the film,
+all four reps, both runs, while the concurrent null keeps all 25 messages through the same action.
+Visible-region parity reports it as a difference rather than a refusal. Two caveats kept with the
+finding: `model_change` is the weakest selector in the suite by its own docstring, and in these
+runs it selected an option labelled "Search Hub", which is not a chat model, so this is "the
+windowed arm did not survive an interaction the base arm survived" and not "changing the model
+empties a virtualized thread". It was not chased further because the arm was closed.
+
+**Three of eighteen actions could not be measured on it.** `delete_message` and `thread_reopen` ran
+four times on the base arm and zero times on the treatment; `image_upload` ran on neither. Any
+per-window comparison must drop those rather than compare a busy window against an empty one.
+
+**And two accessibility and correctness obligations come with it.** A windowed list must publish
+`aria-setsize` and `aria-posinset` or the accessibility tree reports a forty-turn conversation as
+the six messages that happen to be mounted. Select-all copy must be served from the message store,
+because a windowed DOM cannot select what it has not mounted: measured at 0.61 of the thread before
+the fix. The obvious store serialiser is the "save this reply" one, which emits reasoning and
+tool-call payloads that no user can select, and it lands at 2.16 of the thread instead. Both
+failure directions are now bounds on `clipboard_carries_the_whole_thread`.
+
+If you want the structural win without any of this, defer off-screen work instead of unmounting it.
+Score it with `sweep/ui_parity.py --mode visible --null OUTDIR`: an off-screen-only difference is
+exempt by policy, and that mode is the one that can say so.

@@ -47,6 +47,9 @@ def _records(path: str | Path) -> list[dict[str, Any]]:
 
 
 def _completion_by_rung(records: Sequence[Mapping[str, Any]]) -> dict[int, tuple[bool, str | None]]:
+    from ..runtime.ab import failed_invalidating_gates
+
+    gate_failures = failed_invalidating_gates(records)
     out: dict[int, tuple[bool, str | None]] = {}
     for r in records:
         if r.get("row_type") != "cell":
@@ -59,6 +62,22 @@ def _completion_by_rung(records: Sequence[Mapping[str, Any]]) -> dict[int, tuple
         reason = None
         if not completed:
             reason = f"{failure.get('kind') or 'unknown'}: {failure.get('message') or 'no message'}"
+        # NOT COMPLETE, RATHER THAN NOT PRESENT. A cell whose thread lost messages, or that stopped
+        # following the reply it was measuring, reaches here `completed=True` with a full set of
+        # timings, because both gates are advisory where they are emitted. Those timings are
+        # CHEAPER than a correct cell's -- fewer rows to render -- and the ladder is ABSOLUTE, with
+        # no second arm to contradict them, so the rung was scored against fixed anchors and came
+        # out green and fast on a cell whose own self-check had already recorded the loss.
+        #
+        # It is marked incomplete rather than dropped, which is the distinction this module is
+        # built on: `score_rung` gives an incomplete rung 0 and KEEPS ITS WEIGHT, and aggregating
+        # over only the rungs that survived is the crash-beats-limp bug wearing a different hat. A
+        # build whose thread loses its middle at 100K is not usable at 100K, and lowering `onset`
+        # is exactly the honest way to say so. Dropping the cell would delete the most important
+        # thing the run has to say.
+        elif str(r.get("cell_id")) in gate_failures:
+            completed = False
+            reason = gate_failures[str(r.get("cell_id"))]
         # If a rung was repeated and any rep failed, the rung is not clean. Recording the failure
         # rather than the success is deliberate: the interesting fact about a bimodal rung is
         # that it can fail, not that it can pass.

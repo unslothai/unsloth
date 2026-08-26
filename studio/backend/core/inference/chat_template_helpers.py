@@ -2051,7 +2051,11 @@ class ReasoningChannelNormalizer:
         return "".join(output)
 
     def finish(self) -> str:
-        """Flush a naturally completed stream and close an open think block."""
+        """Flush a stream that ended and close an open think block.
+
+        Ended, not merely finished generating: a stop sequence ends a turn as a stop
+        token does, and the block it cut inside is still owed its close.
+        """
         output = self.drain()
         if self._in_reasoning:
             # Nothing generated: no block at all, rather than a close with no opener.
@@ -2109,8 +2113,12 @@ def normalize_reasoning_snapshots(
     tools = None,
     prompt: Optional[str] = None,
     continued: bool = False,
+    ended = None,
 ):
-    """Normalize a prefix-monotonic cumulative text stream when supported."""
+    """Normalize a prefix-monotonic cumulative text stream when supported.
+
+    ``ended`` is read after the stream: a turn a stop sequence ended still owes
+    its open block a close, even if a cancel landed on the same step."""
     markers = markers or detect_reasoning_channel_markers(tokenizer, tools = tools)
     if markers is None:
         yield from stream
@@ -2131,7 +2139,9 @@ def normalize_reasoning_snapshots(
             normalized_output += delta
             yield normalized_output
 
-    cancelled = cancel_event is not None and cancel_event.is_set()
+    cancelled = (
+        not (ended is not None and ended()) and cancel_event is not None and cancel_event.is_set()
+    )
     tail = normalizer.drain() if cancelled else normalizer.finish()
     if tail:
         normalized_output += tail
@@ -2415,12 +2425,19 @@ def append_assistant_turn(
     model just added are one turn, so they are merged: appending would instead give two
     consecutive assistant messages and break role alternation. Self-limiting, since
     after a tool result the conversation no longer ends with a plain assistant turn.
+
+    Merge over the resumed turn rather than replacing it, or every key the partial
+    carried but the continuation does not repeat is lost. ``extra_content`` is such a
+    key, and Gemini reads the text part's thought signature back from it alone, so a
+    resumed turn replayed without it is rejected.
     """
     # Same acceptance rule as the prompt boundary, so a partial sent as text parts merges too.
     prev_text = trailing_assistant_text(conversation) if continue_final_message else None
     if prev_text is not None and isinstance(assistant_msg.get("content"), str):
-        assistant_msg["content"] = f"{prev_text}{assistant_msg['content']}"
-        conversation[-1] = assistant_msg
+        # Copy rather than mutate: the caller owns assistant_msg and may still read it.
+        merged_msg = {**conversation[-1], **assistant_msg}
+        merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
+        conversation[-1] = merged_msg
         return
     conversation.append(assistant_msg)
 

@@ -60,8 +60,10 @@ import {
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
+import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
 import {
   consumeQueuedChatRunSettings,
+  shouldPersistResolvedQueuedModel,
   snapshotQueuedChatRunSettings,
 } from "../utils/queued-chat-run-settings";
 import {
@@ -1888,8 +1890,7 @@ export async function buildLocalTokenCountExtras(
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
-    // Only truthiness is read server-side, to keep search_knowledge_base and its grounding nudge
-    // in the prompt; no retrieval runs for a count.
+    // the ids name the attached documents in the nudge server-side; no retrieval runs for a count.
     ...(ragOn
       ? {
           rag_scope: {
@@ -2147,6 +2148,7 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
 
 type QueuedResolvedModelRuntime = {
   checkpoint: string;
+  activeGgufVariant: string | null;
   supportsTools: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -2293,6 +2295,7 @@ function queuedResolvedModelFromStore(
   );
   return {
     checkpoint: state.params.checkpoint,
+    activeGgufVariant: state.activeGgufVariant,
     supportsTools: state.supportsTools,
     supportsReasoning: state.supportsReasoning,
     reasoningAlwaysOn: state.reasoningAlwaysOn,
@@ -3788,6 +3791,7 @@ async function resolveQueuedEmptyLocalModel(
           blockedByTrustRemoteCode: false,
           modelRuntime: {
             checkpoint,
+            activeGgufVariant: status.gguf_variant ?? null,
             supportsTools: status.supports_tools ?? false,
             supportsReasoning: status.supports_reasoning ?? false,
             reasoningAlwaysOn: status.reasoning_always_on ?? false,
@@ -3879,8 +3883,18 @@ export function createOpenAIStreamAdapter(
       // Before the first await: hydration and a model load both run ahead of the
       // first resolveProjectId, and a send survives navigation. Only consulted
       // while the thread's own row is still missing.
-      const composerProjectIdAtSend =
-        useChatRuntimeStore.getState().activeProjectId ?? null;
+      //
+      // ...which for a fresh send is exactly the window this has to be right in, and the store
+      // is no longer a safe reading of it: send() awaits document extraction, and initialize()
+      // does not await its row write, so the user may be in another project by now and the run
+      // would take its instructions, RAG sources and sandbox from one the message was never
+      // sent to. A stamp OF null still wins -- a send from outside any project.
+      const creationClaim = unstable_threadId
+        ? readThreadCreationClaim(unstable_threadId)
+        : undefined;
+      const composerProjectIdAtSend = creationClaim
+        ? creationClaim.projectId
+        : (useChatRuntimeStore.getState().activeProjectId ?? null);
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       // After the hydrate, not before: the backend reads some settings out of
       // SQLite at call time rather than taking them from the request -- Search
@@ -3935,7 +3949,10 @@ export function createOpenAIStreamAdapter(
       const queuedRunSettings =
         consumeQueuedChatRunSettings(resolvedThreadId);
       let queuedEmptyModelRuntime: QueuedResolvedModelRuntime | null = null;
-      const persistResolvedQueuedModel = async (modelId: string) => {
+      const persistResolvedQueuedModel = async (
+        modelId: string,
+        modelGgufVariant: string | null,
+      ) => {
         if (
           !queuedRunSettings ||
           queuedRunSettings.params.checkpoint ||
@@ -3944,11 +3961,14 @@ export function createOpenAIStreamAdapter(
         ) {
           return;
         }
-        try {
-          await updateStoredChatThread(resolvedThreadId, { modelId });
-        } catch (error) {
-          throw error;
+        const storedThread = await readThreadRecord?.();
+        if (!shouldPersistResolvedQueuedModel(storedThread)) {
+          return;
         }
+        await updateStoredChatThread(resolvedThreadId, {
+          modelId,
+          modelGgufVariant,
+        });
       };
       if (queuedRunSettings) {
         runtime = { ...runtime, ...queuedRunSettings };
@@ -4018,6 +4038,10 @@ export function createOpenAIStreamAdapter(
                     queuedEmptyModelRuntime?.checkpoint ??
                     liveRuntime.params.checkpoint,
                 },
+                activeGgufVariant:
+                  queuedEmptyModelRuntime !== null
+                    ? queuedEmptyModelRuntime.activeGgufVariant
+                    : liveRuntime.activeGgufVariant,
                 supportsTools:
                   queuedEmptyModelRuntime?.supportsTools ??
                   liveRuntime.supportsTools,
@@ -4065,7 +4089,10 @@ export function createOpenAIStreamAdapter(
         const userMessageParentId =
           userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
-        await persistResolvedQueuedModel(params.checkpoint);
+        await persistResolvedQueuedModel(
+          params.checkpoint,
+          runtime.activeGgufVariant,
+        );
         const selectedCheckpoint = params.checkpoint.trim();
         const researchExternalSelection = parseExternalModelId(selectedCheckpoint);
         const researchExternalProvider = researchExternalSelection
@@ -4365,6 +4392,10 @@ export function createOpenAIStreamAdapter(
                   queuedEmptyModelRuntime?.checkpoint ??
                   liveRuntime.params.checkpoint,
               },
+              activeGgufVariant:
+                queuedEmptyModelRuntime !== null
+                  ? queuedEmptyModelRuntime.activeGgufVariant
+                  : liveRuntime.activeGgufVariant,
               supportsTools:
                 queuedEmptyModelRuntime?.supportsTools ??
                 liveRuntime.supportsTools,
@@ -4404,7 +4435,10 @@ export function createOpenAIStreamAdapter(
             }
         : liveRuntime;
       const { params } = runtime;
-      await persistResolvedQueuedModel(params.checkpoint);
+      await persistResolvedQueuedModel(
+        params.checkpoint,
+        runtime.activeGgufVariant,
+      );
       const sandboxSessionId = await resolveSandboxSessionId(
         resolvedThreadId,
         readThreadRecord,
@@ -5585,10 +5619,10 @@ export function createOpenAIStreamAdapter(
                     // emitting structured tool_calls, so the external loop heals
                     // like the local one. Omitting this left the backend on its
                     // process default, which is not what the user set in Settings.
-                    // nudge_tool_calls is deliberately absent: it is the
-                    // non-streaming client-tool passthrough retry, which this
-                    // streaming server-side loop does not perform.
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
+                    // Keep the external server-side loop under the same user
+                    // setting as the local inference paths.
+                    nudge_tool_calls: runtime.nudgeToolCalls,
                     // This branch runs the tools here, so say so by name:
                     // enabled_tools ["web_search"] is byte-identical to what an
                     // older bundle sent meaning hosted search, so without this

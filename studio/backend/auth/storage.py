@@ -1240,20 +1240,28 @@ def validate_api_key(raw_key: str) -> Optional[str]:
     return verified[0] if verified else None
 
 
-def validate_api_key_with_credential(raw_key: str) -> Optional[Tuple[str, str]]:
+def validate_api_key_with_credential(
+    raw_key: str, *, touch: bool = True
+) -> Optional[Tuple[str, str]]:
     """Validate *raw_key* and return ``(username, jwt_secret)``, or ``None``.
 
     Also updates ``last_used_at`` on success. The key check and the credential
     read share one write transaction, so the returned version is the one the key
     was actually valid under: a reset committing right after cannot have its new
     generation handed to a request the key it revoked authenticated.
+
+    ``touch=False`` drops that stamp, and with it the write transaction, for a caller
+    that only asks whether the key authenticates and never binds a write to the
+    generation. One request must not count as two uses, and on sqlite the write lock
+    is global, so an advisory check has no business taking it.
     """
     cache_id = _api_key_cache_id(raw_key)
     cached_hash = _api_key_hash_cache.get(cache_id)
     key_hash = cached_hash if cached_hash is not None else _pbkdf2_api_key(raw_key)
     conn = get_connection()
     try:
-        conn.execute("BEGIN IMMEDIATE")
+        if touch:
+            conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
             "SELECT id, username, is_active, expires_at FROM api_keys WHERE key_hash = ?",
             (key_hash,),
@@ -1280,11 +1288,12 @@ def validate_api_key_with_credential(raw_key: str) -> Optional[Tuple[str, str]]:
         secret = _current_secret(conn, row["username"])
         if secret is None:
             return None
-        conn.execute(
-            "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), row["id"]),
-        )
-        conn.commit()
+        if touch:
+            conn.execute(
+                "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), row["id"]),
+            )
+            conn.commit()
         return row["username"], secret
     finally:
         conn.rollback()

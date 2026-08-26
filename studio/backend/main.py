@@ -746,7 +746,24 @@ async def lifespan(app: FastAPI):
         "lifespan startup completed in %.1fms",
         (_time.perf_counter() - _lifespan_started) * 1000,
     )
+    # Persist only terminal scalar usage from authenticated third-party API
+    # requests. The monitor itself stays storage-agnostic until the production
+    # lifespan is ready, which keeps imports and unit tests deterministic.
+    from core.inference.api_monitor import api_monitor as _api_monitor
+    from storage.api_usage_db import (
+        acquire_api_usage_writer as _acquire_api_usage_writer,
+        enqueue_api_usage as _enqueue_api_usage,
+        release_api_usage_writer as _release_api_usage_writer,
+    )
+
+    _api_usage_writer_lease = _acquire_api_usage_writer()
+    _api_usage_callback_lease = _api_monitor.acquire_terminal_callback(_enqueue_api_usage)
     yield
+
+    # Remove only this lifespan's callback. A concurrently live sibling keeps
+    # both the monitor sink and the shared serialized writer. The final owner
+    # drains accepted receipts off the event loop before stopping the worker.
+    _api_monitor.release_terminal_callback(_api_usage_callback_lease)
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
@@ -757,6 +774,8 @@ async def lifespan(app: FastAPI):
     _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
     if _invalidate_detection is not None:
         _invalidate_detection()
+
+    await asyncio.to_thread(_release_api_usage_writer, _api_usage_writer_lease)
 
     from core.inference.openai_codex_auth import shutdown_flows
 
@@ -804,6 +823,7 @@ app = FastAPI(
     redoc_url = None,
     swagger_ui_oauth2_redirect_url = None,
 )
+app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"
 
 # The MCP surface is opt-in: it can start GPU jobs and write model artifacts.
 if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
@@ -1346,6 +1366,10 @@ app.add_middleware(
     max_age = 60,
 )
 
+from utils.keyless_api_access import KeylessToolPolicyMiddleware  # noqa: E402
+
+app.add_middleware(KeylessToolPolicyMiddleware)
+
 from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # noqa: E402
 
 app.add_middleware(RemoteAccessStopResponseMiddleware)
@@ -1584,6 +1608,30 @@ def _torch_warm_in_progress() -> bool:
     return bool(status["started"] and not status["finished"] and status["alive"])
 
 
+# Modules that expose generation_in_flight(). The three engines answer for the render itself;
+# routes.inference answers for the image-persist tail, which outlives the engine's own marker.
+_MEDIA_BACKEND_MODULES = (
+    "core.inference.video",
+    "core.inference.diffusion",
+    "core.inference.sd_cpp_backend",
+    "routes.inference",
+)
+
+
+def _media_generation_active() -> bool:
+    """Check imported media backends without importing, constructing, or locking them."""
+    for module_name in _MEDIA_BACKEND_MODULES:
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        try:
+            if module.generation_in_flight():
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _inference_active() -> bool:
     """True while at least one generation is in flight.
 
@@ -1591,14 +1639,17 @@ def _inference_active() -> bool:
     one that has died: a saturated host can stall the event loop past a probe budget, and
     killing there ends a response the user is still waiting on.
 
-    A len() under a threading.Lock held only for that read, so the route stays cheap.
-    Failures report "not busy", the same answer as before this field existed.
+    A len() under a threading.Lock held only for that read, plus a bool off each resident
+    media backend, so the route stays cheap. Failures report "not busy", the same answer as
+    before this field existed.
     """
     try:
         from state import active_generations
-        return active_generations.count() > 0
+        if active_generations.count() > 0:
+            return True
     except Exception:
-        return False
+        pass
+    return _media_generation_active()
 
 
 @app.get("/api/liveness")
@@ -1696,13 +1747,15 @@ async def health_check(request: Request):
             # Nothing is detecting until a hardware-dependent operation runs; say so instead of making clients poll.
             base["hardware_detection_deferred"] = True
     auth = request.headers.get("authorization", "")
-    if not auth.lower().startswith("bearer "):
-        return base
+    bearer = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else None
     try:
+        from auth.authentication import credentials_for_token
         from auth.authentication import get_current_subject as _gcs
-        from fastapi.security import HTTPAuthorizationCredentials
 
-        creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = auth.split(" ", 1)[1])
+        # resolved rather than built, so a scope covering this route answers it in full
+        creds = await credentials_for_token(request, bearer)
+        if creds is None:
+            return base
         # Must await: a bare coroutine is truthy and would skip the auth check
         subject = await _gcs(creds)
     except HTTPException:
