@@ -574,10 +574,7 @@ def test_igpu_and_dgpu_each_report_their_own(win_rocm, monkeypatch):
     )
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
-    assert [d["used_gb"] for d in devices] == [
-        None,
-        pytest.approx(1.2, abs = 0.01),
-    ]
+    assert [d["used_gb"] for d in devices] == [None, pytest.approx(1.2, abs = 0.01)]
     assert aggregate is None
 
 
@@ -600,10 +597,7 @@ def test_a_name_the_two_sides_spell_differently_still_joins(win_rocm, monkeypatc
     )
 
     devices, _ = hw._rocm_windows_per_device_vram([0, 1])
-    assert [d["used_gb"] for d in devices] == [
-        None,
-        pytest.approx(1.2, abs = 0.01),
-    ]
+    assert [d["used_gb"] for d in devices] == [None, pytest.approx(1.2, abs = 0.01)]
 
 
 def test_the_arch_answers_when_the_names_do_not(win_rocm, monkeypatch):
@@ -625,10 +619,7 @@ def test_the_arch_answers_when_the_names_do_not(win_rocm, monkeypatch):
     )
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
-    assert [d["used_gb"] for d in devices] == [
-        None,
-        pytest.approx(1.2, abs = 0.01),
-    ]
+    assert [d["used_gb"] for d in devices] == [None, pytest.approx(1.2, abs = 0.01)]
     assert aggregate is None
 
 
