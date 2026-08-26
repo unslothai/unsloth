@@ -117,11 +117,11 @@ def test_research_handoff_transition_honors_the_original_run_stop() -> None:
     assert "transitionSignal: AbortSignal = abortSignal" in research
     assert "await waitForModelReady(transitionSignal)" in research
     assert "await resolveQueuedEmptyLocalModel(transitionSignal)" in research
-    registered = research.index("runtime.registerThreadServerCancel(threadKey, researchServerCancel);")
+    registered = research.index(
+        "runtime.registerThreadServerCancel(threadKey, researchServerCancel);"
+    )
     assert research.rfind("if (transitionSignal.aborted) return;", 0, registered) >= 0
-    assert adapter.count(
-        "startDeepResearch(deepResearchHandoff.question, runSignal)"
-    ) == 2
+    assert adapter.count("startDeepResearch(deepResearchHandoff.question, runSignal)") == 2
 
 
 def test_research_reasoning_effort_is_clamped_to_the_loaded_model() -> None:
