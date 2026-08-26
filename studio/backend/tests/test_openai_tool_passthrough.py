@@ -1011,6 +1011,144 @@ class TestChatCompletionRequestToolFields:
         else:
             assert len(calls) == 1
 
+    def test_a_legacy_image_field_with_audio_is_refused(self, monkeypatch):
+        """A client attaching its image through the top-level image_base64
+        extension, with no image parts anywhere, means that image for THIS
+        request. The audio branch cannot forward it, so refuse rather than drop."""
+        import numpy as np
+
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        calls = []
+
+        class _OmniBackend:
+            active_model_name = "omni-sf"
+            models = {
+                "omni-sf": {
+                    "is_vision": True,
+                    "has_audio_input": True,
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+
+            def resize_image(self, image):
+                return image
+
+            def generate_audio_input_response(self, **kwargs):
+                calls.append(kwargs)
+                yield "answered from the audio"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "what is this?"}],
+                "image_base64": "AAAA",
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "audio or an image in one message" in resp.text
+        assert calls == []
+        assert monitor.active_count() == 0
+
+    def test_a_derived_legacy_image_field_does_not_block_a_voice_follow_up(self, monkeypatch):
+        """Studio fills image_base64 from anywhere in the thread
+        (findLatestUserImageBase64 walks the whole history), so it is not a
+        per-turn signal. When message parts carry the image on an earlier turn,
+        they decide, and the voice follow-up must still be answered."""
+        import numpy as np
+
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        calls = []
+
+        class _OmniBackend:
+            active_model_name = "omni-sf"
+            models = {
+                "omni-sf": {
+                    "is_vision": True,
+                    "has_audio_input": True,
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+
+            def resize_image(self, image):
+                return image
+
+            def generate_audio_input_response(self, **kwargs):
+                calls.append(kwargs)
+                yield "answered from the audio"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _OmniBackend())
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "what is this?"}, image],
+                    },
+                    {"role": "assistant", "content": "a square"},
+                    {"role": "user", "content": "and now by voice"},
+                ],
+                "image_base64": "AAAA",
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(calls) == 1
+        assert monitor.active_count() == 0
+
     def test_an_image_on_an_earlier_turn_still_allows_a_voice_follow_up(self, monkeypatch):
         """The count is scoped to the newest user turn, so asking by voice about a
         picture attached on an earlier turn keeps working."""

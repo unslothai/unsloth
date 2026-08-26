@@ -15998,11 +15998,28 @@ async def openai_chat_completions(
             # image attached to the turn is dropped on the floor. Refuse instead of
             # answering from the audio alone and letting the caller believe the
             # picture was looked at. Any count, not just several: one image is
-            # discarded here exactly as silently as two. Scoped to the newest turn,
-            # so asking by voice about a picture attached earlier still works.
+            # discarded here exactly as silently as two.
+            #
+            # The legacy top-level field only counts when the thread carries no
+            # image parts at all. On its own it is a client attaching an image to
+            # THIS request, which this branch would drop. But Studio also fills it
+            # from anywhere in the thread (findLatestUserImageBase64 walks the whole
+            # history), so treating it as a per-turn signal would refuse every voice
+            # follow-up in a chat that once held an image. Message parts carry the
+            # turn, so when they exist they decide alone.
+            #
+            # An image on an EARLIER turn is deliberately not refused: this branch
+            # never forwarded history images, and turning that into a hard error
+            # would break asking by voice about a picture attached before.
             # api_monitor directly rather than _reject, which is not bound this
             # early in the handler.
-            if _images_in_last_user_message(payload.messages):
+            _thread_has_image_part = any(
+                isinstance(_m.content, list) and any(_p.type == "image_url" for _p in _m.content)
+                for _m in payload.messages
+            )
+            if _images_in_last_user_message(payload.messages) or (
+                payload.image_base64 and not _thread_has_image_part
+            ):
                 _audio_image_detail = (
                     "This model takes audio or an image in one message, not both."
                     " Send the image on its own turn."
