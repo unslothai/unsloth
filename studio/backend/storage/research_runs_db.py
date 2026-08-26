@@ -588,7 +588,8 @@ def create_and_bind_terminal_fallback(
             conn.commit()
             return message_id, False
 
-        message_id = f"research-{run_id}"
+        attempt = int(run["retry_count"])
+        message_id = f"research-{run_id}" if attempt == 0 else f"research-{run_id}-{attempt}"
         parts: list[dict[str, Any]] = [{"type": "text", "text": text, "researchRunId": run_id}]
         for source in sources or []:
             parts.append(

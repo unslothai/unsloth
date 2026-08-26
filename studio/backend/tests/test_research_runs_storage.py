@@ -3826,6 +3826,30 @@ def test_stopped_run_is_repointed_at_a_newer_message(research_home):
     assert research_db.has_thread_claim("thread-1") is True
 
 
+def test_no_placeholder_rebind_gets_a_fresh_terminal_fallback(research_home):
+    _create(assistant_message_id = None)
+    _cancel_run()
+    first_id, first_created = research_db.create_and_bind_terminal_fallback(
+        "run-1", text = "Research cancelled.", status = "cancelled"
+    )
+    assert first_created is True
+
+    assert _rebind(_new_user_message(), assistant_message_id = None) is not None
+    research_db.set_plan("run-1", _plan())
+    assert research_db.request_cancel("run-1") == "cancelled"
+    second_id, second_created = research_db.create_and_bind_terminal_fallback(
+        "run-1", text = "Research cancelled again.", status = "cancelled"
+    )
+
+    assert second_created is True
+    assert second_id != first_id
+    first = studio_db.get_chat_message("thread-1", first_id)
+    second = studio_db.get_chat_message("thread-1", second_id)
+    assert first["parentId"] == "user-1"
+    assert second["parentId"] == "user-2"
+    assert second["content"][0]["text"] == "Research cancelled again."
+
+
 def test_migrated_history_does_not_hide_the_claim_owner_s_stopped_run(research_home):
     _create()
     conn = studio_db.get_connection()
