@@ -49,6 +49,61 @@ test("the read waits for this chat's own write before it can be believed", () =>
   );
 });
 
+/** sync()'s body with comments removed, for the two order assertions below. These call
+ * sites are heavily commented, and a prose mention of a call ahead of the call itself
+ * would otherwise read as the call being in the wrong place. */
+function syncCode(): string {
+  return slice(provider, "const sync = () => {", "// The read did not answer")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
+}
+
+test("both waits sit inside the attempt's deadline, not in front of it", () => {
+  // Neither wait is bounded on its own. The settings chain is a PATCH; and
+  // awaitStoredChatThreadWrites settles the row write through
+  // ThreadRecordWriteCoordinator.settleCurrent, which is Promise.allSettled over work
+  // that opens with getStoredChatThread -- a GET given no timeoutMs, so timeout = null.
+  //
+  // In front of the deadline their time is uncounted, and THREAD_PAIRING_WAIT_MS stops
+  // bounding the chain it was sized against. Past it the gate is still shut, so
+  // awaitThreadScopedPairing gives up and chat-adapter refuses the user's send with
+  // "This chat's settings could not be loaded" -- a message meant only for a chat left
+  // mid-read. Inside the deadline the same stall is one failed attempt, and
+  // retryThreadRead already knows what to do with that.
+  const sync = syncCode();
+  const race = sync.indexOf("Promise.race");
+  assert.ok(race !== -1, "the per-attempt deadline is gone");
+
+  for (const wait of ["awaitThreadScopedSettingsWrite", "awaitStoredChatThreadWrites"]) {
+    assert.ok(
+      sync.indexOf(wait) > race,
+      `${wait}() is awaited before the deadline opens, so its time is unbounded`,
+    );
+  }
+});
+
+test("the pairing wait still outlasts the worst case read chain", () => {
+  // The arithmetic THREAD_PAIRING_WAIT_MS's own comment claims. Read from source so the
+  // two cannot drift apart: whichever constant moves, this is what catches it.
+  const constant = (source: string, name: string): number => {
+    const match = source.match(new RegExp(`${name}\\s*=\\s*([0-9_]+)`));
+    assert.ok(match, `${name} not found`);
+    return Number(match[1].replace(/_/g, ""));
+  };
+  const store = read("../src/features/chat/stores/chat-runtime-store.ts");
+
+  const attempts = constant(provider, "THREAD_READ_RETRIES") + 1;
+  const worstCase =
+    attempts * constant(provider, "THREAD_READ_TIMEOUT_MS") +
+    (attempts - 1) * constant(provider, "THREAD_READ_RETRY_MS");
+
+  assert.ok(
+    worstCase < constant(store, "THREAD_PAIRING_WAIT_MS"),
+    `the read chain can take ${worstCase}ms, at or past the gate's give-up, so a slow ` +
+      "read refuses the user's send instead of falling back to the installation defaults",
+  );
+});
+
 test("running out of read retries ends the pairing rather than parking sends forever", () => {
   // threadScopedSettingsPending gates the composer, so a pairing left open with no retry
   // left holds every send behind a wait that nothing can resolve.
