@@ -608,6 +608,8 @@ export interface OpenAIChatCompletionsRequest {
   min_p?: number;
   repetition_penalty?: number;
   presence_penalty?: number;
+  /** Omitted when unset, which leaves the server to draw its own seed. */
+  seed?: number;
   image_base64?: string;
   audio_base64?: string;
   video_base64?: string;
