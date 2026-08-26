@@ -4959,6 +4959,53 @@ def test_a_cached_drafter_the_runtime_is_too_old_for_says_so_instead_of_vanishin
     assert rows[0].fields["runtime_supported"] is False
 
 
+@pytest.mark.parametrize(
+    ("native_head", "builtin_rows", "expected"),
+    [
+        # Listed last and ranked first: the badge follows the ranking, not the table.
+        (False, [], ["mlx-community/Qwen3.8-27B-MTP-bf16"]),
+        # The tensors are there but this runtime cannot split them, so no resident drafter is
+        # offered and the badge still has to name a download.
+        (True, [], ["z-lab/Qwen3.8-27B-DFlash2"]),
+        # A resident drafter is offered; no download improves on it.
+        (True, ["builtin://mtp"], []),
+    ],
+)
+def test_at_most_one_proposal_carries_the_recommendation_badge(
+    monkeypatch, native_head, builtin_rows, expected
+):
+    """Marking every proposal is the same as marking none: the badge only says something when it
+    names the one to take.
+    """
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "_canonical_target_id", lambda t: t)
+    monkeypatch.setattr(spec, "_read_config", lambda _t: {})
+    monkeypatch.setattr(spec, "mlx_target_snapshot_path", lambda _t: Path("/nowhere"))
+    monkeypatch.setattr(spec, "native_mtp_tensors_present", lambda *_a: native_head)
+    monkeypatch.setattr(
+        spec, "_builtin_candidate_rows",
+        lambda *_a: iter([
+            spec._CandidateRow(repo, spec._UNVERIFIED, {"repo_id": repo, "recommended": False})
+            for repo in builtin_rows
+        ]),
+    )
+    monkeypatch.setattr(spec, "_cached_candidate_rows", lambda *_a: iter(()))
+    monkeypatch.setattr(spec, "_recommendation_target_key", lambda *_a: "qwen3.8-27b")
+    monkeypatch.setattr(spec, "_recommendation_target_owner_allowed", lambda *_a: True)
+    monkeypatch.setattr(spec, "_target_method_contract_available", lambda *_a: True)
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda *_a: 0)
+    monkeypatch.setattr(
+        spec, "mlx_speculative_runtime_capabilities",
+        lambda: {"common": True, "methods": dict.fromkeys(spec.MLX_SPECULATIVE_METHODS, True),
+                 "reason": None},
+    )
+
+    candidates = spec.mlx_speculative_options("mlx-community/target")["candidates"]
+    assert len(candidates) - len(builtin_rows) > 1
+    assert [row["repo_id"] for row in candidates if row["recommended"]] == expected
+
+
 def test_every_recommendation_is_reachable_from_a_target_shape():
     """A seed keyed to something no shape produces is dead weight: nothing ever matches it, so
     the checkpoint it names is never offered and the mistake stays invisible.

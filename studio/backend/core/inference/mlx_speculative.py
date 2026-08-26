@@ -2335,29 +2335,43 @@ def _builtin_candidate_rows(target_id, target_config, caps, enabled):
     )
 
 
-def _recommended_candidate_rows(target_id, target_config, caps, enabled, native_head):
+def _recommendation_offered(seed, target_id, target_key, target_config, native_head) -> bool:
     """A checkpoint is proposed only for the family it was built for and only from an owner
     the target vouches for, so an unrelated repository sharing a name cannot steer one.
     """
-    target_key = _recommendation_target_key(target_id, target_config)
-    for seed in _RECOMMENDATIONS:
-        if target_key != seed.target_key or not _recommendation_target_owner_allowed(
-            target_id, target_key
-        ):
-            continue
-        if (
-            seed.target_owner is not None
-            and _target_repository_owner(target_id) != seed.target_owner
-        ):
-            continue
-        if target_config is not None and not _target_method_contract_available(
-            seed.method, target_config
-        ):
-            continue
-        # A target that already carries a head needs no companion for the same job.
-        if seed.requires_missing_native_mtp and native_head:
-            continue
+    if target_key != seed.target_key or not _recommendation_target_owner_allowed(
+        target_id, target_key
+    ):
+        return False
+    if seed.target_owner is not None and _target_repository_owner(target_id) != seed.target_owner:
+        return False
+    if target_config is not None and not _target_method_contract_available(
+        seed.method, target_config
+    ):
+        return False
+    # A target that already carries a head needs no companion for the same job.
+    return not (seed.requires_missing_native_mtp and native_head)
 
+
+def _recommended_candidate_rows(
+    target_id, target_config, caps, enabled, native_head, builtin_offered
+):
+    """One proposal is marked, so the badge names a choice instead of restating the list."""
+    target_key = _recommendation_target_key(target_id, target_config)
+    offered = [
+        seed
+        for seed in _RECOMMENDATIONS
+        if _recommendation_offered(seed, target_id, target_key, target_config, native_head)
+    ]
+    # The method Auto would reach for first. A resident head no proposal outranks is only
+    # better than downloading one where it is actually offered: carrying the tensors is not
+    # enough when this runtime cannot split them into a drafter.
+    best = (
+        None
+        if builtin_offered
+        else min(offered, key = lambda seed: _AUTO_METHOD_RANK[seed.method], default = None)
+    )
+    for seed in offered:
         target_matches = target_config is not None and (
             seed.verifier_id is None
             or _verifier_matches_target(seed.verifier_id, target_id, target_config) is True
@@ -2383,7 +2397,7 @@ def _recommended_candidate_rows(target_id, target_config, caps, enabled, native_
                 "repo_id": seed.repo_id,
                 "label": seed.label,
                 "source": "recommended",
-                "recommended": True,
+                "recommended": seed is best,
                 "approximate_size_bytes": seed.approximate_size_bytes,
                 "estimated_memory_bytes": estimated_memory_bytes,
                 "materialization_bytes": 0,
@@ -2504,9 +2518,10 @@ def mlx_speculative_options(target_id: str) -> dict[str, Any]:
                 native_head = native_mtp_tensors_present(snapshot, target_config)
         except (OSError, RuntimeError, ValueError):
             native_head = False
+        builtin = list(_builtin_candidate_rows(*args))
         rows = itertools.chain(
-            _builtin_candidate_rows(*args),
-            _recommended_candidate_rows(*args, native_head),
+            builtin,
+            _recommended_candidate_rows(*args, native_head, bool(builtin)),
             _cached_candidate_rows(*args),
         )
     return {
