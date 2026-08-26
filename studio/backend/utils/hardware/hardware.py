@@ -1469,6 +1469,7 @@ _ROCM_UNNAMED_APU_ARCHES = frozenset({"gfx1103"})
 def _rocm_props_unified_status(props: Any) -> Optional[bool]:
     try:
         from core.training.worker import _rocm_classify_unified_memory
+
         classification = _rocm_classify_unified_memory(props)
         arch = str(classification[0] or "")
         return bool(classification[1]) or (
