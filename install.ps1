@@ -2137,6 +2137,14 @@ public static class UnslothStudioFinalPathV2
             if ((Test-Path -LiteralPath $_studioIdFile) -and `
                 ((Get-Item -LiteralPath $_studioIdFile).Length -gt 0)) {
                 $_studioRootId = ([System.IO.File]::ReadAllText($_studioIdFile)).Trim()
+                # Same contract as the backend and the desktop app: 64
+                # lowercase hex. -cnotmatch because -notmatch is case
+                # insensitive and would take uppercase the backend rejects.
+                # Anything else lands in a single-quoted assignment in the
+                # generated launcher, so a planted quote would be code.
+                if ($_studioRootId -cnotmatch '^[0-9a-f]{64}$') {
+                    $_studioRootId = ""
+                }
             }
             if (-not $_studioRootId) {
                 $_idBytes = New-Object byte[] 32
@@ -2155,11 +2163,12 @@ public static class UnslothStudioFinalPathV2
                     try {
                         $_adoptedRootId = ([System.IO.File]::ReadAllText($_studioIdFile)).Trim()
                     } catch { }
-                    if ($_adoptedRootId) {
+                    if ($_adoptedRootId -cmatch '^[0-9a-f]{64}$') {
                         $_studioRootId = $_adoptedRootId
                     } else {
-                        # Zero-length incumbent is an interrupted write, not an
-                        # id. Replace it with one atomic rename, no unlink.
+                        # Zero-length or malformed is an interrupted write
+                        # or a planted value, not an id: replace it with one
+                        # atomic rename, no unlink.
                         Move-Item -LiteralPath $_idTmp -Destination $_studioIdFile -Force
                     }
                 } finally {
