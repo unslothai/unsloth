@@ -500,10 +500,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         repoIdForSidecarKey: sttRepoIdForSidecarKey,
         engineForRepo: sttEngineForRepoId,
       });
-      // The sidecar is shared, so this resync can drop the pick or adopt another
-      // surface's model. Either way the model that produced the transcript is gone,
-      // and leaving it up hands Copy and Download .txt a result nothing here made.
-      if (reconciled !== selectedSttRepoRef.current) clearTranscript();
+      // The sidecar is shared, so this resync can adopt another surface's model. The
+      // transcript on screen was made by the pick being replaced, and leaving it up
+      // shows it under the model that now sits in the picker. A selection merely going
+      // away misattributes nothing, so the 5-minute idle unload -- which fires while
+      // the user is on another tab, with no action of theirs -- keeps the text they
+      // came back to copy.
+      if (reconciled !== null && reconciled !== selectedSttRepoRef.current)
+        clearTranscript();
       selectedSttRepoRef.current = reconciled;
       setSelectedSttRepo(reconciled);
     } catch {
