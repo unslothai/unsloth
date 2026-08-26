@@ -749,9 +749,9 @@ def test_a_backgrounded_new_chat_view_neither_opens_a_thread_nor_prices_one():
     )
     assert out["paused"]["switched"] == 0, "a paused switch must not open a thread"
     assert out["paused"]["counts"] == 0, "a paused switch must not price a prompt"
-    assert (
-        out["paused"]["activeThreadId"] == "thread-on-screen"
-    ), "a paused switch must not blank the active thread the visible view is using"
+    assert out["paused"]["activeThreadId"] == "thread-on-screen", (
+        "a paused switch must not blank the active thread the visible view is using"
+    )
     assert out["paused"]["contextUsage"] is None
     assert out["switched"] == 1, "releasing the pause must open the new thread"
     assert out["activeThreadId"] is None
@@ -1052,12 +1052,12 @@ def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent, cou
     )
     assert out["counts"] == 1
     assert len(out["sent"]) == expected_sent, "the branch the request would send must be priced"
-    assert (out["contextUsage"] or {}).get(
-        "totalTokens"
-    ) == expected_total, "a total from another model's tokenizer must not reach the bar"
-    assert (out["cached"] or {}).get(
-        "totalTokens"
-    ) == expected_total, "nor the per-thread cache setActiveThreadId restores from"
+    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
+        "a total from another model's tokenizer must not reach the bar"
+    )
+    assert (out["cached"] or {}).get("totalTokens") == expected_total, (
+        "nor the per-thread cache setActiveThreadId restores from"
+    )
     if expected_total is not None:
         assert out["cached"] is not None, "the recount must reach the per-thread cache"
 
@@ -1122,9 +1122,9 @@ def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total)
     )
     assert out["counts"] == 1
     assert len(out["sent"]) == 2, "the count priced the branch as it stood"
-    assert (out["contextUsage"] or {}).get(
-        "totalTokens"
-    ) == expected_total, "a total for a branch that has since gained a turn must not reach the bar"
+    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
+        "a total for a branch that has since gained a turn must not reach the bar"
+    )
     assert (out["cached"] or {}).get("totalTokens") == expected_total
 
 
@@ -1327,9 +1327,9 @@ def test_a_count_for_a_branch_that_was_emptied_is_dropped(empties, expected_tota
         )
     )
     assert out["counts"] == 1
-    assert (out["contextUsage"] or {}).get(
-        "totalTokens"
-    ) == expected_total, "a total for a branch that has since been emptied must not reach the bar"
+    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
+        "a total for a branch that has since been emptied must not reach the bar"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1388,15 +1388,18 @@ def test_history_hydration_keeps_saved_usage_it_restored(
     )
     usage = out["contextUsage"] or {}
     assert usage.get("totalTokens") == expect_total
-    assert (
-        usage.get("completionTokens") == expect_completion
-    ), "the completion half of an exact total must survive hydration"
+    assert usage.get("completionTokens") == expect_completion, (
+        "the completion half of an exact total must survive hydration"
+    )
 
 
-def test_deep_research_declines_the_recount():
-    """With Deep Research on, the next send creates a server-side research run instead of posting
-    this history, and the research reply carries no usage to correct a guess with. Counting would
-    put a total on the bar describing a request that is never made, and leave it there."""
+def test_deep_research_recounts_before_the_model_decides():
+    """Arming Deep Research no longer guarantees a server-side research run.
+
+    The model first receives the ordinary chat turn and may answer directly, so the bar must price
+    that request just like any other send. A later tool handoff replaces the reply with research
+    state, but cannot justify hiding the context estimate before the model decides.
+    """
     out = _run(
         textwrap.dedent(
             f"""
@@ -1412,8 +1415,8 @@ def test_deep_research_declines_the_recount():
             """
         )
     )
-    assert out["counts"] == 0, "a research turn must not be priced as a chat completion"
-    assert out["contextUsage"] is None
+    assert out["counts"] == 1, "the model-decision turn must be priced before it can hand off"
+    assert out["contextUsage"] is not None
 
 
 def test_an_image_branch_is_declined_before_it_is_sent():
@@ -1566,9 +1569,9 @@ def test_a_trigger_skipped_behind_an_in_flight_count_is_replayed():
         "deferred but lost"
     )
     # 62, not 12: the replay prices the branch as it moved, which is the point of deferring it.
-    assert (
-        (out["contextUsage"] or {}).get("totalTokens") == 62
-    ), "and the replay must publish the current branch, which is why it is deferred not dropped"
+    assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
+        "and the replay must publish the current branch, which is why it is deferred not dropped"
+    )
 
 
 def test_a_new_chat_recount_is_retried_after_a_background_run_ends():
@@ -1604,9 +1607,9 @@ def test_a_new_chat_recount_is_retried_after_a_background_run_ends():
             """
         )
     )
-    assert (
-        out["during"]["counts"] == 0
-    ), "a New Chat must not count while the outgoing conversation is still generating"
+    assert out["during"]["counts"] == 0, (
+        "a New Chat must not count while the outgoing conversation is still generating"
+    )
     assert out["during"]["contextUsage"] is None
     assert out["counts"] == 1, (
         "the run ending must re-fire this effect: nothing else can, so without it the count is "
@@ -1649,9 +1652,9 @@ def test_a_new_chat_count_is_dropped_once_its_first_run_starts(first_run_starts,
         )
     )
     assert out["counts"] == 1
-    assert (out["contextUsage"] or {}).get(
-        "totalTokens"
-    ) == expected_total, "a bare-template total must not land on a New Chat that already has a turn"
+    assert (out["contextUsage"] or {}).get("totalTokens") == expected_total, (
+        "a bare-template total must not land on a New Chat that already has a turn"
+    )
 
 
 def test_adopting_the_resident_gguf_reprices_the_open_thread():

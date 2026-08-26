@@ -25,7 +25,7 @@ import type { ResearchMessageMetadata } from "../types/research";
 import { researchReplyOwnsRun } from "../utils/research-run-binding";
 import { researchStatusLabel } from "./research-activity-panel";
 
-export function ResearchMessage(): ReactElement {
+export function ResearchMessage(): ReactElement | null {
   const metadata = useAuiState(
     ({ message }) =>
       (message.metadata as { custom?: ResearchMessageMetadata } | undefined)
@@ -68,6 +68,9 @@ export function ResearchMessage(): ReactElement {
           className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-15p5"
         />
       );
+    }
+    if (!ownsRun) {
+      return null;
     }
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">

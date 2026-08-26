@@ -826,6 +826,8 @@ def _update_assistant(
             "createdAt": existing.get("createdAt") or db.now_ms(),
         },
         allow_research_update = True,
+        expected_research_run_id = run["id"],
+        expected_research_attempt = int(run.get("retryCount") or 0),
     )
 
 

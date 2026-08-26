@@ -197,6 +197,13 @@ def test_research_presentation_is_integrated() -> None:
     assert "Stop research" not in activity
     assert "retryResearchRun" in activity
     assert "Deep research completed" in message
+    empty_fallback = message.split("if (!run) {", 1)[1].split("if (run.status", 1)[0]
+    assert (
+        empty_fallback.index("if (fallbackText.trim())")
+        < empty_fallback.index("if (!ownsRun)")
+        < empty_fallback.index("Loading research…")
+    )
+    assert "return null;" in empty_fallback
     assert "<DocumentSourcesGroup" in message
     assert "urlTransform={safeMarkdownUrl}" in markdown_preview
     assert 'node.tagName !== "img"' in safe_markdown_url

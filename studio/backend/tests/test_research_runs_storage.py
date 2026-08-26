@@ -3805,6 +3805,19 @@ def test_stopped_run_is_repointed_at_a_newer_message(research_home):
     assert research_db.has_thread_claim("thread-1") is True
 
 
+def test_repointed_run_starts_a_fresh_attempt_clock(research_home, monkeypatch):
+    _create()
+    _cancel_run()
+    monkeypatch.setattr(research_db, "now_ms", lambda: 5_000_000)
+
+    reused = _rebind(_new_user_message())
+
+    assert reused is not None
+    assert reused["createdAt"] == 5_000_000
+    assert reused["heartbeatAt"] == 5_000_000
+    assert reused["updatedAt"] == 5_000_000
+
+
 def test_repointing_clears_the_stopped_run_of_its_old_question(research_home):
     _create()
     plan = research_db.set_plan("run-1", _plan())
@@ -4060,6 +4073,84 @@ def test_a_stopped_worker_does_not_stamp_cancelled_on_the_next_question(research
     new_reply = studio_db.get_chat_message("thread-1", "assistant-2")
     assert (new_reply["metadata"] or {}).get("researchStatus") != "cancelled"
     assert "Research cancelled." not in json.dumps(new_reply["content"])
+
+
+def test_terminal_write_cannot_cross_a_rebind_after_the_worker_guard(research_home, monkeypatch):
+    from core import research_runs as worker
+
+    _create()
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    research_db.request_cancel("run-1")
+    claimed = research_db.claim_next(supervisor.worker_id)
+    assert claimed is not None
+
+    async def cancelled_plan(run):
+        raise worker.RunCancelled()
+
+    original_update = worker._update_assistant
+    rebound = False
+
+    def rebind_after_guard(*args, **kwargs):
+        nonlocal rebound
+        if not rebound:
+            rebound = True
+            studio_db.upsert_chat_message(
+                {
+                    "id": "assistant-2",
+                    "threadId": "thread-1",
+                    "parentId": "user-2",
+                    "role": "assistant",
+                    "content": [],
+                    "createdAt": 21,
+                }
+            )
+            assert _rebind(_new_user_message(), assistant_message_id = "assistant-2") is not None
+        return original_update(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor, "_plan", cancelled_plan)
+    monkeypatch.setattr(worker, "_update_assistant", rebind_after_guard)
+    asyncio.run(supervisor._process(claimed))
+
+    current = research_db.get_run("run-1")
+    reply = studio_db.get_chat_message("thread-1", "assistant-2")
+    assert current is not None and current["status"] == "planning"
+    assert current["retryCount"] == 1
+    assert (reply["metadata"] or {}).get("researchStatus") != "cancelled"
+    assert "Research cancelled." not in json.dumps(reply["content"])
+
+
+def test_terminal_write_cannot_cross_a_retry_after_the_worker_guard(research_home, monkeypatch):
+    from core import research_runs as worker
+
+    _create()
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    research_db.request_cancel("run-1")
+    claimed = research_db.claim_next(supervisor.worker_id)
+    assert claimed is not None
+
+    async def cancelled_plan(run):
+        raise worker.RunCancelled()
+
+    original_update = worker._update_assistant
+    retried = False
+
+    def retry_after_guard(*args, **kwargs):
+        nonlocal retried
+        if not retried:
+            retried = True
+            assert research_db.retry("run-1") == "planning"
+        return original_update(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor, "_plan", cancelled_plan)
+    monkeypatch.setattr(worker, "_update_assistant", retry_after_guard)
+    asyncio.run(supervisor._process(claimed))
+
+    current = research_db.get_run("run-1")
+    reply = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert current is not None and current["status"] == "planning"
+    assert current["retryCount"] == 1
+    assert (reply["metadata"] or {}).get("researchStatus") != "cancelled"
+    assert "Research cancelled." not in json.dumps(reply["content"])
 
 
 def _attachment_only_message(message_id = "user-img", created_at = 40):

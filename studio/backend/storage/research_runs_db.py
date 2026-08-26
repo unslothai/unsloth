@@ -368,13 +368,15 @@ def rebind_cancelled(
             "UPDATE research_runs SET user_message_id=?, assistant_message_id=?, "
             "status='planning', cancel_requested=0, plan_json=NULL, plan_hash=NULL, "
             "plan_revision=?, retry_count=retry_count + 1, error_message=NULL, "
-            "report_text=NULL, started_at=NULL, "
+            "report_text=NULL, created_at=?, heartbeat_at=?, started_at=NULL, "
             "completed_at=NULL, lease_owner=NULL, lease_expires_at=NULL, config_json=?, "
             "updated_at=? WHERE id=?",
             (
                 user_message_id,
                 assistant_message_id,
                 revision,
+                now,
+                now,
                 json.dumps(config, ensure_ascii = False),
                 now,
                 run_id,
