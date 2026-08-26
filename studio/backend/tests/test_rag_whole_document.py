@@ -357,6 +357,28 @@ def test_build_rag_autoinject_zero_budget_still_grounds(rag_conn, monkeypatch):
         assert _injected_text(result) == "TOPK_ZERO_BUDGET", scope
 
 
+def test_build_rag_autoinject_zero_budget_grounds_with_one_passage(rag_conn, monkeypatch):
+    # Grounding survives a zero budget, but only just: a measured "no room left"
+    # keeps the single mandatory passage, not the whole top-K, which would add
+    # several chunks to a turn that has no tokens left for them.
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
+    )
+
+    def fake_search(**kw):
+        sources = [
+            {"citationId": 0, "filename": "thread.txt", "text": "T" * 2000}
+            for _ in range(kw["top_k"] or 4)
+        ]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    scope = {"thread_id": "t1", "autoinject": False, "context_length": 1200}
+    assert inf_tools._whole_doc_budget(scope, _convo()) == 0
+    injected = _injected_text(inf_tools.build_rag_autoinject(_convo(), scope))
+    assert injected.count('<chunk id="') == 1
+
+
 def test_build_rag_autoinject_enabled_path_stays_unbudgeted(rag_conn, monkeypatch):
     # With auto-injection ON the fallback is the pre-existing one: a single
     # combined search, no whole-doc budget clamp. A long thread or a small

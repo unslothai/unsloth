@@ -10981,8 +10981,14 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         # bound for both, and identical to the old estimate on pure ASCII.
         # Exact counts are not reachable here: chunks_by_id does not select
         # token_count, and the GGUF's tokenizer lives in llama-server.
-        if not max_tokens or max_tokens <= 0:
+        # No budget was computed (the estimate itself failed) means there is
+        # nothing to enforce. A budget of zero is the opposite: it is a measured
+        # "no room left", so nothing fits and _trim falls back to the single
+        # mandatory passage rather than keeping the whole top-K.
+        if max_tokens is None:
             return True
+        if max_tokens <= 0:
+            return False
         return max(1, len(candidate_text.encode("utf-8")) // 4) <= max_tokens
 
     def _trim(hit_text, hit_sources, max_tokens):
