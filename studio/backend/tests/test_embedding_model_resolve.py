@@ -956,9 +956,7 @@ def test_a_gguf_only_model_is_refused_when_llama_server_is_missing(client, monke
     assert "no llama-server binary was found" in body["error"]
 
 
-def test_a_safetensors_model_still_falls_back_when_llama_server_is_missing(
-    client, monkeypatch
-):
+def test_a_safetensors_model_still_falls_back_when_llama_server_is_missing(client, monkeypatch):
     """The refusal is scoped to models only llama can serve. One that publishes
     safetensors has a usable plan on the other backend, and turning that into an
     error would strand it too."""

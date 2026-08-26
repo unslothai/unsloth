@@ -1858,7 +1858,6 @@ def _ambient_hf_token() -> Optional[str]:
 def _model_names_gguf_repo(model: str) -> bool:
     """Whether ``model`` is a repo id naming GGUF weights, per the embedder's rule."""
     from core.rag import embeddings
-
     try:
         return embeddings._model_names_gguf_repo(model)
     except Exception:  # noqa: BLE001 - a name test that cannot answer blocks nothing
@@ -1871,7 +1870,6 @@ def _llama_runtime_available() -> bool:
     Shares the embedder's own probe so the resolver and the loader cannot disagree
     about whether the backend exists."""
     from core.rag import embeddings
-
     try:
         return embeddings._llama_server_runtime_available()
     except Exception:  # noqa: BLE001 - an unanswerable probe must not block saving

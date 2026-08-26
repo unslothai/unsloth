@@ -1535,7 +1535,11 @@ def test_a_dim_probe_is_serialized_with_a_model_switch(monkeypatch):
     monkeypatch.setattr(b, "_ensure_ready", lambda model_name = None: None)
     observed = {}
 
-    def _probe_encode(texts, normalize = False, model_name = None):
+    def _probe_encode(
+        texts,
+        normalize = False,
+        model_name = None,
+    ):
         # A second job trying to take the server while this probe is mid-flight.
         acquired = []
         switcher = threading.Thread(
