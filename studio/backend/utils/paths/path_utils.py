@@ -137,6 +137,51 @@ def normalize_path(path: str) -> str:
     return path.replace("\\", "/")
 
 
+def wsl_automount_root() -> str:
+    """DrvFs root under which WSL maps Windows drives, with a trailing slash.
+
+    Defaults to ``/mnt/`` but is user-configurable via ``/etc/wsl.conf``
+    (``[automount] root``), so hard-coding ``/mnt/`` mistranslates Windows paths
+    on a host with a custom root (e.g. ``root = /`` -> ``C:`` at ``/c/``).
+    """
+    default = "/mnt/"
+    if not _IS_WSL:
+        return default
+    try:
+        import configparser
+
+        parser = configparser.ConfigParser(inline_comment_prefixes = ("#", ";"))
+        parser.read("/etc/wsl.conf", encoding = "utf-8")
+        root = parser.get("automount", "root", fallback = "").strip().strip("\"'")
+    except Exception:
+        return default
+    if not root:
+        return default
+    return root if root.endswith("/") else f"{root}/"
+
+
+_WSL_AUTOMOUNT_ROOT: str = wsl_automount_root()
+
+
+def host_normalize_path(path: str) -> str:
+    """Normalize a path this process is about to open, honouring ``[automount] root``.
+
+    Deliberately not :func:`normalize_path`: that one hard-codes ``/mnt/`` because
+    it has to predict the mapping the model loader will use. Paths read out of
+    *another* tool's config (LM Studio's ``downloadsFolder``, ``$OLLAMA_MODELS``)
+    are stat-ed here, so they take the real automount root.
+    """
+    if not path:
+        return path
+    if len(path) >= 3 and path[1] == ":" and path[2] in ("\\", "/"):
+        if _IS_WSL:
+            drive = path[0].lower()
+            rest = path[3:].replace("\\", "/")
+            return f"{_WSL_AUTOMOUNT_ROOT}{drive}/{rest}"
+        return path.replace("\\", "/")
+    return path.replace("\\", "/")
+
+
 def is_local_path(path: str) -> bool:
     """
     Check if path is a local filesystem path vs HuggingFace model identifier.

@@ -9,9 +9,13 @@ import os
 import re
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Iterable
 import tempfile
 
-from utils.paths.path_utils import drop_appledouble_metadata
+from loggers import get_logger
+from utils.paths.path_utils import drop_appledouble_metadata, host_normalize_path
+
+logger = get_logger(__name__)
 
 
 def _infer_studio_home_from_venv() -> Path | None:
@@ -238,36 +242,82 @@ def hf_default_cache_dir() -> Path:
     return Path.home() / ".cache" / "huggingface" / "hub"
 
 
+def _host_path(path: str | Path) -> Path:
+    """Expand a configured path into one this process can stat.
+
+    Drive-letter paths read out of a tool's config file mean nothing to a WSL
+    process until they are mapped under the automount root.
+    """
+    return Path(host_normalize_path(str(path))).expanduser()
+
+
+def _existing_dirs(candidates: Iterable[str | Path], *, resolve: bool) -> list[Path]:
+    """Host-translate *candidates*, drop non-directories, dedupe by real path."""
+    out: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            expanded = _host_path(candidate)
+            resolved = expanded.resolve()
+            is_dir = expanded.is_dir()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        key = str(resolved)
+        if key in seen or not is_dir:
+            continue
+        seen.add(key)
+        out.append(resolved if resolve else expanded)
+    return out
+
+
+def _lmstudio_downloads_folder() -> str:
+    """Custom models folder from LM Studio's settings.json, or "" if unset.
+
+    Read as utf-8-sig: LM Studio writes this file itself, and a BOM'd one used
+    to be discarded silently, dropping the user's custom folder.
+    """
+    settings_path = Path.home() / ".lmstudio" / "settings.json"
+    if not settings_path.is_file():
+        return ""
+    try:
+        settings = json.loads(settings_path.read_text(encoding = "utf-8-sig"))
+        return settings.get("downloadsFolder", "") or ""
+    except Exception as exc:
+        logger.debug("Ignoring unreadable LM Studio settings at %s: %s", settings_path, exc)
+        return ""
+
+
 def lmstudio_model_dirs() -> list[Path]:
     """Return LM Studio model directories that exist on disk."""
-    dirs: list[Path] = []
-    seen: set[Path] = set()
+    candidates: list[str | Path] = []
 
-    def _add(p: Path) -> None:
-        resolved = p.resolve()
-        if resolved not in seen and p.is_dir():
-            seen.add(resolved)
-            dirs.append(p)
-
-    # LM Studio settings.json custom downloads folder
-    settings_path = Path.home() / ".lmstudio" / "settings.json"
-    if settings_path.is_file():
-        try:
-            with open(settings_path, encoding = "utf-8-sig") as f:
-                settings = json.load(f)
-            downloads = settings.get("downloadsFolder", "")
-            if downloads:
-                _add(Path(downloads).expanduser())
-        except Exception:
-            pass
+    downloads = _lmstudio_downloads_folder()
+    if downloads:
+        candidates.append(downloads)
 
     # LM Studio default models directory (all platforms)
-    _add(Path.home() / ".lmstudio" / "models")
+    candidates.append(Path.home() / ".lmstudio" / "models")
 
     # Legacy LM Studio cache location
-    _add(Path.home() / ".cache" / "lm-studio" / "models")
+    candidates.append(Path.home() / ".cache" / "lm-studio" / "models")
 
-    return dirs
+    return _existing_dirs(candidates, resolve = False)
+
+
+def ollama_model_dirs() -> list[Path]:
+    """Return Ollama model directories that exist on disk.
+
+    User-level plus the common system-wide install paths
+    (https://github.com/ollama/ollama/issues/733).
+    """
+    candidates: list[str | Path] = []
+    ollama_env = os.environ.get("OLLAMA_MODELS")
+    if ollama_env:
+        candidates.append(ollama_env)
+    candidates.append(Path.home() / ".ollama" / "models")
+    candidates.append(Path("/usr/share/ollama/.ollama/models"))
+    candidates.append(Path("/var/lib/ollama/.ollama/models"))
+    return _existing_dirs(candidates, resolve = False)
 
 
 def well_known_model_dirs() -> list[Path]:
@@ -278,19 +328,9 @@ def well_known_model_dirs() -> list[Path]:
     likelihood of models being there -- LM Studio and Ollama first, then
     generic fallbacks.
     """
-    candidates: list[Path] = []
-
-    # LM Studio (reuses the logic above, including settings.json override)
+    candidates: list[str | Path] = []
     candidates.extend(lmstudio_model_dirs())
-
-    # Ollama -- user-level and common system-wide install paths
-    # (https://github.com/ollama/ollama/issues/733).
-    ollama_env = os.environ.get("OLLAMA_MODELS")
-    if ollama_env:
-        candidates.append(Path(ollama_env).expanduser())
-    candidates.append(Path.home() / ".ollama" / "models")
-    candidates.append(Path("/usr/share/ollama/.ollama/models"))
-    candidates.append(Path("/var/lib/ollama/.ollama/models"))
+    candidates.extend(ollama_model_dirs())
 
     # HF hub cache root (separate from the explicit HF cache chip)
     candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
@@ -299,20 +339,7 @@ def well_known_model_dirs() -> list[Path]:
     for name in ("models", "Models"):
         candidates.append(Path.home() / name)
 
-    # Dedupe preserving order; keep only extant dirs
-    out: list[Path] = []
-    seen: set[str] = set()
-    for p in candidates:
-        try:
-            resolved = str(p.resolve())
-        except OSError:
-            continue
-        if resolved in seen:
-            continue
-        if Path(resolved).is_dir():
-            seen.add(resolved)
-            out.append(Path(resolved))
-    return out
+    return _existing_dirs(candidates, resolve = True)
 
 
 def _setup_cache_env() -> None:
