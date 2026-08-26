@@ -184,6 +184,37 @@ def test_xpu_triton_without_the_private_api_is_not_gated(tmp_path, monkeypatch):
     assert _msvc_env.crt_headers_reachable() is True
 
 
+def test_stale_rocm_clang_cl_under_xpu_triton_is_not_gated(tmp_path, monkeypatch):
+    """A ROCm-to-XPU move under a pinned index is repaired in place (setup.ps1:4162) and does
+    not prune orphans, so `_rocm_sdk_core` can outlive the Triton that would have selected it.
+    The file being there is not evidence the active Triton will run it."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("INCLUDE", str(tmp_path))  # no stdlib.h
+    monkeypatch.setitem(sys.modules, "triton.runtime.build", None)
+    monkeypatch.setattr(_msvc_env, "_rocm_clang_cl_present", lambda: True)  # the orphan
+    monkeypatch.setattr(_msvc_env, "_triton_is_triton_windows", lambda: False)  # but XPU Triton
+    assert _msvc_env._needs_msvc_headers() is False
+    assert _msvc_env.crt_headers_reachable() is True
+
+
+def test_triton_is_triton_windows_reads_the_distribution_name(monkeypatch):
+    """Resolved by distribution, the same question setup.ps1 asks when it swaps the two."""
+    import importlib.metadata as md
+
+    monkeypatch.setattr(md, "packages_distributions", lambda: {"triton": ["triton-windows"]})
+    assert _msvc_env._triton_is_triton_windows() is True
+    monkeypatch.setattr(md, "packages_distributions", lambda: {"triton": ["pytorch-triton-xpu"]})
+    assert _msvc_env._triton_is_triton_windows() is False
+    monkeypatch.setattr(md, "packages_distributions", lambda: {})
+    assert _msvc_env._triton_is_triton_windows() is False
+
+    def boom():
+        raise RuntimeError("metadata is unreadable")
+
+    monkeypatch.setattr(md, "packages_distributions", boom)
+    assert _msvc_env._triton_is_triton_windows() is False
+
+
 def test_no_private_api_but_rocm_clang_cl_on_disk_is_gated(tmp_path, monkeypatch):
     """The other half: an AMD box whose Triton does not expose the API still gets the gate,
     because get_cc() would pick the ROCm clang-cl sitting right there."""
@@ -191,6 +222,7 @@ def test_no_private_api_but_rocm_clang_cl_on_disk_is_gated(tmp_path, monkeypatch
     monkeypatch.setenv("INCLUDE", str(tmp_path))
     monkeypatch.setitem(sys.modules, "triton.runtime.build", None)
     monkeypatch.setattr(_msvc_env, "_rocm_clang_cl_present", lambda: True)
+    monkeypatch.setattr(_msvc_env, "_triton_is_triton_windows", lambda: True)
     # Left real, this asks the runner's own Visual Studio and answers for the wrong machine.
     monkeypatch.setattr(_msvc_env, "_triton_finds_crt_headers", lambda: False)
     assert _msvc_env._needs_msvc_headers() is True

@@ -68,13 +68,29 @@ def _triton_finds_crt_headers() -> bool:
     return any(d and os.path.isfile(os.path.join(d, "stdlib.h")) for d in inc_dirs)
 
 
-def _rocm_clang_cl_present() -> bool:
-    """Whether the ROCm wheel's clang-cl, the compiler #7595 is about, is installed.
+def _triton_is_triton_windows() -> bool:
+    """Whether the installed `triton` package comes from the triton-windows distribution.
 
-    `get_cc()` prefers it over everything else, so its presence decides the question on its own.
-    Kept as a plain path check because it has to answer for Triton builds that do not expose
-    `triton.runtime.build`, and because it cannot be fooled by a different Triton owning the
-    top-level package.
+    Only its `build.py` prefers the ROCm wheel's clang-cl. Torch's XPU Triton and upstream
+    Triton own the same top-level name without that preference, so a `_rocm_sdk_core` left on
+    disk says nothing about what they will run. setup.ps1 asks this same question by
+    distribution name when it swaps the two.
+    """
+    try:
+        import importlib.metadata as md  # noqa: PLC0415
+        dists = md.packages_distributions().get("triton") or ()
+    except Exception:  # noqa: BLE001 -- unanswerable means don't gate, see _needs_msvc_headers
+        logger.debug("Could not resolve which distribution owns `triton`", exc_info = True)
+        return False
+    return any(d.lower().replace("_", "-") == "triton-windows" for d in dists)
+
+
+def _rocm_clang_cl_present() -> bool:
+    """Whether the ROCm wheel's clang-cl, the compiler #7595 is about, is on disk.
+
+    Only meaningful alongside `_triton_is_triton_windows()`: a ROCm-to-XPU move under a pinned
+    index is repaired in place (setup.ps1:4162) and does not prune orphans, so this file can
+    outlive the Triton that would have selected it.
     """
     import sysconfig  # noqa: PLC0415
     return os.path.isfile(
@@ -94,15 +110,20 @@ def _needs_msvc_headers() -> bool:
     Asking Triton is exact, so try that first. But several Triton builds own the top-level
     `triton` package without that private API: setup.ps1 swaps triton-windows for torch's
     pytorch-triton-xpu on Intel, and older builds predate `is_clang_cl`. Answering "MSVC
-    required" for those would disable torch.compile on installs that compile fine, so the
-    fallback checks for the one compiler this is about instead of assuming the worst.
+    required" for those would disable torch.compile on installs that compile fine.
+
+    The fallback therefore needs BOTH halves. The compiler has to be on disk, and the active
+    Triton has to be the distribution that would select it, because an in-place ROCm-to-XPU
+    repair can leave the one without the other. Anything still unanswerable is left ungated:
+    failing to gate costs the actionable message on a box that was already broken, while
+    gating wrongly breaks a box that works.
     """
     try:
         from triton.runtime.build import get_cc, is_clang_cl, is_msvc
         cc = get_cc()
-    except Exception:  # noqa: BLE001 -- another Triton flavour, or no compiler: ask the disk
+    except Exception:  # noqa: BLE001 -- another Triton flavour, or no compiler: ask the install
         logger.debug("Triton's compiler selection is unavailable", exc_info = True)
-        return _rocm_clang_cl_present()
+        return _triton_is_triton_windows() and _rocm_clang_cl_present()
     return bool(is_msvc(cc) or is_clang_cl(cc))
 
 
