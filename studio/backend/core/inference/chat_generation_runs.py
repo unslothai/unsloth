@@ -380,7 +380,11 @@ class ChatGenerationSupervisor:
                 status = "failed"
                 finish_reason = "interrupted"
                 error = "Studio shut down during generation"
-            elif cancel_event.is_set() or current["cancelRequested"]:
+            elif current["cancelRequested"] or (cancel_event.is_set() and error is None):
+                # A bare event is not proof of a user stop: the streaming paths set this
+                # same event from their cleanup after emitting an in-band error, so a
+                # parsed failure outranks it. An explicit cancelRequested still wins,
+                # and a real Stop carries no error chunk, so neither loses its identity.
                 status = "cancelled"
                 finish_reason = "cancelled"
             elif error is not None:

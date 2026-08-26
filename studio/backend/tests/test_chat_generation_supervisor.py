@@ -420,6 +420,41 @@ async def test_uncancelled_partial_eof_is_interrupted(durable_run, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_streamed_error_outranks_cleanup_cancellation(durable_run, monkeypatch):
+    """A backend failure must not be recorded as if the user pressed Stop.
+
+    ``gguf_stream_chunks`` emits the error in band, follows it with ``[DONE]`` and then
+    sets this same ``cancel_event`` from its ``finally`` because the stream did not
+    complete. Nobody asked to cancel, so the run has to settle as ``failed`` carrying
+    the diagnostic the user needs to act on.
+    """
+    async def body(cancel_event):
+        try:
+            yield 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+            yield (
+                'data: {"error": {"message": "Out of memory"}}\n\n'
+                'data: [DONE]\n\n'
+            )
+        finally:
+            cancel_event.set()
+
+    async def fake(_payload, request, *_args, **_kwargs):
+        return SimpleNamespace(
+            status_code = 200,
+            body_iterator = body(request.state.generation_cancel_event),
+        )
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    await ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))._produce("run-1")
+    run = runs_db.get_run("run-1", "alice")
+    assert run["status"] == "failed"
+    assert run["error"] == "Out of memory"
+    assert run["finishReason"] != "cancelled"
+    metadata = studio_db.get_chat_message("thread-1", "assistant-1")["metadata"]
+    assert metadata["incomplete"] != {"reason": "cancelled"}
+
+
+@pytest.mark.asyncio
 async def test_graceful_supervisor_shutdown_is_interrupted(durable_run, monkeypatch):
     entered = asyncio.Event()
 
