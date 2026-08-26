@@ -1123,20 +1123,16 @@ def derive_unstable(
             # Unstable only with enough observations to mean it. Below that the honest answer is
             # "not enough evidence", which is not the same as "stable" and is not reported as it.
             #
-            # COUNTED FROM THE COMPLETE COMPARISONS ONLY, so a settled-match refusal can decide an
-            # action but can never help CLASSIFY one as unstable. One DIFFER beside one settled
-            # match is one differing comparison, and letting the refusal supply the second
-            # observation would mint an exemption out of a reading that never saw the live
-            # subtree. It can still lower `undetermined`, which is the direction that only ever
-            # narrows the excuse set.
+            # FROM THE COMPLETE COMPARISONS ONLY: a settled-match refusal can decide an action
+            # and never help CLASSIFY one as unstable. One DIFFER beside one settled match is one
+            # differing comparison, and letting the refusal supply the second would mint an
+            # exemption from a reading that never saw the live subtree.
             "unstable": bool(d and (n - settled[action]) >= min_observations),
-            # THE SAME COUNT `unstable` WAS DECIDED ON, once anything has differed. Leaving this
-            # on the raw total made the mixed state -- one real DIFFER beside one settled match --
-            # read as "decided, and stable": not unstable, not undetermined. `cross_check` then
-            # files a declared action under `declared_stable_in_practice`, whose stated meaning is
-            # that the null never saw it differ, on a run where it differed once. With nothing
-            # differing there is no classification to make and the total is the right count, which
-            # is the case this change exists for.
+            # THE SAME COUNT `unstable` WAS DECIDED ON, once anything has differed. On the raw
+            # total the mixed state -- one DIFFER beside one settled match -- read as "decided and
+            # stable", so `cross_check` filed a declared action under `declared_stable_in_practice`
+            # ("the null never saw it differ") on a run where it differed once. With nothing
+            # differing there is no classification to make and the total is the right count.
             "undetermined": (n - settled[action] if d else n) < min_observations,
         }
     return out

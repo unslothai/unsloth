@@ -1614,10 +1614,10 @@ def test_a_live_row_whose_role_changed_carries_no_positive_reading():
 
 def test_a_settled_match_cannot_supply_the_observation_that_mints_an_exemption():
     # DECIDING an action and CLASSIFYING it unstable are different claims, and only the first is
-    # this flag's to make. One real DIFFER beside one settled-match refusal is one differing
-    # comparison, so letting the refusal supply the second observation would derive
-    # `(rung, action)` into the MEASURED exemption set on a reading that never saw the live
-    # subtree -- the excuse set growing, which `SETTLED_MATCH` promises it cannot do.
+    # this flag's to make. One DIFFER beside one settled-match refusal is one differing comparison,
+    # so letting the refusal supply the second observation would derive `(rung, action)` into the
+    # MEASURED exemption set from a reading that never saw the live subtree -- the excuse set
+    # growing, which `SETTLED_MATCH` promises it cannot do.
     rows = streaming_pair_rows(
         "r100K.base.rep0",
         "r100K.treatment.rep0",
@@ -1632,11 +1632,10 @@ def test_a_settled_match_cannot_supply_the_observation_that_mints_an_exemption()
     assert row["observations"] == 2
     assert row["differed"] == 1
     assert row[P.SETTLED_MATCH] == 1
-    # NOT unstable, because only one of the two readings compared anything. And not "decided,
-    # and stable" either: one differing comparison is the single flake `min_observations` exists
-    # for, so once anything has differed the same count decides both. Left on the raw total this
-    # would reach `cross_check` as `declared_stable_in_practice`, whose stated meaning is that the
-    # null never saw this action differ, on a run where it differed once.
+    # NOT unstable, because only one of the two readings compared anything, and not "decided and
+    # stable" either: one differing comparison is the single flake `min_observations` exists for.
+    # On the raw total this reached `cross_check` as `declared_stable_in_practice`, whose stated
+    # meaning is that the null never saw this action differ.
     assert row["unstable"] is False
     assert row["undetermined"] is True
     # Two complete comparisons still classify exactly as before.
