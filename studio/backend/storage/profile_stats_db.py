@@ -653,7 +653,7 @@ def compute_profile_stats(
 ) -> dict[str, Any]:
     """Aggregate profile statistics, subject-scoping only external API usage.
 
-    Legacy Studio chat and training history is install-wide because those rows
+    Legacy Unsloth chat and training history is install-wide because those rows
     have no authenticated owner. An empty subject intentionally sees no API
     receipts, keeping non-route callers fail-closed.
     """

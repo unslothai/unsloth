@@ -109,7 +109,7 @@ import {
 } from "@/features/model-picker/api/llama-flags";
 import type {
   ChatLoraSummary,
-  ChatModelSummary,
+  ChatModelRow,
 } from "../types/runtime";
 
 export type SelectedModelInput = {
@@ -249,7 +249,7 @@ function describeModel(model: {
   return tags.join(" · ");
 }
 
-function toChatModelSummary(model: {
+function toChatModelRow(model: {
   id: string;
   name?: string | null;
   is_lora?: boolean;
@@ -260,7 +260,7 @@ function toChatModelSummary(model: {
   audio_type?: string | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
-}): ChatModelSummary {
+}): ChatModelRow {
   return {
     id: model.id,
     name: model.name || model.id,
@@ -288,6 +288,7 @@ export function syncModelCapabilities(
     is_vision?: boolean;
     is_lora?: boolean;
     is_gguf?: boolean;
+    is_mlx?: boolean;
     is_audio?: boolean;
     audio_type?: string | null;
     has_audio_input?: boolean;
@@ -299,6 +300,9 @@ export function syncModelCapabilities(
   const synced = {
     isVision: Boolean(resp.is_vision),
     isGguf: Boolean(resp.is_gguf),
+    // A locally scanned model is in no /api/models/list row, so this is the only place
+    // its summary learns it is served by MLX, and the seed gate reads that.
+    isMlx: Boolean(resp.is_mlx),
     isAudio: Boolean(resp.is_audio),
     audioType: resp.audio_type ?? null,
     hasAudioInput: Boolean(resp.has_audio_input),
@@ -398,7 +402,7 @@ async function syncInferenceStatusToStore(options?: {
     // describes a moment that has passed.
     if (signal?.aborted || superseded()) return;
 
-    setModels(listRes.models.map(toChatModelSummary));
+    setModels(listRes.models.map(toChatModelRow));
     if (lorasRes) {
       setLoras(lorasRes.loras.map(toLoraSummary));
     }
@@ -427,7 +431,7 @@ async function syncInferenceStatusToStore(options?: {
         // capability. Re-apply live status so attach gates survive a refresh.
         syncModelCapabilities(checkpointId, statusRes);
 
-        // Studio starting against an already-resident GGUF: history can load before this first
+        // Unsloth starting against an already-resident GGUF: history can load before this first
         // status refresh has a checkpoint or window, so its own recount never runs. A null thread
         // would publish an empty count, hence the mounted-thread guard.
         const hydrated = useChatRuntimeStore.getState();

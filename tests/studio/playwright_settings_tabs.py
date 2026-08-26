@@ -165,7 +165,7 @@ def click_tab_and_observe(page, tab: str) -> dict:
 def require_harness(page) -> None:
     """Fail with the cause rather than a selector timeout if the page has moved on.
 
-    Vite dev proxies /api to 127.0.0.1:8888. With a real Studio listening there and no
+    Vite dev proxies /api to 127.0.0.1:8888. With a real Unsloth listening there and no
     token, those calls come back 401 and the app's auth handling navigates, which takes
     the harness's window with it. Every later step then times out on a dialog that cannot
     exist. This is not the dialog's doing: it happens on main too, where the harness is
@@ -174,7 +174,7 @@ def require_harness(page) -> None:
     if not page.evaluate("() => !!window.__settingsSmoke"):
         raise RuntimeError(
             "the harness page is gone (window.__settingsSmoke undefined). This smoke page "
-            f"is served by vite on {PORT} and proxies /api to 127.0.0.1:8888; a Studio "
+            f"is served by vite on {PORT} and proxies /api to 127.0.0.1:8888; an Unsloth "
             "listening there answers 401 and the app navigates away. Run this without a "
             "backend on 8888."
         )

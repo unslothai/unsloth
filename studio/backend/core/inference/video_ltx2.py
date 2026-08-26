@@ -35,7 +35,7 @@ LTX23_EXTRAS_REPO = "unsloth/LTX-2.3-GGUF"
 
 
 def _live_cache_dir() -> str:
-    """Studio's LIVE hub cache root. Read from utils rather than ``diffusion.hub_cache_dir`` to
+    """Unsloth's LIVE hub cache root. Read from utils rather than ``diffusion.hub_cache_dir`` to
     avoid a circular import, the same way diffusion_auto_policy does."""
     from utils.hf_cache_settings import active_hf_hub_cache
     return active_hf_hub_cache()
@@ -657,7 +657,7 @@ def load_ltx23_pipeline(
     )
 
     # Shared 2.0/2.3 components from the base repo via model_index, so upstream class renames break loudly here rather than drift.
-    # Pinned to the LIVE hub root, not huggingface_hub's import-time constant: Studio's cache
+    # Pinned to the LIVE hub root, not huggingface_hub's import-time constant: Unsloth's cache
     # folder is a setting, and the locality gate that cleared this switch reads the live root. An
     # unpinned lookup after a mid-session change searches the OTHER root, so under
     # local_files_only it raises for a base that is fully downloaded, after eviction.

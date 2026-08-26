@@ -1313,7 +1313,7 @@ class _Resident:
 
 
 class _RecastingPipeline:
-    """``from_pipe`` as every diffusers Studio can install implements it: reuse the resident
+    """``from_pipe`` as every diffusers Unsloth can install implements it: reuse the resident
     components, then cast them in name order to float32 unless the caller named a dtype."""
 
     seen: dict = {}
@@ -1409,7 +1409,7 @@ def test_from_pipe_no_recast_leaves_every_component_at_its_loaded_dtype(
     encoder is float32 already by then, so catching the error is not a fix; unquantized
     raises nothing at all and the whole pipeline is silently doubled in place. The two
     pipeline classes cover a from_pipe that recasts and one that has stopped, so an upstream
-    fix landing under Studio cannot change the outcome."""
+    fix landing under Unsloth cannot change the outcome."""
     from core.inference.diffusion import DiffusionBackend
 
     resident = _Resident(quantized_transformer = quantized_transformer)
@@ -5593,7 +5593,7 @@ def _split_cache_roots(
     *,
     register_root = False,
 ):
-    """Studio's live cache root and a second one holding what a mid-session cache-folder change
+    """Unsloth's live cache root and a second one holding what a mid-session cache-folder change
     left behind, both empty. ``register_root`` makes the second dir huggingface_hub's import-time
     constant, the root ``cache_dir = None`` resolves to; without it the constant points at a third
     empty dir, so ``other`` is reachable only as an explicit staged snapshot. Either way the test
@@ -5669,7 +5669,7 @@ def _other_root_base_snapshot(
     *,
     register_root = False,
 ):
-    """A base repo cached ONLY under the other cache root, with Studio's live root empty: what
+    """A base repo cached ONLY under the other cache root, with Unsloth's live root empty: what
     a mid-session cache-folder change leaves behind, handed back as ``_base_local_dir``. Sparse."""
     _live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = register_root)
     snapshot = other / "models--bfl--base" / "snapshots" / ("a" * 40)
@@ -6511,7 +6511,7 @@ def _fake_hf_api(
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
     # Download-plan tests describe their cache state explicitly. Never let a developer's real
-    # Studio cache make an entry disappear from these otherwise hermetic tests.
+    # Unsloth cache make an entry disappear from these otherwise hermetic tests.
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
@@ -7352,7 +7352,7 @@ def test_download_plan_for_a_pipeline_kind_ignores_the_prequant_cache(monkeypatc
 
 
 def test_download_plan_restages_a_base_split_across_both_cache_roots(monkeypatch):
-    # Studio's cache folder is a setting, so a base can end up half in the old root and half in the
+    # Unsloth's cache folder is a setting, so a base can end up half in the old root and half in the
     # new one. _prefetch_files refuses to name a snapshot in that state and the assembly is pinned
     # to hub_cache_dir(), so the old-root half is invisible to from_pretrained. Staging nothing
     # there means the load re-pulls it inline, past the plan's progress, cancel and disk preflight.

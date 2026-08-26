@@ -3366,7 +3366,7 @@ def _mark_chat_attachment_inventory_clean(conn: sqlite3.Connection) -> None:
 
 
 def _rebuild_chat_attachment_inventory(conn: sqlite3.Connection) -> None:
-    """Rebuild after schema upgrade or a write from an older Studio build."""
+    """Rebuild after schema upgrade or a write from an older Unsloth build."""
     conn.execute("DELETE FROM chat_attachment_inventory")
     tombstones: dict[tuple[str, str], set[str]] = {}
     for row in conn.execute(
@@ -3434,10 +3434,29 @@ def upsert_chat_message(
     *,
     allow_research_update: bool = False,
     allow_generation_edit: bool = False,
-) -> dict:
+    expected_research_run_id: str | None = None,
+    expected_research_attempt: int | None = None,
+) -> dict | None:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if expected_research_run_id is not None:
+            if expected_research_attempt is None:
+                raise ValueError("expected_research_attempt is required with a research run")
+            current = conn.execute(
+                "SELECT 1 FROM research_runs "
+                "WHERE id = ? AND thread_id = ? AND assistant_message_id = ? "
+                "AND retry_count = ?",
+                (
+                    expected_research_run_id,
+                    message["threadId"],
+                    message["id"],
+                    expected_research_attempt,
+                ),
+            ).fetchone()
+            if current is None:
+                conn.rollback()
+                return None
         _ensure_chat_attachment_inventory_current(conn)
         if _references_tombstoned_generation(conn, message):
             raise ChatMessageProtectedError(

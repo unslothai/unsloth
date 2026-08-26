@@ -124,7 +124,7 @@ def test_page_renders_with_csp(client):
 
 def test_page_renders_friendly_busy_message(client):
     response = client.get(f"/p/demorun?k={_sig('demorun')}")
-    assert "Studio is currently using another model" in response.text
+    assert "Unsloth is currently using another model" in response.text
 
 
 def test_page_escapes_title(tmp_path, monkeypatch, captured):
@@ -896,7 +896,7 @@ def test_slot_claim_happens_before_admitted_decrement(slot_state, monkeypatch):
     _run_middleware(_app, "/v1/chat/completions")
     assert observed["admitted_at_claim"] == 1
     assert llama_keepwarm._admitted_inference == 0  # decremented afterwards
-    assert not inference._is_preview_resident("/outputs/run/ckpt-a")  # claimed for Studio
+    assert not inference._is_preview_resident("/outputs/run/ckpt-a")  # claimed for Unsloth
     _reset_keepwarm_counters()
     llama_keepwarm._admitted_inference = 0
 

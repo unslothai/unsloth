@@ -17,7 +17,7 @@ TLS connection; the ``python -c`` probes and the standalone prebuilt installers
 carry an inline copy of the gating because they cannot import backend modules.
 
 truststore is vendored at ``backend/vendor/`` rather than depended on, so no
-Studio user gains a package for a proxy they do not have; see the README there.
+Unsloth user gains a package for a proxy they do not have; see the README there.
 Every consumer appends that directory to ``sys.path`` and imports the top-level
 name, which keeps a truststore the user installed themselves in front of ours.
 
@@ -29,7 +29,7 @@ OS anchors alongside them; ``0`` is the way back to a bundle being the only
 trust root.
 
 Client side only: the injected class verifies a peer chain on every handshake,
-so an ``SSLContext`` built after activation cannot serve TLS. Studio serves
+so an ``SSLContext`` built after activation cannot serve TLS. Unsloth serves
 plain HTTP on loopback and ``test_native_tls_entrypoints.py`` keeps it that way;
 a future in-process HTTPS listener needs ``truststore.SSLContext`` for outbound
 connections instead of this process-wide injection.

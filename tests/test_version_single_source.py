@@ -16,7 +16,7 @@
 
 Three consumers read that literal by different means and each breaks differently when it
 moves: pyproject resolves it with a static AST parse (a non-literal makes setuptools import
-torch inside the build env), Studio's version fallback scans the file line by line for
+torch inside the build env), Unsloth's version fallback scans the file line by line for
 ``__version__ = `` (a re-export line silently reports "dev"), and the MLX branch of
 unsloth/__init__.py imports the module directly (anything with imports defeats its
 torch-free boot, which is what drove it to borrow unsloth_zoo's number instead -- unsloth#8171).
@@ -136,13 +136,13 @@ def _Path_read(p):
 def test_studio_version_fallback_reports_the_real_version_on_a_source_checkout():
     # get_unsloth_version falls back to scanning the source when distribution metadata is
     # missing. The scan matches a `__version__ = ` line prefix, so a file that only
-    # re-exports the name yields nothing and Studio silently reports "dev". Driving the
+    # re-exports the name yields nothing and Unsloth silently reports "dev". Driving the
     # real function against the real tree catches that whatever the scan is pointed at.
     reported = _get_unsloth_version_with_metadata_missing(
         _REPO_ROOT / "studio" / "backend" / "main.py"
     )
     assert reported == _load_version_module_standalone().__version__, (
-        f"the fallback reported {reported!r}; Studio would show that instead of the "
+        f"the fallback reported {reported!r}; Unsloth would show that instead of the "
         "real version on a source checkout."
     )
 

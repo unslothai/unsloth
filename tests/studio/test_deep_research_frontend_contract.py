@@ -71,10 +71,21 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     # runSignal, not abortSignal: each run gets its own controller, forwarded from the thread
     # signal, so one chat's Stop cannot abort a sibling streaming in the background.
     assert "if (runSignal.aborted) return" in adapter
-    research = adapter.split("if (\n        runtime.deepResearchEnabled", 1)[1].split(
+    # The model decides: arming research offers it the deep_research tool, and the run starts
+    # off the tool events every loop already publishes, never off the toggle alone.
+    assert "deep_research_armed: true" in adapter
+    assert 'toolEvent.tool_name === "deep_research"' in adapter
+    assert "readDeepResearchToolEvent(deepResearchHandoff, toolEvent)" in adapter
+    assert "if (deepResearchHandoff.question !== null && !runSignal.aborted)" in adapter
+    assert 'yield* startDeepResearch("")' not in adapter
+    # Armed research asks for Studio's tool loop on the external body too. Without it the
+    # turn proxies through, the model is never offered the tool, and arming does nothing.
+    assert "projectRagEnabled ||" in adapter
+    assert "deepResearchArmed)" in adapter
+    research = adapter.split("const startDeepResearch = async function*", 1)[1].split(
         "const sandboxSessionId", 1
     )[0]
-    assert "await resolveQueuedEmptyLocalModel(abortSignal)" in research
+    assert "await resolveQueuedEmptyLocalModel(transitionSignal)" in research
     assert "queuedEmptyModelRuntime = resolution.modelRuntime" in research
     assert "signal: researchFollowController.signal" in adapter
     assert "beginExternalResearchFollow(" in adapter
@@ -95,6 +106,22 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert "prompt," not in create_block
     assert "instructions: researchInstructions" in create_block
     assert "resolveChatInstructions" in adapter
+
+
+def test_research_handoff_transition_honors_the_original_run_stop() -> None:
+    adapter = source("features/chat/api/chat-adapter.ts")
+    research = adapter.split("const startDeepResearch = async function*", 1)[1].split(
+        "const deepResearchHandoff = newDeepResearchHandoff();", 1
+    )[0]
+
+    assert "transitionSignal: AbortSignal = abortSignal" in research
+    assert "await waitForModelReady(transitionSignal)" in research
+    assert "await resolveQueuedEmptyLocalModel(transitionSignal)" in research
+    registered = research.index(
+        "runtime.registerThreadServerCancel(threadKey, researchServerCancel);"
+    )
+    assert research.rfind("if (transitionSignal.aborted) return;", 0, registered) >= 0
+    assert adapter.count("startDeepResearch(deepResearchHandoff.question, runSignal)") == 2
 
 
 def test_research_reasoning_effort_is_clamped_to_the_loaded_model() -> None:
@@ -155,6 +182,10 @@ def test_research_presentation_is_integrated() -> None:
     assert "if (researchRunId) return null" in thread
     assert "!researchRunId &&" in thread
     assert "if (researchRunId || ownsResearchMessage)" in thread
+    assert "ResearchMessageRunIdContext = createContext<string | null>(null)" in thread
+    assert "researchReplyOwnsRun(boundResearchAssistantMessageId, messageId)" in thread
+    assert "<ResearchMessageRunIdContext.Provider value={researchRunId}>" in thread
+    assert "useContext(ResearchMessageRunIdContext)" in thread
     # A prompt whose reply is a research message loses its edit and delete controls. Ownership is
     # a question about the whole repository, not the visible message list: a reply can sit on a
     # branch the view is not showing. It used to be one export per user message (quadratic in
@@ -186,6 +217,13 @@ def test_research_presentation_is_integrated() -> None:
     assert "Stop research" not in activity
     assert "retryResearchRun" in activity
     assert "Deep research completed" in message
+    empty_fallback = message.split("if (!run) {", 1)[1].split("if (run.status", 1)[0]
+    assert (
+        empty_fallback.index("if (fallbackText.trim())")
+        < empty_fallback.index("if (!ownsRun)")
+        < empty_fallback.index("Loading research…")
+    )
+    assert "return null;" in empty_fallback
     assert "<DocumentSourcesGroup" in message
     assert "urlTransform={safeMarkdownUrl}" in markdown_preview
     assert 'node.tagName !== "img"' in safe_markdown_url
@@ -336,3 +374,73 @@ def test_research_stop_is_prompt_only_and_deduplicated() -> None:
     assert "Stop research" not in activity
     assert "abortSignal.reason as { detach?: boolean }" in adapter
     assert "await cancelResearchRun(createdRun.id)" in adapter
+
+
+def test_the_handoff_is_keyed_on_the_result_the_backend_writes() -> None:
+    """tool_end alone closes a denied, skipped or budget-exhausted call too.
+
+    Reading a run out of one spends the chat's single Deep Research on a question the loop
+    refused to pass on, so the two sides have to agree on what "it ran" looks like.
+    """
+    helper = source("features/chat/utils/deep-research-handoff.ts")
+    tools = (ROOT / "studio" / "backend" / "core" / "inference" / "tools.py").read_text(
+        encoding = "utf-8"
+    )
+    marker = re.search(r'DEEP_RESEARCH_STARTED_MARKER = "([^"]+)"', tools)
+    assert marker is not None
+    assert f'DEEP_RESEARCH_STARTED_MARKER = "{marker.group(1)}"' in helper
+    assert "result.startsWith(DEEP_RESEARCH_STARTED_MARKER)" in helper
+    # A gated call keeps its Allow / Deny card: the loop blocks on a verdict, so hiding it
+    # asks the user nothing and the turn hangs there.
+    assert "if (event.awaiting_confirmation === true) {\n      return false;" in helper
+
+    # The clamp is the endpoint's own limit; a longer question 422s the whole handoff.
+    routes = (ROOT / "studio" / "backend" / "routes" / "research_runs.py").read_text(
+        encoding = "utf-8"
+    )
+    max_length = re.search(
+        r"question: str \| None = Field\(default = None, max_length = ([\d_]+)\)", routes
+    )
+    assert max_length is not None
+    limit = int(max_length.group(1).replace("_", ""))
+    assert f"DEEP_RESEARCH_QUESTION_MAX_CHARS = {limit}" in helper
+
+
+def test_the_handoff_uses_the_turn_that_asked_for_it() -> None:
+    """The handoff runs after the model's stream, and the model selector stays usable.
+
+    Reading the store there researched model A's handoff with whichever model B had since
+    been picked, or failed outright when B runs no Studio tools.
+    """
+    adapter = source("features/chat/api/chat-adapter.ts")
+    # The generator's own body: the main path's re-read after an auto-load is a different
+    # thing, and it happens at send time where reading the store is right.
+    research = adapter.split("const startDeepResearch = async function*", 1)[1].split(
+        "const deepResearchHandoff = newDeepResearchHandoff();", 1
+    )[0]
+    assert "const sendTimeRuntime = runtime;" in research
+    assert "withResolvedModel(sendTimeRuntime)" in research
+    # Only the empty-model resolution, which happens inside this call, may override it.
+    assert "useChatRuntimeStore.getState()" not in research
+
+
+def test_a_local_model_without_tools_cannot_consume_research_without_classifying() -> None:
+    adapter = source("features/chat/api/chat-adapter.ts")
+    fallback = adapter.split("if (\n        deepResearchArmed &&", 1)[1].split(
+        "// Project sources auto-scope", 1
+    )[0]
+
+    assert "!supportsTools" in fallback
+    assert "!isExternalModelId(params.checkpoint)" in fallback
+    assert "deepResearchArmed = false" in fallback
+    assert "runtime.setDeepResearchEnabled(false)" in fallback
+    assert "yield* startDeepResearch" not in fallback
+
+
+def test_a_tool_that_ran_starts_its_run_even_if_the_reply_never_finished() -> None:
+    """The acknowledgement can error, time out or drop; the run it announced is still owed."""
+    adapter = source("features/chat/api/chat-adapter.ts")
+    stream_error = adapter.split("} catch (streamError) {", 1)[1].split("throw streamError;", 1)[0]
+    assert "deepResearchHandoff.question !== null && !runSignal.aborted" in stream_error
+    assert "yield* startDeepResearch(deepResearchHandoff.question, runSignal)" in stream_error
+    assert "if (deepResearchHandoff.question !== null) break;" in adapter

@@ -1055,7 +1055,7 @@ test("keeps what a display:contents wrapper renders, drops what is offscreen", (
           tag: "div",
           display: "contents",
           children: [
-            { tag: "main", rect: [0, 1440, 900, 0], text: "Studio is ready" },
+            { tag: "main", rect: [0, 1440, 900, 0], text: "Unsloth is ready" },
           ],
         },
         { tag: "aside", rect: [-400, 1440, -100, 0], text: "Scrolled past" },
@@ -1068,7 +1068,7 @@ test("keeps what a display:contents wrapper renders, drops what is offscreen", (
   });
 
   const { html } = storedSnapshot(environment.storage);
-  assert.match(html, /Studio is ready/);
+  assert.match(html, /Unsloth is ready/);
   assert.doesNotMatch(html, /Scrolled past/);
   assert.doesNotMatch(html, /Collapsed/);
 });

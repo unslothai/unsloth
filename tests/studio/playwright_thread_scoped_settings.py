@@ -119,9 +119,24 @@ def sign_in(page):
     return page.evaluate("() => localStorage.getItem('unsloth_auth_token')")
 
 
-def seed_thread(page, token, title):
+def app_created_thread_id():
+    """The id a chat started in the app really carries.
+
+    assistant-ui mints `__LOCALID_<id>` for a thread before its first send, the thread list
+    adapter hands that same string back as the remoteId, and the row keeps it as its primary
+    key. The prefix therefore says nothing about whether a row exists.
+    """
+    return f"__LOCALID_{uuid.uuid4().hex}"
+
+
+def seed_thread(
+    page,
+    token,
+    title,
+    thread_id = None,
+):
     """Create a saved chat with one message, the state the sidebar and the loader expect."""
-    thread_id = str(uuid.uuid4())
+    thread_id = thread_id or str(uuid.uuid4())
     now = int(time.time() * 1000)
     api(
         page,
@@ -319,7 +334,7 @@ def main():
 
         step("pin the installation default every later step compares against")
         # The install is shared, not fresh: the UI workflow boots this server on the same
-        # Studio home the chat-ui and cross-browser permission tests have already used, and
+        # Unsloth home the chat-ui and cross-browser permission tests have already used, and
         # those leave a permission level behind in the mirrored settings. Every assertion
         # below names a literal level, so the default is set here rather than assumed.
         # No chat is open, so this writes the installation default itself.
@@ -330,7 +345,10 @@ def main():
         )
 
         step("seed two saved chats")
-        thread_a = seed_thread(page, token, "Chat A")
+        # Both id shapes are real: chats started in the app keep their `__LOCALID_` id as the
+        # row's primary key, imported and older rows do not. Seeding only uuids is what let
+        # this run miss the prefix being read as "no row yet".
+        thread_a = seed_thread(page, token, "Chat A", app_created_thread_id())
         thread_b = seed_thread(page, token, "Chat B")
         print(f"[thread-settings]   A={thread_a} B={thread_b}", flush = True)
 

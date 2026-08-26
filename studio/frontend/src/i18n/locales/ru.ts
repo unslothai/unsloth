@@ -896,7 +896,7 @@ export const ru = {
         tokensIn: "Отправлено токенов",
         tokensOut: "Сгенерировано токенов",
         totalTokens: "Всего токенов",
-        studioChatTokens: "Токены Studio Chat",
+        studioChatTokens: "Токены Unsloth Chat",
         apiTokens: "Токены API",
         cachedTokens: "Токенов из кеша",
         cachedValue: "{tokens} ({percent}% ввода)",
@@ -1351,7 +1351,7 @@ export const ru = {
         title: "Веб-поиск",
         images: "Показывать изображения из веб-поиска",
         imagesDescription:
-          "Позволяет веб-поиску возвращать изображения и подбирает по одному для каждого пункта, который перечисляет ответ. Миниатюры загружает и уменьшает Studio, поэтому браузер никогда не обращается к хостам изображений.",
+          "Позволяет веб-поиску возвращать изображения и подбирает по одному для каждого пункта, который перечисляет ответ. Миниатюры загружает и уменьшает Unsloth, поэтому браузер никогда не обращается к хостам изображений.",
       },
       artifacts: {
         title: "Canvas",
@@ -1372,7 +1372,7 @@ export const ru = {
       exportingAction: "Экспорт…",
       exportConversations: "Экспортировать «Недавние» и проекты",
       exportConversationsDescription:
-        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Raw JSONL, CSV или ShareGPT JSONL, объединённо или по чатам.",
+        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV или ShareGPT JSONL, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
       exportConversationsAction: "Экспорт",
       exportScopeRecents: "Недавние",
       exportScopeAll: "Недавние + проекты",

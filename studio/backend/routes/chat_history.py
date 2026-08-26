@@ -13,7 +13,15 @@ import sqlite3
 from typing import Annotated, Any, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_serializer,
+    field_validator,
+)
 
 from auth.authentication import get_current_subject
 from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
@@ -66,6 +74,22 @@ from storage.studio_db import (
 router = APIRouter()
 
 logger = get_logger(__name__)
+
+
+def _reject_boolean(value: Any) -> Any:
+    """bool subclasses int, so lax mode would take `true` for a number the user never set."""
+    if isinstance(value, bool):
+        raise ValueError("Expected a number, got a boolean.")
+    return value
+
+
+NotABoolean = Annotated[Optional[int], BeforeValidator(_reject_boolean)]
+
+# llama.cpp spends 0xFFFFFFFF on its "draw one" sentinel, so a pin stops one below it.
+MAX_SAMPLING_SEED = 2**32 - 2
+SamplingSeed = Optional[
+    Annotated[int, Field(ge = 0, le = MAX_SAMPLING_SEED), BeforeValidator(_reject_boolean)]
+]
 
 
 class ChatRagThreadSource(BaseModel):
@@ -121,6 +145,7 @@ class ChatThreadSettings(BaseModel):
     minP: Optional[float] = Field(default = None, ge = 0, le = 1)
     repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
     presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
+    seed: SamplingSeed = None
     # Not length-capped, like the installation-wide copy: truncating here would
     # silently change what the chat runs with.
     systemPrompt: Optional[str] = None
@@ -144,13 +169,28 @@ class ChatThread(BaseModel):
     forkedFromMessageId: Optional[str] = None
     settings: Optional[ChatThreadSettings] = None
 
+    @field_serializer("settings")
+    def _only_the_keys_the_snapshot_stored(
+        self, settings: Optional[ChatThreadSettings]
+    ) -> Optional[dict]:
+        """Report a key the snapshot never held as absent rather than as null.
+
+        `seed` is the one setting whose null is a value: it means this chat draws its own
+        rather than taking the pinned one. Spelling every unset field as null, which is
+        what the default dump does, would make a snapshot written before the field existed
+        read as a chat that had cleared it.
+        """
+        if settings is None:
+            return None
+        return settings.model_dump(exclude_unset = True)
+
 
 def thread_from_row(row: dict) -> ChatThread:
     """Build a ChatThread from a DATABASE row, tolerating a snapshot it cannot read.
 
-    `settings` is the first strictly validated nested model Studio builds out of the
+    `settings` is the first strictly validated nested model Unsloth builds out of the
     database rather than off the wire, and a stored snapshot outlives the build that
-    wrote it: a newer Studio adding a seventeenth setting, widening an enum or
+    wrote it: a newer Unsloth adding a seventeenth setting, widening an enum or
     raising a bound writes a blob this one rejects. Refusing it here 500s the chat on
     open and takes the entire history export with it, since the export validates
     every thread. `_json_loads` already shrugs off JSON that will not parse; JSON
@@ -188,7 +228,7 @@ def readable_thread_settings(settings: dict) -> Optional[dict]:
 def _unreadable_thread_settings(stored: dict) -> dict:
     """The part of a stored snapshot this build cannot validate, and so must not delete.
 
-    An older Studio opening a database a newer one wrote drops the fields it cannot read.
+    An older Unsloth opening a database a newer one wrote drops the fields it cannot read.
     A blind replacement would make that loss permanent instead of temporary, so a write
     carries forward everything the writer could not have known about: unknown keys, and
     known keys holding values this build rejects.
@@ -365,6 +405,7 @@ class ChatInferenceSettings(BaseModel):
     systemVariables: Optional[str] = None
     trustRemoteCode: Optional[bool] = None
     fastMode: Optional[bool] = None
+    seed: SamplingSeed = None
 
 
 class ChatPresetLoadConfig(BaseModel):
@@ -380,21 +421,12 @@ class ChatPresetLoadConfig(BaseModel):
     # The normalizer emits both keys on every preset (null included) and this model is
     # extra="forbid", so without them PUT /api/chat/settings 400s the whole save for any
     # preset carrying a loadConfig, including one that only pinned nParallel.
-    nBatch: Optional[int] = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
-    nUbatch: Optional[int] = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
+    nBatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
+    nUbatch: NotABoolean = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
     tensorParallel: Optional[bool] = None
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
-
-    @field_validator("nBatch", "nUbatch", mode = "before")
-    @classmethod
-    def _no_booleans(cls, value: Any) -> Any:
-        # Same contract as LoadRequest: bool subclasses int, so lax mode would store
-        # `true` as 1 here while /load 422s it.
-        if isinstance(value, bool):
-            raise ValueError("Expected a number, got a boolean.")
-        return value
 
 
 class ChatPreset(BaseModel):
@@ -1000,7 +1032,7 @@ def save_project(payload: ChatProject, current_subject: str = Depends(get_curren
     try:
         return ChatProject(**upsert_chat_project(payload.model_dump()))
     except ProjectWorkspaceError as exc:
-        # A project is the only thing Studio writes to Documents, so a folder it
+        # A project is the only thing Unsloth writes to Documents, so a folder it
         # cannot create there fails here and nowhere else. Only this error, and
         # only its own path: the same upsert also opens the database, which
         # lives somewhere else entirely.

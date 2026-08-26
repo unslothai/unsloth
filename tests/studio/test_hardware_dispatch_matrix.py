@@ -364,13 +364,13 @@ def test_xpu_takes_priority_over_mlx_when_both_available(spoof_hardware):
     assert hw.detect_hardware() == hw.DeviceType.XPU
 
 
-# Studio's placement, against the loader's opt-in device map.
+# Unsloth's placement, against the loader's opt-in device map.
 #
 # unsloth's loader upgrades a "sequential" device_map to the "unsloth" planning sentinel
-# when UNSLOTH_AUTO_DEVICE_MAP=1. Studio does not pass the sentinel and never sets that
-# variable, but an operator can set it process-wide, and Studio's "sequential" is not a
+# when UNSLOTH_AUTO_DEVICE_MAP=1. Unsloth does not pass the sentinel and never sets that
+# variable, but an operator can set it process-wide, and Unsloth's "sequential" is not a
 # default it forgot to change: it is get_device_map() saying "one device". These pin the
-# two facts that keep that safe on every profile above -- Studio's multi-GPU answer is
+# two facts that keep that safe on every profile above -- Unsloth's multi-GPU answer is
 # "balanced", which is never upgraded, and its single-GPU answer is reached only inside a
 # worker that has already narrowed the visible devices to the selection.
 
@@ -435,9 +435,9 @@ def _loader_device_map_helpers():
 def test_studio_placement_survives_the_loader_opt_in(
     profile, gpu_ids, opt_in, spoof_hardware, monkeypatch
 ):
-    """Whatever Studio decided, the loader hands the same thing to transformers.
+    """Whatever Unsloth decided, the loader hands the same thing to transformers.
 
-    The one value the opt-in can rewrite is "sequential", and Studio only produces that
+    The one value the opt-in can rewrite is "sequential", and Unsloth only produces that
     when it selected a single device -- at which point the worker has already narrowed the
     visible set, the planner sees one GPU and declines back to "sequential".
     """
@@ -465,15 +465,15 @@ def test_studio_placement_survives_the_loader_opt_in(
     )
     assert resolved == device_map, (
         f"profile {profile.name}, gpu_ids={gpu_ids}, UNSLOTH_AUTO_DEVICE_MAP={opt_in}: "
-        f"Studio asked for {device_map!r} and the loader produced {resolved!r}"
+        f"Unsloth asked for {device_map!r} and the loader produced {resolved!r}"
     )
 
 
 @pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
 def test_studio_never_speaks_the_planning_sentinel(profile, spoof_hardware):
-    """get_device_map is the only thing that names a placement for Studio's loads, and
+    """get_device_map is the only thing that names a placement for Unsloth's loads, and
     "unsloth" is not one of its answers on any backend. If it ever becomes one, the
-    Studio-side reasoning above stops holding and this fails first."""
+    Unsloth-side reasoning above stops holding and this fails first."""
     spoof_hardware(profile)
     hw = _import_studio_hardware_module()
     answers = {hw.get_device_map(None), hw.get_device_map([])}

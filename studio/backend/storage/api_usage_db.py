@@ -165,7 +165,7 @@ def record_api_usage(receipt: ApiUsageReceipt) -> bool:
             if not _is_busy_error(exc) or attempt + 1 == _WRITE_RETRIES:
                 raise
             # The worker is the only production writer of these receipts. A
-            # short bounded backoff lets unrelated Studio transactions finish
+            # short bounded backoff lets unrelated Unsloth transactions finish
             # without ever holding up the inference/streaming caller.
             _sleep_after_busy(min(0.01 * (2**attempt), _WORKER_BUSY_RETRY_SECONDS))
 
@@ -243,7 +243,7 @@ class ApiUsageWriter:
                             break
                         # record_api_usage already made its bounded fast retries.
                         # Retain this accepted item at the head of the single
-                        # writer until a normal long Studio transaction releases
+                        # writer until a normal long Unsloth transaction releases
                         # SQLite. The stop sentinel remains behind it, so final
                         # shutdown drains rather than silently dropping usage.
                         busy_failures += 1

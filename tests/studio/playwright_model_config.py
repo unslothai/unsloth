@@ -55,7 +55,7 @@ from _playwright_robust import (  # noqa: E402
 
 BASE = os.environ["BASE_URL"]
 NEW = os.environ.get("STUDIO_NEW_PW", "ModelCfg-NEW-2026!")
-# Attach mode: log into an already-provisioned Studio with an existing password
+# Attach mode: log into an already-provisioned Unsloth with an existing password
 # instead of the first-boot change-password dance. CI leaves STUDIO_LOGIN_PW unset
 # to exercise the real change-password flow; local runs can set it to skip re-provisioning.
 LOGIN_PW = os.environ.get("STUDIO_LOGIN_PW")
@@ -322,7 +322,7 @@ with sync_playwright() as p:
     if LOGIN_PW:
         # Attach mode: log in via the API and seed the token before navigation,
         # skipping the first-boot change-password dance.
-        step("setup: API login + token seed (attach to running Studio)")
+        step("setup: API login + token seed (attach to running Unsloth)")
         _tok = _login_token_via_api(BASE, LOGIN_USER, LOGIN_PW)
         ctx.add_init_script(
             f"try{{localStorage.setItem('unsloth_auth_token', {json.dumps(_tok)});}}"
