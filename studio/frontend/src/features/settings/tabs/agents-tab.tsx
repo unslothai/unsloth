@@ -61,7 +61,10 @@ import {
 } from "../components/agent-command";
 import { SettingsSection } from "../components/settings-section";
 import { psSingle, shSingle } from "../components/usage-examples";
-import { isSpeechOnlyHubModel } from "../lib/agent-hub-model.ts";
+import {
+  isClassifierOrRerankerHubModel,
+  isSpeechOnlyHubModel,
+} from "../lib/agent-hub-model.ts";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
@@ -780,7 +783,8 @@ export function AgentsTab() {
           (model) =>
             model.isGguf &&
             !isEmbeddingHubModel(model) &&
-            !isSpeechOnlyHubModel(model),
+            !isSpeechOnlyHubModel(model) &&
+            !isClassifierOrRerankerHubModel(model),
         )
         .map((model) => model.id),
     [trendingGgufs],
@@ -828,12 +832,14 @@ export function AgentsTab() {
   // /v1/models advertises for it. The resident model is exempt: it already
   // loaded by id, and cached-gguf keeps the largest copy across caches, whose
   // snapshot could switch cache or quant under it.
-  const cachedLoadId =
-    selectedModel === activeStatusModel
-      ? null
-      : (cachedLoadIds[selectedModel] ??
-        cachedLoadIds[selectedModel.toLowerCase()] ??
-        null);
+  const selectedModelIsActive =
+    activeStatusModel != null &&
+    modelKey(selectedModel) === modelKey(activeStatusModel);
+  const cachedLoadId = selectedModelIsActive
+    ? null
+    : (cachedLoadIds[selectedModel] ??
+      cachedLoadIds[selectedModel.toLowerCase()] ??
+      null);
   const modelId = cachedLoadId ?? selectedModel;
   const suffixVariant = isHuggingFaceRepo(modelId);
   const commandModel =
@@ -849,7 +855,8 @@ export function AgentsTab() {
       ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsShell)}`
       : `--model ${commandModelArg}`;
   const selectedModelOptions =
-    modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO)
+    modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO) &&
+    !selectedModelIsActive
       ? EXAMPLE_MODEL_OPTIONS
       : "";
   const modelArgs = attachOnly

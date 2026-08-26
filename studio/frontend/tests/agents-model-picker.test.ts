@@ -5,7 +5,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { isSpeechOnlyHubModel } from "../src/features/settings/lib/agent-hub-model.ts";
+import {
+  isClassifierOrRerankerHubModel,
+  isSpeechOnlyHubModel,
+} from "../src/features/settings/lib/agent-hub-model.ts";
 
 const TAB = readFileSync(
   fileURLToPath(
@@ -48,6 +51,7 @@ test("the model dropdown loads live trending GGUFs", () => {
   assert.ok(TAB.includes("!isEmbeddingHubModel(model)"));
   assert.ok(TAB.includes("EMBEDDING_TAGS.has(tag.toLowerCase())"));
   assert.ok(TAB.includes("!isSpeechOnlyHubModel(model)"));
+  assert.ok(TAB.includes("!isClassifierOrRerankerHubModel(model)"));
   assert.ok(TAB.includes("mergeModelOrder(trendingModels, models)"));
   assert.ok(TAB.includes("[...primary, ...fallback]"));
 });
@@ -61,21 +65,60 @@ test("the agent feed excludes speech-only model tasks", () => {
   }
   assert.equal(
     isSpeechOnlyHubModel({
-      pipelineTag: "text-generation",
       tags: ["GGUF", " TEXT-TO-SPEECH "],
     }),
     true,
   );
+  assert.equal(
+    isSpeechOnlyHubModel({
+      pipelineTag: "text-generation",
+      tags: ["gguf", "text-to-speech"],
+    }),
+    false,
+  );
+  assert.equal(
+    isSpeechOnlyHubModel({
+      pipelineTag: "audio-text-to-text",
+      tags: ["gguf", "automatic-speech-recognition"],
+    }),
+    false,
+  );
+  assert.equal(
+    isSpeechOnlyHubModel({ pipelineTag: "image-text-to-text" }),
+    false,
+  );
+});
+
+test("the agent feed excludes classifier and reranker models", () => {
   for (const pipelineTag of [
-    "text-generation",
-    "image-text-to-text",
-    "audio-text-to-text",
+    "text-classification",
+    "token-classification",
+    "zero-shot-classification",
   ]) {
-    assert.equal(
-      isSpeechOnlyHubModel({ pipelineTag, tags: ["gguf", "audio"] }),
-      false,
-    );
+    assert.equal(isClassifierOrRerankerHubModel({ pipelineTag }), true);
   }
+  assert.equal(
+    isClassifierOrRerankerHubModel({ id: "unsloth/Qwen3-Reranker-GGUF" }),
+    true,
+  );
+  assert.equal(
+    isClassifierOrRerankerHubModel({ tags: ["gguf", "cross-encoder"] }),
+    true,
+  );
+  assert.equal(
+    isClassifierOrRerankerHubModel({
+      pipelineTag: "text-generation",
+      tags: ["text-classification"],
+    }),
+    false,
+  );
+  assert.equal(
+    isClassifierOrRerankerHubModel({
+      id: "unsloth/Qwen3.8-27B-GGUF",
+      pipelineTag: "text-generation",
+    }),
+    false,
+  );
 });
 
 test("restored Hub selections remain valid while uncached", () => {
@@ -85,4 +128,9 @@ test("restored Hub selections remain valid while uncached", () => {
 test("model selection matching ignores Hub repository casing", () => {
   assert.ok(TAB.includes("modelKey(model) === selectedKey"));
   assert.ok(TAB.includes("modelKey(model) === modelKey(selectedModel)"));
+});
+
+test("an adopted resident model does not receive example load overrides", () => {
+  assert.ok(TAB.includes("const selectedModelIsActive"));
+  assert.ok(TAB.includes("!selectedModelIsActive"));
 });
