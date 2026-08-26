@@ -1013,9 +1013,7 @@ def test_a_validated_backend_outranks_the_gguf_name_heuristic(monkeypatch):
     # The name is a guess; a local .gguf is not, and keeps its precedence (see
     # test_a_local_gguf_beats_a_stored_sentence_transformers_record).
 
-    assert (
-        rag_embeddings._resolve_auto_for_model("org/torn-GGUF") == "sentence-transformers"
-    )
+    assert rag_embeddings._resolve_auto_for_model("org/torn-GGUF") == "sentence-transformers"
     # With nothing validated, the name still decides, which is what stops a forced
     # save over a failed plan from stranding the model on the wrong backend.
     monkeypatch.setattr(ems, "get_stored_backend", lambda model: None)
