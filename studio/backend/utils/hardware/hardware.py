@@ -3221,16 +3221,17 @@ def _rocm_visibility_mask_active() -> bool:
 
 
 def _rocm_single_numeric_mask_matches(devices: list[Dict[str, Any]]) -> bool:
-    if _rocm_device_ordinal_active():
+    if _rocm_device_ordinal_active() or _rocm_visibility_masks_are_stacked():
         return False
-    masks = []
+
+    selected_mask = None
     for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
-        value = os.environ.get(var)
-        if value and value.strip():
-            masks.append(value.strip())
-    if len(masks) != 1:
+        if var in os.environ:
+            selected_mask = os.environ[var]
+            break
+    if selected_mask is None:
         return False
-    tokens = [token.strip() for token in masks[0].split(",") if token.strip()]
+    tokens = [token.strip() for token in selected_mask.split(",") if token.strip()]
     try:
         numeric_ids = [int(token) for token in tokens]
     except ValueError:

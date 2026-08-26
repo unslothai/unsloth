@@ -1046,9 +1046,11 @@ def test_rocm_apu_equal_driver_total_scope_is_platform_specific(
     ("torch_total", "sysfs_total", "expected_shared"),
     [(_APU_GTT_TOTAL, _APU_CARVE_OUT, True), (_APU_CARVE_OUT, _APU_CARVE_OUT, False)],
 )
-@pytest.mark.parametrize("hip_mask", [None, "0"])
+@pytest.mark.parametrize(
+    ("hip_mask", "cuda_mask"), [(None, None), ("0", None), ("0", "0")]
+)
 def test_linux_rocm_apu_uses_sysfs_to_confirm_equal_total_scope(
-    monkeypatch, torch_total, sysfs_total, expected_shared, hip_mask
+    monkeypatch, torch_total, sysfs_total, expected_shared, hip_mask, cuda_mask
 ):
     mod = _apu_mod(gtt_total = torch_total, carve_out = torch_total)
     for var in (
@@ -1060,6 +1062,8 @@ def test_linux_rocm_apu_uses_sysfs_to_confirm_equal_total_scope(
         monkeypatch.delenv(var, raising = False)
     if hip_mask is not None:
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", hip_mask)
+    if cuda_mask is not None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", cuda_mask)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
