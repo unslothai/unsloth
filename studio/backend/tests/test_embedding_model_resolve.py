@@ -685,6 +685,7 @@ def test_a_cached_gguf_only_repo_is_not_reported_as_a_ready_st_model(client, mon
 
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", lambda m: snapshot)
 
     assert settings._cached_snapshot_has_st_weights("org/gguf-only") is False
 
@@ -720,6 +721,7 @@ def test_a_cached_safetensors_model_is_selectable_offline(client, monkeypatch, t
 
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", lambda m: snapshot)
 
     assert settings._safetensors_plan("org/st-only", None) == ("org/st-only", ["model.safetensors"])
 
@@ -751,10 +753,13 @@ def test_a_local_dir_without_weights_is_not_already_present(client, monkeypatch,
     assert body["cached"] is False
     assert "no checkpoint this backend can load" in body["error"]
 
-    # One weight file anywhere under it is enough, including an ST module subdir.
+    # A complete module subtree is enough; the weights need not sit at the root.
+    # modules.json has to declare it, as a real one does: the directory is judged
+    # by the layout it announces, the same way a Hub snapshot is.
     module = empty / "0_Transformer"
     module.mkdir()
     (module / "model.safetensors").write_bytes(b"ST")
+    (empty / "modules.json").write_text('[{"idx": 0, "name": "0", "path": "0_Transformer"}]')
     assert settings._local_sentence_transformer_is_present(str(empty)) is True
 
 
@@ -834,6 +839,7 @@ def test_the_cached_snapshot_probe_uses_the_same_filename_family(monkeypatch, tm
     import utils.utils as utils
 
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", lambda m: snapshot)
     assert settings._cached_snapshot_has_st_weights("org/partial") is False
     assert settings._cached_st_weight_names("org/partial") == []
 
@@ -852,11 +858,9 @@ def test_a_cached_alias_names_the_namespace_it_is_filed_under(client, monkeypatc
     (snapshot / "model.safetensors").write_bytes(b"ST")
     import utils.utils as utils
 
-    monkeypatch.setattr(
-        utils,
-        "hf_cache_snapshot_dir",
-        lambda repo: snapshot if repo == "sentence-transformers/all-MiniLM-L6-v2" else None,
-    )
+    _snapshot_of = lambda repo: snapshot if repo == "sentence-transformers/all-MiniLM-L6-v2" else None
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir", _snapshot_of)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", _snapshot_of)
     monkeypatch.setattr(settings, "_st_backend_available", lambda: True)
     # Offline: the remote listing cannot answer, so only the cache can.
     monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
@@ -889,11 +893,9 @@ def test_a_stale_literal_cache_does_not_hide_a_complete_alias_snapshot(
     import utils.utils as utils
 
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
-    monkeypatch.setattr(
-        utils,
-        "hf_cache_snapshot_dir",
-        lambda repo: alias if repo == "sentence-transformers/all-MiniLM-L6-v2" else literal,
-    )
+    _snapshot_of = lambda repo: alias if repo == "sentence-transformers/all-MiniLM-L6-v2" else literal
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir", _snapshot_of)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", _snapshot_of)
     # The generic check answers about the stale literal entry.
     monkeypatch.setattr(
         utils,
@@ -1018,3 +1020,45 @@ def test_a_validated_backend_outranks_the_gguf_name_heuristic(monkeypatch):
     # save over a failed plan from stranding the model on the wrong backend.
     monkeypatch.setattr(ems, "get_stored_backend", lambda model: None)
     assert rag_embeddings._resolve_auto_for_model("org/torn-GGUF") == "llama-server"
+
+
+def test_a_torn_local_checkpoint_is_not_reported_as_present(client, monkeypatch, tmp_path):
+    """Any one matching filename used to be enough, so half a shard family read as
+    ready and the first index failed when SentenceTransformer opened it. Same
+    completeness test a Hub snapshot gets."""
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
+    torn = tmp_path / "half-copied"
+    torn.mkdir()
+    (torn / "config.json").write_text("{}")
+    # The index is what says how many shards the family has, as a real sharded
+    # checkpoint ships it.
+    (torn / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00002.safetensors",'
+        ' "b": "model-00002-of-00002.safetensors"}}'
+    )
+    (torn / "model-00001-of-00002.safetensors").write_bytes(b"ST")
+
+    assert settings._local_sentence_transformer_is_present(str(torn)) is False
+
+    # The missing shard completes it.
+    (torn / "model-00002-of-00002.safetensors").write_bytes(b"ST")
+    assert settings._local_sentence_transformer_is_present(str(torn)) is True
+
+
+def test_a_declared_module_the_directory_lacks_is_not_present(client, monkeypatch, tmp_path):
+    """modules.json announces the layout ST will load. A module it names and the
+    directory does not have is a torn copy however complete the rest looks."""
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
+    partial = tmp_path / "missing-module"
+    partial.mkdir()
+    (partial / "config.json").write_text("{}")
+    (partial / "model.safetensors").write_bytes(b"ST")
+    (partial / "modules.json").write_text(
+        '[{"idx": 0, "name": "0", "path": ""},'
+        ' {"idx": 1, "name": "1", "path": "1_Pooling"}]'
+    )
+
+    assert settings._local_sentence_transformer_is_present(str(partial)) is False
+
+    (partial / "1_Pooling").mkdir()
+    assert settings._local_sentence_transformer_is_present(str(partial)) is True

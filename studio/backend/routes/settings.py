@@ -2378,7 +2378,16 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
             # SentenceTransformer takes a directory or a repo id, never a bare
             # checkpoint file.
             return False
-        return any(_is_st_weight_name(child.name) and child.is_file() for child in p.rglob("*"))
+        if not any(_is_st_weight_name(child.name) and child.is_file() for child in p.rglob("*")):
+            return False
+        # And a WHOLE one. A single shard of a two-shard family, or a module
+        # modules.json declares that the directory does not have, reported ready
+        # here and then failed at the first index when ST opened it. Same
+        # completeness test a Hub snapshot gets, so a local copy of a model is
+        # judged the way the downloaded one is.
+        from utils.utils import checkpoint_directory_is_complete
+
+        return checkpoint_directory_is_complete(p)
     except Exception:  # noqa: BLE001 - filesystem oddity is a cache miss
         return False
 

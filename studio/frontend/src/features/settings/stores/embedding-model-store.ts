@@ -30,6 +30,15 @@ interface EmbeddingModelState {
     request: () => Promise<EmbeddingModelSettings>,
     reservation?: number,
   ) => Promise<boolean>;
+  /**
+   * Run a write that changes residency rather than the selection, such as
+   * unloading. It claims no place in save order: doing so retired the
+   * reservation a selection still running its preflight on the other surface
+   * was holding, and that selection then returned without ever persisting.
+   */
+  applyResidency: (
+    request: () => Promise<EmbeddingModelSettings>,
+  ) => Promise<void>;
   load: () => Promise<void>;
 }
 
@@ -84,6 +93,26 @@ export const useEmbeddingModelStore = create<EmbeddingModelState>(
         }
         if (savesInFlight > 1) saveWasSuperseded = true;
         throw error;
+      } finally {
+        savesInFlight -= 1;
+        if (savesInFlight === 0 && saveWasSuperseded) {
+          saveWasSuperseded = false;
+          void get().load();
+        }
+      }
+    },
+    applyResidency: async (request) => {
+      savesInFlight += 1;
+      try {
+        const settings = await request();
+        // A selection is still out, and this answer was formed before whatever
+        // it persists. Applying it would show the old model; let the settling
+        // re-read below carry the residency change instead.
+        if (savesInFlight > 1) {
+          saveWasSuperseded = true;
+          return;
+        }
+        get().applySettings(settings);
       } finally {
         savesInFlight -= 1;
         if (savesInFlight === 0 && saveWasSuperseded) {

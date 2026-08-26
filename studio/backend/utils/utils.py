@@ -566,7 +566,10 @@ def cached_st_source(model_name: str) -> Optional[tuple]:
     satisfied by the first finalized shard of a transfer still in flight.
     """
     for candidate in st_repo_id_candidates(model_name):
-        snapshot = hf_cache_snapshot_dir(candidate)
+        # Exactly this candidate: the alias-expanding lookup answers the literal
+        # slashless name with the namespaced snapshot, so the pair returned named
+        # a repo that had not supplied anything.
+        snapshot = hf_cache_snapshot_dir_for_repo(candidate)
         if snapshot is None:
             continue
         try:
@@ -594,38 +597,113 @@ def snapshot_has_st_weights(model_name: str) -> bool:
     return cached_st_source(model_name) is not None
 
 
-def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
-    """Active local snapshot dir for model_name's main revision, or None if not cached.
-    Reads refs/main then snapshots/<commit>; no network. Tries the ST alias for slashless names."""
+def _snapshot_in_root(cache_root: Path, repo_id: str) -> Optional[Path]:
+    """``repo_id``'s main-revision snapshot under exactly ``cache_root``, or None."""
     try:
         from huggingface_hub.file_download import repo_folder_name
     except Exception:
         repo_folder_name = None
+    try:
+        if repo_folder_name is not None:
+            folder = repo_folder_name(repo_id = repo_id, repo_type = "model")
+        else:
+            folder = "models--" + repo_id.replace("/", "--")
+        repo_dir = cache_root / folder
+        ref = repo_dir / "refs" / "main"
+        if not ref.is_file():
+            return None
+        commit = ref.read_text(encoding = "utf-8").strip()
+        if not commit:
+            return None
+        snapshot = repo_dir / "snapshots" / commit
+        return snapshot if snapshot.is_dir() else None
+    # UnicodeDecodeError is a ValueError, not an OSError: a torn refs file must keep meaning "not cached here".
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def hf_cache_snapshot_dir_for_repo(repo_id: str) -> Optional[Path]:
+    """Snapshot dir for exactly ``repo_id``, with no alias expansion.
+
+    ``hf_cache_snapshot_dir`` answers "is this model cached anywhere", trying the
+    ST alias, so asking it about a literal slashless name can return the
+    namespaced snapshot. A caller that has to report WHICH repo supplied the
+    weights needs this one instead, or it pairs the alias's directory with the
+    literal id and sends verification at a repo that does not exist."""
+    for cache_root in _hf_cache_roots():
+        snapshot = _snapshot_in_root(cache_root, repo_id)
+        if snapshot is not None:
+            return snapshot
+    return None
+
+
+def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
+    """Active local snapshot dir for model_name's main revision, or None if not cached.
+    Reads refs/main then snapshots/<commit>; no network. Tries the ST alias for slashless names."""
     for cache_root in _hf_cache_roots():
         for repo_id in st_repo_id_candidates(model_name):
-            try:
-                if repo_folder_name is not None:
-                    folder = repo_folder_name(repo_id = repo_id, repo_type = "model")
-                else:
-                    folder = "models--" + repo_id.replace("/", "--")
-                repo_dir = cache_root / folder
-                ref = repo_dir / "refs" / "main"
-                if not ref.is_file():
-                    continue
-                commit = ref.read_text(encoding = "utf-8").strip()
-                if not commit:
-                    continue
-                snapshot = repo_dir / "snapshots" / commit
-                if snapshot.is_dir():
-                    return snapshot
-            # UnicodeDecodeError is a ValueError, not an OSError: a torn refs file must keep meaning "not cached here".
-            except (OSError, UnicodeDecodeError):
-                continue
+            snapshot = _snapshot_in_root(cache_root, repo_id)
+            if snapshot is not None:
+                return snapshot
     return None
 
 
 # A weight file plus a config distinguishes a real cached model from a metadata-only partial cache.
 _LOADABLE_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".gguf", ".pt", ".pth", ".ckpt"})
+
+
+def checkpoint_directory_is_complete(root: Path, weights = None) -> bool:
+    """Whether ``root`` holds a whole checkpoint, shards and declared modules alike.
+
+    Shared by the Hub-cache check and the local-path one so a directory is judged
+    the same way however it got there: a single shard of a two-shard family, or a
+    module ``modules.json`` declares and the directory does not have, is a torn
+    checkpoint that SentenceTransformer fails to open at the first index.
+
+    ``weights`` is the already-scanned weight list when the caller has one.
+    """
+    from hub.utils.inventory_scan import snapshot_holds_a_complete_payload
+
+    if weights is None:
+        weights = [
+            path
+            for path in root.rglob("*")
+            if path.suffix.lower() in _LOADABLE_WEIGHT_SUFFIXES
+            and path.is_file()
+            and not is_appledouble_metadata(path)
+        ]
+    # SentenceTransformer modules may keep their own transformer checkpoint
+    # below 0_Transformer/. Validate every module subtree that carries weights;
+    # config-only modules such as Pooling need no weight family of their own.
+    if (root / "modules.json").is_file():
+        import json
+        from pathlib import PurePosixPath
+
+        try:
+            modules = json.loads((root / "modules.json").read_text(encoding = "utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            return False
+        roots = []
+        for module in modules if isinstance(modules, list) else []:
+            value = module.get("path") if isinstance(module, dict) else None
+            if not isinstance(value, str) or "\\" in value:
+                continue
+            relative = PurePosixPath(value or ".")
+            if relative.is_absolute() or ".." in relative.parts:
+                continue
+            module_root = root.joinpath(*relative.parts)
+            # A declared module the directory does not have at all is a torn
+            # checkpoint, whatever the others hold: checking only roots that
+            # carry weights passed one missing 0_Transformer entirely.
+            # Existence is the whole test, since config-only modules such as
+            # Pooling have no weight family.
+            if module_root != root and not module_root.is_dir():
+                return False
+            if any(path == module_root or module_root in path.parents for path in weights):
+                roots.append(module_root)
+        if roots:
+            return all(snapshot_holds_a_complete_payload(r, quants = False) for r in roots)
+    return snapshot_holds_a_complete_payload(root, quants = False)
 
 
 def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
@@ -685,40 +763,7 @@ def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
         if snapshot_has_broken_symlinks(snapshot):
             return False
 
-        from hub.utils.inventory_scan import snapshot_holds_a_complete_payload
-
-        # SentenceTransformer modules may keep their own transformer checkpoint
-        # below 0_Transformer/. Validate every module subtree that carries weights;
-        # config-only modules such as Pooling need no weight family of their own.
-        if (snapshot / "modules.json").is_file():
-            import json
-            from pathlib import PurePosixPath
-
-            try:
-                modules = json.loads((snapshot / "modules.json").read_text(encoding = "utf-8"))
-            except (OSError, UnicodeDecodeError, ValueError):
-                return False
-            roots = []
-            for module in modules if isinstance(modules, list) else []:
-                value = module.get("path") if isinstance(module, dict) else None
-                if not isinstance(value, str) or "\\" in value:
-                    continue
-                relative = PurePosixPath(value or ".")
-                if relative.is_absolute() or ".." in relative.parts:
-                    continue
-                root = snapshot.joinpath(*relative.parts)
-                # A declared module the snapshot does not have at all is a torn
-                # download, whatever the others hold: checking only roots that
-                # carry weights passed a snapshot missing 0_Transformer entirely.
-                # Existence is the whole test, since config-only modules such as
-                # Pooling have no weight family.
-                if root != snapshot and not root.is_dir():
-                    return False
-                if any(path == root or root in path.parents for path in weights):
-                    roots.append(root)
-            if roots:
-                return all(snapshot_holds_a_complete_payload(root, quants = False) for root in roots)
-        return snapshot_holds_a_complete_payload(snapshot, quants = False)
+        return checkpoint_directory_is_complete(snapshot, weights)
     except OSError:
         return False
     except Exception:

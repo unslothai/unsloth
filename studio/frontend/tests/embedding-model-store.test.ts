@@ -310,3 +310,26 @@ test("the settle flag does not carry into the next save", async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(reads, 0, "the earlier overlap was already settled");
 });
+
+test("unloading does not retire an in-flight selection's reservation", async () => {
+  reset();
+  const store = useEmbeddingModelStore.getState();
+  // The user starts a selection on one surface, switches to the other while its
+  // preflight is still running, and unloads. Unloading releases residency and
+  // leaves the selection alone, so the selection must still be the current save.
+  const selection = store.beginSave();
+  await store.applyResidency(async () => settings("org/selected"));
+
+  assert.ok(
+    useEmbeddingModelStore.getState().isSaveCurrent(selection),
+    "the unload took the selection's place in save order",
+  );
+  assert.ok(
+    await store.save(async () => settings("org/selected"), selection),
+    "the selection was dropped without ever persisting",
+  );
+  assert.equal(
+    useEmbeddingModelStore.getState().settings?.embeddingModel,
+    "org/selected",
+  );
+});

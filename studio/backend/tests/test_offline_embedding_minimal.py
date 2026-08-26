@@ -1135,6 +1135,7 @@ def test_a_module_declared_but_absent_makes_the_snapshot_incomplete(monkeypatch,
     )
     (dense / "model.safetensors").write_bytes(b"ST")
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", lambda m: snapshot)
 
     assert utils.hf_cache_snapshot_is_loadable("org/torn") is False
 
@@ -1160,6 +1161,7 @@ def test_an_eviction_between_the_check_and_the_snapshot_keeps_the_marker(monkeyp
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
     # Evicted in the window between the two calls.
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: None)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", lambda m: None)
     monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
@@ -1200,6 +1202,7 @@ def test_a_gguf_only_cache_does_not_retire_the_pending_st_marker(monkeypatch, tm
     # The shared predicate says yes; the ST-specific one must not.
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", lambda m: snapshot)
     monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
@@ -1239,6 +1242,7 @@ def test_a_partial_st_transfer_keeps_the_pending_marker(monkeypatch, tmp_path):
     monkeypatch.setattr(ems, "clear_stored_download_pending", lambda m: cleared.append(m) or True)
     monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: True)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", lambda m: snapshot)
     # The ST family is there; the snapshot as a whole is not complete.
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: False)
     monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
@@ -1283,6 +1287,7 @@ def test_the_alias_snapshot_is_the_one_loaded(monkeypatch, tmp_path):
         return alias if repo == "sentence-transformers/all-MiniLM-L6-v2" else literal
 
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", _dir)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", _dir)
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
 
     assert utils.cached_st_source("all-MiniLM-L6-v2") == (
@@ -1339,6 +1344,7 @@ def test_a_pending_transfer_does_not_make_the_security_scan_offline(monkeypatch,
     monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: True)
     monkeypatch.setattr(ems, "clear_stored_download_pending", lambda m: True)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", lambda m: snapshot)
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
     monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
@@ -1392,6 +1398,7 @@ def test_a_failed_st_constructor_keeps_the_pending_marker(monkeypatch, tmp_path)
     monkeypatch.setattr(ems, "clear_stored_download_pending", lambda m: cleared.append(m) or True)
     monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: True)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", lambda m: snapshot)
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
     monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
@@ -1447,6 +1454,7 @@ def test_a_local_path_is_not_replaced_by_a_hub_cache_of_the_same_name(monkeypatc
 
     # The same name is cached under the namespace, which is what shadowed it.
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda repo: hub)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", lambda repo: hub)
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
 
     loaded = {}
@@ -1472,3 +1480,27 @@ def test_a_local_path_is_not_replaced_by_a_hub_cache_of_the_same_name(monkeypatc
         embeddings._name = None
 
     assert loaded["target"] == str(local)
+
+
+def test_an_alias_cache_hit_names_the_namespace_that_supplied_it(monkeypatch, tmp_path):
+    """Real cache layout, no stub over the lookup: hf_cache_snapshot_dir tries the
+    ST alias itself, so asking it about the literal slashless name returned the
+    namespaced snapshot paired with a repo id that had supplied nothing. The
+    resolver reports that id, and the PUT verifies and scans it."""
+    import utils.utils as utils
+
+    hub = tmp_path / "hub"
+    repo_dir = hub / "models--sentence-transformers--all-MiniLM-L6-v2"
+    snapshot = repo_dir / "snapshots" / "abc123"
+    snapshot.mkdir(parents = True)
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text("abc123", encoding = "utf-8")
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model.safetensors").write_bytes(b"ST")
+    monkeypatch.setattr(utils, "_hf_cache_roots", lambda: [hub])
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
+
+    assert utils.cached_st_source("all-MiniLM-L6-v2") == (
+        "sentence-transformers/all-MiniLM-L6-v2",
+        snapshot,
+    )

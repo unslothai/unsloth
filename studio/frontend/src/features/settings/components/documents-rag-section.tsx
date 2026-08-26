@@ -53,6 +53,9 @@ export function DocumentsRagSection(): ReactElement {
   const beginSave = useEmbeddingModelStore((s) => s.beginSave);
   const isSaveCurrent = useEmbeddingModelStore((s) => s.isSaveCurrent);
   const save = useEmbeddingModelStore((s) => s.save);
+  // Unloading releases residency and leaves the selection alone, so it must not
+  // take a place in save order and retire an in-flight selection's reservation.
+  const applyResidency = useEmbeddingModelStore((s) => s.applyResidency);
   const [saveError, setSaveError] = useState<string | null>(null);
   // The store carries the backend's reason; an unreadable failure has none.
   const loadFailure =
@@ -374,7 +377,7 @@ export function DocumentsRagSection(): ReactElement {
   const unload = async () => {
     setIsSavingEmbeddingModel(true);
     try {
-      await save(unloadEmbeddingModel);
+      await applyResidency(unloadEmbeddingModel);
     } catch (error) {
       toast.error(t("settings.general.rag.unloadFailed"), {
         description: error instanceof Error ? error.message : undefined,
