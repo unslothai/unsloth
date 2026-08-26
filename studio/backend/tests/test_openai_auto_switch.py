@@ -6047,6 +6047,49 @@ def test_a_matching_explicit_ctx_flag_survives_auto_switch(monkeypatch):
     assert request.llama_extra_args == ["--ctx-size", "100352"]
 
 
+@pytest.mark.parametrize(
+    "stored_max_seq_length",
+    ["100352", "not-a-number", 100352.0, True, [100352], {"v": 100352}],
+)
+def test_a_legacy_override_row_cannot_break_the_loader(stored_max_seq_length):
+    """Rows are coerced on write but returned verbatim on read (get_model_overrides),
+    so an entry written by an older build, by hand or through the API can hold any
+    JSON type. Comparing the context against one must degrade, never raise: a raise
+    here fails every auto-switch load of that model with a 500 the user cannot clear.
+    A value that is not a plain positive int cannot be confirmed as matching, so the
+    shadowing flag is stripped exactly as it was before the opt-in existed.
+    """
+    from utils.openai_auto_switch_settings import model_override_load_kwargs
+
+    out = model_override_load_kwargs(
+        {
+            "llama_extra_args": ["--ctx-size", "100352", "--top-k", "40"],
+            "max_seq_length": stored_max_seq_length,
+        },
+        is_gguf = True,
+    )
+    assert "--ctx-size" not in out["llama_extra_args"]
+    assert "--top-k" in out["llama_extra_args"]
+
+
+@pytest.mark.parametrize("stored_max_seq_length", ["", False, None, 0])
+def test_a_falsy_legacy_context_leaves_the_flag_as_the_only_control(stored_max_seq_length):
+    """These resolve to "no context field sent", so there is nothing to shadow and
+    the pass-through flag stays the user's only way to set the knob -- the same
+    answer this path gave before the opt-in existed.
+    """
+    from utils.openai_auto_switch_settings import model_override_load_kwargs
+
+    out = model_override_load_kwargs(
+        {
+            "llama_extra_args": ["--ctx-size", "100352", "--top-k", "40"],
+            "max_seq_length": stored_max_seq_length,
+        },
+        is_gguf = True,
+    )
+    assert out["llama_extra_args"] == ["--ctx-size", "100352", "--top-k", "40"]
+
+
 def test_load_kwargs_strip_only_the_shadow_groups_the_override_supplies():
     # Same rule the /load route applies to inherited extras: one group per first-class
     # field actually being sent, so a flag with nothing to shadow still passes through.

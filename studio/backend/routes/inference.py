@@ -9271,9 +9271,22 @@ def _resolve_inherited_extra_args(
         # so strip the inherited --chat-template-file then too -- else the stale arg
         # (appended last) shadows the bundled template while Studio reports its caps.
         fields_set = getattr(request, "model_fields_set", set())
+        # An inherited -c/--ctx-size that MATCHES the context being sent is the
+        # user's standing opt-in to run past the VRAM-fit estimate, not a stale
+        # value shadowing a fresh save, so it survives here exactly as it does on
+        # the API auto-switch path (model_override_load_kwargs). Without this the
+        # two disagreed: an Apply that set max_seq_length alongside any other
+        # field relaunched without the flag, llama-server allocated the fit
+        # estimate instead, and the confirmed larger context silently collapsed
+        # while the stored override still said otherwise.
+        from core.inference.llama_server_args import matches_explicit_ctx_override
+
         stripped = strip_shadowing_flags(
             stored_args,
-            strip_context = "max_seq_length" in fields_set,
+            strip_context = "max_seq_length" in fields_set
+            and not matches_explicit_ctx_override(
+                stored_args, getattr(request, "max_seq_length", None)
+            ),
             strip_cache = "cache_type_kv" in fields_set,
             strip_spec = ("speculative_type" in fields_set or "spec_draft_n_max" in fields_set),
             strip_template = (

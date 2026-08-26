@@ -721,7 +721,10 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         # (_resolve_inherited_extra_args); the stripper is imported rather than mirrored so
         # the two paths cannot drift over which flag belongs to which group -- the allow-list
         # this module stays out of is validate_extra_args, which remains the caller's job.
-        from core.inference.llama_server_args import parse_ctx_override, strip_shadowing_flags
+        from core.inference.llama_server_args import (
+            matches_explicit_ctx_override,
+            strip_shadowing_flags,
+        )
 
         # Context is the one first-class field whose load-time value is still a
         # VRAM-fit target rather than an unconditional llama-server allocation.
@@ -729,15 +732,13 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         # explicit decision to run beyond the estimated safe threshold, and the
         # server's /props readback will publish what was actually allocated. A
         # stale or malformed flag is still stripped so it cannot outrank a newly
-        # saved Context Length.
-        matching_explicit_ctx = False
-        if "max_seq_length" in kwargs and kwargs["max_seq_length"] > 0:
-            try:
-                matching_explicit_ctx = (
-                    parse_ctx_override(kwargs["llama_extra_args"]) == kwargs["max_seq_length"]
-                )
-            except ValueError:
-                pass
+        # saved Context Length. The test lives in llama_server_args beside the
+        # stripper, for the same reason the stripper itself is imported rather
+        # than mirrored: /load's inheritance path asks the same question, and the
+        # two must not drift over which flag survives which reload.
+        matching_explicit_ctx = matches_explicit_ctx_override(
+            kwargs["llama_extra_args"], kwargs.get("max_seq_length")
+        )
 
         kwargs["llama_extra_args"] = strip_shadowing_flags(
             kwargs["llama_extra_args"],

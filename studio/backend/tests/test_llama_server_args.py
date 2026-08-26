@@ -1187,3 +1187,37 @@ def test_the_projector_env_twins_survive_the_scrub():
     # the corrupt path it is undoing, and it does that itself.
     assert "LLAMA_ARG_MMPROJ" not in _lsa.DENIED_ENV_VARS
     assert "LLAMA_ARG_MMPROJ_URL" not in _lsa.DENIED_ENV_VARS
+
+
+# --- the shared "is this ctx flag the user's opt-in?" test ----------------------
+# Both stripping paths (model_override_load_kwargs on the API auto-switch, and
+# _resolve_inherited_extra_args on /load) ask this one function, so a value that
+# survives one reload survives the other.
+
+
+def test_matching_ctx_override_confirms_only_an_exact_positive_int():
+    assert _lsa.matches_explicit_ctx_override(["--ctx-size", "100352"], 100352)
+    assert _lsa.matches_explicit_ctx_override(["-c", "100352"], 100352)
+    # llama.cpp folds the underscore spelling, and so does the matcher.
+    assert _lsa.matches_explicit_ctx_override(["--ctx_size", "100352"], 100352)
+    # Last-wins, exactly as the launch parses it.
+    assert _lsa.matches_explicit_ctx_override(
+        ["--ctx-size", "8192", "--ctx-size", "100352"], 100352
+    )
+    assert not _lsa.matches_explicit_ctx_override(
+        ["--ctx-size", "100352", "--ctx-size", "8192"], 100352
+    )
+    # A different value is a stale shadow, not an opt-in.
+    assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "8192"], 100352)
+    assert not _lsa.matches_explicit_ctx_override(["--top-k", "40"], 100352)
+    assert not _lsa.matches_explicit_ctx_override(None, 100352)
+
+
+def test_matching_ctx_override_is_total_over_stored_junk():
+    # Override rows are coerced on write but returned verbatim on read, so this is
+    # reached with whatever JSON an older build, the API or a hand edit left behind.
+    # None of it may raise inside a load, and none of it counts as confirmed.
+    for n_ctx in (None, 0, -1, "100352", "", "x", 100352.0, True, False, [100352], {"v": 1}):
+        assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "100352"], n_ctx), n_ctx
+    # A malformed flag raises in parse_ctx_override; the matcher answers False.
+    assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "--top-k"], 100352)

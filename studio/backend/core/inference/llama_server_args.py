@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -740,6 +740,35 @@ def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) ->
     """
     override = parse_ctx_override(args)
     return override if override is not None else fallback_n_ctx
+
+
+def matches_explicit_ctx_override(args: Optional[Iterable[str]], n_ctx: Any) -> bool:
+    """Whether a pass-through ``-c``/``--ctx-size`` records the SAME context the
+    caller is already sending as a first-class field.
+
+    Context is the one first-class field whose load-time value is a VRAM-fit
+    TARGET rather than an unconditional llama-server allocation, so a flag that
+    matches it is not a stale value shadowing a fresh save -- it is the user's
+    standing decision to run past the estimated safe threshold, and the /props
+    readback publishes whatever was really allocated. Every path that strips
+    shadowing flags asks here rather than mirroring the test, so the API
+    auto-switch and the /load inheritance cannot drift over whether that opt-in
+    survives a reload.
+
+    False for anything that cannot be CONFIRMED, which is the pre-existing
+    strip-it behaviour: no flag, a malformed one, or an ``n_ctx`` that is not a
+    plain positive int. The last case is not hypothetical -- override rows are
+    coerced on write but returned verbatim on read, so an entry written by an
+    older build, by hand, or through the API can hold any JSON type, and a
+    comparison against it must not raise inside a load.
+    """
+    if isinstance(n_ctx, bool) or not isinstance(n_ctx, int) or n_ctx <= 0:
+        return False
+    try:
+        return parse_ctx_override(args) == n_ctx
+    except ValueError:
+        # Malformed extras are refused at the boundary; this must not raise here.
+        return False
 
 
 def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Optional[str]:
