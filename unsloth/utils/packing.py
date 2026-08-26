@@ -526,9 +526,7 @@ def _call_without_attention_mask(fn, args, kwargs):
     try:
         sig = inspect.signature(fn)
         has_mask = "attention_mask" in sig.parameters
-        has_var_kw = any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-        )
+        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
         if not has_mask and not has_var_kw:
             return fn(*args, **kwargs)
         bound = sig.bind_partial(*args, **kwargs)

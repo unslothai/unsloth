@@ -774,7 +774,11 @@ def test_patch_mamba2_varlen_clears_padded_mask_for_fused_path(monkeypatch):
     # mixer takes mamba_chunk_scan_combined and the fused wrapper never runs.
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
 
-    def mamba_chunk_scan_combined(*args, seq_idx = None, **kwargs):
+    def mamba_chunk_scan_combined(
+        *args,
+        seq_idx = None,
+        **kwargs,
+    ):
         mamba_chunk_scan_combined.calls.append(seq_idx)
         return args[0] if args else None
 
@@ -787,9 +791,7 @@ def test_patch_mamba2_varlen_clears_padded_mask_for_fused_path(monkeypatch):
             cache_params = None,
             attention_mask = None,
         ):
-            input_not_masked = attention_mask is None or bool(
-                torch.all(attention_mask == 1)
-            )
+            input_not_masked = attention_mask is None or bool(torch.all(attention_mask == 1))
             if self.training and cache_params is None and input_not_masked:
                 return self.mamba2_split_conv1d_scan_combined(hidden_states, seq_idx = None)
             return mamba_chunk_scan_combined(hidden_states, seq_idx = None)
