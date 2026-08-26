@@ -17,6 +17,7 @@ import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
+  readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   resolveStagedDiffusionClassification,
   useChatRuntimeStore,
@@ -45,6 +46,7 @@ import {
   useInferenceGpuInfo,
 } from "@/hooks/use-gpu-info";
 import {
+  DEFAULT_VRAM_FRACTION,
   aggregateUsableFreeVramGb,
   resolveMemoryCapacityGb,
 } from "@/hooks/gpu-vram";
@@ -2051,6 +2053,11 @@ export function ModelConfigPage({
   const rememberRef = useRef(remember);
   rememberRef.current = remember;
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
+  // Same substitution as speculativeFallback, for the same reason: only "manual" is
+  // persisted per model, so an absent mode means "follow the standing preference"
+  // rather than Auto. applyPerModelConfigToRuntime resolves it that way at load, so
+  // pricing the absence as Auto rated a Manual launch against the wrong plan.
+  const [gpuMemoryModeFallback] = useState(readPersistedGpuMemoryMode);
   const [templateOpen, setTemplateOpen] = useState(false);
   // Raised by the extra-arguments row when what is typed is something
   // validate_extra_args would refuse, so the load is not started to fail. Held by
@@ -2722,6 +2729,8 @@ export function ModelConfigPage({
       ? { ...loadableConfig, customContextLength: activeLoadedContext }
       : loadableConfig
     : loadableConfig;
+  const runtimeGpuMemoryMode =
+    runtimeConfig.gpuMemoryMode ?? gpuMemoryModeFallback;
   // Priced against the config that would actually load, at the context on screen, so
   // the figures answer for what the Load button will do. Diffusion stands down: its
   // runner allocates on a different plan than llama-server's.
@@ -2749,7 +2758,7 @@ export function ModelConfigPage({
             // reaches the resident context: --fit owns the sizing, or a
             // builtin-default preset on a GGUF load.
             (target.isGguf === true &&
-              runtimeConfig.gpuMemoryMode === "manual" &&
+              runtimeGpuMemoryMode === "manual" &&
               (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0) ||
               (target.isGguf === true && activePresetSource === "builtin-default"),
           ),
@@ -2768,7 +2777,7 @@ export function ModelConfigPage({
           specDraftCacheType: runtimeConfig.specDraftCacheDtype ?? null,
           tensorParallel: runtimeConfig.tensorParallel,
           disableVision: runtimeConfig.disableVision,
-          gpuMemoryMode: runtimeConfig.gpuMemoryMode ?? null,
+          gpuMemoryMode: runtimeGpuMemoryMode,
           gpuLayers:
             runtimeConfig.gpuLayers != null &&
             runtimeConfig.gpuLayers !== GPU_LAYERS_AUTO
@@ -2790,7 +2799,13 @@ export function ModelConfigPage({
   // claim per GPU, so the verdict has to be measured against the capped figure or the
   // row contradicts the control directly above it. Subscribed as well as read once:
   // dragging that slider must re-classify without a remount.
-  const [memoryVramBudgetFraction, setMemoryVramBudgetFraction] = useState(1);
+  // Seeded with the loader's own default rather than a full card. The read is async
+  // and returns null on failure -- an older backend has no such route -- and in both
+  // windows the launch still applies VRAM_FRACTION_DEFAULT. Starting at 1 claimed a
+  // reserve no setting of that slider ever gives back, so the row read a hair
+  // optimistic until the answer arrived and stayed there if it never did.
+  const [memoryVramBudgetFraction, setMemoryVramBudgetFraction] =
+    useState(DEFAULT_VRAM_FRACTION);
   useEffect(() => {
     let cancelled = false;
     loadVramBudgetSettings().then((loaded) => {
@@ -2822,7 +2837,7 @@ export function ModelConfigPage({
   // placement on a 24 GiB card reads as over budget at 50%. Auto is still budgeted,
   // because Auto is exactly the mode that hands the decision to the planner.
   const memoryBudgetGovernsLaunch =
-    (runtimeConfig.gpuMemoryMode ?? "auto") !== "manual" ||
+    runtimeGpuMemoryMode !== "manual" ||
     (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0;
   const memoryEffectiveBudgetFraction = memoryBudgetGovernsLaunch
     ? memoryVramBudgetFraction

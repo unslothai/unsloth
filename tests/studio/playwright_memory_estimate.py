@@ -627,18 +627,53 @@ with sync_playwright() as p:
     # component itself, so neither depends on a class name that a restyle can move.
     # ─────────────────────────────────────────────────────
     ESTIMATE_LABEL = re.compile(r"Estimated Memory Usage", re.I)
+    # The run-settings panel exists more than once in this document -- the picker keeps
+    # its own copy mounted behind the one on screen -- so a bare `.first` is a coin
+    # toss, and the copy it landed on in CI was one the user cannot see: the row was
+    # painted, screenshotted, and reported missing for twenty seconds. Take the first
+    # match that is actually on screen, and say which strategy found it, because "the
+    # row is not there" and "the row is there twice" are the same failure otherwise.
+    _match_note: list[str] = []
+
+    def _first_visible(loc, label: str):
+        """The first on-screen match of `loc`, or None. Never raises."""
+        try:
+            total = loc.count()
+        except Exception:
+            return None
+        for i in range(total):
+            candidate = loc.nth(i)
+            try:
+                if candidate.is_visible():
+                    if label not in _match_note:
+                        _match_note.append(label)
+                        info(f"row located by {label} ({total} match(es) in the document)")
+                    return candidate
+            except Exception:
+                continue
+        return None
 
     def estimate_button():
-        return page.get_by_role("button", name = ESTIMATE_LABEL).first
+        """The visible toggle, by role first and by markup second.
+
+        The role query is the one that carries a claim worth making -- a row a screen
+        reader cannot announce is a row that is not there for some users -- so it is
+        tried first and its success is recorded. The structural fallback exists because
+        this scene must be able to tell "the panel never rendered the row" from "the
+        row is unreachable by role", and a single locator that answers no to both
+        cannot.
+        """
+        found = _first_visible(
+            page.get_by_role("button", name = ESTIMATE_LABEL), "role=button"
+        )
+        if found is not None:
+            return found
+        return _first_visible(
+            page.locator("button").filter(has_text = ESTIMATE_LABEL), "button+text"
+        )
 
     def estimate_visible() -> bool:
-        button = estimate_button()
-        if _count(button) == 0:
-            return False
-        try:
-            return button.is_visible()
-        except Exception:
-            return False
+        return estimate_button() is not None
 
     def wait_for_row(present: bool, timeout_ms: int = ESTIMATE_WAIT_MS) -> bool:
         deadline = time.monotonic() + timeout_ms / 1000
@@ -650,7 +685,7 @@ with sync_playwright() as p:
 
     def header_text() -> str:
         button = estimate_button()
-        if _count(button) == 0:
+        if button is None:
             return ""
         try:
             return (button.locator("xpath=..").inner_text() or "").strip()
@@ -659,7 +694,7 @@ with sync_playwright() as p:
 
     def breakdown_text() -> str:
         button = estimate_button()
-        if _count(button) == 0:
+        if button is None:
             return ""
         try:
             content_id = button.get_attribute("aria-controls")
@@ -799,6 +834,15 @@ with sync_playwright() as p:
         diagnose("row-missing", "button[name=/Estimated Memory Usage/]")
     else:
         info("OK row: Estimated Memory Usage rendered for the GGUF target")
+        if "role=button" not in _match_note:
+            # Only the structural locator found it, so the toggle is not reachable by
+            # role -- an ancestor is hiding it from the accessibility tree, or its
+            # accessible name is not what it reads as. Reported rather than gated
+            # while it is unproven which; the line above names the strategy that won.
+            runtime_warn(
+                "the row was found only by markup, not by role=button: a screen "
+                "reader would not announce this toggle"
+            )
 
     if not exchanges:
         fail(
@@ -883,7 +927,10 @@ with sync_playwright() as p:
 
         # Expand: the breakdown is where the per-term figures and the KV note live.
         try:
-            estimate_button().click()
+            expander = estimate_button()
+            if expander is None:
+                raise RuntimeError("the row is no longer on screen")
+            expander.click()
             page.wait_for_timeout(400)
         except Exception as exc:
             fail(f"could not expand the Estimated Memory Usage row: {exc}")

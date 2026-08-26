@@ -205,7 +205,7 @@ export function resolveGpuVramUsedGb(
 }
 
 /** The loader's default VRAM fraction (`_CTX_FIT_VRAM_FRACTION`). */
-const DEFAULT_VRAM_FRACTION = 0.97;
+export const DEFAULT_VRAM_FRACTION = 0.97;
 /** The loader's floor reserve (`_VRAM_FLOOR_RESERVE_MIB`), in GB. */
 const VRAM_FLOOR_RESERVE_GB = 512 / 1024;
 
