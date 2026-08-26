@@ -726,9 +726,8 @@ export async function ensureThreadRecord({
   const createdAtInit = createdAt ?? Date.now();
   // A temporary chat skips the history list so a storage outage cannot block its first send.
   // Gated on the caller knowing the thread is new, not on its id: a `__LOCALID_` id is the
-  // permanent primary key of every chat the app creates, so testing the prefix here tagged
-  // SAVED chats incognito whenever the toggle was on and a caller passed the open chat's id
-  // (openai-code-exec-section does, three times). A tagged chat stops persisting.
+  // permanent key of every chat the app creates, so keying on the prefix tagged SAVED chats
+  // incognito whenever a caller passed the open chat's id with the toggle on.
   if (incognitoAtInit && neverSent) {
     markThreadIncognito(threadId);
     return;
