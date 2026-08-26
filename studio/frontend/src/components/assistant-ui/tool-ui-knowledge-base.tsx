@@ -13,6 +13,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo, useEffect, useMemo, useState } from "react";
 import { Badge } from "./badge";
+import { toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -76,7 +77,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
-  const query = (args as { query?: string })?.query ?? "";
+  const query = toolArgText((args as { query?: unknown })?.query);
   const isRunning = status?.type === "running";
 
   const resultText = result == null ? "" : stringifyToolResult(result);

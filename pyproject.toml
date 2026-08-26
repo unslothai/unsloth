@@ -30,6 +30,7 @@ dependencies = [
     "pydantic",
     "pyyaml",
     "nest-asyncio",
+    "huggingface-hub>=0.34.0",
     # Every CLI command imports studio.backend.*, which reaches structlog at
     # module level. The rest of the server stack lives in the studio extra.
     "structlog>=24.1.0",
@@ -147,7 +148,7 @@ exllama = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.8.13",
+    "unsloth_zoo>=2026.8.15",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -194,7 +195,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.8.13",
+    "unsloth_zoo>=2026.8.15",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -718,7 +719,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.8.13",
+    "unsloth_zoo>=2026.8.15",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",

@@ -362,3 +362,122 @@ def test_xpu_takes_priority_over_mlx_when_both_available(spoof_hardware):
     spoof_hardware(profile)
     hw = _import_studio_hardware_module()
     assert hw.detect_hardware() == hw.DeviceType.XPU
+
+
+# Studio's placement, against the loader's opt-in device map.
+#
+# unsloth's loader upgrades a "sequential" device_map to the "unsloth" planning sentinel
+# when UNSLOTH_AUTO_DEVICE_MAP=1. Studio does not pass the sentinel and never sets that
+# variable, but an operator can set it process-wide, and Studio's "sequential" is not a
+# default it forgot to change: it is get_device_map() saying "one device". These pin the
+# two facts that keep that safe on every profile above -- Studio's multi-GPU answer is
+# "balanced", which is never upgraded, and its single-GPU answer is reached only inside a
+# worker that has already narrowed the visible devices to the selection.
+
+
+def _loader_device_map_helpers():
+    """The two loader functions, rebuilt over a fabricated torch.
+
+    ast rather than an import: `unsloth.models.loader_utils` pulls in the whole CUDA
+    import chain, which is exactly what the spoofs in this file are pretending about.
+    """
+    import ast as _ast
+
+    source = (REPO_ROOT / "unsloth" / "models" / "loader_utils.py").read_text(encoding = "utf-8")
+
+    class _Cuda:
+        def __init__(self, count):
+            self._count = count
+
+        def device_count(self):
+            return self._count
+
+        def mem_get_info(self, index):
+            return (8 * 2**30, 16 * 2**30)
+
+    def build(visible_devices):
+        import os as _os
+
+        namespace = {
+            "os": _os,
+            "torch": types.SimpleNamespace(cuda = _Cuda(visible_devices)),
+            "DEVICE_TYPE_TORCH": "cuda",
+            "is_distributed": lambda: False,
+        }
+        for node in _ast.parse(source).body:
+            if isinstance(node, _ast.FunctionDef) and node.name in (
+                "requested_device_map",
+                "resolve_unsloth_device_map",
+                "_as_bytes",
+            ):
+                exec(_ast.get_source_segment(source, node), namespace)
+            elif isinstance(node, _ast.ClassDef) and node.name == "_DefaultDeviceMap":
+                exec(_ast.get_source_segment(source, node), namespace)
+            elif isinstance(node, _ast.Assign) and getattr(node.targets[0], "id", None) in (
+                "UNSLOTH_DEVICE_MAP",
+                "DEFAULT_DEVICE_MAP",
+                "_SIZE_UNITS",
+            ):
+                exec(_ast.get_source_segment(source, node), namespace)
+        # No planner installed: the fallback is what a decline looks like from here.
+        sys.modules.pop("unsloth_zoo.device_map_planner", None)
+        sys.modules["unsloth_zoo.device_map_planner"] = types.ModuleType(
+            "unsloth_zoo.device_map_planner"
+        )
+        return namespace
+
+    return build
+
+
+@pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
+@pytest.mark.parametrize("gpu_ids", [None, [], [0], [0, 1], [2, 3, 5]], ids = repr)
+@pytest.mark.parametrize("opt_in", ["unset", "0", "1"])
+def test_studio_placement_survives_the_loader_opt_in(
+    profile, gpu_ids, opt_in, spoof_hardware, monkeypatch
+):
+    """Whatever Studio decided, the loader hands the same thing to transformers.
+
+    The one value the opt-in can rewrite is "sequential", and Studio only produces that
+    when it selected a single device -- at which point the worker has already narrowed the
+    visible set, the planner sees one GPU and declines back to "sequential".
+    """
+    spoof_hardware(profile)
+    hw = _import_studio_hardware_module()
+
+    if gpu_ids and hw.get_device() not in (hw.DeviceType.CUDA, hw.DeviceType.XPU):
+        pytest.skip(f"{profile.name} does not take an explicit gpu_ids")
+
+    device_map = hw.get_device_map(gpu_ids)
+    assert device_map in ("balanced", "sequential")
+
+    if opt_in == "unset":
+        monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", opt_in)
+
+    # The worker narrows CUDA_VISIBLE_DEVICES to the selection before torch initialises,
+    # so the loader counts the selected devices, not the machine's.
+    visible = len(gpu_ids) if gpu_ids else 1
+    loader = _loader_device_map_helpers()(visible)
+
+    resolved = loader["resolve_unsloth_device_map"](
+        loader["requested_device_map"](device_map), "unsloth/Qwen3-0.6B"
+    )
+    assert resolved == device_map, (
+        f"profile {profile.name}, gpu_ids={gpu_ids}, UNSLOTH_AUTO_DEVICE_MAP={opt_in}: "
+        f"Studio asked for {device_map!r} and the loader produced {resolved!r}"
+    )
+
+
+@pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
+def test_studio_never_speaks_the_planning_sentinel(profile, spoof_hardware):
+    """get_device_map is the only thing that names a placement for Studio's loads, and
+    "unsloth" is not one of its answers on any backend. If it ever becomes one, the
+    Studio-side reasoning above stops holding and this fails first."""
+    spoof_hardware(profile)
+    hw = _import_studio_hardware_module()
+    answers = {hw.get_device_map(None), hw.get_device_map([])}
+    if hw.get_device() in (hw.DeviceType.CUDA, hw.DeviceType.XPU):
+        answers |= {hw.get_device_map([0]), hw.get_device_map([0, 1])}
+    assert "unsloth" not in answers
+    assert answers <= {"balanced", "sequential"}

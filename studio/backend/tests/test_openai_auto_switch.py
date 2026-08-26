@@ -3258,11 +3258,13 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         require_vision = False,
         require_image = True,
         modality_label = "image or audio",
+        claim_resident = True,
     ):
         captured.update(
             require_vision = require_vision,
             require_image = require_image,
             modality_label = modality_label,
+            claim_resident = claim_resident,
         )
         raise _Reached()
 
@@ -3276,6 +3278,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         "require_vision": True,
         "require_image": False,
         "modality_label": "audio",
+        "claim_resident": False,
     }
 
     # An image in the same request does need the vision tower.
@@ -3291,6 +3294,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         "require_vision": True,
         "require_image": True,
         "modality_label": "image or audio",
+        "claim_resident": False,
     }
 
 
@@ -3481,8 +3485,9 @@ def test_require_vision_probes_the_quant_the_load_will_open(monkeypatch):
     monkeypatch.setattr(
         inference_route,
         "_target_is_vision",
-        lambda path, variant = None, need_image = True: probed.append((path, variant, need_image))
-        or True,
+        lambda path, variant = None, need_image = True: (
+            probed.append((path, variant, need_image)) or True
+        ),
     )
     asyncio.run(
         inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
@@ -3646,8 +3651,10 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
         subject,
         *,
         require_vision = False,
+        claim_resident = True,
     ):
         captured["require_vision"] = require_vision
+        captured["claim_resident"] = claim_resident
         raise _Reached()
 
     monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p: True)
@@ -3656,6 +3663,7 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
     assert captured["require_vision"] is True
+    assert captured["claim_resident"] is False
 
 
 # ── /chat/count_tokens: what the recount prices ───────────────────
@@ -4767,8 +4775,10 @@ def test_audio_generate_is_reload_only(monkeypatch):
         subject,
         *,
         require_vision = False,
+        claim_resident = True,
     ):
         captured["model"] = model
+        captured["claim_resident"] = claim_resident
         raise _Reached()
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
@@ -4778,6 +4788,7 @@ def test_audio_generate_is_reload_only(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.generate_audio(payload, object(), "tester"))
     assert captured["model"] == inference_route._RELOAD_ONLY_MODEL
+    assert captured["claim_resident"] is False
 
 
 def test_note_model_unloaded_clears_reload_stash(monkeypatch):
@@ -8158,11 +8169,13 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         require_vision = False,
         require_image = True,
         modality_label = "image or audio",
+        claim_resident = True,
     ):
         captured.update(
             require_vision = require_vision,
             require_image = require_image,
             modality_label = modality_label,
+            claim_resident = claim_resident,
         )
         raise _Reached()
 
@@ -8176,4 +8189,73 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         "require_vision": True,
         "require_image": False,
         "modality_label": "video",
+        "claim_resident": False,
     }
+
+
+# Preview ownership regressions.
+
+
+def test_count_tokens_switch_marks_new_model_preview_owned(monkeypatch):
+    backend = _FakeBackend("org/A-GGUF")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("org/B-GGUF", None, "org/B-GGUF"),
+        backend = backend,
+        recorder = recorder,
+    )
+    inference_route._set_preview_resident("org/A-GGUF")
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/B-GGUF", object(), "tester", claim_resident = False
+        )
+    )
+    assert len(recorder.calls) == 1
+    assert inference_route._is_preview_resident("org/B-GGUF")
+    inference_route._set_preview_resident(None)  # cleanup
+
+
+def test_count_tokens_does_not_own_an_independent_load(monkeypatch):
+    state = {"slot": "/outputs/preview-a"}
+    identity_checked = threading.Event()
+    independent_load_done = threading.Event()
+
+    def loaded_identity_satisfies(_requested):
+        identity_checked.set()
+        assert independent_load_done.wait(timeout = 2)
+        return True
+
+    async def no_model_error(*_args, **_kwargs):
+        return 503, "No GGUF model loaded"
+
+    monkeypatch.setattr(inference_route, "_loaded_slot_ident", lambda: state["slot"])
+    monkeypatch.setattr(inference_route, "_loaded_identity_satisfies", loaded_identity_satisfies)
+    monkeypatch.setattr(inference_route, "_no_model_loaded_error", no_model_error)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    monkeypatch.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: types.SimpleNamespace(is_loaded = False),
+    )
+
+    inference_route._set_preview_resident(state["slot"])
+    payload = _anthropic_payload_with_tools(None)
+    request = types.SimpleNamespace(scope = {"path": "/v1/messages/count_tokens"})
+
+    async def drive():
+        task = asyncio.create_task(
+            inference_route.anthropic_count_tokens(payload, request, "tester")
+        )
+        assert await asyncio.to_thread(identity_checked.wait, 2)
+        state["slot"] = "/outputs/studio-b"
+        inference_route._set_preview_resident(None)
+        independent_load_done.set()
+        with pytest.raises(HTTPException) as exc:
+            await task
+        assert exc.value.status_code == 503
+
+    asyncio.run(drive())
+    assert not inference_route._is_preview_resident("/outputs/studio-b")
