@@ -676,3 +676,28 @@ class TestThePlannerFiguresArrive:
             "the floor equals the full plan, so the second pricing did not use a "
             "shorter context and cannot separate reducible from fixed"
         )
+
+
+class TestADirectGgufFileResolves:
+    """A custom or LM Studio entry whose path is the .gguf itself never goes
+    through variant selection, so there is no quant label to match. The file
+    names the weights on its own."""
+
+    def test_a_direct_file_is_its_own_resolution(self, tmp_path):
+        gguf = _write_gguf(tmp_path / "some-model-Q4_K_M.gguf", _PLAIN_GQA)
+        path, size = models_routes._resolve_quant_gguf(str(gguf), "", True)
+        assert path == str(gguf), "a direct file selection did not resolve to itself"
+        assert size == gguf.stat().st_size
+
+    def test_a_directory_still_takes_the_quant_scan(self, tmp_path):
+        # The direct-file branch must not swallow the ordinary case: a folder is
+        # still scanned for the quant that was asked for.
+        model_dir = tmp_path / "folder"
+        _write_gguf(model_dir / "model-Q4_K_M.gguf", _PLAIN_GQA)
+        path, size = models_routes._resolve_quant_gguf(str(model_dir), "Q4_K_M", True)
+        assert path and path.endswith("model-Q4_K_M.gguf")
+        assert size > 0
+        # And a quant it does not hold resolves to nothing rather than to
+        # whatever happened to be there.
+        missing, _ = models_routes._resolve_quant_gguf(str(model_dir), "Q2_K", True)
+        assert missing is None

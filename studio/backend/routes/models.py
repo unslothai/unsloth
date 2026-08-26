@@ -3557,6 +3557,16 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
     """
     try:
         if is_local:
+            # A direct file selection names the weights outright: custom, LM
+            # Studio and other local inventory entries whose path ends in .gguf
+            # never go through variant selection, so there is no quant label to
+            # match and nothing to scan for. Answer with the file itself, and
+            # with the whole split family's size rather than this shard's, the
+            # same way the quant scan below totals its shards.
+            direct = Path(repo_id)
+            if direct.is_file() and direct.suffix.lower() == ".gguf":
+                from core.inference.llama_cpp import LlamaCppBackend
+                return str(direct), LlamaCppBackend._get_gguf_size_bytes(str(direct))
             roots = [Path(repo_id)]
         else:
             from hub.utils.hf_cache_state import iter_repo_cache_dirs
@@ -3820,6 +3830,7 @@ async def get_kv_cache_estimate(
                 cache_type_kv,
                 n_parallel = n_parallel,
                 ctx_checkpoints = ctx_checkpoints or 0,
+                n_ubatch = n_ubatch,
             )
 
             # The checkpoint share of that cache, by difference rather than by
@@ -3837,6 +3848,7 @@ async def get_kv_cache_estimate(
                     cache_type_kv,
                     n_parallel = n_parallel,
                     ctx_checkpoints = 0,
+                    n_ubatch = n_ubatch,
                 )
                 kv_checkpoint = max(0, int(kv) - int(_kv_without))
 
@@ -4037,6 +4049,24 @@ async def get_kv_cache_estimate(
                     _gguf_memory_breakdown,
                     _localized_estimate_config,
                 )
+
+                # Tensor mode replicates its compute buffers on every device in
+                # the pool, so pricing one device understates the reserve by a
+                # factor of however many cards the launch would use. Only consulted
+                # in tensor mode: a layer split does not replicate them the same
+                # way, and this is the same count the load panel derives.
+                _planner_devices = 1
+                if tensor_parallel:
+                    from routes.inference import (
+                        _cached_inference_devices,
+                        _guard_device_count,
+                    )
+                    _planner_devices = max(
+                        1,
+                        _guard_device_count(
+                            None, _cached_inference_devices(), tensor_parallel = True
+                        ),
+                    )
                 _cfg = _cached_estimate_config(repo_id, quant, None, False)
                 if _cfg is not None and _cfg is not _ESTIMATE_NOT_ON_DISK:
                     _cfg = _localized_estimate_config(_cfg, path)
@@ -4054,9 +4084,16 @@ async def get_kv_cache_estimate(
                         n_batch = n_batch,
                         n_ubatch = n_ubatch,
                         tensor_parallel = tensor_parallel,
+                        n_devices = _planner_devices,
                     )
                     if _b is not None:
-                        planner_gpu = int(_b.gpu_bytes) or None
+                        # `or None` would fold a real zero into "no answer".
+                        # Zero is a meaningful result: inherited placement such as
+                        # LLAMA_ARG_DEVICE=none makes the launch entirely CPU
+                        # resident, and discarding that sent the caller back to
+                        # summing segments and drawing VRAM pressure for a load
+                        # that touches no card at all.
+                        planner_gpu = int(_b.gpu_bytes)
                         planner_compute = int(_b.compute_bytes) or None
                         planner_total = int(_b.total_bytes) or None
                         planner_unsized = bool(_b.drafter_kv_unsized)
@@ -4088,11 +4125,10 @@ async def get_kv_cache_estimate(
                             n_batch = n_batch,
                             n_ubatch = n_ubatch,
                             tensor_parallel = tensor_parallel,
+                            n_devices = _planner_devices,
                         )
                         if _floor is not None:
-                            planner_floor = (
-                                min(int(_floor.gpu_bytes) or 0, planner_gpu or 0) or None
-                            )
+                            planner_floor = min(int(_floor.gpu_bytes), planner_gpu)
             except Exception as e:
                 logger.debug(f"planner breakdown failed for '{repo_id}' {quant}: {e}")
 

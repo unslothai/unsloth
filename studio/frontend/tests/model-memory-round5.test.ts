@@ -119,3 +119,43 @@ test("a mixed shared-memory host is judged on dedicated VRAM only", () => {
     "the dedicated-only budget must still refuse a model larger than the card",
   );
 });
+
+test("a CPU-resident launch draws no VRAM bar", () => {
+  // Inherited placement (LLAMA_ARG_DEVICE=none) makes the planner report zero
+  // GPU bytes. That is an answer, not a missing one, and a `||` fallback used to
+  // swap it for the segment sum and draw pressure for a load that touches no
+  // card at all.
+  const segments = computeModelMemory({
+    weightsBytes: 8 * GB,
+    kvBytes: 2 * GB,
+    gpuTotalBytes: 0,
+    gpuGb: 24,
+    budgetFraction: 0.9,
+  });
+  assert.equal(segments.status, "unknown");
+});
+
+test("the planner's total wins over the segment sum", () => {
+  // The segments are assembled from separate fields and can only include what
+  // this file knows to ask for; the planner's figure already counts the terms it
+  // does not. A total below the sum still has to be taken, or the delegation is
+  // decorative.
+  const segments = computeModelMemory({
+    weightsBytes: 10 * GB,
+    kvBytes: 4 * GB,
+    gpuTotalBytes: 20 * GB,
+    gpuGb: 24,
+    budgetFraction: 0.9,
+  });
+  assert.equal(Math.round(segments.totalGb), 20);
+});
+
+test("KV-shaping recognises the flags that override structured settings", () => {
+  // --flash-attn off changes the cache LAYOUT, and an extras --spec-type beats
+  // the structured speculative mode outright, so both make the priced figure
+  // describe a different launch.
+  assert.equal(extraArgsShapeKvCache(["--flash-attn", "off"]), true);
+  assert.equal(extraArgsShapeKvCache(["-fa", "off"]), true);
+  assert.equal(extraArgsShapeKvCache(["--spec-type", "draft-mtp"]), true);
+  assert.equal(extraArgsShapeKvCache(["--spec-draft-n-max=8"]), true);
+});

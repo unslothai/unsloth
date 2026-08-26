@@ -149,6 +149,10 @@ export function computeModelMemory(
   const gpuGb = input.gpuGb ?? 0;
   const modelGb = toGb(input.weightsBytes);
   if (gpuGb <= 0 || modelGb <= 0) return EMPTY;
+  // The planner says this launch puts nothing on the card. A VRAM bar has
+  // nothing to say about it, and drawing one implies a reservation that is not
+  // going to happen.
+  if (input.gpuTotalBytes === 0) return EMPTY;
 
   // The loader's own budget when the caller knows it, so the bar warns at the
   // line admission actually draws. VRAM_HEADROOM_RATIO stays the fallback: it
@@ -164,7 +168,12 @@ export function computeModelMemory(
   // The planner's total when it gave one, since it accounts for terms these
   // segments cannot see. Falls back to the sum for a backend too old to send it.
   const segmentSumGb = modelGb + kvGb + specGb;
-  const totalGb = toGb(input.gpuTotalBytes) || segmentSumGb;
+  // Explicitly null-checked, because zero is an answer rather than the absence
+  // of one: inherited placement can make the launch entirely CPU resident, and
+  // `||` would have quietly swapped that for the segment sum and drawn VRAM
+  // pressure for a load that touches no card.
+  const totalGb =
+    input.gpuTotalBytes == null ? segmentSumGb : toGb(input.gpuTotalBytes);
 
   // Only the weights are a hard verdict: they are what they are. The context
   // term is a reservation the loader is free to shrink when nothing pinned it,
@@ -183,7 +192,9 @@ export function computeModelMemory(
   // auto-fit suppress an overage nothing could fix.
   const specFixedGb = toGb(input.specFixedBytes);
   const irreducibleGb =
-    toGb(input.gpuFloorBytes) || modelGb + specFixedGb;
+    input.gpuFloorBytes == null
+      ? modelGb + specFixedGb
+      : toGb(input.gpuFloorBytes);
   const status: ModelMemoryStatus =
     irreducibleGb > budgetGb
       ? "model-exceeds"
@@ -269,6 +280,20 @@ export const PLACEMENT_OWNING_ARGS = [
  */
 export const KV_SHAPING_ARGS = [
   "--swa-full",
+  // Turning flash attention off changes the cache layout, not just its size:
+  // _estimate_kv_cache_bytes then pads variable-width V tensors to the
+  // model-wide maximum, which can reserve materially more than the default
+  // enabled layout this estimate prices.
+  "--flash-attn",
+  "-fa",
+  // The loader treats an extras --spec-type as authoritative over the
+  // structured mode, so a config saying "off" can still open an embedded NextN
+  // head. The request carries only the structured mode, so the draft KV and the
+  // target rollback state would both be missing from the total.
+  "--spec-type",
+  "--spec-draft-n-max",
+  "--spec-draft-type-k",
+  "--spec-draft-type-v",
   "--kv-unified",
   "-kvu",
   "--ctx-size",

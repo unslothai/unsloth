@@ -712,7 +712,12 @@ export function LocalOnDeviceCard({
         {/* Below the action row, not inside it: the row is a horizontal flex
             container, so a full-width bar there becomes another flex item and
             squeezes the Run/Train buttons. */}
-        {(repoId || path) && selectedQuant ? (
+        {/* A direct .gguf path skips variant selection entirely, so selectedQuant
+            is null for exactly the local files this is meant to cover. The path
+            names the weights on its own there, and the backend resolves a
+            direct file without needing a quant to match. */}
+        {(repoId || localGgufPath) &&
+        (selectedQuant || localGgufPath.toLowerCase().endsWith(".gguf")) ? (
           <ModelMemoryBarFor
             // The card's own path is what Run opens, so it is the identity the
             // estimate has to use: a repo cached under several roots or revisions
@@ -720,9 +725,9 @@ export function LocalOnDeviceCard({
             // click does not load. It is also the only identity a custom or local
             // GGUF has, where repoId is null and the bar used to be suppressed
             // outright despite a perfectly good path being right here.
-            repoId={repoId || path}
-            loadId={path}
-            quant={selectedQuant}
+            repoId={repoId || localGgufPath}
+            loadId={localGgufPath}
+            quant={selectedQuant ?? ""}
             sizeBytes={selectedVariant?.size_bytes}
             gpuGb={gpuGb}
             className="px-3 pb-2"
