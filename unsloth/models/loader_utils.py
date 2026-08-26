@@ -1505,7 +1505,7 @@ def _restore_progress_bars(were_disabled):
 # Every way a cache miss reaches the caller once offline mode has skipped Transformers'
 # own "does not appear to have a file named" raise: the resolved path stays None and the
 # next line dereferences it, so the message names the None and never the cache. Same set
-# the Studio training worker matches (studio/backend/core/training/worker.py, #7845):
+# the Unsloth training worker matches (studio/backend/core/training/worker.py, #7845):
 # weights come out as `endswith`, tokenizers/processors as any of the other four.
 _EMPTY_CACHE_ARTIFACTS = (
     "'nonetype' object has no attribute 'endswith'",

@@ -186,6 +186,21 @@ def test_save_thread_distinguishes_a_tombstone_from_an_unknown_id(monkeypatch):
     assert exc_info.value.detail == "Thread thread-1 was deleted"
 
 
+def test_chat_thread_payload_carries_gguf_variant():
+    thread = chat_history.ChatThread(
+        id = "thread-1",
+        title = "GGUF chat",
+        modelType = "base",
+        modelId = "unsloth/Qwen3-GGUF",
+        modelGgufVariant = "Q6_K",
+        createdAt = 1,
+    )
+    patch = chat_history.ChatThreadPatch(modelGgufVariant = "Q8_0")
+
+    assert thread.model_dump()["modelGgufVariant"] == "Q6_K"
+    assert patch.model_dump(exclude_unset = True) == {"modelGgufVariant": "Q8_0"}
+
+
 def test_clear_history_fences_pending_thread_ids(monkeypatch):
     captured: list[str] = []
     captured_operation_ids: list[str | None] = []

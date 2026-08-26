@@ -884,8 +884,8 @@ class DiffusionTrainingStartRequest(BaseModel):
         description = (
             "Directory for the PERSISTENT conditioning cache (latents + text embeddings), reused "
             "across runs: a rerun whose images, captions and resolution are unchanged skips "
-            "loading the VAE and the multi-GB text encoders entirely. Studio-relative names are "
-            "resolved under the Studio outputs root and absolute paths must stay inside it. "
+            "loading the VAE and the multi-GB text encoders entirely. Unsloth-relative names are "
+            "resolved under the Unsloth outputs root and absolute paths must stay inside it. "
             "null or blank keeps the in-memory cache, which is rebuilt every run."
         ),
     )
@@ -943,7 +943,7 @@ class DiffusionTrainingStartRequest(BaseModel):
         None,
         description = (
             "Continue a previous run: its output_dir (the newest complete checkpoint inside it "
-            "is used) or one explicit checkpoint-<N> directory. Must resolve inside the Studio "
+            "is used) or one explicit checkpoint-<N> directory. Must resolve inside the Unsloth "
             "outputs root, and must match this run's family, base model, dataset, LoRA "
             "configuration and precision. train_steps is then the TARGET TOTAL, so resuming a "
             "checkpoint at step 11 with train_steps=500 trains steps 12..500."
@@ -1009,7 +1009,7 @@ class DiffusionTrainingStatusResponse(BaseModel):
     lora_path: Optional[str] = None
     # The second, EMA-averaged adapter written in the run's ema subdir when ema_decay was enabled.
     ema_path: Optional[str] = None
-    # Where the adapter was mirrored into the Studio LoRA catalog, and what family / base it trained from, so the UI can deploy it.
+    # Where the adapter was mirrored into the Unsloth LoRA catalog, and what family / base it trained from, so the UI can deploy it.
     catalog_path: Optional[str] = None
     family: Optional[str] = None
     base_model: Optional[str] = None
@@ -1081,7 +1081,7 @@ class DiffusionTrainingRunsResponse(BaseModel):
 
 
 class DiffusionDatasetSummary(BaseModel):
-    """One dataset folder under the Studio datasets root: images, clips, or both."""
+    """One dataset folder under the Unsloth datasets root: images, clips, or both."""
 
     name: str
     path: str
@@ -1130,7 +1130,7 @@ class DiffusionTrainableFamily(BaseModel):
 
 
 class DiffusionTrainingInfoResponse(BaseModel):
-    """Where diffusion training reads/writes on this Studio, plus usable datasets and the
+    """Where diffusion training reads/writes on this Unsloth, plus usable datasets and the
     trainable model families (so the UI can offer a base picker with realistic guidance)."""
 
     datasets_root: str

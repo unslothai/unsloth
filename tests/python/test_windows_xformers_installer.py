@@ -283,7 +283,7 @@ def test_installed_build_probe_reads_cpp_lib_json():
 
 # Torch releases the exact tables cannot list, and the answer both selectors must give.
 # The two implementations resolve the same machine (install.ps1 during install, wheel_utils
-# on demand from Studio), so a fallback that lives in only one of them is a machine whose
+# on demand from Unsloth), so a fallback that lives in only one of them is a machine whose
 # answer changes depending on which one asked.
 STABLE_ABI_PARITY_CASES = [
     ("2.10.1+cu130", "13.0", "0.0.35"),

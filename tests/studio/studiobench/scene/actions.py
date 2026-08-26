@@ -7,7 +7,7 @@ THE RULE THIS FILE EXISTS TO ENFORCE: an action that did not happen is `ran = Fa
 a fast timing. That is not a style preference, it is the failure mode that wasted a day of
 measurement. A menu whose trigger opens on `pointerdown` does not open when you call `.click()`,
 and the column then reads a tidy small number that looks like a fast menu. A jump scroll from the
-bottom is read by Studio's intent-aware autoscroll as programmatic and snapped straight back, so
+bottom is read by Unsloth's intent-aware autoscroll as programmatic and snapped straight back, so
 the viewport lands where it started and the timing is real, precise and about nothing. Every
 action below therefore asserts a POSITIVE observable consequence -- the scroll travelled at least
 90% of what was commanded, the menu opened AND closed with a non-zero item count, the delete
@@ -341,7 +341,7 @@ def _scroll(ctx: ActionContext, label: str) -> ActionResult:
         return not_run(raw.get("reason", "the scroll did not run"))
     commanded = raw["commandedPx"]
     travelled = raw["travelledPx"]
-    # 90% of commanded. Studio replaces assistant-ui's autoscroll with an intent-aware one that
+    # 90% of commanded. Unsloth replaces assistant-ui's autoscroll with an intent-aware one that
     # snaps a move it reads as programmatic straight back to the bottom: measured on an earlier
     # harness, the gesture landed where it started and the column timed a scroll that did not
     # happen. Travel is the only thing that separates the two.
@@ -2525,7 +2525,7 @@ async (opts) => {
 
 #: How long an action that needs a message's ACTION BAR will wait for the reply to finish.
 #:
-#: Studio hides the action bar while a message is generating, so "no More button on the last
+#: Unsloth hides the action bar while a message is generating, so "no More button on the last
 #: assistant message" and "no Delete button (a running message hides it)" are the same fact
 #: reported by two actions. The film schedules `message_menu` about four seconds after a
 #: `send_turn` whose reply runs for roughly fourteen, so the menu was being asked for on a message
@@ -2557,7 +2557,7 @@ def _wait_for_the_reply_to_land(ctx: ActionContext) -> bool:
 @register_action(name = "message_menu", default_budget_ms = 12000)
 def message_menu(ctx: ActionContext) -> ActionResult:
     # TWO WAITS, AND THEY COVER DIFFERENT THINGS. This one waits for the STREAM to stop, bounded by
-    # a fraction of the slot's own budget, because a follow-up reply runs for seconds and Studio
+    # a fraction of the slot's own budget, because a follow-up reply runs for seconds and Unsloth
     # unmounts the whole action bar for its whole duration -- far longer than the page-side wait
     # below is allowed to sit. `waitForButtonMs` then waits for the BAR TO MOUNT, which happens a
     # few hundred milliseconds after the reply settles, and which this one cannot see because
@@ -2566,7 +2566,7 @@ def message_menu(ctx: ActionContext) -> ActionResult:
     # second, the slot asks for a control that has not been mounted yet.
     if not _wait_for_the_reply_to_land(ctx):
         return not_run(
-            "a reply was still generating when the slot's budget ran out, and Studio hides the "
+            "a reply was still generating when the slot's budget ran out, and Unsloth hides the "
             "action bar on a generating message, so there was no menu to open"
         )
     raw = _ev(

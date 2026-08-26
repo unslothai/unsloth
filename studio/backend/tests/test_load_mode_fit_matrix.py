@@ -405,7 +405,7 @@ def test_the_fitters_margin_is_not_credited_to_the_fit(monkeypatch):
             avail_mib = 2 * 1024,
         )
 
-    # --fit off (Studio proved the placement): no fitter, no margin, the card pays.
+    # --fit off (Unsloth proved the placement): no fitter, no margin, the card pays.
     assert _fit(0.0) == FIT_MODE
     # --fit on: the last 1 GiB is the fitter's, so 0.5 GiB of weights spill, and
     # 2 GiB of RAM is exactly the headroom, so nothing is left to hold them.
@@ -429,7 +429,7 @@ def test_the_margin_is_charged_per_device():
         (False, 0.0, True, 1024.0),
         # Manual + Auto starts from the tighter floor.
         (True, 0.0, True, 512.0),
-        # A lowered VRAM budget raises the margin Studio asks the fitter to keep.
+        # A lowered VRAM budget raises the margin Unsloth asks the fitter to keep.
         (False, 2048.0, True, 3072.0),
         # ...and never below the 512 MiB floor.
         (True, -4096.0, True, 512.0),
@@ -647,7 +647,7 @@ def test_an_abstaining_fit_reproduces_the_old_argv_exactly(axes, extras, toggles
 
     Every host where the fit cannot prove a fit -- unreadable RAM, an unsized
     model, Apple Silicon, a load too big for the machine -- has to come out of
-    this byte-identical to a Studio that never had the feature.
+    this byte-identical to an Unsloth instance that never had the feature.
     """
     (keep, no_reserve), user, _fit, supports, host = axes
     toggles(keep, no_reserve)
@@ -1258,7 +1258,7 @@ def _vulkan(footprint, avail_mib, monkeypatch, **kwargs):
     ],
 )
 def test_a_replaced_vulkan_pin_voids_the_credit(extras, monkeypatch):
-    """Studio pins Vulkan0,Vulkan1 from the credited ordinals; a pass-through
+    """Unsloth pins Vulkan0,Vulkan1 from the credited ordinals; a pass-through
     --device lands after it and last-wins."""
     assert _vulkan(18 * GIB, 4 * 1024, monkeypatch, extra_args = extras) is None
 
@@ -1955,7 +1955,7 @@ def test_the_fit_prices_pass_through_adapter_weights(tmp_path, monkeypatch):
 
 def test_the_fit_prices_the_legacy_two_token_scaled_adapter(tmp_path, monkeypatch):
     """``--lora-scaled FNAME SCALE`` is the spelling older llama-servers declared,
-    and Studio runs whatever binary it is pointed at. Reading only FNAME as the
+    and Unsloth runs whatever binary it is pointed at. Reading only FNAME as the
     operand and dropping it for want of a colon prices the adapter at zero, which is
     the optimistic direction: a load that needs 21 GiB on a 20 GiB card would be
     handed a loader that cannot page.

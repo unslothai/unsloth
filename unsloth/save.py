@@ -7107,14 +7107,14 @@ def _offload_model_for_quantize_subprocess(model):
 
     Two shapes are handled:
       * single-device CUDA/XPU model -> ``.to("cpu")``, restored with ``.to(device)``;
-      * accelerate-dispatched model (a multi-GPU ``device_map`` shard, e.g. the Studio
+      * accelerate-dispatched model (a multi-GPU ``device_map`` shard, e.g. the Unsloth
         multi-GPU export load) -> hooks removed and moved to CPU, restored by replaying
         the dispatch. A plain ``.to("cpu")`` is invalid here, which is why the old
         single-device-only move left every GPU holding a full copy. A map spilling to
         CPU is still released, but disk/meta targets are left alone: accelerate keeps
         those parameters off the model, so moving would materialize the whole checkpoint.
 
-    Quantized (bnb) models are attempted too rather than skipped: Studio exports load
+    Quantized (bnb) models are attempted too rather than skipped: Unsloth exports load
     4-bit by DEFAULT, so skipping them left a shard on every GPU. transformers refuses
     ``.to()`` for some bitsandbytes builds and that refusal raises before anything moves,
     so the failure path restores the model and returns None, i.e. the old behaviour.
