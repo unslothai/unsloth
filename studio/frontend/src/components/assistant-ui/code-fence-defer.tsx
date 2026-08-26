@@ -340,7 +340,7 @@ const upgradeEverythingForPrint = (): void => {
 };
 
 /*
- * GRAMMARS, WARMED AT IDLE, ON REAL TEXT, ONE LANGUAGE PER TASK.
+ * GRAMMARS, WARMED AT IDLE, ON REAL TEXT, ONE TOKENIZATION PER TASK.
  *
  * One fence per language, so `latchNow`'s synchronous path cannot be defeated by a still-loading
  * grammar: on a jump into a language the reader has not met, and on a print, where there is no
@@ -359,32 +359,26 @@ const upgradeEverythingForPrint = (): void => {
  *   warm on real text           183,  190 ms     1                and 2
  *   this: split, eager loads    187,  183 ms     1/64/21/32/1016  and 2/68/36/52/1104
  *
- * The 1,016 ms is ONE tokenize call, typescript's first, which nothing here can subdivide; what
- * the split buys is that the other four do not land on top of it. The unsplit arm pays it too, at
- * t=6.5 s inside a grammar-load callback rather than in a warm, which is why its callback reads
- * 1 ms. On the empty-string arm the same call lands at t=36.5 s, inside the scroll, and that IS
- * the worst frame. Idle is best on the split arm, 25 and 32 ms worst frame against 46/37 unsplit
- * and 38/43 on `""`, because the work is done by t=8 s.
+ * The 1,016 ms is ONE tokenize call, typescript's first, which nothing here can subdivide; the
+ * split only keeps the other four off it. Every arm pays that call: unsplit at t=6.5 s inside a
+ * grammar-load callback, which is why its warm reads 1 ms, and on the `""` arm at t=36.5 s, inside
+ * the scroll, where it IS the worst frame. Moved, not skipped, and the totals say so: tokenize time
+ * RISES, 1607-1746 ms to 1917-2039 ms, because a warmed fence is tokenized once and read from cache
+ * later. Mount is unaffected, worst idle frame is best here (25 and 32 ms against 46/37 unsplit and
+ * 38/43 on `""`), idle is 62.5 fps and 7.1 to 7.4% busy on every arm, the three arms render the
+ * same document (7,259 spans, 27,045 elements, 56 code blocks), and the rig is jam-controlled: a
+ * 200 ms/250 ms hog reads 81% busy.
  *
- * Moved, not skipped: total tokenize time RISES, 1607-1746 ms to 1917-2039 ms, because a warmed
- * fence is tokenized once here and read from cache later. Mount is unaffected, idle is 62.5 fps
- * and 7.1 to 7.4% busy on every arm, the three arms render the same document (7,259 spans, 27,045
- * elements, 56 code blocks), and the rig is jam-controlled: a 200 ms/250 ms hog reads 81% busy.
- *
- * ONE TOKENIZATION PER TASK, BUT EVERY LOAD IN THE FIRST. An idle callback only chooses when it
- * STARTS -- nothing yields once it runs, its 2,000 ms timeout can start it on a busy thread, and
- * WebKitGTK has no `requestIdleCallback` at all, so this venue takes the `setTimeout` fallback and
- * cannot even pick a quiet moment. The table understates that: a COLD grammar makes
- * `code.highlight` queue and return, leaving the tokenizing to each grammar's own load callback.
- * Once loaded it tokenizes INLINE and N languages concatenate -- driving shiki with this
- * component's configuration, the five languages here (c, python, go, typescript, rust) cost 746 ms
- * back to back, worst single language 334 ms.
- *
- * The LOADS stay eager, all of them, in the first pass. Yielding them too would put the last
- * language's grammar 500 ms x N away on the `setTimeout` fallback, and a jump or a print inside
- * that window is exactly what this exists for: `highlight` answers `null` while a grammar loads,
- * so `latchNow`'s synchronous flush would produce streamdown's plain fallback for that frame or
- * that page. A load is cheap and asynchronous; only the tokenization is worth a task of its own.
+ * WHY THE TOKENIZATIONS YIELD AND THE LOADS DO NOT. An idle callback only chooses when it STARTS:
+ * nothing yields once it runs, its 2,000 ms timeout can start it on a busy thread, and WebKitGTK
+ * has no `requestIdleCallback` at all, so this venue takes the `setTimeout` fallback and cannot
+ * even pick a quiet moment. With a grammar already loaded `code.highlight` tokenizes INLINE and N
+ * languages concatenate -- driving shiki with this component's configuration, the five languages
+ * here (c, python, go, typescript, rust) cost 746 ms back to back. But `highlight` answers `null`
+ * WHILE a grammar loads, so yielding the loads too would put the fifth grammar 500 ms x N away and
+ * a jump or a print inside that window would get streamdown's plain fallback out of `latchNow`'s
+ * flush -- the defect this whole pre-warm exists to prevent. So every load starts in the first
+ * pass and only the tokenizing is spread out.
  *
  * NOTHING BOUNDED THE SIZE OF A WARM, and this comment used to claim `MAX_HIGHLIGHT_CHARS` did.
  * It does not reach here: `markdownPluginNeeds` applies it in `markdown-preview.tsx` and
@@ -392,11 +386,10 @@ const upgradeEverythingForPrint = (): void => {
  * source, but `markdown-text.tsx` supplies the code plugin unconditionally and `FenceBlock` warms
  * the whole body -- and `code-plugin.ts`'s `evict` keeps the last fence whatever its size. A LATCH
  * is demanded work and stays uncapped; a warm is SPECULATIVE, on a fence the reader may never
- * reach, so it is capped at the same 20,000 characters. Past the cap, and for a fence that is
- * EMPTY or nothing but newlines, this loads the grammar and stops. Neither marks the grammar
- * warmed, so a later fence in that language still gets its real warm rather than inheriting a
- * tokenization of `""`. The cap costs the measurement nothing: the largest fence at this rung is
- * 2,817 characters.
+ * reach, so it is capped at the same 20,000 characters. Over the cap, and for a fence that is
+ * EMPTY or nothing but newlines, the grammar loads and nothing is tokenized; neither marks the
+ * language warmed, so a later fence that can warm it still does. The cap costs the measurement
+ * nothing: the largest fence at this rung is 2,817 characters.
  */
 const grammarsWarmed = new Set<string>();
 const grammarsLoaded = new Set<string>();
