@@ -77,7 +77,7 @@ test("the prefetched model path is keyed to the model it was fetched for", () =>
   assert.match(
     GGUF,
     /const pathKey = [^\n]*repoId[^\n]*quant/,
-    "the cache key must cover both repoId and quant",
+    "the cache key must cover repoId and quant",
   );
   assert.ok(
     PREFETCH_PATH.includes("cachedPathRef.current?.key === pathKey"),
@@ -100,6 +100,25 @@ test("the link base is kept fresh for as long as the grid is on screen", () => {
     !COPY_PREVIEW.includes("setInterval") &&
       !COPY_PREVIEW.includes("fetchDeviceType"),
     "the refresh belongs outside the click",
+  );
+});
+
+test("refreshes do not stack when /api/health is slow", () => {
+  const effect = block(
+    HISTORY,
+    HISTORY.indexOf("const refreshLinkBase = () => {"),
+  );
+  assert.ok(
+    effect.includes("if (inFlight)"),
+    "a forced read always writes, so a slow answer would restore the old URL",
+  );
+});
+
+test("the cached path is dropped when the inventory moves", () => {
+  assert.match(
+    GGUF,
+    /const pathKey = [^\n]*inventoryVersion/,
+    "a re-download moves the snapshot the cached path points at",
   );
 });
 

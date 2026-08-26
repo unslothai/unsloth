@@ -74,6 +74,7 @@ import {
   normalizeGgufVariantIdentity,
 } from "../lib/model-identity";
 import { useHfTokenStore } from "../stores/hf-token-store";
+import { useInventoryVersion } from "../stores/inventory-events";
 import { DotTag } from "./dot-tag";
 import { DownloadStopIndicator } from "./download-cancel-indicator";
 import {
@@ -295,9 +296,11 @@ export function QuantOptionsMenu({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const revealLabel =
     deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
-  // One menu stays mounted while the run bar swaps repoId/quant under it.
+  // One menu stays mounted while the run bar swaps repoId/quant under it, and while a
+  // re-download moves the snapshot the old path pointed at.
   const cachedPathRef = useRef<{ key: string; path: string } | null>(null);
-  const pathKey = JSON.stringify([repoId, quant ?? null]);
+  const inventoryVersion = useInventoryVersion();
+  const pathKey = JSON.stringify([repoId, quant ?? null, inventoryVersion]);
   const pathKeyRef = useRef(pathKey);
   useEffect(() => {
     pathKeyRef.current = pathKey;

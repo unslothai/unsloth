@@ -260,8 +260,17 @@ export function HistoryCardGrid({
   // re-reads /api/health once the verdict settles. Polled because the tunnel URL is
   // published late (DNS, then a public probe) and can die without warning.
   useEffect(() => {
+    // Skipped while one is outstanding: a forced read always writes the store, so a
+    // slow answer landing after a later one would put the old tunnel URL back.
+    let inFlight = false;
     const refreshLinkBase = () => {
-      void fetchDeviceType({ force: true });
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      void fetchDeviceType({ force: true }).finally(() => {
+        inFlight = false;
+      });
     };
     refreshLinkBase();
     const id = window.setInterval(refreshLinkBase, LINK_BASE_POLL_MS);
