@@ -88,6 +88,36 @@ def test_resolution_selects_the_backend_for_the_new_model_not_the_old_one(client
     assert body["backend"] == "sentence-transformers"
 
 
+def test_runtime_st_failure_is_planned_as_a_managed_gguf_download(client, monkeypatch):
+    from core.rag import embeddings
+
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
+    monkeypatch.setattr(
+        embeddings,
+        "_resolve_auto_for_model",
+        lambda model = None: "sentence-transformers",
+    )
+    monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: False)
+    monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
+    monkeypatch.setattr(
+        settings, "_cached_embedding_gguf", lambda candidates, require_variant: None
+    )
+    monkeypatch.setattr(
+        settings,
+        "_remote_embedding_gguf_plan",
+        lambda candidates, token: (candidates[0], ["embed-F16.gguf"]),
+    )
+    monkeypatch.setattr(settings, "_hf_files_size", lambda repo, files, token: 1234)
+
+    body = _resolve(client, "org/embed").json()
+
+    assert body["backend"] == "llama"
+    assert body["download_repo"] == "org/embed-GGUF"
+    assert body["files"] == ["embed-F16.gguf"]
+    assert body["size_bytes"] == 1234
+
+
 def test_sentence_transformers_local_path_is_already_present(client, monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
     local = tmp_path / "embedder"

@@ -2193,9 +2193,9 @@ _ST_WEIGHT_SUFFIXES = (".safetensors", ".bin")
 def _st_backend_available() -> bool:
     """Whether sentence-transformers could actually run here. A GGUF-only install
     has no torch, so the safetensors fallback is not on offer there."""
-    from importlib.util import find_spec
     try:
-        return all(find_spec(mod) is not None for mod in ("torch", "sentence_transformers"))
+        from core.rag import embeddings
+        return embeddings.sentence_transformers_runtime_available()
     except Exception:  # noqa: BLE001 - a broken import path is a no
         return False
 

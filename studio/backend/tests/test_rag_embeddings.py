@@ -203,6 +203,53 @@ def test_token_counter_does_not_hide_non_lifecycle_errors(monkeypatch):
         embeddings.token_counter()("chunk")
 
 
+def test_st_unload_waits_for_encode_admitted_before_model_lookup(monkeypatch):
+    entered_lookup = threading.Event()
+    finish_lookup = threading.Event()
+    unload_done = threading.Event()
+    order = []
+    errors = []
+
+    class _Model:
+        def encode(self, texts, **kwargs):
+            order.append("encode")
+            return np.zeros((len(texts), 2), dtype = np.float32)
+
+    def _get(model_name = None):
+        entered_lookup.set()
+        assert finish_lookup.wait(timeout = 2)
+        return _Model()
+
+    def _encode():
+        try:
+            embeddings._st_encode(["chunk"])
+        except Exception as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    monkeypatch.setattr(embeddings, "_get", _get)
+    monkeypatch.setattr(embeddings, "_model", object())
+    monkeypatch.setattr(embeddings, "_name", "org/embedder")
+    worker = threading.Thread(target = _encode)
+    worker.start()
+    assert entered_lookup.wait(timeout = 2)
+
+    def _unload():
+        embeddings._release_st_model()
+        order.append("unload")
+        unload_done.set()
+
+    closer = threading.Thread(target = _unload)
+    closer.start()
+    assert unload_done.wait(timeout = 0.05) is False
+    finish_lookup.set()
+    worker.join(timeout = 2)
+    closer.join(timeout = 2)
+
+    assert errors == []
+    assert order == ["encode", "unload"]
+    assert unload_done.is_set()
+
+
 def test_sentence_transformer_load_uses_live_cache(monkeypatch, tmp_path):
     observed = {}
 
@@ -563,6 +610,44 @@ def test_forced_llama_fallback_is_scoped_to_the_model_that_failed(monkeypatch):
     assert embeddings.sentence_transformers_fallback_allowed("org/new-model") is True
     assert embeddings.resolved_backend_for_model("org/failed") == "llama-server"
     assert embeddings.resolved_backend_for_model("org/new-model") == "sentence-transformers"
+
+
+def test_runtime_preflight_predicts_the_supported_llama_fallback(monkeypatch):
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
+    monkeypatch.setattr(
+        embeddings,
+        "_resolve_auto_for_model",
+        lambda model = None: "sentence-transformers",
+    )
+    monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: False)
+    monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
+
+    assert embeddings.resolved_backend_for_model("org/embedder") == "llama-server"
+
+
+def test_runtime_preflight_keeps_st_when_no_fallback_exists(monkeypatch):
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_forced_backend_key", None)
+    monkeypatch.setattr(
+        embeddings,
+        "_resolve_auto_for_model",
+        lambda model = None: "sentence-transformers",
+    )
+    monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: False)
+    monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: False)
+
+    assert embeddings.resolved_backend_for_model("org/embedder") == "sentence-transformers"
+
+
+def test_runtime_preflight_catches_a_fatal_torch_device_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        embeddings,
+        "_load_device",
+        lambda: (_ for _ in ()).throw(embeddings.TorchDeviceUnusableError("broken torch")),
+    )
+
+    assert embeddings.sentence_transformers_runtime_available() is False
 
 
 class _BoomOnEncodeModel:

@@ -506,8 +506,11 @@ def _st_encode(
 ):
     """ST encode -> (N, dim) float32. Serialized (fast-tokenizer borrow check),
     under inference_mode when torch is present, with rayon enabled for the call."""
-    model = _get(model_name)
     with _compute_lock:
+        # Admission and model lookup are one lease. If lookup happened first,
+        # unload could clear the globals and return while this call retained a
+        # strong local reference and had not begun inference yet.
+        model = _get(model_name)
         os.environ["TOKENIZERS_PARALLELISM"] = "true"
         try:
             with _inference_ctx():
@@ -526,7 +529,8 @@ def _st_encode(
 
 
 def _st_dim(model_name: str | None = None) -> int:
-    return _get(model_name).get_sentence_embedding_dimension()
+    with _compute_lock:
+        return _get(model_name).get_sentence_embedding_dimension()
 
 
 def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
@@ -648,12 +652,51 @@ def _resolve_auto_for_model(model_name: str | None = None) -> str:
     return _resolve_auto()
 
 
+def sentence_transformers_runtime_available() -> bool:
+    """Whether the ST backend can reach the model-loading step in this process.
+
+    This deliberately mirrors the environment-dependent prefix of ``_get`` but
+    does not construct a model (which could download the snapshot the picker is
+    still planning). It catches missing/broken torch or sentence-transformers
+    installs and the fatal device mismatch that ``_build_st_backend_or_fallback``
+    would otherwise discover only after an ST-only plan was persisted.
+    """
+    try:
+        _load_device()
+        with _lock:
+            # The stub's one-shot state and the import it protects share the
+            # same lock as the real model-loading path.
+            _install_torchao_stub_once()
+            from sentence_transformers import SentenceTransformer
+
+        return callable(SentenceTransformer)
+    except Exception as exc:  # noqa: BLE001 - any failed runtime import selects the fallback
+        logger.debug("sentence-transformers runtime preflight failed: %s", exc)
+        return False
+
+
+def _llama_server_runtime_available() -> bool:
+    """Whether the fallback that ST construction would use can be built."""
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        return bool(LlamaCppBackend._find_llama_server_binary())
+    except Exception:  # noqa: BLE001 - an unavailable fallback cannot be planned
+        return False
+
+
 def resolved_backend_for_model(model_name: str) -> str:
     """Backend a fresh operation for ``model_name`` would actually select."""
     raw = _raw_backend()
     with _backend_lock:
         forced = _forced_backend_key if _forced_backend_model == model_name else None
     key = forced or (_resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw)
+    if key in _ST_ALIASES and not sentence_transformers_runtime_available():
+        # Match _build_st_backend_or_fallback before Settings commits an
+        # ST-only pending download. Without a real llama binary ST remains the
+        # only possible plan, and its eventual error is more useful than a
+        # fabricated GGUF destination.
+        if _llama_server_runtime_available():
+            key = "llama-server"
     if key in _LLAMA_ALIASES:
         return "llama-server"
     if key in _ST_ALIASES:
