@@ -1517,11 +1517,17 @@ class TestDetectionMatchesWhatTheManagersActuallyEnforce:
     @pytest.mark.parametrize(
         "body,tables,expected",
         [
-            ("[tool]\nuv = { pip = { require-hashes = true } }\n",
-             (("tool", "uv"), ("tool", "uv", "pip")), ["require-hashes"]),
+            (
+                "[tool]\nuv = { pip = { require-hashes = true } }\n",
+                (("tool", "uv"), ("tool", "uv", "pip")),
+                ["require-hashes"],
+            ),
             ("pip = { require-hashes = true }\n", ((), ("pip",)), ["require-hashes"]),
-            ("[other]\nuv = { pip = { require-hashes = true } }\n",
-             (("tool", "uv"), ("tool", "uv", "pip")), []),
+            (
+                "[other]\nuv = { pip = { require-hashes = true } }\n",
+                (("tool", "uv"), ("tool", "uv", "pip")),
+                [],
+            ),
         ],
     )
     def test_the_legacy_parser_reads_inline_tables(self, body, tables, expected):
@@ -1534,8 +1540,9 @@ class TestDetectionMatchesWhatTheManagersActuallyEnforce:
         """`exclude-newer-package = {}` reached the value conversion as an empty dict and
         came out as the string "{}", which is not an off spelling. uv applies no cutoff
         for it, and under the opt-out the phantom control could stop a pip step."""
-        assert ips._hardened_keys_in_toml("[pip]\nexclude-newer-package = {}\n",
-                                          ((), ("pip",))) == []
+        assert (
+            ips._hardened_keys_in_toml("[pip]\nexclude-newer-package = {}\n", ((), ("pip",))) == []
+        )
         assert ips._hardened_keys_in_toml(
             '[pip]\nexclude-newer-package = { foo = "2020-01-01T00:00:00Z" }\n',
             ((), ("pip",)),

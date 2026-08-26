@@ -4952,9 +4952,7 @@ def _uv_project_config() -> "list[str]":
     # Measured on the pinned uv 0.12.1, a `[tool.uv.pip] require-hashes = true` in a
     # project named by either variable is enforced from an unrelated cwd, so walking
     # from getcwd() alone scanned the wrong tree and missed live policy.
-    root = os.environ.get("UV_PROJECT", "").strip() or os.environ.get(
-        "UV_WORKING_DIR", ""
-    ).strip()
+    root = os.environ.get("UV_PROJECT", "").strip() or os.environ.get("UV_WORKING_DIR", "").strip()
     try:
         # A deleted working directory raises here rather than returning anything.
         current = os.path.abspath(root or os.getcwd())
