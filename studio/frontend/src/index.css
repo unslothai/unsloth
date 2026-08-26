@@ -2628,14 +2628,25 @@ html[data-chat-font] .aui-root {
 	 * has not reached yet, and only until they reach it. A second traversal of the
 	 * same thread measured zero excursion and zero drift.
 	 *
-	 * WHAT IT COSTS. `content-visibility: auto` turns on layout AND PAINT
-	 * containment unconditionally, even while the element is being rendered, so a
-	 * marked block becomes a stacking context with its own painting origin and
-	 * KaTeX's absolutely positioned `.vlist` boxes round to a different device
-	 * pixel. Measured on seven on-screen formulae: 39 sub-structures move, 28 by
-	 * one device pixel down and 8 by one up, with used heights identical to a
-	 * tenth of a pixel and nothing clipped or missing. That is a change to what is
-	 * on screen, which is why this ships off. */
+	 * WHAT IT COSTS, corrected. An earlier revision of this comment said 39
+	 * sub-structures move by one device pixel across seven formulae, blamed paint
+	 * containment re-parenting KaTeX's absolutely positioned `.vlist` boxes, and
+	 * gave that as the reason to ship off. Both halves were wrong. `contain: paint`
+	 * ALONE moves 192 pixels over the same seven frames, two of them bit-identical,
+	 * against 7,611 for the whole change, so it is about 2.5% of the effect. And
+	 * the effect is a FIRST-TRAVERSAL TRANSIENT rather than a rendering difference:
+	 * photographed after one full walk of the thread, so that every block has
+	 * rendered once and `contain-intrinsic-size: auto` holds its real height, the
+	 * two built bundles differ by TEN pixels over seven frames, four of them
+	 * bit-identical, with `scrollHeight` matching exactly. What the earlier
+	 * measurement caught was blocks still showing their placeholder.
+	 *
+	 * What it does cost is recorded on `SHIP_DEFAULT` in `math-block-mode.ts`: a
+	 * remembered height goes stale across a resize, 2.0% of `scrollHeight` on the
+	 * 500K corpus against 0.0% with the feature off, converging as blocks are
+	 * scrolled past; and paint containment clips an inline formula wider than the
+	 * column, which no block in that corpus is. This ships ON, gated on the
+	 * engine. */
 	html[data-math-block-containment="on"] .aui-thread-root .aui-math-block {
 		content-visibility: auto;
 		contain-intrinsic-size: auto 8.5rem;

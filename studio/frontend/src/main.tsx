@@ -32,9 +32,11 @@ if (uaLower.includes("linux") && !uaLower.includes("android")) {
   document.documentElement.classList.add("render-linux");
 }
 
-// Whether off-screen maths takes containment. Off by default, so this normally removes an
-// attribute that was never there. Before the first render, because the rule it arms is a
-// rendering rule and arming it late would relayout the first thread that mounts.
+// Whether off-screen maths takes containment. ON by default, subject to a feature detect for the
+// engine's find-in-page, so on a recent engine this normally SETS the attribute and arms the rule;
+// on an older one it removes an attribute that was never there. Before the first render, because
+// the rule it arms is a rendering rule and arming it late would relayout the first thread that
+// mounts.
 applyMathBlockContainment();
 // And keep watching, so a devtools flip of `__UNSLOTH_MATH_BLOCK_CONTAINMENT__` reapplies instead of
 // leaving the session measuring the arm it was already in.

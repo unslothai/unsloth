@@ -9,10 +9,12 @@
  * evaluate `import.meta.env`. Every row below is RUN by `tests/math-block-mode.test.ts` rather
  * than checked by regexes over the source.
  *
- *   "off"      SHIP DEFAULT. The marker class is still emitted, the stylesheet rule that reads it
- *              is not armed, and nothing about rendering changes.
- *   "contain"  `content-visibility: auto` applies to maths-bearing blocks, so off-screen maths
- *              generates no boxes and no RenderLayers until it is scrolled to.
+ *   "off"      The marker class is still emitted, the stylesheet rule that reads it is not armed,
+ *              and nothing about rendering changes.
+ *   "contain"  SHIP DEFAULT, subject to the engine gate below. `content-visibility: auto` applies
+ *              to maths-bearing blocks, so off-screen maths generates no boxes and no RenderLayers
+ *              until it is scrolled to. See the comment on `SHIP_DEFAULT` for what that buys and
+ *              for the two costs that are accepted rather than solved.
  *
  * TWO STATES, NOT THREE. `code-fence-mode.ts` distinguishes an unset flag from a mistyped one; this
  * file does not, and the reason has CHANGED now that the default is "contain". It used to be that
