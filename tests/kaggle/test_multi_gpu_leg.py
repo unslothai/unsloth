@@ -253,9 +253,9 @@ def test_the_declaration_is_measured_and_not_copied_from_a_sibling():
     measured = json.loads((SMOKE_DIR / "measured_vram.json").read_text(encoding = "utf-8"))[
         "peak_reserved_gb"
     ]
-    assert "multi_gpu" in measured, (
-        "the leg is not in the measured file, so the declaration check passes on it vacuously"
-    )
+    assert (
+        "multi_gpu" in measured
+    ), "the leg is not in the measured file, so the declaration check passes on it vacuously"
     assert legs.LEGS["multi_gpu"].vram_gb >= measured["multi_gpu"]
 
 
@@ -269,10 +269,8 @@ def test_it_does_not_export_a_gguf_and_the_reason_is_recorded():
     assert "--export-gguf" not in leg.args
     # The reason travels with the decision. A leg that simply lacks a flag
     # invites someone to add it back in the hour they notice.
-    source = (ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "legs.py").read_text(
-        encoding = "utf-8"
-    )
-    entry = source.split('"multi_gpu": Leg(')[1].split("),\n    \"")[0]
+    source = (ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "legs.py").read_text(encoding = "utf-8")
+    entry = source.split('"multi_gpu": Leg(')[1].split('),\n    "')[0]
     assert "backend CPU" in entry or "CPU bundle" in entry
 
 
