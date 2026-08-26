@@ -20,6 +20,10 @@ const CODE_SHAPES = new Set(["auto", "module", "snippet"]);
 const SNIPPET_PREFIX = "(() => {\n";
 const SNIPPET_SUFFIX = "\n})();\nexport {};\n";
 const OXLINT_SUPPRESSED_RULES = ["no-unused-vars", "no-new-array"];
+// Under the caller's own timeout, so a wedged oxlint is killed here instead of
+// being orphaned when the caller kills this wrapper. SIGKILL because SIGTERM is
+// ignorable and spawnSync then waits for the child regardless of the timeout.
+const OXLINT_TIMEOUT_MS = 20_000;
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url));
 
 function mapLang(value) {
@@ -398,6 +402,8 @@ function runLintBatch(entries) {
     const exec = spawnSync(oxlintBin, oxlintArgs, {
       encoding: "utf8",
       cwd: TOOL_DIR,
+      timeout: OXLINT_TIMEOUT_MS,
+      killSignal: "SIGKILL",
     });
     if (exec.error) {
       return fallbackLintResults(

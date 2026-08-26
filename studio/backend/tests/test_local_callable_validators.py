@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -40,3 +41,22 @@ def test_oxc_batch_falls_back_when_node_times_out(monkeypatch, tmp_path):
         "OXC validation timed out",
         "OXC validation timed out",
     ]
+
+
+def test_oxlint_spawn_is_bounded_below_the_python_timeout():
+    # validate.mjs owns oxlint's lifetime: the Python timeout SIGKILLs only the Node
+    # wrapper, so an oxlint bounded from Python alone survives as an orphan. The
+    # backend ships no JS test runner, so the invariant is guarded on the source.
+    source = validators._OXC_RUNNER_PATH.read_text(encoding = "utf-8")
+
+    declared = re.search(r"const OXLINT_TIMEOUT_MS = ([\d_]+);", source)
+    assert declared, "validate.mjs must declare OXLINT_TIMEOUT_MS"
+    assert (
+        int(declared.group(1).replace("_", "")) / 1000 < validators._OXC_TIMEOUT_S
+    ), "oxlint must give up before the Python wait does, or Python kills the wrapper first"
+
+    options = re.search(r"spawnSync\(oxlintBin, oxlintArgs, \{(.*?)\}\)", source, re.S)
+    assert options, "oxlint must still be launched through spawnSync(oxlintBin, oxlintArgs, ...)"
+    assert "timeout: OXLINT_TIMEOUT_MS" in options.group(1)
+    # SIGTERM is ignorable, and spawnSync then waits out the child anyway.
+    assert 'killSignal: "SIGKILL"' in options.group(1)
