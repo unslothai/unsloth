@@ -99,13 +99,13 @@ function ensureActiveModelInStoreList(
 ): void {
   const store = useChatRuntimeStore.getState();
   const caps = {
+    // Adopting a model the backend already had is one of the ways a row is minted
+    // without a catalog entry, and the seed gate reads this off the row.
+    isMlx: status.is_mlx ?? false,
     isAudio: status.is_audio ?? false,
     audioType: status.audio_type ?? null,
     hasAudioInput: status.has_audio_input ?? false,
     hasVideoInput: status.has_video_input ?? false,
-    // Adopting a model the backend already had is the other way a row is minted
-    // without a catalog entry, and the seed gate reads this off the row.
-    isMlx: status.is_mlx ?? false,
   };
   const existing = store.models.find((model) => model.id === checkpointId);
   if (existing) {

@@ -4,6 +4,7 @@ export type QueuedModelCapabilities = Pick<
   ChatModelSummary,
   | "isVision"
   | "isGguf"
+  | "isMlx"
   | "isAudio"
   | "audioType"
   | "hasAudioInput"

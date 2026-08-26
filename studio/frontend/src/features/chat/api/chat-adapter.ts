@@ -2308,6 +2308,9 @@ function queuedResolvedModelFromStore(
       ? {
           isVision: activeModel.isVision,
           isGguf: activeModel.isGguf,
+          // The queued run mints its own summary for a model with no catalog row, and
+          // the sampling seed is gated on this.
+          isMlx: activeModel.isMlx,
           isAudio: activeModel.isAudio,
           audioType: activeModel.audioType,
           hasAudioInput: activeModel.hasAudioInput,
@@ -3803,6 +3806,7 @@ async function resolveQueuedEmptyLocalModel(
             modelCapabilities: {
               isVision: status.is_vision ?? false,
               isGguf: status.is_gguf ?? false,
+              isMlx: status.is_mlx ?? false,
               isAudio: status.is_audio ?? false,
               audioType: status.audio_type ?? null,
               hasAudioInput: status.has_audio_input ?? false,

@@ -7,7 +7,7 @@
 // quietly drop a seed of 0 or a deliberate clear.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 
 import { registerBundlerResolver } from "./helpers/kit.ts";
@@ -309,22 +309,36 @@ test("a cleared seed is not read as a missing key", () => {
   assert.match(helper, /values\.find\(\(value\) => value !== undefined\)/);
 });
 
-test("a model with no catalog row still learns it is served by MLX", () => {
-  // A locally scanned model is in neither /api/models/list nor the external ids, so its
-  // models[] summary is minted from the load or status response. Both hops that mint one
-  // have to carry is_mlx or the gate hides the field for a backend that reads the seed.
-  const runtime = read("../src/features/chat/hooks/use-chat-model-runtime.ts");
-  const synced = slice(runtime, "  const synced = {", "  const idx =");
-  assert.match(synced, /isMlx: Boolean\(resp\.is_mlx\)/);
-  const adoption = read(
-    "../src/features/chat/lib/apply-inference-status-to-store.ts",
-  );
-  const caps = slice(
-    adoption,
-    "function ensureActiveModelInStoreList",
-    "const existing = store.models.find",
-  );
-  assert.match(caps, /isMlx: status\.is_mlx \?\? false/);
+// A model outside /api/models/list gets its models[] summary minted from a load or
+// status response, and the seed gate reads isMlx off that summary. Four separate places
+// mint or refresh one, and three of them were each missing the flag, so this is a rule
+// over the capability cluster rather than a spot check per place.
+test("every capability set that reaches a model summary carries isMlx", () => {
+  const SRC = new URL("../src/", import.meta.url);
+  const files: URL[] = [];
+  const walk = (dir: URL) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules") continue;
+      if (entry.isDirectory()) walk(new URL(`${entry.name}/`, dir));
+      else if (/\.tsx?$/.test(entry.name)) files.push(new URL(entry.name, dir));
+    }
+  };
+  walk(SRC);
+
+  const dropped: string[] = [];
+  for (const file of files) {
+    const source = readFileSync(file, "utf8");
+    // hasVideoInput is the last field of the cluster every summary-shaped literal writes,
+    // and `:` is the write; `.hasVideoInput` is a read.
+    for (const match of source.matchAll(/\bhasVideoInput\s*:/g)) {
+      const cluster = source.slice(Math.max(0, match.index - 400), match.index);
+      if (!/\bisMlx\s*:/.test(cluster)) {
+        const line = source.slice(0, match.index).split("\n").length;
+        dropped.push(`${file.pathname.split("/src/")[1]}:${line}`);
+      }
+    }
+  }
+  assert.deepEqual(dropped, []);
 });
 
 test("saving a preset takes the seed being typed, not the one before it", () => {
