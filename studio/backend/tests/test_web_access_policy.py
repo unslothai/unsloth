@@ -352,15 +352,20 @@ def _raise_if_search_backend(monkeypatch):
     ],
 )
 def test_web_search_empty_arguments_are_a_recoverable_error(monkeypatch, arguments):
-    # schema allows {}, and local models emit it; that used to become "No query provided."
+    # The schema allows {} and local models emit it. The result string is main's, and
+    # already a TOOL_ERROR_PREFIXES entry; what is new is that no backend call is made.
     _raise_if_search_backend(monkeypatch)
     result = tools.execute_tool("web_search", arguments)
     assert result == "No query provided."
     assert is_tool_error(result) is True
-    assert (
-        "Never call web_search with empty arguments"
-        in tools.WEB_SEARCH_TOOL["function"]["description"]
-    )
+
+
+def test_web_search_description_names_the_usable_arguments():
+    # Asserted in fragments: the sentence around them is prompt text and gets reworded.
+    description = tools.WEB_SEARCH_TOOL["function"]["description"]
+    assert "non-empty `query`" in description
+    assert "non-empty `url`" in description
+    assert "no usable arguments" in description
 
 
 @pytest.mark.parametrize("key", ["query", "url"])
