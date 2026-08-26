@@ -1166,7 +1166,10 @@ class FastSentenceTransformer(FastModel):
             "inputs_embeds",
             "return_dict",
         }
-        transformer_module.model_forward_params |= preinit_model_forward_params
+        if model_forward_params is None:
+            transformer_module.model_forward_params = None
+        else:
+            transformer_module.model_forward_params |= preinit_model_forward_params
 
         # determine max_seq_length if not provided
         if max_seq_length is None:
