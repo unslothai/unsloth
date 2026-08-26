@@ -703,10 +703,10 @@ def test_install_sh_publishes_the_id_without_clobbering():
 def test_install_sh_bakes_the_id_that_is_actually_on_disk(tmp_path):
     """The launcher must hold what the id file holds, not what we tried to write.
 
-    The backend reports the file's content from /api/health, so any path where
-    publication silently did something else (destination is a directory, so
-    `ln` links the temp INSIDE it; another writer won; the share dir is not
-    writable) must resolve to the on-disk value or to no launcher at all.
+    The backend reports the file's content, so every path where publication did
+    something else (a directory destination, so `ln` links the temp inside it;
+    a lost race; an unwritable share dir) must resolve to the on-disk value or
+    to no launcher at all.
     """
     src = INSTALL_SH.read_text(encoding = "utf-8")
     fn_start = src.index('_css_id_dir="$STUDIO_HOME/share"')
@@ -801,10 +801,9 @@ def test_install_sh_id_publish_replaces_a_blank_incumbent(tmp_path):
 def test_install_sh_trims_only_surrounding_whitespace_in_an_existing_id(tmp_path):
     """Interior whitespace must fail the check, not be deleted into a valid id.
 
-    The backend applies `.strip()` and then an exact regex, so `<32 hex>\\n<32
-    hex>` is NOT an id to it. Deleting the newline instead would mint a 64-hex
-    token the installer bakes into the launcher while the backend keeps
-    reporting "", and the launcher would reject its own backend forever.
+    The backend strips then regex-matches, so `<32 hex>\\n<32 hex>` is not an id
+    to it. Deleting the newline would bake a token the backend never reports,
+    leaving the launcher rejecting its own backend forever.
     """
     src = INSTALL_SH.read_text(encoding = "utf-8")
     assert (
@@ -837,10 +836,9 @@ def test_install_sh_trims_only_surrounding_whitespace_in_an_existing_id(tmp_path
 def test_install_sh_refuses_an_unreadable_existing_id(tmp_path):
     """An id we cannot READ must not be treated as malformed and replaced.
 
-    In a shared root the file can be a perfectly good id owned by another user
-    (this installer chmod 600s it), and a running backend may already report
-    it. Regenerating would break that install, so the shortcut step refuses,
-    which is what it did before the id was validated at all.
+    In a shared root it can be a good id owned by someone else that a running
+    backend already reports, so the step refuses, as it did before the id was
+    validated at all.
     """
     src = INSTALL_SH.read_text(encoding = "utf-8")
     fn_start = src.index('_css_id_dir="$STUDIO_HOME/share"')
@@ -877,8 +875,8 @@ def test_install_sh_refuses_an_unreadable_existing_id(tmp_path):
 def test_install_sh_never_reads_a_non_regular_id_path(tmp_path):
     """A FIFO at the id path must not park the installer on the open.
 
-    `cat` on a FIFO blocks until a writer appears, so an unconditional read of
-    a shared/custom root would hang the install forever.
+    `cat` blocks until a writer appears, so an unconditional read of a shared
+    or custom root hangs the install forever.
     """
     src = INSTALL_SH.read_text(encoding = "utf-8")
     assert (
@@ -896,10 +894,9 @@ def test_install_sh_never_reads_a_non_regular_id_path(tmp_path):
 def test_install_sh_never_bakes_a_planted_id_into_the_launcher(tmp_path):
     """A pre-planted studio_install_id must be regenerated, not embedded.
 
-    The launcher holds the id in a single-quoted shell assignment, so a value
-    containing a quote would break out and run as launcher code on every
-    Studio start. Custom roots (UNSLOTH_STUDIO_HOME) can live in shared or
-    workspace directories, so the file is not trusted just for being there.
+    The launcher holds the id in a single-quoted assignment, so a quote in it
+    runs as launcher code on every Studio start. Custom roots can live in
+    shared directories, so the file is not trusted for merely being there.
     """
     studio_home = tmp_path / "studio"
     (studio_home / "share").mkdir(parents = True)
@@ -937,8 +934,8 @@ def test_install_sh_never_bakes_a_planted_id_into_the_launcher(tmp_path):
 def test_install_ps1_validates_an_existing_id_before_embedding_it():
     """install.ps1 must reject a non-hex existing id instead of interpolating it.
 
-    -cnotmatch, not -notmatch: PowerShell's -match is case-insensitive and
-    would accept an uppercase id the backend's regex rejects.
+    -cnotmatch, not -notmatch: -match is case insensitive and would accept an
+    uppercase id the backend's regex rejects.
     """
     src = INSTALL_PS1.read_text(encoding = "utf-8")
     idx = src.index('$_studioIdFile = Join-Path $_studioIdDir "studio_install_id"')

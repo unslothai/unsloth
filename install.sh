@@ -1032,12 +1032,10 @@ _smart_apt_install() {
 }
 
 # ── Helper: the studio_install_id contract ──
-# Exactly 64 lowercase hex characters, the same rule the backend applies in
-# studio/backend/main.py (_STUDIO_INSTALL_ID_RE) and the desktop app applies
-# in desktop_backend_owner.rs (is_valid_studio_root_id). Anything else is not
-# an id: no backend can ever report it, and since the launcher holds it in a
-# single-quoted shell assignment, a pre-planted value containing a quote would
-# become launcher code. Validate before reuse, regenerate anything else.
+# 64 lowercase hex, as in the backend (_STUDIO_INSTALL_ID_RE) and the desktop
+# app (is_valid_studio_root_id). Nothing else is an id: no backend reports it,
+# and the launcher holds it in a single-quoted assignment, so a planted value
+# with a quote in it would be launcher code.
 _css_install_id_is_valid() {
     case "${1:-}" in
         "" | *[!0123456789abcdef]*) return 1 ;;
@@ -1047,16 +1045,15 @@ _css_install_id_is_valid() {
 
 # Echoes the id stored at $1 if it satisfies the contract, nothing otherwise.
 _css_read_valid_install_id() {
-    # Regular files only. A FIFO (or a symlink to one, or to a device) at this
-    # path would park the installer on the open, waiting for a writer forever.
+    # Regular files only: a FIFO here (or a symlink to one, or to a device)
+    # would park the installer on the open, waiting for a writer forever.
     [ -f "$1" ] || return 0
-    # Group the redirect so an unreadable file is silent: 2>/dev/null on `cat`
-    # alone would not cover the shell's own "cannot open" message.
+    # Group the redirect, or the shell's own "cannot open" escapes 2>/dev/null.
     _cvi_id=$({ cat "$1"; } 2>/dev/null || true)
-    # Trim exactly what the backend's .strip() trims, the SURROUNDING
-    # whitespace. Deleting interior whitespace instead would mint a 64-hex
-    # token out of bytes the backend reads as something else, and the launcher
-    # would then hold an id its own backend never reports.
+    # Trim what the backend's .strip() trims, the SURROUNDING whitespace only.
+    # Deleting interior whitespace would mint a 64-hex token out of bytes the
+    # backend reads as something else, leaving the launcher holding an id its
+    # own backend never reports.
     _cvi_id=${_cvi_id#"${_cvi_id%%[![:space:]]*}"}
     _cvi_id=${_cvi_id%"${_cvi_id##*[![:space:]]}"}
     if _css_install_id_is_valid "$_cvi_id"; then
@@ -1105,14 +1102,13 @@ create_studio_shortcuts() {
     _css_id_dir="$STUDIO_HOME/share"
     mkdir -p "$_css_id_dir"
     _css_id_file="$_css_id_dir/studio_install_id"
-    # An existing id is reused only when it matches the contract above, so a
-    # re-run over a normal install is a no-op and a pre-populated custom root
-    # cannot inject anything into the generated launcher.
+    # Reuse an existing id only when it matches the contract above: a re-run
+    # over a normal install is then a no-op, and a pre-populated custom root
+    # cannot reach the launcher.
     _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")
-    # An id we merely cannot READ is not a malformed id. It can be a perfectly
-    # good one owned by another user in a shared root, and a running backend
-    # may already be reporting it, so regenerating would break that install.
-    # Refuse instead, which is what this did before the id was validated.
+    # Unreadable is not malformed: in a shared root the id can be a good one
+    # owned by someone else and already reported by a running backend, so
+    # regenerating would break that install. Refuse, as this did pre-validation.
     if [ -z "$_css_studio_root_id" ] && [ -f "$_css_id_file" ] \
         && [ ! -r "$_css_id_file" ]; then
         echo "[WARN] Cannot create launcher: cannot read $_css_id_file" >&2
@@ -1137,13 +1133,12 @@ create_studio_shortcuts() {
         _css_id_tmp="$_css_id_file.$$.$(printf '%.8s' "$_css_new_id").tmp"
         if printf '%s' "$_css_new_id" > "$_css_id_tmp"; then
             if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then
-                # A usable incumbent always wins -- but only a valid one. A
-                # zero-length or malformed file is an interrupted write or a
-                # pre-planted value, so replace it with one rename (no unlink,
-                # so the path never vanishes). This branch also covers
-                # filesystems without hard links (exFAT/FAT32). The -d test is
-                # there because renaming onto a directory moves the temp file
-                # inside it instead of replacing it.
+                # A usable incumbent wins, but only a valid one: zero-length
+                # or malformed is an interrupted write or a planted value, so
+                # replace it with one rename (no unlink, the path never
+                # vanishes). Also covers filesystems without hard links
+                # (exFAT/FAT32). -d because renaming onto a directory moves
+                # the temp inside it instead of replacing it.
                 if [ -z "$(_css_read_valid_install_id "$_css_id_file")" ] \
                     && [ ! -d "$_css_id_file" ]; then
                     mv "$_css_id_tmp" "$_css_id_file" 2>/dev/null || true
@@ -1154,10 +1149,9 @@ create_studio_shortcuts() {
         if [ -f "$_css_id_file" ]; then
             chmod 600 "$_css_id_file" 2>/dev/null || true
         fi
-        # Bake what is on disk, not what we hoped to write: that is the byte
-        # string the backend will report from /api/health, whoever won the
-        # race. An unwritable or non-regular path leaves this empty and the
-        # launcher is not generated at all.
+        # Bake what is on disk, not what we meant to write: that is what the
+        # backend reports from /api/health, whoever won the race. An unwritable
+        # or non-regular path leaves this empty and no launcher is generated.
         _css_studio_root_id=$(_css_read_valid_install_id "$_css_id_file")
         unset _css_new_id _css_id_tmp
     fi
