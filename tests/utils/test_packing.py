@@ -578,7 +578,9 @@ def test_patch_mamba2_varlen_rebinds_compiled_module_alias(monkeypatch):
             self.mamba2_split_conv1d_scan_combined = fused
 
         def forward(self, hidden_states, **fused_kwargs):
-            return compiled.mamba_split_conv1d_scan_combined(hidden_states, **fused_kwargs)
+            return compiled.mamba_split_conv1d_scan_combined(
+                hidden_states, seq_idx = None, **fused_kwargs
+            )
 
     class _CompiledModel(_FakeMamba2Model):
         def __init__(self):

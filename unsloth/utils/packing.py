@@ -488,26 +488,72 @@ def _wrap_mamba2_fused_call(
     return fused_fn
 
 
+def _rewrite_callable_refs(fn, orig, wrapped, *, _seen: set[int] | None = None) -> None:
+    """Replace ``orig`` with ``wrapped`` in a callable's globals and closure."""
+    if fn is None or orig is None or wrapped is orig:
+        return
+    if _seen is None:
+        _seen = set()
+    try:
+        fn_id = id(fn)
+    except Exception:
+        return
+    if fn_id in _seen:
+        return
+    _seen.add(fn_id)
+    namespace = getattr(fn, "__globals__", None)
+    if isinstance(namespace, dict):
+        for key, value in list(namespace.items()):
+            if value is orig:
+                namespace[key] = wrapped
+    closure = getattr(fn, "__closure__", None)
+    if closure is None:
+        return
+    for cell in closure:
+        try:
+            if cell.cell_contents is orig:
+                cell.cell_contents = wrapped
+        except (ValueError, AttributeError):
+            continue
+
+
+_MAMBA2_REBIND_MODULE_SUBSTR = (
+    "unsloth_compiled",
+    "nemotron",
+    "mamba_ssm",
+    "transformers_modules",
+    "modeling_nemotron",
+)
+
+
 def _rebind_mamba2_fused_aliases(orig, wrapped) -> None:
     """Point every imported fused-kernel name at ``wrapped``.
 
     Unsloth's Fast Nemotron-H compile copies transformers mixer source into
     ``unsloth_compiled_cache`` and binds ``mamba_split_conv1d_scan_combined``
-    (or the transformers hub name) as a module global. Wrapping only the
-    mixer's owning module leaves that compiled binding on the original, so
-    packed forwards never hit the varlen wrapper.
+    as a LOAD_GLOBAL / closure. Wrapping only the transformers modeling import
+    leaves that compiled binding on the original, so packed forwards never hit
+    the varlen wrapper.
     """
     if orig is None or wrapped is orig:
         return
+    seen: set[int] = set()
     for mod in list(sys.modules.values()):
         if mod is None:
             continue
         namespace = getattr(mod, "__dict__", None)
         if not isinstance(namespace, dict):
             continue
+        mod_name = (getattr(mod, "__name__", "") or "").lower()
+        interesting = any(s in mod_name for s in _MAMBA2_REBIND_MODULE_SUBSTR)
         for key, value in list(namespace.items()):
             if value is orig:
                 namespace[key] = wrapped
+            elif interesting and callable(value):
+                _rewrite_callable_refs(value, orig, wrapped, _seen = seen)
+                _rewrite_callable_refs(
+                    getattr(value, "__func__", None), orig, wrapped, _seen = seen
+                )
 
 
 def _wrap_mamba2_mixer_forward(module):
@@ -715,6 +761,9 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             modeling._unsloth_mamba2_fused_wrapped = True
         elif kind == "ssm":
             module._unsloth_varlen_orig_fused = fn
+        if fn is not None and wrapped is not None:
+            _rewrite_callable_refs(getattr(type(module), "forward", None), fn, wrapped)
+            _rewrite_callable_refs(module.forward, fn, wrapped)
         _wrap_mamba2_mixer_forward(module)
         module._unsloth_varlen = None
         module._unsloth_varlen_wrapped = True
