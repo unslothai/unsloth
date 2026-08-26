@@ -488,7 +488,13 @@ def _wrap_mamba2_fused_call(
     return fused_fn
 
 
-def _rewrite_callable_refs(fn, orig, wrapped, *, _seen: set[int] | None = None) -> None:
+def _rewrite_callable_refs(
+    fn,
+    orig,
+    wrapped,
+    *,
+    _seen: set[int] | None = None,
+) -> None:
     """Replace ``orig`` with ``wrapped`` in a callable's globals and closure."""
     if fn is None or orig is None or wrapped is orig:
         return
@@ -551,9 +557,7 @@ def _rebind_mamba2_fused_aliases(orig, wrapped) -> None:
                 namespace[key] = wrapped
             elif interesting and callable(value):
                 _rewrite_callable_refs(value, orig, wrapped, _seen = seen)
-                _rewrite_callable_refs(
-                    getattr(value, "__func__", None), orig, wrapped, _seen = seen
-                )
+                _rewrite_callable_refs(getattr(value, "__func__", None), orig, wrapped, _seen = seen)
 
 
 def _wrap_mamba2_mixer_forward(module):
