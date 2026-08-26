@@ -1187,6 +1187,156 @@ class TestDetectionMatchesPipsOwnRules:
         assert any(path.startswith("C:\\u") and path.endswith("pip.ini") for path in paths)
 
 
+class TestDetectionMatchesWhatTheManagersActuallyEnforce:
+    """Detection has to report the policy in force, not the policy that looks configured.
+
+    Every claim below was measured against the versions Unsloth ships against: the uv
+    0.12.1 that setup.sh pins by sha256, and pip 26.2.1. Over-reporting is not the safe
+    direction here, because under the opt-out a control credited to one manager and not
+    the other stops the step.
+    """
+
+    _names = TestDetectionMatchesPipsOwnRules._names
+
+    @pytest.mark.parametrize(
+        "name,value",
+        [
+            ("UV_NO_BUILD", "true"),
+            ("UV_NO_BUILD_PACKAGE", "simsrc"),
+            ("UV_ONLY_BINARY", ":all:"),
+            ("UV_NO_BINARY", ":all:"),
+        ],
+    )
+    def test_the_uv_artifact_variables_uv_ignores_are_not_policy(self, name, value):
+        """Measured on the pinned uv 0.12.1: a source directory installs with any of
+        these set, and is refused by the matching --no-build / --no-binary flag or by a
+        uv.toml carrying it. `uv help pip install` lists no [env:] spelling for them.
+
+        They are still stripped from a pinned command, which costs nothing. Counting one
+        as uv policy is the harm: it hid a genuine pip-side gap under the opt-out by
+        making uv look as though it had the control covered."""
+        assert self._names({name: value}) == ()
+        assert ips._configured_policy_keys()["uv"] == frozenset()
+
+    @pytest.mark.parametrize("name", ["UV_REQUIRE_HASHES", "UV_EXCLUDE_NEWER"])
+    def test_the_uv_variables_uv_does_read_are_still_policy(self, name):
+        """The same measurement the other way: UV_REQUIRE_HASHES fails an unhashed
+        install and UV_EXCLUDE_NEWER filters by upload date, both from the environment
+        alone."""
+        value = "1" if name.endswith("HASHES") else "2020-01-01T00:00:00Z"
+        assert self._names({name: value}) == (name,)
+
+    @pytest.mark.parametrize("key", ["no-build", "no-build-package", "exclude-newer"])
+    def test_a_uv_only_key_in_pip_conf_is_not_pip_policy(self, key, tmp_path):
+        """pip 26.2.1 has no option for these, so `pip install --help` exposes nothing
+        for them and an entry in pip.conf is inert. Reading one as pip policy made the
+        first uv step refuse under the opt-out over a gap that did not exist."""
+        config = tmp_path / "pip.conf"
+        config.write_text(f"[global]\n{key} = true\n", encoding = "utf-8")
+        assert self._names({}, pip_files = [str(config)]) == ()
+
+    @pytest.mark.parametrize("key", ["require-hashes", "only-binary", "uploaded-prior-to"])
+    def test_the_keys_pip_does_have_are_still_read(self, key, tmp_path):
+        config = tmp_path / "pip.conf"
+        value = "true" if key == "require-hashes" else ":all:"
+        config.write_text(f"[global]\n{key} = {value}\n", encoding = "utf-8")
+        assert self._names({}, pip_files = [str(config)]) == (f"pip.conf {key}",)
+
+    def test_an_empty_variable_does_not_cancel_a_config_file(self, tmp_path):
+        """pip drops empty environment values before applying precedence. Measured with
+        pip 26.2.1: PIP_ONLY_BINARY='' still rejects an sdist under a pip.conf
+        `only-binary = :all:`, while `:none:` clears it. Treating the empty spelling as a
+        cancellation suppressed a policy that was fully in force."""
+        config = tmp_path / "pip.conf"
+        config.write_text("[global]\nonly-binary = :all:\n", encoding = "utf-8")
+        assert self._names({"PIP_ONLY_BINARY": ""}, pip_files = [str(config)]) == (
+            "pip.conf only-binary",
+        )
+        assert self._names({"PIP_ONLY_BINARY": ":none:"}, pip_files = [str(config)]) == ()
+
+    def test_a_subcommand_setting_survives_a_later_file(self, tmp_path):
+        """pip resolves each command separately across ALL its files, so a low-priority
+        file's [wheel] entry cannot erase a higher one's [install] entry. Collapsing each
+        file before reading the next reported an unhardened host while pip was still
+        hash-checking every install."""
+        first = tmp_path / "user.conf"
+        first.write_text("[install]\nrequire-hashes = true\n", encoding = "utf-8")
+        second = tmp_path / "site.conf"
+        second.write_text("[wheel]\nrequire-hashes = false\n", encoding = "utf-8")
+        assert self._names({}, pip_files = [str(first), str(second)]) == (
+            "user.conf require-hashes",
+        )
+        # And the ordinary same-section override still works.
+        third = tmp_path / "later.conf"
+        third.write_text("[install]\nrequire-hashes = false\n", encoding = "utf-8")
+        assert self._names({}, pip_files = [str(first), str(third)]) == ()
+
+    def test_a_project_config_can_switch_a_user_config_off(self, tmp_path):
+        """Measured on the pinned uv 0.12.1: a user `~/.config/uv/uv.toml` with
+        `[pip] require-hashes = true` plus a project `[tool.uv.pip] require-hashes =
+        false` installs unhashed. Reporting the user value regardless made a later pip
+        step refuse under the opt-out over policy uv was not enforcing."""
+        user = tmp_path / "uv.toml"
+        user.write_text("[pip]\nrequire-hashes = true\n", encoding = "utf-8")
+        project = tmp_path / "pyproject.toml"
+        project.write_text(
+            '[project]\nname = "p"\nversion = "0"\n[tool.uv.pip]\nrequire-hashes = false\n',
+            encoding = "utf-8",
+        )
+        assert self._names({}, uv_files = [str(user)]) == ("uv.toml require-hashes",)
+        assert self._names({}, uv_files = [str(user), str(project)]) == ()
+
+    def test_the_uv_files_come_back_lowest_precedence_first(self, tmp_path):
+        """The resolution above is only correct if the order is: system, user, project."""
+        home = tmp_path / "home"
+        (home / "uv").mkdir(parents = True)
+        (home / "uv" / "uv.toml").write_text("[pip]\nno-build = true\n", encoding = "utf-8")
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "pyproject.toml").write_text('[project]\nname = "p"\n', encoding = "utf-8")
+        with (
+            mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(home)}, clear = True),
+            mock.patch.object(ips, "IS_WINDOWS", False),
+            mock.patch.object(os, "getcwd", lambda: str(project)),
+            mock.patch.object(ips.os.path, "isfile", os.path.isfile),
+        ):
+            paths = ips._hardened_uv_config_paths()
+        assert paths[-1] == str(project / "pyproject.toml"), paths
+        assert str(home / "uv" / "uv.toml") in paths
+
+    def test_a_parent_pyproject_is_discovered_from_a_child_directory(self, tmp_path):
+        """Measured on the pinned uv 0.12.1: a parent `[tool.uv.pip] require-hashes =
+        true` fails an install run from a child directory. Studio is normally launched
+        from one, so stopping at the working directory missed real policy."""
+        parent = tmp_path / "parent"
+        (parent / "child" / "deep").mkdir(parents = True)
+        (parent / "pyproject.toml").write_text('[project]\nname = "p"\n', encoding = "utf-8")
+        with mock.patch.object(os, "getcwd", lambda: str(parent / "child" / "deep")):
+            assert ips._uv_project_config() == [str(parent / "pyproject.toml")]
+
+    def test_a_uv_toml_beside_the_pyproject_wins(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\n', encoding = "utf-8")
+        (tmp_path / "uv.toml").write_text("[pip]\nrequire-hashes = true\n", encoding = "utf-8")
+        with mock.patch.object(os, "getcwd", lambda: str(tmp_path)):
+            assert ips._uv_project_config() == [str(tmp_path / "uv.toml")]
+
+    def test_a_uv_toml_with_no_pyproject_beside_it_is_not_read(self, tmp_path):
+        """Measured: uv reads it in neither the working directory nor any ancestor, so
+        reporting it would be hardening uv does not apply."""
+        (tmp_path / "uv.toml").write_text("[pip]\nrequire-hashes = true\n", encoding = "utf-8")
+        with mock.patch.object(os, "getcwd", lambda: str(tmp_path)):
+            assert ips._uv_project_config() == []
+
+    def test_the_walk_terminates_on_a_host_with_no_pyproject_anywhere(self):
+        with mock.patch.object(os, "getcwd", lambda: "/a/b/c"):
+            with mock.patch.object(ips.os.path, "isfile", lambda path: False):
+                assert ips._uv_project_config() == []
+
+    def test_a_deleted_working_directory_is_not_an_error(self):
+        with mock.patch.object(os, "getcwd", mock.Mock(side_effect = OSError("gone"))):
+            assert ips._uv_project_config() == []
+
+
 class TestPolicyEnvIsPlatformAndHardwareInvariant:
     """The env this helper builds must not depend on the platform or the accelerator.
 
@@ -1225,16 +1375,11 @@ class TestPolicyEnvIsPlatformAndHardwareInvariant:
         # refusal is not an environment to compare across platforms.
         # Both managers configured, so no cross-manager gap: a refusal is not an
         # environment, and this sweep is about environment construction.
-        policy = (
-            {
-                "PIP_REQUIRE_HASHES": "1",
-                "UV_REQUIRE_HASHES": "1",
-                "PIP_ONLY_BINARY": ":all:",
-                "UV_NO_BUILD": "1",
-            }
-            if hardened
-            else {}
-        )
+        # require-hashes on both sides, and only that: it is the one artifact-policy
+        # control with an environment spelling uv actually reads, so it is the only way
+        # to configure both managers without writing config files. UV_NO_BUILD would not
+        # do, since uv ignores it and detection no longer pretends otherwise.
+        policy = {"PIP_REQUIRE_HASHES": "1", "UV_REQUIRE_HASHES": "1"} if hardened else {}
         for command in self.COMMANDS:
             answers = set()
             for platform, settings in self.PLATFORMS.items():
