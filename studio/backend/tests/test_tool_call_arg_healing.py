@@ -78,7 +78,7 @@ def test_the_model_is_told_the_arguments_were_cut_off():
     assert result.startswith("Error:")
     assert "edit_file" in result
     assert "cut off" in result
-    assert "Nothing was run" in result
+    assert "nothing ran" in result
     # The old answer, which blamed the model for keys it never sent.
     assert "must both be strings" not in result
 
@@ -270,4 +270,4 @@ def test_the_model_is_told_python_arguments_were_cut_off():
 
     assert "could not be read" in result
     assert "cut off" in result
-    assert "Nothing was run" in result
+    assert "nothing ran" in result

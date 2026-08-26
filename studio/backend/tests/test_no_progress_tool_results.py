@@ -137,7 +137,7 @@ def test_a_tool_repeating_one_answer_is_told_so(monkeypatch):
 
     results = _tool_results(_run(backend))
 
-    assert any("will not change the answer" in r for r in results)
+    assert any("it will not change" in r for r in results)
     # The notice that caused the repeats is kept: replacing it would leave the model
     # holding less than it already had.
     assert any(_TRUNCATION_NOTICE in r for r in results)
@@ -174,7 +174,7 @@ def test_changing_results_are_never_interrupted(monkeypatch):
     results = _tool_results(_run(backend))
 
     assert results, "no tool ran"
-    assert not any("will not change the answer" in r for r in results)
+    assert not any("it will not change" in r for r in results)
 
 
 def _thread_with_a_big_completed_call(body_chars: int = 9000) -> list[dict]:
@@ -265,4 +265,4 @@ def test_a_repeat_that_stops_repeating_resets(monkeypatch):
 
     results = _tool_results(_run(backend))
 
-    assert not any("will not change the answer" in r for r in results)
+    assert not any("it will not change" in r for r in results)

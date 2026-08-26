@@ -9917,23 +9917,16 @@ EDIT_FILE_TOOL = {
         # The description does the steering: given the tool but no preference,
         # a model keeps writing heredocs because that is what it was trained on.
         "description": (
-            "Change a file by replacing exact strings in it. Prefer this over "
-            "rewriting a file with python or a shell heredoc: it sends only the "
-            "lines that change, so editing a large file costs a fraction of the "
-            "tokens and cannot drop the parts you did not retype. Read the file "
-            "first and copy each old_string out of it verbatim, including "
-            "indentation. Send every change to one file as separate entries in "
-            "edits rather than calling this repeatedly: each call replays the "
-            "whole conversation, so one call with five edits costs far less than "
-            "five calls. Every old_string is matched against the file as it was "
-            "BEFORE this call, not against the result of the edits before it, and "
-            "no two may overlap. Each must match exactly one place unless that "
-            "entry sets replace_all; if any entry matches none or several you get "
-            "an error and NOTHING is written. Paths are relative to the working "
-            "directory. A successful call means the file on disk now contains "
-            "what you sent, so do not read it back to confirm: re-reading a file "
-            "you just wrote pays for the same content twice, and on a small "
-            "context window it can leave no room for the answer."
+            "Change a file by replacing exact strings. Prefer this over rewriting a "
+            "file with python or a shell heredoc: it sends only what changes. Copy each "
+            "old_string verbatim from the file, indentation included. Batch every change "
+            "to one file into edits rather than calling repeatedly, since each call "
+            "replays the whole conversation. Every old_string matches the file as it was "
+            "BEFORE this call, not the result of earlier edits, and no two may overlap. "
+            "Each must match exactly one place unless it sets replace_all; if any matches "
+            "none or several, nothing is written. Paths are relative to the working "
+            "directory. A successful call means the file holds what you sent, so do not "
+            "read it back."
         ),
         "parameters": {
             "type": "object",
@@ -10329,14 +10322,13 @@ def execute_tool(
         raw = str(arguments.get(UNPARSED_ARGUMENTS_KEY) or "")
         truncated = raw.lstrip().startswith(("{", "[")) and not raw.rstrip().endswith(("}", "]"))
         cause = (
-            "they stop part-way through, so they were probably cut off"
+            "were cut off part-way and could not be read"
             if truncated
-            else "they are not valid JSON"
+            else "were not valid JSON"
         )
         return (
-            f"Error: the arguments to {name} could not be read -- {cause}. Nothing was "
-            f"run. Send the call again as complete JSON; if the content is long, split it "
-            "into smaller calls."
+            f"Error: {name} arguments {cause}, so nothing ran. Resend as complete JSON, "
+            "split across smaller calls if the content is long."
         )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":

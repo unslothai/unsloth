@@ -470,14 +470,19 @@ def _compacted_arguments(
 
 
 _REFUSED_PHRASE = (
-    "of arguments you sent, elided because this call was refused before it ran; nothing was written"
+    "of arguments you sent, elided; this call was refused before it ran and nothing was written"
 )
 # Worded so the model cannot mistake it for the tool's OUTPUT. The first version read
 # "<2581 chars written; re-read the file to see it>" and was quoted straight back in
 # the model's reasoning as "the tool result says ... the output was omitted" -- it
 # concluded the sandbox had mangled its file and abandoned a working approach. Says
 # "you sent" so the owner of the text is unambiguous, and says what it is not.
-_COMPLETED_PHRASE = "of arguments you sent, already written{where}; elided from this transcript to save room -- this is not the tool's output, read the file back if you need the content"
+# The tail once read "read the file back if you need the content", which contradicted
+# every other line this PR added: `edit_file` now says not to read back what you just
+# wrote, and the starved and repeated-result notices both say reading again will not help.
+# Three messages discouraging a re-read and one inviting it is worse than either rule
+# alone, and the re-read is the loop that cost eighteen calls in one turn.
+_COMPLETED_PHRASE = "of arguments you sent, already written{where}; elided to save room. Not tool output; the file on disk holds it."
 
 
 def compact_executed_call_arguments(messages: list[dict], call_id: str) -> list[dict]:

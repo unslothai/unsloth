@@ -293,10 +293,9 @@ def starved_result_message(tool_name: str, result: str) -> str:
     """
     return (
         f"{result}\n\n"
-        f"[The context window had no room for this result, so {tool_name} returned little "
-        "or nothing regardless of what it found. Reading again, or in smaller pieces, will "
-        "not help while the window is this full. Work from what you already have, or say "
-        "what you need and let the user decide.]"
+        f"[No room in the window for this result, so {tool_name} returned nothing usable. "
+        "Re-reading will not help. Continue from what you have, and deliver the work in "
+        "parts if it will not fit at once.]"
     )
 
 
@@ -308,10 +307,8 @@ def repeated_result_message(tool_name: str, times: int, last_result: str) -> str
     """
     return (
         f"{last_result}\n\n"
-        f"[{tool_name} has now returned exactly this {times} times. Calling it again with "
-        "different arguments will not change the answer. If the result is a truncation "
-        "notice, the window has no room to carry this content: work from what you already "
-        "have, or tell the user what you need instead of reading it again.]"
+        f"[{tool_name} returned exactly this {times} times; it will not change. Continue "
+        "from what you have, in parts if needed, and finish the task.]"
     )
 
 
@@ -323,15 +320,17 @@ def thinking_exhausted_message(context_length: Optional[int] = None) -> str:
     identical symptom is likewise to lower reasoning effort, because no amount of
     retrying fits a thought that did not fit the first time.
     """
-    window = f" of the {context_length}-token window" if context_length else ""
+    # Built by substitution rather than `.format` on a pre-spaced fragment, which produced
+    # "spent its whole reply of the 4096-token window on reasoning".
+    window = f"{context_length}-token " if context_length else ""
     return (
-        "The model spent its whole reply{}on reasoning and had none left for an "
-        "answer, twice in a row.\n\n"
+        f"The model spent the whole of its {window}window on reasoning and had none "
+        "left for an answer, twice in a row.\n\n"
         "To get past this:\n"
         "- Lower the reasoning effort, or turn thinking off\n"
         "- Or raise the context length, so a thought and an answer both fit\n"
         "- Or ask for a smaller piece of the task at a time"
-    ).format(window + " " if window else " ")
+    )
 
 
 def continue_after_length_message() -> str:
@@ -342,10 +341,9 @@ def continue_after_length_message() -> str:
     deliberation is asking for the same ending a second time.
     """
     return (
-        "Your previous turn ran out of room while thinking, so nothing was produced. "
-        "Do not think further and do not restate your reasoning. Act now: call a tool "
-        "or give the answer directly. If the whole answer will not fit, produce the "
-        "first part now and continue afterwards."
+        "You ran out of room while thinking, so nothing was produced. Stop thinking and "
+        "act: call a tool or answer now. If it will not all fit, deliver the first part "
+        "and continue after."
     )
 
 

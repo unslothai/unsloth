@@ -355,6 +355,6 @@ def test_a_receipt_cannot_be_mistaken_for_the_tools_output():
     replayed = json.dumps(compact_executed_call_arguments(messages, "c1"))
 
     assert "arguments you sent" in replayed
-    assert "not the tool's output" in replayed
+    assert "Not tool output" in replayed
     # The tool's real result is the one record of what happened and is never touched.
     assert "Created a.html" in replayed
