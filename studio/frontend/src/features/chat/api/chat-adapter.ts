@@ -5140,6 +5140,10 @@ export function createOpenAIStreamAdapter(
       };
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: PositionedToolCallPart[] = [];
+      // Completed tool-call parts from earlier indices, preserved when a new
+      // id-less call at the same index replaces a finished one (vLLM parallel
+      // tool-call streaming — see issue #9807).
+      const savedToolCalls: PositionedToolCallPart[] = [];
       // Raw tool_args accumulator per card: the backend forwards arguments while
       // the model is still WRITING them, and the partial parse below feeds the
       // card's args so the code renders live.
@@ -6664,7 +6668,21 @@ export function createOpenAIStreamAdapter(
                   if (existing) {
                     const prevName = existing.toolName ?? "";
                     const nextName = call.function?.name ?? prevName;
-                    const merged = (existing.argsText ?? "") + argsFragment;
+                    // When an id-less delta arrives at an occupied index with a
+                    // different function name, the stream is introducing a new
+                    // parallel tool call — not continuing the existing one.
+                    // Preserve the finished call and start a fresh slot.
+                    const isNewCallAtSameIndex =
+                      !stablePartId &&
+                      existing.toolName !== "" &&
+                      nextName !== existing.toolName;
+                    if (isNewCallAtSameIndex) {
+                      savedToolCalls.push(
+                        existing as PositionedToolCallPart,
+                      );
+                      toolCallParts.splice(existingIndex, 1);
+                    }
+                    const merged = (isNewCallAtSameIndex ? "" : (existing.argsText ?? "")) + argsFragment;
                     let parsedArgs: ToolCallMessagePart["args"] =
                       existing.args ?? {};
                     if (merged) {
@@ -6743,6 +6761,16 @@ export function createOpenAIStreamAdapter(
                     toolCallParts.push(fresh);
                     addedToolCall = true;
                   }
+                }
+                // Splice any saved (completed) tool calls back into the
+                // live parts array so later code can reference them.
+                if (savedToolCalls.length > 0) {
+                  toolCallParts.splice(
+                    0,
+                    0,
+                    ...savedToolCalls,
+                  );
+                  savedToolCalls.length = 0;
                 }
                 if (
                   addedToolCall ||
