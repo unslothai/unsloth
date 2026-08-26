@@ -260,7 +260,10 @@ test("a gated-repo token never rides in the URL", () => {
 
 test("on-device rows carry the Hub's green dot", () => {
   assert.match(PICKER, /rounded-full bg-status-success/);
-  assert.match(PICKER, /cachedModels\?\.has\(item\.id\)/);
+  // The membership test moved off the raw id and onto the resolved repo; see
+  // "the on-device dot follows the resolved repo, not the displayed id".
+  assert.match(PICKER, /isOnDevice\(cachedModels, item\.id\)/);
+  assert.match(PICKER, /cached\.has\(repo\)/);
 });
 
 test("General and Data show the same section, not two copies of it", () => {
@@ -344,4 +347,19 @@ test("backend residency is re-read, not just loaded once on mount", () => {
   assert.match(SECTION, /addEventListener\("visibilitychange", refresh\)/);
   assert.match(SECTION, /removeEventListener\("visibilitychange", refresh\)/);
   assert.match(SECTION, /window\.clearInterval\(timer\)/);
+});
+
+test("the on-device dot follows the resolved repo, not the displayed id", () => {
+  // The inventory records what was fetched, not what was picked: llama-server
+  // opens the -GGUF companion and a slashless alias resolves under the canonical
+  // namespace, so an exact-id lookup left the dot off a fully downloaded model.
+  assert.match(PICKER, /export function cachedRepoCandidates\(model: string\): string\[\]/);
+  assert.match(PICKER, /`\$\{id\}-GGUF`/);
+  assert.match(PICKER, /`sentence-transformers\/\$\{id\}`/);
+  assert.match(PICKER, /if \(!id\.includes\("\/"\)\)/);
+  assert.match(PICKER, /isOnDevice\(cachedModels, item\.id\)/);
+  assert.ok(
+    !PICKER.includes("cachedModels?.has(item.id)"),
+    "the raw exact-id lookup is gone",
+  );
 });

@@ -46,6 +46,32 @@ type EmbeddingModelPickerProps = {
  * that reaches the whole Hub. Empty lists unsloth's embedders, which the global
  * top-downloads page would bury.
  */
+/** Repo ids an on-device copy of `model` can be filed under.
+ *
+ * The inventory records what was fetched, not what was picked, and the two differ
+ * by exactly the two conventions the backend resolves through: llama-server opens
+ * the `-GGUF` companion, and a slashless sentence-transformers alias resolves
+ * under the canonical namespace. Comparing the displayed id straight against raw
+ * inventory ids left the dot off even with the model fully downloaded.
+ *
+ * An off-convention mirror the server resolved is not derivable here and still
+ * shows no dot; the row's own status line is what covers the selected model. */
+export function cachedRepoCandidates(model: string): string[] {
+  const id = model.trim();
+  if (!id) return [];
+  const candidates = [id, `${id}-GGUF`];
+  if (!id.includes("/")) candidates.push(`sentence-transformers/${id}`);
+  return candidates;
+}
+
+function isOnDevice(
+  cached: ReadonlySet<string> | undefined,
+  model: string,
+): boolean {
+  if (!cached) return false;
+  return cachedRepoCandidates(model).some((repo) => cached.has(repo));
+}
+
 export function EmbeddingModelPicker({
   value,
   onSelect,
@@ -184,7 +210,7 @@ export function EmbeddingModelPicker({
               >
                 <span className="flex min-w-0 flex-1 items-center gap-1.5">
                   {/* Same green dot the Hub marks an on-device row with. */}
-                  {cachedModels?.has(item.id) ? (
+                  {isOnDevice(cachedModels, item.id) ? (
                     <span
                       // A bare span is generic, and ARIA-in-HTML forbids naming
                       // one, so Safari and Firefox drop the label and the dot goes

@@ -802,3 +802,45 @@ def test_a_bare_checkpoint_file_is_not_a_local_sentence_transformer(client, monk
     body = _resolve(client, str(bare)).json()
     assert body["cached"] is False
     assert "no checkpoint this backend can load" in body["error"]
+
+
+def test_a_tokenizer_bin_is_not_mistaken_for_a_checkpoint(client, monkeypatch, tmp_path):
+    """.bin is the loose suffix: tokenizer.bin shares it with real weights, so a
+    directory holding only modules.json and tokenizer.bin resolved as cached and
+    passed is_embedding_model's local marker check, then failed at the first index."""
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
+    monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
+    import utils.utils as utils
+
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: False)
+
+    local = tmp_path / "partial"
+    local.mkdir()
+    (local / "modules.json").write_text("[]")
+    (local / "tokenizer.bin").write_bytes(b"NOT WEIGHTS")
+    assert settings._local_sentence_transformer_is_present(str(local)) is False
+
+    body = _resolve(client, str(local)).json()
+    assert body["cached"] is False
+    assert "no checkpoint this backend can load" in body["error"]
+
+    # A real checkpoint under any of the accepted families still counts.
+    (local / "pytorch_model.bin").write_bytes(b"ST")
+    assert settings._local_sentence_transformer_is_present(str(local)) is True
+
+
+def test_the_cached_snapshot_probe_uses_the_same_filename_family(monkeypatch, tmp_path):
+    """The cached-snapshot probe had the same suffix-only test as the local one."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "tokenizer.bin").write_bytes(b"NOT WEIGHTS")
+    import utils.utils as utils
+
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+    assert settings._cached_snapshot_has_st_weights("org/partial") is False
+    assert settings._cached_st_weight_names("org/partial") == []
+
+    (snapshot / "model.safetensors").write_bytes(b"ST")
+    assert settings._cached_snapshot_has_st_weights("org/partial") is True
+    assert settings._cached_st_weight_names("org/partial") == ["model.safetensors"]

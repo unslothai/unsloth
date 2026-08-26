@@ -464,9 +464,13 @@ def _get(model_name: str | None = None):
                         f"Embedding model {name!r} is not downloaded yet. "
                         "Finish its Settings download before indexing documents."
                     )
-                if download_pending:
-                    # Proven complete just above: retire the marker rather than
-                    # leaving this model cache-only for the life of the install.
+                snapshot = hf_cache_snapshot_dir(name)
+                if snapshot is not None and download_pending:
+                    # Retired only once the snapshot path is in hand. Clearing it
+                    # off the loadable check alone meant an eviction landing in
+                    # between cleared the marker AND raised below, and the next
+                    # attempt was free to reach the Hub: the silent redownload the
+                    # marker exists to prevent.
                     try:
                         from utils.embedding_model_settings import (
                             clear_stored_download_pending,
@@ -474,7 +478,6 @@ def _get(model_name: str | None = None):
                         clear_stored_download_pending(name)
                     except Exception:  # noqa: BLE001 - a settings write must not fail a load
                         pass
-                snapshot = hf_cache_snapshot_dir(name)
                 if snapshot is not None:
                     # Load from the local snapshot dir: a local path never touches the Hub, so
                     # this is offline-safe on ANY sentence-transformers version (even ones
@@ -963,11 +966,23 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
     if backend is None:
         return False
     if model_name is None:
+        # Same reason as below: a llama backend whose process is gone is not
+        # resident, whichever model was asked about.
+        if _is_llama_backend(backend):
+            try:
+                return bool(backend._process_alive())
+            except Exception:  # noqa: BLE001 - a status probe must never block settings
+                return False
         return True
     if isinstance(backend, _SentenceTransformersBackend):
         return _model is not None and _name == model_name
     if _is_llama_backend(backend):
         try:
+            # The subprocess can exit or be reaped between requests while the
+            # backend object keeps its _model_repo, so the repo match alone
+            # reported a dead server as resident and offered Unload for it.
+            if not backend._process_alive():
+                return False
             return backend._model_repo == config.effective_gguf_repo_for_embedding_model(model_name)
         except Exception:  # noqa: BLE001 - a status probe must never block settings
             return False

@@ -2188,6 +2188,23 @@ def _st_backend_available() -> bool:
         return False
 
 
+def _is_st_weight_name(basename: str) -> bool:
+    """Whether a filename is a checkpoint, not just something ending in a suffix.
+
+    ``.bin`` is the loose one: ``tokenizer.bin`` and friends share the extension
+    with real weights, so a directory holding only those looked like a complete
+    model. Same family test the Hub listing already applied; the local probes did
+    not, which is how a partial directory resolved as cached."""
+    name = basename.lower()
+    for suffix in _ST_WEIGHT_SUFFIXES:
+        if not name.endswith(suffix):
+            continue
+        if suffix == ".bin":
+            return name.startswith(("pytorch_model", "model", "adapter_model", "consolidated"))
+        return True
+    return False
+
+
 def _st_weight_source(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
     """``(repo, weight files)`` for the repo an ST load of ``model`` would open.
 
@@ -2213,17 +2230,12 @@ def _st_weight_files(model: str, hf_token: Optional[str]) -> Optional[list[str]]
     except Exception:  # noqa: BLE001 - missing/gated repo or offline
         return None
     for suffix in _ST_WEIGHT_SUFFIXES:
-        weights = []
-        for filename in files:
-            basename = filename.rsplit("/", 1)[-1].lower()
-            if suffix == ".bin":
-                if not basename.endswith(suffix) or not basename.startswith(
-                    ("pytorch_model", "model", "adapter_model", "consolidated")
-                ):
-                    continue
-            elif not basename.endswith(suffix):
-                continue
-            weights.append(filename)
+        weights = [
+            filename
+            for filename in files
+            if filename.rsplit("/", 1)[-1].lower().endswith(suffix)
+            and _is_st_weight_name(filename.rsplit("/", 1)[-1])
+        ]
         if weights:
             return weights
     return None
@@ -2243,7 +2255,7 @@ def _cached_snapshot_has_st_weights(model: str) -> bool:
         if snapshot is None:
             return False
         for path in snapshot.rglob("*"):
-            if path.suffix.lower() in _ST_WEIGHT_SUFFIXES and path.is_file():
+            if _is_st_weight_name(path.name) and path.is_file():
                 return True
         return False
     except Exception:  # noqa: BLE001 - an unreadable cache is not a proof of weights
@@ -2261,7 +2273,7 @@ def _cached_st_weight_names(model: str) -> list[str]:
         return sorted(
             str(path.relative_to(snapshot))
             for path in snapshot.rglob("*")
-            if path.suffix.lower() in _ST_WEIGHT_SUFFIXES and path.is_file()
+            if _is_st_weight_name(path.name) and path.is_file()
         )
     except Exception:  # noqa: BLE001 - the plan stands without a file list
         return []
@@ -2354,10 +2366,7 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
             # a forced save then recorded it with no pending download, so the first
             # index handed the file path straight to SentenceTransformer.
             return False
-        return any(
-            child.suffix.lower() in _ST_WEIGHT_SUFFIXES and child.is_file()
-            for child in p.rglob("*")
-        )
+        return any(_is_st_weight_name(child.name) and child.is_file() for child in p.rglob("*"))
     except Exception:  # noqa: BLE001 - filesystem oddity is a cache miss
         return False
 

@@ -507,7 +507,9 @@ def test_loaded_state_belongs_to_the_resident_sentence_transformer(monkeypatch):
 
 
 def test_loaded_state_belongs_to_the_resident_gguf_repo(monkeypatch):
-    backend = SimpleNamespace(_model_repo = "org/resident-GGUF")
+    # A live process, since residency now means the subprocess is actually there;
+    # see test_a_dead_llama_process_is_not_reported_as_loaded.
+    backend = SimpleNamespace(_model_repo = "org/resident-GGUF", _process_alive = lambda: True)
     monkeypatch.setattr(embeddings, "_backend", backend)
     monkeypatch.setattr(embeddings, "_is_llama_backend", lambda value: value is backend)
     monkeypatch.setattr(
@@ -1009,3 +1011,29 @@ def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch):
         assert answered.wait(timeout = 5), "the status probe blocked on the load locks"
 
     assert result == {"any": False, "named": False}
+
+
+def test_a_dead_llama_process_is_not_reported_as_loaded(monkeypatch):
+    """The subprocess can exit or be reaped between requests while the backend
+    object keeps its _model_repo, so the repo match alone reported a dead server
+    as resident. With the settings poll added this round, that showed the model as
+    Loaded and offered Unload until some later request self-healed the process."""
+    alive = {"value": True}
+    backend = SimpleNamespace(
+        _model_repo = "org/resident-GGUF", _process_alive = lambda: alive["value"]
+    )
+    monkeypatch.setattr(embeddings, "_backend", backend)
+    monkeypatch.setattr(embeddings, "_is_llama_backend", lambda value: value is backend)
+    monkeypatch.setattr(
+        embeddings.config,
+        "effective_gguf_repo_for_embedding_model",
+        lambda model: f"{model}-GGUF",
+    )
+
+    assert embeddings.backend_is_loaded("org/resident") is True
+    assert embeddings.backend_is_loaded() is True
+
+    alive["value"] = False
+    assert embeddings.backend_is_loaded("org/resident") is False
+    # And the unqualified question, which is what gates the Unload control.
+    assert embeddings.backend_is_loaded() is False

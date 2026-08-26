@@ -1145,3 +1145,39 @@ def test_a_module_declared_but_absent_makes_the_snapshot_incomplete(monkeypatch,
     (snapshot / "0_Transformer").mkdir()
     (snapshot / "0_Transformer" / "model.safetensors").write_bytes(b"ST")
     assert utils.hf_cache_snapshot_is_loadable("org/torn") is True
+
+
+def test_an_eviction_between_the_check_and_the_snapshot_keeps_the_marker(monkeypatch):
+    """The marker was retired off the loadable check alone, so a cache eviction
+    landing between that check and hf_cache_snapshot_dir cleared it AND raised,
+    and the next indexing attempt was free to reach the Hub: exactly the silent
+    redownload the marker exists to prevent."""
+    from core.rag import embeddings
+    import utils.embedding_model_settings as ems
+    import utils.utils as utils
+
+    cleared = []
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda m: cleared.append(m) or True)
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: True)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
+    # Evicted in the window between the two calls.
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: None)
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    monkeypatch.setattr(embeddings, "_st_accepts_local_files_only", lambda _c: False)
+    st_mod = types.ModuleType("sentence_transformers")
+    st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer = None)
+    monkeypatch.setitem(sys.modules, "sentence_transformers", st_mod)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    embeddings._model = None
+    embeddings._name = None
+
+    try:
+        with pytest.raises(embeddings.EmbeddingModelDownloadRequiredError):
+            embeddings._get("org/evicted")
+    finally:
+        embeddings._model = None
+        embeddings._name = None
+
+    assert cleared == [], "the marker outlives a load that could not find the snapshot"
