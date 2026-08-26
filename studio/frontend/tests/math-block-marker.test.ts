@@ -147,18 +147,43 @@ test("inline wrappers are walked through to the block", () => {
   assert.equal(countMarked(tree), 1, "the em and the strong are not marked");
 });
 
-test("a paragraph inside a list item hoists to the list item", () => {
+test("maths inside a list item is abandoned, so the item keeps its number", () => {
+  // An earlier revision marked the `li`, because Streamdown gives its paragraph `[&>p]:inline` and
+  // an inline box cannot take size containment, which leaves the item as the only containable
+  // ancestor. Containing it costs the item its `::marker`: `content-visibility: auto` applies style
+  // containment, style containment scopes the automatic `list-item` counter, and the item can no
+  // longer resolve `counter(list-item)` for its own marker. Photographed on WebKitGTK 2.50.4 the
+  // number simply vanishes on the contained items. So there is no containable ancestor here at all
+  // and the maths is abandoned, as it is inside a table cell.
   const paragraph = el("p", [inlineMath()]);
   const item = el("li", [paragraph]);
   const tree = root([el("ul", [item])]);
 
-  assert.equal(markMathBlocks(tree), 1);
-  assert.ok(marked(item), "the list item takes the class");
-  assert.equal(
-    marked(paragraph),
-    false,
-    "the paragraph does not, because Streamdown renders it inline",
-  );
+  assert.equal(markMathBlocks(tree), 0, "nothing is marked");
+  assert.equal(marked(item), false, "the list item does NOT take the class");
+  assert.equal(marked(paragraph), false, "nor does its inline paragraph");
+});
+
+test("maths directly inside a list item is abandoned too, not just via a paragraph", () => {
+  // The `p` inside `li` shape has its own branch. This one reaches the `li` through the ordinary
+  // tag walk, so it proves the exemption is in the tag sets rather than only in that branch.
+  const item = el("li", [inlineMath()]);
+  const tree = root([el("ol", [item])]);
+
+  assert.equal(markMathBlocks(tree), 0);
+  assert.equal(marked(item), false);
+});
+
+test("the walk does not hoist PAST a list item and contain the whole list", () => {
+  // Containing the `ol` would lose every marker in it rather than one, so `ol` and `ul` are
+  // uncontainable and stop the walk instead of being skipped over.
+  const item = el("li", [el("p", [inlineMath()])]);
+  const list = el("ol", [item]);
+  const tree = root([el("div", [list])]);
+
+  assert.equal(markMathBlocks(tree), 0);
+  assert.equal(marked(list), false, "the list itself is not marked");
+  assert.equal(countMarked(tree), 0, "and nothing above it is either");
 });
 
 test("a heading and a blockquote paragraph are markable", () => {

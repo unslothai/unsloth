@@ -25,6 +25,50 @@ export type MathBlockMode = "off" | "contain";
 /** Moving this line is the whole of "turn block containment on by default". */
 export const SHIP_DEFAULT: MathBlockMode = "off";
 
+/*
+ * THE FIND-IN-PAGE GATE, and why it is a proxy rather than a direct test.
+ *
+ * WebKit below Safari 26 cannot find SKIPPED `content-visibility` content with native find-in-page
+ * (webkit.org/b/283846). `index.css` already refuses to use `content-visibility: auto` on code
+ * blocks for exactly this reason and says so in a comment, noting that Studio has no in-thread
+ * search to fall back on. Containment on maths-bearing blocks reintroduces the same hazard, and it
+ * reaches further: the marked element is a whole paragraph or heading, so ordinary PROSE in a
+ * maths-bearing block would stop being findable too, not just the formula.
+ *
+ * Nothing on the platform exposes "can find-in-page reach skipped content", so this gates on a CSS
+ * feature that shipped in the SAME release as the fix and is therefore absent on exactly the builds
+ * that are affected. Anchor positioning is that feature. This is a PROXY: it asserts a release
+ * train, not the bug, and if some engine ever ships one without the other this gate is wrong in
+ * whichever direction that engine chose. That is a deliberate trade against the alternative, which
+ * is parsing a user-agent string that WebKitGTK freezes at `AppleWebKit/605.1.15` on every version
+ * it has ever shipped.
+ *
+ * Measured on the venue the performance numbers came from, WebKitGTK 2.50.4: `anchor-name` is
+ * supported, and that build does find skipped content. The point of the gate is the builds that are
+ * not that one, which Studio absolutely ships against, since Linux uses whatever WebKitGTK the host
+ * provides and macOS uses whatever the OS provides.
+ */
+export const FIND_IN_PAGE_PROBE = "anchor-name: --unsloth-probe";
+
+/**
+ * Whether the engine may take containment at all, given the outcome of the probe above.
+ *
+ * An EXPLICIT RUNTIME override wins, because that global exists so a measurement or a bug report
+ * can force an arm from the devtools console, and a gate that silently refused would make the
+ * console flip look like it had worked while measuring the other arm. A build flag does NOT win:
+ * a build is shipped to machines whose engines the builder cannot see.
+ */
+export const gateOnEngine = (
+  mode: MathBlockMode,
+  engineFindsSkippedContent: boolean,
+  forcedByRuntime: boolean,
+): MathBlockMode =>
+  mode !== "contain" || engineFindsSkippedContent || forcedByRuntime ? mode : "off";
+
+/** Whether `runtime` is an explicit instruction rather than an absent global. */
+export const isRuntimeForced = (runtime: unknown): boolean =>
+  runtime === true || runtime === "1" || runtime === "contain";
+
 /**
  * @param runtime  `__UNSLOTH_MATH_BLOCK_CONTAINMENT__`: string, boolean or absent. The boolean is
  *                 the devtools-console form and has to work in BOTH directions, so that a session
@@ -59,3 +103,45 @@ export const resolveMathBlockMode = (
  */
 export const MATH_BLOCK_CONTAINMENT_ATTRIBUTE = "data-math-block-containment";
 export const MATH_BLOCK_CONTAINMENT_ON = "on";
+
+/*
+ * REAPPLY WHEN THE CONSOLE FLIPS THE GLOBAL.
+ *
+ * `applyMathBlockContainment()` is called once, before the first render. Without this, a tester who
+ * set `__UNSLOTH_MATH_BLOCK_CONTAINMENT__` from devtools AFTER load changed nothing: the attribute
+ * kept its old value and the session went on measuring the arm it was already in, silently. That is
+ * the worst failure mode an escape hatch can have, because the number it produces looks like an
+ * answer.
+ *
+ * The global is redefined as an accessor so that ASSIGNING it reapplies. The value is held in a
+ * closure rather than on the scope object, so reading the property still returns what was written
+ * and nothing else on the page sees a different shape than before.
+ *
+ * It lives HERE, in the module with no `import.meta` and no `document`, for the reason this file's
+ * header gives: the frontend's `node --experimental-strip-types` runner cannot load the other one,
+ * and an escape hatch whose failure mode is silence is exactly the thing that needs rows run
+ * against it rather than a comment.
+ */
+export const installOverrideWatcher = (
+  scope: Record<string, unknown>,
+  apply: () => MathBlockMode,
+): boolean => {
+  try {
+    let held = scope.__UNSLOTH_MATH_BLOCK_CONTAINMENT__;
+    Object.defineProperty(scope, "__UNSLOTH_MATH_BLOCK_CONTAINMENT__", {
+      configurable: true,
+      enumerable: true,
+      get: () => held,
+      set: (next: unknown) => {
+        held = next;
+        apply();
+      },
+    });
+    return true;
+  } catch {
+    // A frozen or otherwise hostile global is not worth failing startup over: this runs before the
+    // first render, so throwing here is a white screen. The flag still works when set BEFORE load,
+    // which is how the build flag and the measurement harness use it.
+    return false;
+  }
+};

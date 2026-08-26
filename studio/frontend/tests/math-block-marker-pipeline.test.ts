@@ -127,8 +127,32 @@ test("the class survives the sanitizer and lands on the right blocks", async () 
 
   assert.deepEqual(
     marked,
-    ["p", "li", "h1", "p"],
-    "the prose paragraph, the list item, the heading and the blockquote's paragraph",
+    ["p", "h1", "p"],
+    "the prose paragraph, the heading and the blockquote's paragraph",
+  );
+  assert.equal(
+    marked.includes("li"),
+    false,
+    "the list item is NOT among them: containing it would cost the item its number, see " +
+      "UNCONTAINABLE_TAGS in math-block-marker.ts",
+  );
+});
+
+test("the list item in the fixture really does carry maths, so its absence means something", async () => {
+  // Without this the assertion above passes just as well on a fixture whose list item never had a
+  // formula in it, which is the shape of a test that stops testing when the fixture drifts.
+  const tree = await render(MARKDOWN);
+  const items: Node[] = [];
+  const walk = (node: Node): void => {
+    if (node.tagName === "li") items.push(node);
+    for (const child of node.children ?? []) walk(child);
+  };
+  walk(tree);
+  assert.ok(items.length >= 1, "PRECONDITION: the fixture has a list item");
+  const text = JSON.stringify(items);
+  assert.ok(
+    text.includes("katex"),
+    "PRECONDITION: that list item rendered maths, so declining to mark it is a choice",
   );
 });
 

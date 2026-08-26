@@ -11,9 +11,13 @@
  */
 
 import {
+  FIND_IN_PAGE_PROBE,
   MATH_BLOCK_CONTAINMENT_ATTRIBUTE,
   MATH_BLOCK_CONTAINMENT_ON,
   type MathBlockMode,
+  gateOnEngine,
+  installOverrideWatcher,
+  isRuntimeForced,
   resolveMathBlockMode,
 } from "./math-block-mode";
 
@@ -25,11 +29,32 @@ const readBuildFlag = (): string => {
   }
 };
 
-export const mathBlockMode = (): MathBlockMode =>
-  resolveMathBlockMode(
-    (globalThis as Record<string, unknown>).__UNSLOTH_MATH_BLOCK_CONTAINMENT__,
-    readBuildFlag(),
+/**
+ * Does this engine's find-in-page reach skipped `content-visibility` content? Answered by proxy;
+ * `FIND_IN_PAGE_PROBE` carries the reasoning. Absent `CSS.supports`, the answer is NO, because an
+ * engine too old to have that is certainly too old to have the fix.
+ */
+export const engineFindsSkippedContent = (): boolean => {
+  try {
+    return typeof CSS !== "undefined" && typeof CSS.supports === "function"
+      ? CSS.supports(FIND_IN_PAGE_PROBE)
+      : false;
+  } catch {
+    return false;
+  }
+};
+
+const runtimeFlag = (): unknown =>
+  (globalThis as Record<string, unknown>).__UNSLOTH_MATH_BLOCK_CONTAINMENT__;
+
+export const mathBlockMode = (): MathBlockMode => {
+  const runtime = runtimeFlag();
+  return gateOnEngine(
+    resolveMathBlockMode(runtime, readBuildFlag()),
+    engineFindsSkippedContent(),
+    isRuntimeForced(runtime),
   );
+};
 
 /**
  * Put the resolved mode on `document.documentElement`, following the `html[data-panel-resizing]`
@@ -56,3 +81,12 @@ export const applyMathBlockContainment = (
   }
   return mode;
 };
+
+/**
+ * Bind `installOverrideWatcher` to the real global and the real apply. The logic is in
+ * `math-block-mode.ts`, where the test runner can reach it.
+ */
+export const watchMathBlockContainmentOverride = (
+  scope: Record<string, unknown> = globalThis as Record<string, unknown>,
+  apply: () => MathBlockMode = applyMathBlockContainment,
+): boolean => installOverrideWatcher(scope, apply);

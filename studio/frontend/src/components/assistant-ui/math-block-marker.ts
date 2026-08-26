@@ -95,7 +95,6 @@ const MATH_CLASS = "language-math";
 const BLOCK_TAGS = new Set([
   "p",
   "div",
-  "li",
   "blockquote",
   "dd",
   "figcaption",
@@ -113,8 +112,31 @@ const BLOCK_TAGS = new Set([
  * which would be far too coarse a thing to collapse. Maths inside a table cell is therefore
  * ABANDONED rather than hoisted past. Recorded as a known limit rather than hidden: the corpus
  * this was measured on has no maths in tables.
+ *
+ * LIST ITEMS ARE HERE FOR A DIFFERENT AND MEASURED REASON. `content-visibility: auto` applies
+ * STYLE containment, which scopes the automatic `list-item` counter, and a contained `li` can then
+ * no longer resolve `counter(list-item)` for its own `::marker`. The observed result is not a
+ * renumbering, it is that the number DISAPPEARS: photographed on WebKitGTK 2.50.4 with a five item
+ * ordered list where only items 2 and 4 carried the class, the marker column differed by 61 and 59
+ * pixels at full channel swing on exactly those two items and by 0 pixels on the other three, so
+ * the list read 1, nothing, 3, nothing, 5. Siblings still observe the increment; what breaks is the
+ * contained item's own marker.
+ *
+ * An earlier revision marked the `li` DELIBERATELY, because Streamdown gives a list item's
+ * paragraph `[&>p]:inline` and an inline box cannot take size containment, which leaves the `li` as
+ * the only containable ancestor. There is no third option there, so maths inside a list item is
+ * abandoned like maths inside a table cell. `ol` and `ul` are listed too, so the walk cannot hoist
+ * PAST an item and contain the whole list, which would lose every marker in it instead of one.
+ *
+ * The cost of this exemption was censused rather than assumed: of the 595 marked blocks in the 500K
+ * corpus, 595 are `p` and 0 are `li`, so it gives up nothing that the +92% measurement was
+ * counting. A thread that does put maths in lists loses the optimisation for those items and keeps
+ * its numbering, which is the right way round.
  */
 const UNCONTAINABLE_TAGS = new Set([
+  "li",
+  "ol",
+  "ul",
   "td",
   "th",
   "table",
@@ -169,15 +191,14 @@ export const markNearestBlock = (stack: HastNode[]): HastNode | null => {
     if (!BLOCK_TAGS.has(tagName)) continue;
     /*
      * Streamdown renders a list item with `[&>p]:inline`, so the paragraph a list item wraps its
-     * text in computes to `display: inline` and cannot take size containment. The list item can.
-     * This is the one place where the tag name alone gives the wrong answer, and
-     * `tests/math-block-marker.test.ts` reads that class out of the installed Streamdown build so
-     * the day Streamdown stops doing it, this stops being justified loudly rather than quietly.
+     * text in computes to `display: inline` and cannot take size containment. Neither can the list
+     * item, for the counter reason recorded on `UNCONTAINABLE_TAGS`, so there is nothing markable
+     * here and the maths is abandoned rather than hoisted to something that would break numbering.
+     * `tests/math-block-marker.test.ts` reads the `[&>p]:inline` class out of the installed
+     * Streamdown build, so the day Streamdown stops doing it this stops being justified loudly
+     * rather than quietly.
      */
-    if (tagName === "p" && i > 0 && stack[i - 1].tagName === "li") {
-      addClass(stack[i - 1]);
-      return stack[i - 1];
-    }
+    if (tagName === "p" && i > 0 && stack[i - 1].tagName === "li") return null;
     addClass(candidate);
     return candidate;
   }
