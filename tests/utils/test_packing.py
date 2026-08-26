@@ -653,6 +653,7 @@ def test_patch_mamba2_varlen_rewrites_bytecode_load_global(monkeypatch):
     # Unsloth compiles mixer methods into unsloth_compiled_cache as free
     # functions whose co_names include mamba_split_conv1d_scan_combined.
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
     import types
 
     compiled = types.ModuleType("unsloth_compiled_cache.NemotronHMamba2Mixer")
