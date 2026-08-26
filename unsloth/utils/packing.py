@@ -502,16 +502,12 @@ def _rebind_mamba2_fused_aliases(orig, wrapped) -> None:
     for mod in list(sys.modules.values()):
         if mod is None:
             continue
-        try:
-            names = tuple(_MAMBA2_FUSED_NAMES)
-        except Exception:
+        namespace = getattr(mod, "__dict__", None)
+        if not isinstance(namespace, dict):
             continue
-        for name in names:
-            try:
-                if getattr(mod, name, None) is orig:
-                    setattr(mod, name, wrapped)
-            except Exception:
-                continue
+        for key, value in list(namespace.items()):
+            if value is orig:
+                namespace[key] = wrapped
 
 
 def _wrap_mamba2_mixer_forward(module):
