@@ -82,20 +82,24 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "odt" => "application/vnd.oasis.opendocument.text",
         "ods" => "application/vnd.oasis.opendocument.spreadsheet",
-        "mp3" => "audio/mpeg",
+        "mp3" | "mp2" => "audio/mpeg",
         "wav" => "audio/wav",
         "m4a" => "audio/mp4",
         "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/opus",
         "flac" => "audio/flac",
         "aac" => "audio/aac",
-        "txt" | "text" | "log" | "rst" | "tsv" | "yaml" | "yml" | "toml" | "ini" | "cfg"
-        | "conf" | "env" | "properties" | "css" | "scss" | "sass" | "less" | "js" | "jsx"
-        | "mjs" | "cjs" | "ts" | "tsx" | "py" | "pyi" | "ipynb" | "rb" | "php" | "go" | "rs"
-        | "java" | "kt" | "kts" | "scala" | "swift" | "c" | "h" | "cc" | "cpp" | "hpp" | "cxx"
-        | "cs" | "m" | "mm" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "lua" | "pl"
-        | "pm" | "r" | "jl" | "dart" | "vue" | "svelte" | "astro" | "sql" | "graphql" | "gql"
-        | "proto" | "tf" | "tfvars" | "gradle" | "dockerfile" | "makefile" | "cmake" | "diff"
-        | "patch" => "text/plain",
+        "aiff" | "aif" | "aifc" => "audio/aiff",
+        "caf" => "audio/x-caf",
+        "wma" => "audio/x-ms-wma",
+        "amr" => "audio/amr",
+        "vtt" => "text/vtt",
+        "srt" => "application/x-subrip",
+        // .txt is a RAG type, so it is absent from TEXT_ATTACHMENT_EXTS and
+        // named here; the rest of the source and text formats come from the one
+        // list the composer and the drop path already share.
+        "txt" => "text/plain",
+        other if crate::native_path_policy::TEXT_ATTACHMENT_EXTS.contains(&other) => "text/plain",
         _ => return None,
     };
     Some(mime_type)

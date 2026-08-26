@@ -5,7 +5,7 @@
  * what ffmpeg reads, not what the webview can play. Extensions ride along
  * because MIME is unreliable for mkv and some mov files. */
 export const VIDEO_ACCEPT =
-  "video/mp4,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,.mp4,.mov,.webm,.mkv,.avi";
+  "video/mp4,video/x-m4v,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,video/mpeg,video/x-ms-wmv,video/x-flv,video/3gpp,video/ogg,.mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv";
 
 // Matches _MAX_VIDEO_B64_CHARS in the backend, so the composer does not accept
 // a clip the route refuses. The native reader's cap is a higher backstop.
@@ -24,10 +24,17 @@ export function getVideoSizeError(size: number): string | null {
 // browser must reach the route as the same mime type.
 const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
   ".mp4": "video/mp4",
+  ".m4v": "video/x-m4v",
   ".mov": "video/quicktime",
   ".webm": "video/webm",
   ".mkv": "video/x-matroska",
   ".avi": "video/x-msvideo",
+  ".mpg": "video/mpeg",
+  ".mpeg": "video/mpeg",
+  ".wmv": "video/x-ms-wmv",
+  ".flv": "video/x-flv",
+  ".3gp": "video/3gpp",
+  ".ogv": "video/ogg",
 };
 
 const VIDEO_EXTENSIONS = Object.keys(VIDEO_MIME_BY_EXTENSION);
