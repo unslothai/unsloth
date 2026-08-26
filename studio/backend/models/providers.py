@@ -156,6 +156,36 @@ class ProviderResponse(BaseModel):
 # ── Model listing ─────────────────────────────────────────────────
 
 
+class ProviderModelReasoning(BaseModel):
+    """Reasoning controls a connected model advertises through its chat template.
+
+    Only populated for self-hosted servers that expose a Jinja chat template to
+    clients (llama.cpp ``/props``). Mirrors the flags the local GGUF/safetensors
+    paths derive from the same classifier
+    (``core.inference.llama_cpp.detect_reasoning_flags``) so the frontend sees
+    one consistent shape.
+    """
+
+    supports_reasoning: bool = Field(
+        False,
+        description = "Whether the model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
+    )
+    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
+        Field(
+            "enable_thinking",
+            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (effort ladder), or 'enable_thinking_effort' (on/off gate plus an effort level)",
+        )
+    )
+    reasoning_effort_levels: list[str] = Field(
+        default_factory = list,
+        description = "Discrete reasoning_effort levels the template offers (e.g. ['low', 'medium', 'high', 'xhigh']); empty when the style is not effort-based",
+    )
+    reasoning_always_on: bool = Field(
+        False,
+        description = "Whether reasoning is always on (hardcoded <think> tags, not toggleable)",
+    )
+
+
 class ProviderModelInfo(BaseModel):
     """A model available from an external provider."""
 
@@ -163,6 +193,10 @@ class ProviderModelInfo(BaseModel):
     display_name: str = Field("", description = "Human-readable model name")
     context_length: Optional[int] = Field(None, description = "Maximum context length in tokens")
     owned_by: Optional[str] = Field(None, description = "Model owner/organization")
+    reasoning: Optional[ProviderModelReasoning] = Field(
+        None,
+        description = "Reasoning capabilities probed from the server's chat template; absent when the provider exposes no template endpoint or the probe failed",
+    )
 
 
 class ProviderModelsRequest(BaseModel):

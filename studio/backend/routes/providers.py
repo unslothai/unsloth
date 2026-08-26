@@ -47,8 +47,9 @@ from core.inference import openai_codex_auth, openai_codex_client
 from models.providers import (
     ProviderCreate,
     ProviderCredentialMigration,
-    ProviderModelsRequest,
     ProviderModelInfo,
+    ProviderModelReasoning,
+    ProviderModelsRequest,
     ProviderResponse,
     ProviderRegistryEntry,
     ProviderTestRequest,
@@ -724,6 +725,67 @@ async def test_provider(
 # ── List models from provider ─────────────────────────────────────
 
 
+async def _probe_model_reasoning(
+    client: ExternalProviderClient, provider_type: str, models: list[dict]
+) -> dict[str, ProviderModelReasoning]:
+    """Derive reasoning capabilities from a connected server's chat template.
+
+    Only llama.cpp exposes a Jinja chat template to clients; every other
+    provider returns an empty mapping, leaving the ``reasoning`` field absent.
+    Classification reuses ``detect_reasoning_flags`` -- the same classifier the
+    local GGUF/safetensors load paths run -- so the frontend sees one consistent
+    shape. Best-effort: a probe or classification failure leaves the model
+    unclassified rather than failing the listing.
+    """
+    if provider_type != "llama_cpp":
+        return {}
+    probe = getattr(client, "probe_chat_template", None)
+    if probe is None:
+        return {}
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    out: dict[str, ProviderModelReasoning] = {}
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        model_id = str(model.get("id") or "").strip()
+        if not model_id:
+            continue
+        try:
+            template = await probe(model_id)
+        except Exception:
+            logger.debug(
+                "chat-template probe raised for %s/%s",
+                provider_type,
+                model_id,
+                exc_info = True,
+            )
+            continue
+        if not template:
+            continue
+        try:
+            flags = detect_reasoning_flags(
+                template,
+                model_identifier = model_id,
+                log_source = f"external:{provider_type}",
+            )
+        except Exception:
+            logger.debug(
+                "reasoning classification failed for %s/%s",
+                provider_type,
+                model_id,
+                exc_info = True,
+            )
+            continue
+        out[model_id] = ProviderModelReasoning(
+            supports_reasoning = bool(flags.get("supports_reasoning")),
+            reasoning_style = flags.get("reasoning_style", "enable_thinking"),
+            reasoning_effort_levels = list(flags.get("reasoning_effort_levels") or []),
+            reasoning_always_on = bool(flags.get("reasoning_always_on")),
+        )
+    return out
+
+
 @router.post("/models", response_model = list[ProviderModelInfo])
 async def list_provider_models(
     payload: ProviderModelsRequest,
@@ -811,15 +873,20 @@ async def list_provider_models(
         limit = info.get("model_id_limit")
         if isinstance(limit, int) and limit > 0:
             models = models[:limit]
-        return [
-            ProviderModelInfo(
-                id = m.get("id", ""),
-                display_name = m.get("id", ""),
-                context_length = m.get("context_length") or m.get("context_window"),
-                owned_by = m.get("owned_by"),
+        reasoning_by_model = await _probe_model_reasoning(client, payload.provider_type, models)
+        result: list[ProviderModelInfo] = []
+        for m in models:
+            model_id = m.get("id", "")
+            result.append(
+                ProviderModelInfo(
+                    id = model_id,
+                    display_name = model_id,
+                    context_length = m.get("context_length") or m.get("context_window"),
+                    owned_by = m.get("owned_by"),
+                    reasoning = reasoning_by_model.get(str(model_id).strip()),
+                )
             )
-            for m in models
-        ]
+        return result
     except Exception as exc:
         raise log_and_http_error(
             exc,

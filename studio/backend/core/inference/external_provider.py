@@ -902,6 +902,9 @@ class ExternalProviderClient:
         # Generous per-byte read timeout: reasoning models pause tens of seconds
         # between bytes, but a dead upstream must eventually error, not hang forever.
         self._stream_timeout = httpx.Timeout(timeout, connect = 10.0, read = 300.0)
+        # llama.cpp serves a single model, so its chat template is fetched once
+        # per client and reused across every model id in the catalog.
+        self._probed_llama_cpp_template: Optional[str] = None
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
@@ -1149,12 +1152,21 @@ class ExternalProviderClient:
                 body["thinking"] = {"type": "disabled"}
         elif self.provider_type == "mistral":
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
-        elif self.provider_type == "vllm" and enable_thinking is not None:
-            # vLLM gates thinking via chat_template_kwargs.enable_thinking.
+        elif self.provider_type in ("vllm", "llama_cpp") and (
+            enable_thinking is not None or reasoning_effort is not None
+        ):
+            # vLLM and llama-server both apply the model's own chat template on
+            # the way in and accept `chat_template_kwargs` on
+            # /v1/chat/completions, so the resolved reasoning controls render
+            # exactly as they do for an in-process load. llama-server merges
+            # these per key over its load-time defaults.
             tpl_kw = body.get("chat_template_kwargs")
             if not isinstance(tpl_kw, dict):
                 tpl_kw = {}
-            tpl_kw["enable_thinking"] = bool(enable_thinking)
+            if enable_thinking is not None:
+                tpl_kw["enable_thinking"] = bool(enable_thinking)
+            if reasoning_effort is not None:
+                tpl_kw["reasoning_effort"] = reasoning_effort
             body["chat_template_kwargs"] = tpl_kw
 
         # OpenRouter's unified `reasoning` field gates per-model thinking.
@@ -6477,6 +6489,43 @@ class ExternalProviderClient:
             for entry in raw_models
             if isinstance(entry, dict) and entry.get("name", "").strip()
         ]
+
+    async def probe_chat_template(self, model_id: str) -> Optional[str]:
+        """Best-effort Jinja chat template for a connected self-hosted model.
+
+        Only llama.cpp exposes its chat template to clients: ``GET /props``
+        returns the loaded model's ``chat_template`` (the same Jinja template the
+        local GGUF path classifies). One model is served, so the result is
+        fetched once and cached on this client for every catalog id.
+
+        Every other provider type has no standard Jinja chat-template endpoint
+        and returns ``None`` -- notably Ollama, whose ``/api/show`` ``template``
+        is a Go template with a different variable surface and no
+        ``reasoning_effort`` concept, so it cannot feed the Jinja classifier.
+        Failures also return ``None``: a capability probe must never break the
+        model listing it decorates.
+        """
+        if self.provider_type == "llama_cpp":
+            if self._probed_llama_cpp_template is None:
+                self._probed_llama_cpp_template = await self._probe_llama_cpp_chat_template()
+            return self._probed_llama_cpp_template
+        return None
+
+    async def _probe_llama_cpp_chat_template(self) -> Optional[str]:
+        root = self.base_url.removesuffix("/v1").rstrip("/")
+        try:
+            response = await _http_client.get(
+                f"{root}/props",
+                headers = self._auth_headers(),
+                timeout = httpx.Timeout(5.0, connect = 5.0),
+            )
+            response.raise_for_status()
+            data = response.json()
+            template = data.get("chat_template") if isinstance(data, dict) else None
+            return template if isinstance(template, str) and template else None
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.debug("llama_cpp /props chat-template probe failed: %s", exc)
+            return None
 
     async def verify_models_endpoint_lightweight(self) -> None:
         """

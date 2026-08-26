@@ -4,6 +4,8 @@
 import type {
   ProviderAuthKind,
   ProviderAuthStatus,
+  ProviderModelInfo,
+  ProviderModelReasoning,
 } from "./api/providers-api";
 
 export interface ExternalProviderConfig {
@@ -209,6 +211,89 @@ export function pruneProviderModelCapabilities(knownProviderTypes: Iterable<stri
     }
   }
   if (removed) persistProviderModelCapabilities();
+}
+
+// Per-connection-model reasoning capabilities, probed from the server's chat
+// template by the backend (llama.cpp /props). Mirrors REGISTRY_MODEL_CAPABILITIES
+// above: localStorage-backed so a probed control survives a reload without
+// re-fetching the model catalog, keyed by provider type + model id so
+// `getExternalReasoningCapabilities` can consult it without reaching for the
+// providers store.
+const PROBED_MODEL_REASONING_KEY = "unsloth_chat_provider_model_reasoning";
+const PROBED_MODEL_REASONING = new Map<
+  string,
+  Record<string, ProviderModelReasoning>
+>();
+let probedModelReasoningHydrated = false;
+
+function hydrateProbedModelReasoning(): void {
+  if (probedModelReasoningHydrated) return;
+  probedModelReasoningHydrated = true;
+  if (!canUseStorage()) return;
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(PROBED_MODEL_REASONING_KEY) ?? "{}",
+    ) as Record<string, Record<string, ProviderModelReasoning>>;
+    for (const [providerType, capabilities] of Object.entries(parsed)) {
+      if (capabilities && typeof capabilities === "object") {
+        PROBED_MODEL_REASONING.set(providerType, capabilities);
+      }
+    }
+  } catch {
+    // Ignore invalid browser state; the next catalog fetch repopulates it.
+  }
+}
+
+function persistProbedModelReasoning(): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(
+      PROBED_MODEL_REASONING_KEY,
+      JSON.stringify(Object.fromEntries(PROBED_MODEL_REASONING)),
+    );
+  } catch {
+    // Ignore storage failures; capabilities remain valid for this session.
+  }
+}
+
+/** Record the reasoning capabilities the backend probed for a model catalog.
+
+ * Entries without a `reasoning` payload are dropped, so re-fetching the catalog
+ * converges the map on the server's current truth rather than accumulating
+ * stale model ids. */
+export function setProviderModelReasoningCapabilities(
+  providerType: string,
+  models: readonly ProviderModelInfo[],
+): void {
+  hydrateProbedModelReasoning();
+  const normalized = providerType.trim().toLowerCase();
+  const next: Record<string, ProviderModelReasoning> = {};
+  for (const model of models) {
+    // Model ids are matched case-insensitively throughout the capability
+    // tables, so store the probe key in the same normalized form the getter
+    // (and `getExternalReasoningCapabilities`) looks up.
+    const id = model.id?.trim().toLowerCase();
+    if (id && model.reasoning) {
+      next[id] = model.reasoning;
+    }
+  }
+  if (Object.keys(next).length > 0) {
+    PROBED_MODEL_REASONING.set(normalized, next);
+  } else {
+    PROBED_MODEL_REASONING.delete(normalized);
+  }
+  persistProbedModelReasoning();
+}
+
+export function getProviderModelReasoningCapabilities(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): ProviderModelReasoning | undefined {
+  if (!providerType || !modelId) return undefined;
+  hydrateProbedModelReasoning();
+  return PROBED_MODEL_REASONING.get(providerType.trim().toLowerCase())?.[
+    modelId.trim().toLowerCase()
+  ];
 }
 
 
