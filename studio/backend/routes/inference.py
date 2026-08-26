@@ -18048,20 +18048,29 @@ async def openai_chat_completions(
     # Decode image (from content parts OR legacy field)
     image_b64 = extracted_image_b64 or payload.image_base64
     image = None
+    # Count the image PARTS the turn carries, not the ones extraction could decode.
+    # _extract_content_parts only yields base64 for a data URL, so a message holding
+    # several remote or empty image URLs has no image_b64 at all; counting decoded
+    # images would let exactly those slip past the refusal below and be flattened
+    # away as silently as before. A single undecodable image is left alone: it is
+    # not a multi-image call, and rejecting it would break clients that pass a
+    # remote URL today and get a text answer.
+    images_on_turn = _images_in_last_user_message(payload.messages)
 
-    if image_b64:
+    if image_b64 or images_on_turn > 1:
         try:
             model_info = backend.models.get(backend.active_model_name, {})
             if not model_info.get("is_vision"):
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Image provided but current model is text-only. Load a vision model.",
+                # Through _reject rather than a bare raise, like every rejection
+                # below it: the monitor row is open by here, and one left running
+                # keeps Studio reporting the backend as generating after the
+                # request has already been answered with a 400.
+                raise _reject(
+                    400,
+                    "Image provided but current model is text-only. Load a vision model.",
                 )
 
-            if _images_in_last_user_message(payload.messages) > 1:
-                # Through _reject, not a bare raise: the monitor row is already open
-                # by here, and a rejection that leaves it running keeps Studio
-                # reporting the backend as generating.
+            if images_on_turn > 1:
                 raise _reject(
                     400,
                     (
@@ -18070,22 +18079,27 @@ async def openai_chat_completions(
                     ),
                 )
 
-            image = await asyncio.to_thread(
-                _decode_and_resize_image,
-                backend,
-                image_b64,
-            )
+            if image_b64:
+                image = await asyncio.to_thread(
+                    _decode_and_resize_image,
+                    backend,
+                    image_b64,
+                )
 
         except HTTPException:
             raise
         except Exception as e:
-            raise log_and_http_error(
+            # log_and_http_error keeps the exception text server-side, but knows
+            # nothing about the monitor row; hand its public detail to _reject so
+            # a failed decode closes the row like the refusals above.
+            decode_error = log_and_http_error(
                 e,
                 400,
                 "Failed to decode image",
                 event = "inference.decode_image_failed",
                 log = logger,
             )
+            raise _reject(decode_error.status_code, decode_error.detail)
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})

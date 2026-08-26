@@ -791,6 +791,166 @@ class TestChatCompletionRequestToolFields:
         assert "one image per message" in entry["error"]
         assert monitor.active_count() == 0
 
+    def _standard_vision_client(self, monkeypatch, monitor, is_vision = True):
+        """A loaded safetensors backend on the standard path, recording generation."""
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        calls = []
+
+        class _Backend:
+            active_model_name = "vision-sf"
+            models = {
+                "vision-sf": {
+                    "is_vision": is_vision,
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+            generated = calls
+
+            def resize_image(self, image):
+                return image
+
+            def generate_chat_response(self, **kwargs):
+                calls.append(kwargs)
+                yield "ok"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        backend = _Backend()
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        return self._v1_client(monkeypatch, _LlamaOff(), backend), backend
+
+    def test_several_undecodable_images_on_one_message_are_still_refused(self, monkeypatch):
+        """The count is of image PARTS, not of images extraction could decode.
+
+        Only a data URL becomes base64, so a message carrying several remote
+        image URLs has no decoded image at all. Gating the refusal on a decoded
+        image would let exactly those through to be flattened away unannounced,
+        which is the silent drop this guard exists to stop."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        remote = {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}
+        empty = {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}}
+
+        for parts in ([remote, remote], [empty, empty], [empty, remote]):
+            resp = client.post(
+                "/v1/chat/completions",
+                json = {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": "compare these"}, *parts],
+                        }
+                    ]
+                },
+            )
+            assert resp.status_code == 400, parts
+            assert "one image per message" in resp.text
+
+        assert backend.generated == []
+        assert monitor.active_count() == 0
+        assert all(e["status"] == "error" for e in monitor.snapshot())
+
+    def test_a_single_undecodable_image_is_left_alone(self, monkeypatch):
+        """One remote image is not a multi-image call. Clients that pass a remote
+        URL today get a text answer, and this guard must not turn that into a 400."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "what is this?"},
+                            {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+                        ],
+                    }
+                ]
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(backend.generated) == 1
+        assert backend.generated[0]["image"] is None
+        assert monitor.active_count() == 0
+
+    def test_a_text_only_model_closes_the_monitor_row(self, monkeypatch):
+        """Same defect as the multi-image refusal, one branch up: this rejection
+        also lands after the monitor row opens and must finalize it."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor, is_vision = False)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "what is this?"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,AAAA"},
+                            },
+                        ],
+                    }
+                ]
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "text-only" in resp.text
+        assert backend.generated == []
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "error"
+        assert "text-only" in entry["error"]
+        assert monitor.active_count() == 0
+
+    def test_a_failed_image_decode_closes_the_monitor_row(self, monkeypatch):
+        """A single image whose payload is not an image fails inside the decode,
+        after the row opens. That rejection must finalize the row too."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "what is this?"},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,AAAA"},
+                            },
+                        ],
+                    }
+                ]
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "Failed to decode image" in resp.text
+        assert backend.generated == []
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "error"
+        assert "Failed to decode image" in entry["error"]
+        assert monitor.active_count() == 0
+
     def test_client_tools_use_passthrough_capability_when_tool_loop_is_disabled(self, monkeypatch):
         import routes.inference as inference_route
 
@@ -1952,6 +2112,29 @@ class TestOpenAICompatibilityHelpers:
             ]
         )
         assert _images_in_last_user_message(payload.messages) == 0
+
+    def test_undecodable_image_urls_still_count(self):
+        """Structural count, not a decoded one: remote and empty data URLs are
+        image parts the caller attached, whether or not extraction can read them."""
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "compare these"},
+                        {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}},
+                    ],
+                }
+            ]
+        )
+        assert _images_in_last_user_message(payload.messages) == 2
+
+    def test_a_trailing_assistant_turn_does_not_change_which_turn_is_counted(self):
+        payload = ChatCompletionRequest(
+            messages = [self._turn(2), {"role": "assistant", "content": "partial"}]
+        )
+        assert _images_in_last_user_message(payload.messages) == 2
 
 
 # =====================================================================
