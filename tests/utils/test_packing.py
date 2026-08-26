@@ -559,6 +559,50 @@ def test_patch_mamba2_varlen_kwargs_only_stub_fail_closed(monkeypatch):
     assert patch_hybrid_linear_attention_varlen(model) is False
 
 
+def test_patch_mamba2_varlen_rebinds_compiled_module_alias(monkeypatch):
+    # Unsloth compiles mixer.forward into unsloth_compiled_cache with a module-global
+    # fused kernel import. Wrapping only transformers.modeling_* leaves that alias
+    # on the original and the handshake aborts on a real Nemotron-H train.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
+    import types
+
+    fused = _make_fake_mamba2_fused()
+    compiled = types.ModuleType("unsloth_compiled_cache.NemotronHMamba2Mixer")
+    compiled.mamba_split_conv1d_scan_combined = fused
+    sys.modules[compiled.__name__] = compiled
+
+    class _CompiledNemotronHMamba2Mixer(_FakeNemotronHMamba2Mixer):
+        def __init__(self):
+            super().__init__()
+            self.mamba2_split_conv1d_scan_combined = fused
+
+        def forward(self, hidden_states, **fused_kwargs):
+            return compiled.mamba_split_conv1d_scan_combined(
+                hidden_states, **fused_kwargs
+            )
+
+    class _CompiledModel(_FakeMamba2Model):
+        def __init__(self):
+            super().__init__()
+            self.mixer = _CompiledNemotronHMamba2Mixer()
+
+    try:
+        model = _CompiledModel()
+        assert patch_hybrid_linear_attention_varlen(model) is True
+        fused.calls.clear()
+        model(
+            input_ids = torch.zeros(1, 6, dtype = torch.long),
+            packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+            use_cache = False,
+        )
+        assert fused.calls[-1] is not None
+        assert fused.calls[-1].tolist() == [[0, 0, 1, 2, 2, 2]]
+        assert compiled.mamba_split_conv1d_scan_combined is not fused
+    finally:
+        sys.modules.pop(compiled.__name__, None)
+
+
 def test_patch_mamba2_varlen_no_fused_dispatch_aborts(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
 

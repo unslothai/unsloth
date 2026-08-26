@@ -21,6 +21,7 @@ import copy
 import inspect
 import logging
 import os
+import sys
 from collections import OrderedDict
 from functools import wraps
 from typing import Any, Iterable, Optional, Sequence, Tuple
@@ -487,6 +488,32 @@ def _wrap_mamba2_fused_call(
     return fused_fn
 
 
+def _rebind_mamba2_fused_aliases(orig, wrapped) -> None:
+    """Point every imported fused-kernel name at ``wrapped``.
+
+    Unsloth's Fast Nemotron-H compile copies transformers mixer source into
+    ``unsloth_compiled_cache`` and binds ``mamba_split_conv1d_scan_combined``
+    (or the transformers hub name) as a module global. Wrapping only the
+    mixer's owning module leaves that compiled binding on the original, so
+    packed forwards never hit the varlen wrapper.
+    """
+    if orig is None or wrapped is orig:
+        return
+    for mod in list(sys.modules.values()):
+        if mod is None:
+            continue
+        try:
+            names = tuple(_MAMBA2_FUSED_NAMES)
+        except Exception:
+            continue
+        for name in names:
+            try:
+                if getattr(mod, name, None) is orig:
+                    setattr(mod, name, wrapped)
+            except Exception:
+                continue
+
+
 def _wrap_mamba2_mixer_forward(module):
     if getattr(module, "_unsloth_mamba2_forward_wrapped", False):
         return
@@ -661,37 +688,48 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
         module._unsloth_varlen = None
         module._unsloth_varlen_wrapped = True
 
-    wrapped_modeling = set()
+    wrapped_fused: dict[int, Any] = {}
+
+    def _ensure_mamba2_fused_wrapped(fn):
+        if fn is None:
+            return None
+        wrapped = wrapped_fused.get(id(fn))
+        if wrapped is None:
+            wrapped = _wrap_mamba2_fused_call(fn, mamba2_modules)
+            wrapped_fused[id(fn)] = wrapped
+            _rebind_mamba2_fused_aliases(fn, wrapped)
+        return wrapped
+
     for module in mamba2_modules:
         if getattr(module, "_unsloth_varlen_wrapped", False):
             continue
         fn, loc = _resolve_mamba2_fused(module)
+        wrapped = _ensure_mamba2_fused_wrapped(fn)
         kind = loc[0] if loc is not None else None
-        if kind == "instance":
+        if kind == "instance" and wrapped is not None:
             name = loc[2]
             module._unsloth_varlen_orig_fused = fn
-            wrapped = _wrap_mamba2_fused_call(fn, mamba2_modules)
             if name is not None:
                 setattr(module, name, wrapped)
             else:
                 module.mamba2_split_conv1d_scan_combined = wrapped
-        elif kind == "modeling":
+        elif kind == "modeling" and wrapped is not None:
             modeling, name = loc[1], loc[2]
-            key = (id(modeling), name)
-            if key not in wrapped_modeling and not getattr(
-                modeling, "_unsloth_mamba2_fused_wrapped", False
-            ):
-                orig = getattr(modeling, name)
-                _wrap_mamba2_fused_call(orig, mamba2_modules, on_module = modeling, attr_name = name)
-                modeling._unsloth_mamba2_fused_wrapped = True
-                wrapped_modeling.add(key)
+            setattr(modeling, name, wrapped)
+            modeling._unsloth_mamba2_fused_wrapped = True
         elif kind == "ssm":
-            # transformers binds a hub wrapper on the modeling module; if we only
-            # found mamba_ssm, mixer.forward kwargs still carry seq_idx.
             module._unsloth_varlen_orig_fused = fn
         _wrap_mamba2_mixer_forward(module)
         module._unsloth_varlen = None
         module._unsloth_varlen_wrapped = True
+    if mamba2_modules:
+        try:
+            from mamba_ssm.ops.triton.ssd_combined import (  # type: ignore
+                mamba_split_conv1d_scan_combined as _ssm_fused,
+            )
+        except Exception:
+            _ssm_fused = None
+        _ensure_mamba2_fused_wrapped(_ssm_fused)
 
     # Refresh the boundary stash on the outermost forward (once per step, outside
     # gradient-checkpoint recompute, so it stays valid for recomputed inner
