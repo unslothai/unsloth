@@ -295,23 +295,29 @@ export function QuantOptionsMenu({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const revealLabel =
     deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
-  const cachedPathRef = useRef<string | null>(null);
+  // Keyed to the model it was fetched for: the run bar keeps one menu mounted and
+  // swaps repoId/quant under it, so an unkeyed cache copies the old quant's path.
+  const cachedPathRef = useRef<{ key: string; path: string } | null>(null);
+  const pathKey = JSON.stringify([repoId, quant ?? null]);
   const prefetchCachedPath = useCallback(() => {
-    if (!downloaded || cachedPathRef.current) {
+    if (!downloaded || cachedPathRef.current?.key === pathKey) {
       return;
     }
     getCachedModelPath(repoId, quant)
       .then(({ path }) => {
-        cachedPathRef.current = path;
+        cachedPathRef.current = { key: pathKey, path };
       })
       .catch(() => undefined);
-  }, [downloaded, repoId, quant]);
+  }, [downloaded, repoId, quant, pathKey]);
   const handleCopyPath = useCallback(async () => {
     try {
       // Safari drops the click's clipboard permission after any other await.
+      const cached = cachedPathRef.current;
       const path =
-        cachedPathRef.current ?? (await getCachedModelPath(repoId, quant)).path;
-      cachedPathRef.current = path;
+        cached?.key === pathKey
+          ? cached.path
+          : (await getCachedModelPath(repoId, quant)).path;
+      cachedPathRef.current = { key: pathKey, path };
       if (await copyToClipboard(path)) {
         toast.success("Copied path");
       } else {
@@ -322,7 +328,7 @@ export function QuantOptionsMenu({
         err instanceof Error ? err.message : "Failed to resolve model path",
       );
     }
-  }, [repoId, quant]);
+  }, [repoId, quant, pathKey]);
   const handleCopyId = useCallback(async () => {
     const id = quant ? `${repoId}:${quant}` : repoId;
     if (await copyToClipboard(id)) {

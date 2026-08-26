@@ -14,7 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Spinner } from "@/components/ui/spinner";
-import { usePlatformStore } from "@/config/env";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { bumpInventoryVersion } from "@/features/hub";
 import type { TrainingRunSummary } from "@/features/training";
 import {
@@ -253,8 +253,19 @@ export function HistoryCardGrid({
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
   const { resumeTrainingRunFromHistory, startBlocked, stopRequested } =
     useTrainingActions();
-  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The tunnel can now
-  // start and stop at any time, so refresh on click instead of polling at mount.
+  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The launch tunnel
+  // resolves while the server is already serving, and nothing re-reads /api/health
+  // once the platform verdict settles, so a page loaded during that window keeps a
+  // null tunnel URL and copies a link only this machine can open. Refresh here and
+  // never in the click, where Safari drops the clipboard permission across an await.
+  useEffect(() => {
+    const refreshLinkBase = () => {
+      void fetchDeviceType({ force: true });
+    };
+    refreshLinkBase();
+    window.addEventListener("focus", refreshLinkBase);
+    return () => window.removeEventListener("focus", refreshLinkBase);
+  }, []);
 
   const userControllerRef = useRef<AbortController | null>(null);
   const pollControllerRef = useRef<AbortController | null>(null);
