@@ -101,6 +101,7 @@ import {
   PromptStorageDialog,
   exportConversationShareGPT,
   exportConversationRawJsonl,
+  exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
 } from "@/features/chat/prompt-storage/prompt-storage-dialog";
@@ -5940,7 +5941,17 @@ const ComposerToolsMenu: FC<{
               });
             }}
           >
-            Raw JSONL
+            Training JSONL
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationMessagesJsonl(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
+            }}
+          >
+            Message JSONL
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={() => {
