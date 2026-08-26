@@ -32,6 +32,7 @@ _OXC_CODE_SHAPES = {"auto", "module", "snippet"}
 
 _OXC_TOOL_DIR = Path(__file__).resolve().parent / "oxc-validator"
 _OXC_RUNNER_PATH = _OXC_TOOL_DIR / "validate.mjs"
+_OXC_TIMEOUT_S = 30
 
 
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -262,8 +263,12 @@ def _run_oxc_batch(
             capture_output = True,
             check = False,
             env = env,
+            timeout = _OXC_TIMEOUT_S,
             **_windows_hidden_subprocess_kwargs(),
         )
+    except subprocess.TimeoutExpired:
+        logger.warning("OXC validation timed out after %ss", _OXC_TIMEOUT_S)
+        return _fallback_results(len(code_values), "OXC validation timed out")
     except (OSError, ValueError) as exc:
         logger.warning("OXC subprocess launch failed: %s", exc)
         return _fallback_results(len(code_values), f"OXC launch failed: {exc}")
