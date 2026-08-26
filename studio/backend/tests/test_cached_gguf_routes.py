@@ -4,7 +4,6 @@
 import asyncio
 import json
 import os
-import struct
 import sys
 import threading
 import time
@@ -75,15 +74,6 @@ def _file(
         size_on_disk = size_on_disk,
         blob_path = blob_path,
     )
-
-
-def _projector(path: Path, *keys: str) -> None:
-    """A minimal GGUF declaring the given ``clip.has_*_encoder`` bools, no tensors."""
-    kvs = b"".join(
-        struct.pack("<Q", len(key)) + key.encode() + struct.pack("<I", 7) + struct.pack("<?", True)
-        for key in keys
-    )
-    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, len(keys)) + kvs)
 
 
 def test_iter_gguf_paths_matches_extension_case_insensitively(tmp_path):
@@ -1259,6 +1249,19 @@ def test_a_projector_at_the_snapshot_root_serves_a_quant_in_a_subdirectory(monke
 def test_an_audio_only_projector_in_the_cache_is_not_vision(monkeypatch, tmp_path):
     """ultravox, Voxtral and Qwen3-ASR ship a projector for audio input, so reading the row's
     badge off the projector's presence claims an image button the model cannot honour."""
+    import struct
+
+    def _projector(path: Path, *keys: str) -> None:
+        """A minimal GGUF declaring the given ``clip.has_*_encoder`` bools, no tensors."""
+        kvs = b"".join(
+            struct.pack("<Q", len(key))
+            + key.encode()
+            + struct.pack("<I", 7)
+            + struct.pack("<?", True)
+            for key in keys
+        )
+        path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, len(keys)) + kvs)
+
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Audio"
     snapshot = repo_dir / "snapshots" / ("d" * 40)
@@ -1308,49 +1311,6 @@ def test_an_audio_only_projector_in_the_cache_is_not_vision(monkeypatch, tmp_pat
     # read off the audio claim alone.
     _projector(snapshot / "mmproj-F16.gguf", "clip.has_audio_encoder", "clip.has_vision_encoder")
     assert _row()["has_vision"] is True
-
-
-def test_a_repo_root_projector_marks_the_cached_row_as_vision(monkeypatch, tmp_path):
-    active = tmp_path / "active"
-    repo_dir = active / "models--Org--RootVision"
-    snapshot = repo_dir / "snapshots" / ("d" * 40)
-    snapshot.mkdir(parents = True)
-    (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
-    projector = repo_dir / "mmproj-F16.gguf"
-    _projector(projector, "clip.has_vision_encoder")
-    (repo_dir / "refs").mkdir()
-    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
-
-    repo = _repo(
-        "Org/RootVision",
-        [],
-        repo_dir,
-        revisions = [
-            SimpleNamespace(
-                files = [_file("Model-Q4_K_M.gguf", 256)],
-                snapshot_path = snapshot,
-            )
-        ],
-    )
-    monkeypatch.setattr(
-        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
-    )
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr(
-        "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root = None: [snapshot]
-    )
-
-    def _has_vision() -> bool:
-        rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
-        return {row["repo_id"]: row for row in rows}["Org/RootVision"]["has_vision"]
-
-    assert _has_vision() is True
-
-    projector.write_bytes(b"")
-    assert _has_vision() is False
-
-    _projector(projector, "clip.has_audio_encoder")
-    assert _has_vision() is False
 
 
 def test_vision_is_read_from_the_cache_root_holding_the_row(monkeypatch, tmp_path):

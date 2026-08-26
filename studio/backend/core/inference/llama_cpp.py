@@ -11868,9 +11868,9 @@ class LlamaCppBackend:
         copy co-located with the main GGUF's cache snapshot.
 
         Last, and only when the repo publishes none: a projector the user
-        hand-added at the HF cache repo root, one level above the snapshot
-        (#9286). Placed after the download so a repo that ships a projector
-        resolves exactly as it did before.
+        hand-added in the cache beside the weight (#9286). Placed after the
+        download so a repo that ships a projector resolves exactly as it did
+        before.
         """
 
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
@@ -11910,13 +11910,11 @@ class LlamaCppBackend:
             return None
         if not near_path or cancel_event.is_set():
             return None
-        from utils.models.model_config import _detect_local_mmproj
+        from utils.models.model_config import _hf_cached_local_mmproj
 
-        # Discovery drops an incomplete split set and hands back shard 1 of a complete
-        # one on its own snapshot path, so what comes back is launchable as it is.
-        cached = _detect_local_mmproj(near_path, near_path)
+        cached = _hf_cached_local_mmproj(near_path)
         if cached is not None:
-            logger.info("Reusing hand-added mmproj at the HF cache repo root: %s", cached)
+            logger.info("Reusing hand-added mmproj from the HF cache: %s", cached)
         return cached
 
     def _cached_repo_mtp_drafter(
@@ -22543,20 +22541,18 @@ class LlamaCppBackend:
     @staticmethod
     def _gguf_load_source_identity(path: str, mmproj_path: Optional[str] = None) -> Optional[tuple]:
         """Identity of the exact GGUF inode(s) handed to the resident process."""
-
-        def _declared_shards(p: Path) -> list[Path]:
-            match = _SHARD_FULL_RE.match(p.name)
-            if match is None:
-                return [p]
+        p = Path(path)
+        paths = [p]
+        match = _SHARD_FULL_RE.match(p.name)
+        if match:
             prefix, _first, total = match.groups()
-            return [
+            paths = [
                 p.with_name(f"{prefix}-{index:05d}-of-{total}{p.suffix}")
                 for index in range(1, int(total) + 1)
             ]
-
         try:
             identity = []
-            for shard in _declared_shards(Path(path)):
+            for shard in paths:
                 resolved = shard.resolve()
                 stat = shard.stat()
                 identity.append(
@@ -22569,21 +22565,19 @@ class LlamaCppBackend:
                     )
                 )
             if mmproj_path:
-                # Every shard, like the weight above: llama-server opens the siblings of a
-                # split projector implicitly, so a replaced shard 2 is a different launch.
-                for projector in _declared_shards(Path(mmproj_path)):
-                    resolved = projector.resolve()
-                    stat = projector.stat()
-                    identity.append(
-                        (
-                            "mmproj",
-                            str(resolved),
-                            stat.st_dev,
-                            stat.st_ino,
-                            stat.st_size,
-                            stat.st_mtime_ns,
-                        )
+                projector = Path(mmproj_path)
+                resolved = projector.resolve()
+                stat = projector.stat()
+                identity.append(
+                    (
+                        "mmproj",
+                        str(resolved),
+                        stat.st_dev,
+                        stat.st_ino,
+                        stat.st_size,
+                        stat.st_mtime_ns,
                     )
+                )
             return tuple(identity)
         except (OSError, RuntimeError):
             return None

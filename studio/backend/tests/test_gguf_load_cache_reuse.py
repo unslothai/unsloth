@@ -573,53 +573,6 @@ class TestLoadReusesCachedCopy:
 
         assert out == "/remote/image.gguf"
 
-    def test_an_incomplete_split_projector_at_the_repo_root_is_not_reused(self, hf_cache):
-        """Half a hand-copied split set is a --mmproj llama-server opens and then fails on."""
-        backend = LlamaCppBackend()
-        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
-        repo_root = snap.parent.parent
-        first = repo_root / "mmproj-F16-00001-of-00002.gguf"
-        first.write_bytes(b"mmproj")
-
-        with patch.object(backend, "_download_companion_gguf", return_value = None):
-            assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) is None
-
-            (repo_root / "mmproj-F16-00002-of-00002.gguf").write_bytes(b"mmproj")
-            # Complete, and llama-server is handed shard 1 whichever shard ranked first.
-            assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) == str(first)
-
-    def test_a_zero_byte_sibling_shard_is_not_a_complete_projector(self, hf_cache):
-        """An interrupted copy leaves the name in place at zero bytes. The set is what
-        llama-server opens, so one empty shard disqualifies every member of it."""
-        backend = LlamaCppBackend()
-        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
-        repo_root = snap.parent.parent
-        first = repo_root / "mmproj-F16-00001-of-00002.gguf"
-        first.write_bytes(b"mmproj")
-        second = repo_root / "mmproj-F16-00002-of-00002.gguf"
-        second.write_bytes(b"")
-
-        with patch.object(backend, "_download_companion_gguf", return_value = None):
-            assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) is None
-
-            second.write_bytes(b"mmproj")
-            assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) == str(first)
-
-    def test_an_incomplete_split_projector_does_not_shadow_a_complete_one(self, hf_cache):
-        """Dropped during discovery, so a whole set still gets its turn at ranking."""
-        backend = LlamaCppBackend()
-        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
-        repo_root = snap.parent.parent
-        # Longer shared prefix with the weight stem, so it outranks the plain name.
-        (repo_root / f"{Path(MAIN).stem}-mmproj-00001-of-00002.gguf").write_bytes(b"mmproj")
-        complete = repo_root / "mmproj-F16.gguf"
-        complete.write_bytes(b"mmproj")
-
-        with patch.object(backend, "_download_companion_gguf", return_value = None):
-            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
-
-        assert out == str(complete)
-
     def test_a_dropped_fetch_of_a_published_projector_does_not_fall_back(self, hf_cache):
         """The repo names one, so None here is a transient failure, not an absence.
         Launching the hand-added file instead would be the wrong projector."""
@@ -714,25 +667,6 @@ class TestLoadReusesCachedCopy:
             out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
 
         assert out == str(projector)
-
-    def test_the_resident_identity_covers_every_projector_shard(self, hf_cache):
-        """llama-server opens the siblings of a split projector, so a replaced shard 2
-        is a different launch even when shard 1 is untouched."""
-        snap = _build_cache(
-            hf_cache,
-            REPO,
-            {
-                MAIN: 4,
-                "mmproj-F16-00001-of-00002.gguf": 2,
-                "mmproj-F16-00002-of-00002.gguf": 2,
-            },
-        )
-        first = snap / "mmproj-F16-00001-of-00002.gguf"
-        before = LlamaCppBackend._gguf_load_source_identity(str(snap / MAIN), str(first))
-
-        (snap / "mmproj-F16-00002-of-00002.gguf").write_bytes(b"replacement")
-
-        assert LlamaCppBackend._gguf_load_source_identity(str(snap / MAIN), str(first)) != before
 
     def test_companion_cancelled_before_scanning_cached_projectors(self, hf_cache):
         backend = LlamaCppBackend()

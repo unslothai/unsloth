@@ -1389,50 +1389,17 @@ def snapshot_has_complete_variants(snapshot: str) -> bool:
 
 
 def snapshot_has_gguf_projector(snapshot: Optional[Path]) -> bool:
-    """Whether *snapshot*'s GGUF load can reach a vision projector.
+    """Whether *snapshot* itself holds a GGUF vision projector.
 
-    Projectors normally live in the snapshot, but local HF-cache loads also search the enclosing
-    ``models--*/`` directory. Keep that widening limited to a real snapshot layout.
+    Same walk the variant lister reports ``has_vision`` from, so row capability and picker flag
+    cannot name different revisions.
     """
     if snapshot is None:
         return False
     from hub.utils.gguf import list_local_gguf_variants
-    from utils.models.gguf_metadata import mmproj_accepts_image
-    from utils.models.model_config import (
-        _detect_local_mmproj,
-        _hf_repo_root_has_mmproj,
-        _local_gguf_companion_search_root,
-    )
 
     try:
-        snapshot_path = Path(snapshot)
-        variants, has_snapshot_projector = list_local_gguf_variants(str(snapshot_path))
-        if not variants:
-            return False
-
-        if not has_snapshot_projector:
-            # Widened only where the loader widens: an HF cache checkout, where the
-            # search root is the enclosing models--*/ dir rather than the snapshot.
-            first_weight = snapshot_path / variants[0].filename
-            repo_root = _local_gguf_companion_search_root(str(first_weight), str(first_weight))
-            if Path(repo_root).resolve() == snapshot_path.resolve():
-                return False
-            # One presence check for the whole snapshot before pairing each variant
-            # against it, over the same directories the cached row asks about.
-            if not _hf_repo_root_has_mmproj(Path(repo_root)):
-                return False
-
-        # The loader's own answer, even when the lister already saw a projector: it
-        # counts each file on its own, so half a split set reads as vision support the
-        # load then refuses, and it walks nested dirs the load never reaches.
-        for variant in variants:
-            weight = snapshot_path / variant.filename
-            # Same snapshot-first order the load uses, so the row cannot advertise a
-            # repo-root projector the load will pass over for one in the snapshot.
-            projector = _detect_local_mmproj(str(weight), str(weight))
-            if projector is not None and mmproj_accepts_image(projector):
-                return True
-        return False
+        return bool(list_local_gguf_variants(str(snapshot))[1])
     except Exception:
         return False
 

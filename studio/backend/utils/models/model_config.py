@@ -991,7 +991,8 @@ def is_vision_model(
         else:
             gguf_file = detect_gguf_model(local_path)
         if gguf_file:
-            mmproj_file = _detect_local_mmproj(local_path, gguf_file)
+            companion_root = _local_gguf_companion_search_root(local_path, gguf_file)
+            mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
             # An audio-only projector serves this model's audio input, never an image.
             is_vision = mmproj_file is not None and (
                 not require_image or mmproj_accepts_image(mmproj_file)
@@ -1726,17 +1727,13 @@ def _local_gguf_load_path(path: Path) -> Path:
     return (first or path).absolute()
 
 
-def detect_mmproj_file(
-    path: str,
-    search_root: Optional[str] = None,
-    accept: Optional[Callable[[str], bool]] = None,
-) -> Optional[str]:
+def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
     """Find the mmproj GGUF for a model.
 
     ``path``: directory or a .gguf file. ``search_root``: optional ancestor
     to also walk (snapshot layouts where the weight is in ``snapshot/BF16/``
     but the projector sits at ``snapshot/``). Returns the projector path or
-    ``None``. ``accept`` filters a candidate before its GGUF header is read."""
+    ``None``."""
     p = Path(path)
     start_dir = p.parent if p.is_file() else p
     if not start_dir.is_dir():
@@ -1788,8 +1785,6 @@ def detect_mmproj_file(
     seen_resolved: set[Path] = set()
     for d in scan_order:
         for f in _iter_gguf_files(d):
-            if accept is not None and not accept(str(f)):
-                continue
             try:
                 resolved = f.resolve()
                 # Interrupted download: llama-server can't open it and it must not shadow a real projector.
@@ -1803,23 +1798,15 @@ def detect_mmproj_file(
             meta = read_gguf_general_metadata(str(resolved))
             by_meta = is_mmproj_by_metadata(meta)
             if by_meta is True or (by_meta is None and _is_mmproj(f.name)):
-                # A split projector is usable only whole: llama-server resolves the
-                # siblings from this path's directory. Asked after classification and
-                # before ranking, so half a set cannot shadow a complete one and an
-                # N-shard weight is not rescanned once per shard.
-                if _GGUF_SPLIT_FILE_RE.match(f.name) and not _drafter_split_is_complete(f):
-                    continue
                 seen_resolved.add(resolved)
-                # A split set has to keep its shard names: llama-server resolves the
-                # siblings from the path it is handed, and an HF blob target has none.
-                candidates.append(f.absolute() if _GGUF_SPLIT_FILE_RE.match(f.name) else resolved)
+                candidates.append(resolved)
 
     if not candidates:
         return None
 
     # Directory path: no model name to compare against; legacy behaviour.
     if not p.is_file():
-        return _drafter_launch_path(candidates[0])
+        return str(candidates[0])
 
     # Stage 1: GGUF metadata. Stage 2: filename family token (#5347).
     model_stem = p.stem.lower()
@@ -1856,8 +1843,7 @@ def detect_mmproj_file(
             -len(sc[1].stem),
         ),
     )
-    # Shard 1 for a split winner, whichever shard ranked first; a no-op otherwise.
-    return _drafter_launch_path(best[1])
+    return str(best[1])
 
 
 # Drafter naming, ranking and DFlash discovery live in utils.models.drafters, so one
@@ -2602,12 +2588,7 @@ def _is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
     return False
 
 
-def _local_gguf_companion_search_root(
-    selected_path: str,
-    gguf_file: str,
-    *,
-    include_hf_repo_root: bool = True,
-) -> str:
+def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str:
     """Directory to scan upward from for local GGUF companion files."""
     import re
 
@@ -2619,139 +2600,37 @@ def _local_gguf_companion_search_root(
     if not search_dir.name:
         return str(search_dir)
     if re.fullmatch(quant_dir_re, search_dir.name, re.IGNORECASE):
-        search_dir = search_dir.parent
-    # Only projectors reach a real HF repo root; drafters stay in the selected snapshot.
-    if include_hf_repo_root:
-        snapshot_dir = _enclosing_hf_snapshot_dir(str(search_dir))
-        if snapshot_dir is not None:
-            return str(Path(snapshot_dir).parent.parent)
+        return str(search_dir.parent)
     return str(search_dir)
 
 
-def _is_hf_snapshots_container(directory: Path) -> bool:
-    """Whether *directory* is the ``snapshots`` dir of a ``models--*`` cache repo.
+def _hf_cache_repo_dir(weight_path: str) -> Optional[str]:
+    """The ``models--<repo>`` dir *weight_path* was cached into, or None elsewhere.
 
-    Case-folded to match resolution: _iter_hf_cache_snapshots and the pre-download
-    bound find a cache dir case-insensitively, so reading the markers literally would
-    refuse to widen inside a directory the weight was resolved out of.
+    Only the remote (-hf) projector lookup widens this far, and only to the repo the
+    weight itself came out of, so a sibling repo's projector stays out of reach. The
+    ``models--`` marker is matched case-insensitively because cache resolution finds a
+    weight in any case variant of the directory.
     """
-    return directory.name.casefold() == "snapshots" and directory.parent.name.casefold().startswith(
-        "models--"
-    )
-
-
-def _hf_repo_root_companion_dirs(repo_dir: Path) -> list[Path]:
-    """The directories above a snapshot that the widened companion walk reaches.
-
-    The walk climbs ``snapshots/<sha>`` -> ``snapshots`` -> ``models--<repo>`` and
-    ``_iter_gguf_files`` is not recursive, so those two containers are all the
-    widening adds. Nearest first, so a caller taking the first hit names what the load
-    reaches first. One definition, or the row says no vision for a file the load opens.
-    """
-    return [repo_dir / "snapshots", repo_dir]
-
-
-def _hf_repo_root_mmproj(repo_dir: Path) -> Optional[str]:
-    """The hand-added projector above *repo_dir*'s snapshots (#9286), or None.
-
-    One scanner, so the cached row's presence question, the inventory gate and the
-    remote config's own lookup cannot disagree about which directories count or which
-    file they found in them.
-    """
-    try:
-        for directory in _hf_repo_root_companion_dirs(repo_dir):
-            found = detect_mmproj_file(str(directory))
-            if found is not None:
-                return found
-    except Exception:
-        pass
+    for directory in Path(weight_path).parents:
+        parent = directory.parent
+        if parent.name.casefold() == "snapshots" and parent.parent.name.casefold().startswith(
+            "models--"
+        ):
+            return str(parent.parent)
     return None
 
 
-def _hf_repo_root_has_mmproj(repo_dir: Path) -> bool:
-    """The cheap presence question the cached row and the inventory gate ask before
-    paying for a per-variant walk."""
-    return _hf_repo_root_mmproj(repo_dir) is not None
+def _hf_cached_local_mmproj(weight_path: str) -> Optional[str]:
+    """A projector sitting with *weight_path* in the HF cache, or None (#9286).
 
-
-def _hf_cache_repo_root_mmproj(repo_id: str) -> Optional[str]:
-    """The same file, found from a repo id rather than a directory.
-
-    For the window where no quant of *repo_id* verifies yet, so there is no weight to
-    pair against: without it a repo that publishes no projector skips companion
-    resolution on the first Apply and attaches the projector only on a second one, and
-    the training guard charges nothing for what the launch then makes resident.
-
-    Whichever candidate discovery names, not a survey of them. With one hand-added
-    projector, which is what this exists for, that is the file the load will open;
-    with several the vision flag and the charge follow the same pick, and pairing
-    settles it for real on the Apply after the download. Case variants of the cache
-    dir are searched in turn, since resolution finds a weight in any of them.
+    For a repo that publishes none: the walk covers the snapshot the weight is in and
+    the two containers above it, which is where a user adding a projector by hand drops
+    it. All three share one ranking pass rather than widening a boundary at a time,
+    because the caller only asks when the repo publishes no projector of its own, so
+    every candidate here was hand-added and metadata pairing is the honest tie-break.
     """
-    try:
-        from utils.hf_cache_settings import get_hf_cache_paths
-        target = f"models--{repo_id.replace('/', '--')}".lower()
-        for repo_dir in Path(get_hf_cache_paths().hub_cache).iterdir():
-            if not repo_dir.is_dir() or repo_dir.name.lower() != target:
-                continue
-            found = _hf_repo_root_mmproj(repo_dir)
-            if found is not None:
-                return found
-    except Exception as exc:
-        # A cache-path lookup must never be what fails a config resolve.
-        logger.debug(f"Could not check the HF cache repo root of {repo_id}: {exc}")
-    return None
-
-
-def _enclosing_hf_snapshot_dir(path: str) -> Optional[str]:
-    """The ``models--*/snapshots/<sha>`` dir *path* sits in, or None."""
-    candidate = Path(path)
-    for directory in (candidate, *candidate.parents):
-        if _is_hf_snapshots_container(directory.parent):
-            return str(directory)
-    return None
-
-
-def _detect_local_mmproj(
-    selected_path: str,
-    gguf_file: str,
-    accept_for: Optional[Callable[[str], Optional[Callable[[str], bool]]]] = None,
-) -> Optional[str]:
-    """The projector for a local GGUF, nearest boundary first.
-
-    ``detect_mmproj_file`` ranks every candidate it can see against the weight, so
-    reaching the enclosing ``models--<repo>`` dir in one pass would let a hand-added
-    projector outrank one published closer to the weight. The walk therefore widens
-    a boundary at a time -- the selected directory (with its quant parent), then the
-    snapshot it belongs to, then the repo dir -- and the first boundary that pairs
-    wins. Same published-first order ``_download_mmproj`` uses.
-
-    ``accept_for`` builds the pre-read admission filter for a root (native-grant
-    loads) and applies to the widened boundaries ONLY, so the first one answers
-    exactly what it answered before the widening, refusals included."""
-    selected_root = _local_gguf_companion_search_root(
-        selected_path, gguf_file, include_hf_repo_root = False
-    )
-    roots = [selected_root]
-    repo_root = _local_gguf_companion_search_root(selected_path, gguf_file)
-    if repo_root != selected_root:
-        # A named checkpoint subdir (``snapshots/<sha>/distilled/``) is not a quant
-        # name, so the selected root stops inside it and the snapshot's own projector
-        # would otherwise share a pool with the repo dir's.
-        snapshot_dir = _enclosing_hf_snapshot_dir(selected_root)
-        if snapshot_dir is not None and snapshot_dir != selected_root:
-            roots.append(snapshot_dir)
-        roots.append(repo_root)
-
-    for index, root in enumerate(roots):
-        found = detect_mmproj_file(
-            gguf_file,
-            search_root = root,
-            accept = accept_for(root) if accept_for is not None and index else None,
-        )
-        if found is not None:
-            return found
-    return None
+    return detect_mmproj_file(weight_path, search_root = _hf_cache_repo_dir(weight_path))
 
 
 def _snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
@@ -3919,7 +3798,7 @@ class ModelConfig:
             gguf_variant: Optional GGUF quant variant (e.g. "Q4_K_M") to load
                 via -hf for remote repos; None auto-selects via _pick_best_gguf().
             drafter_accept: ``(candidate, gguf_file, kind, search_root) -> bool``,
-                the caller's extra admission rule for a discovered companion. A
+                the caller's extra admission rule for a discovered drafter. A
                 native-grant load passes the lease boundary here so it is applied
                 BEFORE this scan inspects a candidate: detect_dflash_file reads
                 the header of the file it is about to accept, and a
@@ -3994,29 +3873,21 @@ class ModelConfig:
                     except Exception as e:
                         logger.debug(f"Could not read export metadata: {e}")
 
-                # Direct file selections may point into a quant subdir while mmproj-*.gguf
-                # sits at the root. Drafters stop there; only the projector goes on to
-                # the enclosing HF repo dir, and only when the snapshot pairs with none.
-                drafter_root = _local_gguf_companion_search_root(
-                    path, gguf_file, include_hf_repo_root = False
-                )
+                # Direct file selections may point into a quant subdir while mmproj-*.gguf sits at the root.
+                companion_root = _local_gguf_companion_search_root(path, gguf_file)
 
-                # One accept per companion kind, bound to the file this load opens.
+                # One accept per drafter kind, bound to the file this load opens.
                 # Each kind admits a different companion directory, so they cannot
                 # share one closure or an MTP load would take a sidecar out of
                 # dspark/.
-                def _companion_accept_for(
-                    kind: str, search_root: str
-                ) -> Optional[Callable[[str], bool]]:
+                def _drafter_accept_for(kind: str) -> Optional[Callable[[str], bool]]:
                     if drafter_accept is None:
                         return None
-                    return lambda candidate: drafter_accept(candidate, gguf_file, kind, search_root)
+                    return lambda candidate: drafter_accept(
+                        candidate, gguf_file, kind, companion_root
+                    )
 
-                mmproj_file = _detect_local_mmproj(
-                    path,
-                    gguf_file,
-                    accept_for = lambda root: _companion_accept_for("mmproj", root),
-                )
+                mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
                 if mmproj_file:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")
@@ -4026,8 +3897,8 @@ class ModelConfig:
                 # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
                 mtp_file = detect_mtp_file(
                     gguf_file,
-                    search_root = drafter_root,
-                    accept = _companion_accept_for("mtp", drafter_root),
+                    search_root = companion_root,
+                    accept = _drafter_accept_for("mtp"),
                 )
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")
@@ -4037,13 +3908,13 @@ class ModelConfig:
                 # load route a sidecar it has to reject a second time.
                 dspark_file = detect_dspark_file(
                     gguf_file,
-                    search_root = drafter_root,
-                    accept = _companion_accept_for("dspark", drafter_root),
+                    search_root = companion_root,
+                    accept = _drafter_accept_for("dspark"),
                 )
                 dflash_file = detect_dflash_file(
                     gguf_file,
-                    search_root = drafter_root,
-                    accept = _companion_accept_for("dflash", drafter_root),
+                    search_root = companion_root,
+                    accept = _drafter_accept_for("dflash"),
                 )
 
                 return cls(
@@ -4153,20 +4024,17 @@ class ModelConfig:
                     if sizes:
                         verified_gguf = (identifier, variant, verified_file, sizes)
 
-                # The repo may publish no projector while the user hand-added one at the
-                # HF cache repo root (#9286). load_model only resolves a projector when
-                # the config says vision, so the listing's answer alone would skip it.
-                #
-                # Paired against the weight once one is cached, and otherwise the
-                # candidate sitting above the snapshots, which is the same file the
-                # load will pick up after the download.
+                # The repo may publish no projector while the user hand-added one beside
+                # the cached weight (#9286). This branch is the only one that never
+                # looked: it takes the Hub listing's word, and load_model resolves a
+                # projector only when the config already says vision, so the file was
+                # invisible wherever it sat. Asked of the verified copy, so there is a
+                # real weight to pair against; before any quant of the repo is cached
+                # there is nothing to pair with and the Apply after the download settles
+                # it.
                 local_mmproj: Optional[str] = None
-                if not has_vision:
-                    local_mmproj = (
-                        _detect_local_mmproj(verified_file, verified_file)
-                        if verified_file
-                        else _hf_cache_repo_root_mmproj(identifier)
-                    )
+                if not has_vision and verified_file:
+                    local_mmproj = _hf_cached_local_mmproj(verified_file)
                     has_vision = local_mmproj is not None
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"

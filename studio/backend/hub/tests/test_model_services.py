@@ -1550,37 +1550,6 @@ def test_cached_gguf_scan_dedupes_and_excludes_mmproj_only(monkeypatch, tmp_path
     assert result["cached"][0]["capabilities"]["requires_variant"] is True
 
 
-def test_cached_gguf_scan_finds_a_repo_root_projector(monkeypatch, tmp_path):
-    active = tmp_path / "hub"
-    repo_path = active / "models--Org--RootVision"
-    snapshot = repo_path / "snapshots" / ("d" * 40)
-    snapshot.mkdir(parents = True)
-    (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
-    (repo_path / "mmproj-F16.gguf").write_bytes(b"\0" * 256)
-    revision = SimpleNamespace(
-        files = [_file("Model-Q4_K_M.gguf", 256)],
-        snapshot_path = snapshot,
-    )
-    repo = SimpleNamespace(
-        repo_id = "Org/RootVision",
-        repo_type = "model",
-        repo_path = repo_path,
-        revisions = [revision],
-    )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_gguf_repo_partial",
-        lambda _repo_id, _path, **_kw: False,
-    )
-
-    [row] = cache_inventory._scan_cached_gguf(
-        cache_scans = [SimpleNamespace(repos = [repo])],
-        active_hub_cache = active,
-    )
-
-    assert row["capabilities"]["supports_vision"] is True
-
-
 def test_cached_gguf_scan_preserves_partial_flag(monkeypatch, tmp_path):
     partial = _repo("Org/Partial", [_file("Q4_K_M.gguf", 100)], tmp_path / "partial")
     monkeypatch.setattr(
