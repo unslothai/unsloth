@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { parseSync } from "oxc-parser";
 
@@ -22,9 +23,11 @@ const SNIPPET_SUFFIX = "\n})();\nexport {};\n";
 const OXLINT_SUPPRESSED_RULES = ["no-unused-vars", "no-new-array"];
 // The caller kills only this wrapper, so a wedged oxlint has to die here or it is
 // orphaned. Its deadline is the caller's budget minus what this process already spent.
-const PROCESS_START_MS = Date.now();
+// timeOrigin, not Date.now(), so the startup and imports above are counted too. It is
+// fractional, and spawnSync rejects a non-integer timeout, so floor it here.
+const PROCESS_START_MS = Math.floor(performance.timeOrigin);
 const OXLINT_DEFAULT_BUDGET_MS = 30_000;
-// Covers node startup, which precedes the clock above.
+// Covers the spawn the clock above cannot see, plus this process's wind-down.
 const OXLINT_BUDGET_MARGIN_MS = 2_000;
 // Below this, starting oxlint would only hand the caller's kill an orphan.
 const OXLINT_MIN_TIMEOUT_MS = 1_000;
@@ -57,7 +60,7 @@ function mapMode(value) {
 
 function mapBudgetMs(value) {
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : OXLINT_DEFAULT_BUDGET_MS;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : OXLINT_DEFAULT_BUDGET_MS;
 }
 
 function mapCodeShape(value) {
