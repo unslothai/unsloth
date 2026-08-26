@@ -46,6 +46,7 @@ _ANSI_INTRODUCER_RE = re.compile(r"[\x1b\x90\x98\x9b\x9d-\x9f]")
 _SECRET_KEYS = (
     "authorization|x-api-key|api[-_]?key|apikey|hf[-_]?token|access[-_]?token|"
     "refresh[-_]?token|auth[-_]?token|bearer[-_]?token|client[-_]?secret|"
+    "session[-_]?token|"
     "aws_secret_access_key|aws_session_token|wandb[-_]?token|hub[-_]?token|"
     # Studio's own S3 field (models/training.py:60) and its camelCase alias.
     # Neither is reachable through the bare "secret" alternative (the trailing \b
@@ -136,8 +137,10 @@ _ESCAPED_QUOTED_KV_RE = re.compile(
     r"(?P<rest>[^\r\n]*)"
 )
 _QUOTED_HEADER_PAIR_RE = re.compile(
-    r"(?i)(?P<key_quote>[\"'])(?P<key>(?:" + _SECRET_KEYS + r"|(?:set-)?cookie))"
-    r"(?P=key_quote)(?P<sep>\s*,\s*)(?P<quote>[\"'])"
+    r"(?i)(?P<key_bytes>b)?(?P<key_quote>[\"'])(?P<key>(?:"
+    + _SECRET_KEYS
+    + r"|(?:set-)?cookie))"
+    r"(?P=key_quote)(?P<sep>\s*,\s*)(?P<value_bytes>b)?(?P<quote>[\"'])"
     r"(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
 )
 _KV_RE = re.compile(
@@ -384,7 +387,8 @@ def _redact_quoted_header_pair(match: re.Match[str]) -> str:
     key_quote = match.group("key_quote")
     value_quote = match.group("quote")
     return (
-        f"{key_quote}{match.group('key')}{key_quote}{match.group('sep')}"
+        f"{match.group('key_bytes') or ''}{key_quote}{match.group('key')}{key_quote}"
+        f"{match.group('sep')}{match.group('value_bytes') or ''}"
         f"{value_quote}{masked}{value_quote}"
     )
 

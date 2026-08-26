@@ -350,6 +350,28 @@ def test_private_key_fields_are_masked(field):
     assert '"name":"kept"' in masked
 
 
+@pytest.mark.parametrize("field", ["session_token", "session-token", "sessionToken"])
+def test_generic_session_token_fields_are_masked(field):
+    secret = "opaqueSESSIONSECRET123456"
+    line = f'{{"{field}":"{secret}","status":401}}'
+    assert redact_log_text(line) == f'{{"{field}":"<redacted>","status":401}}'
+
+
+@pytest.mark.parametrize(
+    "key,value,masked",
+    [
+        ("cookie", "session=opaqueCOOKIESECRET123456", "<redacted>"),
+        ("authorization", "Custom opaqueAUTHSECRET123456", "<redacted>"),
+        ("x-api-key", "opaqueAPISECRET123456", "<redacted>"),
+    ],
+)
+def test_byte_string_header_pairs_are_masked(key, value, masked):
+    line = f"headers=[(b'{key}', b'{value}'), (b'x-request-id', b'req-42')]"
+    assert redact_log_text(line) == (
+        f"headers=[(b'{key}', b'{masked}'), (b'x-request-id', b'req-42')]"
+    )
+
+
 # A colorized writer puts an escape between the key and its value. Every rule is
 # anchored on a word boundary or lookbehind, and the "m" ending "\x1b[36m" is a
 # word character, so the anchor stopped matching and the credential went out in
