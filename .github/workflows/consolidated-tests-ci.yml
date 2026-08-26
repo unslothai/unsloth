@@ -145,6 +145,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: consolidated
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
@@ -2366,6 +2367,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: llama-cpp-smoke
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt

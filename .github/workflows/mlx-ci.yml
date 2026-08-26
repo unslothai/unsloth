@@ -192,6 +192,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: mlx
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
