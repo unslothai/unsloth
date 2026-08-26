@@ -137,6 +137,64 @@ def normalize_path(path: str) -> str:
     return path.replace("\\", "/")
 
 
+def wsl_automount_root() -> str:
+    """DrvFs root WSL maps Windows drives under, with a trailing slash.
+
+    Set via ``/etc/wsl.conf`` ``[automount] root``, so hard-coding ``/mnt/``
+    mistranslates drive paths on a host that moved it (``root = /`` puts C: at ``/c/``).
+    """
+    default = "/mnt/"
+    if not _IS_WSL:
+        return default
+    try:
+        import configparser
+
+        parser = configparser.ConfigParser(inline_comment_prefixes = ("#", ";"))
+        parser.read("/etc/wsl.conf", encoding = "utf-8")
+        root = parser.get("automount", "root", fallback = "").strip().strip("\"'")
+    except Exception:
+        return default
+    if not root:
+        return default
+    return root if root.endswith("/") else f"{root}/"
+
+
+_WSL_AUTOMOUNT_ROOT: str = wsl_automount_root()
+
+
+def _looks_windows_shaped(path: str) -> bool:
+    """True for a drive-letter path (``C:\\x``, ``c:/x``) or a UNC path (``\\\\host\\share``)."""
+    if path.startswith("\\\\"):
+        return True
+    return len(path) >= 3 and path[1] == ":" and path[2] in ("\\", "/")
+
+
+def host_normalize_path(path: str) -> str:
+    """Normalize a path this process is about to open, honouring ``[automount] root``.
+
+    Not :func:`normalize_path`: that hard-codes ``/mnt/`` to predict where the model
+    *loader* will look, while a path read from another tool's config is stat-ed here.
+
+    Separators are rewritten only when the path is Windows-shaped or the host treats a
+    backslash as one. On Linux and macOS it is a legal filename character, so rewriting
+    it unconditionally silently loses a directory that has one in its name.
+    """
+    if not path:
+        return path
+
+    if _looks_windows_shaped(path):
+        if _IS_WSL and path[1:2] == ":":
+            drive = path[0].lower()
+            rest = path[3:].replace("\\", "/")
+            return f"{_WSL_AUTOMOUNT_ROOT}{drive}/{rest}"
+        return path.replace("\\", "/")
+
+    if os.name == "nt" or _IS_WSL:
+        return path.replace("\\", "/")
+
+    return path
+
+
 def is_local_path(path: str) -> bool:
     """
     Check if path is a local filesystem path vs HuggingFace model identifier.
