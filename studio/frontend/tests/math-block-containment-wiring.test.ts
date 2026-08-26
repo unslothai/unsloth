@@ -158,6 +158,83 @@ test("the rule is armed by nothing except that attribute", () => {
   );
 });
 
+test("a print turns the containment off, for both populations", () => {
+  /*
+   * WHAT IS AT STAKE. Skipped content is not painted and the box keeps its placeholder height, so a
+   * block still skipped when the reader prints comes out as an EMPTY 8.5rem or 3rem rectangle. The
+   * Gecko report that got printing fixed there describes precisely that: "the contents are not
+   * visible in the print preview. However, the height is reserved, resulting in a few empty pages."
+   * (bugzilla.mozilla.org/show_bug.cgi?id=1907081, fixed in Firefox 130.)
+   *
+   * AND THE ENGINE DOES NOT DO IT FOR US. css-contain-2 lists on-screen, focused, selected and top
+   * layer as the ways to be "relevant to the user" and says nothing about printing; the CSSWG
+   * resolved to add a print carve-out on 2024-06-13 (w3c/csswg-drafts#10347) and the spec is still
+   * unedited. Chromium and Gecko each fixed it themselves. WebKit has not: `ContentRelevancy` is
+   * `OnScreen | Focused | IsInTopLayer | Selected` and nothing in its
+   * `ContentVisibilityDocumentState` mentions printing. WebKit is what Studio renders through on
+   * Linux, and it is an engine this feature ARMS on, since the `anchor-name` probe passes on Safari
+   * 26 and on WebKitGTK 2.50.4. So this rule, not the engine, is what keeps the equations on the
+   * page -- which makes it worth a test rather than a comment.
+   *
+   * NOT a `beforeprint` hook, unlike `code-fence-defer.tsx`, which has to script its print upgrade
+   * because what it defers is not in the DOM. Here the maths is in the DOM and only its rendering
+   * is skipped, so a media query is the whole fix and it covers `page.pdf()` too.
+   */
+  // Balanced-brace slices, so the assertions below are about a print block and not about whatever
+  // the next 200 characters of the file happen to be, and every `@media print` in the file is a
+  // candidate rather than just the first one.
+  const printBlocks: string[] = [];
+  for (
+    let start = INDEX_CSS.indexOf("@media print");
+    start >= 0;
+    start = INDEX_CSS.indexOf("@media print", start + 1)
+  ) {
+    let depth = 0;
+    for (let i = INDEX_CSS.indexOf("{", start); i < INDEX_CSS.length; i += 1) {
+      if (INDEX_CSS[i] === "{") depth += 1;
+      else if (INDEX_CSS[i] === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          printBlocks.push(INDEX_CSS.slice(start, i + 1));
+          break;
+        }
+      }
+    }
+  }
+  const printBlock =
+    printBlocks.find((block) => block.includes(`.${MATH_BLOCK_CLASS}`)) ?? "";
+  assert.notEqual(
+    printBlock,
+    "",
+    "no `@media print` block in the stylesheet mentions the marked-block class, so a thread " +
+      "printed before the reader has scrolled every formula into view loses them",
+  );
+
+  for (const cls of [MATH_BLOCK_CLASS, MATH_DISPLAY_CLASS]) {
+    assert.ok(
+      printBlock.includes(`.${cls}`),
+      `the print override names .${cls}; a paragraph of prose holding a formula is lost by the ` +
+        "same mechanism as the formula itself, so both populations need it",
+    );
+  }
+  assert.ok(
+    printBlock.includes("content-visibility: visible !important"),
+    "`visible`, and important: the gated rules above are more specific than any unprefixed selector",
+  );
+  assert.ok(
+    printBlock.includes("contain-intrinsic-size: none !important"),
+    "and the placeholder height cleared, or a rendered block still prints at its fallback size",
+  );
+
+  // ANTI-VACUITY: the two gated `auto` rules really are the thing being overridden, and they are
+  // still there to override. Without this the block above could be defending nothing.
+  assert.equal(
+    INDEX_CSS.split("content-visibility: auto;").length - 1,
+    2,
+    "PRECONDITION: the two gated declarations this print block exists to switch off",
+  );
+});
+
 test("no comment anywhere claims this feature ships off", () => {
   // THIS HAS NOW GONE WRONG THREE TIMES. Flipping `SHIP_DEFAULT` to "contain" left prose in
   // `math-block-mode.ts`, `main.tsx` and `index.css` still saying the feature defaults to off;

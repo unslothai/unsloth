@@ -2666,6 +2666,49 @@ html[data-chat-font] .aui-root {
 		content-visibility: auto;
 		contain-intrinsic-size: auto 3rem;
 	}
+
+	/* A PRINT IS NOT A VIEWPORT, and on WebKit that loses the equations.
+	 *
+	 * Skipped content is not painted, and the box keeps the placeholder height above, so a block
+	 * that is skipped when the print is taken comes out as an EMPTY 8.5rem or 3rem rectangle on the
+	 * page. Nothing about the printed copy tells the reader it happened; they keep a PDF whose
+	 * formulae, and whose maths-bearing paragraphs of prose, are blank boxes. That is the one
+	 * failure mode this whole feature must not have.
+	 *
+	 * WHY THE ENGINE DOES NOT SAVE US. `content-visibility: auto` skips whatever is not "relevant to
+	 * the user", and css-contain-2 defines that as on-screen, focused, selected or in the top layer
+	 * -- there is no print carve-out in the prose, under `#relevant-to-the-user` in
+	 * drafts.csswg.org/css-contain-2. The CSSWG resolved on 2024-06-13 to add one, "when printing a
+	 * document, also treat content-visibility:auto as visible" (w3c/csswg-drafts#10347), and the
+	 * spec still has not been edited. So each engine is on its own: Chromium unlocks for print
+	 * (`DisplayLockContext::SetShouldUnlockAutoForPrint`, 2020), Gecko resolves `auto` to `visible`
+	 * in print context (bugzilla 1907081, Firefox 130), and WebKit does NEITHER -- its
+	 * `ContentRelevancy` enum is `OnScreen | Focused | IsInTopLayer | Selected` and its
+	 * `ContentVisibilityDocumentState` never mentions printing, so relevancy stays whatever an
+	 * IntersectionObserver against the on-screen viewport last said. WebKit is exactly what Studio
+	 * renders through on Linux and what a macOS reader reaches this app with, and it is the engine
+	 * the gate ARMS: Safari 26 and WebKitGTK 2.50.4 both carry `anchor-name`, which is what
+	 * `FIND_IN_PAGE_PROBE` tests, and neither carries a print fix. The Gecko report reads exactly
+	 * like the defect this rule prevents: "the contents are not visible in the print preview.
+	 * However, the height is reserved, resulting in a few empty pages."
+	 *
+	 * WHY CSS AND NOT `beforeprint`. `code-fence-defer.tsx` needs a script for its print upgrade
+	 * because what it defers is not in the DOM to begin with. Here the maths IS in the DOM and only
+	 * its RENDERING is skipped, so switching the declaration off is the whole fix, and a media query
+	 * covers both doors that file has to hook separately: WebKit re-evaluates media queries inside
+	 * `LocalFrame::setPrinting` before it lays out the pages, and a headless `page.pdf()` or DevTools
+	 * print emulation changes the media without ever firing `beforeprint`.
+	 *
+	 * `!important` because the gated rules above are more specific than anything unprefixed, and
+	 * `none` rather than a length so the box is sized by its contents, matching the code-block rule
+	 * earlier in this file. */
+	@media print {
+		.aui-thread-root .aui-math-block,
+		.aui-thread-root .aui-math-display {
+			content-visibility: visible !important;
+			contain-intrinsic-size: none !important;
+		}
+	}
 }
 
 /* No border line; same drop shadow as the composer (.unsloth-composer-surface).
