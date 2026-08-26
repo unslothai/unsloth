@@ -276,7 +276,12 @@ def test_settings_path_being_a_directory_is_not_a_crash(fake_home):
     assert storage_roots.lmstudio_model_dirs() == []
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root reads regardless of mode bits")
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    # geteuid is POSIX-only, and skipif evaluates at import, so calling it unguarded
+    # fails collection of this whole module on Windows.
+    reason = "needs POSIX mode bits and a non-root user",
+)
 def test_an_unreadable_settings_file_is_logged_not_raised(fake_home, recording_logger):
     settings = write_settings(fake_home, settings_json(fake_home))
     settings.chmod(0o000)
