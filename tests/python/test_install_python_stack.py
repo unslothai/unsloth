@@ -26,6 +26,18 @@ import install_python_stack as ips
 
 
 @pytest.fixture(autouse = True)
+def _neutral_policy_environment(monkeypatch):
+    """Run as an ordinary machine unless a test says otherwise.
+
+    UNSLOTH_RESPECT_PM_POLICY changes what several of these code paths do, so inheriting
+    it from the developer's shell rewrites the suite's subject: with it set, the metadata
+    repair and the XPU swap both decline to start and dozens of unrelated assertions
+    fail. Tests that want the opt-out set it themselves.
+    """
+    monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+
+
+@pytest.fixture(autouse = True)
 def _clear_policy_cache():
     """_policy_scan is cached for the life of the process, which is right in an installer
     and wrong across tests: without this a scan taken under one environment answers for
@@ -609,69 +621,41 @@ class TestOperatorCanKeepTheirPolicy:
             assert os.environ["PIP_REQUIRE_HASHES"] == "1"
 
 
-class TestTheMetadataRepairCannotStrandThePackage:
-    """The repair uninstalls every record and then reinstalls from a staged wheel. If
-    that reinstall is refused, the core package is simply gone -- and under the opt-out
-    it WAS refused, because the restore names an unpinned, unhashed requirement while
-    require-hashes is in force. Measured against pip 26.2.1: "In --require-hashes mode,
-    all requirements must have their versions pinned with ==".
+class TestDestructiveRepairsDoNotStartUnderTheOptOut:
+    """Two paths uninstall something and can only finish by installing a replacement:
+    the duplicate-metadata repair and the Intel XPU triton swap. Under a hash policy
+    that replacement cannot be verified -- there is no expected digest to check it
+    against, and deriving one from the artifact just fetched would approve it with
+    itself. So neither starts, and the venv is left exactly as it was.
     """
 
-    def _staged(self, tmp_path):
-        staged = tmp_path / "staged"
-        staged.mkdir()
-        wheel = staged / "unsloth_zoo-1.0-py3-none-any.whl"
-        wheel.write_bytes(b"PK\x03\x04 not a real wheel, but a real file to hash\n")
-        return staged, wheel
+    def test_the_metadata_repair_declines_before_staging(self, capsys):
+        with mock.patch.dict(
+            os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True
+        ):
+            assert ips._stage_replacement("unsloth-zoo") is None
+        out = capsys.readouterr().err
+        assert "UNSLOTH_RESPECT_PM_POLICY" in out and "leaving the install alone" in out
 
-    def test_the_default_path_still_names_the_requirement(self, tmp_path):
-        """Unchanged where nothing is hardened: same command as before this fix."""
-        staged, _ = self._staged(tmp_path)
-        with mock.patch.dict(os.environ, {}, clear = True):
-            args, cleanup = ips._staged_restore_args("unsloth-zoo", str(staged))
-        assert cleanup == ""
-        assert args == [
-            "--no-deps",
-            "--force-reinstall",
-            "--no-index",
-            "--find-links",
-            str(staged),
-            "unsloth-zoo",
-        ]
+    def test_the_default_path_still_stages(self):
+        """Nothing is skipped on an ordinary machine: the bail is opt-out only."""
+        with (
+            mock.patch.dict(os.environ, {}, clear = True),
+            mock.patch.object(ips, "USE_UV", False),
+            mock.patch.object(ips, "tempfile") as fake_tempfile,
+            mock.patch.object(ips, "pip_install_try", lambda *a, **k: False),
+        ):
+            fake_tempfile.mkdtemp.return_value = "/tmp/staging"
+            # It gets far enough to try, which is all this asserts; the staging itself
+            # is covered by TestDuplicateCoreMetadataRepair.
+            ips._stage_replacement("unsloth-zoo")
+            assert fake_tempfile.mkdtemp.called
 
-    def test_the_opt_out_restores_through_a_real_hash(self, tmp_path):
-        """Not a relaxation and not a skipped repair: the staged wheel is a local file
-        this installer just built, so its hash is knowable and the policy is satisfied
-        honestly. Measured: pip accepts this under PIP_REQUIRE_HASHES=1, and rejects it
-        with THESE PACKAGES DO NOT MATCH THE HASHES if the wheel is altered."""
-        staged, wheel = self._staged(tmp_path)
-        with mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True):
-            args, cleanup = ips._staged_restore_args("unsloth-zoo", str(staged))
-        try:
-            assert args[:4] == ["--no-deps", "--force-reinstall", "--no-index", "-r"]
-            body = pathlib.Path(cleanup).read_text(encoding = "utf-8")
-            digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
-            assert str(wheel) in body and f"--hash=sha256:{digest}" in body, body
-        finally:
-            os.unlink(cleanup)
-
-    def test_a_normalised_name_still_finds_its_wheel(self, tmp_path):
-        """The wheel spells the project with an underscore and the requirement with a
-        dash, so the match has to normalise both."""
-        staged, _ = self._staged(tmp_path)
-        with mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True):
-            args, cleanup = ips._staged_restore_args("Unsloth_Zoo", str(staged))
-        assert cleanup, "the underscore spelling must match unsloth_zoo-1.0-...whl"
-        os.unlink(cleanup)
-
-    def test_a_missing_wheel_falls_back_rather_than_raising(self, tmp_path):
-        """Nothing to hash is not a crash: the caller gets the ordinary arguments and
-        whatever pip says about them."""
-        staged = tmp_path / "empty"
-        staged.mkdir()
-        with mock.patch.dict(os.environ, {"UNSLOTH_RESPECT_PM_POLICY": "1"}, clear = True):
-            args, cleanup = ips._staged_restore_args("unsloth-zoo", str(staged))
-        assert cleanup == "" and args[-1] == "unsloth-zoo"
+    def test_no_self_approving_hash_helper_survives(self):
+        """The approach this replaced hashed the wheel it had just downloaded and handed
+        that digest to the protected install, which is not what a hash policy is for."""
+        assert not hasattr(ips, "_hashed_requirement_file")
+        assert not hasattr(ips, "_staged_restore_args")
 
 
 class TestTheOptOutKeepsRestrictiveIndexSettings:
@@ -717,27 +701,6 @@ class TestTheOptOutKeepsRestrictiveIndexSettings:
             {"UNSLOTH_RESPECT_PM_POLICY": "1", "PIP_NO_INDEX": "0", "PIP_FIND_LINKS": "/w"}
         )
         assert "PIP_NO_INDEX" not in env and "PIP_FIND_LINKS" not in env
-
-
-class TestTheXpuTritonSwapCannotStrandTheVenv:
-    """The swap uninstalls generic triton and installs the downloaded wheel by path. A
-    bare file reference is rejected under require-hashes, and by then the venv has NO
-    triton and no generic distribution left to trigger a retry on.
-    """
-
-    def test_the_wheel_is_pinned_by_its_own_hash(self, tmp_path):
-        wheel = tmp_path / "triton_xpu-3.5.0-py3-none-any.whl"
-        wheel.write_bytes(b"not a real wheel, but a real file to hash\n")
-        requirements = ips._hashed_requirement_file(str(wheel))
-        try:
-            body = pathlib.Path(requirements).read_text(encoding = "utf-8")
-            digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
-            assert str(wheel) in body and f"--hash=sha256:{digest}" in body, body
-        finally:
-            os.unlink(requirements)
-
-    def test_an_unreadable_wheel_is_not_an_error(self, tmp_path):
-        assert ips._hashed_requirement_file(str(tmp_path / "gone.whl")) == ""
 
 
 class TestHardenedPolicyIsAnnounced:

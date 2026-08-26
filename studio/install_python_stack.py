@@ -2680,6 +2680,22 @@ def _ensure_xpu_triton() -> None:
         )
         return
 
+    if _respect_pm_policy():
+        # The swap uninstalls generic triton and installs a wheel fetched from the pinned
+        # index, and there is no expected hash to check that wheel against: deriving one
+        # from the artifact itself would approve whatever the index returned. The swap is
+        # an optimisation -- torch.compile using the XPU -- so under the opt-out it is
+        # skipped BEFORE the download, leaving the venv exactly as it was rather than
+        # without triton at all, which no rerun could repair.
+        _safe_print(
+            _red(
+                f"   {_POLICY_OPT_OUT_ENV} is set and the XPU triton swap would have to "
+                f"install a wheel your hash policy cannot verify; leaving generic triton "
+                f"{generic} in place -- torch.compile will not use the XPU."
+            )
+        )
+        return
+
     # Fetch, THEN uninstall, THEN install from the file. The uninstall cannot go last: the shared
     # paths live in generic triton's OWN record, so removing it afterwards deletes what the XPU
     # build just wrote. Pre-fetching stops a dead mirror stranding the venv between the two
@@ -2743,25 +2759,13 @@ def _ensure_xpu_triton() -> None:
         # with it. pip_install, not pip_install_try -- a warning would let the caller write a
         # completion manifest over a venv whose torch.compile is broken, which the next update
         # then fast-paths past (no generic distribution is left to trigger on).
-        # The wheel is a bare file reference, which require-hashes rejects. This install
-        # runs with the venv already stripped of triton and cannot be retried later --
-        # no generic distribution is left to trigger on -- so under the opt-out it goes
-        # through the wheel's own sha256, exactly as the metadata restore does.
-        requirements = _hashed_requirement_file(wheels[0]) if _respect_pm_policy() else ""
-        try:
-            pip_install(
-                "triton (Intel XPU)",
-                "--force-reinstall",
-                "--no-deps",
-                *(("-r", requirements) if requirements else (wheels[0],)),
-                constrain = False,
-            )
-        finally:
-            if requirements:
-                try:
-                    os.unlink(requirements)
-                except OSError:
-                    pass
+        pip_install(
+            "triton (Intel XPU)",
+            "--force-reinstall",
+            "--no-deps",
+            wheels[0],
+            constrain = False,
+        )
     finally:
         shutil.rmtree(tmp, ignore_errors = True)
 
@@ -4187,58 +4191,6 @@ class _QuarantinedMetadata:
         self._copied.clear()
 
 
-def _hashed_requirement_file(wheel: str) -> str:
-    """A requirements file pinning `wheel` by its own sha256, or "" if it cannot be made.
-
-    Under the opt-out, an install of a wheel this installer just fetched or built has to
-    satisfy require-hashes rather than be exempted from it. Each such install also runs
-    AFTER something has been uninstalled, so being refused there leaves the venv missing
-    the package rather than merely unchanged.
-    """
-    try:
-        digest = hashlib.sha256(Path(wheel).read_bytes()).hexdigest()
-        handle = tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False, encoding = "utf-8")
-        with handle:
-            handle.write(f"{os.path.abspath(wheel)} --hash=sha256:{digest}\n")
-    except OSError:
-        return ""
-    return handle.name
-
-
-def _staged_restore_args(name: str, staged: str) -> "tuple[list[str], str]":
-    """pip arguments that reinstall `name` from the staged wheel directory.
-
-    By default the wheel is a bare requirement resolved out of `--find-links`. Under the
-    opt-out require-hashes rejects that, and the restore runs AFTER the uninstall loop
-    has deleted the package records, so failing there leaves the core package gone.
-
-    The staged wheel is a local file this installer just built, so its hash is knowable:
-    the restore goes through a requirements file carrying the real sha256, satisfying
-    the policy instead of relaxing it for one command or abandoning the repair.
-    Measured on pip 26.2.1, both directions -- accepted under PIP_REQUIRE_HASHES=1, and
-    "THESE PACKAGES DO NOT MATCH THE HASHES" once the wheel is altered.
-
-    Returns (arguments, a temporary requirements file to delete, or "").
-    """
-    default = ["--no-deps", "--force-reinstall", "--no-index", "--find-links", staged, name]
-    if not _respect_pm_policy():
-        return default, ""
-    wanted = re.sub(r"[-_.]+", "-", name).lower()
-    wheel = ""
-    for candidate in sorted(glob.glob(os.path.join(staged, "*.whl"))):
-        project = re.sub(r"[-_.]+", "-", os.path.basename(candidate).split("-")[0]).lower()
-        if project == wanted:
-            wheel = candidate
-            break
-    if not wheel:
-        # Nothing to hash, so nothing better to offer than the default and its error.
-        return default, ""
-    requirements = _hashed_requirement_file(wheel)
-    if not requirements:
-        return default, ""
-    return ["--no-deps", "--force-reinstall", "--no-index", "-r", requirements], requirements
-
-
 def _restore_from_staged(
     name: str,
     staged: str,
@@ -4253,24 +4205,21 @@ def _restore_from_staged(
     """
     if not (removed_any and staged):
         return
-    restore_args, restore_reqs = _staged_restore_args(name, staged)
-    try:
-        restored_here = pip_install_try(
-            f"Restoring {name} after an incomplete metadata repair",
-            "--no-cache-dir",
-            *restore_args,
-            # pip, not uv: the wheel is already built and sitting in staged, and uv would
-            # reject the unpinned name under UV_REQUIRE_HASHES with the package records
-            # already gone. Routing through pip also earns the PIP_REQUIRE_HASHES
-            # relaxation, which the opt-out withholds -- see _staged_restore_args.
-            force_pip = True,
-        )
-    finally:
-        if restore_reqs:
-            try:
-                os.unlink(restore_reqs)
-            except OSError:
-                pass
+    restored_here = pip_install_try(
+        f"Restoring {name} after an incomplete metadata repair",
+        "--no-cache-dir",
+        "--no-deps",
+        "--force-reinstall",
+        "--no-index",
+        "--find-links",
+        staged,
+        name,
+        # pip, not uv: the wheel is already built and sitting in staged, and uv would
+        # reject the unpinned name under UV_REQUIRE_HASHES with the package records
+        # already gone. The repair never starts under the opt-out, so this cannot be
+        # the step that a hash policy refuses.
+        force_pip = True,
+    )
     if restored_here:
         # The wheel just wrote its own valid metadata at the same path the rewritten
         # record occupied, so the unwinding below must not put the original back over
@@ -4326,6 +4275,22 @@ def _stage_replacement(name: str):
         # leaves the installation intact.
         build_options = ["--no-build-isolation"]
         overrides = {"PIP_NO_INDEX": "1"}
+    if _respect_pm_policy():
+        # The repair deletes every metadata record and then reinstalls from the staged
+        # wheel, and that reinstall cannot be made to satisfy require-hashes honestly:
+        # hashing the artifact we just fetched and handing that digest back to the
+        # protected install approves it with itself, which is not what a hash policy is
+        # for. There is no expected hash to check against, so the repair does not start.
+        # Duplicate metadata is untidy; a venv with the core package uninstalled is not.
+        _safe_print(
+            _red(
+                f"   {_POLICY_OPT_OUT_ENV} is set and repairing {name} would have to "
+                "install a replacement your hash policy cannot verify; leaving the "
+                "install alone."
+            ),
+            file = sys.stderr,
+        )
+        return None
     if USE_UV and _uv_is_offline() and not _is_local_source(name):
         # A checkout on disk needs no network, so offline has nothing to say about it.
         _safe_print(
@@ -4561,22 +4526,19 @@ def _repair_duplicate_core_metadata(
                 # The overlay install is preferred because it keeps the editable
                 # or git provenance, but the staged wheel was built from that
                 # same source, so falling back to it never substitutes a release.
-                repair_args, repair_reqs = _staged_restore_args(name, staged)
-                try:
-                    restored = pip_install_try(
-                        f"Repairing duplicate metadata for {name}",
-                        "--no-cache-dir",
-                        *repair_args,
-                        # As _restore_from_staged: pip, so a uv hash policy cannot reject
-                        # the already-built wheel once every record has been removed.
-                        force_pip = True,
-                    )
-                finally:
-                    if repair_reqs:
-                        try:
-                            os.unlink(repair_reqs)
-                        except OSError:
-                            pass
+                restored = pip_install_try(
+                    f"Repairing duplicate metadata for {name}",
+                    "--no-cache-dir",
+                    "--no-deps",
+                    "--force-reinstall",
+                    "--no-index",
+                    "--find-links",
+                    staged,
+                    name,
+                    # As _restore_from_staged: pip, so a uv hash policy cannot reject the
+                    # already-built wheel once every record has been removed.
+                    force_pip = True,
+                )
             if not restored:
                 _safe_print(
                     _red(
@@ -4725,6 +4687,9 @@ _PM_POLICY_ENV_VARS = (
     "PIP_NO_BINARY",
     "PIP_REQUIRE_HASHES",
     "PIP_UPLOADED_PRIOR_TO",
+    # Reported as well as scrubbed: the pinned branch removes it by default, and
+    # `pip config list` shows it as `:env:.no-index`, which this scan skips.
+    "PIP_NO_INDEX",
 )
 
 
