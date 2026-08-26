@@ -42,6 +42,16 @@ const AUTHED = {
 };
 // What the same endpoint answers once the token expires: HTTP 200, no authed fields.
 const UNAUTHED = { chat_only: false };
+// Authed, but sent while the hardware snapshot is still provisional: health_check ships
+// the tunnel fields before it knows a device_type. Here the tunnel has been stopped.
+const AUTHED_DETECTING = {
+  chat_only: false,
+  hardware_detecting: true,
+  version: "2026.1.1",
+  cloudflare_url: null,
+  server_url: "http://10.0.0.4:8000",
+  secure: false,
+};
 
 let next: () => Promise<Record<string, unknown>> = async () => AUTHED;
 globalThis.fetch = (async () => {
@@ -80,7 +90,7 @@ test("a superseded forced read does not restore what a later one replaced", asyn
   await fetchDeviceType({ force: true });
 
   // The stalled read: it answers with the URL that was live when it was sent.
-  let releaseStalled: (() => void) | null = null;
+  let releaseStalled = () => {};
   next = async () => {
     await new Promise<void>((resolve) => {
       releaseStalled = resolve;
@@ -102,11 +112,56 @@ test("a superseded forced read does not restore what a later one replaced", asyn
     "https://restarted.trycloudflare.com",
   );
 
-  releaseStalled?.();
+  releaseStalled();
   await stalled;
   assert.equal(
     usePlatformStore.getState().cloudflareUrl,
     "https://restarted.trycloudflare.com",
     "the abandoned read wrote its stale tunnel URL over the live one",
+  );
+});
+
+test("a stopped tunnel is cleared even before detection settles", async () => {
+  next = async () => AUTHED;
+  await fetchDeviceType({ force: true });
+  assert.equal(usePlatformStore.getState().cloudflareUrl, TUNNEL);
+
+  next = async () => AUTHED_DETECTING;
+  await fetchDeviceType({ force: true });
+
+  assert.equal(
+    usePlatformStore.getState().cloudflareUrl,
+    null,
+    "an authed null is a tunnel that stopped, not a field the reply left out",
+  );
+  assert.equal(
+    usePlatformStore.getState().deviceType,
+    "linux",
+    "the provisional reply still must not relabel the host",
+  );
+});
+
+test("a failed read keeps the platform the backend measured", async () => {
+  next = async () => AUTHED;
+  await fetchDeviceType({ force: true });
+  const measured = usePlatformStore.getState();
+  assert.equal(measured.deviceType, "linux");
+  assert.equal(measured.fetched, true);
+
+  next = async () => {
+    throw new Error("network");
+  };
+  await fetchDeviceType({ force: true });
+
+  const after = usePlatformStore.getState();
+  assert.equal(
+    after.deviceType,
+    "linux",
+    "a dropped poll relabelled the host from the browser it is viewed in",
+  );
+  assert.equal(
+    after.fetched,
+    true,
+    "a dropped poll threw away the measurement",
   );
 });

@@ -202,12 +202,26 @@ export async function fetchDeviceType(options?: {
       );
       // Authed-only, so they ride with device_type on the same terms: an expired token
       // gets the unauthenticated body, which carries none of them, and nulling a live
-      // tunnel there leaves every copied preview link pointing at this machine.
-      const cloudflareUrl =
-        data.cloudflare_url ?? (keepPlatform ? previous.cloudflareUrl : null);
-      const serverUrl =
-        data.server_url ?? (keepPlatform ? previous.serverUrl : null);
-      const secure = data.secure ?? (keepPlatform ? previous.secure : false);
+      // tunnel there leaves every copied preview link pointing at this machine. Keyed on
+      // whether the field is THERE, not on whether it is null: health_check ships all
+      // three to an authed caller before it knows a device_type, so a null from one of
+      // those is a tunnel that stopped, and treating it as absent keeps a dead URL.
+      const authedFields = "cloudflare_url" in data;
+      const cloudflareUrl = authedFields
+        ? (data.cloudflare_url ?? null)
+        : keepPlatform
+          ? previous.cloudflareUrl
+          : null;
+      const serverUrl = authedFields
+        ? (data.server_url ?? null)
+        : keepPlatform
+          ? previous.serverUrl
+          : null;
+      const secure = authedFields
+        ? (data.secure ?? false)
+        : keepPlatform
+          ? previous.secure
+          : false;
       // Cache only a server-reported platform. Unauthenticated responses fall
       // back to the browser platform, which can differ from the host (WSL,
       // SSH); keeping fetched=false retries once a token exists.
@@ -228,9 +242,12 @@ export async function fetchDeviceType(options?: {
   } catch {
     // Backend not ready: use client-side detection so chat-only guard works
     // on initial load (important for macOS). Keep fetched=false so a later
-    // call retries against the backend. But a late non-forced failure must not
-    // wipe an authoritative platform that already resolved.
-    if (shouldKeepAuthoritativePlatform(options?.force) || superseded()) {
+    // call retries against the backend. But a failure carries no verdict, so it
+    // must not wipe an authoritative platform that already resolved -- forced or
+    // not. Forced reads recur (the sidebar's recovery poll, the History grid's
+    // link-base poll), and one dropped request would otherwise relabel a Linux
+    // host from the browser it is being viewed from until the next success.
+    if (usePlatformStore.getState().fetched || superseded()) {
       return usePlatformStore.getState().deviceType;
     }
     const deviceType = detectLocalPlatform();
