@@ -166,6 +166,24 @@ export function isTerminalChatGenerationRun(run: ChatGenerationRun): boolean {
   return TERMINAL_STATUSES.has(run.status);
 }
 
+/** Where a Stop has to be sent, given how far durable admission has got.
+ *
+ * Admission resolves well after the abort listener is installed: the turn first has to
+ * auto-load a model, retrieve RAG, upload attachments and save history. A Stop landing
+ * in that window has no run id yet and may still end up on the legacy stream, so it
+ * needs the `cancel_id` POST, whose server side stashes the cancel for a generation
+ * that registers afterwards. That POST is safe once the run does exist too, because the
+ * durable request pins `cancel_id` to the same run id.
+ */
+export function chatGenerationStopPlan(
+  decision: "pending" | "durable" | "legacy",
+  runId: string | null,
+): { cancelRunId: string | null; postLegacyCancel: boolean } {
+  if (runId) return { cancelRunId: runId, postLegacyCancel: false };
+  if (decision === "durable") return { cancelRunId: null, postLegacyCancel: false };
+  return { cancelRunId: null, postLegacyCancel: true };
+}
+
 export function explicitStopSignal(signal: AbortSignal): {
   signal: AbortSignal;
   dispose: () => void;

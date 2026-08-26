@@ -487,3 +487,15 @@ def test_event_cursor_rejects_values_outside_sqlite_integer_range():
         _event_cursor(None, "²")
     with pytest.raises(Exception, match = "cursor is too large"):
         _event_cursor(None, "9" * 4301)
+
+
+@pytest.mark.parametrize("field", ["image_base64", "audio_base64", "video_base64"])
+def test_request_sanitization_rejects_inline_media(field):
+    """Media stays on the legacy stream on the server too, not only in the composer.
+
+    Recovery rebuilds text and reasoning deltas, and the request is persisted verbatim,
+    so admitting one of these would park a base64 blob in request_json for the life of
+    the thread and hand the client a transcript it has no way to replay.
+    """
+    with pytest.raises(Exception, match = "legacy streaming path"):
+        _sanitize_request(_model(**{field: "iVBORw0KGgo="}))

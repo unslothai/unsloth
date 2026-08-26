@@ -57,6 +57,12 @@ _EXTERNAL_ROUTING_FIELDS = {
     "encrypted_api_key",
     "provider_base_url",
 }
+# Attachments the composer sends inline. Durable replay has no representation for them.
+_MEDIA_FIELDS = {
+    "image_base64",
+    "audio_base64",
+    "video_base64",
+}
 _SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807
 _ENVELOPE_MAX_DEPTH = 64
 _ENVELOPE_MAX_NODES = 20_000
@@ -164,6 +170,16 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
         raise HTTPException(
             status_code = 400,
             detail = "Durable chat runs are available only for local inference",
+        )
+    # Recovery rebuilds text and reasoning deltas. A media turn has neither the same
+    # chunk shape nor a replayable transcript, and its payload is persisted verbatim,
+    # so a base64 blob would live in request_json for the life of the thread. Studio's
+    # own composer already keeps these on the legacy stream; keep the server in step so
+    # a stale tab or a direct caller cannot open a path nothing replays.
+    if any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Media chat runs use the legacy streaming path",
         )
     # Recovery currently rebuilds text and reasoning deltas, not server-side tool
     # events. Keep any request whose effective policy can enter the local tool loop

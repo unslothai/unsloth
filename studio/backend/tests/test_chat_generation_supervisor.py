@@ -473,3 +473,46 @@ def test_startup_reconcile_marks_stored_assistant_interrupted(durable_run):
     message = studio_db.get_chat_message("thread-1", "assistant-1")
     assert message["metadata"]["generationStatus"] == "failed"
     assert message["metadata"]["incomplete"] == {"reason": "interrupted"}
+
+
+@pytest.mark.asyncio
+async def test_shutdown_returns_even_when_a_producer_will_not_unwind(
+    durable_run, monkeypatch
+):
+    """A generator whose teardown blocks must not take uvicorn's shutdown with it.
+
+    The grace period is bounded, but the gather after task.cancel() has to be too:
+    an engine draining a subprocess inside aclose never completes its cancellation,
+    and stop() would then wait on it forever.
+    """
+    import core.inference.chat_generation_runs as chat_generation_runs
+
+    monkeypatch.setattr(chat_generation_runs, "_SHUTDOWN_GRACE_SECONDS", 0.2)
+    monkeypatch.setattr(chat_generation_runs, "_SHUTDOWN_CANCEL_SECONDS", 0.5)
+
+    wedged = asyncio.Event()
+    release = asyncio.Event()
+
+    async def body():
+        yield 'data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
+        wedged.set()
+        try:
+            await release.wait()
+        except (asyncio.CancelledError, GeneratorExit):
+            await release.wait()
+            raise
+        yield "data: [DONE]\n\n"
+
+    async def fake(_payload, _request, _subject, *, cancel_on_disconnect):
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    supervisor.start("run-1", thread_id = "thread-1", model = "local.gguf")
+    await asyncio.wait_for(wedged.wait(), 10)
+
+    try:
+        await asyncio.wait_for(supervisor.stop(), timeout = 10)
+    finally:
+        release.set()
+        await asyncio.sleep(0)

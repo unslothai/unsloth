@@ -259,6 +259,7 @@ import {
 import { cancelResearchRun, createResearchRun } from "./research-api";
 import {
   cancelChatGenerationRun,
+  chatGenerationStopPlan,
   isLegacyFallbackChatGenerationAdmissionError,
   type ChatGenerationRun,
   type ChatGenerationStatus,
@@ -5356,12 +5357,14 @@ export function createOpenAIStreamAdapter(
           return;
         }
         generationStopRequested = true;
-        if (generationDecision !== "legacy") {
-          if (generationRunId) {
-            void cancelChatGenerationRun(generationRunId).catch(() => {});
-          }
-          return;
+        const stopPlan = chatGenerationStopPlan(
+          generationDecision,
+          generationRunId,
+        );
+        if (stopPlan.cancelRunId) {
+          void cancelChatGenerationRun(stopPlan.cancelRunId).catch(() => {});
         }
+        if (!stopPlan.postLegacyCancel) return;
         const body: Record<string, string> = { cancel_id: cancelId };
         if (sandboxSessionId) body.session_id = sandboxSessionId;
         // Plain fetch, not authFetch: authFetch redirects to login on

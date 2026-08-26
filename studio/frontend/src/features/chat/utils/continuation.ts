@@ -48,6 +48,22 @@ export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
   return null;
 }
 
+/**
+ * assistant-ui's reason for each of ours. `length` is a truthful stop, not a failure:
+ * mapping it to `error` paints MessagePrimitive.Error's red box and a Retry button over
+ * a turn that already offers the Continue bar below it, on every reloaded max-tokens
+ * answer including ones written before this feature existed. `interrupted` keeps `error`
+ * on purpose -- a cut stream is the thing the user has to be told about.
+ */
+const STATUS_REASON: Record<
+  IncompleteReason,
+  "cancelled" | "length" | "error"
+> = {
+  cancelled: "cancelled",
+  length: "length",
+  interrupted: "error",
+};
+
 /** Restore assistant-ui's status without losing the product-specific stop reason. */
 export function restoredAssistantStatus(
   metadata: unknown,
@@ -56,10 +72,7 @@ export function restoredAssistantStatus(
   if (!incomplete) {
     return { type: "complete", reason: "unknown" };
   }
-  return {
-    type: "incomplete",
-    reason: incomplete.reason === "cancelled" ? "cancelled" : "error",
-  };
+  return { type: "incomplete", reason: STATUS_REASON[incomplete.reason] };
 }
 
 const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {

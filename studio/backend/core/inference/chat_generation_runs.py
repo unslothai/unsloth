@@ -25,6 +25,9 @@ _EVENT_BATCH_MIN_SIZE = 2
 _EVENT_BATCH_SECONDS = 0.1
 _EVENT_SINGLE_FLUSH_SECONDS = 1.0
 _SHUTDOWN_GRACE_SECONDS = 10.0
+# Second budget, after task.cancel(). Shorter than the grace period: by this point the
+# run is already being abandoned, and the only question is whether shutdown returns.
+_SHUTDOWN_CANCEL_SECONDS = 5.0
 
 
 class _SSEDecoder:
@@ -211,15 +214,26 @@ class ChatGenerationSupervisor:
             self.cancel(run_id)
         if not tasks:
             return
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*(task for _run_id, task in tasks), return_exceptions = True),
-                timeout = _SHUTDOWN_GRACE_SECONDS,
+        # asyncio.wait, not wait_for(gather(...)): on timeout wait_for cancels the inner
+        # future and then awaits it, so a producer that does not unwind on cancellation --
+        # an engine draining its subprocess inside the generator's aclose -- makes the
+        # wait itself unbounded, and takes the whole uvicorn shutdown down with it. wait
+        # returns the pending set instead and leaves those tasks alone.
+        pending = {task for _run_id, task in tasks}
+        _done, pending = await asyncio.wait(pending, timeout = _SHUTDOWN_GRACE_SECONDS)
+        if not pending:
+            return
+        for task in pending:
+            task.cancel()
+        _done, pending = await asyncio.wait(pending, timeout = _SHUTDOWN_CANCEL_SECONDS)
+        if pending:
+            stuck = [run_id for run_id, task in tasks if task in pending]
+            # Abandoned, not leaked: the run is already fenced and reconcile_orphaned_runs
+            # settles it on the next boot. Process exit reclaims the rest.
+            logger.warning(
+                "Durable chat generations did not stop within the shutdown budget: %s",
+                ", ".join(stuck),
             )
-        except asyncio.TimeoutError:
-            for _run_id, task in tasks:
-                task.cancel()
-            await asyncio.gather(*(task for _run_id, task in tasks), return_exceptions = True)
 
     async def _produce(
         self,

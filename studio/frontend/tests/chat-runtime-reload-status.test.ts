@@ -81,14 +81,21 @@ test("reload recovery preserves server reasoning durations", () => {
 });
 
 test("stored assistant status remains truthful after reload", () => {
-  for (const reason of ["interrupted", "length"] as const) {
-    const metadata = { custom: { incomplete: { reason } } };
-    assert.deepEqual(restoredAssistantStatus(metadata), {
-      type: "incomplete",
-      reason: "error",
-    });
-    assert.deepEqual(readIncompleteInfo(metadata), { reason });
-  }
+  const interrupted = { custom: { incomplete: { reason: "interrupted" } } };
+  assert.deepEqual(restoredAssistantStatus(interrupted), {
+    type: "incomplete",
+    reason: "error",
+  });
+  assert.deepEqual(readIncompleteInfo(interrupted), { reason: "interrupted" });
+
+  // Every reason keeps its own identity, so the Continue bar and the error box
+  // cannot disagree about what happened.
+  const length = { custom: { incomplete: { reason: "length" } } };
+  assert.deepEqual(restoredAssistantStatus(length), {
+    type: "incomplete",
+    reason: "length",
+  });
+  assert.deepEqual(readIncompleteInfo(length), { reason: "length" });
 
   assert.deepEqual(
     restoredAssistantStatus({

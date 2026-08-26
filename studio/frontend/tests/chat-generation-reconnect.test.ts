@@ -22,6 +22,7 @@ afterEach(() => {
 
 const {
   cancelChatGenerationRun,
+  chatGenerationStopPlan,
   createChatGenerationRun,
   createChatGenerationRunUntilAbort,
   explicitStopSignal,
@@ -326,4 +327,36 @@ test("Stop during create cancels the run after its delayed reply", async () => {
   while (cancelled === 0)
     await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(cancelled, 1);
+});
+
+test("Stop before admission resolves still reaches the server", () => {
+  // Admission resolves long after the abort listener is installed (model auto-load,
+  // RAG, attachment upload, first history save). A Stop in that window has no run id
+  // and the turn may still fall back to the legacy stream, so it has to send the
+  // cancel_id POST the backend stashes for a generation that registers afterwards.
+  assert.deepEqual(chatGenerationStopPlan("pending", null), {
+    cancelRunId: null,
+    postLegacyCancel: true,
+  });
+  assert.deepEqual(chatGenerationStopPlan("legacy", null), {
+    cancelRunId: null,
+    postLegacyCancel: true,
+  });
+
+  // Once the run exists, cancelling it is enough and is the precise thing to do.
+  assert.deepEqual(chatGenerationStopPlan("pending", "run-7"), {
+    cancelRunId: "run-7",
+    postLegacyCancel: false,
+  });
+  assert.deepEqual(chatGenerationStopPlan("durable", "run-7"), {
+    cancelRunId: "run-7",
+    postLegacyCancel: false,
+  });
+
+  // Durable with no id means create was aborted before it replied; that path chains
+  // its own cancel onto the pending create, so a second POST would be noise.
+  assert.deepEqual(chatGenerationStopPlan("durable", null), {
+    cancelRunId: null,
+    postLegacyCancel: false,
+  });
 });
