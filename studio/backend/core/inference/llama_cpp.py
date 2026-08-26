@@ -7360,6 +7360,64 @@ class LlamaCppBackend:
         except Exception:
             return False
 
+    @staticmethod
+    def _integrated_cuda_gpu_ids() -> set[int]:
+        """PHYSICAL ids of visible CUDA GPUs whose "VRAM" is shared system RAM.
+
+        Jetson and DGX Spark class parts set cudaDeviceProp::integrated, which torch
+        surfaces as ``is_integrated``; the diffusion memory policy reads the same flag
+        (diffusion_memory.py:292-294). ROCm is excluded because it reuses
+        ``torch.cuda.*`` and ``_rocm_unified_memory_gpu_ids`` already answers for it.
+        Empty off CUDA and on error, so every caller keeps its discrete-GPU default.
+        """
+        try:
+            import torch
+
+            if LlamaCppBackend._torch_is_rocm(torch):
+                return set()
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return set()
+            # Same ordinal -> physical mapping the ROCm twin uses, so a masked host
+            # (CUDA_VISIBLE_DEVICES=2) does not answer for the wrong card.
+            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            integrated: set[int] = set()
+            for ordinal in range(torch.cuda.device_count()):
+                try:
+                    props = torch.cuda.get_device_properties(ordinal)
+                except Exception:
+                    continue
+                # Both spellings: the attribute was `integrated` before torch renamed
+                # it, and an old wheel exposing neither reads discrete.
+                if not (
+                    getattr(props, "is_integrated", False) or getattr(props, "integrated", False)
+                ):
+                    continue
+                integrated.add(
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+            return integrated
+        except Exception:
+            return set()
+
+    @staticmethod
+    def _integrated_cuda_unified_memory(gpu_indices = None) -> bool:
+        """True when a credited CUDA device is an integrated (unified-memory) SoC.
+
+        Scoped by gpu_indices (PHYSICAL ids) like its ROCm twin, so a dGPU on a
+        mixed host is not treated as unified; None means every visible GPU. Any
+        integrated device is enough: one shared pool in the credited set is already
+        the double count.
+        """
+        try:
+            integrated = LlamaCppBackend._integrated_cuda_gpu_ids()
+            if gpu_indices is None:
+                return bool(integrated)
+            return any(_i in integrated for _i in gpu_indices)
+        except Exception:
+            return False
+
     # "Off" spellings ggml itself ignores (it tests presence); we honour them.
     _UNIFIED_MEMORY_OFF = frozenset({"", "0", "false", "no", "off"})
 
@@ -18786,8 +18844,16 @@ class LlamaCppBackend:
                         # Raw free_mib is 3.5 GiB per card larger at 0.80 on a
                         # 24 GiB card, so planning on it under-spills and then pins
                         # the result with --fit off.
+                        #
+                        # _pin_fraction, not the bare _vram_frac: when the drafter
+                        # engages but its KV cannot be sized, the placement paths
+                        # spend _MTP_VRAM_RESERVE_FRAC less of every card and
+                        # _mtp_reserve_bytes carries no replacement for the unsized
+                        # part, so crediting the full fraction here would hand the
+                        # planner 5% of VRAM the fit deliberately kept free. Equal to
+                        # _vram_frac on every other load (_flat_mtp_reserve is 0).
                         "gpu_usable_mib": {
-                            _idx: max(0.0, _gpu_usable((_idx, _free)))
+                            _idx: max(0.0, _gpu_usable((_idx, _free), _pin_fraction))
                             for _idx, _free in (gpus or ())
                         },
                         "gpu_indices": gpu_indices,
@@ -18818,6 +18884,13 @@ class LlamaCppBackend:
                         # same type (common/speculative.cpp:2257-2261).
                         # Over-charging only spills more.
                         "mtp_will_engage": bool(_mtp_will_engage),
+                        # A SEPARATE drafter that stays on the GPU: a second model,
+                        # whose weights and KV llama.cpp distributes like any other.
+                        # None once the drafter is CPU-offloaded (_mtp_draft_for_budget
+                        # is nulled there), which is the case that really is off-GPU.
+                        "separate_draft_on_gpu": bool(
+                            _mtp_will_engage and _mtp_draft_for_budget
+                        ),
                         # The planner reads the real tensor table, not a bucket
                         # total, so it can spill the MINIMUM set of blocks.
                         "model_path": model_path,
@@ -23606,6 +23679,18 @@ class LlamaCppBackend:
         if is_apple_silicon():
             return None
 
+        # An integrated CUDA SoC (Jetson, DGX Spark) is unified memory too, and
+        # nothing else here sees it: _amd_apu_wants_unified_memory answers only for
+        # ROCm, and shared_gpu_ids is populated only on Vulkan, which reports total
+        # 0 for an iGPU. CUDA states it directly (cudaDeviceProp::integrated, torch's
+        # is_integrated), and Studio's diffusion policy already classifies such a
+        # device as unified memory for exactly this reason -- CPU offload frees
+        # nothing there (diffusion_memory.py:292-294). A spill would count one pool
+        # twice and then pin the result with --fit off.
+        if self._integrated_cuda_unified_memory(inputs.get("gpu_indices")):
+            logger.debug("Tensor spill: declined, an integrated CUDA device is unified memory")
+            return None
+
         # Someone else owns the placement -- decline. Each of these re-places the
         # model out from under a plan made here: -ot / --cpu-moe (or its env twin)
         # already moves tensors, a layer count overrides -ngl -1, a device list
@@ -23738,6 +23823,26 @@ class LlamaCppBackend:
             return None
         avail_mib = self._available_system_memory_mib()
         if avail_mib is None:
+            return None
+
+        # A separate drafter is a second MODEL, and an UNPINNED one is placed like
+        # any other: common_base_params_to_speculative copies the draft device list
+        # verbatim (common/speculative.cpp:2319-2331), and an empty one drops
+        # llama_prepare_model_devices into its default enumeration of every visible
+        # GPU (llama.cpp:184-276), so the drafter's weights AND its context follow
+        # the free-memory row split onto every card. A PINNED one already declined
+        # above. Its reserve rides in extra_resident_bytes, which
+        # _per_device_shortfall books entirely on device 0, so every other card is
+        # under-booked by its share -- and --fit off means common/fit.cpp never runs
+        # to catch the overflow. Nothing here says how llama.cpp will split a model
+        # this layout knows nothing about, so decline, like the pass-through adapter
+        # below.
+        if inputs.get("separate_draft_on_gpu") and len(vram_per_device) > 1:
+            logger.debug(
+                "Tensor spill: declined, a separate drafter's bytes cannot be placed "
+                "across %d devices",
+                len(vram_per_device),
+            )
             return None
 
         # The trailing nextn/MTP blocks the layout dropped, charged back when a

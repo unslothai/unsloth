@@ -53,9 +53,15 @@ class _Stub:
     # Bytes of trailing nextn/MTP blocks the layout dropped. 0 = an ordinary
     # model, which is every existing case here.
     _excluded_bytes = 0
+    # Discrete CUDA by default. An integrated SoC (Jetson, DGX Spark) is the
+    # unified-memory answer on the CUDA side, exercised deliberately below.
+    _integrated_cuda = False
 
     def _amd_apu_wants_unified_memory(self, gpu_indices = None):
         return self._unified
+
+    def _integrated_cuda_unified_memory(self, gpu_indices = None):
+        return self._integrated_cuda
 
     def __init__(
         self,
@@ -126,6 +132,7 @@ def _inputs(
     ctx_compute = 0,
     env_mmproj = 0,
     env_mmproj_unsized = False,
+    separate_draft = False,
 ):
     return {
         "model_size": model_size,
@@ -143,6 +150,7 @@ def _inputs(
         "n_ctx": 32768,
         "n_parallel": n_parallel,
         "shared_gpu_ids": set() if shared is None else set(shared),
+        "separate_draft_on_gpu": separate_draft,
         **({} if mtp is None else {"mtp_will_engage": mtp}),
     }
 
@@ -1036,3 +1044,89 @@ def test_apple_silicon_declines_the_plan(monkeypatch):
 
     monkeypatch.setattr(utils.hardware, "is_apple_silicon", lambda: False)
     assert _plan(_Stub(), free_mib = 14 * 1024) is not None, "not vacuous"
+
+
+def test_an_integrated_cuda_device_declines_the_plan():
+    """A CUDA SoC (Jetson, DGX Spark) is unified memory and no other guard sees it.
+
+    `_amd_apu_wants_unified_memory` answers only for ROCm, and `shared_gpu_ids`
+    is filled only on Vulkan (an iGPU reports total VRAM 0), so an integrated
+    CUDA device arrives with its "VRAM" credited AND host RAM credited: one pool
+    counted twice. Spilling out of it frees no device memory, and the plan then
+    pins that with --fit off, which is the load llama.cpp's own fitter used to
+    place. The repository already classifies such a device as unified memory for
+    the diffusion path (diffusion_memory.py:292-294, cudaDeviceProp::integrated
+    via torch's is_integrated).
+    """
+    discrete = _Stub()
+    soc = _Stub()
+    soc._integrated_cuda = True
+
+    # Same numbers either way, so the difference is attributable to the flag.
+    assert _plan(soc, free_mib = 14 * 1024) is None
+    assert _plan(discrete, free_mib = 14 * 1024) is not None, "not vacuous"
+
+
+def test_a_multi_gpu_separate_drafter_declines_rather_than_booking_it_on_device_0():
+    """An unpinned drafter is distributed, not a device-0 lump.
+
+    `common_base_params_to_speculative` copies the draft device list verbatim
+    (common/speculative.cpp:2319-2331) and an EMPTY one drops
+    `llama_prepare_model_devices` into its default enumeration of every visible
+    GPU (llama.cpp:184-276), so the drafter's weights and its context follow the
+    free-memory row split onto every card. `_mtp_reserve_bytes` rides in
+    `extra_resident_bytes`, which `_per_device_shortfall` books entirely on
+    device 0, so a tight second card passes the per-device check on bytes it will
+    really be asked to hold -- and --fit off means common/fit.cpp never runs to
+    catch the overflow. A PINNED drafter already declines on
+    `_extra_args_draft_device_pin`.
+    """
+    stub = _FlatAttentionStub()
+    # The all-blocks-spilled shape, the only multi-GPU one that reaches the
+    # per-device check at all (a partial spill abstains above it). extra_gpu is
+    # the drafter's own reserve, which is how the seam really carries it: the
+    # snapshot folds _mtp_reserve_bytes into extra_gpu_bytes.
+    two_cards = dict(
+        model_size = 21 * GIB,
+        kv = 2 * GIB,
+        extra_gpu = 3 * GIB,
+        gpus = [(0, 10 * 1024), (1, 3 * 1024)],
+    )
+    # Before this abstain the same inputs produced a real plan -- every block
+    # spilled, -ngl -1 --fit off emitted -- with the whole 3 GiB booked on
+    # device 0 and nothing on device 1, which is where the drafter's rows for
+    # that card's layers actually go.
+    assert _plan(stub, separate_draft = True, **two_cards) is None
+
+    # Only the drafter is refused: the same two cards without one still plan, and
+    # really spill, so the abstain is not the whole configuration being dropped.
+    without = _plan(stub, **two_cards)
+    assert without is not None and without.spills_anything
+
+    # Single card is unchanged: there the flat charge IS the right one.
+    one_card = _plan(_Stub(), free_mib = 14 * 1024, separate_draft = True)
+    assert one_card is not None and one_card.spills_anything
+
+
+def test_the_flat_mtp_reserve_reaches_the_spill_budget():
+    """An unsized draft KV is paid for with _MTP_VRAM_RESERVE_FRAC of every card.
+
+    The placement paths spend `_pin_fraction = _vram_frac - _MTP_VRAM_RESERVE_FRAC`
+    when the byte-accurate `mtp_overhead_fn` cannot size the draft KV, and
+    `_mtp_reserve_bytes` carries no replacement for the unsized part (it is 0 when
+    `mtp_overhead_fn is None`). The snapshot has to hand the planner that same
+    reduced budget, or the plan spends 5% of VRAM the fit deliberately kept free
+    and then pins it with --fit off.
+    """
+    import inspect
+
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    assert '"gpu_usable_mib":{_idx:max(0.0,_gpu_usable((_idx,_free),_pin_fraction))' in compact
+
+    # And the budget really is what the planner spends: the same load plans a
+    # bigger spill on the smaller budget.
+    stub = _Stub()
+    generous = _plan(stub, free_mib = 24 * 1024, usable_mib = 15 * 1024)
+    reserved = _plan(stub, free_mib = 24 * 1024, usable_mib = 14 * 1024)
+    assert generous is not None and reserved is not None
+    assert len(reserved.spilled_blocks) > len(generous.spilled_blocks)
