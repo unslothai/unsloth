@@ -708,9 +708,7 @@ def test_a_cached_safetensors_model_is_selectable_offline(client, monkeypatch, t
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
 
-    assert settings._safetensors_plan("org/st-only", None) == (
-        "org/st-only", ["model.safetensors"]
-    )
+    assert settings._safetensors_plan("org/st-only", None) == ("org/st-only", ["model.safetensors"])
 
     body = _resolve(client, "org/st-only").json()
     assert body["backend"] == "sentence-transformers"

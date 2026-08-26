@@ -460,12 +460,12 @@ def test_sink_threads_ambient_token_into_scan(monkeypatch):
     # loader's own token to the scan, or it fails open for the repo that still loads.
     seen = {}
     mod = _types.ModuleType("utils.security")
-    mod.security_load_subdirs = (
-        lambda name, token = None: seen.setdefault("subdirs_token", token) or ()
+    mod.security_load_subdirs = lambda name, token = None: (
+        seen.setdefault("subdirs_token", token) or ()
     )
-    mod.evaluate_file_security = lambda *a, **k: seen.setdefault(
-        "scan_token", k.get("hf_token")
-    ) or _Decision(False)
+    mod.evaluate_file_security = lambda *a, **k: (
+        seen.setdefault("scan_token", k.get("hf_token")) or _Decision(False)
+    )
     monkeypatch.setitem(sys.modules, "utils.security", mod)
     import core.rag.embeddings as embeddings
 

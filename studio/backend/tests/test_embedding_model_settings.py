@@ -159,9 +159,7 @@ def test_a_concurrent_save_is_not_reverted_by_a_late_pending_clear(settings_stor
     assert ems.get_stored_gguf_repo("org/a") is None
 
 
-def test_a_pinned_jobs_resolved_repo_survives_a_save_for_another_model(
-    settings_store, monkeypatch
-):
+def test_a_pinned_jobs_resolved_repo_survives_a_save_for_another_model(settings_store, monkeypatch):
     """There is one stored resolution record, so saving B takes A's repo away
     while a linked-folder job pinned to A is still ingesting. Without the memo its
     identity moves to the derived A-GGUF name mid-run, splitting one document set
