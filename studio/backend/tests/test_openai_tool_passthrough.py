@@ -1980,10 +1980,8 @@ class TestOpenAICompatibilityHelpers:
         assert image_b64 == "GENERATED"
 
     def test_first_image_wins_within_one_message(self):
-        # The composer allows multi-select, so one turn can carry several
-        # images. findLatestUserImageBase64 (chat-adapter.ts) returns on the
-        # first image part of the newest user message, and this value overrides
-        # that one downstream, so both sides must name the same image.
+        # The composer allows multi-select, and findLatestUserImageBase64
+        # (chat-adapter.ts) names the first of them, so this must agree.
         payload = ChatCompletionRequest(
             messages = [
                 {
@@ -2044,8 +2042,7 @@ class TestOpenAICompatibilityHelpers:
         assert image_b64 == "LATER"
 
     def test_payloadless_part_does_not_claim_the_message_slot(self):
-        # An empty data URL is not an image, so the first REAL image in the
-        # message wins rather than the message contributing nothing.
+        # An empty data URL is not an image, so the first real one still wins.
         payload = ChatCompletionRequest(
             messages = [
                 {
@@ -2070,8 +2067,8 @@ class TestOpenAICompatibilityHelpers:
         assert image_b64 == "RIGHT"
 
     def test_earlier_real_image_survives_a_payloadless_opening_turn(self):
-        # The pre-PR helper latched "" from the opening turn and suppressed
-        # every later image, so the request reached the model with none.
+        # The old helper latched "" here and suppressed every later image, so
+        # the request reached the model with none.
         def turn(url):
             return {
                 "role": "user",

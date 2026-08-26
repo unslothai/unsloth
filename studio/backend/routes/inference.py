@@ -13436,16 +13436,12 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
                 elif part.type == "image_url":
                     url = part.image_url.url
                     if url.startswith("data:"):
-                        # A data URL carrying no payload is not an image, so it
-                        # must not displace a real one from an earlier turn.
+                        # A payloadless data URL is not an image, so it must not
+                        # displace a real one from an earlier turn.
                         part_b64 = url.partition(",")[2]
                         if part_b64:
-                            # Within one message the FIRST image wins, matching
-                            # findLatestUserImageBase64 (chat-adapter.ts), which
-                            # returns on the first image part of the newest user
-                            # message. This value overrides that one downstream,
-                            # so a message carrying several images must not hand
-                            # the model a different one than the UI sent.
+                            # First within a message, matching the frontend's
+                            # findLatestUserImageBase64 (chat-adapter.ts).
                             if message_image_b64 is None:
                                 message_image_b64 = part_b64
                         else:
@@ -13454,8 +13450,7 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
                             )
                     else:
                         logger.warning(f"Remote image URLs not yet supported: {url[:80]}...")
-            # Later turns win: single-image backends must see the image just
-            # attached, not the one that opened the thread.
+            # Latest message wins: send the image just attached, not the thread's first.
             if message_image_b64 is not None:
                 latest_image_b64 = message_image_b64
                 if msg.role == "user":
@@ -13473,10 +13468,8 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
             chat_message["reasoning_content"] = msg.reasoning_content
         chat_messages.append(chat_message)
 
-    # The user's own newest attachment outranks an assistant's generated image: the
-    # frontend picks the legacy image_base64 field the same way (findLatestUserImageBase64
-    # in chat-adapter.ts) and this value overrides it downstream. An assistant-only
-    # history still falls back, so such a chat keeps reaching a vision model.
+    # A user's own attachment outranks an assistant-generated one, as the frontend's
+    # legacy image_base64 field does. An assistant-only history still falls back.
     return (
         "\n\n".join(p for p in system_parts if p),
         chat_messages,
