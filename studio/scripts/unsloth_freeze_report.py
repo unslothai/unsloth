@@ -185,8 +185,8 @@ CANDIDATE_VARS = tuple(sorted({k for _, extra, _ in CANDIDATES for k in extra}))
 #                                     between the shared-memory switch and no workaround.
 #   UNSLOTH_WEBKIT_DISABLE_COMPOSITING  the app's own on/off switch for the compositing
 #                                     workaround, and the one a freezing host is told to
-#                                     export, so it is the value most likely to still be
-#                                     set in the shell that runs this script.
+#                                     export, so of all of these it is the likeliest to
+#                                     still be set in the shell that runs this script.
 #
 # None of these appear in CANDIDATES, so a cleared set derived from CANDIDATES left every
 # one of them active. Any of them still exported in the reporter's shell then pins all four

@@ -269,9 +269,9 @@ def test_the_app_marker_is_recorded_so_a_stale_claim_is_visible():
 
 def test_every_setting_the_app_reads_is_one_the_reporter_clears():
     """The list above is hand-maintained, so it goes stale the moment linux_webkit.rs learns
-    a new UNSLOTH_WEBKIT_* setting: an inherited value then pins all four launches including
-    the control, and the report reads clean without having compared anything. Read the names
-    back out of the Rust rather than restating them here, so adding one there fails here."""
+    a new UNSLOTH_WEBKIT_* setting: an inherited value pins every launch including the
+    control, and the report reads clean without having compared anything. Reading the names
+    back out of the Rust, rather than restating them, is what makes adding one fail here."""
     import re
 
     source = (REPO_ROOT / "studio" / "src-tauri" / "src" / "linux_webkit.rs").read_text(
