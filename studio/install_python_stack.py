@@ -4763,9 +4763,15 @@ _EMPTY_POLICY_VALUES = ("", ":none:")
 
 # The upload cutoff is a date, but uv accepts `false` for it as "no cutoff": measured on
 # the pinned uv 0.12.1, UV_EXCLUDE_NEWER=false installs the current release while a date
-# filters it. Reading `false` as a cutoff put a security notice in front of an operator
-# who had switched the control off.
-_FALSE_DISABLES_KEYS = ("exclude-newer", "exclude-newer-package", "uploaded-prior-to")
+# filters it, and UV_EXCLUDE_NEWER=garbage is rejected outright, so `false` is a spelling
+# uv understands rather than a value it tolerates. Reading `false` as a cutoff put a
+# security notice in front of an operator who had switched the control off.
+#
+# uv's spellings ONLY. pip has no off value for its cutoff: measured on pip 26.2.1, both
+# `--uploaded-prior-to false` and PIP_UPLOADED_PRIOR_TO=false exit with "Expected an ISO
+# 8601 datetime string". Treating that as a disable let an unusable value cancel a real
+# pip.conf cutoff, so the notice went quiet about a control the pinned path still drops.
+_FALSE_DISABLES_KEYS = ("exclude-newer", "exclude-newer-package")
 
 
 def _policy_key_spelling(key: str) -> str:

@@ -41,6 +41,12 @@ def _shell_predicate() -> str:
 @pytest.mark.parametrize("value", [
     "", "0", "false", "FALSE", "False", "no", "NO", " no ", " 0 ", "\t0\t",
     "1", "yes", "on", "true", "2", "anything",
+    # Internal whitespace: the shell trimmed with `tr -d`, which deletes every space
+    # rather than the ends, so `f alse` collapsed to the false spelling here while
+    # Python read it as an ordinary non-false value and turned the opt-out ON.
+    "f alse", "n o", "fal se", "0 0", " no thing ", "a b",
+    # A lone separator strips to empty on both sides, which is the false spelling.
+    " ", "\t", "\n", " \t ",
 ])
 @pytest.mark.skipif(shutil.which("sh") is None, reason = "no POSIX sh")
 def test_the_shell_and_python_agree_on_the_opt_out(value, monkeypatch):

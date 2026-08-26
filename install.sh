@@ -245,8 +245,12 @@ _uv_download_markers() {
 # True when the operator asked for their pip/uv policy to be left in force. Mirrors
 # _respect_pm_policy() in studio/install_python_stack.py, including its false set, so the
 # same variable means the same thing at every entry point.
+# TRIM, not "delete every space": `tr -d` collapsed internal whitespace too, so `f alse`
+# read as the false spelling here while Python's .strip() and both PowerShell .Trim()s
+# read it as any other non-false value and turned the opt-out ON. The entry points have
+# to agree on a value or the promise holds for only part of a run.
 _respect_pm_policy() {
-    case "$(printf '%s' "${UNSLOTH_RESPECT_PM_POLICY:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+    case "$(printf '%s' "${UNSLOTH_RESPECT_PM_POLICY:-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" in
         ''|0|false|no) return 1 ;;
         *) return 0 ;;
     esac

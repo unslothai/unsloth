@@ -2777,3 +2777,36 @@ class TestDesktopBackendVersionConstraint:
                 else package_name
             )
             assert unsloth_spec == "unsloth"
+
+
+class TestAFalseCutoffOnlyDisablesTheManagerThatAcceptsIt:
+    """`false` is an off spelling for uv's exclude-newer and an ERROR for pip's cutoff.
+
+    Measured, not assumed. On the pinned uv 0.12.1, UV_EXCLUDE_NEWER=false resolves
+    normally while UV_EXCLUDE_NEWER=garbage is rejected, so uv understands `false` as
+    "no cutoff" rather than merely tolerating it. On pip 26.2.1 both
+    `--uploaded-prior-to false` and PIP_UPLOADED_PRIOR_TO=false exit with "Expected an
+    ISO 8601 datetime string". Treating pip's spelling as a disable let an unusable
+    environment value cancel a real pip.conf cutoff, which took the notice quiet about
+    a control the pinned path still drops.
+    """
+
+    def test_uv_cutoff_spellings_are_disabled_by_false(self):
+        for key in ("exclude-newer", "exclude-newer-package"):
+            assert ips._config_value_is_on("false", key) is False, key
+            assert ips._config_value_is_on("2026-01-01", key) is True, key
+
+    def test_pips_cutoff_is_not_disabled_by_a_value_pip_rejects(self):
+        # pip errors on this value, so it can neither be a cutoff nor an off switch.
+        # Reporting it keeps the notice honest about a setting that is still there.
+        assert ips._config_value_is_on("false", "uploaded-prior-to") is True
+        assert ips._config_value_is_on("false", "PIP_UPLOADED_PRIOR_TO") is True
+
+    def test_the_false_disables_set_holds_only_uv_spellings(self):
+        assert "uploaded-prior-to" not in ips._FALSE_DISABLES_KEYS
+        assert set(ips._FALSE_DISABLES_KEYS) == {"exclude-newer", "exclude-newer-package"}
+
+    def test_an_empty_cutoff_is_still_off_for_both(self):
+        for key in ("exclude-newer", "uploaded-prior-to"):
+            assert ips._config_value_is_on("", key) is False, key
+            assert ips._config_value_is_on("   ", key) is False, key
