@@ -280,6 +280,14 @@ def test_the_fields_after_a_masked_header_survive(line, expected):
             "OPENAI_API_KEY=abcdef123456 python server.py --port 8080",
             "OPENAI_API_KEY=<redacted> python server.py --port 8080",
         ),
+        (
+            "DATABASE_PASSWORD=abc,def}] python server.py",
+            "DATABASE_PASSWORD=<redacted> python server.py",
+        ),
+        (
+            r"DATABASE_PASSWORD=abc\ def python server.py",
+            "DATABASE_PASSWORD=<redacted> python server.py",
+        ),
         ('{"password":"null"}', '{"password":"<redacted>"}'),
         ("password='None'", "password='<redacted>'"),
     ],

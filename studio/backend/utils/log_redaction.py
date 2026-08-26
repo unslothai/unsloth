@@ -112,7 +112,7 @@ _ENV_ASSIGNMENT_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?P<key>[A-Z_][A-Z0-9_]*)"
     r"(?P<sep>=)(?:(?P<quote>[\"'])(?P<quoted>"
     + _QUOTED_VALUE
-    + r")(?P=quote)|(?P<val>[^\s,}\]]+))"
+    + r")(?P=quote)|(?P<val>(?:\\[^\r\n]|[^\s\\])+))"
 )
 _QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
