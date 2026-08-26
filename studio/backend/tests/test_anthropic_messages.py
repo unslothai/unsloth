@@ -3622,7 +3622,7 @@ def assert_anthropic_stream_conformant(lines):
     for name, data in events[1:]:
         assert data.get("type") == name, f"event {name} carries data.type {data.get('type')}"
         if name in ("ping", "tool_result"):
-            # tool_result is Studio's own event for a server-executed tool; real
+            # tool_result is Unsloth's own event for a server-executed tool; real
             # SDKs ignore it, and it must never claim a content block index.
             assert "index" not in data, "tool_result must not consume a block index"
             continue

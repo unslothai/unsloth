@@ -2978,7 +2978,7 @@ def _mark_chat_attachment_inventory_clean(conn: sqlite3.Connection) -> None:
 
 
 def _rebuild_chat_attachment_inventory(conn: sqlite3.Connection) -> None:
-    """Rebuild after schema upgrade or a write from an older Studio build."""
+    """Rebuild after schema upgrade or a write from an older Unsloth build."""
     conn.execute("DELETE FROM chat_attachment_inventory")
     tombstones: dict[tuple[str, str], set[str]] = {}
     for row in conn.execute(

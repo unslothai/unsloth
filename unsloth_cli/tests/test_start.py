@@ -6189,7 +6189,7 @@ def test_augment_path_leaves_path_alone_when_nothing_to_add(monkeypatch):
 
 
 def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path):
-    # A shim resolved via Studio's managed Node needs that node on PATH when it runs.
+    # A shim resolved via Unsloth's managed Node needs that node on PATH when it runs.
     managed_bin = tmp_path / "node" / "bin"
     managed_bin.mkdir(parents = True)
     monkeypatch.setattr(
@@ -6207,7 +6207,7 @@ def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path)
 
 
 def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypatch, tmp_path):
-    # Attaching to a remote Studio needs no local auth tree, so a read-only one must not stop it.
+    # Attaching to a remote Unsloth needs no local auth tree, so a read-only one must not stop it.
     readonly = tmp_path / "readonly"
     readonly.mkdir(mode = 0o500)
     monkeypatch.setattr(start, "_agents_config_root", lambda: readonly / "agents")
@@ -6219,7 +6219,7 @@ def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypat
 
 
 def test_session_config_reclaims_abandoned_homes_for_non_codex_agents(monkeypatch, tmp_path):
-    # Nothing else prunes Studio's auth tree, so a killed wrapper's home must be reclaimed.
+    # Nothing else prunes Unsloth's auth tree, so a killed wrapper's home must be reclaimed.
     agents_root = tmp_path / "agents"
     temp_root = agents_root / ".tmp"
     temp_root.mkdir(parents = True)

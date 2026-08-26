@@ -117,7 +117,7 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # the same opaque one.
     frozenset({"--log-file"}),
     frozenset({"--log-disable"}),
-    # Slot-state dir: Studio owns it for KV persistence across idle unload. Endpoint
+    # Slot-state dir: Unsloth owns it for KV persistence across idle unload. Endpoint
     # exposure (--slots, --props) is deliberately NOT denied alongside it: Unsloth
     # reads GET /props and never /slots, so either is the user's own call.
     frozenset({"--slot-save-path"}),
@@ -1342,17 +1342,17 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_CORS_METHODS",
     "LLAMA_ARG_CORS_CREDENTIALS",
     "LLAMA_ARG_MEDIA_PATH",
-    # The twins of --log-file and --log-disable. Studio classifies a failed start by
+    # The twins of --log-file and --log-disable. Unsloth classifies a failed start by
     # reading llama-server's own output, so an inherited redirect leaves every
-    # failure looking like the same opaque one; and unlike the flags, Studio emits
+    # failure looking like the same opaque one; and unlike the flags, Unsloth emits
     # nothing later that would override these. LLAMA_ARG_LOG_DISABLE has no twin in
     # today's builds, and is listed so it cannot arrive as one.
     "LLAMA_ARG_LOG_FILE",
     "LLAMA_ARG_LOG_DISABLE",
-    # --api-prefix moves every endpoint, including the /health Studio waits on, so an
+    # --api-prefix moves every endpoint, including the /health Unsloth waits on, so an
     # inherited one turns every load into a timeout.
     "LLAMA_ARG_API_PREFIX",
-    # --api-key and its file. Studio terminates auth itself and sends the child no
+    # --api-key and its file. Unsloth terminates auth itself and sends the child no
     # Authorization header, so an inherited key makes the healthy child refuse every
     # request. The bundled build reads LLAMA_API_KEY for the flag and
     # LLAMA_ARG_API_KEY_FILE for the file; the third spelling is listed because the
@@ -1361,7 +1361,7 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_API_KEY",
     "LLAMA_ARG_API_KEY_FILE",
     # The twins of --ssl-key-file and --ssl-cert-file. Given both, llama-server
-    # listens on https, while Studio probes /health and proxies over http against
+    # listens on https, while Unsloth probes /health and proxies over http against
     # the port it launched: the child comes up healthy and every load times out.
     # Measured on b10360, where an inherited pair turns "listening on
     # http://127.0.0.1:PORT" into "listening on https://...".
@@ -1369,7 +1369,7 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_SSL_CERT_FILE",
     # The rest of the twins its --help documents for a denied flag, enumerated from
     # the bundled b10342 help rather than picked one at a time: every "(env: NAME)"
-    # whose option this module refuses. Studio emits most of these itself and argv
+    # whose option this module refuses. Unsloth emits most of these itself and argv
     # wins over the environment, so removing them changes nothing in the ordinary
     # case; they are here for the paths where it does not, and so a flag denied in
     # the box is not reachable through the environment instead. The mapping below
@@ -1405,7 +1405,7 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     # LLAMA_ARG_POOLING / _RERANKING / _EMBEDDINGS itself, next to where it decides
     # what the GGUF header says.
     # The multi-model server mode: a child holding its own model directory, preset
-    # and autoload policy is not the single model Studio launched and accounts for.
+    # and autoload policy is not the single model Unsloth launched and accounts for.
     "LLAMA_ARG_MODELS_DIR",
     "LLAMA_ARG_MODELS_PRESET",
     "LLAMA_ARG_MODELS_MAX",

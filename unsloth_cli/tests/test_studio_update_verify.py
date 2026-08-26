@@ -5,7 +5,7 @@
 
 pip considers a distribution with intact metadata already satisfied, so an
 update reinstalls nothing when a package's files are damaged. Before this check
-it printed "Unsloth Studio Installed" and exited 0 while Studio died at boot
+it printed "Unsloth Studio Installed" and exited 0 while Unsloth died at boot
 with `cannot import name 'Depends' from 'fastapi'` -- and a missing-package
 check could not have caught it, because `import fastapi` still succeeded.
 
@@ -356,12 +356,12 @@ def test_duplicate_metadata_gets_its_own_actionable_failure(monkeypatch, capsys)
 
     assert excinfo.value.exit_code == 1
     err = capsys.readouterr().err
-    assert "Studio package metadata is inconsistent" in err
+    assert "Unsloth package metadata is inconsistent" in err
     assert "cannot safely choose" in err
     assert "Recreate the managed environment before" in err
     assert "pip install" not in err
     assert "installed files are damaged" not in err
-    assert "Studio will keep failing to start" not in err
+    assert "Unsloth will keep failing to start" not in err
 
 
 @pytest.mark.parametrize("package", ["typer", "torch"])
@@ -432,7 +432,7 @@ def test_a_system_python_is_not_treated_as_the_managed_venv(monkeypatch, tmp_pat
     # Colab has no Unsloth venv: studio/setup.sh installs the backend into the
     # system Python on purpose. Distro-packaged RECORDs there list files the
     # distro never installed (PEP 627), so running the file check would accuse
-    # the distro of damaging Studio. Reproduced on Ubuntu system Python, which
+    # the distro of damaging Unsloth. Reproduced on Ubuntu system Python, which
     # reports an apt-owned `markdown-it-py: ../scripts/markdown-it is missing`.
     prefix = tmp_path / "usr"
     prefix.mkdir()
@@ -666,7 +666,7 @@ def test_the_message_covers_packages_the_installer_will_not_repair(monkeypatch, 
     # nothing, and the installer never recreates the venv, so damage in an
     # orphan from an older release survives the reinstall it recommends and
     # would report the same failure forever. The scan is deliberately not
-    # scoped to Studio's dependency closure: under-including there would let
+    # scoped to Unsloth's dependency closure: under-including there would let
     # real damage through, which is the failure this whole check exists to
     # catch. So the message has to carry the fallback instead.
     import typer

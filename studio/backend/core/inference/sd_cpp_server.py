@@ -8,7 +8,7 @@ reloaded the multi-GB GGUF from disk every generation. ``sd-server`` (the upstre
 ``examples/server`` target) loads the model once at spawn and serves many generations
 over HTTP, exactly like the chat backend's persistent ``llama-server``. This manager
 owns ONLY the process + HTTP lifecycle; the backend (``sd_cpp_backend.py``) still owns
-asset resolution, request validation, and the public Studio surface.
+asset resolution, request validation, and the public Unsloth surface.
 
 Shape mirrors ``core/rag/embed_llama_server.py``:
   * ``start``      -- pick a free loopback port, spawn the server (model loads here),
@@ -318,7 +318,7 @@ class SdCppServer:
         ``_find_free_port`` binds an ephemeral port, reads it and closes the socket, and sd-server
         binds it only AFTER loading the model -- minutes for a multi-gigabyte checkpoint. Another
         local process can take the port inside that window, and ``/v1/models`` is a stock
-        OpenAI-compatible route that llama.cpp's own server (and a second Studio) answers 200 on,
+        OpenAI-compatible route that llama.cpp's own server (and a second Unsloth) answers 200 on,
         so readiness would pass and every generation would be posted to an unrelated listener.
 
         Verifying the listener really belongs to our child closes that. Best-effort by design:

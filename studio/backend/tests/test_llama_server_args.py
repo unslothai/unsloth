@@ -236,7 +236,7 @@ def test_a_bare_positional_is_rejected():
         # Startup output is how a bad GGUF is told from an OOM from a rejected flag.
         "--log-file",
         "--log-disable",
-        # Slot-state dir: Studio owns it for KV persistence across idle unload.
+        # Slot-state dir: Unsloth owns it for KV persistence across idle unload.
         "--slot-save-path",
         # These print and exit instead of serving.
         "-h",
@@ -1128,7 +1128,7 @@ def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
     # pairs that mattered, so a name dropped from the denylist, or a twin dropped
     # from the scrub, is a red test rather than a back door found later.
     #
-    # llama.cpp applies the environment BEFORE argv, so the ones Studio always emits
+    # llama.cpp applies the environment BEFORE argv, so the ones Unsloth always emits
     # are overridden anyway; the rest are the reason this exists.
     for env_var, flag in (
         ("LLAMA_ARG_UI_MCP_PROXY", "--ui-mcp-proxy"),
@@ -1159,7 +1159,7 @@ def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
     for kept in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
         assert kept not in _lsa.DENIED_ENV_VARS, kept
     # HF_TOKEN is deliberately not here: it is the standard Hugging Face credential
-    # Studio's own downloads use, not a llama-server behaviour switch, and the child
+    # Unsloth's own downloads use, not a llama-server behaviour switch, and the child
     # is always given a local -m path rather than a repo to fetch.
     assert "HF_TOKEN" not in _lsa.DENIED_ENV_VARS
     _lsa.scrub_denied_env(env)

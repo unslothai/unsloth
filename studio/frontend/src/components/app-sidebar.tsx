@@ -308,7 +308,7 @@ const menuRadioItemClass =
   "pl-9 pr-3 [&>[data-slot=dropdown-menu-radio-item-indicator]]:right-auto [&>[data-slot=dropdown-menu-radio-item-indicator]]:left-3";
 
 // Whether cmd or ctrl adds a row to the selection. This is the user's own
-// keyboard, not the host Studio runs on, so it reads the browser rather than
+// keyboard, not the host Unsloth runs on, so it reads the browser rather than
 // the platform store: a Mac browser on a Linux host still uses cmd. Ctrl is
 // left alone on macOS, where ctrl click is the right click chord.
 const SELECT_WITH_META =

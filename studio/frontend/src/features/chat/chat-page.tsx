@@ -2494,7 +2494,7 @@ export function ChatPage({
     const storedWebFetchToolsEnabled =
       threadScopedOverride("webFetchToolsEnabled") ??
       loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
-    // Studio runs Search and Code itself for any provider that advertises the
+    // Unsloth runs Search and Code itself for any provider that advertises the
     // capability, so a self-hosted connection has no hosted builtin to key off.
     // Keying the pill state on the hosted flags alone discarded the user's saved
     // preference on every reload and sent enable_tools: false, even though the
@@ -2505,7 +2505,7 @@ export function ChatPage({
         selection.modelId,
       ) === true;
     const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
-    // Read out of the placement rule, not off the Studio-tools flag: a model on
+    // Read out of the placement rule, not off the Unsloth-tools flag: a model on
     // a sandbox-owning provider that cannot use it runs nothing either way, and
     // offering the pill there restored a preference that sent no tools at all.
     const canRunCode = codeToolCanRun({
@@ -3869,7 +3869,7 @@ export function ChatPage({
           <body> costs 0.10 ms either way, so the cost is the thread being under
           the subject and nothing else. Chromium only: WebKitGTK and Firefox are
           flat across all four selector forms, so this neither helps nor hurts
-          the engine Studio uses on Linux.
+          the engine Unsloth uses on Linux.
 
           ChatModelNotice renders a direct child of this element (see below), so
           the child combinator matches exactly what the descendant form matched.

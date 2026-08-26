@@ -107,7 +107,7 @@ test("the notice clears the chat header instead of rendering underneath it", () 
   // bg-background. Per CSS painting order a positioned element is painted above every
   // non-positioned one whatever the source order, so the whole bar sat underneath the
   // header and only the 10px the header's `right-[10px]` leaves uncovered was visible.
-  // Measured on a built Studio: the notice's rect was {x:280,y:0,w:1220,h:37}, exactly
+  // Measured on a built Unsloth: the notice's rect was {x:280,y:0,w:1220,h:37}, exactly
   // the header's own band, and the before/after screenshots differed by a 10x37 sliver.
   const header = slice(page, "chat-header-fade", "</div>");
   assert.match(header, /z-40/, "the header is still the z-40 absolute overlay");
@@ -136,7 +136,7 @@ test("the notice clears the chat header instead of rendering underneath it", () 
 });
 
 test("the conversation reserves the space the notice overlay takes", () => {
-  // Measured on a built Studio before this: the viewport reserved exactly the
+  // Measured on a built Unsloth before this: the viewport reserved exactly the
   // header's 48px, the notice sat opaque at y 48..85, and the first message's own
   // rect started at y=48 -- elementFromPoint returned the notice for every sample
   // across its band, in a 2-turn chat AND in a 40-turn chat scrolled to the top.
@@ -184,7 +184,7 @@ test("the research panel reserves the notice's height too", () => {
   // the header height for exactly the same reason, which lands its header at the
   // notice's top edge.
   //
-  // Measured on a Studio built from this tree, saved chat on claude-opus-4-5 with
+  // Measured on an Unsloth built from this tree, saved chat on claude-opus-4-5 with
   // the composer on gpt-5-mini and the research panel open: notice rect
   // {top:48,bottom:84,left:280,right:1590}, aside {top:48,left:1099.41,right:1600}
   // -> 36px x 490.59px of the aside covered, which is its entire header band.

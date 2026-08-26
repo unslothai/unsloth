@@ -87,7 +87,7 @@ export async function loadProfileStats(
   signal?: AbortSignal,
 ): Promise<ProfileStats> {
   // Bucket days and hours in this browser's timezone, which is not the
-  // server's when Studio is reached over the network. The IANA name is what
+  // server's when Unsloth is reached over the network. The IANA name is what
   // gives each historical date its own daylight-saving offset; the current
   // offset only covers callers whose host cannot resolve the name.
   const query = new URLSearchParams({

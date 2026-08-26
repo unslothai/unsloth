@@ -451,7 +451,7 @@ def invalidate_hf_cache_scans() -> None:
 
 def _is_hidden_infra_repo(*values: str | None) -> bool:
     """True for infra-only repos (the RAG embedder and the llama.cpp install
-    validation probe) that are cached as a side effect of Studio itself and are
+    validation probe) that are cached as a side effect of Unsloth itself and are
     not usable chat models."""
     return is_hidden_model(*values)
 

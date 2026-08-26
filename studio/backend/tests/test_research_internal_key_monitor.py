@@ -58,7 +58,7 @@ def test_session_jwt_and_missing_header_are_not_api_traffic():
 
 
 def test_unknown_key_is_treated_as_third_party():
-    # An unrecognised key cannot be Studio's own, so it must keep its monitor attribution.
+    # An unrecognised key cannot be Unsloth's own, so it must keep its monitor attribution.
     assert auth_storage.is_internal_api_key("sk-unsloth-deadbeefdeadbeef") is False
     assert _request_used_api_key(_Request("Bearer sk-unsloth-deadbeefdeadbeef")) is True
 

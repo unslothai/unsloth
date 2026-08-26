@@ -371,7 +371,7 @@ from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
 
 # The leaf module, not utils.models: importing anything from that package runs its __init__,
 # which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
-# Studio's Python is, so it must not make the whole models package a hard import dependency.
+# Unsloth's Python is, so it must not make the whole models package a hard import dependency.
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
     is_speech_gguf_architecture,
@@ -788,7 +788,7 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
     exchanges it created, which the next request's transcript does not contain.
 
     Counted by identity. Instruction messages are skipped rather than treated as the front
-    of the branch, or a Studio request (always system-prefixed) would report zero on every
+    of the branch, or an Unsloth request (always system-prefixed) would report zero on every
     compaction and the boundary would slide every turn again. Everything from the newest
     USER turn on is excluded: it is never evicted, and an inline recall rewrites that turn
     into a new dict, which an identity scan reads as an eviction. Excluding just the last
@@ -3019,7 +3019,7 @@ def _planned_main_cache_types(
     return _effective_main_cache_types(args, env)
 
 
-# What kv_cache_type_from_str accepts, so the only types Studio emits. Module scope
+# What kv_cache_type_from_str accepts, so the only types Unsloth emits. Module scope
 # because the budget must know whether a type will reach the child before the command
 # is assembled.
 _VALID_CACHE_TYPES = frozenset(
@@ -3304,7 +3304,7 @@ def _pipeline_parallel_disabled_by_args(
     """Whether the launch turns OFF llama.cpp's pipeline parallelism, i.e. the 4x in
     ``_CTX_COMPUTE_SPLIT_MULT``. llama-context.cpp requires ``-sm layer``, KV offload
     on and an empty tensor-override list (among other things); anything here is back to
-    1x, and charging the multiplier anyway would waste context. Studio passes none of
+    1x, and charging the multiplier anyway would waste context. Unsloth passes none of
     it, but extra_args and the environment can.
 
     ``-cmoe`` / ``-ncmoe`` count: both push into ``tensor_buft_overrides`` exactly like
@@ -3326,7 +3326,7 @@ def _pipeline_parallel_disabled_by_args(
     if split_mode is not None and split_mode.strip().lower() not in {"layer", "tensor"}:
         return True
     # Pipelining needs n_gpu_layers > n_layer_all, so a user -ngl (appended after
-    # Studio's -ngl -1, last-wins) that cannot exceed the count loads a prefix and
+    # Unsloth's -ngl -1, last-wins) that cannot exceed the count loads a prefix and
     # turns it off. Negative (all layers) or above the count keeps the step, even
     # in between: n_layers is block_count, which IS n_layer_all (llama-model.cpp
     # reads the key straight into it); hparams.n_layer() is the smaller MTP-less one.
@@ -3355,7 +3355,7 @@ def _kv_unified_from_args(
     elif value in _LLAMA_ARG_FALSE_VALUES:
         enabled = False
     if default:
-        # Studio's managed --kv-unified flag is appended after environment
+        # Unsloth's managed --kv-unified flag is appended after environment
         # parsing and before user extras.
         enabled = True
     for raw in extra_args or ():
@@ -3592,7 +3592,7 @@ def _metal_device_is_paravirtual() -> bool:
 def _paravirtual_probe_answered(server_caps: Mapping[str, object]) -> bool:
     """False when the --help probe failed, so every capability read as absent.
 
-    Both companion flags predate the oldest build Studio can launch (--no-mmproj-offload
+    Both companion flags predate the oldest build Unsloth can launch (--no-mmproj-offload
     is b5178, --gpu-layers-draft is from 2023, and the base argv already requires b6325),
     so "capability missing" means the probe did not answer, not that the build lacks it:
     one malformed inherited LLAMA_ARG_* makes llama-server --help exit non-zero and the
@@ -3678,7 +3678,7 @@ def _extra_args_mmproj_offload_value(extra_args: Optional[Sequence[str]]) -> Opt
 
 
 # arg.cpp applies set_env options BEFORE argv, so an inherited placement is a choice
-# Studio can reverse with nothing but a llama.cpp warning to show for it, and the child
+# Unsloth can reverse with nothing but a llama.cpp warning to show for it, and the child
 # inherits this process's environment. Both spellings: get_value_from_env checks the
 # LLAMA_ARG_NO_ form first and forces falsey on PRESENCE, empty value included.
 _MMPROJ_OFFLOAD_ENV_VAR = "LLAMA_ARG_MMPROJ_OFFLOAD"
@@ -4576,7 +4576,7 @@ def _cpu_runtime_owner_alive(staged_dir: Path) -> bool:
     try:
         pid = int((staged_dir / _CPU_RUNTIME_OWNER_FILE).read_text(encoding = "utf-8").strip())
     except (OSError, ValueError):
-        # No owner stamp: written by an older Studio, so leave it alone.
+        # No owner stamp: written by an older Unsloth, so leave it alone.
         return True
     if pid == os.getpid():
         return True
@@ -4603,7 +4603,7 @@ def _cpu_runtime_owner_alive(staged_dir: Path) -> bool:
 
 
 def _sweep_abandoned_cpu_runtimes(runtime_root: Path) -> None:
-    """Delete staged runtimes whose owning Studio is gone (kill -9, host crash)."""
+    """Delete staged runtimes whose owning Unsloth is gone (kill -9, host crash)."""
     try:
         candidates = list(runtime_root.glob("llama-cpu-*"))
     except OSError:
@@ -5635,7 +5635,7 @@ class LlamaCppBackend:
         # stripped list is clearing the failed drafter and must not read as inheriting it.
         _invoked_extras = self.requested_extra_args if intent.extra_args_inherited else extra_args
         # Requested against requested, per axis, the same rule the tuning group above
-        # uses. The scalar self._cache_type_kv holds only what Studio emitted as a
+        # uses. The scalar self._cache_type_kv holds only what Unsloth emitted as a
         # managed flag, so a cache set through extras or the env records None on one
         # side and a type on the other, and an identical repeat /load tears down a
         # healthy server. _requested_cache_types is what the live server was ASKED for,
@@ -5977,7 +5977,7 @@ class LlamaCppBackend:
         Search order:
         1.  LLAMA_SERVER_PATH environment variable (direct path to binary)
         1b. UNSLOTH_LLAMA_CPP_PATH env var (custom llama.cpp install dir)
-        2.  Studio's custom llama.cpp folder setting
+        2.  Unsloth's custom llama.cpp folder setting
         3.  ~/.unsloth/llama.cpp/llama-server        (make build, root dir)
         4.  ~/.unsloth/llama.cpp/build/bin/llama-server  (cmake build, Linux)
         5.  ~/.unsloth/llama.cpp/build/bin/Release/llama-server.exe  (cmake build, Windows)
@@ -6069,7 +6069,7 @@ class LlamaCppBackend:
             if hit:
                 return hit
 
-        # 2. Studio setting: a deliberate pin, so a missing or inaccessible
+        # 2. Unsloth setting: a deliberate pin, so a missing or inaccessible
         # selected build must not silently fall through to the bundled runtime.
         # The user would otherwise see their custom path selected while another
         # llama-server actually ran.
@@ -6085,7 +6085,7 @@ class LlamaCppBackend:
             if hit:
                 return hit
             logger.warning(
-                "The custom llama.cpp folder selected in Studio no longer contains "
+                "The custom llama.cpp folder selected in Unsloth no longer contains "
                 "%s; not falling back to another runtime",
                 binary_name,
             )
@@ -6443,7 +6443,7 @@ class LlamaCppBackend:
             elif _is_real("--draft-max"):
                 spec_draft_n_max_flag = "--draft-max"
             # And the build's OWN default for it, off the same help line. Needed
-            # where the extras own --spec-type: Studio emits no depth then, so the
+            # where the extras own --spec-type: Unsloth emits no depth then, so the
             # child runs on this number and the Hybrid Mamba rollback reserve
             # scales by it. None when the line carries no default.
             if spec_draft_n_max_flag:
@@ -7551,7 +7551,7 @@ class LlamaCppBackend:
     ) -> bool:
         """Whether a pass-through "-c 0" must be dropped before it reaches Metal.
 
-        User extras are appended after Studio's own -c and llama.cpp is
+        User extras are appended after Unsloth's own -c and llama.cpp is
         last-wins, so a zero override outlives both the Apple cap and the floor
         above and re-pins the native length. Only a zero; a positive -c stays
         honored. Inert off Apple Silicon like the floor, but unlike the floor it
@@ -7576,7 +7576,7 @@ class LlamaCppBackend:
         max_recommended_working_set_size is a static device property, and
         virtual_memory().total obviously is, so on a 16 GB Mac the budget came
         out around 9 GB whether the machine was idle or already holding several
-        gigabytes. Studio's own idle footprint alone is over a gigabyte once the
+        gigabytes. Unsloth's own idle footprint alone is over a gigabyte once the
         warm thread has imported torch and, on Apple Silicon, MLX. The fit then
         sized a context against headroom that was not there, and llama-server
         died in KV or compute allocation.
@@ -8725,7 +8725,7 @@ class LlamaCppBackend:
         defaults to 4096, and only "-c 0" disables the reduction outright), but it
         decides from the free memory ggml-metal reports, off the device's
         recommendedMaxWorkingSetSize. That is a property of the machine, not the moment:
-        it knows nothing of Studio's own resident gigabyte or two, of whatever else the
+        it knows nothing of Unsloth's own resident gigabyte or two, of whatever else the
         user has open, or of the iogpu wired limit that is the figure actually being
         blown. _apple_metal_memory_budget_bytes exists for exactly that gap, and takes
         min(device ceiling, psutil available) instead.
@@ -8890,7 +8890,7 @@ class LlamaCppBackend:
     _NON_QUANTIZED_KV_TYPES = frozenset({"f16", "bf16", "f32"})
 
     # Main-model placement settings that Manual mode owns. They must not leak
-    # from Studio's parent environment into llama-server and silently override
+    # from Unsloth's parent environment into llama-server and silently override
     # the command assembled from the current request. Draft-model placement is
     # intentionally separate and remains available to speculative decoding.
     _MANUAL_PLACEMENT_ENV_VARS = (
@@ -12459,7 +12459,7 @@ class LlamaCppBackend:
             "wan",
         )
     )
-    # Media archs Studio recognises but NO page can run, so the refusal must not promise
+    # Media archs Unsloth recognises but NO page can run, so the refusal must not promise
     # one. Mirrors ``routes.models._UNSUPPORTED_DIFFUSION_GGUF_ARCHS``, which tags these
     # ``image-diffusion-unsupported`` and so hides them from the Images AND Video pickers.
     #   * "cosmos": no VideoFamily exists at all (``detect_video_family`` returns None for
@@ -12626,7 +12626,7 @@ class LlamaCppBackend:
                     )
                 return (
                     f"This is a text-to-video GGUF (architecture '{arch}'), which cannot "
-                    "run as a chat model. Studio cannot assemble this particular model "
+                    "run as a chat model. Unsloth cannot assemble this particular model "
                     "from a GGUF, so the Video page does not list it either."
                 )
             if arch in self._IMAGE_ARCHES:
@@ -12642,7 +12642,7 @@ class LlamaCppBackend:
                     )
                 return (
                     f"This is an image-generation GGUF (architecture '{arch}'), which "
-                    "cannot run as a chat model. Studio could not tell which model family "
+                    "cannot run as a chat model. Unsloth could not tell which model family "
                     f"this file belongs to -- '{arch}' is shared by several -- so the "
                     "Images page cannot assemble it either."
                 )
@@ -12676,7 +12676,7 @@ class LlamaCppBackend:
                     )
                 return (
                     "This is a text-to-video model, not a chat model, and its GGUF carries "
-                    "no llama.cpp model metadata. Studio cannot assemble this particular "
+                    "no llama.cpp model metadata. Unsloth cannot assemble this particular "
                     "model from a GGUF either, so the Video page does not list it."
                 )
         except Exception as e:  # noqa: BLE001 -- naming the page is a nicety, never a gate
@@ -12692,7 +12692,7 @@ class LlamaCppBackend:
                     )
                 return (
                     "This is an image-generation model, not a chat model, and its GGUF "
-                    "carries no llama.cpp model metadata. Studio cannot assemble this "
+                    "carries no llama.cpp model metadata. Unsloth cannot assemble this "
                     "particular model from a GGUF either, so the Images page does not list "
                     "it."
                 )
@@ -12760,7 +12760,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _is_llama_install_tree(binary: Optional[str]) -> bool:
-        """Does ``binary`` sit in a llama.cpp tree Studio resolved for itself?
+        """Does ``binary`` sit in a llama.cpp tree Unsloth resolved for itself?
 
         The pre-existing half of the question above, kept separate because the
         two are not the same: a --with-llama-cpp-dir checkout IS the active
@@ -13309,7 +13309,7 @@ class LlamaCppBackend:
             if _why.lower() in {"stoi", "stof", "stod", "stoul", "stoll"}:
                 _why = "the value is not a number"
             _tail = f": {_why}" if _why else ""
-            # Whose flag it is decides the advice. Studio emits its own options
+            # Whose flag it is decides the advice. Unsloth emits its own options
             # conditionally on the capability probe, so a build that reads
             # "--flash-attn on" differently rejects a value the box never held, and
             # sending that reader to edit their extra arguments points them at a
@@ -13420,7 +13420,7 @@ class LlamaCppBackend:
                     )
                 return (
                     f"'{arch}' is a text-to-video GGUF, which llama-server cannot run as "
-                    "a chat/completion model. Studio cannot assemble this particular "
+                    "a chat/completion model. Unsloth cannot assemble this particular "
                     "model from a GGUF, so the Video page does not list it either."
                 )
             if arch in LlamaCppBackend._IMAGE_ARCHES or (
@@ -13665,7 +13665,7 @@ class LlamaCppBackend:
     def _scrub_secret_values(text: str, extra: Sequence[Optional[str]] = ()) -> str:
         """Redact credential-looking environment values out of ``text``.
 
-        llama-server inherits nearly all of Studio's environment, so a wrapper
+        llama-server inherits nearly all of Unsloth's environment, so a wrapper
         script, a diagnostic build or a crash handler that echoes its env would
         otherwise put an API key straight into the load error.
 
@@ -14162,7 +14162,7 @@ class LlamaCppBackend:
     # Unlike the #6415 split-axis abort this is a clean LLAMA_LOG_ERROR + return
     # nullptr (exit 1, no signal), so _should_record_tensor_split_abort cannot see it.
     # Matched on the middle of the string, so the surrounding log format is irrelevant.
-    # Studio dropped its own pre-emptive gate once #23792 shipped, so this marker is
+    # Unsloth dropped its own pre-emptive gate once #23792 shipped, so this marker is
     # what keeps an older binary cheap: without it every load burns two doomed model
     # loads (tensor attempt plus --fit retry) before the route's layer fallback.
     _TENSOR_QUANT_KV_UNSUPPORTED_MARKER = (
@@ -14575,7 +14575,7 @@ class LlamaCppBackend:
         for i in reversed(bare_at):
             del out[i]
 
-        # Studio launches with FA on, so a quantized --cache-type-v is legal at
+        # Unsloth launches with FA on, so a quantized --cache-type-v is legal at
         # launch but would make THIS FA-off retry crash on init instead of
         # recovering.
         return LlamaCppBackend._reset_quantized_v_cache(
@@ -14596,7 +14596,7 @@ class LlamaCppBackend:
         before a flash-attn-off retry, returning True if anything was removed.
 
         The argv rewrite in ``_with_flash_attn_off`` only reaches flags on the
-        command line. Studio deliberately lets an env-only cache type reach the
+        command line. Unsloth deliberately lets an env-only cache type reach the
         child untouched (an asymmetric K/V env must survive), so a quantized V
         cache set purely through ``LLAMA_ARG_CACHE_TYPE_V`` (or the draft
         ``LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V``) would still abort the FA-off retry
@@ -14925,7 +14925,7 @@ class LlamaCppBackend:
         loader_path = _loader_path_var()
         env[loader_path] = loader_env[loader_path]
         replay[0] = cpu_binary
-        # Staging covers only the executable and libraries, so keep Studio's working
+        # Staging covers only the executable and libraries, so keep Unsloth's working
         # directory: relative paths in user extra args resolve against it.
         return replay, None
 
@@ -14966,7 +14966,7 @@ class LlamaCppBackend:
             )
             staged_dir = Path(staged_runtime.name)
             # A kill -9 skips TemporaryDirectory's atexit hook, so stamp the owner
-            # and let the next stage collect what no live Studio holds.
+            # and let the next stage collect what no live Unsloth holds.
             (staged_dir / _CPU_RUNTIME_OWNER_FILE).write_text(str(os.getpid()), encoding = "utf-8")
             lib_dir = _llama_lib_dir(str(source_binary))
             gpu_backend = _GGML_GPU_BACKEND_RE
@@ -16151,7 +16151,7 @@ class LlamaCppBackend:
                 # the same reason as _detected_gpus: the except path (--fit on) falls
                 # through to the launch, which reads it.
                 _arch_gate_forced_cpu = False
-                # Whether Studio's placement planner actually RAN and came back
+                # Whether Unsloth's placement planner actually RAN and came back
                 # unable to fit the model. `use_fit` alone cannot answer that: it
                 # starts True at its declaration below and is also what the except
                 # path restores, so an unfitted `--fit on` is indistinguishable
@@ -16389,7 +16389,7 @@ class LlamaCppBackend:
                         )
                         original_ctx = effective_ctx
                         # Strip the user --split-mode when the toggle owns the split
-                        # (TP engaged -> Studio emits --split-mode tensor) or when the
+                        # (TP engaged -> Unsloth emits --split-mode tensor) or when the
                         # user asked for tensor (which aborts on a single GPU even if
                         # the manual <2-GPU guard downgraded TP). Otherwise keep their
                         # non-tensor mode (row/none/layer) -- the toggle can't express
@@ -16483,7 +16483,7 @@ class LlamaCppBackend:
                     # arrive by two routes, hence the two conditions: draft-simple
                     # and draft-eagle3 via _user_draft_via_extras (already excluded,
                     # they never set _user_mtp_via_extras), and DSpark/DFlash via
-                    # Studio's own resolution, which does set _auto_studio_mtp.
+                    # Unsloth's own resolution, which does set _auto_studio_mtp.
                     _engaged_is_mtp = bool(
                         _user_mtp_via_extras
                         or (_auto_studio_mtp and _mtp_effective not in ("dspark", "dflash"))
@@ -16539,7 +16539,7 @@ class LlamaCppBackend:
                         if _env_n_max is not None:
                             _mtp_eff_n_max = int(str(_env_n_max).strip())
                         else:
-                            # Never fall through to Studio's platform default here:
+                            # Never fall through to Unsloth's platform default here:
                             # the child is drafting at the build's number, and a
                             # probe that timed out or printed no default still leaves
                             # it drafting. Assume the deepest llama.cpp has shipped.
@@ -16579,7 +16579,7 @@ class LlamaCppBackend:
                     )
                     # Will a SEPARATE drafter be emitted at all, taken before the CPU
                     # nulling below. Not mtp_draft_path: extras owning --spec-type return
-                    # before Studio's sidecar becomes --model-draft, which
+                    # before Unsloth's sidecar becomes --model-draft, which
                     # _studio_draft_for_budget already encodes.
                     _separate_draft_launches = bool(_mtp_draft_for_budget)
                     # Drafter offloaded to CPU keeps its weights+KV off the GPU, so
@@ -17749,7 +17749,7 @@ class LlamaCppBackend:
                         # Cap with the same fit math; Auto shrinks to the cap, an explicit
                         # request above it is refused. "--fit on" stays a backstop but not
                         # one this can lean on: llama.cpp sizes its reduction from
-                        # ggml-metal's free-memory report, blind to Studio's own footprint
+                        # ggml-metal's free-memory report, blind to Unsloth's own footprint
                         # and the wired limit. See _metal_context_overcommit_message.
                         native_ctx_for_cap = self._context_length or effective_ctx
                         # Only a ceiling backed by a real KV estimate may refuse; the 4096
@@ -18290,7 +18290,7 @@ class LlamaCppBackend:
                     effective_ctx,
                     # Auto-layers earns its exemption by leaving the context to --fit,
                     # so it only holds while --fit actually runs. Extras land after
-                    # Studio's own "--fit on" and win, and a "--fit off" there would
+                    # Unsloth's own "--fit on" and win, and a "--fit off" there would
                     # otherwise leave a command with no -c and no fitter, which is
                     # llama.cpp's native context.
                     auto_fit and fit_is_effectively_on(extra_args),
@@ -18443,7 +18443,7 @@ class LlamaCppBackend:
                     # when >1 GPU is in use AND the list length matches that count:
                     # the field is hidden (not cleared) when the picker narrows to
                     # one, and a direct caller can send a stale ratio for a different
-                    # GPU set. Studio drops any mismatch to the free-VRAM default
+                    # GPU set. Unsloth drops any mismatch to the free-VRAM default
                     # (llama.cpp would silently zero-pad a short list, or abort past
                     # its 16-device cap).
                     _split_gpus = self._effective_gpu_count(gpu_indices)
@@ -18741,7 +18741,7 @@ class LlamaCppBackend:
                         and self._partially_offloads_layers(
                             [*cmd, *(_spec_placement_extras or [])],
                             _spec_placement_env,
-                            # Manual mode skips Studio's placement planner (gpus is
+                            # Manual mode skips Unsloth's placement planner (gpus is
                             # emptied above), so its --fit on is the default this
                             # function starts at, not a finding that the model does
                             # not fit. Only Auto's fitter carries that evidence --
@@ -19085,7 +19085,7 @@ class LlamaCppBackend:
                     binary = binary,
                     env = _mem_env,
                     probe_vulkan = should_mlock(),
-                    # Over the built cmd AND the extras, so Studio's own --fit
+                    # Over the built cmd AND the extras, so Unsloth's own --fit
                     # counts and a later user --fit still wins by last-arg.
                     fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], _mem_env),
                 )
@@ -19130,7 +19130,7 @@ class LlamaCppBackend:
                     logger.info("Load mode: %s", " ".join(_load_mode_managed))
 
                 # User pass-through args go last. Placement flags are removed
-                # below when the Studio picker owns the GPU selection.
+                # below when the Unsloth picker owns the GPU selection.
                 if _mem_extras:
                     _emit_extra_args = list(_mem_extras)
                     if gpu_ids is not None:
@@ -19153,7 +19153,7 @@ class LlamaCppBackend:
                     cmd.extend(_pv_draft_cpu_pin)
                 if _pv_mmproj_cpu_pin:
                     cmd.extend(_pv_mmproj_cpu_pin)
-                # Also last, and for the same last-wins reason: suppressing Studio's own
+                # Also last, and for the same last-wins reason: suppressing Unsloth's own
                 # --mmproj and scrubbing the env vars still leaves a remembered
                 # --mmproj-auto in the extras above, and that flag asks llama-server to
                 # rediscover the adjacent projector by itself. Vision would come back on
@@ -19195,7 +19195,7 @@ class LlamaCppBackend:
                         # No env argument: the child environment is not built until
                         # below, and reading it here is an UnboundLocalError. The
                         # inherited os.environ is the right source anyway, since
-                        # Studio never rewrites LLAMA_ARG_SPEC_DRAFT_MODEL.
+                        # Unsloth never rewrites LLAMA_ARG_SPEC_DRAFT_MODEL.
                         draft_mla = self._draft_kv_symmetry(cmd),
                     )
 
@@ -19386,7 +19386,7 @@ class LlamaCppBackend:
                 # own projector on the command line (with --no-mmproj-offload), so an
                 # inherited one is only ever the corrupt path.
                 # Turning vision off has the same blind spot, and it is the whole point
-                # of the switch: suppressing Studio's own --mmproj leaves an inherited
+                # of the switch: suppressing Unsloth's own --mmproj leaves an inherited
                 # LLAMA_ARG_MMPROJ / LLAMA_ARG_MMPROJ_URL untouched, so llama-server
                 # loads a projector anyway (arg.cpp sets params.mmproj.path / .url
                 # straight from those vars). The load would then report text-only over a
@@ -19505,7 +19505,7 @@ class LlamaCppBackend:
                     # fails with "LLAMA_SPLIT_MODE_TENSOR needs >= 1 devices" and
                     # llama-server exits 1 rather than falling back, so normalise to
                     # layer/CPU. Gate-scoped: the zero-offload arm already dropped
-                    # Studio's flags, and a user --split-mode there is overridden.
+                    # Unsloth's flags, and a user --split-mode there is overridden.
                     _cpu_cmd = (
                         self._without_flags(cmd, ("--split-mode", "-sm", "--tensor-split", "-ts"))
                         if _arch_gate_forced_cpu
@@ -20656,7 +20656,7 @@ class LlamaCppBackend:
                                     "llama-server could not start with this model's vision "
                                     "projector (--mmproj), including the CPU-projector "
                                     "recovery when available. Retrying text-only for this "
-                                    "session; check memory, GPU/driver logs, or update Studio."
+                                    "session; check memory, GPU/driver logs, or update Unsloth."
                                 )
                                 self._mmproj_fallback_reason = "projector_startup_failure"
                             cmd = self._strip_mmproj_args(_vision_gpu_cmd)
@@ -21582,7 +21582,7 @@ class LlamaCppBackend:
     @staticmethod
     def _cmd_has_gpu_companion(cmd: list, env: Optional[Mapping[str, str]] = None) -> bool:
         """True when the argv/env carries a GPU companion: any --mmproj form, or
-        a drafter (Studio's --model-draft, the extras aliases, or the
+        a drafter (Unsloth's --model-draft, the extras aliases, or the
         LLAMA_ARG_SPEC_DRAFT_* env) -- these offload to the GPU regardless of
         the main ``--gpu-layers``. A drafter explicitly forced to CPU
         (--spec-draft-ngl 0 / --spec-draft-device cpu) doesn't count."""
@@ -21940,7 +21940,7 @@ class LlamaCppBackend:
     @staticmethod
     def _server_pidfile_path() -> Optional[Path]:
         """Pidfile recording the live llama-server PID, under the active studio root
-        (per-root, so concurrent Studios with distinct UNSLOTH_STUDIO_HOME stay
+        (per-root, so concurrent Unsloth instances with distinct UNSLOTH_STUDIO_HOME stay
         isolated, mirroring the reaper's custom-root isolation)."""
         try:
             from utils.paths.storage_roots import studio_root  # noqa: WPS433
@@ -22378,7 +22378,7 @@ class LlamaCppBackend:
                 # Floored here rather than in each enumerator: both the /proc scan
                 # and the psutil scan feed this loop, and a third one added later
                 # would too. Not hypothetical for pid 1 either, since #7894
-                # established Studio can run as a container entrypoint, and a
+                # established Unsloth can run as a container entrypoint, and a
                 # container whose entrypoint is llama-server puts a process this
                 # sweep recognises at pid 1. Killing it takes the container down.
                 if not _is_signalable_pid(pid):

@@ -37,9 +37,9 @@ KREA2_FAMILY_NAME = "krea-2"
 
 
 def _live_cache_dir() -> str:
-    """Studio's LIVE hub cache root, which every component load here must be pinned to.
+    """Unsloth's LIVE hub cache root, which every component load here must be pinned to.
 
-    An unset ``cache_dir`` resolves through huggingface_hub's import-time constant, and Studio's
+    An unset ``cache_dir`` resolves through huggingface_hub's import-time constant, and Unsloth's
     cache folder is a setting: after a mid-session change the two roots differ. This assembler is
     reached with a repo id, and the locality gate that cleared the switch reads the live root
     (``media_locality`` passes ``cache_dir = hub_cache_dir()``), so an unpinned load looks in the

@@ -191,7 +191,7 @@ def test_a_case_insensitive_volume_does_not_list_a_file_twice(monkeypatch):
 
     monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
     lower = "c:\\users\\dan\\studio\\logs\\server\\server-1-pid2.log"
-    upper = "C:\\Users\\Dan\\Studio\\Logs\\Server\\Server-1-pid2.log"
+    upper = "C:\\Users\\Dan\\Unsloth\\Logs\\Server\\Server-1-pid2.log"
     assert debug_log_sources._identity(lower) == debug_log_sources._identity(upper)
 
 

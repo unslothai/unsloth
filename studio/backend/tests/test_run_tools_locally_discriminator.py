@@ -98,7 +98,7 @@ def test_a_hosted_only_name_with_no_local_stand_in_stays_hosted(provider_type):
     from core.inference.tools import ALL_TOOLS
     from routes.inference import _selects_only_provider_hosted_tools
 
-    # The premise: Studio has nothing to substitute.
+    # The premise: Unsloth has nothing to substitute.
     assert "image_generation" not in {tool["function"]["name"] for tool in ALL_TOOLS}
 
     payload = _payload(enabled_tools = ["image_generation"])
@@ -127,7 +127,7 @@ def test_the_flag_cannot_route_a_hosted_only_selection_into_the_loop(provider_ty
 def test_code_execution_alone_stays_hosted_because_its_stand_ins_are_unselected(provider_type):
     """code_execution has a stand-in mapping, but this request selects neither half.
 
-    Studio ships no code_execution, so the loop has nothing to execute. Reading
+    Unsloth ships no code_execution, so the loop has nothing to execute. Reading
     the flag off the mere existence of the mapping enters the loop, finds an
     empty catalog, falls back to the same passthrough, and skips the
     confirmation rejection on the way.
@@ -137,7 +137,7 @@ def test_code_execution_alone_stays_hosted_because_its_stand_ins_are_unselected(
     from routes.inference import _select_request_tools, _selects_only_provider_hosted_tools
 
     # The premise, derived rather than asserted: a mapping exists, nothing it
-    # points at was selected, and Studio has no code_execution of its own.
+    # points at was selected, and Unsloth has no code_execution of its own.
     assert LOCAL_STANDINS_FOR_HOSTED_TOOLS["code_execution"] == frozenset({"python", "terminal"})
     assert "code_execution" not in {tool["function"]["name"] for tool in ALL_TOOLS}
 
@@ -153,7 +153,7 @@ def test_code_execution_alone_stays_hosted_because_its_stand_ins_are_unselected(
 
 @pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
 def test_code_execution_beside_a_selected_stand_in_still_takes_the_loop(provider_type):
-    """The other half of the rule: web_search is Studio's to run and
+    """The other half of the rule: web_search is Unsloth's to run and
     code_execution rides along, so the check above must not sweep this up."""
     from routes.inference import _selects_only_provider_hosted_tools
 
@@ -166,7 +166,7 @@ def test_code_execution_beside_a_selected_stand_in_still_takes_the_loop(provider
 
 @pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
 def test_a_mixed_selection_with_the_flag_still_takes_the_loop(provider_type):
-    """One name Studio can run is enough; the hosted one rides along as a flag."""
+    """One name Unsloth can run is enough; the hosted one rides along as a flag."""
     from routes.inference import _selects_only_provider_hosted_tools
 
     payload = _payload(

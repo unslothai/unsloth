@@ -636,7 +636,7 @@ export function AgentsTab() {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   // Browser commands target the viewed origin; a desktop window origin is a Tauri URL
   // the CLI cannot reach, so use the backend URL from /api/health (getApiBase until it
-  // lands). The command then runs wherever that CLI is: a loopback base is this Studio's
+  // lands). The command then runs wherever that CLI is: a loopback base is this Unsloth's
   // own host, so deviceType decides, and it reports wsl where the browser would claim
   // Windows; any other base is reached from the viewer's machine, so only the client
   // platform describes that shell.
@@ -789,7 +789,7 @@ export function AgentsTab() {
     selectedAgent,
   );
   const command = attachOnly ? commandBase : `${commandBase} ${modelArgs}`;
-  // The fixed examples below target the same Studio, not a bare 127.0.0.1:8888.
+  // The fixed examples below target the same Unsloth, not a bare 127.0.0.1:8888.
   const example = (agentId: string, flags: string) =>
     `${buildAgentCommand(studioBase, null, commandOs, agentId)} ${flags}`;
   const {
