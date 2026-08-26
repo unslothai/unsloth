@@ -289,12 +289,18 @@ LEGS: dict[str, Leg] = {
             # seed (10.3222 against 6.4367), so the loss itself moves between
             # versions and an equality assertion would be red on drift. What it
             # DOES assert is that both paths train and both converge.
-            # Q8_0 through the prebuilt llama.cpp binaries, then inference on
-            # the file. Asked for on every leg, and this one had been missed.
-            # It costs a merge of a ~5B-equivalent checkpoint, which is
-            # affordable: the export lands in /tmp (1.1 TB free, measured) and
-            # this leg already holds its card alone at 12.8 GB.
-            "--export-gguf",
+            # NO EXPORT here, deliberately, and this is a reversal.
+            # It ran and it worked: unsloth-probe-lcleg-tmpdir-ac53ca produced
+            # a 4725.1MB gemma-4-e2b-it.Q8_0.gguf plus a 940.0MB F16-mmproj
+            # from the prebuilt bundle, with llama-bench rc=0 at 16.18 t/s pp8.
+            # It also cost 310.8s, the single largest line item in the suite,
+            # for a claim two cheaper legs already make: `default` exports a
+            # 609.8MB Q8_0 in 40.6s and `vision_fla_compile` a 1980.5MB one
+            # with its mmproj sidecar in 99.3s, both through the same prebuilt
+            # binaries and both run afterwards. A third conversion of a bigger
+            # checkpoint re-runs llama.cpp rather than asking a new question.
+            # Put it back with --export-gguf on a dispatch if a gemma-specific
+            # conversion is ever what is in doubt.
             "--compare-naive-trl",
             # Measured on kernels unsloth-probe-latestcompile-r4-e67ef2 and
             # -r5-45cf5b: the plain arm asks for 8.75GiB with 8.96GiB already
@@ -532,13 +538,18 @@ LEGS: dict[str, Leg] = {
             "3",
             "--max-seq-length",
             "1024",
-            # MXFP4, measured: gpt-oss overrides any other request and logs
-            # "GPT-OSS does not support GGUF quantization ... Overriding to
-            # MXFP4 format", then "skipping additional quantizations". The
-            # export itself was 326.9s for 27.6GB of transient disk on kernel
-            # unsloth-probe-gptoss-gguf, which fits with room to spare against
-            # the ~1.1TB free measured on a Kaggle session.
-            "--export-gguf",
+            # NO EXPORT here either, and for this leg it was never Q8_0.
+            # gpt-oss overrides any request and logs "GPT-OSS does not support
+            # GGUF quantization ... Overriding to MXFP4 format", so what this
+            # produced was a 13153.7MB MXFP4 file in 348.1s across 27.6GB of
+            # transient disk (unsloth-probe-gptoss-final-e9bd76). That is the
+            # most expensive export in the suite and the least representative
+            # of the thing under test, which is that the prebuilt binaries
+            # convert and the result runs -- covered by `default` at 40.6s and
+            # by `vision_fla_compile` at 99.3s, on files small enough to
+            # actually load afterwards. The -cpu llama.cpp bundle is another
+            # reason not to lean on a 20B here: inference on it would be CPU
+            # decode.
         ),
     ),
     # NOT WIRED, for a smaller reason than it used to be. See UNWIRED below:

@@ -25,6 +25,13 @@ PAYLOAD = ROOT / "tests" / "kaggle" / "studio_gpu" / "run_studio_gpu.py"
 SRC = PAYLOAD.read_text(encoding = "utf-8")
 
 
+def _func(name: str = "assert_server_flags") -> ast.FunctionDef:
+    tree = ast.parse(SRC)
+    return next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name
+    )
+
+
 def _body() -> str:
     tree = ast.parse(SRC)
     func = next(
@@ -38,8 +45,44 @@ def _body() -> str:
 def test_the_load_requests_all_three_flags():
     body = _body()
     assert '"cache_type_kv": "q8_0"' in body
-    assert '"tensor_split": [1.0, 1.0]' in body, "both cards, which is the flag under test"
+    # Sized to the VISIBLE cards rather than hardcoded to two.
+    # --studio-concurrent pins this half to one card so it can share with a
+    # training leg, and [1.0, 1.0] against a one-card server asks llama.cpp to
+    # split across a device that is not there: what comes back is a failure
+    # about the load rather than about the flag.
+    assert '"tensor_split": [1.0] * max(1, len(cards))' in body
+    assert "cards = gpu_inventory()" in body
     assert '"max_seq_length": self.args.studio_ctx' in body
+
+
+def test_a_one_card_run_says_the_two_card_split_was_not_exercised():
+    """The coverage this shares away must be STATED, not silently dropped.
+
+    Under --studio-concurrent the split is over one device, which is not the
+    flag the brief asks about. A check that keeps its name while testing less
+    is the failure this directory keeps being caught by, so the report carries
+    `tensor_split_over_two_cards` and a note naming what was and was not
+    covered.
+    """
+    body = _body()
+    assert 'detail["tensor_split_over_two_cards"] = len(cards) >= 2' in body
+    assert "was NOT exercised" in body
+    # And it is a RECORD, not a failure: sharing is a scheduling decision, so a
+    # one-card run is not a defect and must not go red for being one.
+    func = _func("assert_server_flags")
+    for node in ast.walk(func):
+        if isinstance(node, ast.If) and "cards" in ast.unparse(node.test):
+            appended = [
+                inner
+                for inner in ast.walk(node)
+                if isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr == "append"
+            ]
+            assert not appended, (
+                "a one-card run fails rather than records, so every "
+                "--studio-concurrent run would go red by design"
+            )
 
 
 def test_the_check_reads_the_applied_values_not_the_request():

@@ -746,10 +746,14 @@ class Payload:
         silently dropped is visible, and a check that only asserted "the load
         succeeded" would pass on exactly that.
 
-        Both cards, deliberately. `tensor_split` over two T4s is the flag the
-        brief asks about and the one nothing here has ever exercised; a
-        single-card load would leave it untested while looking identical in the
-        report.
+        `tensor_split` over two T4s is the flag the brief asks about and the
+        one nothing here has ever exercised. The split is sized to the cards
+        that are VISIBLE, because --studio-concurrent pins this half to one
+        card so it can share with a training leg, and the report says which of
+        the two it did: a single-card run records
+        `tensor_split_over_two_cards: false` with a note rather than passing
+        under the same name. A check that keeps its name while quietly testing
+        less is the failure this file exists against.
 
         The context length is pinned to `--studio-ctx` (2048 by default) rather
         than left at the model default, because an unconstrained context on a
@@ -757,7 +761,8 @@ class Payload:
         else.
         """
         failures: list[str] = []
-        detail: dict = {"requested": {}}
+        cards = gpu_inventory()
+        detail: dict = {"requested": {}, "cards_visible": len(cards)}
         body = {
             "model_path": self.args.chat_model,
             "is_lora": False,
@@ -769,15 +774,35 @@ class Payload:
             # build supports, so a refusal here is about the MODEL's cache
             # layout and not about the binary.
             "cache_type_kv": "q8_0",
-            # Even across both cards. The values are relative weights, not
-            # byte counts.
-            "tensor_split": [1.0, 1.0],
+            # One weight per VISIBLE card, even. The values are relative
+            # weights, not byte counts.
+            #
+            # Sized rather than hardcoded to two, because --studio-concurrent
+            # pins this half to a single card so it can share with a training
+            # leg: build_kernel.py's run_one sets CUDA_VISIBLE_DEVICES to the
+            # card it was admitted on. Sending [1.0, 1.0] to a one-card server
+            # asks llama.cpp to split across a device that is not there, and
+            # what comes back is a failure about the load rather than about the
+            # flag.
+            "tensor_split": [1.0] * max(1, len(cards)),
         }
         if self.args.chat_variant:
             body["gguf_variant"] = self.args.chat_variant
         detail["requested"] = {
             k: body[k] for k in ("max_seq_length", "cache_type_kv", "tensor_split")
         }
+        # STATED, not silent. Under --studio-concurrent this half runs on one
+        # card so it can share with a training leg, and a split over one device
+        # is not the two-card flag the brief asks about. Recording it as
+        # exercised when it was not is how a check keeps its name and loses its
+        # meaning; a reader of this report can see which machine it ran on.
+        detail["tensor_split_over_two_cards"] = len(cards) >= 2
+        if len(cards) < 2:
+            detail["tensor_split_note"] = (
+                f"only {len(cards)} card visible, so the two-card tensor_split "
+                f"was NOT exercised; the KV-cache type, the context pin and the "
+                f"GPU residency below still were"
+            )
 
         try:
             self.studio.expect("POST", "/api/inference/load", body, timeout = self.args.load_timeout)
@@ -842,8 +867,9 @@ class Payload:
         detail["gpu_used_mib"] = used
         if used is not None and used < 200:
             failures.append(
-                f"only {used} MiB of GPU memory is in use after a two-card "
-                f"tensor_split load, so this is running on the CPU"
+                f"only {used} MiB of GPU memory is in use after a "
+                f"{len(cards)}-card tensor_split load, so this is running on "
+                f"the CPU"
             )
 
         detail["failures"] = failures

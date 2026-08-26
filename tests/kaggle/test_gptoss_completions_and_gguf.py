@@ -64,9 +64,18 @@ def test_the_leg_asks_for_completions_and_for_mxfp4():
     from kaggle_t4_ci.legs import LEGS
 
     leg = LEGS["gptoss"]
-    assert "--export-gguf" in leg.args
     assert "--no-train-on-completions" not in leg.args
-    assert "gguf_export.py" in leg.files, "the export imports it lazily, so it must be declared"
+    # The export is OFF on this leg now: 13153.7 MB of MXFP4 in 348.1s, the
+    # most expensive conversion in the suite and the least representative of
+    # the claim, which `default` makes on a 609.8 MB file in 40.6s. The payload
+    # keeps the capability and the mxfp4 accept rule, so a dispatch can turn it
+    # back on; what it does not do is pay for it on every PR.
+    assert "--export-gguf" not in leg.args
+    assert "gguf_export.py" in leg.files, (
+        "the payload still imports it lazily behind --export-gguf, so it stays "
+        "declared: a dispatch that turns the export back on must not fail on a "
+        "missing file"
+    )
 
 
 def test_the_payload_requests_q8_and_accepts_only_mxfp4():

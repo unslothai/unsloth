@@ -49,15 +49,59 @@ def test_every_directive_leg_is_pointed_at_the_model_it_was_specified_for():
         ), f"{name} trains {args[args.index('--model') + 1]!r}, not {model!r}"
 
 
-def test_every_directive_leg_exports_a_gguf_and_runs_it():
-    """The rule Latest_compile was missing for the whole rebuild.
+# Which legs carry the export, and why it is these two rather than all four.
+# The claim is that the PREBUILT llama.cpp binaries convert a trained adapter
+# and that the result runs -- `run_failures` in gguf_export.py rules on the
+# second half. Two legs make it, on the two cheapest checkpoints:
+#
+#   default             609.8 MB Q8_0            40.6s
+#   vision_fla_compile  1980.5 MB Q8_0 + mmproj  99.3s
+#
+# The two that no longer carry it were measured and dropped on cost:
+#
+#   latest_compile      4725.1 MB Q8_0          310.8s
+#   gptoss             13153.7 MB MXFP4         348.1s   (never a Q8_0 at all)
+#
+# 659s for a third and fourth conversion that re-run llama.cpp rather than ask
+# a new question.
+EXPORTING = ("default", "vision_fla_compile")
+NOT_EXPORTING = ("latest_compile", "gptoss")
 
-    The flag is what turns on the export AND the inference against the exported
-    file -- `run_failures` in gguf_export.py rules on whether any prebuilt
-    runner produced output, so a leg without the flag makes neither claim.
-    """
-    missing = [n for n in DIRECTIVE if "--export-gguf" not in legs.LEGS[n].args]
+
+def test_the_cheap_legs_export_a_gguf_and_run_it():
+    """The flag is what turns on the export AND the inference against the
+    exported file, so a leg without it makes neither claim. At least one leg
+    has to keep it or the directive's llama.cpp item is uncovered."""
+    missing = [n for n in EXPORTING if "--export-gguf" not in legs.LEGS[n].args]
     assert missing == [], f"these legs never export a GGUF: {missing}"
+
+
+def test_the_expensive_exports_stay_off():
+    """A removal made for wall-clock reasons has to be visible, or it comes
+    back by accident on the next edit and nobody notices 659 seconds.
+
+    Stated as a rule rather than a comment because the cost is invisible in a
+    green run: an export that reappears makes the suite slower and no redder.
+    """
+    back = [n for n in NOT_EXPORTING if "--export-gguf" in legs.LEGS[n].args]
+    assert back == [], (
+        f"these legs export again: {back}. They were dropped at 310.8s and "
+        f"348.1s for a claim `default` makes in 40.6s; if a checkpoint-specific "
+        f"conversion is genuinely in doubt, dispatch with the flag rather than "
+        f"putting it back on every PR"
+    )
+
+
+def test_at_least_one_wired_leg_still_exports():
+    """The rule above must not be satisfiable by removing every export. Read
+    off KERNELS, not off the list here, so dropping the exporting leg from the
+    wired set fails too."""
+    wired = {name for kernel in legs.KERNELS for name in kernel}
+    exporting = [n for n in wired if "--export-gguf" in legs.LEGS[n].args]
+    assert exporting, (
+        "no leg in the wired set exports a GGUF, so nothing covers the "
+        "prebuilt llama.cpp binaries or inference on an exported file"
+    )
 
 
 def test_the_grpo_leg_keeps_the_settings_it_was_measured_with():

@@ -2529,10 +2529,19 @@ def test_the_workflow_can_actually_reach_studio_concurrent():
     workflow = yaml.safe_load(source)
     inputs = workflow[True]["workflow_dispatch"]["inputs"]
     assert "studio_concurrent" in inputs, sorted(inputs)
-    # Off by default. Sharing costs the coverage property that Studio picks its
-    # own card out of two, which the Studio builder keeps deliberately, so this
-    # has to be something a dispatch asks for rather than the default shape.
-    assert inputs["studio_concurrent"].get("default") is False, inputs["studio_concurrent"]
+    # ON by default now, and the reason is a measurement: Studio's GPU half is
+    # ~1100s and it used to start only once every leg had freed both cards, on
+    # top of a ~1200s leg phase, so sharing takes that block off the critical
+    # path. What it costs -- Studio seeing one T4 rather than two -- is not
+    # silent: the payload sizes tensor_split to the visible cards and records
+    # `tensor_split_over_two_cards: false` with a note, which is asserted by
+    # test_studio_server_flags.py.
+    assert inputs["studio_concurrent"].get("default") is True, inputs["studio_concurrent"]
+    # And it must still be switchable OFF, or the both-cards run is unreachable.
+    assert 'inputs.studio_concurrent }}" = "false"' in source, (
+        "nothing reads the input as a way to turn sharing off, so a dispatch "
+        "asking for the two-card coverage would silently get the shared shape"
+    )
 
     build = source.split("build_kernel.py")[1].split("- name:")[0]
     assert "$STUDIO_CONCURRENT" in build, (

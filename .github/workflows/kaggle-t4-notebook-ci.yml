@@ -325,9 +325,9 @@ on:
         type: boolean
         default: false
       studio_concurrent:
-        description: 'Let the Studio GPU half share a card with a small leg instead of waiting for the queue to drain. Costs the both-T4s-visible coverage, so it is off by default and is an experiment rather than the shape'
+        description: 'Let the Studio GPU half share a card with a small leg instead of waiting for the queue to drain. ON by default: it takes about 1100s off the critical path, at the cost of Studio seeing one T4 rather than two. Set false to get the both-cards coverage back on a run that can afford the wall clock'
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -875,10 +875,17 @@ jobs:
           if [ "${{ inputs.shared_wheels }}" = "true" ]; then
             SHARED_WHEELS='--shared-wheels'
           fi
-          STUDIO_CONCURRENT=''
-          if [ "${{ inputs.studio_concurrent }}" = "true" ]; then
-            STUDIO_CONCURRENT='--studio-concurrent'
-            echo "::notice title=Studio shares a card::the Studio GPU half is pinned to one T4 beside a small leg, so this run does NOT cover Studio's own choice between two cards."
+          # Default ON, and `inputs` is null on push and on a schedule, so the
+          # fallback rather than the input default is what decides those. The
+          # measurement behind it: Studio's GPU half is ~1100s and it used to
+          # start only once every leg had freed both cards, on top of a
+          # ~1200s leg phase. Sharing a card moves it alongside instead.
+          STUDIO_CONCURRENT='--studio-concurrent'
+          if [ "${{ inputs.studio_concurrent }}" = "false" ]; then
+            STUDIO_CONCURRENT=''
+          fi
+          if [ -n "$STUDIO_CONCURRENT" ]; then
+            echo "::notice title=Studio shares a card::the Studio GPU half is pinned to one T4 beside a small leg, so this run does NOT cover Studio's own choice between two cards. The report records tensor_split_over_two_cards=false rather than claiming it."
           fi
           # A leg list REPLACES --all-kernels rather than filtering it: the
           # kernel plan and the payload count both come out of the same call,
