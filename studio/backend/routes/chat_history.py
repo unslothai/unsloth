@@ -132,6 +132,7 @@ class ChatThread(BaseModel):
     title: str = "New Chat"
     modelType: Literal["base", "lora", "model1", "model2"]
     modelId: str = ""
+    modelGgufVariant: Optional[str] = None
     pairId: Optional[str] = None
     projectId: Optional[str] = None
     archived: bool = False
@@ -241,6 +242,7 @@ class ChatThreadPatch(BaseModel):
     expectedOpeningMessageId: Optional[str] = None
     modelType: Optional[Literal["base", "lora", "model1", "model2"]] = None
     modelId: Optional[str] = None
+    modelGgufVariant: Optional[str] = None
     pairId: Optional[str] = None
     projectId: Optional[str] = None
     archived: Optional[bool] = None

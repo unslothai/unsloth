@@ -2416,12 +2416,19 @@ def append_assistant_turn(
     model just added are one turn, so they are merged: appending would instead give two
     consecutive assistant messages and break role alternation. Self-limiting, since
     after a tool result the conversation no longer ends with a plain assistant turn.
+
+    Merge over the resumed turn rather than replacing it, or every key the partial
+    carried but the continuation does not repeat is lost. ``extra_content`` is such a
+    key, and Gemini reads the text part's thought signature back from it alone, so a
+    resumed turn replayed without it is rejected.
     """
     # Same acceptance rule as the prompt boundary, so a partial sent as text parts merges too.
     prev_text = trailing_assistant_text(conversation) if continue_final_message else None
     if prev_text is not None and isinstance(assistant_msg.get("content"), str):
-        assistant_msg["content"] = f"{prev_text}{assistant_msg['content']}"
-        conversation[-1] = assistant_msg
+        # Copy rather than mutate: the caller owns assistant_msg and may still read it.
+        merged_msg = {**conversation[-1], **assistant_msg}
+        merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
+        conversation[-1] = merged_msg
         return
     conversation.append(assistant_msg)
 
