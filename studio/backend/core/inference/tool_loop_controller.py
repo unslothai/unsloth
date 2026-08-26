@@ -119,9 +119,7 @@ def _unreadable_arguments_summary(fragment: str) -> dict[str, str]:
     fails the whole request rather than just that call.
     """
     return {
-        "error": (
-            f"arguments were cut off after {len(fragment)} characters and could not be read"
-        )
+        "error": (f"arguments were cut off after {len(fragment)} characters and could not be read")
     }
 
 

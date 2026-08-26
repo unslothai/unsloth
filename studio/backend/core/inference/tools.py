@@ -10322,9 +10322,7 @@ def execute_tool(
         raw = str(arguments.get(UNPARSED_ARGUMENTS_KEY) or "")
         truncated = raw.lstrip().startswith(("{", "[")) and not raw.rstrip().endswith(("}", "]"))
         cause = (
-            "were cut off part-way and could not be read"
-            if truncated
-            else "were not valid JSON"
+            "were cut off part-way and could not be read" if truncated else "were not valid JSON"
         )
         return (
             f"Error: {name} arguments {cause}, so nothing ran. Resend as complete JSON, "

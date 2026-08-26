@@ -220,7 +220,9 @@ def test_replayed_arguments_always_parse_as_json(raw):
 
 def test_a_replayed_unreadable_call_stays_small():
     """The fragment is the content that overflowed the window; resending it is backwards."""
-    tool_call = _decision_for('{"path":"x","edits":[{"new_string":"' + "y" * 8000).as_assistant_tool_call()
+    tool_call = _decision_for(
+        '{"path":"x","edits":[{"new_string":"' + "y" * 8000
+    ).as_assistant_tool_call()
 
     assert len(tool_call["function"]["arguments"]) < 200
 
