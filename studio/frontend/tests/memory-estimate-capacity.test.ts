@@ -50,16 +50,20 @@ test("a pin on the iGPU does not offer its own RAM twice, nor throw the rest awa
   assert.equal(capacity.singleMemoryPool, true);
 });
 
-test("pinning both counts the shared pool once and adds no RAM on top", () => {
-  // 96, not 96 + 16: the discrete card's own memory is not added beside a pool it is
-  // not part of. That under-counts the dGPU, which refuses a load rather than
-  // admitting one that cannot run, and is the direction to be wrong in.
+test("pinning both keeps the discrete card as a pool beside system RAM", () => {
+  // This asserted 96 and the reasoning given was that under-counting the dGPU refuses
+  // a load rather than admitting one, so it was the safe direction. That was wrong,
+  // and only half the effect was being looked at: the flag it also sets makes the row
+  // show a lone Shared figure and drop the GPU verdict entirely, so a fixed placement
+  // larger than the discrete card had nothing left to catch it. Two pools now, with
+  // the ceiling counting the shared bytes once: 16 dedicated + 96 RAM, not 28 + 96.
   const capacity = resolveMemoryCapacityGb({
     ...HOST,
     pinnedDevices: [DGPU, IGPU, IGPU],
   });
+  assert.equal(capacity.singleMemoryPool, false);
   assert.equal(capacity.gpuCapacityGb, 28);
-  assert.equal(capacity.totalCapacityGb, 96);
+  assert.equal(capacity.totalCapacityGb, 112);
 });
 
 test("with no pin the host answers, and it says shared", () => {
@@ -219,4 +223,102 @@ test("a probe with no total falls back to the fraction, as the loader does", () 
 
 test("the usable figure never goes negative", () => {
   assert.equal(usableFreeVramGb(0.1, 24, 0.5), 0);
+});
+
+test("a mixed dedicated and shared inventory is two pools, not one", () => {
+  // devices.some(shared) marked a discrete card sitting beside a Vulkan iGPU as one
+  // pool. The row shows a lone Shared figure there and drops the GPU verdict
+  // entirely, so a fixed Manual placement larger than the discrete card read as a fit
+  // against a ceiling it can never spill into.
+  const mixed = resolveMemoryCapacityGb({
+    pinnedDevices: [],
+    hostGpuTotalGb: 28, // 16 GB card + a 12 GB iGPU budget, counted once
+    hostDedicatedGpuTotalGb: 16,
+    hostSharesSystemRam: false, // every(), so a mixed host is no longer flagged
+    systemRamTotalGb: 91,
+    unifiedMemory: false,
+  });
+  assert.equal(mixed.singleMemoryPool, false);
+  assert.equal(mixed.gpuCapacityGb, 28);
+  // 16 + 91, NOT 28 + 91: the iGPU's 12 GB budget is already inside the 91.
+  assert.equal(mixed.totalCapacityGb, 107);
+
+  // An all-shared host is still one pool, and still takes the max rather than a sum.
+  const allShared = resolveMemoryCapacityGb({
+    pinnedDevices: [],
+    hostGpuTotalGb: 12,
+    hostDedicatedGpuTotalGb: 0,
+    hostSharesSystemRam: true,
+    systemRamTotalGb: 91,
+    unifiedMemory: false,
+  });
+  assert.equal(allShared.singleMemoryPool, true);
+  assert.equal(allShared.totalCapacityGb, 91);
+});
+
+test("a pin decides the pool question for the cards it names", () => {
+  const dedicated = { memoryTotalGb: 16, sharedMemory: false };
+  const igpu = { memoryTotalGb: 12, sharedMemory: true };
+
+  // Only the discrete card: two pools, and RAM is genuinely beside it.
+  const onCard = resolveMemoryCapacityGb({
+    pinnedDevices: [dedicated],
+    hostGpuTotalGb: 28,
+    hostDedicatedGpuTotalGb: 16,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 91,
+    unifiedMemory: false,
+  });
+  assert.equal(onCard.singleMemoryPool, false);
+  assert.equal(onCard.totalCapacityGb, 107);
+
+  // Only the iGPU: one pool.
+  const onIgpu = resolveMemoryCapacityGb({
+    pinnedDevices: [igpu],
+    hostGpuTotalGb: 28,
+    hostDedicatedGpuTotalGb: 16,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 91,
+    unifiedMemory: false,
+  });
+  assert.equal(onIgpu.singleMemoryPool, true);
+  assert.equal(onIgpu.totalCapacityGb, 91);
+
+  // Both pinned: still two pools, because the discrete VRAM is still there.
+  const onBoth = resolveMemoryCapacityGb({
+    pinnedDevices: [dedicated, igpu],
+    hostGpuTotalGb: 28,
+    hostDedicatedGpuTotalGb: 16,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 91,
+    unifiedMemory: false,
+  });
+  assert.equal(onBoth.singleMemoryPool, false);
+  assert.equal(onBoth.gpuCapacityGb, 28);
+  assert.equal(onBoth.totalCapacityGb, 107);
+});
+
+test("a discrete-only host is unchanged by the dedicated-only ceiling", () => {
+  // The regression guard: with no shared device the two figures are equal, so every
+  // ordinary machine keeps exactly the ceiling it had.
+  const discrete = resolveMemoryCapacityGb({
+    pinnedDevices: [],
+    hostGpuTotalGb: 24,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 64,
+    unifiedMemory: false,
+  });
+  assert.equal(discrete.singleMemoryPool, false);
+  assert.equal(discrete.totalCapacityGb, 88);
+
+  // Apple keeps its own branch, whatever the devices say.
+  const apple = resolveMemoryCapacityGb({
+    pinnedDevices: [],
+    hostGpuTotalGb: 64,
+    hostSharesSystemRam: false,
+    systemRamTotalGb: 64,
+    unifiedMemory: true,
+  });
+  assert.equal(apple.singleMemoryPool, true);
+  assert.equal(apple.totalCapacityGb, 64);
 });

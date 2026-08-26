@@ -41,6 +41,9 @@ export interface GpuInfo {
   backend: string;
   name: string;
   memoryTotalGb: number;
+  /** The same aggregate with shared-memory devices left out: the VRAM that is a pool
+   *  BESIDE system RAM rather than a capped view of it. */
+  dedicatedMemoryTotalGb: number;
   /** Largest single device's VRAM. Image/video loads live on ONE device (no tensor split), so their fit math must use a single device, not the multi-GPU sum. */
   maxDeviceMemoryGb: number;
   /** VRAM of the device an image/video load actually lands on: the lowest visible ordinal, since resolve_diffusion_device_target() returns a bare "cuda" and torch places on the current device. On a heterogeneous host this is NOT maxDeviceMemoryGb, and sizing a pick against the larger card would recommend a checkpoint that OOMs the smaller one. */
@@ -70,6 +73,7 @@ const DEFAULT_GPU: GpuInfo = {
   backend: "",
   name: "Unknown",
   memoryTotalGb: 0,
+  dedicatedMemoryTotalGb: 0,
   maxDeviceMemoryGb: 0,
   loadDeviceMemoryGb: 0,
   cpuCore: 0,
@@ -110,12 +114,25 @@ function toGpuInfo(
     systemRamAvailableGb: devices.some((device) => device.shared_memory)
       ? 0
       : base.systemRamAvailableGb,
-    sharedMemory: devices.some((device) => device.shared_memory),
+    // EVERY, not some, and deliberately different from the zeroing above. That one
+    // is about a SUM: one shared device is enough to make "GPU total + system RAM"
+    // count the same bytes twice. This one answers "is there only one pool", which a
+    // discrete card sitting beside an iGPU makes false. Reading it as some() marked a
+    // mixed inventory single-pool, and the row shows a lone Shared figure there and
+    // drops the GPU verdict, so a fixed Manual placement larger than the discrete
+    // card read as a fit against a combined ceiling it will never spill into.
+    // Length-guarded because every() on an empty list is true, and a host with
+    // nothing probed has no pool to be single.
+    sharedMemory:
+      devices.length > 0 && devices.every((device) => device.shared_memory),
     available: true,
     budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",
     // Shared-memory (Vulkan iGPU) devices report the same system RAM pool, so they are counted once rather than summed.
     memoryTotalGb: aggregateGpuMemoryTotalGb(devices),
+    dedicatedMemoryTotalGb: aggregateGpuMemoryTotalGb(
+      devices.filter((device) => !device.shared_memory),
+    ),
     maxDeviceMemoryGb: devices.reduce((max, d) => Math.max(max, d.memory_total_gb ?? 0), 0),
     // Lowest visible ordinal = torch's current device = where the pipeline lands.
     loadDeviceMemoryGb: pickLoadDevice(devices)?.memory_total_gb ?? 0,

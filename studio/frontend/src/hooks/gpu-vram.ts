@@ -52,6 +52,12 @@ export interface MemoryCapacityInput {
   pinnedDevices: { memoryTotalGb: number; sharedMemory: boolean }[];
   /** Aggregate GPU budget of the whole inventory, for the unpinned case. */
   hostGpuTotalGb: number;
+  /** The same aggregate with shared-memory devices left out, for the unpinned case.
+   *  Only the dedicated cards are memory BESIDE system RAM; an iGPU's budget is a
+   *  capped view of that same RAM, so adding both to reach a machine-wide ceiling
+   *  counts the shared bytes twice. Absent means "no shared device", i.e. the same
+   *  figure as `hostGpuTotalGb`. */
+  hostDedicatedGpuTotalGb?: number;
   /** Whether ANY device on the host reports a shared pool. Only consulted when
    *  nothing is pinned; a pin answers for itself. */
   hostSharesSystemRam: boolean;
@@ -98,6 +104,22 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
       ? input.hostGpuTotalGb
       : 0;
   const rawGpuCapacityGb = pinGoverns ? pinnedGpuCapacityGb : hostGpuTotalGb;
+  // The dedicated-only figure for the same governing set. A pin answers for itself;
+  // unpinned takes the caller's, falling back to the full aggregate, which is the
+  // right answer on every host that has no shared device at all.
+  const rawDedicatedCapacityGb = pinGoverns
+    ? aggregateGpuMemoryTotalGb(
+        input.pinnedDevices
+          .filter((device) => !device.sharedMemory)
+          .map((device) => ({
+            memory_total_gb: device.memoryTotalGb,
+            shared_memory: false,
+          })),
+      )
+    : Number.isFinite(input.hostDedicatedGpuTotalGb) &&
+        (input.hostDedicatedGpuTotalGb as number) >= 0
+      ? (input.hostDedicatedGpuTotalGb as number)
+      : hostGpuTotalGb;
   // The budget is what the next load is ALLOWED to claim, so it is the capacity a
   // verdict should be measured against: at 80% a 20 GB footprint on a 24 GB card is
   // over the line the slider draws, and reading the raw total called it comfortable.
@@ -110,6 +132,8 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
       ? input.gpuBudgetFraction
       : 1;
   const gpuCapacityGb = Math.round(rawGpuCapacityGb * budget * 100) / 100;
+  const dedicatedCapacityGb =
+    Math.round(rawDedicatedCapacityGb * budget * 100) / 100;
   // Same guard as the device totals: psutil's figure arrives over the wire too, and a
   // non-finite one would turn the ceiling below into NaN, which classifyMemoryFit
   // reads as no verdict at all rather than as the RAM the machine plainly has.
@@ -117,8 +141,13 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
     Number.isFinite(input.systemRamTotalGb) && input.systemRamTotalGb > 0
       ? input.systemRamTotalGb
       : 0;
+  // Every, for the same reason the host-level flag uses every: a pin naming a
+  // discrete card alongside an iGPU still has dedicated VRAM beside system RAM, and
+  // calling that one pool hides the GPU verdict on the only figure that would catch
+  // a fixed placement too large for the card.
   const sharesSystemRam = pinGoverns
-    ? input.pinnedDevices.some((device) => device.sharedMemory)
+    ? input.pinnedDevices.length > 0 &&
+      input.pinnedDevices.every((device) => device.sharedMemory)
     : input.hostSharesSystemRam;
   const singleMemoryPool = input.unifiedMemory || sharesSystemRam;
   return {
@@ -135,7 +164,11 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
         // inventory that under-counts a discrete card sitting beside it, which is
         // the side that refuses a load rather than admitting one that cannot run.
         : Math.max(gpuCapacityGb, systemRamTotalGb)
-      : gpuCapacityGb + systemRamTotalGb,
+      // Dedicated VRAM, not the whole GPU figure: on a mixed inventory the iGPU's
+      // budget is already inside systemRamTotalGb, and adding it again inflated the
+      // ceiling in the direction that admits a load. Identical to gpuCapacityGb on
+      // any host without a shared device, which is every discrete-only machine.
+      : dedicatedCapacityGb + systemRamTotalGb,
     singleMemoryPool,
   };
 }

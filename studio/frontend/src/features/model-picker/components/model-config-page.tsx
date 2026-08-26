@@ -2855,6 +2855,7 @@ export function ModelConfigPage({
           ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
           : [],
       hostGpuTotalGb: inferenceGpu.memoryTotalGb,
+      hostDedicatedGpuTotalGb: inferenceGpu.dedicatedMemoryTotalGb,
       hostSharesSystemRam: inferenceGpu.sharedMemory,
       systemRamTotalGb: inferenceGpu.systemRamTotalGb,
       unifiedMemory: isUnifiedMemory,
