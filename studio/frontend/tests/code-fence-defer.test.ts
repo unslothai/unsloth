@@ -467,14 +467,11 @@ test("token coalescing was measured at zero and is not carried as code", () => {
 
 test("the idle pre-warm drives the tokenizer over real text, not an empty string", () => {
   /*
-   * This warmed on `""` until it was measured. Loading a grammar is cheap; running it over text
-   * for the first time is not, and highlighting an empty string never does the second thing. With
-   * deferral on, the whole one-off cost therefore landed on the first fence the reader scrolled
-   * to, in a single frame: 1592 and 1540 ms at the 100K rung on WebKitGTK, against 294 and 318 ms
-   * once the warm uses real text.
-   *
-   * Asserted at the source because the invariant is structural and the alternative is a benchmark
-   * noticing it two days later, which is exactly how it was found.
+   * Loading a grammar is cheap; running it over text the first time is not, and `""` never does
+   * the second. With deferral on the whole one-off cost therefore landed in one frame on the fence
+   * the reader scrolled to: 1592 and 1540 ms at the 100K rung on WebKitGTK, against 294 and 318 ms
+   * on real text. Asserted at the source because the invariant is structural, and the alternative
+   * is a benchmark noticing it two days later, which is how it was found.
    */
   const warm = SOURCE.slice(SOURCE.indexOf("const warmGrammars"));
   const body = warm.slice(0, warm.indexOf("\n};"));
@@ -482,25 +479,23 @@ test("the idle pre-warm drives the tokenizer over real text, not an empty string
     body.includes("gate.warm(true)"),
     "warming on an empty string leaves the first real tokenization to happen during a scroll",
   );
-  // `gate.warm(false)` survives in exactly one place, the over-cap branch, and it must be reached
-  // only through the size check.
+  // `gate.warm(false)` survives only in the over-cap branch, behind the size check.
   assert.match(
     body,
     /gate\.chars > MAX_HIGHLIGHT_CHARS\)[\s\S]*gate\.warm\(false\)[\s\S]*gate\.warm\(true\)/,
     "an unconditional false warm here is the regression this test exists to catch",
   );
-  // Anti-vacuity: if the function is ever renamed or restructured, the checks above would pass
-  // against an empty slice and prove nothing.
+  // Anti-vacuity: renamed or restructured, the checks above would pass on an empty slice.
   assert.ok(body.length > 60 && body.includes("grammarsWarmed"), "found the real warmGrammars body");
 });
 
 test("a speculative warm is capped, and the cap is the shared one", () => {
   /*
    * The chat renderer never applies MAX_HIGHLIGHT_CHARS: `markdown-text.tsx` supplies the code
-   * plugin unconditionally and `FenceBlock` warms the whole fence body, so warming on real text
-   * would tokenize an arbitrarily large off-screen fence the reader may never reach -- and
-   * `code-plugin.ts`'s `evict` keeps the last fence whatever its size. The latch is demanded work
-   * and stays uncapped; this is the speculative half, so it is bounded.
+   * plugin unconditionally and `FenceBlock` warms the whole body, so a real-text warm would
+   * tokenize an arbitrarily large off-screen fence, and `code-plugin.ts`'s `evict` keeps the last
+   * fence whatever its size. The latch is demanded work and stays uncapped; this half is
+   * speculative, so it is bounded.
    */
   assert.match(
     SOURCE,
@@ -515,7 +510,7 @@ test("a speculative warm is capped, and the cap is the shared one", () => {
     /gate\.chars > MAX_HIGHLIGHT_CHARS/.test(SOURCE),
     "the warm must consult the fence's size before tokenizing it",
   );
-  // The latch is the other half of the invariant: it must NOT have grown a cap.
+  // The other half: the latch must NOT have grown a cap.
   const latch = SOURCE.slice(SOURCE.indexOf("const latchNow"));
   assert.ok(
     !latch.slice(0, latch.indexOf("\n};")).includes("MAX_HIGHLIGHT_CHARS"),
@@ -530,12 +525,10 @@ test("a speculative warm is capped, and the cap is the shared one", () => {
 
 test("the idle warm yields between languages", () => {
   /*
-   * requestIdleCallback only controls when a callback STARTS. A warm is a synchronous
-   * tokenization once its grammar is loaded, so warming every language in one callback
-   * concatenates N of them into one unyieldable block: 746 ms for the 100K rung's five languages
-   * driven through shiki directly, worst single language 334 ms. WebKitGTK has no
-   * requestIdleCallback at all and takes the setTimeout fallback, which cannot even pick a quiet
-   * moment to start.
+   * requestIdleCallback only controls when a callback STARTS, and WebKitGTK has none at all, so
+   * this venue takes the setTimeout fallback and cannot even do that. A warm tokenizes
+   * synchronously once its grammar is loaded, so every language in one callback is one unyieldable
+   * block: 746 ms for the 100K rung's five languages driven through shiki, worst single 334 ms.
    */
   const warm = SOURCE.slice(SOURCE.indexOf("const warmGrammars"));
   const body = warm.slice(0, warm.indexOf("\n};"));
