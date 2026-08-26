@@ -178,7 +178,11 @@ import type {
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
 } from "../types/api";
-import type { ChatModelSummary } from "../types/runtime";
+import {
+  modelReadsSamplingSeed,
+  type ChatModelRow,
+  type ChatModelSummary,
+} from "../types/runtime";
 import {
   getStoredChatProject,
   getStoredChatThread,
@@ -2387,6 +2391,9 @@ function queuedResolvedModelFromStore(
       ? {
           isVision: activeModel.isVision,
           isGguf: activeModel.isGguf,
+          // The queued run mints its own summary for a model with no catalog row, and
+          // the sampling seed is gated on this.
+          isMlx: activeModel.isMlx,
           isAudio: activeModel.isAudio,
           audioType: activeModel.audioType,
           hasAudioInput: activeModel.hasAudioInput,
@@ -3754,12 +3761,15 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             maxTokensCap: loadResp.context_length ?? undefined,
           },
         );
-        const defaultModel: ChatModelSummary = {
+        const defaultModel: ChatModelRow = {
           id: DEFAULT_CHAT_MODEL_REPO,
           name: loadResp.display_name ?? DEFAULT_CHAT_MODEL_LABEL,
           isVision: loadResp.is_vision ?? false,
           isLora: false,
           isGguf: true,
+          isMlx: false,
+          isAudio: false,
+          hasAudioInput: false,
         };
         if (!store.models.some((m) => m.id === DEFAULT_CHAT_MODEL_REPO)) {
           store.setModels([...store.models, defaultModel]);
@@ -3887,6 +3897,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
             modelCapabilities: {
               isVision: status.is_vision ?? false,
               isGguf: status.is_gguf ?? false,
+              isMlx: status.is_mlx ?? false,
               isAudio: status.is_audio ?? false,
               audioType: status.audio_type ?? null,
               hasAudioInput: status.has_audio_input ?? false,
@@ -5882,6 +5893,12 @@ export function createOpenAIStreamAdapter(
             min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,
             presence_penalty: params.presencePenalty,
+            // Omitted when unset so the server keeps drawing a fresh seed, and when the
+            // backend does not read one, so a pin left over from a GGUF is not sent
+            // invisibly after a switch to transformers.
+            ...(params.seed == null || !modelReadsSamplingSeed(activeModel)
+              ? {}
+              : { seed: params.seed }),
             image_base64: imageBase64,
             audio_base64: audioBase64,
             video_base64: videoBase64,

@@ -11618,6 +11618,12 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     lean_k = _autoinject_top_k()
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
     top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
+    budget: int | None = None
+    # The window the budget was sized against, so `_text_token_cost` only trusts
+    # a GGUF actually serving this same window.
+    ctx_tokens = (
+        _opt_int(rag_scope.get("context_length") or rag_scope.get("max_context_tokens")) or 0
+    )
 
     # Whole-document mode: a thread-attached file under budget is injected in
     # full. A KB selection is exclusive so whole-doc never preempts it; project
@@ -11626,11 +11632,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     if whole_doc_requested:
         try:
             budget = _whole_doc_budget(rag_scope, conversation)
-
-            whole = whole_document_context(
-                scope_thread_id = thread_id,
-                max_tokens = budget,
-            )
+            whole = whole_document_context(scope_thread_id = thread_id, max_tokens = budget)
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG whole-document context failed: %s", exc)
             whole = None
@@ -11657,22 +11659,87 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                         text = merged_text
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
 
-    if text is None and enabled:
+    def _fits(candidate_text, max_tokens) -> bool:
+        # None means the estimate itself failed, so there is nothing to enforce.
+        # Zero is the opposite: a measured "no room left".
+        if max_tokens is None:
+            return True
+        if max_tokens <= 0:
+            return False
+        # Priced by the serving GGUF when it can, doubled when it cannot. The
+        # doubling is what stops dense ASCII (source, minified JSON, hashes, all
+        # nearer two characters per token) being charged the English four.
+        return _text_token_cost(candidate_text, ctx_tokens) <= max_tokens
+
+    def _trim(hit_text, hit_sources, max_tokens):
+        """Drop passages from the tail until the rendered block fits, else None.
+
+        Re-renders only when something is dropped, so an untrimmed result comes
+        back exactly as retrieval built it.
+
+        None when not even the top passage fits: the block joins the current
+        turn, which the window may not evict, so an overflowing injection fails
+        the request rather than degrading the answer. Losing the attachment is
+        what this branch exists to prevent, but main already loses it here, and
+        that beats an error instead of an answer.
+        """
+        kept, rendered = list(hit_sources), hit_text
+        while len(kept) > 1 and not _fits(rendered, max_tokens):
+            kept = kept[:-1]
+            rendered = render_sources(kept)
+        return (rendered, kept) if _fits(rendered, max_tokens) else None
+
+    def retrieve(*, max_tokens = None, **scope):
+        found = search_for_autoinject(query = query, top_k = top_k, **scope)
+        return _trim(found[0], found[1], max_tokens) if found else None
+
+    # An oversized thread attachment is mandatory grounding: with auto-injection
+    # off, search it alone, without the optional-auto relevance floor, then add
+    # project context if the combination still fits. The budget binds on that
+    # path only -- with auto-injection on this stays the single combined
+    # unbudgeted search, so a small context cannot silently switch RAG off.
+    if text is None and (enabled or whole_doc_requested):
         try:
-            found = search_for_autoinject(
-                query = query,
-                scope_kb_id = rag_scope.get("kb_id"),
-                scope_thread_id = rag_scope.get("thread_id"),
-                scope_project_id = rag_scope.get("project_id"),
-                top_k = top_k,
-                min_dense_score = floor,
-                **_scope_retrieval_kwargs(rag_scope),
-            )
+            if whole_doc_requested and not enabled:
+                found = retrieve(
+                    max_tokens = budget,
+                    scope_thread_id = thread_id,
+                    min_dense_score = None,
+                    **_scope_retrieval_kwargs(rag_scope),
+                )
+                project_id = rag_scope.get("project_id")
+                if found and project_id:
+                    # Isolated like the whole-document companion above: an
+                    # unavailable project index must not send the shared handler
+                    # below into discarding thread grounding already in hand.
+                    try:
+                        proj = retrieve(
+                            scope_project_id = project_id,
+                            min_dense_score = floor,
+                            **_scope_retrieval_kwargs(rag_scope),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("RAG project retrieval (fallback companion) failed: %s", exc)
+                        proj = None
+                    if proj:
+                        # Trim the combination, not the project alone, which was
+                        # never entitled to the whole budget. The tail is all
+                        # project, so what fits beside the thread result survives.
+                        merged = found[1] + proj[1]
+                        found = _trim(render_sources(merged), merged, budget) or found
+            else:
+                found = retrieve(
+                    scope_kb_id = rag_scope.get("kb_id"),
+                    scope_thread_id = thread_id,
+                    scope_project_id = rag_scope.get("project_id"),
+                    min_dense_score = floor,
+                    **_scope_retrieval_kwargs(rag_scope),
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None
         if not found:
-            logger.info("RAG auto-inject: no passage >= %.2f; skipping", floor)
+            logger.info("RAG auto-inject: no matching passage; skipping")
             return None
         text, sources = found
     if text is None:

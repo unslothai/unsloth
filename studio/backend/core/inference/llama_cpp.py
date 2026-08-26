@@ -4981,7 +4981,24 @@ class LlamaCppBackend:
         3. unload_model(): terminate the subprocess
     """
 
-    def __init__(self):
+    def __init__(self, *, manages_processes: bool = True):
+        """``manages_processes = False`` builds an INERT probe.
+
+        The constructor is not free. It reaps orphaned llama-servers, which walks
+        every entry in /proc, resolves each candidate's exe and signals the ones it
+        recognises, and it registers an atexit handler that holds this instance for
+        the life of the process. Both are right for the backend that owns the child.
+
+        Neither is right for a probe. The sizing helpers build one only to read a GGUF
+        header and evaluate arithmetic, and since the memory-estimate route those
+        helpers run on every settings change rather than once per load. Measured on one
+        estimate: five constructions, five /proc scans, five atexit handlers -- and the
+        handlers are never released, so fifty estimates left 250 of them holding 250
+        backends. A panel that prices a load must not be able to kill a server, and a
+        slider drag must not leak.
+
+        Default is True, so every existing caller keeps the behaviour it has today.
+        """
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
         self._model_identifier: Optional[str] = None
@@ -5271,12 +5288,13 @@ class LlamaCppBackend:
         # to decide whether to wait for the VRAM reclaim to finish.
         self._last_kill_monotonic: float = 0.0
 
-        _reaped = self._kill_orphaned_servers()
-        if _reaped:
-            # Reaped VRAM frees lazily; arm the settle wait so the first load
-            # waits before ranking GPUs by free memory.
-            self._last_kill_monotonic = time.monotonic()
-        atexit.register(self._cleanup)
+        if manages_processes:
+            _reaped = self._kill_orphaned_servers()
+            if _reaped:
+                # Reaped VRAM frees lazily; arm the settle wait so the first load
+                # waits before ranking GPUs by free memory.
+                self._last_kill_monotonic = time.monotonic()
+            atexit.register(self._cleanup)
 
     # ── Properties ────────────────────────────────────────────────
 
