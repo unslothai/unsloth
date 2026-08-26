@@ -22,10 +22,29 @@ import {
  * way it can be addressed. A truth table nobody executes is not evidence of that.
  */
 
-test("an install that has never set the flag gets nothing", () => {
-  assert.equal(SHIP_DEFAULT, "off", "PRECONDITION: this feature ships off");
-  assert.equal(resolveMathBlockMode(undefined, ""), "off");
-  assert.equal(resolveMathBlockMode(null, ""), "off");
+test("an install that has never set the flag gets the ship default", () => {
+  assert.equal(
+    SHIP_DEFAULT,
+    "contain",
+    "PRECONDITION: this feature ships ON, gated on the engine. It is +92% at 500K, 3.2 to " +
+      "37 fps, with 10 differing pixels across seven screenshots. See the comment on SHIP_DEFAULT " +
+      "for what is accepted rather than solved.",
+  );
+  // Expressed through the constant rather than through its current value, so this row keeps
+  // testing "unset means the ship default" when the default next moves.
+  assert.equal(resolveMathBlockMode(undefined, ""), SHIP_DEFAULT);
+  assert.equal(resolveMathBlockMode(null, ""), SHIP_DEFAULT);
+});
+
+test("a mistyped build flag turns it OFF, and does not fall back to the ship default", () => {
+  // The asymmetry matters now that the default is on. Someone who reaches for a flag that is
+  // already enabled is reaching for it in order to disable it, so a typo landing on "off" does
+  // what they meant. Resolving a typo to the default would ignore them silently, which is the
+  // hazard `code-fence-mode.ts` invented a third state to avoid.
+  assert.equal(SHIP_DEFAULT, "contain", "PRECONDITION: this row is about an ON default");
+  assert.equal(resolveMathBlockMode(undefined, "conatin"), "off");
+  assert.equal(resolveMathBlockMode(undefined, "true"), "off");
+  assert.notEqual(resolveMathBlockMode(undefined, "conatin"), SHIP_DEFAULT);
 });
 
 test("the build flag turns it on, and only on the values that mean on", () => {
@@ -33,8 +52,8 @@ test("the build flag turns it on, and only on the values that mean on", () => {
   assert.equal(resolveMathBlockMode(undefined, "1"), "contain");
   assert.equal(resolveMathBlockMode(undefined, "off"), "off");
   assert.equal(resolveMathBlockMode(undefined, "0"), "off");
-  // A mistyped value must not land on "contain". With a default of "off" it cannot land anywhere
-  // else either, which is why this file does not pretend to distinguish unset from unrecognised.
+  // A mistyped value must not land on "contain". It lands on "off", which is no longer the same
+  // thing as the ship default; the row below this test is where that asymmetry is asserted.
   assert.equal(resolveMathBlockMode(undefined, "conatin"), "off");
   assert.equal(resolveMathBlockMode(undefined, "true"), "off");
 });
@@ -43,7 +62,7 @@ test("the runtime global overrides the build flag in BOTH directions", () => {
   // PRECONDITION: without the runtime value these two builds disagree, so the assertions below
   // are about the override and not about the build flag being ignored.
   assert.equal(resolveMathBlockMode(undefined, "contain"), "contain");
-  assert.equal(resolveMathBlockMode(undefined, ""), "off");
+  assert.equal(resolveMathBlockMode(undefined, "off"), "off");
 
   assert.equal(resolveMathBlockMode("off", "contain"), "off");
   assert.equal(resolveMathBlockMode(false, "contain"), "off");
@@ -54,7 +73,8 @@ test("the runtime global overrides the build flag in BOTH directions", () => {
 
 test("a non-string, non-boolean runtime value falls through to the build flag", () => {
   assert.equal(resolveMathBlockMode({}, "contain"), "contain");
-  assert.equal(resolveMathBlockMode(0, ""), "off");
+  assert.equal(resolveMathBlockMode(0, "off"), "off");
+  assert.equal(resolveMathBlockMode(0, ""), SHIP_DEFAULT);
 });
 
 test("the attribute the stylesheet reads is the one the stylesheet reads", () => {
