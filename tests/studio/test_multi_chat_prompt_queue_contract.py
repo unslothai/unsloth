@@ -428,7 +428,16 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "getInferenceStatus().catch(() => null)" not in lifecycle
     assert "const status = await getInferenceStatus();" in lifecycle
     assert "options?.abortSignal?.throwIfAborted()" in CHAT_ADAPTER
-    assert CHAT_ADAPTER.count("await persistResolvedQueuedModel(params.checkpoint)") >= 2
+    assert (
+        len(
+            re.findall(
+                r"await persistResolvedQueuedModel\(\s*params\.checkpoint,"
+                r"\s*runtime\.activeGgufVariant,\s*\)",
+                CHAT_ADAPTER,
+            )
+        )
+        >= 2
+    )
     assert "notifyQueuedRunFailed" not in CHAT_ADAPTER
     assert "pendingSettings.length === 1" not in QUEUED_SETTINGS
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS

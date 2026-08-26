@@ -205,6 +205,22 @@ def test_chat_thread_updated_at_survives_thread_resave(tmp_path, monkeypatch):
     assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_000_500
 
 
+def test_chat_thread_preserves_gguf_variant(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    thread = {**_thread(), "modelGgufVariant": "Q6_K"}
+
+    assert studio_db.upsert_chat_thread(thread)["modelGgufVariant"] == "Q6_K"
+    studio_db.upsert_chat_thread(_thread())
+    assert studio_db.get_chat_thread("thread-1")["modelGgufVariant"] == "Q6_K"
+
+    updated = studio_db.update_chat_thread("thread-1", {"modelGgufVariant": "Q8_0"})
+    assert updated is not None
+    assert updated["modelGgufVariant"] == "Q8_0"
+
+    replacement = {**_thread(), "modelId": "other-model"}
+    assert studio_db.upsert_chat_thread(replacement)["modelGgufVariant"] is None
+
+
 def test_list_chat_threads_orders_by_last_activity(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     older = _thread("thread-old")
@@ -282,6 +298,7 @@ def test_chat_threads_updated_at_migration_backfills_from_messages(tmp_path, mon
     assert studio_db.get_chat_thread("thread-with-msgs")["updatedAt"] == 1_700_000_002_000
     assert studio_db.get_chat_thread("thread-empty")["updatedAt"] == 1_700_000_050_000
     assert studio_db.get_chat_thread("thread-fork")["updatedAt"] == 1_700_000_100_000
+    assert studio_db.get_chat_thread("thread-with-msgs")["modelGgufVariant"] is None
 
 
 def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatch):
@@ -650,7 +667,12 @@ def _msg(mid: str, parent: str | None, t: int) -> dict:
 def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(
-        {**_thread("src"), "title": "Original", "openaiCodeExecContainerId": "cnt-x"}
+        {
+            **_thread("src"),
+            "title": "Original",
+            "modelGgufVariant": "Q6_K",
+            "openaiCodeExecContainerId": "cnt-x",
+        }
     )
     # Linear chain: m1 -> m2 -> m3. Plus a sibling m4 off m2 (should NOT
     # be copied since we fork at m3).
@@ -682,6 +704,7 @@ def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
     assert forked["id"] == "fork-1"
     assert forked["forkedFromThreadId"] == "src"
     assert forked["forkedFromMessageId"] == "m3"
+    assert forked["modelGgufVariant"] == "Q6_K"
     # Container ids reset on fork.
     assert forked["openaiCodeExecContainerId"] is None
 

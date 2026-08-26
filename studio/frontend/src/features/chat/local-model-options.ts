@@ -49,6 +49,8 @@ export function chatLocalModelOptions(
       continue;
     }
     seen.add(model.id);
+    const isDirectGguf =
+      model.source === "ollama" || model.path.toLowerCase().endsWith(".gguf");
     options.push({
       id: model.id,
       name:
@@ -58,11 +60,8 @@ export function chatLocalModelOptions(
       baseModel: baseModelLabel(model.source),
       updatedAt: model.updated_at ?? undefined,
       source: "local" as const,
-      isGguf:
-        model.source === "ollama" || model.path.toLowerCase().endsWith(".gguf")
-          ? true
-          : undefined,
-      isDirectGguf: model.source === "ollama" ? true : undefined,
+      isGguf: isDirectGguf ? true : undefined,
+      isDirectGguf: isDirectGguf ? true : undefined,
     });
   }
   return options;

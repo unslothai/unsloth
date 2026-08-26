@@ -63,6 +63,7 @@ import {
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
 import {
   consumeQueuedChatRunSettings,
+  shouldPersistResolvedQueuedModel,
   snapshotQueuedChatRunSettings,
 } from "../utils/queued-chat-run-settings";
 import {
@@ -1912,8 +1913,7 @@ export async function buildLocalTokenCountExtras(
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
-    // Only truthiness is read server-side, to keep search_knowledge_base and its grounding nudge
-    // in the prompt; no retrieval runs for a count.
+    // the ids name the attached documents in the nudge server-side; no retrieval runs for a count.
     ...(ragOn
       ? {
           rag_scope: {
@@ -2178,6 +2178,7 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
 
 type QueuedResolvedModelRuntime = {
   checkpoint: string;
+  activeGgufVariant: string | null;
   supportsTools: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -2323,6 +2324,7 @@ function queuedResolvedModelFromStore(
   );
   return {
     checkpoint: state.params.checkpoint,
+    activeGgufVariant: state.activeGgufVariant,
     supportsTools: state.supportsTools,
     supportsReasoning: state.supportsReasoning,
     reasoningAlwaysOn: state.reasoningAlwaysOn,
@@ -3823,6 +3825,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
           blockedByTrustRemoteCode: false,
           modelRuntime: {
             checkpoint,
+            activeGgufVariant: status.gguf_variant ?? null,
             supportsTools: status.supports_tools ?? false,
             supportsReasoning: status.supports_reasoning ?? false,
             reasoningAlwaysOn: status.reasoning_always_on ?? false,
@@ -3976,7 +3979,10 @@ export function createOpenAIStreamAdapter(
         releasePreStreamRunForThreadIds([unstable_threadId, resolvedThreadId]);
       const queuedRunSettings = consumeQueuedChatRunSettings(resolvedThreadId);
       let queuedEmptyModelRuntime: QueuedResolvedModelRuntime | null = null;
-      const persistResolvedQueuedModel = async (modelId: string) => {
+      const persistResolvedQueuedModel = async (
+        modelId: string,
+        modelGgufVariant: string | null,
+      ) => {
         if (
           !queuedRunSettings ||
           queuedRunSettings.params.checkpoint ||
@@ -3985,11 +3991,14 @@ export function createOpenAIStreamAdapter(
         ) {
           return;
         }
-        try {
-          await updateStoredChatThread(resolvedThreadId, { modelId });
-        } catch (error) {
-          throw error;
+        const storedThread = await readThreadRecord?.();
+        if (!shouldPersistResolvedQueuedModel(storedThread)) {
+          return;
         }
+        await updateStoredChatThread(resolvedThreadId, {
+          modelId,
+          modelGgufVariant,
+        });
       };
       if (queuedRunSettings) {
         runtime = { ...runtime, ...queuedRunSettings };
@@ -4059,6 +4068,10 @@ export function createOpenAIStreamAdapter(
                     queuedEmptyModelRuntime?.checkpoint ??
                     liveRuntime.params.checkpoint,
                 },
+                activeGgufVariant:
+                  queuedEmptyModelRuntime !== null
+                    ? queuedEmptyModelRuntime.activeGgufVariant
+                    : liveRuntime.activeGgufVariant,
                 supportsTools:
                   queuedEmptyModelRuntime?.supportsTools ??
                   liveRuntime.supportsTools,
@@ -4109,7 +4122,10 @@ export function createOpenAIStreamAdapter(
         const userMessageParentId =
           userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
-        await persistResolvedQueuedModel(params.checkpoint);
+        await persistResolvedQueuedModel(
+          params.checkpoint,
+          runtime.activeGgufVariant,
+        );
         const selectedCheckpoint = params.checkpoint.trim();
         const researchExternalSelection =
           parseExternalModelId(selectedCheckpoint);
@@ -4421,6 +4437,10 @@ export function createOpenAIStreamAdapter(
                   queuedEmptyModelRuntime?.checkpoint ??
                   liveRuntime.params.checkpoint,
               },
+              activeGgufVariant:
+                queuedEmptyModelRuntime !== null
+                  ? queuedEmptyModelRuntime.activeGgufVariant
+                  : liveRuntime.activeGgufVariant,
               supportsTools:
                 queuedEmptyModelRuntime?.supportsTools ??
                 liveRuntime.supportsTools,
@@ -4460,7 +4480,10 @@ export function createOpenAIStreamAdapter(
             }
         : liveRuntime;
       const { params } = runtime;
-      await persistResolvedQueuedModel(params.checkpoint);
+      await persistResolvedQueuedModel(
+        params.checkpoint,
+        runtime.activeGgufVariant,
+      );
       const sandboxSessionId = await resolveSandboxSessionId(
         resolvedThreadId,
         readThreadRecord,

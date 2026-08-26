@@ -98,7 +98,7 @@ import {
   runtimeRegistry,
   teardownRuntime,
 } from "./runtime-registry";
-import { getTransportMode } from "./transport-preference";
+import { resolveTransportMode } from "./transport-preference";
 
 function notify(
   job: ManagedDownload,
@@ -627,9 +627,14 @@ export async function startJob(
   // An explicit opts.useXet (a retry pinning a transport) wins; otherwise carry the stored
   // preference UNRESOLVED so "auto" survives to effectiveTransportMode(). Collapsing it to a
   // boolean here would read "auto" as "not xet" and send every download over HTTP.
-  const requestedMode: TransportMode =
-    opts.useXet === undefined
-      ? getTransportMode()
+  // Never for an adopted job: that branch ignores requestedMode, and resolving it is now a
+  // settings round trip. Suspending here left pollingStarted=false long enough for the other
+  // concurrent adoptJob caller to replace this runtime, and both continuations then reached
+  // beginPolling, leaving duplicate timers and a leaked visibility listener.
+  const requestedMode: TransportMode = opts.adopt
+    ? TRANSPORT.HTTP
+    : opts.useXet === undefined
+      ? await resolveTransportMode()
       : opts.useXet
         ? TRANSPORT.XET
         : TRANSPORT.HTTP;

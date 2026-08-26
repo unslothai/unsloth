@@ -320,6 +320,29 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_usage_events (
+            id TEXT NOT NULL PRIMARY KEY,
+            subject TEXT NOT NULL,
+            endpoint TEXT NOT NULL,
+            model TEXT NOT NULL,
+            status TEXT NOT NULL,
+            prompt_tokens INTEGER NOT NULL,
+            completion_tokens INTEGER NOT NULL,
+            total_tokens INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_api_usage_events_created_at "
+        "ON api_usage_events(created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_api_usage_events_subject_created_at "
+        "ON api_usage_events(subject, created_at)"
+    )
     # Windows: COLLATE NOCASE so C:\Models and c:\models dedup; elsewhere BINARY keeps them distinct.
     collation = "COLLATE NOCASE" if platform.system() == "Windows" else ""
     conn.execute(
@@ -359,6 +382,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             title TEXT NOT NULL,
             model_type TEXT NOT NULL,
             model_id TEXT,
+            model_gguf_variant TEXT,
             pair_id TEXT,
             project_id TEXT,
             archived INTEGER NOT NULL DEFAULT 0,
@@ -378,6 +402,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "settings_json" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN settings_json TEXT")
+    if "model_gguf_variant" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN model_gguf_variant TEXT")
     # Orders one writer's snapshot writes against its own earlier ones. A tab closing
     # sends its last edit keepalive, which can overtake a PATCH already accepted by the
     # server, and no client-side cancel reaches a handler that is already running: the
@@ -1757,6 +1783,7 @@ def _chat_thread_from_row(row: sqlite3.Row, include_settings: bool = True) -> di
         "title": data["title"],
         "modelType": data["model_type"],
         "modelId": data.get("model_id") or "",
+        "modelGgufVariant": data.get("model_gguf_variant") or None,
         "pairId": data.get("pair_id") or None,
         "projectId": data.get("project_id") or None,
         "archived": bool(data["archived"]),
@@ -1829,11 +1856,16 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, settings_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, settings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
+                model_gguf_variant = CASE
+                    WHEN excluded.model_id = chat_threads.model_id
+                    THEN COALESCE(excluded.model_gguf_variant, chat_threads.model_gguf_variant)
+                    ELSE excluded.model_gguf_variant
+                END,
                 model_id = excluded.model_id,
                 pair_id = excluded.pair_id,
                 project_id = excluded.project_id,
@@ -1852,6 +1884,7 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread.get("title") or "New Chat",
                 thread["modelType"],
                 thread.get("modelId") or "",
+                thread.get("modelGgufVariant"),
                 thread.get("pairId"),
                 thread.get("projectId"),
                 1 if thread.get("archived") else 0,
@@ -1903,6 +1936,7 @@ def update_chat_thread(
         "title": ("title", patch.get("title")),
         "modelType": ("model_type", patch.get("modelType")),
         "modelId": ("model_id", patch.get("modelId")),
+        "modelGgufVariant": ("model_gguf_variant", patch.get("modelGgufVariant")),
         "pairId": ("pair_id", patch.get("pairId")),
         "projectId": ("project_id", patch.get("projectId")),
         "archived": ("archived", 1 if patch.get("archived") else 0),
@@ -3793,16 +3827,17 @@ def fork_chat_thread(
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, pair_id, project_id, archived, created_at,
+                (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at,
                  openai_code_exec_container_id, anthropic_code_exec_container_id,
                  forked_from_thread_id, forked_from_message_id, settings_json)
-            VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?)
             """,
             (
                 new_thread_id,
                 new_title,
                 src_dict["model_type"],
                 src_dict.get("model_id") or "",
+                src_dict.get("model_gguf_variant"),
                 None,  # pairId: forks always standalone (compare-mode disabled v1)
                 src_dict.get("project_id"),
                 int(created_at),
