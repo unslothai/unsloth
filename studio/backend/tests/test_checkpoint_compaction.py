@@ -15,6 +15,7 @@ import pytest
 
 from core.inference import checkpoint
 from core.inference.checkpoint import (
+    _select_items,
     carried_forward_items,
     fit_checkpoint_context,
     render_checkpoint,
@@ -279,7 +280,7 @@ def test_a_multiline_instruction_survives_being_read_back():
     ]
     assert checkpoint._block_items(checkpoint.render_checkpoint([nested])) == [nested]
 
-    # A flat block, no continuation indent, still reads line by line. It carries Studio's
+    # A flat block, no continuation indent, still reads line by line. It carries Unsloth's
     # own header, which is what marks a block as ours; a foreign one is not read at all.
     flat = (
         checkpoint._OPEN
@@ -380,13 +381,71 @@ def test_the_fit_falls_back_to_rolling_when_the_request_may_not_reset(monkeypatc
     assert seen == {"rolling": True}
 
 
-def test_an_instruction_shorter_than_the_substantive_floor_is_not_carried():
-    """A deliberate bound: the 80-character floor stops "ok, do that" being carried as
-    policy, at the price of dropping a genuinely short instruction ("always answer in
-    French") too. It is still archived and still searchable."""
+def test_a_short_instruction_is_carried_when_it_is_all_there_is():
+    """The 80-character floor used to drop this, on the reasoning that a paragraph is
+    what an instruction looks like. A real session says otherwise, so the floor now only
+    decides which pass finds an item, never whether the block is empty."""
     short = {"role": "user", "content": "Always answer in French."}
 
-    assert carried_forward_items([short], max_tokens = 4096) == []
+    assert carried_forward_items([short], max_tokens = 4096) == ["Always answer in French."]
+
+
+def test_a_short_remark_is_carried_alongside_a_long_instruction():
+    """The cost of dropping the length floor, stated rather than hidden.
+
+    A passing remark like "fix it" now reaches the block, where the floored pass would
+    have excluded it. Nothing structural separates it from "Actually make it Tetris", so
+    the two cannot be told apart, and the trade favours keeping both: a wasted slot out of
+    eight in a block that already labels itself lossy, against losing the user's latest
+    direction outright. Ordering still carries the meaning, oldest first.
+    """
+    messages = [
+        {"role": "user", "content": "fix it"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": INSTRUCTION},
+        {"role": "assistant", "content": "Understood."},
+    ]
+
+    assert carried_forward_items(messages, max_tokens = 4096) == ["fix it", INSTRUCTION]
+
+
+def test_filler_is_never_carried_even_when_the_block_would_be_empty():
+    """The fallback drops the length floor and nothing else. `_CONTINUATIONS` is what
+    actually keeps a nudge out of the system turn, and it still applies, so a thread of
+    pure filler produces no block rather than one that says "continue"."""
+    messages = []
+    for filler in ("continue", "ok", "yes", "keep going", "thanks", "go on"):
+        messages += [
+            {"role": "user", "content": filler},
+            {"role": "assistant", "content": "..."},
+        ]
+
+    assert carried_forward_items(messages, max_tokens = 4096) == []
+
+
+def test_the_task_statement_of_a_real_coding_session_survives_the_reset():
+    """The session that found this. Every user turn is short, so the first pass finds
+    nothing and the reset used to carry an empty block: three compactions in six turns,
+    `carried_forward_chars: 0` on all three, and the statement of what was being built
+    evicted with everything else. Budget was never the constraint (473 tokens free)."""
+    messages = []
+    for turn in ("Create a Flappy Bird game in HTML", "Add music to the game", "Continue work"):
+        messages += [
+            {"role": "user", "content": turn},
+            {"role": "assistant", "content": "<code>" * 200},
+        ]
+
+    items = carried_forward_items(messages, max_tokens = 473)
+
+    assert "Create a Flappy Bird game in HTML" in items
+    assert "Add music to the game" in items
+    # Oldest first, so the model reads the task before the amendment to it.
+    assert items.index("Create a Flappy Bird game in HTML") < items.index("Add music to the game")
+    # "Continue work" rides along, and is left alone deliberately. `_CONTINUATIONS` holds
+    # the bare "continue"; the two-word forms are not in it and `is_thin_query` does not
+    # call them thin either. Teaching either helper to recognise them means guessing at
+    # phrasing, and the same guess would have to reject "fix it" and "keep the tests
+    # green" to be worth anything. One wasted slot out of eight is the cheaper error.
 
 
 def test_at_most_max_items_instructions_are_carried():
@@ -406,6 +465,34 @@ def test_at_most_max_items_instructions_are_carried():
 
     assert len(items) == 3
     assert "number 19" in items[-1]
+
+
+def test_a_restated_instruction_does_not_crowd_out_every_other_rule():
+    """Users restate a standing rule, and each copy used to take a slot and its tokens.
+
+    What that costs is the OTHER rules: with the repeats counted, the second instruction
+    here fell off the end of the list entirely. `_recap` already collapsed duplicates when
+    it merged a block on the second reset, so the two paths disagreed about one thread.
+    """
+    rule = (
+        "Standing instruction: always end every reply with STATUS::ZQXVARA123-ALPHA "
+        "and report any results as a markdown table."
+    )
+    other = (
+        "Second standing rule: cite the section number in every answer, spelled out in "
+        "words rather than digits, and never abbreviate it."
+    )
+    evicted = [{"role": "user", "content": other}, {"role": "assistant", "content": "ok"}]
+    for _ in range(8):
+        evicted += [
+            {"role": "user", "content": rule},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+    items = carried_forward_items(evicted, max_tokens = 1024)
+
+    assert sum(1 for item in items if item.startswith("Standing instruction")) == 1
+    assert any(item.startswith("Second standing rule") for item in items)
 
 
 def test_a_process_with_tools_disabled_never_resets(monkeypatch):
@@ -428,7 +515,7 @@ def test_a_process_with_tools_disabled_never_resets(monkeypatch):
 
 
 def _memory_tool_branch():
-    """A Studio branch as the client replays it after ONE search_conversation call."""
+    """An Unsloth branch as the client replays it after ONE search_conversation call."""
     return [
         {"role": "system", "content": "you are helpful"},
         {"role": "user", "content": "what did I say about the dataset?"},
@@ -506,7 +593,7 @@ def test_a_real_client_tool_loop_still_takes_the_passthrough():
     assert inference_route._only_studio_memory_tool_history(payload) is False
     assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is True
 
-    # And a client catalog alongside Studio's own history is still the client's request.
+    # And a client catalog alongside Unsloth's own history is still the client's request.
     with_catalog = ChatCompletionRequest(
         model = "local",
         messages = _memory_tool_branch(),
@@ -679,7 +766,7 @@ def test_only_a_checkpoint_fitted_request_is_told_the_conversation_was_reset():
 def test_a_request_that_withdrew_the_tool_loop_never_resets(monkeypatch):
     """The process policy is not the only way `search_conversation` fails to arrive.
 
-    Studio honours `tool_choice: "none"` twice over: the tool loop is suppressed, and the
+    Unsloth honours `tool_choice: "none"` twice over: the tool loop is suppressed, and the
     request is excluded from the checkpoint repair that otherwise re-admits
     search_conversation alone. A caller that sets it sets it every turn, so a reset would
     hide the dropped turns behind a tool that never arrives. Same refusal as
@@ -1202,6 +1289,38 @@ def test_a_checkpoint_boundary_is_not_replayed_once_the_policy_is_rolling(monkey
     assert llama_cpp._sticky_compaction_boundary("t1") == 6
 
 
+def test_a_rescued_boundary_is_recorded_but_never_replayed(monkeypatch):
+    """Recording a rescue's depth must not make it sticky.
+
+    Two different questions. "What did this fit evict?" places the compaction notice, and
+    a rescue has a real answer worth persisting. "Which boundary should the next request
+    re-apply?" is the one a missed reply reserve makes unsafe, and it is decided here, on
+    `fits` alone -- so the depth can be honest without the replay becoming wrong.
+    """
+    from core.inference import checkpoint, llama_cpp
+
+    stored = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "a",
+            "metadata": {"custom": {"contextTruncation": {"fits": True, "boundary_messages": 6}}},
+        },
+    ]
+    _stub_studio_db(monkeypatch, stored)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
+
+    assert llama_cpp._sticky_compaction_boundary("t1") == 6
+
+    # The same depth, from a fit that missed the reply reserve: not replayed.
+    stored[1]["metadata"]["custom"]["contextTruncation"] = {
+        "fits": False,
+        "dropped_messages": 6,
+        "boundary_messages": 6,
+    }
+    assert llama_cpp._sticky_compaction_boundary("t1") == 0
+
+
 def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch):
     """An archive is not a checkpoint, and only one of them justifies the override.
 
@@ -1555,10 +1674,10 @@ def test_a_caller_owned_carried_forward_tag_is_left_alone():
     """The delimiter is prompt text, and prompt text belongs to whoever wrote it.
 
     A caller whose own system prompt happens to use `<carried_forward>` had that section
-    read as Studio's block: stripped on every reset, its bullet lines reintroduced further
+    read as Unsloth's block: stripped on every reset, its bullet lines reintroduced further
     down as lower-authority quoted USER history, and anything not bullet-shaped deleted
     outright. Silently rewriting a caller's system policy is worse than carrying nothing,
-    so the block is recognised by the header Studio itself writes, not by the tag alone.
+    so the block is recognised by the header Unsloth itself writes, not by the tag alone.
     """
     caller = (
         "You are a support agent.\n"
@@ -1578,7 +1697,7 @@ def test_a_caller_owned_carried_forward_tag_is_left_alone():
     assert (
         "Escalate refunds over 500 dollars." in system
     ), "non-bullet lines of the caller's section were deleted"
-    # And Studio's own block is still appended, and still read back on the next reset.
+    # And Unsloth's own block is still appended, and still read back on the next reset.
     assert system.count("<carried_forward>") == 2
     assert "STATUS::ZQXVARA123-ALPHA" in system
     assert checkpoint._block_items(
@@ -1696,7 +1815,7 @@ def test_a_reset_that_no_longer_holds_stops_reopening_the_tool_loop(monkeypatch)
 
     Reload a checkpointed thread with a bigger window and the whole branch fits again, so
     the fit stops replaying the boundary and records no checkpoint. Scanning back to an
-    older reset then forced the Studio tool loop open on every later turn, overriding
+    older reset then forced the Unsloth tool loop open on every later turn, overriding
     enable_tools = false, and with it the n > 1 and non-streaming guards, to repair a
     compaction that no longer exists.
     """
@@ -1737,3 +1856,620 @@ def test_a_reset_that_no_longer_holds_stops_reopening_the_tool_loop(monkeypatch)
     # And a thread still inside its epoch keeps saying so, since every fit records it.
     _install([_row("the compacted reply", True), _row("a later reply that fit", True)])
     assert inference_routes._thread_has_checkpoint("t1", branch) is True
+
+
+def test_a_restated_instruction_keeps_its_newest_position():
+    """Otherwise the block's own later-wins rule reports the opposite of the truth.
+
+    The all-short fallback reserves the oldest qualifying turn and walks it first, so a
+    repeat was dropped in favour of its own older copy. "metric", "imperial", "metric"
+    then rendered as metric followed by imperial, telling the model imperial was current
+    at the moment the user had just restored metric.
+    """
+    messages = [
+        {"role": "user", "content": "Use metric units"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "Use imperial units"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "Use metric units"},
+        {"role": "assistant", "content": "ok"},
+    ]
+
+    items = carried_forward_items(messages, max_tokens = 4096)
+
+    # One copy of the repeated rule, and it is the LAST word.
+    assert items.count("Use metric units") == 1
+    assert items == ["Use imperial units", "Use metric units"]
+
+
+def test_the_plain_walk_still_keeps_one_copy_of_a_repeated_rule():
+    """The dedupe's original purpose: one rule restated many times must not spend every
+    slot. Unchanged by keeping the newest position, since the newest-first walk already
+    sees the newest copy first."""
+    messages = []
+    for _ in range(5):
+        messages.append({"role": "user", "content": INSTRUCTION})
+        messages.append({"role": "assistant", "content": "ok"})
+
+    assert carried_forward_items(messages, max_tokens = 4096) == [INSTRUCTION]
+
+
+def test_a_tight_cap_keeps_the_correction_not_the_abandoned_task():
+    """Reserving the opening task must not DISPLACE the newest instruction.
+
+    Placing the oldest turn first exhausted a cap of one before the newest-first walk
+    began, so "Build a Flappy Bird game" then "Actually build Tetris instead" carried
+    only the abandoned request: the block stated the opposite of the user's latest
+    direction.
+    """
+    messages = [
+        {"role": "user", "content": "Build a Flappy Bird game"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "Actually build Tetris instead"},
+        {"role": "assistant", "content": "ok"},
+    ]
+
+    only_one = _select_items(
+        messages,
+        max_tokens = 4096,
+        max_items = 1,
+        min_chars = 0,
+        reserve_oldest = True,
+    )
+    assert only_one == ["Actually build Tetris instead"]
+
+    # With room for two, the opening task is still reserved, rendered oldest first.
+    both = _select_items(
+        messages,
+        max_tokens = 4096,
+        max_items = 2,
+        min_chars = 0,
+        reserve_oldest = True,
+    )
+    assert both == ["Build a Flappy Bird game", "Actually build Tetris instead"]
+
+
+def test_an_oversized_newest_turn_does_not_hand_the_budget_to_the_opening_task():
+    """The reservation slots in behind the newest TAKEABLE turn, not the newest one.
+
+    A turn costing more than the whole cap is skipped by the walk without spending
+    anything, so reserving behind it put the opening task ahead of every usable recent
+    turn. On a 2048-token context (cap 153) an opening "Build Flappy Bird", a later
+    "Actually build Tetris" and a final oversized pasted request carried only the
+    abandoned Flappy Bird request.
+    """
+    opening = (
+        "Build a Flappy Bird clone in a single HTML file: canvas rendering, a bird that "
+        "flaps on space or click, randomly spaced pipes scrolling right to left, "
+        "gravity, collision detection against the pipes and the ground, a score counter "
+        "in the top corner, and a restart screen when you die. Keep it dependency free."
+    )
+    correction = (
+        "Actually scrap the Flappy Bird idea, build Tetris instead: a ten by twenty "
+        "grid, the seven standard tetrominoes with rotation and wall kicks, soft and "
+        "hard drop, line clears with scoring, a next piece preview, and a game over "
+        "state when the stack reaches the top. Same single HTML file, no libraries."
+    )
+    oversized = "Here is the traceback, please fix it: " + "stack frame detail. " * 60
+
+    messages = []
+    for text in (opening, correction, oversized):
+        messages.append({"role": "user", "content": text})
+        messages.append({"role": "assistant", "content": "ok"})
+
+    # 153 = int(prompt_budget(2048, 1024) * checkpoint.MAX_FRACTION), the cap a 2048
+    # context actually hands this selection. Room for one of the two, not both.
+    items = carried_forward_items(messages, max_tokens = 153)
+
+    assert items == [correction], "the newest usable direction must win the tight cap"
+
+
+def test_the_opening_task_still_survives_a_run_of_short_increments():
+    """The reason reserve_oldest exists: newest-first alone spends every slot on the
+    increments nearest the end and evicts the statement of the task itself."""
+    messages = [
+        {"role": "user", "content": "Build a Flappy Bird game"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    for step in ("add music", "now the score", "fix the pipes", "tune gravity"):
+        messages.append({"role": "user", "content": step})
+        messages.append({"role": "assistant", "content": "ok"})
+
+    items = _select_items(
+        messages,
+        max_tokens = 4096,
+        max_items = 3,
+        min_chars = 0,
+        reserve_oldest = True,
+    )
+
+    assert "Build a Flappy Bird game" in items
+    assert "tune gravity" in items, "the newest increment must survive too"
+
+
+def test_a_short_correction_survives_a_long_earlier_instruction():
+    """The length floor used to gate the whole selection.
+
+    A long task statement cleared the 80-character floor on its own, so the no-floor
+    fallback never ran and a later short correction was dropped: the block carried only
+    the abandoned request, precisely because an earlier turn happened to be wordy.
+    """
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                "Build a Flappy Bird game in HTML with a canvas, gravity, pipes that scroll, "
+                "a score counter and a game over screen that lets the player restart."
+            ),
+        },
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "Actually make it Tetris"},
+        {"role": "assistant", "content": "ok"},
+    ]
+
+    items = carried_forward_items(messages, max_tokens = 4096)
+
+    assert "Actually make it Tetris" in items
+    assert items[-1] == "Actually make it Tetris", "the correction must read as current"
+
+
+def _user_turns(*texts):
+    """One user turn per text, each answered, as a real thread arrives."""
+    messages = []
+    for text in texts:
+        messages += [
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": "ok"},
+        ]
+    return messages
+
+
+def test_the_opening_request_is_never_carried_without_the_turn_that_follows_it():
+    """The reservation used to spend its slot on the abandoned request and let the slot
+    cap drop the correction to it, which is the exact statement of the task the
+    reservation exists to prevent.
+
+    "Build Flappy Bird", "Actually build Tetris instead", "Add music" at max_items 2
+    carried ["Build Flappy Bird", "Add music"]: the model is told to build the game the
+    user walked away from, and to add music to it.
+    """
+    messages = _user_turns("Build Flappy Bird", "Actually build Tetris instead", "Add music")
+
+    items = carried_forward_items(messages, max_tokens = 4096, max_items = 2)
+
+    assert "Build Flappy Bird" not in items, "the abandoned request must not be carried alone"
+    assert items == ["Actually build Tetris instead", "Add music"]
+
+
+def test_a_correction_is_not_buried_by_the_increments_that_follow_it():
+    """The same bug with room to spare: nine turns into eight slots dropped the ONE turn
+    that changed direction, since the reservation is spent before the walk reaches it.
+
+    The measured output was ["Build Flappy Bird", "Add feature 1" ... "Add feature 7"].
+    """
+    messages = _user_turns(
+        "Build Flappy Bird",
+        "Actually build Tetris instead",
+        *[f"Add feature {index}" for index in range(1, 8)],
+    )
+
+    items = carried_forward_items(messages, max_tokens = 4096, max_items = 8)
+
+    assert "Actually build Tetris instead" in items, "the correction must survive"
+    assert items.index("Build Flappy Bird") < items.index("Actually build Tetris instead")
+    # Paid for by the OLDEST turn, so the newest increments are all still there.
+    assert items[-1] == "Add feature 7"
+
+
+def test_the_opening_task_survives_a_long_run_of_increments_with_no_correction():
+    """The case the reservation was added for, which the pair must not regress: a real
+    session states the task once at the front and then says nothing but increments, so a
+    plain newest-first walk carries eight ways to change a game it never names."""
+    messages = _user_turns(
+        "Build a Flappy Bird game",
+        *[f"increment {index}" for index in range(1, 20)],
+    )
+
+    items = carried_forward_items(messages, max_tokens = 4096, max_items = 8)
+
+    assert items[0] == "Build a Flappy Bird game", "the statement of the task must survive"
+    assert items[-1] == "increment 19", "and so must the newest increment"
+
+
+def test_the_opening_pair_is_taken_whole_or_not_at_all():
+    """The boundary of the rule. The pair needs two slots behind the newest usable turn,
+    so three slots is where it starts fitting. At two it is abandoned rather than
+    half-taken, because half of it is the abandoned request without its correction.
+    """
+    messages = _user_turns(
+        "Build Flappy Bird",
+        "Actually build Tetris instead",
+        "Add feature 1",
+        "Add feature 2",
+    )
+
+    two = carried_forward_items(messages, max_tokens = 4096, max_items = 2)
+    three = carried_forward_items(messages, max_tokens = 4096, max_items = 3)
+
+    # Two slots: the plain newest-first walk decides. Nothing wrong, only missing.
+    assert two == ["Add feature 1", "Add feature 2"]
+    # Three: the opening request and the correction to it, plus the newest turn.
+    assert three == ["Build Flappy Bird", "Actually build Tetris instead", "Add feature 2"]
+
+
+def test_a_token_budget_too_small_for_the_pair_keeps_the_correction():
+    """The same both-or-neither rule against the token cap rather than the slot cap.
+
+    A budget with room for the newest turn and ONE of the two opening turns used to buy
+    the abandoned request, because the reservation was charged first.
+    """
+    opening = (
+        "Build a Flappy Bird game in a single HTML file with canvas rendering, gravity, "
+        "pipes and a score counter."
+    )
+    correction = (
+        "Actually scrap that and build Tetris instead, same single HTML file, no "
+        "libraries at all."
+    )
+    messages = _user_turns(opening, correction, "add music")
+
+    # 45 tokens: the newest turn (10) plus either opening turn (34 or 30), never both.
+    items = carried_forward_items(messages, max_tokens = 45)
+
+    assert items == [correction, "add music"]
+
+
+def test_abandoning_the_reservation_does_not_reselect_the_opening_on_its_own():
+    """The fallback walk must exclude the opening turn, or it recreates the bug.
+
+    Abandoning the reservation is not enough on its own: the plain newest-first fallback
+    simply picked the opening up again whenever it was the cheaper of the two. A 10-token
+    "Build Tetris", a 27-token correction and a 17-token newest turn under a 40-token
+    budget carried ["Build Tetris", "Add music ..."] -- the abandoned game with the
+    correction to it dropped, which is the bug this pass exists to fix, reached by another
+    route.
+    """
+    opening = "Build Tetris"
+    correction = "Actually scrap that and build Flappy Bird instead, same single HTML file please."
+    newest = "Add music and a score counter to it now."
+    messages = _user_turns(opening, correction, newest)
+
+    items = carried_forward_items(messages, max_tokens = 40)
+
+    assert opening not in items, "the abandoned opening must not come back through the fallback"
+    assert items == [newest]
+
+
+def test_a_successor_nobody_could_afford_does_not_empty_the_block():
+    """The boundary of that exclusion, and the reason it is not unconditional.
+
+    When the successor costs more than the whole budget, no ordering carries it and there
+    was never a pair to take. Dropping the opening then buys nothing, because on these
+    threads the opening is the only affordable turn: the campaign's headline case is a
+    43-token standing instruction followed by eight 160-token sections under a 100-token
+    budget, and excluding the opening sends the block out EMPTY, which is the failure the
+    whole pass exists to stop.
+
+    The same shape with a correction (a 10-token opening, a 56-token correction and a
+    60-token newest turn under a 50-token cap) is indistinguishable from it by anything
+    but the English, so the two get the same answer and it is this one.
+    """
+    instruction = {"role": "user", "content": INSTRUCTION}
+    sections = []
+    for index in range(8):
+        sections += [
+            {"role": "user", "content": f"Section {index}. " + "x" * 600},
+            {"role": "assistant", "content": f"Section {index} noted."},
+        ]
+
+    assert carried_forward_items([instruction, *sections], max_tokens = 100) == [INSTRUCTION]
+
+    opening = "Build Tetris"
+    unaffordable = "Actually build Flappy Bird instead " + "x " * 80
+    newest = "Add music " + "y " * 100
+    items = carried_forward_items(_user_turns(opening, unaffordable, newest), max_tokens = 50)
+
+    assert items == [opening]
+
+
+def test_a_newer_restatement_still_wins_when_the_reserved_pair_fills_the_cap():
+    """Position is meaning, so it is read off the transcript, not off the walk.
+
+    The reserved pair can fill the slot cap before the walk reaches a newer copy of an
+    instruction at all, and the surviving copy then rendered at the position of the older
+    one: "metric", "imperial", "metric", "add a table" at max_items 3 came back as metric,
+    imperial, table, and the header's later-wins rule told the model imperial was current
+    at the moment the user had just restored metric.
+    """
+    messages = _user_turns(
+        "Use metric units",
+        "Use imperial units",
+        "Use metric units",
+        "Add a table",
+    )
+
+    items = carried_forward_items(messages, max_items = 3)
+
+    assert items == ["Use imperial units", "Use metric units", "Add a table"]
+    assert items.index("Use imperial units") < items.index("Use metric units")
+
+
+def test_an_opening_turn_with_nothing_after_it_is_still_reserved():
+    """Nothing can be hidden behind a turn that nothing followed, so the pair rule costs
+    the single-turn thread nothing: the reservation still applies at a cap of one."""
+    messages = [
+        {"role": "user", "content": INSTRUCTION},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "sure"},
+    ]
+
+    items = _select_items(
+        messages,
+        max_tokens = 4096,
+        max_items = 1,
+        min_chars = 0,
+        reserve_oldest = True,
+    )
+
+    assert items == [INSTRUCTION]
+
+
+def test_a_nudge_is_still_excluded_without_the_length_floor():
+    """`_CONTINUATIONS`, not the character count, is what keeps filler out."""
+    messages = [
+        {"role": "user", "content": INSTRUCTION},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "ok"},
+        {"role": "assistant", "content": "sure"},
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "sure"},
+    ]
+
+    items = carried_forward_items(messages, max_tokens = 4096)
+
+    assert items == [INSTRUCTION]
+
+
+def test_the_carried_opening_pair_survives_the_next_compaction():
+    """The pair rule has to hold on the MERGED path, not only on the fresh walk.
+
+    The block arrives in the system turn (the ordinary case in a tool loop, and on every
+    request of an epoch already in force) holding the opening request and the correction
+    to it. The turns that produced them are long gone, so the merge is the only copy. The
+    plain newest-first re-cap then spent the budget on the increments evicted since,
+    skipped the long correction for cost, and STILL afforded the short opening: measured
+    at a 4096-token context, the block came back as "Build Flappy Bird" plus four Tetris
+    increments, which is the abandoned-request-plus-increments output the pair exists to
+    prevent, reached one compaction later.
+    """
+    opening = "Build Flappy Bird in one HTML file."
+    correction = (
+        "Actually scrap Flappy Bird and build Tetris instead: same single HTML file, no "
+        "libraries at all, keyboard controls for rotate and drop, a next-piece preview, a "
+        "score counter that scales with the number of lines cleared at once, and a pause key. "
+        "Keep the whole thing under three hundred lines and comment the collision routine. "
+        "Use a ten by twenty well, the standard seven tetrominoes with the standard colours, "
+        "wall kicks on rotation, a hold slot that can only be used once per piece, a ghost "
+        "piece showing where the current one will land, gravity that speeds up every ten "
+        "lines, and a game over overlay with the final score and a restart button. Draw "
+        "everything on a canvas element, no DOM nodes for the board, and keep the render loop "
+        "on requestAnimationFrame rather than a timer."
+    )
+    increments = [
+        "Add background music and a mute toggle in the corner, and make the score font bigger "
+        "so it can be read from across the room during a demo.",
+        "Give the well a subtle grid so the columns are easy to count, and dim the ghost piece "
+        "a little more than it is now, it reads as a real piece.",
+        "Add a short sound for a line clear and a different one for a tetris, generated with "
+        "the WebAudio oscillator so there are no asset files to ship.",
+        "Remember the high score in localStorage and show it beside the current score, and "
+        "make the restart button focusable so the keyboard alone can replay.",
+    ]
+    block = checkpoint.render_checkpoint([opening, correction])
+    assert checkpoint._block_items(block) == [opening, correction]
+
+    messages = [{"role": "system", "content": "you are helpful\n\n" + block}]
+    for text in increments:
+        messages += [
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": "Done. " + "d " * 1400},
+        ]
+    messages += [{"role": "user", "content": "Here is the console trace. " + "z " * 2000}]
+
+    fitted, truncation = _fit(messages, context_length = 4096, max_tokens = 512)
+    items = checkpoint._block_items(fitted[0]["content"])
+
+    assert truncation["fits"] is True
+    assert correction in items, "the correction must not be dropped while the opening stays"
+    assert items.index(opening) < items.index(correction)
+    # Paid by the OLDEST increment, as the fresh walk pays, so the newest direction stays.
+    assert items[-1] == increments[-1]
+    assert increments[0] not in items
+
+
+def test_the_merged_recap_abandons_the_pair_the_same_way_the_fresh_walk_does():
+    """When the merged budget cannot hold the pair, half of it is still the bug.
+
+    Same shape as `test_abandoning_the_reservation_does_not_reselect_the_opening_on_its
+    _own`, one compaction later: a 10-token "Build Tetris", its 27-token correction and a
+    17-token increment under a 40-token budget re-capped to ["Build Tetris", the
+    increment], the abandoned game with its correction dropped. The merge must reach the
+    same answer the fresh walk does, which is to drop the opening and keep the newest.
+    """
+    opening = "Build Tetris"
+    correction = "Actually scrap that and build Flappy Bird instead, same single HTML file please."
+    newest = "Add music and a score counter to it now."
+
+    merged = checkpoint._recap([opening, correction, newest], max_tokens = 40, max_items = 8, carried = 2)
+
+    assert merged == [newest], "the abandoned opening must not outlive the correction"
+    assert merged == carried_forward_items(_user_turns(opening, correction, newest), max_tokens = 40)
+    # Never at the cost of the newest direction: the pair is reserved BEHIND the newest
+    # affordable item, so the newest is taken before the pair is priced.
+    assert newest in merged
+
+
+def test_the_merged_recap_never_empties_a_block_it_could_have_filled():
+    """The both-or-neither rule must not answer "neither" with nothing left to say.
+
+    A block holding only the pair, re-capped under a budget that no longer holds both (the
+    user switched to a shorter context mid-thread), still goes out with one of them: the
+    correction where the correction is affordable, and the opening where it is not, which
+    is the `_takeable` escape hatch the fresh walk already had.
+    """
+    opening = "Build Tetris"
+    correction = "Actually scrap that and build Flappy Bird instead, same single HTML file please."
+
+    assert checkpoint._recap([opening, correction], max_tokens = 30, max_items = 8, carried = 2) == [
+        correction
+    ]
+    assert checkpoint._recap([opening, correction], max_tokens = 20, max_items = 8, carried = 2) == [
+        opening
+    ]
+
+
+def test_a_one_bullet_block_is_not_paired_with_a_turn_it_never_preceded():
+    """The unit is the BLOCK, so a one-bullet block is never held to a partner.
+
+    A block with a single bullet says nothing about what followed that instruction, and a
+    rule that reached past it into the freshly evicted turns for a partner would invent a
+    relationship the transcript never had, then drop the bullet whenever the invented
+    partner did not fit. That bullet is the only copy of it left anywhere in the request.
+    """
+    carried = (
+        "Build Tetris as a single HTML file with canvas rendering, keyboard controls for "
+        "rotate, drop and hold, a next piece preview, a ghost piece, a pause key and a "
+        "score counter, and keep the whole thing under three hundred lines so it stays "
+        "readable in one screen of a review."
+    )
+    spec = (
+        "Here is the spec for the scoring rules, please follow it exactly and do not round "
+        "anything off. A single line is one hundred points, a double is three hundred, a "
+        "triple is five hundred and a tetris is eight hundred, all multiplied by the "
+        "current level. A soft drop adds one point per cell travelled and a hard drop adds "
+        "two points per cell. Back to back tetrises get a fifty percent bonus on the second "
+        "and every one after it, and a combo adds fifty points per chained clear on top of "
+        "that. The level goes up every ten lines cleared and the gravity interval shortens "
+        "by ten percent each level, down to a floor of fifty milliseconds, and the level "
+        "number is shown beside the score at all times so the player can see when the next "
+        "speed up is due to arrive. A perfect clear is worth two thousand points at level "
+        "one and scales with the level like everything else, a t spin single is eight "
+        "hundred, a t spin double is twelve hundred and a t spin triple is sixteen hundred, "
+        "and every one of those is announced in the corner for one second so the player "
+        "learns which move earned which score."
+    )
+    newest = (
+        "Add background music with a mute toggle in the corner, a short sound for a line "
+        "clear and a different one for a tetris, all generated with the WebAudio oscillator "
+        "so there are no asset files to ship with the page. The music should start muted on "
+        "first load, remember the mute state in localStorage and fade rather than cut when "
+        "it is toggled off."
+    )
+    block = checkpoint.render_checkpoint([carried])
+    messages = [{"role": "system", "content": "you are helpful\n\n" + block}]
+    messages += _user_turns(spec, newest)
+    messages += [{"role": "user", "content": "Here is the console trace. " + "z " * 6000}]
+
+    fitted, truncation = _fit(messages, context_length = 4096, max_tokens = 512)
+    items = checkpoint._block_items(fitted[0]["content"])
+
+    assert truncation["fits"] is True
+    # 358 tokens: the newest turn (94) and the carried bullet (75), never the 279-token
+    # spec. Pairing the bullet with the spec would drop it too.
+    assert items == [carried, newest]
+
+
+def _restated_correction_block():
+    """A VALID block whose bullets are not [opening, successor, ...].
+
+    The user restated the correction after an intervening rule, and the block renders each
+    item at its newest copy, so the correction sits behind the rule that came between it
+    and the opening. Nothing here is malformed: the fresh walk reserved the pair and took
+    it whole, and this is what that looks like once rendered.
+    """
+    opening = "Build Tetris"
+    correction = "Actually scrap that and build a Flappy Bird clone instead, please now."
+    intervening = "Dark theme"
+    newest = "Add music!"
+    prior = carried_forward_items(
+        _user_turns(opening, correction, intervening, correction, newest), max_tokens = 60
+    )
+    assert prior == [opening, intervening, correction, newest]
+    return opening, correction, prior
+
+
+def test_a_correction_restated_out_of_order_is_not_dropped_by_the_merge():
+    """The merge must not decide which bullets were the pair by counting from the front.
+
+    The block reads [opening, intervening rule, correction, newest], so reserving its
+    first TWO bullets reserves the opening and the intervening rule and lets the walk drop
+    the correction: measured at a 60-token budget with two 10-token instructions evicted
+    since, the block came back as "Build Tetris", "Dark theme", "Add music!", "Add a
+    menu", "Add a timer" -- the abandoned game carried, the correction to it gone, and
+    WORSE than no reservation at all, which keeps the correction here.
+    """
+    opening, correction, prior = _restated_correction_block()
+    messages = [
+        {"role": "system", "content": "you are helpful\n\n" + checkpoint.render_checkpoint(prior)}
+    ]
+    for text in ("Add a menu", "Add a timer"):
+        messages += [
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": "ok. " + "r " * 260},
+        ]
+    messages += [{"role": "user", "content": "Here is the console trace. " + "z " * 600}]
+
+    fitted, truncation = _fit(messages, context_length = 800, max_tokens = 200)
+    items = checkpoint._block_items(fitted[0]["content"])
+
+    assert truncation["fits"] is True
+    assert items == ["Dark theme", correction, "Add music!", "Add a timer"]
+    assert opening not in items, "the abandoned request must not outlive its correction"
+    # Paid for by an older increment, never by the newest direction the user gave.
+    assert items[-1] == "Add a timer"
+
+
+def test_the_merge_never_states_the_abandoned_task_whichever_bullet_corrects_it():
+    """The invariant, stated without naming the successor: the block's first bullet is
+    never carried while any affordable bullet beside it is dropped.
+
+    Both positional readings fail this on their own. The plain newest-first re-cap keeps
+    the cheap opening and the cheap intervening rule and drops the 25-token correction
+    ("Build Tetris", "Dark theme", "Add music!" plus three increments at a 60-token
+    budget), and reserving the first two bullets does the same thing one increment
+    earlier. Holding the block WHOLE or dropping its first bullet needs neither reading.
+    """
+    opening, correction, prior = _restated_correction_block()
+    fresh = ["Add a menu", "Add a timer", "Add a pause"]
+
+    merged = checkpoint._recap(prior + fresh, max_tokens = 60, max_items = 8, carried = len(prior))
+
+    assert merged == ["Dark theme", correction, "Add music!", fresh[-1]]
+    assert opening not in merged, "the abandoned request must not outlive its correction"
+    # Never at the cost of the newest direction, and never empty.
+    assert merged[-1] == fresh[-1]
+    # The plain walk is no safe fallback: it states the abandoned task itself, so "stop
+    # reserving on the merged path" would not have fixed this.
+    plain = checkpoint._recap(prior + fresh, max_tokens = 60, max_items = 8)
+    assert opening in plain and correction not in plain
+
+
+def test_holding_the_block_whole_does_not_freeze_it_on_the_first_epoch():
+    """The unit is reserved BEHIND the newest usable item and abandoned when it will not
+    fit whole, so a block cannot take every slot forever and starve the newer rules.
+
+    Without that the merge would be sticky-oldest: eight carried bullets would hold all
+    eight slots on every later compaction and no instruction the user gave afterwards
+    could ever enter the block the model is shown.
+    """
+    block = [f"standing rule {index} " + "w " * 20 for index in range(1, 5)]
+    seen_rounds = []
+    for round_index in range(1, 7):
+        fresh = [f"new rule {round_index}{side} " + "w " * 20 for side in ("a", "b")]
+        block = checkpoint._recap(block + fresh, max_tokens = 200, max_items = 8, carried = len(block))
+        assert block[-1] == fresh[-1], "the newest rule is always carried"
+        seen_rounds.append(sum(1 for item in block if item.startswith("standing rule")))
+
+    assert seen_rounds[0] == 4, "the carried block survives while it fits"
+    assert seen_rounds[-1] == 0, "and ages out instead of holding every slot forever"

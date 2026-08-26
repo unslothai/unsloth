@@ -41,6 +41,7 @@ from hub.services import resolve_destructive_repo_ids
 from hub.services.models import cache_inventory, downloads, gguf_variants
 from hub.services.models.common import (
     _is_gguf_filename,
+    _is_imatrix_filename,
     _is_main_gguf_filename,
     _is_mmproj_filename,
 )
@@ -294,11 +295,17 @@ def _delete_gguf_variant_from_repos(
         if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
             companion_matches = _repo_file_matches(
                 target_repo,
-                # Companions: mmproj and the drafters Studio downloads (MTP with
+                # Companions: mmproj and the drafters Unsloth downloads (MTP with
                 # every variant, DSpark on opt-in). No main GGUF is left, so they
-                # cannot be launched; reclaim them with the last variant.
+                # cannot be launched; reclaim them with the last variant. An imatrix
+                # joins them: no longer offered as a variant, so a copy an older build
+                # fetched as one would be unreachable from the UI.
                 lambda name: _is_gguf_filename(name)
-                and (_is_mmproj_filename(name) or _is_reclaimable_drafter_path(name)),
+                and (
+                    _is_mmproj_filename(name)
+                    or _is_reclaimable_drafter_path(name)
+                    or _is_imatrix_filename(name)
+                ),
             )
             for snap, _blob, name in companion_matches:
                 try:

@@ -712,7 +712,7 @@ def test_request_model_base_precision():
             base_model = "x", data_dir = "d", output_dir = "o", base_precision = "int4"
         )
 
-    # The generic Studio dict path carries base_precision through onto DiffusionLoraConfig.
+    # The generic Unsloth dict path carries base_precision through onto DiffusionLoraConfig.
     cfg = _config_from_dict(
         {
             "base_model": _FLUX_DENSE,

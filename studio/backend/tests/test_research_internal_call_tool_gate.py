@@ -101,7 +101,10 @@ def test_the_research_payload_never_enters_the_tool_loop(monkeypatch, policy):
 @pytest.mark.parametrize("policy", [None, False])
 def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy):
     # Without --enable-tools the hop was already tool-free, so the two fields must not
-    # perturb what the model is handed: same entry point, same generation kwargs.
+    # perturb what the model is handed: same entry point, same generation kwargs, and in
+    # particular no tool catalogue on either side. The one kwarg that may differ is
+    # `tools_withheld` (#9162), which is not handed to the model at all; it is pinned
+    # explicitly below rather than excluded, so a regression either way still fails here.
     before_entry, before_kwargs = _entry_point(monkeypatch, policy = policy, opt_out = False)
     reset_tool_policy()
     after_entry, after_kwargs = _entry_point(monkeypatch, policy = policy, opt_out = True)
@@ -109,12 +112,22 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
     assert (before_entry, after_entry) == ("plain", "plain")
     # Both are fresh per request (a new Event, and the monitor's per-request tok/s closure), so
     # comparing them by identity would fail for any pair of requests.
-    drop = {"cancel_event", "perf_callback"}
+    drop = {"cancel_event", "perf_callback", "tools_withheld"}
     # But dropping perf_callback outright would also pass if the opt-out stopped supplying it at
     # all, silently costing that path its tok/s readout. Compare presence first, then exclude.
     assert callable(before_kwargs.get("perf_callback")) == callable(
         after_kwargs.get("perf_callback")
     ), "the opt-out must not decide whether llama.cpp timings are collected"
+    # `tools_withheld` reaches the compaction gate, never the prompt: it tells
+    # `_can_reset_epoch` that THIS request withdrew the tool loop, which the process-wide
+    # policy cannot see. A default install can still re-admit `search_conversation` alone
+    # through the checkpoint repair, so resetting the epoch there is safe; under the opt-out
+    # that repair is closed on this turn and on every identical turn after it, so a reset
+    # would strand the epoch behind a tool that never arrives. It MUST differ, in this
+    # direction, and the two must never both be False.
+    assert (before_kwargs["tools_withheld"], after_kwargs["tools_withheld"]) == (False, True)
+    # Nothing that reaches the model may differ, tool catalogue included.
+    assert not before_kwargs.get("tools") and not after_kwargs.get("tools")
     assert {k: v for k, v in before_kwargs.items() if k not in drop} == {
         k: v for k, v in after_kwargs.items() if k not in drop
     }
@@ -123,7 +136,7 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
 def test_json_mode_research_calls_send_llama_server_an_unchanged_body():
     # The JSON-mode phases take the llama-server passthrough, not the loop above, so pin
     # that wire body too: no tools means no tool_choice is forwarded, and Unsloth-only
-    # extensions never leave Studio.
+    # extensions never leave Unsloth.
     from models.inference import ChatCompletionRequest
 
     class _PassthroughBackend:

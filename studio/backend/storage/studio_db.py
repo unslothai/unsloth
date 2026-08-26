@@ -320,6 +320,29 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS api_usage_events (
+            id TEXT NOT NULL PRIMARY KEY,
+            subject TEXT NOT NULL,
+            endpoint TEXT NOT NULL,
+            model TEXT NOT NULL,
+            status TEXT NOT NULL,
+            prompt_tokens INTEGER NOT NULL,
+            completion_tokens INTEGER NOT NULL,
+            total_tokens INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_api_usage_events_created_at "
+        "ON api_usage_events(created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_api_usage_events_subject_created_at "
+        "ON api_usage_events(subject, created_at)"
+    )
     # Windows: COLLATE NOCASE so C:\Models and c:\models dedup; elsewhere BINARY keeps them distinct.
     collation = "COLLATE NOCASE" if platform.system() == "Windows" else ""
     conn.execute(
@@ -359,6 +382,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             title TEXT NOT NULL,
             model_type TEXT NOT NULL,
             model_id TEXT,
+            model_gguf_variant TEXT,
             pair_id TEXT,
             project_id TEXT,
             archived INTEGER NOT NULL DEFAULT 0,
@@ -378,6 +402,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "settings_json" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN settings_json TEXT")
+    if "model_gguf_variant" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN model_gguf_variant TEXT")
     # Orders one writer's snapshot writes against its own earlier ones. A tab closing
     # sends its last edit keepalive, which can overtake a PATCH already accepted by the
     # server, and no client-side cancel reaches a handler that is already running: the
@@ -429,7 +455,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             id TEXT NOT NULL PRIMARY KEY,
             active_research_run_ids_json TEXT NOT NULL,
             deleted_thread_ids_json TEXT NOT NULL DEFAULT '[]',
-            cleared_at INTEGER NOT NULL
+            cleared_at INTEGER NOT NULL,
+            reapable_image_ids_json TEXT,
+            caches_cleared_at INTEGER
         ) WITHOUT ROWID
         """
     )
@@ -440,6 +468,17 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE chat_clear_operations ADD COLUMN deleted_thread_ids_json TEXT NOT NULL DEFAULT '[]'"
         )
+    # The thumbnail reap happens AFTER this transaction commits, behind seconds of archive and
+    # sandbox cleanup. A crash in that window leaves the operation recorded and the cache
+    # unreaped, and the retry that follows replays -- skipping the one cleanup that had not
+    # run. These two columns let the replay finish it: the ids the original clear was
+    # responsible for, and whether the reap has since completed. NULL in either means the
+    # answer is unknown (a row written by an older build), which is treated as done, since a
+    # replay must never reap on a guess.
+    if "reapable_image_ids_json" not in chat_clear_operation_cols:
+        conn.execute("ALTER TABLE chat_clear_operations ADD COLUMN reapable_image_ids_json TEXT")
+    if "caches_cleared_at" not in chat_clear_operation_cols:
+        conn.execute("ALTER TABLE chat_clear_operations ADD COLUMN caches_cleared_at INTEGER")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_messages (
@@ -1644,6 +1683,7 @@ def _chat_thread_from_row(row: sqlite3.Row, include_settings: bool = True) -> di
         "title": data["title"],
         "modelType": data["model_type"],
         "modelId": data.get("model_id") or "",
+        "modelGgufVariant": data.get("model_gguf_variant") or None,
         "pairId": data.get("pair_id") or None,
         "projectId": data.get("project_id") or None,
         "archived": bool(data["archived"]),
@@ -1716,11 +1756,16 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, settings_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, settings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
+                model_gguf_variant = CASE
+                    WHEN excluded.model_id = chat_threads.model_id
+                    THEN COALESCE(excluded.model_gguf_variant, chat_threads.model_gguf_variant)
+                    ELSE excluded.model_gguf_variant
+                END,
                 model_id = excluded.model_id,
                 pair_id = excluded.pair_id,
                 project_id = excluded.project_id,
@@ -1739,6 +1784,7 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread.get("title") or "New Chat",
                 thread["modelType"],
                 thread.get("modelId") or "",
+                thread.get("modelGgufVariant"),
                 thread.get("pairId"),
                 thread.get("projectId"),
                 1 if thread.get("archived") else 0,
@@ -1790,6 +1836,7 @@ def update_chat_thread(
         "title": ("title", patch.get("title")),
         "modelType": ("model_type", patch.get("modelType")),
         "modelId": ("model_id", patch.get("modelId")),
+        "modelGgufVariant": ("model_gguf_variant", patch.get("modelGgufVariant")),
         "pairId": ("pair_id", patch.get("pairId")),
         "projectId": ("project_id", patch.get("projectId")),
         "archived": ("archived", 1 if patch.get("archived") else 0),
@@ -2168,6 +2215,89 @@ def delete_chat_threads(ids: list[str]) -> list[str]:
     return delete_chat_threads_with_active_research_runs(ids)
 
 
+def unreaped_clear_operation_image_ids(operation_id: Optional[str]) -> Optional[set]:
+    """The ids a recorded clear was responsible for but never reaped, or None.
+
+    None means there is nothing for a replay to finish: no such operation, a row from a build
+    that did not record the snapshot, or a reap that already completed. A replay must never
+    reap on a guess -- the whole point of bounding it is that the images of chats created
+    since the original clear are NOT its to take -- so anything unknown answers None.
+
+    Exists because the reap runs after the clear's transaction commits, behind seconds of
+    archive and sandbox cleanup. Killed in that window, the operation is recorded and the
+    thumbnails of every deleted chat are still on disk; the retry that follows replays and,
+    without this, skips the one cleanup that had not run. Those files say what was searched
+    for, so leaving them is the worse of the two failures this module weighs.
+    """
+    if operation_id is None:
+        return None
+    try:
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                """
+                SELECT reapable_image_ids_json, caches_cleared_at
+                FROM chat_clear_operations WHERE id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if row is None or row["caches_cleared_at"] is not None:
+                return None
+            stored = row["reapable_image_ids_json"]
+            if stored is None:
+                return None
+            return set(json.loads(stored))
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 -- an unreadable ledger just means nothing to finish
+        return None
+
+
+def record_clear_operation_reap_scope(
+    operation_id: Optional[str], image_ids: Optional[set]
+) -> None:
+    """Persist what this clear's reap is responsible for, before it runs.
+
+    Written as its own statement rather than in the clear's INSERT: the snapshot is taken
+    immediately after that transaction commits, and moving the commit later to include it
+    would widen the window where a concurrent retry sees no ledger row at all.
+
+    A None snapshot means "clear everything", which no replay may repeat blindly, so it is
+    stored as an explicit absence and read back as nothing to finish."""
+    if operation_id is None:
+        return
+    try:
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE chat_clear_operations SET reapable_image_ids_json = ? WHERE id = ?",
+                (None if image_ids is None else json.dumps(sorted(image_ids)), operation_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 -- best effort; failing here must not fail the clear
+        logger.debug("could not record the reap scope for clear %s", operation_id)
+
+
+def mark_clear_operation_caches_cleared(operation_id: Optional[str]) -> None:
+    """Record that the thumbnail reap for this clear finished, so a replay does not redo it."""
+    if operation_id is None:
+        return
+    try:
+        conn = get_connection()
+        try:
+            conn.execute(
+                "UPDATE chat_clear_operations SET caches_cleared_at = ? WHERE id = ?",
+                (int(datetime.now(timezone.utc).timestamp() * 1000), operation_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 -- a missed mark costs one redundant reap on a retry
+        logger.debug("could not mark the reap complete for clear %s", operation_id)
+
+
 def clear_chat_history_with_active_research_runs(
     additional_thread_ids: Iterable[str] = (), operation_id: Optional[str] = None
 ) -> tuple[list[str], list[str]]:
@@ -2181,11 +2311,35 @@ def clear_chat_history_with_active_research_runs(
 def clear_chat_history(
     additional_thread_ids: Iterable[str] = (), operation_id: Optional[str] = None
 ) -> "tuple[list[str], list[str]]":
-    """Delete every chat thread. Returns (thread ids removed, research runs cascaded).
+    """Delete every chat thread. Returns (thread ids removed, research runs cascaded)."""
+    removed, active_runs, _replayed = clear_chat_history_with_replay_status(
+        additional_thread_ids,
+        operation_id = operation_id,
+    )
+    return removed, active_runs
 
-    Both taken inside the same transaction: another process can add a thread
-    between a listing and this call, its sandbox has to be cleaned up too, and
+
+def clear_chat_history_with_replay_status(
+    additional_thread_ids: Iterable[str] = (), operation_id: Optional[str] = None
+) -> "tuple[list[str], list[str], bool]":
+    """`clear_chat_history`, plus whether this call replayed a recorded outcome.
+
+    Returns (thread ids removed, research runs cascaded, replayed).
+
+    The first two are taken inside the same transaction: another process can add a
+    thread between a listing and this call, its sandbox has to be cleaned up too, and
     after the cascade nothing can tell the supervisor which runs to stop.
+
+    `replayed` comes from that same transaction because it cannot be established
+    outside one. Two requests carrying the same operation id can both read an
+    unrecorded ledger before either commits, so both would conclude they performed
+    the clear; BEGIN IMMEDIATE then serialises them and the loser silently replays.
+    A caller trusting the outside read would run the second request's cleanup of
+    global, non-id-keyed state -- the thumbnail cache -- against threads created
+    since the winner committed, which this call deliberately kept. That is exactly
+    the retry the operation id exists to make safe: the frontend reissues the same
+    id when its first attempt times out, and Starlette does not cancel the handler
+    the client hung up on, so both really are in flight at once.
     """
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
@@ -2202,7 +2356,7 @@ def clear_chat_history(
                 conn.commit()
                 # The original request already signalled its workers. Replaying that signal can
                 # leave a cancellation event behind after the worker has exited.
-                return list(json.loads(completed["deleted_thread_ids_json"])), []
+                return list(json.loads(completed["deleted_thread_ids_json"])), [], True
         _ensure_chat_attachment_inventory_current(conn)
         removed = sorted(str(row[0]) for row in conn.execute("SELECT id FROM chat_threads"))
         status_placeholders = ",".join("?" for _ in _ACTIVE_RESEARCH_RUN_STATUSES)
@@ -2234,7 +2388,7 @@ def clear_chat_history(
                 ),
             )
         conn.commit()
-        return removed, active_runs
+        return removed, active_runs, False
     except Exception:
         conn.rollback()
         raise
@@ -2858,7 +3012,7 @@ def _mark_chat_attachment_inventory_clean(conn: sqlite3.Connection) -> None:
 
 
 def _rebuild_chat_attachment_inventory(conn: sqlite3.Connection) -> None:
-    """Rebuild after schema upgrade or a write from an older Studio build."""
+    """Rebuild after schema upgrade or a write from an older Unsloth build."""
     conn.execute("DELETE FROM chat_attachment_inventory")
     tombstones: dict[tuple[str, str], set[str]] = {}
     for row in conn.execute(
@@ -3276,16 +3430,17 @@ def fork_chat_thread(
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, pair_id, project_id, archived, created_at,
+                (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at,
                  openai_code_exec_container_id, anthropic_code_exec_container_id,
                  forked_from_thread_id, forked_from_message_id, settings_json)
-            VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?)
             """,
             (
                 new_thread_id,
                 new_title,
                 src_dict["model_type"],
                 src_dict.get("model_id") or "",
+                src_dict.get("model_gguf_variant"),
                 None,  # pairId: forks always standalone (compare-mode disabled v1)
                 src_dict.get("project_id"),
                 int(created_at),

@@ -102,7 +102,7 @@ class VideoFamily:
     # ``<Model>-<SCHEME>.pt`` name ``prequant_repo_filename`` derives. The derived name stays on as
     # the fallback, so a repo hosting BOTH an old and a new artifact serves the new one to a build
     # that asks for it by name and the old one to every build that does not. That is what lets a
-    # rotated (v2) checkpoint ship without regressing an already-installed Studio, which would
+    # rotated (v2) checkpoint ship without regressing an already-installed Unsloth, which would
     # otherwise refuse the v2 tag and fall all the way back to the dense download.
     # A row may also be (scheme, task, filename), naming the artifact for ONE task; it beats the
     # task-agnostic row and, unlike it, gets no filename fallback (see resolve_prequant_source).
@@ -182,7 +182,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         prequant_repos = (("int8", "unsloth/MiniMax-H3-FP8"), ("fp8", "unsloth/MiniMax-H3-FP8")),
         # The INT8 denoiser is ConvRot-rotated (see diffusion_convrot): its weights live in a
         # Hadamard-rotated basis and are wrong unless the loader rotates the activations to match,
-        # so it carries the v2 format tag a Studio predating that code refuses. Shipping it under
+        # so it carries the v2 format tag an Unsloth predating that code refuses. Shipping it under
         # its own name rather than over MiniMax-H3-INT8.pt keeps both true at once: this build
         # gets the rotated artifact, and an older install still resolves the plain one instead of
         # refusing the v2 tag and falling back to the 66.3 GB dense download.

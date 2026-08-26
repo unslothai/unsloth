@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared LoRA support for the Studio diffusion backends.
+"""Shared LoRA support for the Unsloth diffusion backends.
 
 The native sd-cli engine selects adapters by `<lora:NAME:WEIGHT>` prompt tags resolved against a
 `--lora-model-dir`; diffusers loads them with `load_lora_weights()` + `set_adapters()`. This
@@ -94,7 +94,7 @@ _CURATED: tuple[LoraCatalogEntry, ...] = (
 
 
 def loras_dir() -> Path:
-    """Local directory Studio scans for user-provided diffusion LoRA files."""
+    """Local directory Unsloth scans for user-provided diffusion LoRA files."""
     d = studio_root() / "loras" / "diffusion"
     d.mkdir(parents = True, exist_ok = True)
     return d
@@ -274,7 +274,7 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
     """Pick the single LoRA weight file in an HF repo (prefer safetensors)."""
     from huggingface_hub import HfApi
 
-    from hub.utils.gguf import drop_shadowed_appledouble_names
+    from hub.utils.gguf import drop_shadowed_appledouble_names, is_imatrix_filename
 
     files = drop_shadowed_appledouble_names(list(HfApi(token = hf_token).list_repo_files(repo_id)))
     safes = [f for f in files if f.lower().endswith(".safetensors") and "/" not in f]
@@ -286,7 +286,13 @@ def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
             return f
     if safes:
         return safes[0]
-    ggufs = [f for f in files if f.lower().endswith(".gguf") and "/" not in f]
+    # The gguf fallback only: an imatrix is a .gguf holding no adapter and would be picked
+    # here, while a .safetensors is never one, so the candidates above stay untouched.
+    ggufs = [
+        f
+        for f in files
+        if f.lower().endswith(".gguf") and "/" not in f and not is_imatrix_filename(f)
+    ]
     if ggufs:
         return ggufs[0]
     raise FileNotFoundError(f"no .safetensors/.gguf LoRA file found in '{repo_id}'")

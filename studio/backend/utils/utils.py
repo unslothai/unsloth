@@ -41,7 +41,7 @@ def hf_env_offline() -> bool:
 
 
 def canonical_model_repo_id(model_name: str) -> str:
-    """Normalize a Hugging Face model repository ID selected in Studio."""
+    """Normalize a Hugging Face model repository ID selected in Unsloth."""
     return model_name.strip()
 
 
@@ -599,6 +599,18 @@ def safe_error_detail(error: Exception, fallback: str = "An internal error occur
     """Map an exception to a generic, client-safe message (never raw
     ``str(error)``, which can leak paths). Log the real exception server-side.
     """
+    # A mid-stream llama-server failure carries a message that was written to be shown,
+    # so the leak this function guards against does not apply to it. Without this the
+    # non-streaming paths reduced it to the fallback while streaming clients got the
+    # cause, which is the same "reaches the user stripped of its reason" defect one layer
+    # further out. Imported lazily: utils is low level and must not depend on
+    # core.inference at import time.
+    try:
+        from core.inference.stream_errors import LlamaStreamError  # noqa: PLC0415
+        if isinstance(error, LlamaStreamError) and error.friendly:
+            return error.friendly
+    except Exception:  # noqa: BLE001 -- fall through to the generic mapping below
+        pass
     text = str(error).lower()
     if (
         isinstance(error, (ConnectionError, TimeoutError))

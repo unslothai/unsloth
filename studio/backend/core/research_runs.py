@@ -21,6 +21,7 @@ import httpx
 from auth import storage as auth_storage
 from core.inference.llama_admission import llama_admission_config_from_env
 from core.inference.message_content import message_text_with_pastes
+from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import EMPTY_SEARCH_RESULTS, RAG_SOURCES_SENTINEL, execute_tool
 from core.inference.web_access_policy import check_url_access, website_policy_prompt
@@ -231,7 +232,14 @@ def _safe_error(exc: BaseException) -> str:
         return "Local model request timed out"
     if isinstance(exc, httpx.HTTPStatusError):
         return f"Local model request failed with HTTP {exc.response.status_code}"
-    text = str(exc).replace("\n", " ").strip()
+    # str() on a stream error is deliberately the server's own text, so that the
+    # token-count regex in routes/inference.py still matches it. Deep Research has no
+    # such regex, so reading str() here showed the raw "Context size has been exceeded."
+    # and dropped the Model settings hint from an oversize refusal: the very case this
+    # exception was introduced to explain.
+    friendly = getattr(exc, "friendly", None)
+    text = friendly if isinstance(friendly, str) and friendly else str(exc)
+    text = text.replace("\n", " ").strip()
     return (text or exc.__class__.__name__)[:_MAX_ERROR_CHARS]
 
 
@@ -918,7 +926,7 @@ class ResearchSupervisor:
             )
         if not pages:
             return "", []
-        # Reuse Studio's knowledge-base RAG pipeline (ingest -> hybrid retrieve -> <chunk>
+        # Reuse Unsloth's knowledge-base RAG pipeline (ingest -> hybrid retrieve -> <chunk>
         # render) over an ephemeral scope; runs off the event loop since embedding and the
         # sqlite/vec index work are CPU/GPU bound.
         from core.rag import web_rank
@@ -1006,7 +1014,7 @@ class ResearchSupervisor:
     def _endpoint(self) -> str:
         port = self._server_port()
         if port is None:
-            raise RuntimeError("Research is waiting for the Studio server port")
+            raise RuntimeError("Research is waiting for the Unsloth server port")
         return f"http://127.0.0.1:{port}/v1/chat/completions"
 
     async def _wait_for_local_model(
@@ -1016,7 +1024,7 @@ class ResearchSupervisor:
     ) -> bool:
         """Wait, up to the run's model timeout, for a model to be loaded again; True if one was.
 
-        A durable run resumes after a Studio restart and is approved long after it was created,
+        A durable run resumes after an Unsloth restart and is approved long after it was created,
         so the model it was started with can be gone. Waiting keeps the run alive instead of
         ending it on a non-retryable 400 that discards every step and source it gathered.
 
@@ -1428,8 +1436,12 @@ class ResearchSupervisor:
                             continue
                         try:
                             chunk = json.loads(data)
-                            if isinstance(chunk, dict) and "error" in chunk:
-                                raise RuntimeError("Local model stream failed")
+                            _stream_error = stream_error_from_chunk(chunk)
+                            if _stream_error is not None:
+                                # The server's own text names the cause and, for a context
+                                # refusal, both token counts. Flattening it to a fixed
+                                # string left the user with nothing to act on.
+                                raise _stream_error
                             normalized_usage = _normalize_completion_usage(
                                 chunk.get("usage") if isinstance(chunk, dict) else None
                             )

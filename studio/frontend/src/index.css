@@ -727,7 +727,13 @@ html[data-chat-font] .aui-root {
 }
 :root:not([data-palette]) .palette-card[data-palette-value="standard"],
 :root[data-palette="classic"] .palette-card[data-palette-value="classic"],
-:root[data-palette="minimal"] .palette-card[data-palette-value="minimal"] {
+:root[data-palette="minimal"] .palette-card[data-palette-value="minimal"],
+.reload-snapshot-shell:not([data-palette])
+	.palette-card[data-palette-value="standard"],
+.reload-snapshot-shell[data-palette="classic"]
+	.palette-card[data-palette-value="classic"],
+.reload-snapshot-shell[data-palette="minimal"]
+	.palette-card[data-palette-value="minimal"] {
 	/* Selection keeps the card's own border weight, only darker. */
 	border-color: var(--ring-select);
 }
@@ -1190,13 +1196,25 @@ html[data-chat-font] .aui-root {
 		color: #fff;
 	}
 
+	/* pr-3, not pr-4: header actions end where a hovered row's "…" does (right-0
+	   + pr-1.5 inside a pill the list inset by px-1.5 = 12px). The desktop
+	   titlebar insets by 5px, so those headers override this in app-sidebar.tsx. */
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-4 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. */
 		color: #80868b;
 		letter-spacing: 0;
+	}
+	/* These compound selectors must beat the base label's pr-3 declaration.
+	   Tailwind emits utility classes before this components block, so putting
+	   pr-[11px]/pr-[13px] on the element would lose the cascade. */
+	.sidebar-sticky-label.sidebar-sticky-label-desktop {
+		padding-right: 11px;
+	}
+	.sidebar-sticky-label.sidebar-sticky-label-desktop-recents {
+		padding-right: 13px;
 	}
 	.sidebar-sticky-label-following {
 		@apply pt-[21px];
@@ -1599,22 +1617,12 @@ html[data-chat-font] .aui-root {
 		cursor: pointer;
 	}
 
-	/* While a panel edge is dragged, keep the resize cursor even as the pointer
-	   travels over buttons and text that would claim their own. */
-	html[data-panel-resizing],
-	html[data-panel-resizing] * {
-		cursor: col-resize !important;
-		user-select: none !important;
-	}
-
-	html[data-panel-resizing]
-		:is(
-			[data-slot="sidebar-inner"],
-			[data-slot="sidebar-inset"],
-			[data-slot="chat-settings-panel"] > div
-		) {
-		pointer-events: none;
-	}
+	/* The resize cursor during a drag is owned by the fixed overlay that
+	   PanelResizeHandle mounts for the life of the drag, not by a rule here.
+	   A universal descendant selector on <html> restyles every element in the
+	   document on each of the two attribute flips, which costs in proportion to
+	   the standing DOM; the overlay costs one element. See
+	   components/ui/panel-resize-handle.tsx. */
 
 	/* Model selector: pointer cursor on every clickable element. */
 	.unsloth-model-selector-trigger,
@@ -2551,7 +2559,7 @@ html[data-chat-font] .aui-root {
 	 *    #8977 disproves. It is kept for the flicker alone. Do not reach
 	 *    back for `content-visibility: auto` here: WebKit below Safari 26
 	 *    cannot find skipped content with find-in-page (webkit.org/b/283846)
-	 *    and Studio has no in-thread search to fall back on. Containment on
+	 *    and Unsloth has no in-thread search to fall back on. Containment on
 	 *    the message roots was measured as no help either; what grows with
 	 *    thread length is inherited-property style recalc, not layout.
 	 *
@@ -2838,6 +2846,30 @@ html[data-chat-font] .aui-root {
 	/* Reserve scrollbar space always so absolute-positioned overlays (topbar)
 	   can stop flush with the gutter edge without covering the scrollbar. */
 	scrollbar-gutter: stable;
+}
+
+/* An unregistered custom property always inherits, so writing
+   --aui-scroll-stabilizer on the scroll container dirties inherited style for
+   every descendant and the next scrollHeight read restyles the whole thread.
+   inherits:false confines that to the viewport element: over a 51,608-element
+   thread, 20 writes restyle 51,601 elements each (3,466 ms) without this rule
+   and 1 element each (2.1 ms) with it.
+
+   Safe because the only consumer is the padding-bottom declaration below, on
+   the same element, and initial-value 0px reproduces the `var(..., 0px)`
+   fallback, so an unset property still computes to 0px and removeProperty()
+   still releases the padding.
+
+   The stabilizer writes rarely (content shrinking inside the follow window,
+   mostly at stream finalisation), but those writes are most of the cost of
+   ending a stream in a long thread.
+
+   Engines without @property (Firefox below 128) ignore this block and keep the
+   inherited behaviour: slower, still correct. */
+@property --aui-scroll-stabilizer {
+	syntax: "<length>";
+	inherits: false;
+	initial-value: 0px;
 }
 
 /* Marker class applied only to actual streaming-thread viewports
@@ -3134,6 +3166,13 @@ html[data-chat-font] .aui-root {
 	& svg.unsloth-send-icon {
 		width: calc(var(--ui-icon-size) * 1.15);
 		height: calc(var(--ui-icon-size) * 1.15);
+		/* The stroked arrow rasterizes half a Retina pixel to the right. */
+		transform: translateX(-0.25px);
+	}
+	/* The filled stop glyph lands one Retina pixel right of the circular
+	   action's center even though its SVG box is flex-centered. */
+	& svg.aui-composer-cancel-icon {
+		transform: translateX(-0.5px);
 	}
 	/* Composer plus keeps its pre-#7400 22px base (1.375x the token is the same
 	   curve a 22px glyph would follow), so only its scaling changed. */
@@ -3238,4 +3277,32 @@ html[data-chat-font] .aui-root {
 			var(--foreground)
 		);
 	}
+}
+
+/* The retained reload shell. Its contents live in a closed shadow tree. The
+   script repeats this host rule inline because Vite injects development CSS
+   after main.tsx loads; in production this is painted by the render-blocking
+   stylesheet. Click-through: the copy is a picture, and the live document
+   underneath keeps taking input. */
+.reload-snapshot {
+	position: fixed;
+	inset: 0;
+	z-index: 2147483647;
+	pointer-events: none;
+	background: var(--background);
+}
+
+/* The copy is a still, so it must not animate at all. Pausing is not the same
+   thing: a paused animation holds its FIRST keyframe, which for the
+   animate-in/fade-in entrances is opacity 0, so those elements would render
+   invisible for as long as the shell is up. Even collapsing the duration
+   leaves them blank for the frame the animation starts on. Dropping the
+   animation paints the settled style straight away. This rule reaches the copy
+   because the shadow tree loads this same stylesheet and marks its root
+   .reload-snapshot-shell. */
+.reload-snapshot-shell *,
+.reload-snapshot-shell *::before,
+.reload-snapshot-shell *::after {
+	animation: none !important;
+	transition: none !important;
 }

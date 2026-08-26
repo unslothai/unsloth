@@ -193,6 +193,7 @@ export const ko = {
       chat: "채팅",
       connections: "연결",
       apiKeys: "API",
+      remoteLan: "원격 및 LAN",
       about: "정보",
       data: "데이터",
       agents: "에이전트",
@@ -216,23 +217,11 @@ export const ko = {
       clear: "단축키 제거",
       reset: "기본값 복원",
       resetAll: "모두 기본값으로 초기화",
-      groups: {
-        general: "일반",
-        chat: "채팅",
-      },
+      primarySlot: "단축키",
+      alternateSlot: "대체 단축키",
+      browserReserved:
+        "브라우저가 이 조합을 가져갈 수 있습니다. 데스크톱 앱에서는 동작합니다.",
       actions: {
-        newChat: {
-          label: "새 채팅",
-          description: "새 채팅을 시작합니다",
-        },
-        searchChats: {
-          label: "채팅 검색",
-          description: "채팅 검색 창을 엽니다",
-        },
-        toggleSidebar: {
-          label: "사이드바 토글",
-          description: "사이드바를 표시하거나 숨깁니다",
-        },
         openSettings: {
           label: "설정 열기",
           description: "설정 창을 엽니다",
@@ -240,6 +229,206 @@ export const ko = {
         openKeyboardShortcuts: {
           label: "키보드 단축키",
           description: "이 단축키 목록을 엽니다",
+        },
+        searchChats: {
+          label: "채팅 검색",
+          description: "채팅 검색 창을 엽니다",
+        },
+        openMcpServers: {
+          label: "MCP 서버",
+          description: "이 채팅의 MCP 서버를 설정합니다",
+        },
+        logOut: {
+          label: "로그아웃",
+          description: "Unsloth에서 로그아웃합니다",
+        },
+        approveToolRequest: {
+          label: "요청 승인",
+          description: "대기 중인 도구 호출을 허용합니다",
+        },
+        declineToolRequest: {
+          label: "요청 거부",
+          description: "대기 중인 도구 호출을 거부합니다",
+        },
+        newChat: {
+          label: "새 채팅",
+          description: "새 채팅을 시작합니다",
+        },
+        newTemporaryChat: {
+          label: "새 임시 채팅",
+          description: "기록에 저장되지 않는 채팅을 시작합니다",
+        },
+        newStandaloneChat: {
+          label: "새 독립 채팅",
+          description: "프로젝트 밖에서 새 채팅을 시작합니다",
+        },
+        archiveChat: {
+          label: "채팅 보관",
+          description: "선택한 채팅을, 없으면 현재 채팅을 보관합니다",
+        },
+        markChatUnread: {
+          label: "읽지 않음으로 표시",
+          description: "선택한 채팅을, 없으면 현재 채팅을 읽지 않음으로 표시합니다",
+        },
+        togglePinChat: {
+          label: "고정 전환",
+          description: "선택한 채팅을, 없으면 현재 채팅을 고정하거나 해제합니다",
+        },
+        selectAllChats: {
+          label: "모든 채팅 선택",
+          description: "사이드바의 모든 채팅을 선택합니다",
+        },
+        clearChatSelection: {
+          label: "선택 해제",
+          description: "선택한 채팅을 해제합니다. Esc로도 해제됩니다",
+        },
+        deleteSelectedChats: {
+          label: "선택한 채팅 삭제",
+          description: "선택한 모든 채팅을 삭제합니다",
+        },
+        nextRecentlyViewedChat: {
+          label: "다음에 본 채팅",
+          description: "최근 본 채팅을 앞으로 넘깁니다",
+        },
+        previousRecentlyViewedChat: {
+          label: "이전에 본 채팅",
+          description: "최근 본 채팅을 뒤로 넘깁니다",
+        },
+        nextChat: {
+          label: "다음 채팅",
+          description: "사이드바의 다음 채팅으로 이동합니다",
+        },
+        previousChat: {
+          label: "이전 채팅",
+          description: "사이드바의 이전 채팅으로 이동합니다",
+        },
+        nextChatNeedingAttention: {
+          label: "확인이 필요한 다음 채팅",
+          description: "생성 중이거나 대기 중이거나 읽지 않은 다음 채팅으로 이동합니다",
+        },
+        clearAllUnreads: {
+          label: "모두 읽음으로 표시",
+          description: "모든 채팅을 읽음으로 표시합니다",
+        },
+        goToRecentChat1: {
+          label: "최근 채팅 1(으)로 이동",
+          description: "최근 항목의 1번째 채팅을 엽니다",
+        },
+        goToRecentChat2: {
+          label: "최근 채팅 2(으)로 이동",
+          description: "최근 항목의 2번째 채팅을 엽니다",
+        },
+        goToRecentChat3: {
+          label: "최근 채팅 3(으)로 이동",
+          description: "최근 항목의 3번째 채팅을 엽니다",
+        },
+        goToRecentChat4: {
+          label: "최근 채팅 4(으)로 이동",
+          description: "최근 항목의 4번째 채팅을 엽니다",
+        },
+        goToRecentChat5: {
+          label: "최근 채팅 5(으)로 이동",
+          description: "최근 항목의 5번째 채팅을 엽니다",
+        },
+        goToRecentChat6: {
+          label: "최근 채팅 6(으)로 이동",
+          description: "최근 항목의 6번째 채팅을 엽니다",
+        },
+        switchToChat: {
+          label: "채팅으로 전환",
+          description: "채팅 작업 공간으로 이동합니다",
+        },
+        switchToProjects: {
+          label: "프로젝트로 전환",
+          description: "프로젝트 작업 공간으로 이동합니다",
+        },
+        switchToHub: {
+          label: "모델 허브로 전환",
+          description: "모델 허브로 이동합니다",
+        },
+        switchToTrain: {
+          label: "학습으로 전환",
+          description: "학습 작업 공간으로 이동합니다",
+        },
+        switchToRecipes: {
+          label: "Recipes로 전환",
+          description: "Data Recipes로 이동합니다",
+        },
+        switchToImages: {
+          label: "이미지로 전환",
+          description: "이미지 작업 공간으로 이동합니다",
+        },
+        switchToVideo: {
+          label: "비디오로 전환",
+          description: "비디오 작업 공간으로 이동합니다",
+        },
+        switchToAudio: {
+          label: "오디오로 전환",
+          description: "오디오 작업 공간으로 이동합니다",
+        },
+        switchToExport: {
+          label: "내보내기로 전환",
+          description: "내보내기 작업 공간으로 이동합니다",
+        },
+        toggleSidebar: {
+          label: "사이드바 토글",
+          description: "사이드바를 표시하거나 숨깁니다",
+        },
+        toggleApiMonitor: {
+          label: "API 활동 토글",
+          description: "API 활동 모니터를 표시하거나 숨깁니다",
+        },
+        openModelPicker: {
+          label: "모델 선택 열기",
+          description: "이 채팅에 사용할 모델을 고릅니다",
+        },
+        openProjectPicker: {
+          label: "프로젝트 선택 열기",
+          description: "채팅 헤더에서 다른 프로젝트로 전환합니다",
+        },
+        startDictation: {
+          label: "받아쓰기",
+          description: "입력창 받아쓰기를 시작하거나 중지합니다",
+        },
+        attachFiles: {
+          label: "사진 및 파일 첨부",
+          description: "입력창에 첨부 파일을 추가합니다",
+        },
+        sendMessage: {
+          label: "메시지 보내기",
+          description: "입력창의 내용을 보냅니다",
+        },
+        cycleReasoningEffort: {
+          label: "추론 강도 순환",
+          description: "추론 강도 단계를 차례로 바꿉니다",
+        },
+        increaseReasoningEffort: {
+          label: "추론 강도 높이기",
+          description: "추론 강도를 한 단계 올립니다",
+        },
+        decreaseReasoningEffort: {
+          label: "추론 강도 낮추기",
+          description: "추론 강도를 한 단계 내립니다",
+        },
+        toggleFastMode: {
+          label: "Fast 모드 토글",
+          description: "Fast 모드를 켜거나 끕니다",
+        },
+        renameChat: {
+          label: "채팅 이름 바꾸기",
+          description: "현재 채팅의 이름을 바꿉니다",
+        },
+        forkChat: {
+          label: "채팅 분기",
+          description: "마지막 메시지에서 새 채팅으로 분기합니다",
+        },
+        copyChatAsMarkdown: {
+          label: "Markdown으로 복사",
+          description: "채팅 전체를 Markdown으로 클립보드에 복사합니다",
+        },
+        copySessionId: {
+          label: "세션 ID 복사",
+          description: "이 채팅의 샌드박스 세션 ID를 복사합니다",
         },
       },
     },
@@ -279,6 +468,17 @@ export const ko = {
         engineModel: "로컬 음성 인식",
         engineModelDescription:
           "음성 인식(STT) 모델을 로컬에서 실행하며 오프라인으로 동작합니다. 다운로드 후 로드하고, 일정 시간 사용하지 않으면 자동으로 해제됩니다.",
+        engineCustom: "사용자 지정 엔드포인트",
+        engineCustomDescription:
+          "연결에 등록된 OpenAI 호환 STT 서버로 녹음된 오디오를 전송합니다.",
+        connectionLabel: "연결",
+        connectionDescription:
+          "연결에서 OpenAI 호환 서버와 선택적 API 키를 추가하세요.",
+        connectionPlaceholder: "연결 선택",
+        connectionEmpty: "사용 가능한 연결이 없습니다",
+        customModelLabel: "모델",
+        customModelDescription:
+          "/v1/audio/transcriptions에 전송할 모델 이름입니다.",
         sttModelLabel: "음성 인식 모델",
         sttModelDescription: "로컬에서 실행할 STT 모델을 선택하거나 검색하세요.",
         sttModelSearchPlaceholder: "모델 검색",
@@ -337,6 +537,7 @@ export const ko = {
         languageLabel: "받아쓰기 언어",
         languageDescription: "인식할 언어",
         languageAuto: "자동(브라우저 언어)",
+        languageAutoDetect: "자동(언어 감지)",
       },
       dictionary: {
         sectionTitle: "받아쓰기 사전",
@@ -399,6 +600,15 @@ export const ko = {
         engineStudioDescription: "로드된 오디오 모델을 사용합니다(예: Orpheus)",
         engineSystem: "시스템 음성",
         engineStudio: "TTS 모델 로드",
+        engineCustom: "사용자 지정 엔드포인트",
+        engineCustomDescription:
+          "연결에 저장된 OpenAI 호환 TTS 서버 (예: Kokoro)",
+        connectionLabel: "연결",
+        connectionDescription:
+          "OpenAI 호환 서버는 연결 탭에서 추가할 수 있습니다",
+        connectionPlaceholder: "연결 선택",
+        customModelLabel: "모델",
+        customVoiceDescription: "엔드포인트가 기대하는 음성 이름 (기본값: alloy)",
         modelLabel: "TTS 모델",
         modelDescription:
           "모델 선택기에서 오디오 모델을 로드하세요(예: Orpheus TTS)",
@@ -505,7 +715,7 @@ export const ko = {
           "유휴 해제 전에 KV 캐시를 저장해, 이어서 하는 채팅이 기록을 다시 읽지 않도록 합니다. 디스크를 최대 10GB 사용합니다.",
         apiOnly: "API가 불러온 모델만 해제",
         apiOnlyDescription:
-          "유휴 해제 시 Studio에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
+          "유휴 해제 시 Unsloth에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
       },
       previewSharing: {
         sectionTitle: "미리보기 공유",
@@ -548,6 +758,29 @@ export const ko = {
         loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
       },
+      downloads: {
+        sectionTitle: "다운로드",
+        transport: "다운로드 전송 방식",
+        transportDescription:
+          "Hugging Face에서 모델과 데이터셋 파일을 받아오는 방식입니다. HTTPS는 멈춘 지점부터 이어받고, Xet은 첫 다운로드에서 더 빠른 편이지만 취소하면 해당 파일을 처음부터 다시 받습니다.",
+        transportHint:
+          "HTTPS는 일반 TLS입니다. 모든 네트워크와 프록시, VPN이 허용하며 취소되거나 끊긴 전송도 디스크에 남은 바이트부터 이어받고 메모리 사용량이 일정합니다. Xet은 중복 제거된 청크를 받아오므로 이미 가진 저장소와 데이터를 공유하면 훨씬 빠르게 도착하지만 hf_xet이 필요하고 RAM을 더 쓰며, 취소하면 진행 중인 파일이 버려집니다. Auto는 이 머신에 맞춰 판단해 RAM과 Xet이 여기서 멈춘 적이 있는지를 따지고 필요하면 HTTPS로 물러납니다.",
+        https: "HTTPS",
+        xet: "Xet",
+        auto: "Auto",
+        httpsHint:
+          "표준 TLS. 취소 후에도 이어받고 어떤 네트워크에서도 동작하며 메모리 사용이 안정적입니다.",
+        transportDescriptionNoResume:
+          "모델과 데이터셋 파일을 Hugging Face에서 내려받는 방식입니다. 이 설치에서는 두 전송 방식 모두 이어받기를 할 수 없어 취소한 다운로드는 처음부터 다시 시작합니다. Xet은 첫 다운로드에서 더 빠른 경우가 많습니다.",
+        httpsHintNoResume:
+          "표준 TLS. 모든 네트워크에서 동작하며 메모리 사용량이 일정합니다. 이 설치에서는 취소한 다운로드를 이어받을 수 없습니다.",
+        xetHint:
+          "중복 제거 청크 전송. 새 다운로드에서 더 빠른 편이지만 취소하면 파일을 다시 받고 메모리를 더 씁니다.",
+        autoHint:
+          "머신에 맞춰 고르고, 여기서 Xet이 멈추거나 실패하면 HTTPS로 바꿉니다.",
+        autoCurrently: "이 머신에서 Auto는 {transport}을 사용합니다.",
+        xetMissing: "hf_xet이 설치되지 않아 Xet을 사용할 수 없습니다.",
+      },
       uploads: {
         sectionTitle: "업로드",
         maxUploadSize: "학습 데이터셋 업로드 상한",
@@ -558,6 +791,7 @@ export const ko = {
         embeddingModel: "임베딩 모델",
         embeddingModelDescription:
           "문서를 색인하고 검색하는 데 사용되는 Hugging Face 모델 또는 로컬 경로입니다. 기본값은 {defaultModel}입니다.",
+        searchPlaceholder: "임베딩 모델 검색",
         reindexWarning:
           "새로 색인되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 업로드하세요.",
         emptyError: "Hugging Face 모델 ID 또는 로컬 경로를 입력하세요.",
@@ -630,9 +864,9 @@ export const ko = {
           "아래 내용은 모두 본인의 기록을 바탕으로 계산됩니다. 아무것도 수집하거나 Unsloth로 전송하지 않습니다.",
         retry: "다시 시도",
         privacyNote:
-          "통계는 사용 중인 Unsloth에 저장된 채팅 및 학습 기록을 바탕으로 계산됩니다. 아무것도 수집하지 않으며, Unsloth나 제3자에게 전송하지 않습니다.",
+          "통계는 Unsloth 설치에 저장된 로컬 채팅, API 사용 및 학습 기록을 바탕으로 계산됩니다. 통계를 위해 API 프롬프트, 응답 또는 키를 저장하지 않습니다. Unsloth나 제3자에게 아무것도 전송하지 않습니다.",
         emptyChats:
-          "아직 채팅이 없습니다. 대화를 시작하면 여기에 통계가 채워집니다.",
+          "아직 채팅 또는 API 사용 기록이 없습니다. 대화를 시작하거나 인증된 로컬 API 요청을 보내세요.",
         lifetimeTokens: "누적 토큰",
         peakTokens: "최고 기록일",
         longestChat: "가장 긴 채팅",
@@ -654,6 +888,9 @@ export const ko = {
         totalMessages: "전체 메시지",
         tokensIn: "보낸 토큰",
         tokensOut: "생성된 토큰",
+        totalTokens: "전체 토큰",
+        studioChatTokens: "Unsloth Chat 토큰",
+        apiTokens: "API 토큰",
         cachedTokens: "캐시된 토큰",
         cachedValue: "{tokens}(입력의 {percent}%)",
         avgTokensPerChat: "채팅당 평균 토큰",
@@ -834,6 +1071,8 @@ export const ko = {
         title: "GPU 장치",
         ggufInference: "GGUF 추론",
         unavailable: "사용할 수 없음",
+        detecting: "GPU를 확인하는 중...",
+        unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
         noGpu: "인식되는 GPU가 없습니다. 위에는 CPU 관련 리소스만 표시됩니다.",
         unknownDevice: "알 수 없는 GPU",
         deviceWithIndex: "GPU {index}",
@@ -992,7 +1231,7 @@ export const ko = {
       quickstart: {
         title: "명령 만들기",
         description:
-          "Studio에 현재 로드된 모델로 에이전트를 실행합니다. 먼저 모델을 로드한 다음 claude를 아래 지원되는 에이전트로 바꾸세요.",
+          "Unsloth에 현재 로드된 모델로 에이전트를 실행합니다. 먼저 모델을 로드한 다음 claude를 아래 지원되는 에이전트로 바꾸세요.",
         noneDetected: "PATH에서 지원되는 에이전트 CLI를 찾지 못했습니다.",
         installed: "설치됨",
       },
@@ -1013,7 +1252,7 @@ export const ko = {
         description:
           "Unsloth 플래그가 먼저 처리되고, 인식되지 않은 값은 그대로 에이전트에 전달됩니다.",
         model:
-          "모델을 선택합니다. --model이 없으면 unsloth start는 Studio에 현재 로드된 모델을 사용하며, 로드된 모델이 없으면 오류가 납니다.",
+          "모델을 선택합니다. --model이 없으면 unsloth start는 Unsloth에 현재 로드된 모델을 사용하며, 로드된 모델이 없으면 오류가 납니다.",
         contextLength:
           "요청할 컨텍스트 길이를 설정합니다(별칭: --max-seq-length).",
         ggufVariant: "GGUF 양자화 변형을 선택합니다.",
@@ -1027,12 +1266,16 @@ export const ko = {
           "상위 에이전트는 현재 모델을 유지하고 Unsloth를 로컬 서브에이전트로 등록합니다(Claude Code, Codex, OpenCode).",
         apiKey:
           "Unsloth API 키를 지정합니다(또는 UNSLOTH_API_KEY 환경 변수를 설정합니다).",
+        reasoning:
+          "채팅에서 추론 사용 여부: on, off, auto. auto는 모델의 채팅 템플릿을 따르며 보통 on입니다.",
+        reasoningEffort:
+          "모델의 채팅 템플릿에 전달하는 추론 강도(예: medium). 사용할 수 있는 값은 모델마다 다르므로 해당 모델이 받는 값을 지정하세요. 지정하지 않으면 템플릿의 값이 유지됩니다.",
         yolo: "승인 확인을 건너뜁니다. 신뢰할 수 있는 환경에서만 사용하세요.",
       },
       remote: {
-        title: "원격 Studio에 연결",
+        title: "원격 Unsloth Studio에 연결",
         description:
-          "실행 전에 다음을 설정하면 unsloth start를 다른 곳에서 실행 중인 Studio로 연결할 수 있습니다(또는 --api-key를 직접 전달):",
+          "실행 전에 다음을 설정하면 unsloth start를 다른 곳에서 실행 중인 Unsloth Studio로 연결할 수 있습니다(또는 --api-key를 직접 전달):",
       },
       passthrough: {
         title: "에이전트에 인자 전달",
@@ -1071,7 +1314,7 @@ export const ko = {
         exportChat: "채팅 내보내기",
       },
       pastedTextThreshold: "긴 붙여넣기 압축",
-      pastedTextThresholdDescription: "이 길이를 초과한 붙여넣기 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다.",
+      pastedTextThresholdDescription: "이 길이를 초과한 붙여넣기 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다. {shortcut} 를 누르면 그래도 입력창에 붙여넣습니다.",
       pastedTextThresholdOff: "끄기",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
@@ -1089,6 +1332,12 @@ export const ko = {
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:
           "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
+      },
+      webSearch: {
+        title: "웹 검색",
+        images: "웹 검색 이미지 표시",
+        imagesDescription:
+          "웹 검색이 이미지를 반환하고, 답변에 나열된 항목마다 하나씩 가져옵니다. 썸네일은 Studio가 가져와 축소하므로 브라우저가 이미지 호스트에 접속하지 않습니다.",
       },
       artifacts: {
         title: "Canvas",
@@ -1110,7 +1359,7 @@ export const ko = {
       exportingAction: "내보내는 중...",
       exportConversations: "최근 항목 및 프로젝트 내보내기",
       exportConversationsDescription:
-        "최근 항목 또는 최근 항목과 프로젝트 채팅을 Raw JSONL, CSV 또는 ShareGPT JSONL로, 통합하거나 채팅별로 다운로드합니다.",
+        "최근 항목 또는 최근 항목과 프로젝트 채팅을 Training JSONL, CSV 또는 ShareGPT JSONL로, 통합하거나 채팅별로 다운로드합니다. Message JSONL은 채팅별로만 사용할 수 있습니다.",
       exportConversationsAction: "내보내기",
       exportScopeRecents: "최근 항목",
       exportScopeAll: "최근 항목 + 프로젝트",
@@ -1224,6 +1473,11 @@ export const ko = {
     connections: {
       title: "연결",
       description: "제공자 및 외부 연결을 관리합니다.",
+    },
+    remoteLan: {
+      title: "원격 및 LAN",
+      description:
+        "로컬 네트워크나 임시 공개 URL을 통해 다른 기기에서 이 Unsloth에 접속합니다.",
     },
     apiKeys: {
       title: "API",
@@ -1529,8 +1783,8 @@ export const ko = {
       reasonNotTrainable: "기기에 있는 이 모델은 학습할 수 없습니다.",
       reasonUnsupportedFormat:
         "이 모델 형식은 학습에서 지원되지 않습니다.",
-      vramNeeds: "약 {est}GB VRAM 필요 (GPU: {total}GB)",
-      vramTight: "약 {est}GB VRAM ({total}GB에서 빠듯함)",
+      vramNeeds: "약 {est}GB VRAM 필요 (GPU: {total}GiB)",
+      vramTight: "약 {est}GB VRAM ({total}GiB에서 빠듯함)",
       vramApprox: "약 {est}GB VRAM",
       vramOomBadge: "OOM",
       vramTightBadge: "빠듯함",

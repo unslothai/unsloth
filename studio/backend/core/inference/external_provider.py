@@ -14,7 +14,7 @@ import mimetypes
 import re
 import time
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
 import structlog
@@ -52,6 +52,13 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
 logger = structlog.get_logger(__name__)
+
+
+def _append_provider_path(base_url: str, endpoint: str) -> str:
+    """Append an API path without moving it behind a base URL's query string."""
+    parts = urlsplit(base_url)
+    path = f"{parts.path.rstrip('/')}/{endpoint.lstrip('/')}"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
@@ -862,7 +869,7 @@ def _build_kimi_tool_end(
 
 
 class ExternalProviderClient:
-    """Async proxy for OpenAI-compatible external LLM APIs."""
+    """Async proxy for OpenAI-compatible external APIs."""
 
     def __init__(
         self,
@@ -1396,7 +1403,7 @@ class ExternalProviderClient:
                                                         continue
                                                     for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
-                        # Verbatim relay, minus Studio's own UI control protocol:
+                        # Verbatim relay, minus Unsloth's own UI control protocol:
                         # the frames this server writes to paint tool cards ride
                         # the same stream, so an endpoint that echoes them forges
                         # a card for a tool that never ran.
@@ -1639,7 +1646,7 @@ class ExternalProviderClient:
                                 break
                             if line.strip():
                                 # Same rule as the main relay: never let the
-                                # endpoint speak Studio's control vocabulary.
+                                # endpoint speak Unsloth's control vocabulary.
                                 relayed = sanitize_provider_sse_line(line)
                                 if relayed is not None:
                                     yield relayed
@@ -1775,7 +1782,7 @@ class ExternalProviderClient:
                                                         str(ann.get("type") or "?")
                                                     )
                         # Same rule as the main relay: never let the endpoint
-                        # speak Studio's control vocabulary.
+                        # speak Unsloth's control vocabulary.
                         relayed = sanitize_provider_sse_line(line)
                         if relayed is None:
                             continue
@@ -4858,7 +4865,7 @@ class ExternalProviderClient:
                 # OpenAI requires the reasoning items that came back alongside a
                 # tool call to be replayed with the function_call /
                 # function_call_output pair whenever the history is managed by
-                # hand, which is exactly what the Studio tool loop does: "any
+                # hand, which is exactly what the Unsloth tool loop does: "any
                 # reasoning items returned in model responses with tool calls
                 # must also be passed back with tool call outputs"
                 # (https://developers.openai.com/api/docs/guides/function-calling).
@@ -6277,6 +6284,69 @@ class ExternalProviderClient:
         )
         response.raise_for_status()
         return response.json()
+
+    async def create_speech(
+        self,
+        text: str,
+        model: str,
+        voice: Optional[str] = None,
+        response_format: str = "wav",
+        speed: Optional[float] = None,
+    ) -> tuple[bytes, str]:
+        """POST /audio/speech (OpenAI CreateSpeech). Returns (audio_bytes, media_type)."""
+        body: dict[str, Any] = {
+            "model": model,
+            "input": text,
+            "response_format": response_format,
+        }
+        if voice:
+            body["voice"] = voice
+        if speed is not None:
+            body["speed"] = speed
+        response = await _http_client.post(
+            _append_provider_path(self.base_url, "/audio/speech"),
+            headers = self._auth_headers(),
+            json = body,
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        media_type = (response.headers.get("content-type") or "").split(";")[0].strip()
+        return response.content, media_type or f"audio/{response_format}"
+
+    async def create_transcription(
+        self,
+        audio: bytes,
+        filename: str,
+        content_type: str,
+        model: str,
+        language: Optional[str] = None,
+        response_format: str = "json",
+        timestamp_granularities: Optional[list[str]] = None,
+    ) -> tuple[bytes, str]:
+        """Post audio to an OpenAI-compatible transcription endpoint."""
+        data = {
+            "model": model,
+            "response_format": response_format,
+        }
+        if language:
+            data["language"] = language
+        if timestamp_granularities:
+            # Repeated field, so httpx wants the list under the bracketed name OpenAI uses.
+            data["timestamp_granularities[]"] = list(timestamp_granularities)
+        headers = self._auth_headers()
+        headers.pop("Content-Type", None)
+        response = await _http_client.post(
+            f"{self.base_url}/audio/transcriptions",
+            headers = headers,
+            files = {"file": (filename, audio, content_type)},
+            data = data,
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        media_type = (response.headers.get("content-type") or "").split(";", 1)[0].strip()
+        if not media_type:
+            media_type = "text/plain" if response_format == "text" else "application/json"
+        return response.content, media_type
 
     async def list_models(self) -> list[dict[str, Any]]:
         """GET /models to discover available models.
