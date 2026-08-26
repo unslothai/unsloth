@@ -223,6 +223,11 @@ def test_auto_compact_settings_round_trip():
     }
 
 
+def test_auto_compact_settings_can_inherit_the_server_policy():
+    payload = ChatSettingsPayload.model_validate({"contextPolicy": "inherit"})
+    assert payload.model_dump(exclude_unset = True) == {"contextPolicy": "inherit"}
+
+
 def test_compaction_headroom_ratio_is_bounded():
     with pytest.raises(ValidationError):
         ChatSettingsPayload.model_validate({"compactionHeadroomRatio": 1.5})

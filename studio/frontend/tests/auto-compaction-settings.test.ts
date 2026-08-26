@@ -5,11 +5,30 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  DEFAULT_CONTEXT_POLICY,
   compactionStyleValue,
   ggufCompactionRequestFields,
   parseCompactionStyle,
   sanitizeCompactionHeadroomRatio,
 } from "../src/features/chat/utils/auto-compaction.ts";
+
+test("the default preserves the server context policy", () => {
+  assert.equal(DEFAULT_CONTEXT_POLICY, "inherit");
+  assert.equal(compactionStyleValue("inherit", 0.25), "inherit");
+  assert.deepEqual(parseCompactionStyle("inherit"), {
+    contextPolicy: "inherit",
+    compactionHeadroomRatio: 0.25,
+  });
+  assert.deepEqual(
+    ggufCompactionRequestFields({
+      isGguf: true,
+      autoCompactEnabled: true,
+      contextPolicy: "inherit",
+      compactionHeadroomRatio: 0.25,
+    }),
+    { context_overflow: "truncate_oldest" },
+  );
+});
 
 test("auto-compact off sends an explicit error overflow policy", () => {
   assert.deepEqual(
