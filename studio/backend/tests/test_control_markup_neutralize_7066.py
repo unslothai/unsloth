@@ -3215,8 +3215,7 @@ def _ctrl_mutated(scope):
     """Names filled in place DIRECTLY in *scope*, which no resolved catalog may be.
 
     Rejected rather than modelled: what a mutation puts in the list is the dataflow this resolver
-    would have to follow anyway. Scoped like `_ctrl_bindings`.
-    """
+    would have to follow anyway. Scoped like `_ctrl_bindings`."""
     names = set()
 
     def visit(node):
@@ -3274,15 +3273,15 @@ def _ctrl_sweep_roots(
 ):
     """The names handed to a sweep or a catalog builder anywhere inside *expr*.
 
-    The catalog a branch narrows, named. Used to check that a `None` branch is guarded by the
-    emptiness of that same catalog rather than of some unrelated flag.
+    The catalog a branch narrows, named, so a `None` branch can be checked against the emptiness
+    of THAT catalog rather than of some unrelated flag.
     """
     roots = set()
     if isinstance(expr, ast.Call):
         if _ctrl_called_name(expr, aliases) in _CATALOG_PRODUCERS:
-            # Positional OR keyword: `neutralize_tool_descriptions(tools = tools, ...)` is the
-            # same call, and a guard that only reads `args[0]` would fail a rename of the
-            # argument style -- the refactor fragility this whole test exists to remove.
+            # Positional OR keyword. `neutralize_tool_descriptions(tools = tools, ...)` is the
+            # same call, and reading only `args[0]` would fail a change of argument style: the
+            # refactor fragility this test exists to remove.
             catalog = expr.args[0] if expr.args else None
             for keyword in expr.keywords:
                 if keyword.arg == "tools":
@@ -3310,10 +3309,10 @@ def _ctrl_sweep_roots(
 def _ctrl_guard_proves_empty(test, taken_when_true, roots, scopes):
     """Is *test* the emptiness of a catalog that the sibling branch narrows?
 
-    `None` disables the controller's allowlist entirely, so it is only ever safe on the path
-    where there is nothing to authorize. Both loops say so with the truthiness of the catalog
-    itself -- `unrestricted_tools = not tools` -- and this follows that binding rather than the
-    name, so a rename still resolves while inverting the predicate does not.
+    `None` disables the allowlist entirely, so it is only safe where there is nothing to
+    authorize. Both loops say so with the truthiness of the catalog itself,
+    `unrestricted_tools = not tools`; this follows the binding rather than the name, so a rename
+    resolves and inverting the predicate does not.
     """
     seen = set()
     while isinstance(test, ast.Name) and test.id not in seen:
@@ -3361,9 +3360,9 @@ def _ctrl_resolve(expr, scopes, aliases, module, seen):
                 return False, why, False
             gates = gates or branch_gates
         if gates and isinstance(expr, ast.BoolOp):
-            # NO PREDICATE TO READ, and short-circuit makes any operand reachable: `safe or None`
-            # evaluates to None exactly when the sweep emptied the catalog, which is the moment
-            # the allowlist matters most. Every operand has to gate.
+            # NO PREDICATE TO READ, and short-circuit reaches any operand: `safe or None` is None
+            # exactly when the sweep emptied the catalog, which is when the allowlist matters
+            # most. Every operand has to gate.
             for value in expr.values:
                 _ok, _why, value_gates = _ctrl_resolve(value, scopes, aliases, module, seen)
                 if not value_gates:
@@ -3374,9 +3373,9 @@ def _ctrl_resolve(expr, scopes, aliases, module, seen):
                         False,
                     )
         if gates and isinstance(expr, ast.IfExp):
-            # WHICH branch gates is not enough on its own. `None if tools else <swept>` gates on
-            # the swept side while selecting `None` exactly when there IS a catalog, so the
-            # predicate that reaches the non-gating branch has to prove there is not one.
+            # WHICH branch gates is not enough. `None if tools else <swept>` gates on the swept
+            # side while selecting `None` exactly when there IS a catalog, so the predicate
+            # reaching the non-gating branch has to prove there is not one.
             roots = _ctrl_sweep_roots(expr, scopes, aliases)
             for branch, taken_when_true in ((expr.body, True), (expr.orelse, False)):
                 _ok, _why, branch_gates = _ctrl_resolve(branch, scopes, aliases, module, seen)
@@ -3415,11 +3414,10 @@ def _ctrl_resolve(expr, scopes, aliases, module, seen):
                         False,
                     )
             if known and expr.id in _ctrl_params(scope):
-                # A PARAMETER THAT IS ALSO REBOUND still arrives with the caller's value, and
-                # this resolver is flow-insensitive: `if x: tools = sweep(tools, ...)` records
-                # only the swept binding, so the raw parameter on the other path would be
-                # invisible. It has to clear its contract as well as its bindings. This also
-                # closes `catalog = catalog`, where the self-cycle vouched for itself.
+                # A REBOUND PARAMETER still arrives with the caller's value, and this resolver is
+                # flow-insensitive: `if x: tools = sweep(tools, ...)` records only the swept
+                # binding, leaving the raw parameter on the other path invisible. It has to clear
+                # its contract too, which also closes `catalog = catalog` vouching for itself.
                 allowed = _SANITIZED_BY_CONTRACT.get(
                     (module, getattr(scope, "name", "")), frozenset()
                 )
@@ -3530,9 +3528,8 @@ def _ctrl_resolve_source(source):
 def test_the_resolver_holds_the_shapes_that_defeat_a_source_scan():
     """The two ways past a dataflow guard that a text scan would have caught by accident.
 
-    Both are regressions a refactor can land without meaning to, and neither hands the
-    controller anything a reader would call raw.
-    """
+    Both are regressions a refactor can land without meaning to, and neither hands the controller
+    anything a reader would call raw."""
     swept = "neutralize_tool_descriptions(tools, None, markup)"
     # An UNRESTRICTED controller: `_restrict_to_allowed = False`, so every tool the sweep
     # dropped is executable again. It resolves, and must not satisfy the site.
