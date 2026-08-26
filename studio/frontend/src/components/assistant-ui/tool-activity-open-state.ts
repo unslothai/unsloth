@@ -27,3 +27,22 @@ export function resolveToolActivityOpen({
   }
   return currentOpen;
 }
+
+export interface ToolActivityPreferenceState {
+  collapseByDefault: boolean;
+  open: boolean;
+}
+
+export function syncToolActivityPreference(
+  current: ToolActivityPreferenceState,
+  collapseByDefault: boolean,
+  defaultOpen: boolean,
+) {
+  if (current.collapseByDefault === collapseByDefault) {
+    return current;
+  }
+  return {
+    collapseByDefault,
+    open: defaultOpen && !collapseByDefault,
+  };
+}

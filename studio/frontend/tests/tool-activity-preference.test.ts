@@ -11,7 +11,7 @@ registerBundlerResolver();
 const { useChatPreferencesStore } = await import(
   "../src/features/chat/stores/chat-preferences-store.ts"
 );
-const { resolveToolActivityOpen } = await import(
+const { resolveToolActivityOpen, syncToolActivityPreference } = await import(
   "../src/components/assistant-ui/tool-activity-open-state.ts"
 );
 
@@ -84,6 +84,44 @@ test("disabling collapsed activity restores automatic visibility", () => {
       hasText: true,
     }),
     false,
+  );
+});
+
+test("fallback cards react to live preference changes", () => {
+  const manuallyOpen = {
+    collapseByDefault: false,
+    open: true,
+  };
+  const collapsed = syncToolActivityPreference(manuallyOpen, true, true);
+  assert.deepEqual(collapsed, {
+    collapseByDefault: true,
+    open: false,
+  });
+  assert.deepEqual(syncToolActivityPreference(collapsed, false, true), {
+    collapseByDefault: false,
+    open: true,
+  });
+});
+
+test("fallback cards preserve manual state until the preference changes", () => {
+  const manuallyOpen = {
+    collapseByDefault: true,
+    open: true,
+  };
+  assert.equal(
+    syncToolActivityPreference(manuallyOpen, true, true),
+    manuallyOpen,
+  );
+});
+
+test("disabling collapsed activity respects a closed fallback default", () => {
+  assert.deepEqual(
+    syncToolActivityPreference(
+      { collapseByDefault: true, open: false },
+      false,
+      false,
+    ),
+    { collapseByDefault: false, open: false },
   );
 });
 

@@ -9,7 +9,8 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
-import { useChatPreferencesStore } from "@/features/chat";
+// eslint-disable-next-line no-restricted-imports -- the feature barrel imports this component
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import {
   formatMcpToolName,
@@ -39,6 +40,7 @@ import {
   useState,
 } from "react";
 import { toolArgText } from "./tool-arg-text";
+import { syncToolActivityPreference } from "./tool-activity-open-state";
 
 const ANIMATION_DURATION = 200;
 
@@ -63,13 +65,24 @@ function ToolFallbackRoot({
   const collapseByDefault = useChatPreferencesStore(
     (state) => state.collapseToolActivityByDefault,
   );
-  const [uncontrolledOpen, setUncontrolledOpen] = useState(
-    () => defaultOpen && !collapseByDefault,
+  const [uncontrolledState, setUncontrolledState] = useState(
+    () => ({
+      collapseByDefault,
+      open: defaultOpen && !collapseByDefault,
+    }),
   );
+  const syncedUncontrolledState = syncToolActivityPreference(
+    uncontrolledState,
+    collapseByDefault,
+    defaultOpen,
+  );
+  if (syncedUncontrolledState !== uncontrolledState) {
+    setUncontrolledState(syncedUncontrolledState);
+  }
   const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
 
   const isControlled = controlledOpen !== undefined;
-  const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
+  const isOpen = isControlled ? controlledOpen : syncedUncontrolledState.open;
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
@@ -77,11 +90,14 @@ function ToolFallbackRoot({
         lockScroll();
       }
       if (!isControlled) {
-        setUncontrolledOpen(open);
+        setUncontrolledState({
+          collapseByDefault,
+          open,
+        });
       }
       controlledOnOpenChange?.(open);
     },
-    [lockScroll, isControlled, controlledOnOpenChange],
+    [collapseByDefault, lockScroll, isControlled, controlledOnOpenChange],
   );
 
   return (
