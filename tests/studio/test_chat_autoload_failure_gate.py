@@ -1371,7 +1371,7 @@ def test_a_cached_text_generation_repo_still_auto_loads():
 
 def test_a_provisional_mac_platform_does_not_hide_a_remote_backends_models():
     """Before the probe lands chatOnly is a browser guess: a Mac browser on a
-    remote Linux Studio would hide every local safetensors model."""
+    remote Linux Unsloth would hide every local safetensors model."""
     safetensors = (
         "{ ...LOCAL_GGUF, id: 'st', load_id: 'st', path: '/models/st',"
         " model_format: 'safetensors' }"

@@ -303,7 +303,7 @@ def _ollama_model_info_from_manifest(
         rendered_layers = ", ".join(unsupported_layers)
         if reject_unsupported_layers:
             raise ValueError(
-                "Ollama manifest contains unsupported runtime layers that Studio cannot preserve: "
+                "Ollama manifest contains unsupported runtime layers that Unsloth cannot preserve: "
                 f"{rendered_layers}"
             )
         logger.debug(

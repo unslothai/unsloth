@@ -1559,7 +1559,7 @@ def test_the_doc_says_which_commands_in_the_loop_need_a_studio():
     for offline in ("--assert-liveness", "floor_table", "ui_parity", "--report"):
         assert offline in prose, (
             f"the paragraph under the loop does not say that {offline} runs offline, so it reads "
-            f"as though a contributor needs a Studio to score a payload they already have"
+            f"as though a contributor needs an Unsloth to score a payload they already have"
         )
 
 

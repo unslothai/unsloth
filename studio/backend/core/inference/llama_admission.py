@@ -530,7 +530,7 @@ class LlamaAdmissionQueue:
     are each either free or held by exactly one caller. A caller that finds every
     slot busy waits in arrival order and is handed the next slot to free, so no
     caller is starved. This bounds only the callers that reserve: chat completions
-    and messages do, while /v1/completions, Studio's own chat endpoint and RAG
+    and messages do, while /v1/completions, Unsloth's own chat endpoint and RAG
     captioning all reach llama-server directly, so it is not a global cap.
     Waiting is unbounded in time by default (``queue_timeout_s``
     None); the wait line itself is bounded, and only how many may line up before

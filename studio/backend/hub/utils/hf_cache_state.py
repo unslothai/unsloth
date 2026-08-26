@@ -73,7 +73,7 @@ def hf_partials_are_resumable(hub_cache: Optional[str] = None) -> bool:
     On 1.18+ this also asks whether the download worker will put the 1.17 writer back
     (:mod:`hub.utils.resumable_partials`), since a restored resumer makes partials reusable again.
     That half turns on the filesystem the partial is on, so *hub_cache* names the root being asked
-    about. Studio remembers several and they need not lock alike: without it, a selected cache on a
+    about. Unsloth remembers several and they need not lock alike: without it, a selected cache on a
     network mount would condemn a local cache's partials to the abandoned-partial sweep. Omitting it
     asks about the cache in force, which is where a new download lands.
 

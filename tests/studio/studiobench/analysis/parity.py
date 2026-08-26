@@ -332,7 +332,7 @@ def streaming_probe(base: dict, treat: dict) -> Optional[str]:
 
     THE POSITIVE CONTROL ON A SCAN THAT CAN RETURN ZERO. The elision below is only as good as its
     ability to find the streamed message, and `streamingMessages()` walks selectors written against
-    Studio's markup: rename `data-status` and it goes quiet, matches nothing, and every capture then
+    Unsloth's markup: rename `data-status` and it goes quiet, matches nothing, and every capture then
     reports the strongest thing it can say about the stream -- that there was none -- on the
     strength of never having looked successfully. That is exactly the shape `compare_styles`
     already refuses for the style probe and `compare_visible` for the visibility scan.
@@ -420,14 +420,14 @@ def compare_styles(base: dict, treat: dict) -> tuple[str, str]:
     # counts and equal digests -- both are the hash of an empty string -- so a probe that scanned
     # NOTHING reports MATCH, which is the strongest verdict this function can return and is
     # supported by no observation whatsoever. That is not hypothetical: the selector list is
-    # written against Studio's markup, and a class rename anywhere in it silently empties the
+    # written against Unsloth's markup, and a class rename anywhere in it silently empties the
     # scan. A DOM or CSSOM scan that can return zero has to be able to tell "I looked and they
     # agree" from "I did not look", and this one could not.
     if not bs.get("elements") or not ts.get("elements"):
         return NOT_COMPARABLE, (
             f"the style probe matched no elements (base={bs.get('elements')}, "
             f"treatment={ts.get('elements')}), so it observed nothing on at least one arm. Its "
-            "selector list is written against Studio's markup and does not survive a rename; "
+            "selector list is written against Unsloth's markup and does not survive a rename; "
             "this is a probe that needs fixing, not two arms that agree"
         )
     # THE RUN-STATE CONTROL IS IN THE SELECTOR LIST, so this reading straddles the same composer

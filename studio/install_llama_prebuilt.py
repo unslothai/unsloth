@@ -5794,7 +5794,7 @@ def _validation_server_kwargs() -> "dict[str, Any]":
     """Popen kwargs tying a validation server to this installer's lifetime.
 
     Its own group keeps whatever the server starts reachable through the leader
-    alone, but it also takes the server out of the group Studio force-kills, so
+    alone, but it also takes the server out of the group Unsloth force-kills, so
     the parent-death signal is armed alongside it: an installer that is killed
     mid-validation must not leave a server holding the GPU and the staged files
     until some later startup sweeps the breadcrumb.
@@ -5830,7 +5830,7 @@ def _validation_server_kwargs() -> "dict[str, Any]":
 def _announce_child(state: str, pid: int) -> None:
     """Tell whoever runs this script about a server it started.
 
-    Studio adopts the pid so its own sweep can reach it; run by hand the line is
+    Unsloth adopts the pid so its own sweep can reach it; run by hand the line is
     just noise on stdout.
     """
     print(f"UNSLOTH_INSTALLER_CHILD {state} {pid}", flush = True)
@@ -5863,7 +5863,7 @@ def _terminate_validation_server(process: "subprocess.Popen", grace: float = 5.0
     keeps the pid announced so a later sweep can still reach it.
 
     Where it does not lead one it shares this installer's group, and killpg
-    would take the installer and Studio with it, so only the server itself is
+    would take the installer and Unsloth with it, so only the server itself is
     signalled.
     """
     pgid = None
@@ -6356,7 +6356,7 @@ def write_prebuilt_metadata(
         # so a forced CPU install is not re-routed to a GPU bundle (#7213). An automatic
         # --cpu-fallback (e.g. arm64 GPU-build recovery) stays False so it can heal to GPU.
         "force_cpu": force_cpu,
-        # Kept for older Studio versions that only understand Vulkan overrides.
+        # Kept for older Unsloth versions that only understand Vulkan overrides.
         "llama_backend": _persisted_backend,
         # What the installed bundle runs on.
         "backend": backend_for_install_kind(choice.install_kind),
@@ -7177,11 +7177,11 @@ def effective_backend_request(
         return explicit, True
     stored = persisted_backend_request(install_dir)
     if not is_requestable_backend(stored):
-        # Written by a newer Studio. Detection would quietly rewrite the choice
+        # Written by a newer Unsloth. Detection would quietly rewrite the choice
         # to "auto", so refuse instead and leave the install exactly as it is.
         raise UnknownBackendRequest(
             f"this install records an unsupported llama.cpp backend choice ({stored!r}); "
-            "update Studio before replacing it"
+            "update Unsloth before replacing it"
         )
     return stored, False
 
@@ -8154,7 +8154,7 @@ def parse_args() -> argparse.Namespace:
         const = "latest",
         help = (
             "Report every llama.cpp backend installable on this host, plus what "
-            "--install-dir currently runs, without downloading. Feeds the Studio "
+            "--install-dir currently runs, without downloading. Feeds the Unsloth "
             "backend picker. Use --output-format json."
         ),
     )

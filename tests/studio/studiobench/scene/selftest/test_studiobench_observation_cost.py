@@ -267,7 +267,7 @@ def _running_ctx(page, budget_ms = 12000):
 def test_it_waits_for_a_generating_reply_instead_of_reporting_no_menu():
     """THE DEFECT, and it cost this action on every CI run since the branch opened.
 
-    Studio hides a message's action bar while the message is generating, and the film schedules
+    Unsloth hides a message's action bar while the message is generating, and the film schedules
     `message_menu` about four seconds after a `send_turn` whose reply runs for roughly fourteen.
     So the harness asked for a menu on a message that was still being written, got no More button,
     and reported NOT RUN -- an accurate observation of a question nobody should have asked yet.

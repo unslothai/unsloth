@@ -65,7 +65,7 @@ def test_huggingface_extra_contains_no_diffusers_vcs_reference():
     assert diffusers
     assert all(requirement.url is None for requirement in diffusers), (
         "PyPI rejects VCS direct references in uploaded Requires-Dist metadata; "
-        "keep temporary Diffusers commit pins in Studio installer requirement files."
+        "keep temporary Diffusers commit pins in Unsloth installer requirement files."
     )
 
 
@@ -78,7 +78,7 @@ def test_studio_extra_matches_requirements_file():
     surplus = sorted(set(extra) - set(required))
     assert not missing, (
         f"studio.txt lists {missing} but the `studio` extra does not. "
-        '`pip install "unsloth[studio]"` would build a venv the Studio server '
+        '`pip install "unsloth[studio]"` would build a venv the Unsloth server '
         "cannot boot in. Add them to [project.optional-dependencies] studio."
     )
     assert not surplus, (
