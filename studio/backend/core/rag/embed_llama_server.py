@@ -440,6 +440,15 @@ class LlamaServerBackend:
         # listing follows; offline, the relaxed pass below still reaches both.
         cached = self._resolve_cached_gguf(desired)
         if cached is not None:
+            # The configured variant is present in the preferred repo, which is
+            # what the picker advertised, so any pending marker has been answered.
+            # Retire it here or the model stays cache-only for the life of the
+            # install and a later eviction reads as "never downloaded".
+            try:
+                from utils.embedding_model_settings import clear_stored_download_pending
+                clear_stored_download_pending(model)
+            except Exception:  # noqa: BLE001 - a settings write must not fail a load
+                pass
             return self._adopt_model_path(cached, desired)
         try:
             from utils.embedding_model_settings import get_stored_download_pending
@@ -454,14 +463,12 @@ class LlamaServerBackend:
             # pending/cancelled.
             cached = self._resolve_cached_gguf(desired, require_variant = False)
             if cached is not None:
-                # The transfer this marker was waiting for has landed. Retire it
-                # here, or the model stays cache-only for the life of the install
-                # and a later eviction reads as "never downloaded".
-                try:
-                    from utils.embedding_model_settings import clear_stored_download_pending
-                    clear_stored_download_pending(model)
-                except Exception:  # noqa: BLE001 - a settings write must not fail a load
-                    pass
+                # Reaching here means the configured variant is NOT cached (the
+                # strict pass above already returned if it were), so this is some
+                # other quant left by an earlier setting. Serve it rather than
+                # failing the index, but leave the marker set: the transfer the
+                # picker advertised has not landed, and retiring the marker on a
+                # stand-in would keep this model on the wrong quant for good.
                 return self._adopt_model_path(cached, desired)
             raise RuntimeError(
                 f"Embedding model {model!r} is not downloaded yet. "

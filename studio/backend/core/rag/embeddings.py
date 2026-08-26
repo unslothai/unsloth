@@ -447,9 +447,19 @@ def _get(model_name: str | None = None):
                 model_kwargs = dtype_kwargs("float32" if device == "cpu" else "float16"),
             )
             load_target = name
-            if local_only:
-                from utils.utils import hf_cache_snapshot_dir, hf_cache_snapshot_is_loadable
+            from utils.utils import hf_cache_snapshot_dir, hf_cache_snapshot_is_loadable
 
+            if not local_only and hf_cache_snapshot_is_loadable(name):
+                # Settings reported this model on-device off the same predicate, so
+                # handing SentenceTransformer the repo id here is what lets it reach
+                # the Hub for a revision published since, and fetch it during the
+                # first index. That is the invisible transfer the picker exists to
+                # replace, and it changes the vectors without changing the identity
+                # they are tagged with. Load the snapshot that was called cached.
+                snapshot = hf_cache_snapshot_dir(name)
+                if snapshot is not None:
+                    load_target = str(snapshot)
+            if local_only:
                 if download_pending and not hf_cache_snapshot_is_loadable(name):
                     raise EmbeddingModelDownloadRequiredError(
                         f"Embedding model {name!r} is not downloaded yet. "

@@ -88,10 +88,15 @@ test("the resolve runs before the save, not after it", () => {
       fn.indexOf("persist(trimmed, resolution"),
     "resolve decides, then the save records what it found",
   );
-  // Only the explicit override skips it.
+  // Only the explicit override skips it, and it persists no plan.
   assert.match(
     fn,
-    /if \(force\) \{\s*await persist\(trimmed, null, true, reservation\);/,
+    /if \(force\) \{[\s\S]*persist\(trimmed, null, true, reservation\)/,
+  );
+  const forceBranch = fn.slice(fn.indexOf("if (force) {"), fn.indexOf("let resolution"));
+  assert.ok(
+    !forceBranch.includes("resolveEmbeddingModel"),
+    "the force path must not re-enter the resolver before saving",
   );
 });
 
@@ -292,4 +297,16 @@ test("the rate estimator went with the bar it fed", () => {
   ]) {
     assert.ok(!VOICE_TAB.includes(dead), `${dead} is unused now`);
   }
+});
+
+test("a force save re-resolves even though the model string did not change", () => {
+  // Save anyway on the model already saved leaves savedModel identical, so the
+  // effect keyed on it never re-runs and nothing restores the plan the apply
+  // cleared. The backend still marks an uncached model pending, so the row would
+  // sit with no Download while the loader refuses to index.
+  assert.match(
+    SECTION,
+    /if \(await persist\(trimmed, null, true, reservation\)\) \{\s*setResolveNonce\(\(n\) => n \+ 1\);/,
+  );
+  assert.match(SECTION, /\}, \[savedModel, hfToken, resolveNonce\]\);/);
 });

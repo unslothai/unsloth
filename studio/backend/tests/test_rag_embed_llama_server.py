@@ -1335,3 +1335,44 @@ def test_a_posix_path_is_untouched_by_the_normalization(tmp_path):
     d.mkdir()
     (d / "bge.gguf").write_bytes(b"")
     assert Path(LlamaServerBackend._resolve_local_gguf(str(d))).name == "bge.gguf"
+
+
+def test_a_stand_in_quant_does_not_retire_the_pending_marker(monkeypatch, tmp_path):
+    """The advertised transfer has not landed: reaching the relaxed pass means the
+    configured variant is absent, so what gets served is a leftover from an earlier
+    setting. Clearing the marker on it would pin the model to that quant for good."""
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    cleared = []
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda model: cleared.append(model))
+    _seed_cache(tmp_path / "hub", repo, ["pending-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+
+    assert backend._resolve_model_path().endswith("pending-Q8_0.gguf")
+    assert cleared == [], "a stand-in quant is not the transfer that was advertised"
+
+
+def test_the_planned_variant_landing_retires_the_pending_marker(monkeypatch, tmp_path):
+    """The other half: the configured variant in the preferred repo IS what the
+    picker advertised, so the marker has been answered and must not outlive it."""
+    import utils.embedding_model_settings as ems
+
+    repo = "org/pending-GGUF"
+    cleared = []
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/pending")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: repo)
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+    monkeypatch.setattr(ems, "clear_stored_download_pending", lambda model: cleared.append(model))
+    _seed_cache(tmp_path / "hub", repo, ["pending-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    backend = LlamaServerBackend()
+
+    assert backend._resolve_model_path().endswith("pending-F16.gguf")
+    assert cleared == ["org/pending"]

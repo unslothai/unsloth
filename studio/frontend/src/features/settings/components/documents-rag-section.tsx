@@ -58,6 +58,9 @@ export function DocumentsRagSection(): ReactElement {
   const embeddingModelError = saveError ?? loadFailure;
   // Set after a 409 (unverifiable model); "Save anyway" applies to that pick only.
   const [forceCandidate, setForceCandidate] = useState<string | null>(null);
+  /** Bumped when a save leaves the model string unchanged, which the effect
+   * below keys on and would otherwise not re-run for. */
+  const [resolveNonce, setResolveNonce] = useState(0);
   const [isSavingEmbeddingModel, setIsSavingEmbeddingModel] = useState(false);
   // What /resolve last said about the saved model: drives the status line and
   // whether the action row offers Download.
@@ -116,7 +119,7 @@ export function DocumentsRagSection(): ReactElement {
     return () => {
       live = false;
     };
-  }, [savedModel, hfToken]);
+  }, [savedModel, hfToken, resolveNonce]);
 
   /** Persist the pick, recording the GGUF repo /resolve named so the loader
    * opens what was downloaded rather than re-deriving a name. */
@@ -179,7 +182,14 @@ export function DocumentsRagSection(): ReactElement {
     setResolution(null);
     try {
       if (force) {
-        await persist(trimmed, null, true, reservation);
+        // A force save can leave the model string exactly as it was, so the
+        // savedModel effect does not re-run and nothing restores the plan this
+        // call cleared. The backend still marks an uncached model pending, so
+        // without a re-resolve the row offers no Download while the loader
+        // refuses to index. Ask for one explicitly.
+        if (await persist(trimmed, null, true, reservation)) {
+          setResolveNonce((n) => n + 1);
+        }
         return;
       }
       let resolution: EmbeddingModelResolution;

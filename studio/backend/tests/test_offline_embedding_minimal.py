@@ -1074,3 +1074,48 @@ def test_a_snapshot_linking_to_an_unfinished_blob_is_still_pending(hf_cache):
     weights.symlink_to(snapshot.parent.parent / "blobs" / "deadbeef")
 
     assert hf_cache_snapshot_is_loadable("org/dangling") is False
+
+
+def test_get_online_loads_the_snapshot_settings_called_cached(hf_cache, monkeypatch):
+    """Settings reports on-device from `hf_cache_snapshot_is_loadable`, so handing
+    SentenceTransformer the repo id is what lets it fetch a revision published
+    since and change the vectors without changing the identity they carry. The
+    picker exists to replace exactly that transfer."""
+    from core.rag import embeddings
+
+    snapshot = _make_cache(
+        hf_cache, "org/fresh", {"modules.json": MODULES_JSON, "model.safetensors": "x"}
+    )
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setattr(embeddings, "_model", None, raising = False)
+    monkeypatch.setattr(embeddings, "_name", None, raising = False)
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda name, local_only = False: None)
+    captured = {}
+    _install_fake_sentence_transformers(monkeypatch, captured)
+
+    embeddings._get("org/fresh")
+
+    assert captured["name"] == str(snapshot)
+
+
+def test_an_uncached_model_online_still_loads_by_repo_id(monkeypatch):
+    """The pin above must not turn a first-ever load into a failure: with nothing
+    cached there is no snapshot to prefer, so the repo id still goes to the Hub."""
+    from core.rag import embeddings
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setattr(embeddings, "_model", None, raising = False)
+    monkeypatch.setattr(embeddings, "_name", None, raising = False)
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda name, local_only = False: None)
+    captured = {}
+    _install_fake_sentence_transformers(monkeypatch, captured)
+
+    embeddings._get("org/never-fetched-xyz")
+
+    assert captured["name"] == "org/never-fetched-xyz"
