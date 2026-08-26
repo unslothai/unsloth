@@ -2496,17 +2496,40 @@ def _canonical_target_id(target_id: str) -> str:
     return resolve_cached_repo_id_case(identifier)
 
 
+def _mlx_stack_being_replaced(capabilities: dict[str, Any]) -> bool:
+    """Whether self-heal can still swap this process's MLX stack out from under it.
+
+    Every candidate probe imports mlx-vlm, and an import taken during the reinstall pins the
+    modules it is about to supersede, which is why the capability probe answers from distribution
+    metadata rather than importing. Only the reason that means the stack was measured unusable
+    asks further, mirroring how the hardware verdict holds Train back over the same window.
+
+    A stack nothing is going to replace is described as usual, whether it is missing, below the
+    minimum with the repair opted out or already finished, or simply too old for the speculative
+    API: the rows are what tell the user why each drafter cannot run, and an empty list would not.
+    """
+    if capabilities["reason"] != "runtime_unavailable":
+        return False
+    try:
+        from utils.mlx_repair import mlx_repair_in_flight
+        return mlx_repair_in_flight()
+    except Exception:
+        # A repair that cannot even be asked about is one nothing should be withheld for.
+        return False
+
+
 def mlx_speculative_options(target_id: str) -> dict[str, Any]:
     """Speculative drafters usable with ``target_id``, with local paths redacted.
 
-    A runtime without speculative support still answers, with every candidate
-    carrying the reason it cannot run rather than being omitted.
+    A runtime without speculative support still answers, with every candidate carrying the reason
+    it cannot run rather than being omitted -- unless a repair is about to replace that runtime,
+    where reading it to name them is what the reason above already rules out.
     """
     capabilities = mlx_speculative_runtime_capabilities()
     target_id = _canonical_target_id(target_id)
     target_config = _read_config(target_id)
     rows = []
-    if target_config is not None:
+    if target_config is not None and not _mlx_stack_being_replaced(capabilities):
         args = (target_id, target_config, capabilities, ENABLED_MLX_SPECULATIVE_METHODS)
         # Read from the checkpoint itself, not from whether this runtime could drive it, so
         # a runtime without speculative support does not become advice to download a head

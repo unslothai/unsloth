@@ -5006,6 +5006,66 @@ def test_at_most_one_proposal_carries_the_recommendation_badge(
     assert [row["repo_id"] for row in candidates if row["recommended"]] == expected
 
 
+@pytest.mark.parametrize(
+    ("runtime_reason", "repair_in_flight", "probed"),
+    [
+        # Self-heal is still coming: importing now pins the modules it is about to supersede.
+        ("runtime_unavailable", True, False),
+        # Below the minimum with the repair opted out or already finished. Nothing will replace
+        # this stack, so the rows are what tell the user why each drafter cannot run.
+        ("runtime_unavailable", False, True),
+        # Importable, but without the speculative API. Never a repair window at all.
+        ("runtime_missing_speculative_api", True, True),
+    ],
+)
+def test_a_stack_being_replaced_is_not_imported_to_describe_a_target(
+    monkeypatch, runtime_reason, repair_in_flight, probed
+):
+    """The capability probe reads distribution metadata rather than importing, for a reason the
+    candidate rows have to keep: an import taken during the repair outlives it. Only a repair that
+    is actually coming withholds them, or a host that can never run one is told nothing at all.
+    """
+    import utils.mlx_repair as mlx_repair
+
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(mlx_repair, "mlx_repair_in_flight", lambda: repair_in_flight)
+
+    touched = []
+    monkeypatch.setattr(spec, "_canonical_target_id", lambda t: t)
+    monkeypatch.setattr(spec, "_read_config", lambda _t: {"model_type": "qwen3_5"})
+    monkeypatch.setattr(spec, "mlx_target_snapshot_path", lambda _t: None)
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda *_a: 2048)
+    monkeypatch.setattr(spec, "_dynamic_materialization_bytes", lambda *_a: 0)
+    monkeypatch.setattr(
+        spec, "_cached_drafter_configs",
+        lambda: iter([(
+            "org/Drafter",
+            {"model_type": "qwen3", "dflash_config": {"projector_type": "dspark"}},
+            Path("/nowhere"),
+            2048,
+        )]),
+    )
+    monkeypatch.setattr(
+        spec, "_target_method_contract_available",
+        lambda *_a: touched.append("import") or True,
+    )
+    monkeypatch.setattr(
+        spec, "mlx_speculative_runtime_capabilities",
+        lambda: {
+            "common": False,
+            "methods": dict.fromkeys(spec.MLX_SPECULATIVE_METHODS, False),
+            "reason": runtime_reason,
+        },
+    )
+
+    options = spec.mlx_speculative_options("mlx-community/Qwen3.8-27B-8bit")
+    assert options["runtime_reason"] == runtime_reason
+    assert bool(touched) is probed
+    # A described target still names the drafters it could take; an unprobed one names none.
+    assert bool(options["candidates"]) is probed
+
+
 def test_every_recommendation_is_reachable_from_a_target_shape():
     """A seed keyed to something no shape produces is dead weight: nothing ever matches it, so
     the checkpoint it names is never offered and the mistake stays invisible.
