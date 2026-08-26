@@ -452,10 +452,8 @@
               } catch (_) {}
             }
           }
-          // Keep the assistant turn even when the reply was reasoning-only.
-          // Dropping it leaves two consecutive user messages, and the next
-          // prompt is then discarded to keep roles alternating; reasoning_content
-          // rides along for the templates that replay it.
+          // A reasoning-only reply still needs its turn: without it the next
+          // prompt repeats a role and is dropped to keep alternation.
           if (acc || reasoning) {
             const reply = { role: "assistant", content: acc };
             if (reasoning) reply.reasoning_content = reasoning;

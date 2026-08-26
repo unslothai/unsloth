@@ -128,21 +128,17 @@ def test_page_renders_friendly_busy_message(client):
 
 
 def test_page_renders_reasoning_stream(client):
-    # The page used to read only delta.content, so every reasoning_content chunk
-    # was dropped and a thinking model rendered an empty bubble.
+    # The page read only delta.content, so a thinking model's reasoning
+    # vanished and a cap spent on it left an empty bubble.
     text = client.get(f"/p/demorun?k={_sig('demorun')}").text
     assert "delta.reasoning_content" in text
     assert 'choice.finish_reason === "length"' in text
-    # Reasoning counts against the preview cap, so a reply that spent it all on
-    # thinking must say so instead of showing nothing.
     assert "Reply cut off at the preview length limit." in text
 
 
 def test_page_keeps_assistant_turn_for_reasoning_only_reply(client):
-    # A reasoning-only reply must still push an assistant turn. Without one the
-    # next prompt is a second consecutive user message, which format_chat_prompt
-    # drops to keep roles alternating -- the visitor's follow-up is answered as
-    # if it had never been sent.
+    # Without the assistant turn the next prompt repeats a role and
+    # format_chat_prompt drops it, so the follow-up is never answered.
     text = client.get(f"/p/demorun?k={_sig('demorun')}").text
     assert "if (acc || reasoning)" in text
     assert "reply.reasoning_content = reasoning" in text
