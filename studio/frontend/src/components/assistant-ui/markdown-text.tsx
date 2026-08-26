@@ -553,6 +553,7 @@ function FenceBlock({
     mode !== "off",
     Boolean(isIncomplete),
     languageToken,
+    source.length,
     warm,
   );
 
