@@ -61,6 +61,10 @@ _SECRET_KEYS = (
 # OPENAI_API_KEY / db_password, the shape an env dump or argv line carries. The
 # trailing \b stays, so eos_token_id and secret_sauce_path are left alone.
 _KEY_START = r"(?<![A-Za-z0-9])"
+_QUERY_SECRET_KEYS = (
+    r"token|api[-_]key|apikey|sig|signature|x-amz-signature|"
+    r"x-amz-credential|x-amz-security-token|x-goog-signature|access_token"
+)
 
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # Hugging Face
@@ -89,10 +93,7 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # storage URL it names the object, and blanking it hides WHICH download
     # failed. Google's ?key=AIza... is caught by the AIza rule above.
     (
-        re.compile(
-            r"(?i)([?&](?:token|api[-_]key|apikey|sig|signature|x-amz-signature|"
-            r"x-amz-credential|x-amz-security-token|x-goog-signature|access_token)=)[^&\s\"']+"
-        ),
+        re.compile(r"(?i)([?&](?:" + _QUERY_SECRET_KEYS + r")=)[^&\s\"']+"),
         r"\1" + REDACTED,
     ),
 )
@@ -193,8 +194,15 @@ _INLINE_PLAIN_SECRET_RE = re.compile(
     + _SECRET_KEYS
     + r")\b[\"']?\s*[:=]\s*(?![|>\"'])(?P<value>\S.*)$"
 )
+_CONTINUED_QUERY_SECRET_RE = re.compile(r"(?i)[?&](?:" + _QUERY_SECRET_KEYS + r")=\s*$")
 _OMITTED_CONTEXT_RE = re.compile(
-    r"(?i)" + _KEY_START + r"(?:(?:" + _SECRET_KEYS + r")|(?:set-)?cookie)\b[\"']?\s*[:=]"
+    r"(?i)(?:"
+    + _KEY_START
+    + r"(?:(?:"
+    + _SECRET_KEYS
+    + r")|(?:set-)?cookie)\b[\"']?\s*[:=]|[?&](?:"
+    + _QUERY_SECRET_KEYS
+    + r")=)"
 )
 _OMITTED_QUOTED_START_RE = re.compile(
     r"(?i)(?:"
@@ -750,6 +758,12 @@ class StreamingLogRedactor:
             self._plain_explicit_continuation = self._ends_with_unescaped_backslash(
                 physical_context
             )
+            return redacted
+
+        if _CONTINUED_QUERY_SECRET_RE.search(physical_context):
+            self._plain_key_indent = len(re.match(r"[ \t]*", physical_context).group(0))
+            self._plain_has_value = False
+            self._plain_explicit_continuation = False
             return redacted
 
         inline_flag = _FLAG_RE.search(physical_context)

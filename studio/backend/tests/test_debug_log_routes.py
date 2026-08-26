@@ -378,6 +378,24 @@ def test_export_masks_classified_environment_values_in_structured_logs(client):
     assert '"request_id":"req-42"' in exported
 
 
+@pytest.mark.parametrize(
+    "parameter",
+    ["token", "x-amz-signature", "x-goog-signature"],
+)
+def test_export_masks_query_credentials_wrapped_onto_the_next_record(client, parameter):
+    secret = "plainopaquecredential123456"
+    path = _seed_server_log(
+        f"https://storage.example/object?{parameter}=\n  {secret}\nordinary: kept\n"
+    )
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert secret not in exported
+    assert "  <redacted>" in exported
+    assert "ordinary: kept" in exported
+
+
 def test_export_preserves_siblings_after_an_indented_quoted_secret_key(client):
     secret = "correct-horse-battery-staple"
     path = _seed_server_log(
