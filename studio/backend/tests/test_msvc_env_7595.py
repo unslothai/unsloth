@@ -244,6 +244,31 @@ def test_rocm_clang_cl_present_probes_the_platlib_path(tmp_path, monkeypatch):
 # ── gate_torch_compile_on_windows: the arm the workers actually call ──
 
 
+def test_toolchain_summary_separates_no_vs_from_a_partial_sdk(tmp_path, monkeypatch):
+    """The two look identical in a bug report otherwise. Zero dirs is no Visual Studio; several
+    dirs with no stdlib.h among them is an SDK missing pieces, which the gate cannot tell apart
+    but a reader can once the counts are in the log."""
+    _fake_triton(monkeypatch, [], cc = "clang-cl.exe")
+    monkeypatch.delenv("INCLUDE", raising = False)
+    summary = _msvc_env._toolchain_summary()
+    assert "compiler=clang-cl.exe" in summary
+    assert "include dirs=0" in summary
+    assert "INCLUDE=unset" in summary
+
+    _fake_triton(monkeypatch, [str(tmp_path), str(tmp_path)], cc = "clang-cl.exe")
+    monkeypatch.setenv("INCLUDE", str(tmp_path))
+    summary = _msvc_env._toolchain_summary()
+    assert "include dirs=2" in summary
+    assert "INCLUDE=set" in summary
+
+
+def test_toolchain_summary_never_raises(monkeypatch):
+    """It is evaluated as an argument to the warning, after TORCHDYNAMO_DISABLE is already set."""
+    monkeypatch.setitem(sys.modules, "triton.runtime.build", None)
+    monkeypatch.setitem(sys.modules, "triton.windows_utils", None)
+    assert "compiler=unknown" in _msvc_env._toolchain_summary()
+
+
 def test_gate_survives_a_probe_that_raises(monkeypatch):
     """The probe runs at worker startup, so an exception out of it kills the worker. This gate
     exists to stop a crash; it must not become one. Leave torch.compile alone and carry on."""

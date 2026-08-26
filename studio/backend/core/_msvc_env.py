@@ -86,6 +86,29 @@ def _needs_msvc_headers() -> bool:
     return bool(is_msvc(cc) or is_clang_cl(cc))
 
 
+def _toolchain_summary() -> str:
+    """What the probe saw, short enough to sit in the warning a reporter pastes into an issue.
+
+    The counts are the diagnostic: 0 include dirs means no Visual Studio at all, while several
+    dirs and still no `stdlib.h` means a partial SDK, which looks identical from the outside.
+    """
+    try:
+        from triton.runtime.build import get_cc  # noqa: PLC0415
+        cc = os.path.basename(get_cc())
+    except Exception:  # noqa: BLE001
+        cc = "unknown"
+    try:
+        from triton.windows_utils import find_msvc_winsdk  # noqa: PLC0415
+        _, inc_dirs, _ = find_msvc_winsdk()
+    except Exception:  # noqa: BLE001
+        inc_dirs = []
+    logger.debug("Triton include dirs: %s", list(inc_dirs))
+    return (
+        f"compiler={cc}, Triton include dirs={len(inc_dirs)}, "
+        f"INCLUDE={'set' if os.environ.get('INCLUDE') else 'unset'}"
+    )
+
+
 def crt_headers_reachable() -> bool:
     """Whether a Triton compile in THIS process will find the CRT headers. True off win32."""
     if sys.platform != "win32":
@@ -130,5 +153,7 @@ def gate_torch_compile_on_windows(log: logging.Logger) -> None:
         "directly launched Triton kernels still need the toolchain. "
         "Install Visual Studio Build Tools (C++ workload): winget "
         'install Microsoft.VisualStudio.2022.BuildTools --override "--add '
-        'Microsoft.VisualStudio.Workload.VCTools --includeRecommended".'
+        'Microsoft.VisualStudio.Workload.VCTools --includeRecommended". '
+        "Probe saw: %s.",
+        _toolchain_summary(),
     )
