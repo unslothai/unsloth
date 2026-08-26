@@ -528,20 +528,16 @@ def test_tensor_parallel_split_still_declines(extra_args):
 
 
 @pytest.mark.parametrize(
-    "extra_args,env",
-    [
-        (["--split-mode", "none"], None),
-        (["-sm", "none"], None),
-        (None, {"LLAMA_ARG_SPLIT_MODE": "none"}),
-    ],
+    "extra_args",
+    [["--split-mode", "none"], ["-sm", "none"], ["-sm=none"]],
 )
-def test_split_mode_none_plans_against_one_card(extra_args, env):
+def test_split_mode_none_plans_against_one_card(extra_args):
     """-sm none is a device list of ONE, not a reason to decline: llama.cpp
     clears model->devices and keeps only devices[main_gpu] (llama.cpp:288-299).
     Planning it as a two-card pool was the bug; planning it as the single card is
     the case this planner has the most evidence for."""
     two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
-    got = _plan(_Stub(), gpus = two_cards, extra_args = extra_args, env = env)
+    got = _plan(_Stub(), gpus = two_cards, extra_args = extra_args)
     assert got is not None
 
     # The proof it used ONE card: the same fixture on a genuine single card
@@ -934,6 +930,11 @@ def test_the_seam_computes_a_per_layer_kv_vector():
     b._sliding_window_pattern = [False, True, True, True, True, True]
     b._n_kv_heads_by_layer = None
     b._shared_kv_layers = None
+    # _estimate_kv_cache_bytes picks its path from these before it looks at the
+    # window; None/None means path 3, the one this vector describes.
+    b._kv_lora_rank = None
+    b._ssm_inner_size = None
+    b._full_attention_interval = None
 
     weights = b._kv_layer_weights(131072)
     assert len(weights) == 6
@@ -963,6 +964,9 @@ def _swa_backend(n_layers = 6, shared = None):
     b._sliding_window_pattern = [i % 2 == 1 for i in range(n_layers)]
     b._n_kv_heads_by_layer = None
     b._shared_kv_layers = shared
+    b._kv_lora_rank = None
+    b._ssm_inner_size = None
+    b._full_attention_interval = None
     return b
 
 
@@ -1020,3 +1024,183 @@ def test_the_seam_passes_the_launch_geometry_to_the_kv_vector():
     assert "n_parallel=n_parallel" in compact
     assert "kv_unified=planned_kv_unified" in compact
     assert "n_ubatch=_effective_ubatch" in compact
+
+
+def test_an_inherited_split_mode_none_declines():
+    """An env -sm none may never reach the child: on a layer-split launch
+    load_model reconciles the child env against its own decision and pops
+    LLAMA_ARG_SPLIT_MODE (plus the paired LLAMA_ARG_TENSOR_SPLIT) whenever the
+    inherited mode is not "layer" (llama_cpp.py:20452-20458), so the child runs
+    llama.cpp's default layer split across every card. Budgeting the single main
+    GPU there plans against a mode the child never sees AND skips the per-device
+    check entirely, since _per_device_shortfall short-circuits on one device.
+    argv is the only spelling that provably survives."""
+    two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
+    assert _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_SPLIT_MODE": "none"}) is None
+    # argv still plans, and still against one card.
+    assert _plan(_Stub(), gpus = two_cards, extra_args = ["-sm", "none"]) is not None
+    # An argv override of the env is argv, so it plans.
+    assert (
+        _plan(
+            _Stub(),
+            gpus = two_cards,
+            extra_args = ["-sm", "none"],
+            env = {"LLAMA_ARG_SPLIT_MODE": "none"},
+        )
+        is not None
+    )
+    # Not vacuous, and an inherited "layer" is the default and costs nothing.
+    assert _plan(_Stub(), gpus = two_cards) is not None
+    assert _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_SPLIT_MODE": "layer"}) is not None
+
+
+def test_a_reconciliation_still_strips_a_non_layer_split_mode_env():
+    """Reachability anchor for the decline above. If load_model ever stops
+    scrubbing the inherited mode, the env form becomes plannable again and this
+    is the test that should fail and say so."""
+    import inspect
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    compact = "".join(src.split())
+    assert 'if_inherited_smand_inherited_sm!="layer":' in compact
+    assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)' in compact
+
+
+@pytest.mark.parametrize("value", ["nan,1", "inf,1", "1,nan", "-nan,1", "infinity,1"])
+def test_a_non_finite_tensor_split_declines_instead_of_raising(value):
+    """float() accepts "nan"/"inf", and NaN then passes BOTH remaining guards:
+    every comparison against NaN is false, so `p < 0` misses it, and sum() of a
+    NaN list is NaN, which is not <= 0. It reaches int(round(p * scale)), where
+    NaN raises ValueError and inf raises OverflowError -- and no try in
+    load_model encloses the _planned_tensor_spill call, so it aborts the load.
+    llama.cpp merely degenerates on the same value (std::stof takes it, the
+    prefix sums go NaN, and upper_bound then puts every layer on device 0), so a
+    crash is never the right answer here."""
+    from core.inference.llama_cpp import _extra_args_tensor_split
+
+    assert _extra_args_tensor_split(["-ts", value], {}) is None
+    two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
+    # Declines (unparseable -ts is not "no -ts"), and above all does not raise.
+    assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", value]) is None
+    assert _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_TENSOR_SPLIT": value}) is None
+    # Not vacuous: finite shares still parse and still plan.
+    assert _extra_args_tensor_split(["-ts", "3,1"], {}) == [3.0, 1.0]
+    assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "3,1"]) is not None
+
+
+def test_the_vector_refuses_a_cache_the_estimator_prices_on_another_path():
+    """_estimate_kv_cache_bytes picks its path BEFORE it looks at the window, and
+    the earlier paths price a different quantity: path 1 (MLA) caches one
+    compressed K latent per layer with no V and no window/full split, path 2
+    (hybrid recurrent) caches only 1 in full_attention_interval layers. A
+    window-shaped vector against either total is a different model of the cache,
+    not an approximation, so it must answer [] and let the planner abstain.
+
+    Not hypothetical for path 1: dots3note reads KV_LORA_RANK and
+    ATTENTION_SLIDING_WINDOW(_PATTERN) in the same loader
+    (models/dots3note.cpp:26, 35-38). Path 2 is the recurrent-hybrid hole -- the
+    abstain in _per_device_shortfall is `uneven_cache and not weights`, so a
+    hybrid that ever produced a vector would walk past it, and the device loop
+    never places layout.recurrent_bytes on the layers that own the state."""
+    b = _swa_backend()
+    assert b._kv_layer_weights(131072), "the plain SWA model still answers"
+
+    mla = _swa_backend()
+    mla._kv_lora_rank = 512
+    assert mla._kv_layer_weights(131072) == []
+
+    hybrid = _swa_backend()
+    hybrid._ssm_inner_size = 4096
+    hybrid._full_attention_interval = 4
+    assert hybrid._kv_layer_weights(131072) == []
+
+    # One of the two alone is not the hybrid path and must not cost the vector.
+    half = _swa_backend()
+    half._ssm_inner_size = 4096
+    assert half._kv_layer_weights(131072)
+
+
+def test_a_recurrent_hybrid_stays_on_the_abstain_path():
+    """The end state item 5 asks for, asserted where it matters: with no vector
+    the recurrent abstain in _per_device_shortfall fires, so recurrent_bytes is
+    never silently left unplaced by the device loop."""
+    from core.inference.offload_planner import PlanOptions, _per_device_shortfall
+
+    layout = ModelLayout(
+        arch = "qwen35moe",
+        n_layers = 4,
+        n_attention_layers = 1,
+        blocks = tuple(
+            BlockLayout(index = i, spillable_bytes = GIB, resident_bytes = GIB // 4)
+            for i in range(4)
+        ),
+        lm_head_bytes = GIB // 2,
+        kv_bytes_per_token_f16 = 65536,
+        recurrent_bytes = 2 * GIB,
+        complete = True,
+    )
+    why = _per_device_shortfall(
+        layout,
+        PlanOptions(),
+        32768,
+        set(),
+        False,
+        [8 * GIB, 8 * GIB],
+        quantised = False,
+        kv_bytes_floor = 0,
+        kv_layer_weights = (),
+    )
+    assert why is not None and "recurrent" in why
+
+
+def test_flash_disabled_v_padding_reaches_the_layer_weights():
+    """With flash attention OFF llama.cpp cannot keep a ragged V cache: every
+    layer's V is padded to hparams.n_embd_v_gqa_max() over the whole model, which
+    is exactly what _estimate_kv_cache_bytes charges via _max_kv_value_width. That
+    flattens the V half to a constant while K stays per-layer, so an unpadded
+    vector prices a ratio the total does not have.
+
+    This is the ONLY case on this path, not an edge case: load_model pins
+    planned_flash_attn = False unconditionally (llama_cpp.py:16690) so the
+    FA-off recovery cannot OOM, so the padded branch is the one every spill plan's
+    total is built from."""
+    b = _swa_backend()
+    # SWA layers wider than global ones, so the model-wide max is the SWA width
+    # and padding actually moves: n_embd_v_gqa_max = 8 * 256.
+    b._kv_key_length_swa = 256
+    b._kv_value_length_swa = 256
+
+    assert b._max_kv_value_width(128, 256) == 8 * 256
+
+    on = b._kv_layer_weights(131072, flash_attn = True)
+    off = b._kv_layer_weights(131072, flash_attn = False)
+    assert on and off
+    assert off != on, "the padding has to reach the vector"
+
+    # Exactly the estimator's own per-layer arithmetic, f16 both axes.
+    full_cells, swa_cells = 131072, 1024 + 512
+    pad = 8 * 256
+    glob = (8 * 128 * 2 + pad * 2) * full_cells      # layer 0: global
+    swa = (8 * 256 * 2 + pad * 2) * swa_cells        # layer 1: sliding window
+    assert off[0] == glob and off[1] == swa
+
+    # A quantised K cache floors bpe_v at f16 on the same branch, and with V
+    # constant across layers that asymmetry moves the ratio too.
+    from core.inference.llama_cpp import _kv_bytes_per_elem
+
+    bpe_k = _kv_bytes_per_elem("q8_0")
+    q8 = b._kv_layer_weights(131072, flash_attn = False, cache_type_kv = "q8_0")
+    assert q8 != off
+    assert q8[0] == int((8 * 128 * bpe_k + pad * 2) * full_cells)
+
+
+def test_the_seam_passes_the_flash_state_and_cache_type_to_the_kv_vector():
+    """Reachability: both knobs must travel from the launch path, beside the
+    swa_full/parallel/unified/ubatch ones."""
+    import inspect
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    call = src[src.index('"kv_layer_weights"') :][:600]
+    compact = "".join(call.split())
+    assert "flash_attn=planned_flash_attn" in compact
+    assert "cache_type_kv=cache_type_kv" in compact
