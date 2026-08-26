@@ -684,6 +684,18 @@ with sync_playwright() as p:
     # 60s default (was 30s): the macos-14 runners are slow enough that
     # renders/webfonts/lazy routes routinely crowd 30s.
     page.set_default_timeout(60_000)
+    # Emulate a slow CPU, so a fat build machine renders like the 4 vCPU boxes
+    # plenty of users and every Kaggle session actually run. Not decoration:
+    # the rapid-submit step passes here unthrottled and fails at 4x and 8x, and
+    # that is how the parked-send bug this driver kept reporting on Kaggle was
+    # finally reproduced away from it. Off unless set, so an ordinary lane is
+    # byte for byte unchanged.
+    _throttle = float(os.environ.get("STUDIO_UI_CPU_THROTTLE", "0") or 0)
+    if _throttle > 1:
+        ctx.new_cdp_session(page).send(
+            "Emulation.setCPUThrottlingRate", {"rate": _throttle}
+        )
+        info(f"CPU throttled {_throttle}x")
     page_errors = []
     page.on("pageerror", lambda e: page_errors.append(str(e)))
     console_errors: list[str] = []

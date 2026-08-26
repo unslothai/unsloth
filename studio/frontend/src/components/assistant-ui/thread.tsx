@@ -4187,11 +4187,22 @@ const Composer: FC<{
     dismissWaitToast();
     if (text.trim().length > 0 || attachments.length > 0) {
       clearStoredDraft();
-      if (forceQueue) {
-        // Wait mode read now, not carried from the parked submit: a run can
-        // start while the settings load, and ignoring it would dispatch on top
-        // of the response already streaming.
-        const waitForCurrentRun = aui.thread().getState().isRunning;
+      // Wait mode read now, not carried from the parked submit: a run can
+      // start while the settings load, and ignoring it would dispatch on top
+      // of the response already streaming.
+      const waitForCurrentRun =
+        aui.thread().getState().isRunning ||
+        hasPreStreamRunReservation(preStreamThreadIds);
+      // A run started while the send was parked means this is now the same
+      // situation handleSubmit queues in, whether or not the chord asked for
+      // it. Sending regardless is how a message vanished: measured on a
+      // throttled browser, a follow-up parked on the settings gate 786 ms
+      // after the chat's first send was released 236 ms later with the first
+      // turn still streaming, took this line, and was refused by the runtime
+      // -- no queue entry, no send, and the wait toast already dismissed
+      // above, so nothing on screen said so. The comment on the branch below
+      // had the reason exactly right; it just did not apply it here.
+      if (forceQueue || waitForCurrentRun) {
         // The chord's own two branches from handleSubmit, in the same order. A
         // long paste lives in an attachment, so queueing the text alone queues
         // nothing at all when that is all there is.
@@ -4221,6 +4232,7 @@ const Composer: FC<{
     queueComposerText,
     queuePastedTextPrompt,
     sendReservedComposer,
+    preStreamThreadIds,
   ]);
 
   // Drop any queued send + toast on unmount (e.g. thread switch).
