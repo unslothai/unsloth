@@ -4213,7 +4213,10 @@ class TestApiMonitorProviderAndCompletionStreams:
             async def is_disconnected(self):
                 return False
 
-        async def fake_send(*_args, **_kwargs):
+        upstream_bodies = []
+
+        async def fake_send(_client, built_request, *_args, **_kwargs):
+            upstream_bodies.append(json.loads(built_request.content))
             return httpx.Response(200, content = b"")
 
         async def fake_items(*_args, **_kwargs):
@@ -4260,7 +4263,12 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor_id = monitor_id,
         )
         chunks = [chunk async for chunk in response.body_iterator]
-        return SimpleNamespace(chunks = chunks, body = "".join(chunks), monitor = monitor)
+        return SimpleNamespace(
+            chunks = chunks,
+            body = "".join(chunks),
+            monitor = monitor,
+            upstream_bodies = upstream_bodies,
+        )
 
     def test_passthrough_stream_preheader_dispatched_with_timeout(self, monkeypatch):
         async def _run():
@@ -5237,6 +5245,62 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_completions_stream_requests_usage_only_for_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = "/v1/completions")
+                method = "POST"
+
+                async def json(self):
+                    return {"prompt": "hi", "stream": True}
+
+                async def is_disconnected(self):
+                    return False
+
+            upstream_bodies = []
+
+            async def fake_send(_client, built_request, *_args, **_kwargs):
+                upstream_bodies.append(json.loads(built_request.content))
+                return httpx.Response(200, content = b"")
+
+            async def fake_items(*_args, **_kwargs):
+                yield (
+                    b'data: {"choices":[{"text":"ok","finish_reason":"stop"}]}\n\n'
+                    b'data: {"choices":[],"usage":{"prompt_tokens":3,'
+                    b'"completion_tokens":2,"total_tokens":5}}\n\n'
+                    b"data: [DONE]\n\n"
+                )
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
+                ),
+            )
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+
+            response = await openai_completions(Request(), current_subject = "test")
+            body = b"".join([chunk async for chunk in response.body_iterator])
+
+            assert upstream_bodies[0]["stream_options"]["include_usage"] is True
+            assert b'"usage"' not in body
+            [entry] = monitor.snapshot()
+            assert entry["prompt_tokens"] == 3
+            assert entry["completion_tokens"] == 2
+            assert entry["total_tokens"] == 5
+
+        asyncio.run(_run())
+
     def test_completions_non_streaming_post_error_finalizes_monitor(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -6047,6 +6111,26 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_passthrough_requests_usage_for_monitor_without_exposing_it(self, monkeypatch):
+        async def _run():
+            result = await self._run_passthrough_stream(
+                monkeypatch,
+                [
+                    'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
+                    'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+                    'data: {"id":"chatcmpl-test","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}',
+                ],
+            )
+
+            assert result.upstream_bodies[0]["stream_options"]["include_usage"] is True
+            assert '"usage"' not in result.body
+            [entry] = result.monitor.snapshot()
+            assert entry["prompt_tokens"] == 3
+            assert entry["completion_tokens"] == 2
+            assert entry["total_tokens"] == 5
+
+        asyncio.run(_run())
+
     def test_passthrough_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -6826,10 +6910,16 @@ class TestApiMonitorProviderAndCompletionStreams:
             async def fake_send(*_args, **_kwargs):
                 return httpx.Response(200, content = b"")
 
-            async def fake_items(*_args, **_kwargs):
+            async def fake_items(
+                *_args,
+                post_first_item_read_timeout_s = None,
+                **_kwargs,
+            ):
                 yield 'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}'
                 yield 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
-                await asyncio.Event().wait()  # upstream never closes
+                timeout = post_first_item_read_timeout_s()
+                await asyncio.sleep(timeout)
+                raise httpx.ReadTimeout("upstream never closed")
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)

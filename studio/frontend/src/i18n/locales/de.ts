@@ -891,9 +891,9 @@ export const de = {
           "Alles Folgende wird aus Ihrem eigenen Verlauf berechnet. Es wird nichts erfasst oder an Unsloth gesendet.",
         retry: "Erneut versuchen",
         privacyNote:
-          "Die Statistiken werden aus dem Chat- und Trainingsverlauf berechnet, der in Ihrer Unsloth-Installation gespeichert ist. Es wird nichts erfasst und nichts an Unsloth oder Dritte gesendet.",
+          "Die Statistiken werden aus dem lokalen Chat-, API-Nutzungs- und Trainingsverlauf Ihrer Unsloth-Installation berechnet. API-Eingaben, -Antworten und -Schlüssel werden dafür nie gespeichert. Nichts wird an Unsloth oder Dritte gesendet.",
         emptyChats:
-          "Noch keine Chats. Starten Sie ein Gespräch, dann erscheinen hier Ihre Statistiken.",
+          "Noch keine Chat- oder API-Nutzung. Starten Sie ein Gespräch oder senden Sie eine authentifizierte lokale API-Anfrage.",
         lifetimeTokens: "Tokens insgesamt",
         peakTokens: "Aktivster Tag",
         longestChat: "Längster Chat",
@@ -915,6 +915,9 @@ export const de = {
         totalMessages: "Nachrichten insgesamt",
         tokensIn: "Gesendete Tokens",
         tokensOut: "Erzeugte Tokens",
+        totalTokens: "Tokens insgesamt",
+        studioChatTokens: "Studio-Chat-Tokens",
+        apiTokens: "API-Tokens",
         cachedTokens: "Zwischengespeicherte Tokens",
         cachedValue: "{tokens} ({percent} % der Eingabe)",
         avgTokensPerChat: "Durchschnittliche Tokens pro Chat",

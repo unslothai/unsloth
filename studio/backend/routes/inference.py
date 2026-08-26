@@ -1082,6 +1082,7 @@ def _is_openai_usage_only_sse(line: str) -> bool:
 
 
 _OPENAI_PASSTHROUGH_TERMINAL_GRACE_S = 2.0
+_OPENAI_INTERNAL_USAGE_GRACE_S = 0.25
 _SSE_DONE_LINE = "data: [DONE]"
 _SSE_DONE_CHUNK = "data: [DONE]\n\n"
 
@@ -2654,9 +2655,11 @@ def _request_used_api_key(request: Any) -> bool:
     using Unsloth". Internal workflow keys (Deep Research, data recipes) are Studio
     itself and are excluded, or every research step would pop the API monitor open.
     """
-    # Total by construction: this only decides a monitor label and must never fail a
-    # load. Saved-secret authorization uses _request_has_api_key instead, narrowed by
-    # _request_is_internal_workflow where a Studio workflow needs its own connection.
+    # Total by construction: this must never fail a load. It also gates durable API
+    # usage receipts, so an indeterminate key origin must not attribute Studio's own
+    # workflow traffic to an external caller. Saved-secret authorization uses
+    # _request_has_api_key instead, narrowed by _request_is_internal_workflow where a
+    # Studio workflow needs its own connection.
     token = _request_api_key_token(request)
     if token is None:
         # keyless traffic is someone using Unsloth as an API server too
@@ -2666,7 +2669,7 @@ def _request_used_api_key(request: Any) -> bool:
         return not auth_storage.is_internal_api_key(token)
     except Exception:
         logger.debug("api_monitor.internal_key_probe_failed", exc_info = True)
-        return True
+        return False
 
 
 from state.tool_approvals import resolve_tool_decision
@@ -20073,6 +20076,13 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # honor stream_options.include_usage per event, while keeping SSE
             # framing and token bytes intact.
             _include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
+            # llama-server only emits the terminal usage chunk when asked. Always
+            # request it for internal accounting, then keep the caller's opt-in
+            # contract by filtering that chunk through _cmpl_stream_event_out.
+            upstream_body = dict(body)
+            upstream_stream_options = dict(body.get("stream_options") or {})
+            upstream_stream_options["include_usage"] = True
+            upstream_body["stream_options"] = upstream_stream_options
             from core.inference.llama_keepwarm import mark_response_failed
 
             client = httpx.AsyncClient(
@@ -20095,7 +20105,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             _direct_llama_request_started()
             try:
                 req = client.build_request(
-                    "POST", target_url, json = body, headers = {"Connection": "close"}
+                    "POST", target_url, json = upstream_body, headers = {"Connection": "close"}
                 )
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 # Same event the relay loop polls, so a forced swap ends the request during prefill
@@ -24784,6 +24794,20 @@ async def _anthropic_passthrough_stream(
     )
 
 
+def _sum_passthrough_attempt_stats(first: dict, retry: dict, selected: dict) -> dict:
+    """Keep selected content with the chronological attempts' aggregate stats."""
+    if not all(isinstance(item, dict) for item in (first, retry, selected)):
+        return selected
+    if not isinstance(first.get("usage"), dict) or not isinstance(retry.get("usage"), dict):
+        return selected
+    aggregate = _summed_tool_loop_stats(first, retry)
+    result = dict(selected)
+    result["usage"] = aggregate["usage"]
+    if "timings" in aggregate:
+        result["timings"] = aggregate["timings"]
+    return result
+
+
 async def _anthropic_passthrough_non_streaming(
     llama_backend,
     openai_messages,
@@ -24905,6 +24929,7 @@ async def _anthropic_passthrough_non_streaming(
             and nudge_enabled(nudge_tool_calls)
             and nudge_should_retry(data, _allowed_tools, _healing_tools)
         ):
+            first_data = data
             retry_body = {
                 **body,
                 "messages": _nudge_retry_messages(
@@ -24916,7 +24941,9 @@ async def _anthropic_passthrough_non_streaming(
                 if retry_resp.status_code == 200:
                     retry_data = retry_resp.json()
                     if response_has_promotable_calls(retry_data, _allowed_tools, openai_tools):
-                        data = retry_data
+                        data = _sum_passthrough_attempt_stats(first_data, retry_data, retry_data)
+                    else:
+                        data = _sum_passthrough_attempt_stats(first_data, retry_data, first_data)
             except (httpx.RequestError, ValueError) as exc:
                 logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
 
@@ -25760,6 +25787,10 @@ async def _openai_passthrough_stream_admitted(
         body = await _build_openai_passthrough_body_async(
             payload, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
         )
+        client_wants_usage = _wants_stream_usage(payload)
+        upstream_stream_options = dict(body.get("stream_options") or {})
+        upstream_stream_options["include_usage"] = True
+        body["stream_options"] = upstream_stream_options
         # Text-form tool calls from small models get promoted to structured calls on
         # the way back (declared client tools only); requests without tools or with
         # auto_heal_tool_calls=false keep the unhealed relay. tool_choice constrains
@@ -25995,7 +26026,11 @@ async def _openai_passthrough_stream_admitted(
 
             def _terminal_read_timeout_s() -> Optional[float]:
                 if terminal_seen:
-                    return _OPENAI_PASSTHROUGH_TERMINAL_GRACE_S
+                    return (
+                        _OPENAI_PASSTHROUGH_TERMINAL_GRACE_S
+                        if client_wants_usage
+                        else _OPENAI_INTERNAL_USAGE_GRACE_S
+                    )
                 return stall_timeout_s
 
             def _heal_transform(chunk_data: dict, raw_line: str) -> list:
@@ -26372,20 +26407,19 @@ async def _openai_passthrough_stream_admitted(
                         if monitor_event == "error":
                             saw_stream_error = True
                             mark_response_failed(getattr(request, "scope", None))
-                        # Relay to preserve llama-server's native id,
-                        # finish_reason, delta.tool_calls, and usage chunks.
-                        yield out_line + "\n\n"
-                        if monitor_event == "done":
-                            monitor_done = True
-                            break
                         terminal_state = (
                             _openai_passthrough_terminal_state_from_data(chunk_data)
                             if out_line is raw_line
                             else _openai_passthrough_sse_line_terminal_state(out_line)
                         )
-                        if terminal_state == "usage" or (
-                            terminal_state == "finish" and not _wants_stream_usage(payload)
-                        ):
+                        # The upstream usage-only chunk is always requested for
+                        # accounting, but remains caller-visible only by opt-in.
+                        if terminal_state != "usage" or client_wants_usage:
+                            yield out_line + "\n\n"
+                        if monitor_event == "done":
+                            monitor_done = True
+                            break
+                        if terminal_state == "usage":
                             done_line = _SSE_DONE_LINE
                             _monitor_openai_sse_line(
                                 monitor_id,
@@ -26813,11 +26847,13 @@ async def _openai_passthrough_non_streaming_upstream(
     # original prompt prefix intact (llama-server reuses the slot's KV cache)
     # plus a two-message nudge suffix. The retry replaces the original response
     # only when it actually yields a usable call.
+    usage_aggregated = False
     if (
         _allowed_tools
         and nudge_enabled(payload.nudge_tool_calls)
         and nudge_should_retry(data, _allowed_tools, body.get("tools"))
     ):
+        first_data = data
         retry_body = {
             **body,
             "messages": _nudge_retry_messages(
@@ -26829,14 +26865,18 @@ async def _openai_passthrough_non_streaming_upstream(
             if retry_resp.status_code == 200:
                 retry_data = retry_resp.json()
                 if response_has_promotable_calls(retry_data, _allowed_tools, body.get("tools")):
-                    resp, data = retry_resp, retry_data
+                    resp = retry_resp
+                    data = _sum_passthrough_attempt_stats(first_data, retry_data, retry_data)
+                else:
+                    data = _sum_passthrough_attempt_stats(first_data, retry_data, first_data)
+                usage_aggregated = data is not first_data and data is not retry_data
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
             raise
         except (httpx.RequestError, ValueError) as exc:
             logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
 
-    changed = False
+    changed = usage_aggregated
     if _context_was_truncated and isinstance(data, dict):
         data["context_truncated"] = {
             "dropped_messages": _truncated_messages,

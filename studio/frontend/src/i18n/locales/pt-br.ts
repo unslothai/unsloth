@@ -878,9 +878,9 @@ export const ptBR = {
           "Tudo abaixo é calculado a partir do seu próprio histórico. Nada é coletado nem enviado ao Unsloth.",
         retry: "Tentar novamente",
         privacyNote:
-          "As estatísticas são calculadas a partir do histórico de chats e de treinos guardado pela sua instalação do Unsloth. Nada é coletado e nada é enviado ao Unsloth ou a terceiros.",
+          "As estatísticas são calculadas a partir do histórico local de chats, uso da API e treinos da sua instalação do Unsloth. Prompts, respostas e chaves da API nunca são salvos para as estatísticas. Nada é enviado ao Unsloth ou a terceiros.",
         emptyChats:
-          "Nenhum chat ainda. Comece uma conversa e suas estatísticas aparecerão aqui.",
+          "Ainda não há uso de chat ou API. Comece uma conversa ou faça uma solicitação autenticada à API local.",
         lifetimeTokens: "Tokens acumulados",
         peakTokens: "Dia de pico",
         longestChat: "Chat mais longo",
@@ -902,6 +902,9 @@ export const ptBR = {
         totalMessages: "Total de mensagens",
         tokensIn: "Tokens enviados",
         tokensOut: "Tokens gerados",
+        totalTokens: "Total de tokens",
+        studioChatTokens: "Tokens do Studio Chat",
+        apiTokens: "Tokens da API",
         cachedTokens: "Tokens em cache",
         cachedValue: "{tokens} ({percent}% da entrada)",
         avgTokensPerChat: "Média de tokens por chat",
