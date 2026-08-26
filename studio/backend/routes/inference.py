@@ -16012,6 +16012,20 @@ async def openai_chat_completions(
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("non-GGUF audio chat completions")
             _reject_audio_output_continuation(payload)
+            # generate_audio speaks the newest user TEXT, so an attached image is
+            # dropped without a word. Refuse here: this early return is the reason
+            # the text-only check further down never sees such a request. No
+            # monitor row is open yet (monitor_id is still None, and
+            # _monitored_generate_audio opens its own), so a bare raise leaves
+            # nothing running.
+            if _images_in_last_user_message(payload.messages) or _legacy_image_is_distinct(payload):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "This model generates speech and does not read images."
+                        " Load a vision model to send one."
+                    ),
+                )
             return await _monitored_generate_audio(model_name)
 
         # ── Whisper without audio: return clear error ──
@@ -18140,11 +18154,17 @@ async def openai_chat_completions(
                     "Image provided but current model is text-only. Load a vision model.",
                 )
 
-            # A distinct legacy image only survives when nothing was extracted, since
-            # the selection right below is `extracted_image_b64 or image_base64`. With
-            # an extracted image present the caller supplied two and would never be
-            # told the top-level one was dropped, so that is a multi-image call too.
-            if images_on_turn > 1 or (extracted_image_b64 and _legacy_image_is_distinct(payload)):
+            # A distinct legacy image is a second image the caller supplied, so it
+            # joins the structural count: one image part the extractor could not read
+            # (a remote or payloadless URL) plus a distinct top-level image is still
+            # two images with one of them dropped. The second clause covers the case
+            # the count alone misses, where the turn carries no part but an earlier
+            # one does: the selection below is `extracted_image_b64 or image_base64`,
+            # so the extracted image wins and the top-level one goes unmentioned.
+            _legacy_is_distinct = _legacy_image_is_distinct(payload)
+            if images_on_turn + int(_legacy_is_distinct) > 1 or (
+                extracted_image_b64 and _legacy_is_distinct
+            ):
                 raise _reject(
                     400,
                     (

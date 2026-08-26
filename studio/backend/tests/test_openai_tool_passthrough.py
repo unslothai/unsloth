@@ -917,6 +917,126 @@ class TestChatCompletionRequestToolFields:
         else:
             assert len(backend.generated) == 1
 
+    @pytest.mark.parametrize(
+        "bad_part",
+        [
+            {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}},
+        ],
+        ids = ["remote_url", "payloadless_data_url"],
+    )
+    def test_an_unreadable_part_plus_a_distinct_legacy_image_is_two_images(
+        self, bad_part, monkeypatch
+    ):
+        """The count is structural, so a part the extractor cannot read still counts.
+        With a distinct top-level image beside it the caller supplied two, and the
+        part is the one that gets dropped."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "x"}, bad_part]}
+                ],
+                "image_base64": _RED_PNG_B64,
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "one image per message" in resp.text
+        assert backend.generated == []
+        assert monitor.active_count() == 0
+
+    def test_an_unreadable_part_alone_is_still_answered(self, monkeypatch):
+        """Control: one remote image and no top-level image is not a multi-image
+        call, and clients relying on that text answer must keep it."""
+        monitor = ApiMonitor(max_entries = 3)
+        client, backend = self._standard_vision_client(monkeypatch, monitor)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "x"},
+                            {"type": "image_url", "image_url": {"url": "https://e.com/a.png"}},
+                        ],
+                    }
+                ]
+            },
+        )
+
+        assert resp.status_code == 200
+        assert len(backend.generated) == 1
+        assert backend.generated[0]["image"] is None
+        assert monitor.active_count() == 0
+
+    @pytest.mark.parametrize("n_images,expected", [(2, 400), (1, 400), (0, 200)])
+    def test_a_tts_model_refuses_an_image_instead_of_speaking_over_it(
+        self, n_images, expected, monkeypatch
+    ):
+        """The TTS auto-route returns before the standard image path and speaks the
+        newest user text, so an attached image is discarded. It is also why the
+        text-only rejection never sees such a request."""
+        import routes.inference as inference_route
+
+        class _LlamaOff:
+            is_loaded = False
+            supports_tools = False
+            is_vision = False
+            context_length = None
+
+        spoken = []
+
+        class _TtsBackend:
+            active_model_name = "tts"
+            models = {
+                "tts": {
+                    "is_vision": False,
+                    "is_audio": True,
+                    "audio_type": "csm",
+                    "chat_template_info": {"template": "chatml"},
+                    "context_length": 4096,
+                }
+            }
+
+            def resize_image(self, image):
+                return image
+
+            def generate_audio_response(self, **kwargs):
+                spoken.append(kwargs)
+                import numpy as np
+                return np.zeros(16000, dtype = "float32"), 16000
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), _TtsBackend())
+        image = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_RED_PNG_B64}"}}
+        content = [{"type": "text", "text": "say hi"}] + [image] * n_images
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {"messages": [{"role": "user", "content": content}]},
+        )
+
+        assert resp.status_code == expected
+        assert monitor.active_count() == 0
+        if expected == 400:
+            assert "does not read images" in resp.text
+            assert spoken == []
+        else:
+            assert len(spoken) == 1
+
     def test_a_legacy_image_alone_is_still_served(self, monkeypatch):
         """With nothing extracted from the messages the top-level image IS the one
         that gets used, so it must not be refused as a second image."""
