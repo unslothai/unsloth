@@ -183,14 +183,19 @@ CANDIDATE_VARS = tuple(sorted({k for _, extra, _ in CANDIDATES for k in extra}))
 #                                     test above.
 #   GDK_BACKEND                       selects the display backend, which is what decides
 #                                     between the shared-memory switch and no workaround.
+#   UNSLOTH_WEBKIT_DISABLE_COMPOSITING  the app's own on/off switch for the compositing
+#                                     workaround, and the one a freezing host is told to
+#                                     export, so it is the value most likely to still be
+#                                     set in the shell that runs this script.
 #
-# None of the first four appear in CANDIDATES, so a cleared set derived from CANDIDATES
-# left every one of them active. Any of them still exported in the reporter's shell then
-# pins all four launches, INCLUDING the control, and a control that cannot produce the
-# other answer is not a control: the report comes back saying the comparison was clean
-# when nothing was ever compared.
+# None of these appear in CANDIDATES, so a cleared set derived from CANDIDATES left every
+# one of them active. Any of them still exported in the reporter's shell then pins all four
+# launches, INCLUDING the control, and a control that cannot produce the other answer is not
+# a control: the report comes back saying the comparison was clean when nothing was ever
+# compared.
 RENDERER_OVERRIDE_VARS = (
     "GDK_BACKEND",
+    "UNSLOTH_WEBKIT_DISABLE_COMPOSITING",
     "UNSLOTH_WEBKIT_RENDERER_WORKAROUND",
     "WEBKIT_DISABLE_DMABUF_RENDERER",
     "WEBKIT_DMABUF_RENDERER_FORCE_SHM",
