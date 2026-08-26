@@ -162,7 +162,13 @@ const GPU_LAYERS_AUTO = -1;
 // The sliced region now includes the queue-specific empty-model resolver and
 // visible-state snapshot helpers, so their imported contracts must exist even
 // though these scenarios call autoLoadSmallestModel directly.
+let STATUS_CALLS = 0;
 async function getInferenceStatus() {
+  // serverLoadEvidence is the only caller here, so the counter tracks its probes:
+  // a scenario can fail the first N the way a transient 5xx or a dropped socket does.
+  if (STATUS_CALLS++ < (SCENARIO.statusFailures ?? 0)) {
+    throw new Error("status unavailable");
+  }
   return { active_model: null, loading: SCENARIO.serverLoading ?? [] };
 }
 // serverLoadEvidence reads phase to decide whether a CLI load is in flight. The
@@ -595,6 +601,7 @@ SCENARIO_HELPERS = """
       // serverLoadEvidence reads. Both idle unless a scenario says otherwise.
       loadPhase: null,
       serverLoading: [],
+      statusFailures: 0,
       validate: VALIDATE_OK,
       load: LOADED,
       download: () => "complete",
@@ -1610,6 +1617,33 @@ def test_a_server_that_went_idle_during_the_wait_still_auto_loads():
     out = _run(
         "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
         prelude = _EXPIRE_CLI_LOAD_WAIT,
+    )
+
+    assert _loaded_paths(out) == [GEMMA_REPO]
+    assert out["result"]["loaded"] is True
+
+
+def test_a_transient_status_failure_does_not_license_auto_load_over_a_cli_load():
+    """serverLoadEvidence returns null, not false, when a probe fails: "a failed probe does
+    not prove the server is idle". Treating that as idle let one dropped status read start
+    an auto-load that queues behind the CLI request and replaces it."""
+    out = _run(
+        "scenario({ statusFailures: 1, serverLoading: ['org/slow-model-GGUF'],"
+        " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
+        prelude = _EXPIRE_CLI_LOAD_WAIT,
+    )
+
+    assert _loaded_paths(out) == []
+    assert _downloads_started(out) == []
+    assert out["result"]["loadFailureReported"] is True
+
+
+def test_a_status_endpoint_that_stays_down_still_falls_through_to_auto_load():
+    """The re-read is one retry, not a new wait: with the server unreachable there is no
+    evidence to preserve, and blocking Send on it would strand a genuinely idle backend."""
+    out = _run(
+        "scenario({ statusFailures: 99, ggufRepos: [GEMMA],"
+        " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"
     )
 
     assert _loaded_paths(out) == [GEMMA_REPO]

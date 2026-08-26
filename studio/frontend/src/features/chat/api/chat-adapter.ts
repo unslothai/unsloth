@@ -2832,6 +2832,15 @@ async function adoptInFlightServerLoad(
 
   let evidence = await serverLoadEvidence();
   abortSignal?.throwIfAborted();
+  if (evidence === null) {
+    // "A failed probe does not prove the server is idle", so re-read once rather
+    // than let a single failed status call license auto-loading over a CLI load.
+    // Still no wait when it stays unknown: the server is unreachable either way.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    abortSignal?.throwIfAborted();
+    evidence = await serverLoadEvidence();
+    abortSignal?.throwIfAborted();
+  }
   if (evidence !== true) {
     return settle();
   }

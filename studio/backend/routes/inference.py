@@ -9223,6 +9223,11 @@ _scoped_load_attempts_lock = threading.Lock()
 _scoped_load_attempts: dict[tuple[str, str], _ScopedLoadAttempt] = {}
 _scoped_load_cancel_tombstones: dict[tuple[str, str], tuple[str, float]] = {}
 _running_load_attempt: Optional[_ScopedLoadAttempt] = None
+# Loads that have begun but do not hold inference_lifecycle_gate yet. /load builds
+# its attempt before queueing on that gate, and an unload, a media auto-switch or a
+# transformers install can hold it for minutes; keyed on the attempt's uuid token so
+# concurrent loads of the same path do not evict each other.
+_pending_load_attempts: dict[str, _ScopedLoadAttempt] = {}
 _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S = 60.0
 # Bound on waiting for a cancel's teardown to report back. Only the /unload
 # handler sets cancel_complete for a running attempt, so a disconnect or a
@@ -9405,6 +9410,10 @@ async def load_model_gated(
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
     attempt = _begin_load_attempt(request, current_subject)
+    # Before the gate, not after: a load parked on it is already in flight as far as
+    # every status reader is concerned.
+    with _scoped_load_attempts_lock:
+        _pending_load_attempts[attempt.token] = attempt
     try:
         _raise_if_sidecar_swap_in_progress()
         # Hold the lifecycle gate across the load so idle auto-unload can't unload the
@@ -9433,6 +9442,8 @@ async def load_model_gated(
         get_llama_cpp_backend()._loaded_by_user_action = user_initiated
         return response
     finally:
+        with _scoped_load_attempts_lock:
+            _pending_load_attempts.pop(attempt.token, None)
         _finish_load_attempt(attempt)
 
 
@@ -11902,6 +11913,12 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             _tracked_loading_id = (
                 _running_load_attempt.model_path if _running_load_attempt is not None else ""
             )
+            if not _tracked_loading_id:
+                # Nothing holds the gate yet, so report the load queued on it. Oldest
+                # first: that is the one about to run, and it is the model the caller
+                # asked for, not whatever is still resident behind it.
+                _queued = next(iter(_pending_load_attempts.values()), None)
+                _tracked_loading_id = _queued.model_path if _queued is not None else ""
         # RLock lacks locked() on supported Python versions; probe non-blockingly.
         _serial_load_lock = getattr(llama_backend, "_serial_load_lock", None)
         _lock_acquired = True
