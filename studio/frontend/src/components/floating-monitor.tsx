@@ -7,11 +7,7 @@ import {
   useMonitorFrameStore,
   useMonitorOverlayStore,
 } from "@/features/settings";
-import {
-  dedicatedGpuMemoryTotalGb,
-  resolveGpuVramUsedGb,
-  sharedGpuMemoryTotalGb,
-} from "@/hooks/gpu-vram";
+import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import {
@@ -469,13 +465,9 @@ function FloatingMonitorPanel({
     ? aggregateGpuMemoryTotalGb(separateInferenceGpu.devices)
     : 0;
   const devices = displayedGpu?.devices ?? [];
-  const vramTotal = aggregateGpuMemoryTotalGb(devices);
-  // #9242: split the aggregate so a shared-memory pool (Windows ROCm iGPU,
-  // Vulkan APU) is not labeled VRAM. The aggregate stays the denominator;
-  // only the caption changes.
-  const dedicatedVramTotal = dedicatedGpuMemoryTotalGb(devices);
-  const sharedMemoryTotal = sharedGpuMemoryTotalGb(devices);
-  const hasSharedPool = sharedMemoryTotal > 0;
+  const memoryTotals = gpuMemoryTotalsGb(devices);
+  const vramTotal = memoryTotals.total;
+  const hasSharedPool = memoryTotals.shared > 0;
   // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
   // readout. The host figure can still be known when no device's is (#7452).
   const resolvedVramUsed = resolveGpuVramUsedGb(displayedGpu);
@@ -608,8 +600,8 @@ function FloatingMonitorPanel({
                   {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} /{" "}
                   {hasSharedPool
                     ? t("settings.resources.environment.vramWithShared", {
-                        vram: formatGiB(dedicatedVramTotal),
-                        shared: formatGiB(sharedMemoryTotal),
+                        vram: formatGiB(memoryTotals.dedicated),
+                        shared: formatGiB(memoryTotals.shared),
                       })
                     : formatGiB(vramTotal)}
                 </div>

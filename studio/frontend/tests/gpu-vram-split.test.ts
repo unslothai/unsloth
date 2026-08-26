@@ -11,8 +11,7 @@ import test from "node:test";
 
 import {
   aggregateGpuMemoryTotalGb,
-  dedicatedGpuMemoryTotalGb,
-  sharedGpuMemoryTotalGb,
+  gpuMemoryTotalsGb,
 } from "../src/hooks/gpu-vram.ts";
 
 test("dedicated and shared split the aggregate (#9242)", () => {
@@ -20,8 +19,7 @@ test("dedicated and shared split the aggregate (#9242)", () => {
     { memory_total_gb: 15.92 }, // RX 9060 XT: dedicated
     { memory_total_gb: 12.15, shared_memory: true }, // iGPU: shared pool
   ];
-  const dedicated = dedicatedGpuMemoryTotalGb(devices);
-  const shared = sharedGpuMemoryTotalGb(devices);
+  const { dedicated, shared } = gpuMemoryTotalsGb(devices);
   const aggregate = aggregateGpuMemoryTotalGb(devices);
 
   assert.equal(dedicated, 15.92);
@@ -38,18 +36,24 @@ test("a shared pool counts once even when several devices report it", () => {
     { memory_total_gb: 12.15, shared_memory: true },
     { memory_total_gb: 12.15, shared_memory: true }, // same GTT pool, two views
   ];
-  assert.equal(sharedGpuMemoryTotalGb(devices), 12.15);
-  assert.equal(dedicatedGpuMemoryTotalGb(devices), 8);
+  assert.deepEqual(gpuMemoryTotalsGb(devices), {
+    dedicated: 8,
+    shared: 12.15,
+    total: 20.15,
+  });
 });
 
 test("all-dedicated systems report zero shared", () => {
   const devices = [{ memory_total_gb: 24 }, { memory_total_gb: 24 }];
-  assert.equal(sharedGpuMemoryTotalGb(devices), 0);
-  assert.equal(dedicatedGpuMemoryTotalGb(devices), 48);
+  assert.deepEqual(gpuMemoryTotalsGb(devices), {
+    dedicated: 48,
+    shared: 0,
+    total: 48,
+  });
 });
 
 test("float error does not leak into the halves", () => {
   // 2dp inputs; the derived halves must stay at the same precision.
   const devices = [{ memory_total_gb: 179.06 }, { memory_total_gb: 179.06 }];
-  assert.equal(dedicatedGpuMemoryTotalGb(devices), 358.12);
+  assert.equal(gpuMemoryTotalsGb(devices).dedicated, 358.12);
 });

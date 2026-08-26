@@ -14,11 +14,11 @@ import {
 } from "./gpu-selection";
 import {
   type SystemInfoResponse,
-  aggregateGpuMemoryTotalGb,
   fetchSystemInfo,
   getCachedSystemInfo,
   subscribeSystemInfo,
 } from "./use-system";
+import { gpuMemoryTotalsGb } from "./gpu-vram";
 
 export {
   pinnableGpuContext,
@@ -38,6 +38,8 @@ export interface GpuInfo {
   backend: string;
   name: string;
   memoryTotalGb: number;
+  memoryDedicatedGb: number;
+  memorySharedGb: number;
   /** Largest single device's VRAM. Image/video loads live on ONE device (no tensor split), so their fit math must use a single device, not the multi-GPU sum. */
   maxDeviceMemoryGb: number;
   /** VRAM of the device an image/video load actually lands on: the lowest visible ordinal, since resolve_diffusion_device_target() returns a bare "cuda" and torch places on the current device. On a heterogeneous host this is NOT maxDeviceMemoryGb, and sizing a pick against the larger card would recommend a checkpoint that OOMs the smaller one. */
@@ -54,6 +56,8 @@ const DEFAULT_GPU: GpuInfo = {
   backend: "",
   name: "Unknown",
   memoryTotalGb: 0,
+  memoryDedicatedGb: 0,
+  memorySharedGb: 0,
   maxDeviceMemoryGb: 0,
   loadDeviceMemoryGb: 0,
   cpuCore: 0,
@@ -81,6 +85,7 @@ function toGpuInfo(
   if (!gpuData?.available || !devices.length) {
     return { ...DEFAULT_GPU, ...base, budgetKnown: data !== null };
   }
+  const memoryTotals = gpuMemoryTotalsGb(devices);
   return {
     ...base,
     // A Vulkan iGPU's reported budget is capped shared system RAM, not an
@@ -91,9 +96,13 @@ function toGpuInfo(
     available: true,
     budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",
-    // Shared-memory (Vulkan iGPU) devices report the same system RAM pool, so they are counted once rather than summed.
-    memoryTotalGb: aggregateGpuMemoryTotalGb(devices),
-    maxDeviceMemoryGb: devices.reduce((max, d) => Math.max(max, d.memory_total_gb ?? 0), 0),
+    memoryTotalGb: memoryTotals.total,
+    memoryDedicatedGb: memoryTotals.dedicated,
+    memorySharedGb: memoryTotals.shared,
+    maxDeviceMemoryGb: devices.reduce(
+      (max, d) => Math.max(max, d.memory_total_gb ?? 0),
+      0,
+    ),
     // Lowest visible ordinal = torch's current device = where the pipeline lands.
     loadDeviceMemoryGb: pickLoadDevice(devices)?.memory_total_gb ?? 0,
   };
