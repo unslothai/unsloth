@@ -4812,7 +4812,19 @@ export function HubModelPicker({
             )})`}
             meta="GGUF"
             quantChip={ggufQuantChipLabel(entry.quant)}
-            memory={{ repoId: entry.repoId, quant: entry.quant }}
+            // Same runtime gate the sole-quant row below applies. A pinned quant
+            // can belong to an image, video or audio task, and those load through
+            // the media planner rather than llama.cpp, so the KV estimator is
+            // measuring the wrong runtime -- and it falls back to the file size
+            // when it cannot size the model, so the row draws a confident
+            // weights-only verdict rather than nothing.
+            memory={
+              mediaPageForTask(
+                diffusionTaskById.get(entry.repoId.toLowerCase()),
+              )
+                ? undefined
+                : { repoId: entry.repoId, quant: entry.quant }
+            }
             gpuGb={inferenceGpu.memoryTotalGb}
             alignMeta="device"
             selected={isSelected}

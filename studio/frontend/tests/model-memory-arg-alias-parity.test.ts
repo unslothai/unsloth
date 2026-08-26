@@ -24,8 +24,14 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { PLACEMENT_OWNING_ARGS, KV_SHAPING_ARGS, RESIDENT_ADDING_ARGS } =
-  await import("../src/lib/model-memory.ts");
+const {
+  PLACEMENT_OWNING_ARGS,
+  KV_SHAPING_ARGS,
+  RESIDENT_ADDING_ARGS,
+  extraArgsOwnPlacement,
+  extraArgsShapeKvCache,
+  extraArgsAddResidentFiles,
+} = await import("../src/lib/model-memory.ts");
 
 const BACKEND = new URL("../../backend/", import.meta.url);
 
@@ -115,4 +121,41 @@ test("the three policies stay disjoint in intent", () => {
       `${flag} is classified as both placement-owning and resident-adding`,
     );
   }
+});
+
+test("every drafter-selecting spelling makes the bar abstain", () => {
+  // A hand-named drafter is weights plus a cache nothing here priced, and the
+  // flags are last-wins, so any accepted spelling means the launch opens one.
+  for (const name of ["_LOCAL_DRAFT_FLAGS", "_HF_DRAFT_FLAGS"]) {
+    for (const flag of frozensetLiterals(LLAMA_CPP, name)) {
+      assert.ok(
+        RESIDENT_ADDING_ARGS.includes(flag),
+        `${flag} (${name}) selects a drafter at launch but is not in RESIDENT_ADDING_ARGS`,
+      );
+    }
+  }
+});
+
+test("underscore spellings are classified like their dashed twins", () => {
+  // llama.cpp accepts both, and the backend normalises underscores to dashes
+  // before parsing. Comparing raw tokens let a single spelling slip past ALL
+  // THREE predicates at once, which is a hole in the policy rather than a
+  // missing entry in one list -- so this checks the normalisation, not a list.
+  const cases: [string, (a: string[]) => boolean][] = [
+    ["--gpu_layers", extraArgsOwnPlacement],
+    ["--ctx_size", extraArgsShapeKvCache],
+    ["--spec_draft_hf", extraArgsAddResidentFiles],
+  ];
+  for (const [flag, predicate] of cases) {
+    assert.ok(predicate([flag]), `${flag} was not recognised`);
+    assert.ok(predicate([`${flag}=4`]), `${flag}=4 was not recognised`);
+    // The dashed twin must still work, so normalisation did not replace one
+    // spelling with the other.
+    const dashed = flag.replace(/_/g, "-");
+    assert.ok(predicate([dashed]), `${dashed} stopped being recognised`);
+  }
+  // A short option keeps its underscores: only long options are normalised, so
+  // this must not start matching things that are not flags at all.
+  assert.equal(extraArgsOwnPlacement(["not_a_flag"]), false);
+  assert.equal(extraArgsOwnPlacement(["--temp", "0.7"]), false);
 });

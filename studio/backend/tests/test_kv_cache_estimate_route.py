@@ -827,3 +827,39 @@ class TestTheInheritedEnvironmentIsPriced:
             )["context_is_pinned"]
             is True
         )
+
+    def test_an_inherited_device_pin_is_reported(self, monkeypatch, tmp_path):
+        # The child is confined to the cards LLAMA_ARG_DEVICE names and an
+        # automatic launch preserves the pin, so an aggregate VRAM budget
+        # describes a pool the launch will not open. The caller cannot see the
+        # environment, so the route has to say.
+        gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
+        monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
+        assert (
+            _call_route(
+                monkeypatch,
+                path = gguf,
+                weights_bytes = 4096,
+                repo_id = "org/repo",
+                speculative_type = None,
+            )["inherited_device_pin"]
+            is True
+        )
+
+    @pytest.mark.parametrize("value", ["", "none", "NONE"])
+    def test_no_usable_pin_is_not_reported_as_one(self, monkeypatch, tmp_path, value):
+        # "none" is a CPU-only launch, which the planner already answers with
+        # zero GPU bytes and which draws no bar on its own; reporting it as a pin
+        # would blank the row for a second, unrelated reason.
+        gguf = _write_gguf(tmp_path / "model-Q4_K_M.gguf", _PLAIN_GQA)
+        monkeypatch.setenv("LLAMA_ARG_DEVICE", value)
+        assert (
+            _call_route(
+                monkeypatch,
+                path = gguf,
+                weights_bytes = 4096,
+                repo_id = "org/repo",
+                speculative_type = None,
+            )["inherited_device_pin"]
+            is False
+        )

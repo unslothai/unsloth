@@ -1324,6 +1324,9 @@ export interface KvCacheEstimate {
   /** False only when the loader is free to shrink the context to fit. An
    *  inherited LLAMA_ARG_CTX_SIZE is kept, not fitted. */
   context_is_pinned: boolean | null;
+  /** An inherited LLAMA_ARG_DEVICE confines the launch to the cards it names, so
+   *  an aggregate VRAM budget describes a pool it will not open. */
+  inherited_device_pin: boolean | null;
 }
 
 export interface KvCacheEstimateOptions {

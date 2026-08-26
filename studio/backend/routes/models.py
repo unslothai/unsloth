@@ -3773,6 +3773,7 @@ async def get_kv_cache_estimate(
             "total_bytes": None,
             "gpu_floor_bytes": None,
             "context_is_pinned": None,
+            "inherited_device_pin": None,
         }
         try:
             from utils.models.model_config import is_local_path
@@ -3836,6 +3837,15 @@ async def get_kv_cache_estimate(
             # length here priced the header's window for a child that will run at
             # the environment's -- and an inherited context LARGER than native is
             # then underpriced while still reading as auto-fitted.
+            _inherited_device_pin = False
+            try:
+                _dev = (os.environ.get("LLAMA_ARG_DEVICE") or "").strip()
+                # "none" is a CPU-only launch, which the planner already answers
+                # with zero GPU bytes; that path draws no bar on its own.
+                _inherited_device_pin = bool(_dev) and _dev.lower() != "none"
+            except Exception as e:
+                logger.debug(f"inherited device pin unreadable: {e}")
+
             _ctx_was_omitted = not n_ctx
             # Whether the launch will auto-fit at all. Only a context nobody
             # pinned gets reduced to fit: load_model keeps a positive inherited
@@ -4263,6 +4273,15 @@ async def get_kv_cache_estimate(
                 # stop softening here, or an inherited window over budget reads
                 # as a fit for a launch that will OOM.
                 "context_is_pinned": _context_is_pinned,
+                # An inherited LLAMA_ARG_DEVICE confines the child to the cards it
+                # names, and an automatic launch preserves it. The caller's budget
+                # is an aggregate over the whole visible inventory, which then
+                # describes a pool the launch will not open -- a 30 GiB model
+                # reads as fitting 2x24 GiB while the child has one card. The
+                # caller cannot see the environment, so it is reported here.
+                # Any pin at all is enough to say so: the route does not know the
+                # host's inventory, and abstaining is the safe direction.
+                "inherited_device_pin": _inherited_device_pin,
                 # The planner saw a drafter whose cache it could not size, so its
                 # own total is a floor.
                 "spec_unpriced": spec_unpriced or planner_unsized,

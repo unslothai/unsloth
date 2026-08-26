@@ -379,6 +379,16 @@ export const KV_SHAPING_ARGS = [
  * total is a floor rather than an answer and the bar abstains.
  */
 export const RESIDENT_ADDING_ARGS = [
+  // _LOCAL_DRAFT_FLAGS and _HF_DRAFT_FLAGS in full. A hand-named drafter is
+  // weights plus a cache that nothing here priced, and the flags are last-wins,
+  // so any of these spellings means the launch opens one.
+  "--model-draft",
+  "--spec-draft-model",
+  "-md",
+  "--spec-draft-hf",
+  "-hfd",
+  "-hfrd",
+  "--hf-repo-draft",
   "--lora",
   "--lora-scaled",
   "--control-vector",
@@ -394,10 +404,7 @@ export function extraArgsAddResidentFiles(
   args: string[] | null | undefined,
 ): boolean {
   if (!args || args.length === 0) return false;
-  return args.some((arg) => {
-    const token = String(arg ?? "").split("=")[0].trim();
-    return RESIDENT_ADDING_ARGS.includes(token);
-  });
+  return args.some((arg) => RESIDENT_ADDING_ARGS.includes(flagName(arg)));
 }
 
 /** Whether pass-through args resize the KV cache, so the priced figure stops applying. */
@@ -405,10 +412,24 @@ export function extraArgsShapeKvCache(
   args: string[] | null | undefined,
 ): boolean {
   if (!args || args.length === 0) return false;
-  return args.some((arg) => {
-    const token = String(arg ?? "").split("=")[0].trim();
-    return KV_SHAPING_ARGS.includes(token);
-  });
+  return args.some((arg) => KV_SHAPING_ARGS.includes(flagName(arg)));
+}
+
+/**
+ * A pass-through token reduced to the flag name the launch will parse.
+ *
+ * Mirrors the backend's `_flag_name`: peel `--key=value`, and normalise
+ * underscores in long options, which llama.cpp accepts interchangeably with
+ * dashes. Without the second step `--gpu_layers` or `--ctx_size` passed every
+ * one of the three predicates below while still changing the real launch, so a
+ * single spelling defeated the whole abstention policy rather than one entry in
+ * one list.
+ */
+function flagName(arg: unknown): string {
+  const token = String(arg ?? "").trim();
+  if (!token.startsWith("-")) return "";
+  const name = token.split("=")[0];
+  return name.startsWith("--") ? name.replace(/_/g, "-") : name;
 }
 
 /** Whether pass-through args decide placement, so the GPU total stops applying. */
@@ -416,11 +437,9 @@ export function extraArgsOwnPlacement(
   args: string[] | null | undefined,
 ): boolean {
   if (!args?.length) return false;
-  return args.some((raw) => {
-    // Accept both "--gpu-layers 0" and "--gpu-layers=0" argv shapes.
-    const token = String(raw).trim().split("=", 1)[0];
-    return PLACEMENT_OWNING_ARGS.includes(token);
-  });
+  // flagName accepts both "--gpu-layers 0" and "--gpu-layers=0" argv shapes, and
+  // normalises the underscore spelling the launch also accepts.
+  return args.some((raw) => PLACEMENT_OWNING_ARGS.includes(flagName(raw)));
 }
 
 /** The inputs that change an estimate, and so key its cached answer. */

@@ -78,6 +78,9 @@ interface Estimate {
   computeBytes: number | null;
   /** False only when the loader is free to shrink the context to fit. */
   contextIsPinned: boolean | null;
+  /** An inherited LLAMA_ARG_DEVICE confines the launch to fewer cards than the
+   *  aggregate budget credits. */
+  inheritedDevicePin: boolean | null;
   /** The planner's own GPU-resident total, which supersedes the segment sum. */
   gpuTotalBytes: number | null;
   /** What the planner still reserves at the shortest context. */
@@ -143,6 +146,7 @@ const MISS: Estimate = {
   specFixedBytes: null,
   computeBytes: null,
   contextIsPinned: null,
+  inheritedDevicePin: null,
   gpuTotalBytes: null,
   gpuFloorBytes: null,
   specUnpriced: false,
@@ -366,6 +370,7 @@ async function fetchEstimate(
         specFixedBytes: r.spec_fixed_bytes ?? null,
         computeBytes: r.compute_bytes ?? null,
         contextIsPinned: r.context_is_pinned ?? null,
+        inheritedDevicePin: r.inherited_device_pin ?? null,
         gpuTotalBytes: r.gpu_bytes ?? null,
         gpuFloorBytes: r.gpu_floor_bytes ?? null,
         specUnpriced: r.spec_unpriced === true,
@@ -553,6 +558,12 @@ export function useModelMemory(
     // (a DSpark sidecar runs to about 11 GB). Charting the rest would read as a
     // comfortable fit for a load that is nothing of the sort, so draw nothing.
     if (estimate?.specUnpriced) return computeModelMemory({});
+    // The environment can pin the launch to a subset of the cards the aggregate
+    // budget credits, and an automatic launch preserves that pin. budgetIsMeaningful
+    // can only see browser-side pins and saved config, so this is the one placement
+    // override it cannot reach: without it a 30 GiB model reads as fitting 2x24 GiB
+    // while the child is confined to one of them.
+    if (estimate?.inheritedDevicePin) return computeModelMemory({});
     const weights = estimate?.weightsBytes ?? source?.sizeBytes;
     return computeModelMemory({
       // The projector is resident alongside the weights, so it belongs in that
