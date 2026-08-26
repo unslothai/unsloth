@@ -783,7 +783,8 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     }
     if is_binary_property_list(path, &bytes) {
         return Err(
-            "Binary property lists are not supported. Export the .plist as XML first.".to_string(),
+            "Binary property-list files are not supported. Convert the file to text first."
+                .to_string(),
         );
     }
     if is_binary_vobsub(path, &bytes) {
@@ -940,15 +941,17 @@ mod tests {
     }
 
     #[test]
-    fn binary_plist_read_is_rejected() {
-        let path = temp_path("settings").with_extension("plist");
-        fs::write(&path, b"bplist00payload").unwrap();
-        let (_state, entry) = attachment_entry(&path);
-        let Err(error) = read_attachment_payload(&entry) else {
-            panic!("expected binary plist read to fail");
-        };
-        assert!(error.contains("Binary property lists"));
-        let _ = fs::remove_file(path);
+    fn binary_property_list_read_is_rejected() {
+        for extension in ["plist", "strings"] {
+            let path = temp_path("settings").with_extension(extension);
+            fs::write(&path, b"bplist00payload").unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let Err(error) = read_attachment_payload(&entry) else {
+                panic!("expected binary .{extension} read to fail");
+            };
+            assert!(error.contains("Binary property-list"));
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[test]

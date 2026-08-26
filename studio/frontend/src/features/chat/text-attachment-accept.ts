@@ -346,9 +346,9 @@ export function pickerAcceptForTextBasenames(accept: string): string {
     : accept;
 }
 
-/** Binary Apple property lists are not UTF-8 despite sharing `.plist`. */
+/** Binary Apple property lists are not text despite using `.plist` or `.strings`. */
 export async function isBinaryPropertyList(file: File): Promise<boolean> {
-  if (!file.name.toLowerCase().endsWith(".plist")) {
+  if (!/\.(?:plist|strings)$/i.test(file.name)) {
     return false;
   }
   const header = new Uint8Array(await file.slice(0, 8).arrayBuffer());
@@ -409,12 +409,57 @@ export async function isBinaryTrackerModule(file: File): Promise<boolean> {
   );
 }
 
-export function decodeTextAttachmentBytes(bytes: Uint8Array): string {
+const GETTEXT_HEADER_SCAN_BYTES = 64 * 1024;
+const GETTEXT_CHARSET_ALIASES: Record<string, string> = {
+  CP874: "windows-874",
+  CP932: "shift_jis",
+  CP949: "euc-kr",
+  CP950: "big5",
+};
+const GETTEXT_HEADER_ENTRY_RE =
+  /(?:^|\r?\n)msgid[ \t]+""[ \t]*\r?\nmsgstr[ \t]+("(?:[^"\\]|\\.)*"(?:[ \t]*\r?\n[ \t]*"(?:[^"\\]|\\.)*")*)/;
+const GETTEXT_CHARSET_RE =
+  /Content-Type:[^"\r\n]*?charset[ \t]*=[ \t]*([A-Za-z0-9._-]+)/i;
+
+function declaredGettextCharset(
+  bytes: Uint8Array,
+  fileName: string,
+): string | null {
+  if (!/\.(?:po|pot)$/i.test(fileName)) {
+    return null;
+  }
+  const prefix = new TextDecoder("windows-1252").decode(
+    bytes.subarray(0, GETTEXT_HEADER_SCAN_BYTES),
+  );
+  const headerEntry = prefix.match(GETTEXT_HEADER_ENTRY_RE)?.[1];
+  const charset = headerEntry?.match(GETTEXT_CHARSET_RE)?.[1];
+  return charset && charset.toUpperCase() !== "CHARSET" ? charset : null;
+}
+
+export function decodeTextAttachmentBytes(
+  bytes: Uint8Array,
+  fileName = "",
+): string {
   if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
     return new TextDecoder("utf-16le").decode(bytes.subarray(2));
   }
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
     return new TextDecoder("utf-16be").decode(bytes.subarray(2));
+  }
+  const gettextCharset = declaredGettextCharset(bytes, fileName);
+  if (gettextCharset) {
+    const label =
+      GETTEXT_CHARSET_ALIASES[gettextCharset.toUpperCase()] ?? gettextCharset;
+    try {
+      return new TextDecoder(label).decode(bytes);
+    } catch (error) {
+      if (error instanceof RangeError) {
+        throw new Error(
+          `Gettext charset "${gettextCharset}" isn't supported. Convert the catalog to UTF-8 before attaching it.`,
+        );
+      }
+      throw error;
+    }
   }
   return new TextDecoder().decode(bytes);
 }
@@ -422,7 +467,7 @@ export function decodeTextAttachmentBytes(bytes: Uint8Array): string {
 /** Decode editor text, including the BOM emitted by Windows Registry Editor. */
 export async function readTextAttachment(file: File): Promise<string> {
   const bytes = new Uint8Array(await file.arrayBuffer());
-  return decodeTextAttachmentBytes(bytes);
+  return decodeTextAttachmentBytes(bytes, file.name);
 }
 
 // MIME is unreliable for source files, so match by extension too.

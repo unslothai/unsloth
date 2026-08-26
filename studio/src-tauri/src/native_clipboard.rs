@@ -84,6 +84,16 @@ fn clipboard_file_mime_type(path: &Path) -> Option<&'static str> {
         "png" => "image/png",
         "webp" => "image/webp",
         "gif" => "image/gif",
+        "mp4" => "video/mp4",
+        "m4v" => "video/x-m4v",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "mpg" | "mpeg" => "video/mpeg",
+        "wmv" => "video/x-ms-wmv",
+        "flv" => "video/x-flv",
+        "ogv" => "video/ogg",
         "pdf" => "application/pdf",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "odt" => "application/vnd.oasis.opendocument.text",
@@ -443,6 +453,26 @@ mod tests {
         assert_eq!(clipboard_file_mime_type(Path::new("unknown.bin")), None);
     }
 
+    #[test]
+    fn clipboard_file_mime_types_cover_chat_video_attachments() {
+        for (name, mime_type) in [
+            ("clip.mp4", "video/mp4"),
+            ("clip.m4v", "video/x-m4v"),
+            ("clip.mov", "video/quicktime"),
+            ("clip.webm", "video/webm"),
+            ("clip.mkv", "video/x-matroska"),
+            ("clip.avi", "video/x-msvideo"),
+            ("clip.mpg", "video/mpeg"),
+            ("clip.mpeg", "video/mpeg"),
+            ("clip.wmv", "video/x-ms-wmv"),
+            ("clip.flv", "video/x-flv"),
+            ("clip.ogv", "video/ogg"),
+            ("clip.3gp", "video/3gpp"),
+        ] {
+            assert_eq!(clipboard_file_mime_type(Path::new(name)), Some(mime_type));
+        }
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn clipboard_png_headers_are_bounded_before_decode() {
@@ -481,17 +511,23 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_skips_binary_plists_but_keeps_xml_plists() {
+    fn clipboard_skips_binary_property_lists_but_keeps_text_forms() {
         let directory = tempfile::tempdir().unwrap();
         let binary = directory.path().join("binary.plist");
         std::fs::write(&binary, b"bplist00payload").unwrap();
+        let binary_strings = directory.path().join("binary.strings");
+        std::fs::write(&binary_strings, b"bplist00payload").unwrap();
         let xml = directory.path().join("xml.plist");
         std::fs::write(&xml, b"<?xml version=\"1.0\"?><plist/>").unwrap();
+        let text_strings = directory.path().join("Localizable.strings");
+        std::fs::write(&text_strings, b"\"hello\" = \"world\";").unwrap();
 
-        let files = read_clipboard_files(vec![binary, xml]).unwrap();
-        assert_eq!(files.len(), 1);
+        let files = read_clipboard_files(vec![binary, binary_strings, xml, text_strings]).unwrap();
+        assert_eq!(files.len(), 2);
         assert_eq!(files[0].name, "xml.plist");
         assert_eq!(files[0].mime_type, "application/xml");
+        assert_eq!(files[1].name, "Localizable.strings");
+        assert_eq!(files[1].mime_type, "text/plain");
     }
 
     #[test]

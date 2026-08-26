@@ -370,7 +370,7 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     if (await isBinaryPropertyList(file)) {
       const reason =
-        "Binary property lists aren't supported. Export the .plist as XML before attaching it.";
+        "Binary property-list files aren't supported. Convert the file to text before attaching it.";
       toast.error(reason);
       throw new Error(reason);
     }

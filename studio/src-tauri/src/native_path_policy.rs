@@ -368,7 +368,8 @@ pub fn is_text_attachment_name(path: &Path) -> bool {
 }
 
 pub fn is_binary_property_list(path: &Path, bytes: &[u8]) -> bool {
-    has_extension(path, "plist") && bytes.starts_with(b"bplist00")
+    (has_extension(path, "plist") || has_extension(path, "strings"))
+        && bytes.starts_with(b"bplist00")
 }
 
 pub fn is_binary_vobsub(path: &Path, bytes: &[u8]) -> bool {
@@ -1136,6 +1137,14 @@ mod tests {
         assert!(!is_binary_property_list(
             Path::new("settings.txt"),
             b"bplist00payload"
+        ));
+        assert!(is_binary_property_list(
+            Path::new("Localizable.strings"),
+            b"bplist00payload"
+        ));
+        assert!(!is_binary_property_list(
+            Path::new("Localizable.strings"),
+            b"\"hello\" = \"world\";"
         ));
     }
 

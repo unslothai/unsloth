@@ -723,7 +723,7 @@ test("frontend and Rust accept the same extensionless text names", () => {
   assert.deepEqual(rust, [...TEXT_ATTACHMENT_BASENAMES].sort());
 });
 
-test("binary plists are distinguished from XML plists", async () => {
+test("binary property-list files are distinguished from text forms", async () => {
   assert.equal(
     await isBinaryPropertyList(new File(["bplist00payload"], "settings.plist")),
     true,
@@ -736,6 +736,18 @@ test("binary plists are distinguished from XML plists", async () => {
   );
   assert.equal(
     await isBinaryPropertyList(new File(["bplist00payload"], "settings.txt")),
+    false,
+  );
+  assert.equal(
+    await isBinaryPropertyList(
+      new File(["bplist00payload"], "Localizable.strings"),
+    ),
+    true,
+  );
+  assert.equal(
+    await isBinaryPropertyList(
+      new File(['"hello" = "world";'], "Localizable.strings"),
+    ),
     false,
   );
 });
@@ -796,6 +808,23 @@ test("UTF-16 registry exports are decoded before attachment", async () => {
   assert.equal(
     await readTextAttachment(new File(["plain UTF-8"], "notes.txt")),
     "plain UTF-8",
+  );
+});
+
+test("gettext catalogs use the charset declared by their header", async () => {
+  const before =
+    'msgid ""\nmsgstr ""\n"Content-Type: text/plain; charset=ISO-8859-1\\n"\n\nmsgid "coffee"\nmsgstr "caf';
+  const after = '"\n';
+  const prefix = new TextEncoder().encode(before);
+  const suffix = new TextEncoder().encode(after);
+  const encoded = new Uint8Array(prefix.length + 1 + suffix.length);
+  encoded.set(prefix);
+  encoded[prefix.length] = 0xe9;
+  encoded.set(suffix, prefix.length + 1);
+
+  assert.equal(
+    await readTextAttachment(new File([encoded], "messages.po")),
+    `${before}é${after}`,
   );
 });
 

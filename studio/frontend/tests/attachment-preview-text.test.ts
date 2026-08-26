@@ -215,6 +215,24 @@ test("readAttachmentText previews UTF-16 registry exports as decoded text", asyn
   });
 });
 
+test("readAttachmentText previews gettext catalogs in their declared charset", async () => {
+  const before =
+    'msgid ""\nmsgstr ""\n"Content-Type: text/plain; charset=ISO-8859-1\\n"\n\nmsgid "coffee"\nmsgstr "caf';
+  const after = '"\n';
+  const encoded = Uint8Array.from([
+    ...new TextEncoder().encode(before),
+    0xe9,
+    ...new TextEncoder().encode(after),
+  ]);
+  const file = new File([encoded], "messages.po");
+
+  assert.deepEqual(await readAttachmentText(file, file.name, file.type), {
+    label: null,
+    text: `${before}é${after}`,
+    truncated: false,
+  });
+});
+
 test("readAttachmentText reads a bounded slice of a large html file", async () => {
   const oversized = new File(
     [`<p>${"b".repeat(2_000_000)}</p>`],
