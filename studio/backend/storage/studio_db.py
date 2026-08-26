@@ -3550,9 +3550,15 @@ def sync_chat_messages(
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
-        messages = [
-            message for message in messages if not _references_tombstoned_generation(conn, message)
-        ]
+        # Dropping a stale tab's view of a tombstoned run is a content decision, not a delete
+        # one. Once an edit detaches an assistant, the run row is gone, so the id no longer
+        # counts as generation-linked and nothing else would hold it back from the prune below.
+        tombstoned_ids = {
+            str(message["id"])
+            for message in messages
+            if _references_tombstoned_generation(conn, message)
+        }
+        messages = [message for message in messages if str(message["id"]) not in tombstoned_ids]
         # Generation-linked messages are server-managed: keep the record rather than reject the
         # batch on client drift. No _guard_research_messages call here as a result -- these ids
         # never reach it. upsert_chat_message still guards, so the single-message route keeps
@@ -3567,7 +3573,11 @@ def sync_chat_messages(
         explicitly_deleted_terminal_ids = explicitly_deleted_ids & _terminal_generation_message_ids(
             conn, thread_id
         )
-        prune_protected_ids = research_ids | (generation_ids - explicitly_deleted_terminal_ids)
+        prune_protected_ids = (
+            research_ids
+            | (generation_ids - explicitly_deleted_terminal_ids)
+            | (tombstoned_ids - explicitly_deleted_ids)
+        )
         # The rows this sync will delete, computed before the upsert so a relink forced by
         # that deletion can be told apart from an edit. Research ids are subtracted because
         # the delete below exempts them: counting one as pruned would walk the reseat past a

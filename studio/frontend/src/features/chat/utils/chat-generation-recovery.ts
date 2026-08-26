@@ -224,6 +224,8 @@ export function generationRecoveryMetadata(options: {
   lengthLimited: boolean;
   firstChunkAt?: number;
   totalChunks?: number;
+  usage?: unknown;
+  timings?: unknown;
 }): Record<string, unknown> {
   const {
     current,
@@ -234,6 +236,8 @@ export function generationRecoveryMetadata(options: {
     lengthLimited,
     firstChunkAt,
     totalChunks,
+    usage,
+    timings,
   } = options;
   const settled = generationIsSettled(status, cursor, lastEventSeq);
   const next: Record<string, unknown> = {
@@ -260,6 +264,15 @@ export function generationRecoveryMetadata(options: {
   }
   if (totalChunks !== undefined) {
     next.generationChunkCount = totalChunks;
+  }
+  // Carried with the cursor for the same reason the two above are: the usage chunk arrives
+  // before the terminal event, so a cursor published past it and then reloaded would resume
+  // after it and lose the token counts and server timings for good.
+  if (usage !== undefined) {
+    next.generationRecoveryUsage = usage;
+  }
+  if (timings !== undefined) {
+    next.generationRecoveryTimings = timings;
   }
   return next;
 }

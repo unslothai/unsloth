@@ -346,6 +346,37 @@ def test_cancel_before_registration_and_startup_orphan_reconciliation(chat_home)
     assert runs_db.list_events("orphan")[-1]["payload"]["interrupted"] is True
 
 
+def test_a_stop_in_flight_survives_a_restart_as_a_cancellation(chat_home):
+    """Stop recorded, worker not yet settled, Studio restarts.
+
+    Reporting this as a backend failure would tell the user Studio broke when in fact they
+    stopped it, and finish_run already settles the same case as cancelled.
+    """
+    _create()
+    runs_db.mark_running("run-1", runs_db.get_worker_token("run-1"))
+    assert runs_db.request_cancel("run-1", "alice")["status"] == "cancelling"
+
+    assert runs_db.reconcile_orphaned_runs() == 1
+
+    run = runs_db.get_run("run-1", "alice")
+    assert (run["status"], run["finishReason"]) == ("cancelled", "cancelled")
+    assert run["error"] is None
+    assert runs_db.list_events("run-1")[-1]["type"] == "run.cancelled"
+
+
+def test_an_uncancelled_run_still_reconciles_as_interrupted(chat_home):
+    """The cancellation branch above must not swallow a genuine restart."""
+    _create()
+    runs_db.mark_running("run-1", runs_db.get_worker_token("run-1"))
+
+    assert runs_db.reconcile_orphaned_runs() == 1
+
+    run = runs_db.get_run("run-1", "alice")
+    assert (run["status"], run["finishReason"]) == ("failed", "interrupted")
+    assert run["error"] == "Studio restarted during generation"
+    assert runs_db.list_events("run-1")[-1]["payload"]["interrupted"] is True
+
+
 def test_deleted_run_id_is_tombstoned_against_stale_tabs(chat_home):
     _original, _created = _create()
     studio_db.delete_chat_threads(["thread-1"])
@@ -360,6 +391,101 @@ def test_deleted_run_id_is_tombstoned_against_stale_tabs(chat_home):
             request_payload = _request(seed = 2),
         )
     assert runs_db.get_run("run-1", "alice") is None
+
+
+_SYNC_USER = {
+    "id": "user-1",
+    "threadId": "thread-1",
+    "role": "user",
+    "content": [{"type": "text", "text": "Hello"}],
+    "createdAt": 2,
+}
+
+
+def _edited_generated_assistant():
+    """Settle a generated assistant the way the pipeline does, then edit it by hand.
+
+    Returns the stale pre-edit copy another tab would still be holding.
+    """
+    studio_db.upsert_chat_message(
+        {
+            "id": "assistant-1",
+            "threadId": "thread-1",
+            "role": "assistant",
+            "parentId": "user-1",
+            "content": [],
+            "createdAt": 3,
+            "metadata": {},
+        }
+    )
+    _create()
+    token = runs_db.get_worker_token("run-1")
+    runs_db.mark_running("run-1", token)
+    runs_db.finish_run("run-1", worker_token = token, status = "completed", finish_reason = "stop")
+
+    metadata = dict(studio_db.get_chat_message("thread-1", "assistant-1")["metadata"])
+    metadata["generationSeq"] = int(runs_db.get_run("run-1", "alice")["lastEventSeq"])
+    metadata["generationSettled"] = True
+    settled = {
+        "id": "assistant-1",
+        "threadId": "thread-1",
+        "role": "assistant",
+        "parentId": "user-1",
+        "content": [{"type": "text", "text": "generated answer"}],
+        "createdAt": 3,
+        "metadata": metadata,
+    }
+    studio_db.sync_chat_messages("thread-1", [_SYNC_USER, settled])
+    assert (
+        studio_db.get_chat_message("thread-1", "assistant-1")["metadata"]["generationSettled"]
+        is True
+    ), "the settle write did not land, so anything built on it would prove nothing"
+    stale_tab_copy = json.loads(json.dumps(settled))
+
+    studio_db.upsert_chat_message(
+        {
+            "id": "assistant-1",
+            "threadId": "thread-1",
+            "role": "assistant",
+            "parentId": "user-1",
+            "content": [{"type": "text", "text": "edited by hand"}],
+            "createdAt": 3,
+            "metadata": {},
+        },
+        allow_generation_edit = True,
+    )
+    assert runs_db.get_run("run-1", "alice") is None, "the edit did not detach the run"
+    return stale_tab_copy
+
+
+def test_a_stale_tab_sync_cannot_prune_an_edited_generated_assistant(chat_home):
+    """Editing a settled generated answer detaches it; another open tab must not delete it.
+
+    The edit drops the run row, so the id stops counting as generation-linked. A stale tab
+    still holding the pre-edit copy has that copy filtered out as tombstoned, which would
+    otherwise leave the id absent from the requested set and inside the prune.
+    """
+    stale_tab_copy = _edited_generated_assistant()
+
+    studio_db.sync_chat_messages("thread-1", [_SYNC_USER, stale_tab_copy], prune_missing = True)
+
+    survivor = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert survivor is not None, "the stale tab's sync deleted the user's edited message"
+    # Kept, but still not writable by the stale copy.
+    assert survivor["content"] == [{"type": "text", "text": "edited by hand"}]
+
+
+def test_an_explicit_delete_still_removes_a_detached_generated_assistant(chat_home):
+    """The retention above is snapshot-pruning only; naming the id must still delete it."""
+    stale_tab_copy = _edited_generated_assistant()
+
+    studio_db.sync_chat_messages(
+        "thread-1",
+        [_SYNC_USER, stale_tab_copy],
+        prune_missing = True,
+        deleted_message_ids = ["assistant-1"],
+    )
+    assert studio_db.get_chat_message("thread-1", "assistant-1") is None
 
 
 @pytest.mark.parametrize(

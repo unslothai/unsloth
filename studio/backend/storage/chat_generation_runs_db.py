@@ -615,24 +615,29 @@ def reconcile_orphaned_runs(error: str = "Studio restarted during generation") -
     try:
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
-            """SELECT id FROM chat_generation_runs
+            """SELECT id, status, cancel_requested FROM chat_generation_runs
                WHERE status IN ('queued','running','cancelling') ORDER BY created_at, id"""
         ).fetchall()
         completed = now_ms()
         for row in rows:
             run_id = row["id"]
-            _append_events_locked(
-                conn,
-                run_id,
-                [("run.failed", {"status": "failed", "error": error, "interrupted": True})],
-            )
+            # A Stop that was already recorded outlives the restart. Reporting it as a
+            # backend failure would tell the user Studio broke when they stopped it, and
+            # finish_run settles this same case as cancelled.
+            if str(row["status"]) == "cancelling" or bool(row["cancel_requested"]):
+                status, finish_reason, message = "cancelled", "cancelled", None
+                terminal = ("run.cancelled", {"status": status, "finishReason": finish_reason})
+            else:
+                status, finish_reason, message = "failed", "interrupted", error
+                terminal = ("run.failed", {"status": status, "error": error, "interrupted": True})
+            _append_events_locked(conn, run_id, [terminal])
             conn.execute(
                 """UPDATE chat_generation_runs
-                   SET status='failed', finish_reason='interrupted', error_message=?,
+                   SET status=?, finish_reason=?, error_message=?,
                        updated_at=?, completed_at=? WHERE id=?""",
-                (error, completed, completed, run_id),
+                (status, finish_reason, message, completed, completed, run_id),
             )
-            _sync_assistant_status_locked(conn, run_id, "failed")
+            _sync_assistant_status_locked(conn, run_id, status)
             changed += 1
         _commit(conn, notify = bool(changed))
         return changed

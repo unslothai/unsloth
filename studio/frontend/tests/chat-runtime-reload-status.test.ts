@@ -280,6 +280,62 @@ test("reload, wake, and stale-tab recovery stays monotonic and truthful", () => 
   );
 });
 
+test("recovery persists recovered usage alongside the cursor it advanced", () => {
+  // The usage chunk arrives before the terminal event. A cursor published past it and then
+  // reloaded would resume after it, so the counts have to travel with the cursor.
+  const usage = { prompt_tokens: 8, completion_tokens: 12, total_tokens: 20 };
+  const timings = { predicted_per_second: 12 };
+  const midStream = generationRecoveryMetadata({
+    current: { generationRunId: "run-1" },
+    runId: "run-1",
+    status: "running",
+    cursor: 3,
+    lastEventSeq: 5,
+    lengthLimited: false,
+    usage,
+    timings,
+  });
+  assert.equal(midStream.generationSettled, false);
+  assert.deepEqual(midStream.generationRecoveryUsage, usage);
+  assert.deepEqual(midStream.generationRecoveryTimings, timings);
+
+  // A recovery that never saw one must not invent or erase it.
+  const withoutUsage = generationRecoveryMetadata({
+    current: { generationRunId: "run-1" },
+    runId: "run-1",
+    status: "running",
+    cursor: 1,
+    lastEventSeq: 5,
+    lengthLimited: false,
+  });
+  assert.equal("generationRecoveryUsage" in withoutUsage, false);
+
+  // Reloading picks the stored counts back up, so settlement still reports them.
+  const settled = recoveredGenerationFinalMetadata({
+    current: { generationSettled: true },
+    run: {
+      id: "run-1",
+      requestPayload: { model: "local/model" },
+      createdAt: 100,
+      startedAt: 120,
+      completedAt: 1120,
+    },
+    usage: midStream.generationRecoveryUsage as typeof usage,
+    timings: midStream.generationRecoveryTimings as typeof timings,
+    firstChunkAt: 220,
+    totalChunks: 4,
+  });
+  assert.deepEqual(settled.contextUsage, {
+    promptTokens: 8,
+    completionTokens: 12,
+    totalTokens: 20,
+    cachedTokens: 0,
+    cacheWriteTokens: 0,
+    modelId: "local/model",
+  });
+  assert.deepEqual(settled.serverTimings, timings);
+});
+
 test("recovery persists the replay prefix statistics it has applied", () => {
   const metadata = generationRecoveryMetadata({
     current: {

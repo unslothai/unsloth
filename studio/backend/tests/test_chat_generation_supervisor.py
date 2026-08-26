@@ -420,6 +420,35 @@ async def test_uncancelled_partial_eof_is_interrupted(durable_run, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_caught_up_reconnect_to_a_settled_run_does_not_block(durable_run, monkeypatch):
+    """Nothing left to replay must return at once, not after the 15s event wait.
+
+    Otherwise a finished answer reads as still generating for the whole timeout and one of
+    the event-wait workers is held for it.
+    """
+
+    async def body():
+        yield 'data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\n'
+        yield "data: [DONE]\n\n"
+
+    async def fake(*_args, **_kwargs):
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    await ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))._produce("run-1")
+    settled = runs_db.get_run("run-1", "alice")
+    assert settled["status"] == "completed"
+
+    caught_up = await asyncio.wait_for(
+        _subscriber_sequences(after = int(settled["lastEventSeq"])),
+        timeout = 5,
+    )
+    assert caught_up == []
+    # A client that is behind still gets the whole ledger.
+    assert await _subscriber_sequences() == list(range(1, int(settled["lastEventSeq"]) + 1))
+
+
+@pytest.mark.asyncio
 async def test_streamed_error_outranks_cleanup_cancellation(durable_run, monkeypatch):
     """A backend failure must not be recorded as if the user pressed Stop.
 

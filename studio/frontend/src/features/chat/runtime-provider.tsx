@@ -789,8 +789,9 @@ function scheduleGenerationRecovery(
           cache_creation_input_tokens?: unknown;
           cache_read_input_tokens?: unknown;
         }
-      | undefined;
-    let recoveryTimings: Record<string, unknown> | undefined;
+      | undefined = (metadata.generationRecoveryUsage as typeof recoveryUsage) ?? undefined;
+    let recoveryTimings: Record<string, unknown> | undefined =
+      (metadata.generationRecoveryTimings as Record<string, unknown>) ?? undefined;
     let firstChunkAt =
       typeof metadata.generationFirstChunkAt === "number" &&
       Number.isFinite(metadata.generationFirstChunkAt)
@@ -830,6 +831,8 @@ function scheduleGenerationRecovery(
         lengthLimited,
         firstChunkAt,
         totalChunks,
+        usage: recoveryUsage,
+        timings: recoveryTimings,
       });
       if (nextMetadata.generationSettled === true) {
         nextMetadata = recoveredGenerationFinalMetadata({

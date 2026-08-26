@@ -317,6 +317,16 @@ async def chat_generation_events(
     async def stream():
         nonlocal cursor
         loop = asyncio.get_running_loop()
+        # A client that reconnects already caught up on a settled run has nothing to replay,
+        # and wait_for_events would hold it for the full timeout: the finished answer reads
+        # as still generating and an event-wait worker is tied up meanwhile. Only the first
+        # wait needs this guard, since every later pass already returns on the same test
+        # against the snapshot it read after waiting.
+        opening = await asyncio.to_thread(db.get_run, run_id)
+        if opening is None:
+            return
+        if opening["status"] in db.TERMINAL_STATUSES and cursor >= int(opening["lastEventSeq"]):
+            return
         while True:
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,

@@ -722,6 +722,22 @@ def test_base64_media_turns_stay_on_the_legacy_stream():
     assert "!videoBase64" in candidate
 
 
+def test_continuations_stay_on_the_legacy_stream():
+    """Continue yields its seeded partial before the request starts.
+
+    That autosave can reach storage before durable admission does, and admission refuses a
+    placeholder that already has content with a 409, which is not one of the errors that
+    falls back to the legacy stream. So the turn would fail outright rather than generate.
+    """
+    candidate = _between(
+        CHAT_ADAPTER,
+        "const generationCandidate = Boolean(",
+        ");",
+    )
+    assert "!continuation" in candidate
+
+
+
 def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():
     reset = _between(
         SHARED_COMPOSER,

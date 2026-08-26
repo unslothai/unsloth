@@ -4986,6 +4986,11 @@ export function createOpenAIStreamAdapter(
           !imageBase64 &&
           !audioBase64 &&
           !videoBase64 &&
+          // Continue seeds the partial into the sibling assistant and yields it before the
+          // request starts, so the autosave can land before admission does. Admission
+          // refuses a substantive placeholder with a 409, which is not a fallback error,
+          // and the turn would fail outright. Continuations keep the legacy stream.
+          !continuation &&
           resolvedThreadId &&
           !isThreadIncognito(resolvedThreadId) &&
           unstable_assistantMessageId &&
