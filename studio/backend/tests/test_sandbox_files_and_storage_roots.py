@@ -6308,5 +6308,27 @@ class _WholeSecondMtime:
         return getattr(self._stat, name)
 
 
+def test_session_in_flight_does_not_swallow_tool_exceptions(tmp_path, monkeypatch):
+    """A tool that raises must surface, not be reported as an unknown tool."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    session = "__LOCALID_raises1"
+    with pytest.raises(ValueError, match = "boom"):
+        with tools._session_in_flight(session):
+            raise ValueError("boom")
+
+    assert tools._session_key(session) not in tools._active_sessions
+
+
+def test_execute_tool_reports_a_bad_arg_instead_of_unknown_tool(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+    with pytest.raises(AttributeError):
+        tools.execute_tool("python", {"code": 42}, session_id = "__LOCALID_badarg1")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

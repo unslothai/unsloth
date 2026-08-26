@@ -33,6 +33,28 @@ def _image(data: str = PNG_B64, mime: str = "image/png") -> SimpleNamespace:
     return SimpleNamespace(type = "image", data = data, mimeType = mime)
 
 
+def _blob_resource(
+    data: str = PNG_B64,
+    mime: str | None = "image/png",
+    uri: str = "file:///out/gen.png",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        type = "resource",
+        resource = SimpleNamespace(uri = uri, mimeType = mime, blob = data),
+    )
+
+
+def _text_resource(text: str, mime: str = "text/plain") -> SimpleNamespace:
+    return SimpleNamespace(
+        type = "resource",
+        resource = SimpleNamespace(uri = "file:///out/log.txt", mimeType = mime, text = text),
+    )
+
+
+def _resource_link(uri: str = "file:///out/gen.png", name = None) -> SimpleNamespace:
+    return SimpleNamespace(type = "resource_link", uri = uri, name = name, mimeType = "image/png")
+
+
 def _result(
     *blocks,
     is_error = False,
@@ -218,3 +240,197 @@ def test_stdio_session_call_also_passes_raise_on_error_false(monkeypatch):
     assert out.startswith("Error: boom")
     assert MCP_IMAGES_SENTINEL in out
     assert is_tool_error(out)
+
+
+def test_embedded_resource_image_is_rendered():
+    flat = _flatten_result(_result(_blob_resource()))
+    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
+    assert body == "[1 image attached; displayed to the user]"
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+
+def test_embedded_resource_image_shares_budget_with_image_content():
+    flat = _flatten_result(_result(_text("rendered"), _image(), _blob_resource(mime = "image/webp")))
+    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
+    assert body == "rendered\n[2 images attached; displayed to the user]"
+    assert [img["mimeType"] for img in json.loads(payload)] == ["image/png", "image/webp"]
+
+
+def test_oversized_embedded_resource_image_omitted():
+    huge = "A" * (MAX_IMAGE_PAYLOAD_CHARS + 1)
+    assert _flatten_result(_result(_blob_resource(data = huge))) == "[1 image omitted (too large)]"
+
+
+def test_embedded_text_resource_contributes_its_text():
+    assert (
+        _flatten_result(_result(_text_resource("saved to /out/gen.png"))) == "saved to /out/gen.png"
+    )
+
+
+def test_embedded_non_image_blob_still_ignored():
+    assert _flatten_result(_result(_blob_resource(mime = "application/pdf"))) == ""
+
+
+def test_resource_link_keeps_its_uri():
+    assert _flatten_result(_result(_resource_link())) == "[resource: <file:///out/gen.png>]"
+    assert _flatten_result(_result(_resource_link(name = "gen.png"))) == (
+        "[resource: gen.png <file:///out/gen.png>]"
+    )
+
+
+def test_resource_link_does_not_displace_structured_content():
+    flat = _flatten_result(_result(_resource_link(), structured = {"path": "/out/gen.png"}))
+    assert flat == "{'path': '/out/gen.png'}\n[resource: <file:///out/gen.png>]"
+
+
+def test_server_text_still_wins_over_structured_content():
+    flat = _flatten_result(_result(_resource_link(), _text("done"), structured = {"path": "/x"}))
+    assert flat == "[resource: <file:///out/gen.png>]\ndone"
+
+
+def test_fastmcp_file_format_png_is_rendered():
+    # fastmcp File(data=..., format="png") labels the blob application/png
+    flat = _flatten_result(_result(_blob_resource(mime = "application/png")))
+    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
+    assert body == "[1 image attached; displayed to the user]"
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+
+def test_application_image_subtypes_are_normalised():
+    for mime, expected in (
+        ("application/apng", "image/apng"),
+        ("application/jpeg", "image/jpeg"),
+        ("application/jpg", "image/jpeg"),
+        ("application/webp", "image/webp"),
+        ("application/GIF", "image/gif"),
+        ("application/bmp", "image/bmp"),
+        ("application/avif", "image/avif"),
+        ("application/tif", "image/tiff"),
+        ("application/tiff", "image/tiff"),
+        ("application/ico", "image/vnd.microsoft.icon"),
+        ("application/heic", "image/heic"),
+        ("application/svg", "image/svg+xml"),
+        ("application/svg+xml", "image/svg+xml"),
+    ):
+        flat = _flatten_result(_result(_blob_resource(mime = mime)))
+        payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+        assert json.loads(payload) == [{"data": PNG_B64, "mimeType": expected}], mime
+
+
+def test_blob_resource_without_mime_uses_uri_extension():
+    flat = _flatten_result(_result(_blob_resource(mime = None)))
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+    assert _flatten_result(_result(_blob_resource(mime = None, uri = "file:///out/report.pdf"))) == ""
+
+
+def test_non_image_application_types_stay_ignored():
+    for mime in ("application/pdf", "application/octet-stream", "application/json"):
+        assert _flatten_result(_result(_blob_resource(mime = mime))) == "", mime
+
+
+def test_image_content_mime_is_passed_through_unchanged():
+    flat = _flatten_result(_result(_image(mime = "image/png")))
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+
+def test_mixed_case_image_mime_is_matched():
+    # media type names are case-insensitive
+    for mime in ("IMAGE/PNG", "Image/Png", "image/PNG"):
+        flat = _flatten_result(_result(_blob_resource(mime = mime)))
+        payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+        assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}], mime
+
+
+def test_mime_parameters_are_dropped_from_the_data_url_type():
+    flat = _flatten_result(_result(_image(mime = "image/png; charset=binary")))
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+
+def test_uri_query_and_fragment_are_not_part_of_the_name():
+    # mimetypes only stopped reading the query and fragment in 3.11.9/3.12.3/3.13
+    # (CPython gh-117217); on older supported interpreters this dropped the image.
+    for uri in (
+        "file:///out/gen.png?download=1",
+        "file:///out/gen.png#preview",
+        "file:///out/gen.png?download=1#preview",
+        "https://host/out/gen.png?sig=abc123",
+    ):
+        flat = _flatten_result(_result(_blob_resource(mime = None, uri = uri)))
+        payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+        assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}], uri
+
+
+def test_extension_only_in_the_query_is_not_an_image():
+    # the same defect the other way: a query naming a .png made a non-image render
+    for uri in ("file:///out/download?name=gen.png", "file:///out/download#gen.png"):
+        assert _flatten_result(_result(_blob_resource(mime = None, uri = uri))) == "", uri
+
+
+def test_data_uri_still_resolves_its_own_type():
+    flat = _flatten_result(
+        _result(_blob_resource(mime = None, uri = "data:image/png;base64,iVBORw0KGgo="))
+    )
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+    assert (
+        _flatten_result(
+            _result(_blob_resource(mime = None, uri = "data:application/pdf;base64,JVBERi0="))
+        )
+        == ""
+    )
+
+
+def test_a_bare_host_is_not_a_file_name():
+    # urlsplit puts gen.png in netloc, not path; 3.10 guessed image/png from it
+    assert _flatten_result(_result(_blob_resource(mime = None, uri = "resource://gen.png"))) == ""
+    flat = _flatten_result(_result(_blob_resource(mime = None, uri = "resource://images/gen.png")))
+    assert MCP_IMAGES_SENTINEL in flat
+
+
+def test_malformed_image_types_never_reach_the_data_url():
+    # anything that survives is interpolated into data:<type>;base64, by the frontend
+    for mime in (
+        "image/",
+        "image//png",
+        "image/*",
+        "image/<script>",
+        'image/png"',
+        "image/png\nX-Injected: 1",
+    ):
+        assert _flatten_result(_result(_blob_resource(mime = mime))) == "", mime
+
+
+def test_unusual_but_valid_image_types_are_kept():
+    for mime in ("image/svg+xml", "image/vnd.microsoft.icon", "image/x-icon", "image/jp2"):
+        flat = _flatten_result(_result(_blob_resource(mime = mime)))
+        payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+        assert json.loads(payload) == [{"data": PNG_B64, "mimeType": mime}], mime
+
+
+def test_snake_case_mime_attribute_is_read_too():
+    # mcp 2.x renames mimeType to mime_type and keeps camelCase only as an alias
+    block = SimpleNamespace(
+        type = "resource",
+        resource = SimpleNamespace(uri = "file:///out/gen.bin", mime_type = "image/png", blob = PNG_B64),
+    )
+    flat = _flatten_result(_result(block))
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+
+    direct = SimpleNamespace(type = "image", data = PNG_B64, mime_type = "image/jpeg")
+    flat = _flatten_result(_result(direct))
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/jpeg"}]
+
+
+def test_registry_case_does_not_decide_whether_an_image_survives(monkeypatch):
+    # windows answers .jxl with image/JXL, linux and macos image/jxl; same type per RFC 9110
+    monkeypatch.setattr(
+        mcp_client.mimetypes, "guess_type", lambda name, strict = True: ("image/JXL", None)
+    )
+    flat = _flatten_result(_result(_blob_resource(mime = "application/jxl")))
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/jxl"}]
