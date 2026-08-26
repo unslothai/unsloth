@@ -17,6 +17,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from utils.log_redaction import REDACTED, redact_log_text
+from utils.secret_env import SECRET_ENV_NAMES
 
 _SLACK_SHAPED = "xox" + "b-" + "1234567890" + "-ABCDEFGHIJKLMNOP"
 
@@ -240,6 +241,10 @@ def test_a_real_cookie_pair_is_still_masked(line, secret):
             "Authorization: AWS4-HMAC-SHA256 Credential=AKID/20260826/eu-west-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=deadbeef",
             "Authorization: AWS4-HMAC-SHA256 <redacted>",
         ),
+        (
+            "curl -H 'Authorization: Bearer abcdef123456' https://example.com",
+            "curl -H 'Authorization: Bearer <redacted>' https://example.com",
+        ),
         ("authorization: 'Basic dXNlcjpwdw=='", "authorization: 'Basic <redacted>'"),
         (
             'headers={"Cookie": "session=abc123def456xyz", "accept": "*/*"}',
@@ -271,12 +276,33 @@ def test_the_fields_after_a_masked_header_survive(line, expected):
             "headers=[('Authorization', 'Bearer <redacted>')]",
         ),
         ("password=correct horse battery staple", "password=<redacted>"),
+        (
+            "OPENAI_API_KEY=abcdef123456 python server.py --port 8080",
+            "OPENAI_API_KEY=<redacted> python server.py --port 8080",
+        ),
         ('{"password":"null"}', '{"password":"<redacted>"}'),
         ("password='None'", "password='<redacted>'"),
     ],
 )
 def test_credential_boundaries_do_not_leak_suffixes(line, expected):
     assert redact_log_text(line) == expected
+
+
+@pytest.mark.parametrize(
+    "name",
+    sorted(
+        SECRET_ENV_NAMES
+        | {
+            "AWS_ACCESS_KEY_ID",
+            "AZURE_CLIENT_SECRET",
+            "NPM_CONFIG__AUTH",
+        }
+    ),
+)
+def test_studio_secret_environment_inventory_is_masked(name):
+    secret = "opaque-environment-secret"
+    line = f"{name}={secret} python server.py"
+    assert redact_log_text(line) == f"{name}=<redacted> python server.py"
 
 
 # A colorized writer puts an escape between the key and its value. Every rule is

@@ -380,6 +380,23 @@ def test_export_keeps_secret_context_after_an_oversized_record(client):
     assert exported.splitlines()[-1] == "kept"
 
 
+def test_export_does_not_carry_a_closed_secret_past_an_oversized_record(client):
+    from utils.debug_log_export import EXPORT_READ_BYTES
+
+    path = _seed_server_log(
+        "password=done "
+        + "x" * EXPORT_READ_BYTES
+        + "\n  traceback detail stays visible\nordinary: kept\n"
+    )
+
+    response = client.get("/api/settings/debug/logs/export")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        exported = archive.read(f"server/{path.name}").decode("utf-8")
+    assert "oversized log record omitted" in exported
+    assert "traceback detail stays visible" in exported
+    assert exported.splitlines()[-1] == "ordinary: kept"
+
+
 def test_export_scans_the_whole_oversized_record_for_secret_context(client):
     from utils.debug_log_export import EXPORT_READ_BYTES
 

@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import re
 
+from utils.secret_env import is_secret_env_name
+
 REDACTED = "<redacted>"
 
 # Terminal control sequences, stripped BEFORE anything is matched. A colorized
@@ -106,6 +108,12 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # the suffix, while an escaped matching quote does not end the value early.
 _QUOTED_VALUE = r"(?:\\.|(?!(?P=quote))[^\\\n])*"
 _UNTERMINATED_QUOTED_VALUE = _QUOTED_VALUE + r"\\?"
+_ENV_ASSIGNMENT_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?P<key>[A-Z_][A-Z0-9_]*)"
+    r"(?P<sep>=)(?:(?P<quote>[\"'])(?P<quoted>"
+    + _QUOTED_VALUE
+    + r")(?P=quote)|(?P<val>[^\s,}\]]+))"
+)
 _QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?P<quote>[\"'])"
@@ -119,7 +127,8 @@ _UNTERMINATED_QUOTED_KV_RE = re.compile(
 )
 _PLAIN_SCALAR_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
-    r"(?P<sep>[\"']?\s*[:=]\s*)(?P<val>[^\"'\s|>,}\]][^\"'\r\n,}\]]*)"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)"
+    r"(?P<val>[^\"'\s|>,}\]][^\"'\r\n,}\]]*)"
 )
 _ESCAPED_QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>(?:" + _SECRET_KEYS + r"|(?:set-)?cookie))\b"
@@ -204,7 +213,7 @@ _QUOTED_AUTH_RE = re.compile(
 )
 _UNQUOTED_AUTH_RE = re.compile(
     r"(?i)(?P<key>(?:proxy-)?authorization)(?P<sep>[\"']?\s*[:=]\s*)"
-    r"(?P<val>[^\"'\s}\]][^\r\n}\]]*)"
+    r"(?P<val>[^\"'\s}\]][^\"'\r\n}\]]*)"
 )
 _AUTH_ADJACENT_FIELD_RE = re.compile(r"[,;]\s*[A-Za-z_][\w-]*\s*[:=]")
 # Bearer is not an English word that shows up in a log on its own, so it keeps
@@ -255,6 +264,14 @@ def _redact_kv(match: re.Match[str]) -> str:
             return match.group(0)
         return f"{match.group('key')}{match.group('sep')}{scheme}{sep}{REDACTED}"
     return f"{match.group('key')}{match.group('sep')}{REDACTED}"
+
+
+def _redact_env_assignment(match: re.Match[str]) -> str:
+    """Mask Studio-recognized secret env vars without consuming a command."""
+    if not is_secret_env_name(match.group("key")):
+        return match.group(0)
+    quote = match.group("quote") or ""
+    return f"{match.group('key')}{match.group('sep')}{quote}{REDACTED}{quote}"
 
 
 def _redact_quoted_kv(match: re.Match[str]) -> str:
@@ -381,6 +398,9 @@ def redact_log_text(text: str) -> str:
         text = _ANSI_RE.sub("", text)
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
+    # Use the same env-name classifier as the tool sandbox. Shell assignments
+    # end at whitespace, so later command arguments remain useful diagnostics.
+    text = _ENV_ASSIGNMENT_RE.sub(_redact_env_assignment, text)
     # Exact Authorization assignments are unambiguous even when the scheme is
     # uncommon (Negotiate, AWS SigV4, or a provider-specific extension).
     text = _QUOTED_AUTH_RE.sub(_redact_auth_assignment, text)
@@ -451,12 +471,58 @@ class StreamingLogRedactor:
 
     @staticmethod
     def omitted_record_chunk_has_sensitive_context(text: str) -> bool:
-        return _OMITTED_CONTEXT_RE.search(text) is not None
+        if _OMITTED_CONTEXT_RE.search(text) is not None:
+            return True
+        return any(
+            is_secret_env_name(match.group("key"))
+            for match in re.finditer(
+                r"(?<![A-Za-z0-9_])(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=",
+                text,
+            )
+        )
 
-    def mark_omitted_sensitive_record(self, quoted_secret: str | None = None) -> None:
+    @classmethod
+    def omitted_record_continuation_kind(
+        cls,
+        text: str,
+        previous: str | None = None,
+        sensitive_context: bool = False,
+    ) -> str | None:
+        """Track whether an omitted physical record opens a later value."""
+        matches = list(_OMITTED_CONTEXT_RE.finditer(text))
+        if matches:
+            suffix = text[matches[-1].end() :].rstrip("\r\n")
+            stripped = suffix.strip()
+            if not stripped:
+                return "plain"
+            before_comment = stripped.split("#", 1)[0].rstrip()
+            if _YAML_BLOCK_MARKER_RE.fullmatch(before_comment):
+                return "block"
+            return "plain" if cls._ends_with_unescaped_backslash(suffix.rstrip()) else None
+
+        if previous == "block":
+            stripped = text.strip()
+            return "block" if not stripped or stripped.startswith("#") else None
+        if previous == "plain":
+            if not text.strip():
+                return "plain"
+            return "plain" if cls._ends_with_unescaped_backslash(text.rstrip()) else None
+        if sensitive_context and cls._ends_with_unescaped_backslash(text.rstrip()):
+            return "plain"
+        return None
+
+    def mark_omitted_sensitive_record(
+        self,
+        quoted_secret: str | None = None,
+        continuation_kind: str | None = None,
+    ) -> None:
         """Conservatively mask the continuation after a discarded sensitive record."""
         if quoted_secret is not None:
             self._quoted_secret = quoted_secret
+            return
+        if continuation_kind == "block":
+            self._block_key_indent = 0
+            self._block_value_indent = None
             return
         self._plain_key_indent = 0
         self._plain_has_value = False

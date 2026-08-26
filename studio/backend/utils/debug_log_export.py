@@ -55,15 +55,22 @@ def _copy_redacted(source: BinaryIO, destination: BinaryIO, max_bytes: int) -> N
     omitted = 0
     scan_tail = b""
     sensitive_context = False
+    continuation_kind: str | None = None
     omitted_quote: str | None = None
     omitted_quote_escaped = False
 
     def write_piece(piece: bytes, *, terminated: bool) -> None:
-        nonlocal omitted, scan_tail, sensitive_context, omitted_quote, omitted_quote_escaped
+        nonlocal omitted, scan_tail, sensitive_context, continuation_kind
+        nonlocal omitted_quote, omitted_quote_escaped
         if omitted:
             omitted += len(piece)
             scan = (scan_tail + piece).decode("utf-8", errors = "replace")
             sensitive_context |= redactor.omitted_record_chunk_has_sensitive_context(scan)
+            continuation_kind = redactor.omitted_record_continuation_kind(
+                scan,
+                continuation_kind,
+                sensitive_context,
+            )
             quote_scan = piece.decode("utf-8", errors = "replace") if omitted_quote else scan
             omitted_quote, omitted_quote_escaped = redactor.omitted_record_quote_state(
                 quote_scan,
@@ -77,6 +84,10 @@ def _copy_redacted(source: BinaryIO, destination: BinaryIO, max_bytes: int) -> N
                 omitted = len(record)
                 scan = bytes(record).decode("utf-8", errors = "replace")
                 sensitive_context = redactor.omitted_record_chunk_has_sensitive_context(scan)
+                continuation_kind = redactor.omitted_record_continuation_kind(
+                    scan,
+                    sensitive_context = sensitive_context,
+                )
                 omitted_quote, omitted_quote_escaped = redactor.omitted_record_quote_state(
                     scan,
                     None,
@@ -87,8 +98,11 @@ def _copy_redacted(source: BinaryIO, destination: BinaryIO, max_bytes: int) -> N
         if not terminated:
             return
         if omitted:
-            if sensitive_context or omitted_quote is not None:
-                redactor.mark_omitted_sensitive_record(omitted_quote)
+            if continuation_kind is not None or omitted_quote is not None:
+                redactor.mark_omitted_sensitive_record(
+                    omitted_quote,
+                    continuation_kind,
+                )
             destination.write(f"[oversized log record omitted: {omitted} bytes]\n".encode("ascii"))
         elif record:
             text = bytes(record).decode("utf-8", errors = "replace")
@@ -97,6 +111,7 @@ def _copy_redacted(source: BinaryIO, destination: BinaryIO, max_bytes: int) -> N
         omitted = 0
         scan_tail = b""
         sensitive_context = False
+        continuation_kind = None
         omitted_quote = None
         omitted_quote_escaped = False
 
