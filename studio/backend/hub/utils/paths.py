@@ -325,12 +325,12 @@ def lmstudio_model_dirs() -> list[Path]:
     settings_path = Path.home() / ".lmstudio" / "settings.json"
     if settings_path.is_file():
         try:
-            settings = json.loads(settings_path.read_text(encoding = "utf-8"))
+            settings = json.loads(settings_path.read_text(encoding = "utf-8-sig"))
             downloads = settings.get("downloadsFolder", "")
             if downloads:
                 _add(downloads)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Could not read LM Studio settings from %s: %s", settings_path, exc)
     _add(Path.home() / ".lmstudio" / "models")
     _add(Path.home() / ".cache" / "lm-studio" / "models")
     return dirs
