@@ -5144,9 +5144,7 @@ def _policy_scan() -> "tuple[tuple[tuple[str, str, str], ...], dict[str, frozens
             if _canonical_policy_key(key) not in cancelled["uv"]:
                 _record("uv", os.path.basename(path), key, value)
 
-    return tuple(dict.fromkeys(on)), {
-        tool: frozenset(keys) for tool, keys in configured.items()
-    }
+    return tuple(dict.fromkeys(on)), {tool: frozenset(keys) for tool, keys in configured.items()}
 
 
 def _detected_policy() -> "tuple[tuple[str, str, str], ...]":
@@ -5203,7 +5201,8 @@ def _unenforceable_policy(cmd: "list[str]") -> "list[str]":
     target = "uv" if cmd[:1] == ["uv"] else "pip"
     known = _configured_policy_keys().get(target, frozenset())
     missing = {
-        key for tool, _source, key in _detected_policy()
+        key
+        for tool, _source, key in _detected_policy()
         if tool != target and _canonical_policy_key(key) not in known
     }
     return sorted(missing)
@@ -5230,8 +5229,11 @@ def _refuse_unenforceable_policy(cmd: "list[str]", missing: "list[str]") -> None
         canonical = _canonical_policy_key(key)
         pip_name, uv_name = _POLICY_EQUIVALENTS.get(canonical, ("", ""))
         wanted = uv_name if target == "uv" else pip_name
-        lines.append(f"     {key} -> set {wanted}" if wanted else
-                     f"     {key} -> {target} has no equivalent setting")
+        lines.append(
+            f"     {key} -> set {wanted}"
+            if wanted
+            else f"     {key} -> {target} has no equivalent setting"
+        )
     _safe_print(
         _red(
             f"   {_POLICY_OPT_OUT_ENV} is set, but this step runs {target}, which does "

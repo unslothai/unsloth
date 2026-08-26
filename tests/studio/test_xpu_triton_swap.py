@@ -67,9 +67,9 @@ def _load_real_index_env_scrub():
         exec(compile(src[start : src.index(end, start) + keep], str(STACK), "exec"), ns)
     assert "PIP_NO_INDEX" in ns["_UV_INDEX_ENV_VARS"], "extraction lost the pip vars"
     assert "PIP_REQUIRE_HASHES" in ns["_PM_POLICY_ENV_VARS"], "extraction lost the policy vars"
-    assert not ns["_unenforceable_policy"](["uv", "pip", "install", "x"]), (
-        "without the opt-out the gate must short-circuit before any policy scan"
-    )
+    assert not ns["_unenforceable_policy"](
+        ["uv", "pip", "install", "x"]
+    ), "without the opt-out the gate must short-circuit before any policy scan"
     return ns["_install_env_for_cmd"]
 
 

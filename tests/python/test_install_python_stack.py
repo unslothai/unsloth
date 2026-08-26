@@ -557,7 +557,7 @@ class TestOperatorCanKeepTheirPolicy:
         """The relaxation is withdrawn. Scoped to pip's own controls, because a mix of
         pip and uv policy is now a reported gap, which is a different test's subject."""
         with mock.patch.dict(
-            os.environ, dict(self.PIP_ONLY, UNSLOTH_RESPECT_PM_POLICY=value), clear=True
+            os.environ, dict(self.PIP_ONLY, UNSLOTH_RESPECT_PM_POLICY = value), clear = True
         ):
             env = ips._install_env_for_cmd(["python", "-m", "pip", "install", "-r", "extras.txt"])
         assert env is None or env.get("PIP_REQUIRE_HASHES") != "0"
@@ -984,11 +984,21 @@ class TestNeitherManagerIsLetOffTheOthersPolicy:
     step now stops and names the setting to add, which cannot invent a restriction.
     """
 
-    def _detect(self, on, configured = None):
+    def _detect(
+        self,
+        on,
+        configured = None,
+    ):
         scan = (tuple(on), {k: frozenset(v) for k, v in (configured or {}).items()})
         return mock.patch.object(ips, "_policy_scan", lambda: scan)
 
-    def _run(self, cmd, on, configured = None, env = None):
+    def _run(
+        self,
+        cmd,
+        on,
+        configured = None,
+        env = None,
+    ):
         environment = {"UNSLOTH_RESPECT_PM_POLICY": "1"}
         environment.update(env or {})
         with (
@@ -1028,18 +1038,24 @@ class TestNeitherManagerIsLetOffTheOthersPolicy:
     def test_a_deliberate_difference_is_not_a_gap(self):
         """A uv config saying `[pip] require-hashes = false` next to PIP_REQUIRE_HASHES=1
         is the operator configuring the two differently, not uv missing a control."""
-        assert self._run(
-            ["uv", "pip", "install", "x"],
-            [("pip", "env", "PIP_REQUIRE_HASHES")],
-            {"pip": {"require-hashes"}, "uv": {"require-hashes"}},
-        ) is None
+        assert (
+            self._run(
+                ["uv", "pip", "install", "x"],
+                [("pip", "env", "PIP_REQUIRE_HASHES")],
+                {"pip": {"require-hashes"}, "uv": {"require-hashes"}},
+            )
+            is None
+        )
 
     def test_the_manager_that_owns_the_policy_is_left_alone(self):
-        assert self._run(
-            ["uv", "pip", "install", "x"],
-            [("uv", "env", "UV_REQUIRE_HASHES")],
-            {"uv": {"require-hashes"}, "pip": set()},
-        ) is None
+        assert (
+            self._run(
+                ["uv", "pip", "install", "x"],
+                [("uv", "env", "UV_REQUIRE_HASHES")],
+                {"uv": {"require-hashes"}, "pip": set()},
+            )
+            is None
+        )
 
     @pytest.mark.parametrize(
         "cmd",
@@ -1054,11 +1070,14 @@ class TestNeitherManagerIsLetOffTheOthersPolicy:
         """run() routes EVERY command through this helper. Treating them all as pip
         installs turned an unenforceable policy into a hard exit on the final metadata
         patch, after every real step had succeeded."""
-        assert self._run(
-            cmd,
-            [("uv", "env", "UV_EXCLUDE_NEWER")],
-            {"uv": {"exclude-newer"}, "pip": set()},
-        ) is None
+        assert (
+            self._run(
+                cmd,
+                [("uv", "env", "UV_EXCLUDE_NEWER")],
+                {"uv": {"exclude-newer"}, "pip": set()},
+            )
+            is None
+        )
 
     def test_nothing_is_refused_without_the_opt_out(self):
         with (
@@ -1258,9 +1277,7 @@ class TestTheNoticeCannotTakeAnInstallDown:
     def test_the_pip_probe_is_bounded(self):
         """An unbounded probe on a half-written pip is a hang with no output at all."""
         source = Path(ips.__file__).read_text(encoding = "utf-8")
-        body = source[
-            source.index("def _policy_scan") : source.index("def _detected_policy")
-        ]
+        body = source[source.index("def _policy_scan") : source.index("def _detected_policy")]
         assert "timeout = 30" in body, "the pip config probe must pass an explicit timeout"
 
     def test_a_hanging_pip_still_yields_the_environment_half(self):
