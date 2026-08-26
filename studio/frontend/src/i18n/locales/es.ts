@@ -2400,6 +2400,6 @@ export const es = {
       "Pesos {model} + KV {kv} + borrador MTP {spec} = {total} de {budget} de VRAM utilizable",
     kvRate: "KV reservado, ~{rate}/token",
     oomLikely: "Con la configuración actual es probable un error de memoria",
-    tooLarge: "Demasiado grande para cargarse: prueba una cuantización más pequeña",
+    tooLarge: "Más grande que la VRAM, se descargará a la CPU. Una cuantización más pequeña es más rápida",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

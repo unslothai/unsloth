@@ -2258,6 +2258,6 @@ export const zhCN = {
       "权重 {model} + KV {kv} + MTP 草稿 {spec} = {total}，可用显存 {budget}",
     kvRate: "KV 预先分配，约 {rate}/token",
     oomLikely: "按当前设置可能显存不足",
-    tooLarge: "太大，无法加载 — 请尝试更小的量化版本",
+    tooLarge: "超出显存，将卸载到 CPU 运行。更小的量化版本速度更快",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

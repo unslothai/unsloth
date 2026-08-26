@@ -2412,6 +2412,6 @@ export const fr = {
       "Poids {model} + KV {kv} + brouillon MTP {spec} = {total} sur {budget} de VRAM utilisable",
     kvRate: "KV réservé, ~{rate}/token",
     oomLikely: "Avec les réglages actuels, un dépassement de mémoire est probable",
-    tooLarge: "Trop volumineux pour être chargé — essayez une quantification plus petite",
+    tooLarge: "Plus volumineux que la VRAM, sera déchargé sur le CPU. Une quantification plus petite est plus rapide",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

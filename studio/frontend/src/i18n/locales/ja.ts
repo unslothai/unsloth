@@ -2290,6 +2290,6 @@ export const ja = {
       "重み {model} + KV {kv} + MTP 下書き {spec} = 使用可能な VRAM {budget} 中 {total}",
     kvRate: "KV は事前確保、約 {rate}/トークン",
     oomLikely: "現在の設定ではメモリ不足になる可能性があります",
-    tooLarge: "大きすぎて読み込めません — より小さい量子化オプションをお試しください",
+    tooLarge: "VRAM を超えるため CPU にオフロードされます。より小さい量子化の方が高速です",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

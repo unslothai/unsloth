@@ -2328,6 +2328,6 @@ export const en = {
     // sized to n_ctx, so the rate is what a longer context actually costs.
     kvRate: "KV reserved, ~{rate}/token",
     oomLikely: "With current settings OOM likely",
-    tooLarge: "Too large to load — try a smaller quantization",
+    tooLarge: "Larger than VRAM, will offload to CPU. A smaller quantization runs faster",
   },
 } as const;

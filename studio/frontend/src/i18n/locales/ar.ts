@@ -2336,6 +2336,6 @@ export const ar = {
       "الأوزان {model} + KV {kv} + مسودة MTP {spec} = {total} من {budget} من VRAM القابلة للاستخدام",
     kvRate: "KV محجوزة مسبقًا، ~{rate}/توكن",
     oomLikely: "مع الإعدادات الحالية يُرجَّح نفاد الذاكرة",
-    tooLarge: "أكبر من أن يُحمَّل — جرِّب خيار تكميم أصغر",
+    tooLarge: "أكبر من ذاكرة الرسوميات، وسيُفرَّغ جزء منه إلى المعالج. التكميم الأصغر أسرع",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

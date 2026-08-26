@@ -2335,6 +2335,6 @@ export const ko = {
       "가중치 {model} + KV {kv} + MTP 초안 {spec} = 사용 가능한 VRAM {budget} 중 {total}",
     kvRate: "KV 사전 예약, 약 {rate}/토큰",
     oomLikely: "현재 설정에서는 메모리 부족이 발생할 수 있습니다",
-    tooLarge: "너무 커서 로드할 수 없습니다 — 더 작은 양자화를 사용해 보세요",
+    tooLarge: "VRAM보다 커서 CPU로 오프로드됩니다. 더 작은 양자화가 더 빠릅니다",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -2343,6 +2343,6 @@ export const hi = {
       "वेट्स {model} + KV {kv} + MTP ड्राफ़्ट {spec} = {budget} उपयोग-योग्य VRAM में से {total}",
     kvRate: "KV आरक्षित, ~{rate}/टोकन",
     oomLikely: "मौजूदा सेटिंग्स के साथ मेमोरी कम पड़ सकती है",
-    tooLarge: "लोड करने के लिए बहुत बड़ा — कोई छोटा क्वांटाइज़ेशन आज़माएँ",
+    tooLarge: "VRAM से बड़ा है, CPU पर ऑफ़लोड होगा। छोटा क्वांटाइज़ेशन तेज़ चलता है",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

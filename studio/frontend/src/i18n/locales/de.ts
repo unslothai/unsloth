@@ -2403,6 +2403,6 @@ export const de = {
       "Gewichte {model} + KV {kv} + MTP-Entwurf {spec} = {total} von {budget} nutzbarem VRAM",
     kvRate: "KV reserviert, ca. {rate}/Token",
     oomLikely: "Mit den aktuellen Einstellungen ist ein Speicherüberlauf wahrscheinlich",
-    tooLarge: "Zu groß zum Laden – wählen Sie eine kleinere Quantisierung",
+    tooLarge: "Größer als der VRAM, wird auf die CPU ausgelagert. Eine kleinere Quantisierung läuft schneller",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

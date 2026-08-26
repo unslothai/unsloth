@@ -2363,6 +2363,6 @@ export const ptBR = {
       "Pesos {model} + KV {kv} + rascunho MTP {spec} = {total} de {budget} de VRAM utilizável",
     kvRate: "KV reservado, ~{rate}/token",
     oomLikely: "Com as configurações atuais, é provável um erro de memória",
-    tooLarge: "Grande demais para carregar — tente uma quantização menor",
+    tooLarge: "Maior que a VRAM, será descarregado para a CPU. Uma quantização menor roda mais rápido",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

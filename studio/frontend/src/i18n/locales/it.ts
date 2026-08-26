@@ -2401,6 +2401,6 @@ export const it = {
       "Pesi {model} + KV {kv} + draft MTP {spec} = {total} di {budget} di VRAM utilizzabile",
     kvRate: "KV riservato, ~{rate}/token",
     oomLikely: "Con le impostazioni attuali è probabile un errore di memoria",
-    tooLarge: "Troppo grande per essere caricato: prova una quantizzazione più piccola",
+    tooLarge: "Più grande della VRAM, verrà scaricato sulla CPU. Una quantizzazione più piccola è più veloce",
   },
 } as const;

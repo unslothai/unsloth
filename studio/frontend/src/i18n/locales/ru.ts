@@ -2363,6 +2363,6 @@ export const ru = {
       "Веса {model} + KV {kv} + черновик MTP {spec} = {total} из {budget} доступной VRAM",
     kvRate: "KV зарезервирован, ~{rate}/токен",
     oomLikely: "При текущих настройках вероятна нехватка памяти",
-    tooLarge: "Слишком большая модель — выберите квантизацию поменьше",
+    tooLarge: "Больше объёма VRAM, часть уйдёт на CPU. Меньшая квантизация работает быстрее",
   },
 } satisfies DeepPartialMessageTree<typeof en>;
