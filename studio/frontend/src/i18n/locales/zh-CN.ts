@@ -776,8 +776,6 @@ export const zhCN = {
         embeddingModelDescription:
           "用于为文档建立索引和搜索的 Hugging Face 模型或本地路径。默认值为 {defaultModel}。",
         searchPlaceholder: "搜索 HF 上的任意模型",
-        safetensorsNote:
-          "该发布者没有提供 GGUF，因此使用 safetensors 运行，内存占用约多 1 GB。",
         reindexWarning:
           "仅影响新建立索引的文档。更改模型后请重新上传已有文档。",
         emptyError: "请输入 Hugging Face 模型 ID 或本地路径。",

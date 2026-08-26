@@ -805,8 +805,6 @@ export const ptBR = {
         embeddingModelDescription:
           "Modelo do Hugging Face ou caminho local usado para indexar e buscar seus documentos. O padrão é {defaultModel}.",
         searchPlaceholder: "Buscar qualquer modelo no HF",
-        safetensorsNote:
-          "Este publicador não tem GGUF, então roda com safetensors e usa cerca de 1 GB a mais de memória.",
         reindexWarning:
           "Afeta apenas documentos recém-indexados. Reenvie os documentos existentes após alterar o modelo.",
         emptyError: "Insira um id de modelo do Hugging Face ou um caminho local.",

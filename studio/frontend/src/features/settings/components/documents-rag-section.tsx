@@ -246,10 +246,6 @@ export function DocumentsRagSection(): ReactElement {
     resolution && !resolution.cached && resolution.downloadRepo,
   );
   const onDevice = Boolean(resolution?.cached);
-  // No GGUF from this publisher, so it runs on safetensors: same vectors, about
-  // 1 GB more memory. Worth saying, since the picker chose it rather than the user.
-  const usesSafetensors =
-    resolution?.backend === "sentence-transformers" && !resolution.error;
   const statusTone: "pending" | "ready" | "error" | null = !embeddingModel
     ? "pending"
     : embeddingModelError
@@ -362,11 +358,6 @@ export function DocumentsRagSection(): ReactElement {
               </Button>
             ) : null}
           </div>
-          {usesSafetensors ? (
-            <span className="max-w-[300px] text-right text-xs text-muted-foreground">
-              {t("settings.general.rag.safetensorsNote")}
-            </span>
-          ) : null}
           <span className="max-w-[300px] text-right text-xs text-muted-foreground">
             {t("settings.general.rag.reindexWarning")}
           </span>

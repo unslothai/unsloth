@@ -98,12 +98,6 @@ test("the repo the resolve picked is what gets stored", () => {
   assert.match(API, /backend: options\?\.backend \?\? null/);
 });
 
-test("no unsloth GGUF falls back to safetensors, not to a stranger's upload", () => {
-  // Safetensors cost about 1 GB more memory but they are the model's own weights.
-  assert.match(SECTION, /resolution\?\.backend === "sentence-transformers"/);
-  assert.match(SECTION, /safetensorsNote/);
-});
-
 test("a missing model gets a Download button, not a popup", () => {
   // A modal for a one-click action was noise, and voice already had the shape.
   assert.ok(!SECTION.includes("AlertDialog"), "no confirmation modal");
