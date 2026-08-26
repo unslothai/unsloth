@@ -2739,6 +2739,20 @@ class TestAnthropicMessagesToolRouting:
         }
         assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["web_search"]
 
+    def test_server_tool_choice_must_be_in_the_selected_catalog(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+            tool_choice = {"type": "tool", "name": "python"},
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        assert exc.value.status_code == 400
+        assert "python" in exc.value.detail["error"]["message"]
+        assert backend.calls == []
+
     def test_confirm_tool_calls_rejected_for_server_tools(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(

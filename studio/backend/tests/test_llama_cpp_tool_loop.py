@@ -17,6 +17,8 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -319,6 +321,23 @@ def test_forced_web_search_tool_choice_is_sent_until_a_tool_runs(monkeypatch):
         event.get("type") == "tool_start" and event.get("tool_name") == "web_search"
         for event in events
     )
+
+
+def test_forced_tool_choice_must_exist_in_the_catalog(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [], payloads)
+
+    with pytest.raises(ValueError, match="Forced tool 'python' is not enabled"):
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "run python"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                tool_choice = {"type": "function", "function": {"name": "python"}},
+                max_tool_iterations = 1,
+            )
+        )
+
+    assert payloads == []
 
 
 def test_forced_tool_choice_rejects_other_structured_calls(monkeypatch):

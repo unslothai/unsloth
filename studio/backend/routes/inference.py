@@ -16214,6 +16214,21 @@ async def openai_chat_completions(
             api_monitor.fail(monitor_id, fail_detail)
         return HTTPException(status_code = status_code, detail = detail)
 
+    def _reject_missing_forced_tool(tool_choice, selected_tools) -> None:
+        from core.inference.chat_template_helpers import catalog_tool_names, forced_tool_name
+
+        forced_name = forced_tool_name(tool_choice)
+        if forced_name and forced_name not in catalog_tool_names(selected_tools):
+            raise _reject(
+                400,
+                openai_error_body(
+                    f"Invalid 'tool_choice': function '{forced_name}' is not enabled.",
+                    status = 400,
+                    code = "invalid_value",
+                    param = "tool_choice",
+                ),
+            )
+
     def _reject_unsupported_n(path_label: str) -> "HTTPException":
         return _reject(
             400,
@@ -16529,6 +16544,7 @@ async def openai_chat_completions(
                 # reset is POSSIBLE somewhere, not that this request can perform one.
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
             )
+            _reject_missing_forced_tool(payload.tool_choice, tools_to_use)
             # Skip the tool loop when no tool survived, so the safetensors
             # loop's "empty = allow all" semantic can't reach built-in tools
             # the caller didn't opt into. Callers who omit enabled_tools still
@@ -18193,6 +18209,7 @@ async def openai_chat_completions(
         _sf_tools_to_use = await _select_request_tools(
             payload, tools_on = _sf_tools_on, mcp_allowed = _sf_mcp_allowed
         )
+        _reject_missing_forced_tool(payload.tool_choice, _sf_tools_to_use)
         # Mirror the GGUF path: refuse to enter the tool loop when nothing
         # survived, so a model-emitted built-in call can't piggy-back on the
         # empty allow-list.
@@ -23422,6 +23439,20 @@ async def anthropic_messages(
                     "type": "function",
                     "function": {"name": canonical_name},
                 }
+        from core.inference.chat_template_helpers import catalog_tool_names, forced_tool_name
+
+        forced_name = forced_tool_name(server_tool_choice)
+        if forced_name and forced_name not in catalog_tool_names(openai_tools):
+            message = f"Invalid 'tool_choice': function '{forced_name}' is not enabled."
+            api_monitor.fail(monitor_id, message)
+            raise HTTPException(
+                status_code = 400,
+                detail = anthropic_error_body(
+                    message,
+                    status = 400,
+                    err_type = "invalid_request_error",
+                ),
+            )
 
         # Build tool-use system prompt nudge (same logic as /chat/completions)
         _nudge = _build_tool_action_nudge(

@@ -25547,6 +25547,12 @@ class LlamaCppBackend:
         # off never prompts either, so it also keeps first-pass retrieval.
         from core.inference.chat_template_helpers import forced_tool_name, trailing_assistant_text
 
+        initial_forced_name = forced_tool_name(tool_choice)
+        if initial_forced_name and initial_forced_name not in _gguf_active_tool_names(tools):
+            raise ValueError(
+                f"Forced tool '{initial_forced_name}' is not enabled for this request."
+            )
+
         # A resumed turn must keep the partial trailing: autoinject appends a tool call
         # plus its result, moving the boundary so the model opens a fresh answer.
         _skip_autoinject = (
