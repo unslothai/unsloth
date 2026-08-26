@@ -476,9 +476,7 @@ def test_startup_reconcile_marks_stored_assistant_interrupted(durable_run):
 
 
 @pytest.mark.asyncio
-async def test_shutdown_returns_even_when_a_producer_will_not_unwind(
-    durable_run, monkeypatch
-):
+async def test_shutdown_returns_even_when_a_producer_will_not_unwind(durable_run, monkeypatch):
     """A generator whose teardown blocks must not take uvicorn's shutdown with it.
 
     The grace period is bounded, but the gather after task.cancel() has to be too:
