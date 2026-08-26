@@ -692,9 +692,7 @@ with sync_playwright() as p:
     # byte for byte unchanged.
     _throttle = float(os.environ.get("STUDIO_UI_CPU_THROTTLE", "0") or 0)
     if _throttle > 1:
-        ctx.new_cdp_session(page).send(
-            "Emulation.setCPUThrottlingRate", {"rate": _throttle}
-        )
+        ctx.new_cdp_session(page).send("Emulation.setCPUThrottlingRate", {"rate": _throttle})
         info(f"CPU throttled {_throttle}x")
     page_errors = []
     page.on("pageerror", lambda e: page_errors.append(str(e)))
