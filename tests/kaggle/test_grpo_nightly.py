@@ -57,29 +57,70 @@ def test_the_nightly_does_not_pile_onto_the_hour_mark():
     assert minute not in ("0", "00", "30"), f"minute {minute} is the mark everyone else picks"
 
 
+def _nightly_legs():
+    """The leg names the schedule actually selects, read off the workflow."""
+    # Anchored on LEG_LIST, not on the schedule fallback in general. The gate
+    # bypass a few lines above reads `github.event_name == 'schedule' && 'true'`
+    # and a loose pattern picks THAT up: the first version of this helper
+    # reported the nightly leg set as ["true"].
+    match = re.search(
+        r"LEG_LIST:.*github\.event_name == 'schedule' && '([a-z_,]+)'", TEXT
+    )
+    assert match, "the schedule selects no leg list at all"
+    return [name for name in match.group(1).split(",") if name]
+
+
 def test_the_schedule_runs_the_grpo_leg():
-    assert "github.event_name == 'schedule' && 'grpo'" in TEXT, (
+    assert "grpo" in _nightly_legs(), (
         "the schedule must select the leg; a nightly that runs the wired set "
         "is just another copy of the per-PR run"
     )
 
 
-def test_the_leg_the_nightly_names_exists():
+def test_the_schedule_also_runs_the_multi_gpu_leg():
+    """multi_gpu is here for a different reason from grpo and the distinction
+    is worth keeping: grpo is nightly because it CRASHES 44% of the time,
+    multi_gpu because it costs makespan. It passes on hardware -- the ab3 A/B
+    has it green in both arms -- and the brief it was built to was multi-GPU
+    coverage at no wall-clock cost, which it measurably is not (+172.4s and
+    +39.7s over two same-commit pairs, slower in both).
+
+    Nightly is where that coverage is free. Without this the DEVICE_COUNT > 1
+    bindings in unsloth's kernels go back to being tested nowhere at all, which
+    is the state this leg was written to end."""
+    assert "multi_gpu" in _nightly_legs(), (
+        "the nightly no longer runs multi_gpu, so unsloth's DEVICE_COUNT > 1 "
+        "code path is covered by nothing: every other leg is pinned to one card"
+    )
+
+
+def test_every_leg_the_nightly_names_exists():
     """A typo here produces a build that selects nothing and a run that proves
     nothing, with no error anywhere."""
-    named = set(re.findall(r"&& '([a-z_]+)' \|\| ''", TEXT))
+    named = _nightly_legs()
     assert named, "no scheduled leg name found at all"
     for name in named:
         assert name in legs.LEGS, f"the nightly names {name!r}, which is not a leg"
 
 
-def test_the_nightly_leg_is_NOT_in_the_per_pr_set():
-    """The whole point. If grpo were also wired into KERNELS the 44% crash rate
-    would be back in front of every PR and the nightly would be redundant."""
+def test_the_nightly_set_fits_in_one_kernel():
+    """`--legs` builds ONE kernel, and MAX_LEGS_PER_KERNEL is what the driver's
+    scheduling was measured against. A list longer than that silently packs a
+    kernel nobody has run."""
+    assert len(_nightly_legs()) <= legs.MAX_LEGS_PER_KERNEL
+
+
+def test_no_nightly_leg_is_ALSO_in_the_per_pr_set():
+    """The whole point, and it applies to each of them. If grpo were wired into
+    KERNELS the 44% crash rate would be back in front of every PR; if multi_gpu
+    were, the makespan it was moved here to avoid would be back too. Either way
+    the nightly becomes a second copy of the per-PR run."""
     wired = {name for kernel in legs.KERNELS for name in kernel}
-    assert (
-        "grpo" not in wired
-    ), "grpo is in the per-PR set, so the nightly is pointless and every PR carries a 44% red"
+    both = sorted(set(_nightly_legs()) & wired)
+    assert not both, (
+        f"{both} run nightly AND per-PR, so the nightly is pointless and every "
+        f"PR carries whatever these were moved off the critical path to avoid"
+    )
 
 
 def test_a_leg_list_replaces_all_kernels_rather_than_filtering_after_it():

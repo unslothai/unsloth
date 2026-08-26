@@ -828,11 +828,19 @@ jobs:
         id: build
         if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'
         env:
-          # On the nightly this is 'grpo'; on every other trigger it is empty
-          # and the wired set runs. `github.event.inputs` is null on a
+          # On the nightly this is 'grpo,multi_gpu'; on every other trigger it
+          # is empty and the wired set runs. `github.event.inputs` is null on a
           # schedule, so the default has to come from the fallback rather than
           # from the input's own default.
-          LEG_LIST: ${{ inputs.legs || (github.event_name == 'schedule' && 'grpo' || '') }}
+          #
+          # multi_gpu joined grpo here after the ab3 A/B: it PASSES, but it
+          # costs makespan (+172.4s and +39.7s on two same-commit pairs, B
+          # slower 2 of 2), and the brief for it was multi-GPU coverage at no
+          # wall-clock cost. The two legs also serialise cleanly rather than
+          # contending: grpo declares 13.8GB and admits no co-tenant, and
+          # multi_gpu reserves on every card, so neither ever starts beside the
+          # other.
+          LEG_LIST: ${{ inputs.legs || (github.event_name == 'schedule' && 'grpo,multi_gpu' || '') }}
           SKIP_BAND: ${{ inputs.skip_reference_band }}
           # The VALIDATED, normalised count from the step above, not the raw
           # dispatch string. check_steps.parse_steps accepts "+10", "010" and
