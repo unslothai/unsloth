@@ -3,8 +3,8 @@ name: Release Desktop App
 on:
   workflow_dispatch:
     # Both version inputs are free text in the dispatch UI, and studio_version
-    # alone decides the release tag, all nine asset filenames and the updater
-    # manifest version together. Near-miss tags are the failure mode worth
+    # alone decides the release tag and updater manifest version. Asset filenames
+    # stay stable across releases. Near-miss tags are the failure mode worth
     # guarding, because they look right at a glance:
     #
     #   studio_version   v0.1.52-beta     correct
@@ -38,9 +38,9 @@ env:
   DESKTOP_RELEASE_NOTES: |
     Desktop app for Unsloth.
 
-    **macOS**: Download the Apple Silicon `.dmg`.
-    **Windows**: Download the `-setup.exe` installer.
-    **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental.
+    **macOS**: Download `Unsloth-Desktop-MacOS.dmg` (Apple Silicon).
+    **Windows**: Download `Unsloth-Desktop-Windows.exe`.
+    **Linux**: Download `Unsloth-Desktop-Ubuntu.deb` for Ubuntu/Debian. `.AppImage` is experimental.
 
     > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
     > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
@@ -71,7 +71,6 @@ jobs:
     outputs:
       studio_version: ${{ steps.prepare.outputs.studio_version }}
       app_version: ${{ steps.prepare.outputs.app_version }}
-      asset_version: ${{ steps.prepare.outputs.asset_version }}
       desktop_release_tag: ${{ steps.prepare.outputs.desktop_release_tag }}
       pypi_version: ${{ steps.backend.outputs.pypi_version }}
 
@@ -126,7 +125,6 @@ jobs:
               sys.exit(f'studio_version must be a SemVer tag with leading v, for example v0.1.52-beta: {studio_version}')
 
           app_version = studio_version.removeprefix('v')
-          asset_version = re.sub(r'[^0-9A-Za-z]+', '_', app_version).strip('_')
           desktop_release_tag = studio_version
 
           # Both updater paths compare SemVer, so a tag whose numbers go backwards
@@ -189,7 +187,6 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               print(f'studio_version={studio_version}', file=output)
               print(f'app_version={app_version}', file=output)
-              print(f'asset_version={asset_version}', file=output)
               print(f'desktop_release_tag={desktop_release_tag}', file=output)
 
           PY
@@ -281,7 +278,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           DESKTOP_RELEASE_TAG: ${{ steps.prepare.outputs.desktop_release_tag }}
-          ASSET_VERSION: ${{ steps.prepare.outputs.asset_version }}
         run: |
           set -euo pipefail
           # v{version} is tagged and published when main is tagged, before this runs,
@@ -297,11 +293,6 @@ jobs:
             exit 1
           fi
           gh api "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" > "$RUNNER_TEMP/target-release.json"
-          # A carried-forward manifest for an older version is expected here (see
-          # publish-desktop-updater.yml), so read it rather than judge by name alone.
-          mkdir -p "$RUNNER_TEMP/target-manifest"
-          gh release download "$DESKTOP_RELEASE_TAG" --pattern latest.json \
-            --dir "$RUNNER_TEMP/target-manifest" --clobber 2>/dev/null || true
           python3 <<'PY'
           import json, os, pathlib, sys
 
@@ -313,27 +304,26 @@ jobs:
           if release.get('prerelease'):
               sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
 
-          prefix = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
+          prefix = 'Unsloth-Desktop-'
           clashing = sorted(
               asset['name']
               for asset in release.get('assets', [])
               if str(asset.get('name', '')).startswith(prefix)
+              or asset.get('name') == 'latest.json'
           )
-          manifest_path = runner / 'target-manifest' / 'latest.json'
-          if manifest_path.is_file():
-              try:
-                  version = json.loads(manifest_path.read_text()).get('version')
-              except json.JSONDecodeError:
-                  version = None
-              # Only this version's own manifest is a clash; anything else is the
-              # pointer being carried forward and is overwritten on upload.
-              if not isinstance(version, str) or version.removeprefix('v') == tag.removeprefix('v'):
-                  clashing.append('latest.json')
 
           if clashing:
               print(f'Refusing to republish {tag}: it already carries desktop assets.', file=sys.stderr)
               for name in clashing:
                   print(f'  gh release delete-asset {tag} {name} --yes', file=sys.stderr)
+              if 'latest.json' in clashing:
+                  # Deleting a manifest off whichever release is currently GitHub
+                  # latest 404s every update check until this workflow finishes.
+                  print(
+                      '  latest.json is the live updater manifest: only delete it once '
+                      f'{tag} is not the GitHub latest release.',
+                      file=sys.stderr,
+                  )
               sys.exit(1)
           PY
 
@@ -539,7 +529,6 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
-      ASSET_VERSION: ${{ needs.prepare-version.outputs.asset_version }}
       STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
       DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
       # Compiled in by preflight/version.rs. Without it the app only knows the
@@ -1522,7 +1511,7 @@ jobs:
 
           destination = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-assets')
           destination.mkdir(parents=True, exist_ok=True)
-          base_name = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
+          base_name = 'Unsloth-Desktop'
           suffix_names = (
               ('.app.tar.gz.sig', f'{base_name}-ARM64.app.tar.gz.sig'),
               ('.app.tar.gz', f'{base_name}-ARM64.app.tar.gz'),
@@ -1586,7 +1575,6 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
       APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
-      ASSET_VERSION: ${{ needs.prepare-version.outputs.asset_version }}
       PYPI_VERSION: ${{ needs.prepare-version.outputs.pypi_version }}
       STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
       DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
@@ -1693,7 +1681,7 @@ jobs:
 
           asset_dir = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-assets')
           files = [path for path in asset_dir.iterdir() if path.is_file()]
-          base_name = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
+          base_name = 'Unsloth-Desktop'
           expected_names = {
               f'{base_name}-MacOS.dmg',
               f'{base_name}-ARM64.app.tar.gz',
@@ -1736,11 +1724,6 @@ jobs:
             echo "  Tag main and publish it first, then re-dispatch this workflow." >&2
             exit 1
           fi
-          # A carried-forward manifest for an older version is expected here (see
-          # publish-desktop-updater.yml), so read it rather than judge by name alone.
-          mkdir -p "$RUNNER_TEMP/target-manifest"
-          gh release download "$DESKTOP_RELEASE_TAG" --pattern latest.json \
-            --dir "$RUNNER_TEMP/target-manifest" --clobber 2>/dev/null || true
           python3 <<'PY'
           import json, os, pathlib, sys
 
@@ -1752,27 +1735,26 @@ jobs:
           if release.get('prerelease'):
               sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
 
-          prefix = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
+          prefix = 'Unsloth-Desktop-'
           clashing = sorted(
               asset['name']
               for asset in release.get('assets', [])
               if str(asset.get('name', '')).startswith(prefix)
+              or asset.get('name') == 'latest.json'
           )
-          manifest_path = runner / 'target-manifest' / 'latest.json'
-          if manifest_path.is_file():
-              try:
-                  version = json.loads(manifest_path.read_text()).get('version')
-              except json.JSONDecodeError:
-                  version = None
-              # Only this version's own manifest is a clash; anything else is the
-              # pointer being carried forward and is overwritten on upload.
-              if not isinstance(version, str) or version.removeprefix('v') == tag.removeprefix('v'):
-                  clashing.append('latest.json')
 
           if clashing:
               print(f'Refusing to republish {tag}: it already carries desktop assets.', file=sys.stderr)
               for name in clashing:
                   print(f'  gh release delete-asset {tag} {name} --yes', file=sys.stderr)
+              if 'latest.json' in clashing:
+                  # Deleting a manifest off whichever release is currently GitHub
+                  # latest 404s every update check until this workflow finishes.
+                  print(
+                      '  latest.json is the live updater manifest: only delete it once '
+                      f'{tag} is not the GitHub latest release.',
+                      file=sys.stderr,
+                  )
               sys.exit(1)
           PY
 
@@ -1848,7 +1830,7 @@ jobs:
       # The release body is the maintainer's changelog and this workflow never
       # rewrites it. The target release is already public, so a validation-only
       # run must not upload to it.
-      - name: Publish versioned release assets
+      - name: Publish release assets
         if: ${{ !inputs.draft }}
         shell: bash
         env:
@@ -1869,9 +1851,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # --clobber only for latest.json: it may already hold an older version's
-          # pointer. The bundles above are still uploaded without it.
-          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json" --clobber
+          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json"
 
       - name: Download versioned updater metadata
         if: ${{ !inputs.draft }}
@@ -2050,8 +2030,16 @@ jobs:
           if latest.get('draft') or latest.get('prerelease'):
               sys.exit(f'GitHub latest release {expected} is not a normal published release')
           names = {asset.get('name') for asset in latest.get('assets', [])}
-          if 'latest.json' not in names:
-              sys.exit(f'GitHub latest release {expected} is missing latest.json')
+          required = {
+              'latest.json',
+              'Unsloth-Desktop-MacOS.dmg',
+              'Unsloth-Desktop-Linux.AppImage',
+              'Unsloth-Desktop-Ubuntu.deb',
+              'Unsloth-Desktop-Windows.exe',
+          }
+          missing = sorted(required - names)
+          if missing:
+              sys.exit(f'GitHub latest release {expected} is missing stable download assets: {missing}')
           PY
 
 
