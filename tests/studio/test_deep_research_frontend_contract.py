@@ -77,7 +77,7 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert 'toolEvent.tool_name === "deep_research"' in adapter
     assert "readDeepResearchToolEvent(deepResearchHandoff, toolEvent)" in adapter
     assert "if (deepResearchHandoff.question !== null && !runSignal.aborted)" in adapter
-    assert "yield* startDeepResearch(\"\")" not in adapter
+    assert 'yield* startDeepResearch("")' not in adapter
     # Armed research asks for Studio's tool loop on the external body too. Without it the
     # turn proxies through, the model is never offered the tool, and arming does nothing.
     assert "projectRagEnabled ||" in adapter
