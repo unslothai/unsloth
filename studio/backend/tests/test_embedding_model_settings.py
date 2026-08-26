@@ -147,12 +147,10 @@ def test_a_concurrent_save_is_not_reverted_by_a_late_pending_clear(settings_stor
     ems.set_rag_embedding_model(
         "org/a", gguf_repo = "org/a-GGUF", backend = "llama-server", download_pending = True
     )
-    stale = ems._get_stored_state()          # A's loader has read it
+    stale = ems._get_stored_state()  # A's loader has read it
     assert stale[1] == "org/a" and stale[4] is True
-    ems.set_rag_embedding_model(
-        "org/b", gguf_repo = "org/b-GGUF", backend = "sentence-transformers"
-    )
-    ems._cached = (0.0, stale)               # its 2s snapshot still says A
+    ems.set_rag_embedding_model("org/b", gguf_repo = "org/b-GGUF", backend = "sentence-transformers")
+    ems._cached = (0.0, stale)  # its 2s snapshot still says A
 
     assert ems.clear_stored_download_pending("org/a") is False
     ems._invalidate_cache()

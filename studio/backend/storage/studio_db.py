@@ -3897,9 +3897,7 @@ def compare_and_set_app_setting(key: str, expected: Any, value: Any) -> bool:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT value_json FROM app_settings WHERE key = ?", (key,)
-        ).fetchone()
+        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
         current = _json_loads(row["value_json"], None) if row is not None else None
         if current != expected:
             conn.rollback()
