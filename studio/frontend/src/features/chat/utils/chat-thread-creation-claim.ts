@@ -21,6 +21,7 @@ export type ThreadCreationClaim = {
   projectId: string | null;
   incognito: boolean;
   modelId: string;
+  modelGgufVariant: string | null;
   createdAt: number;
 };
 
@@ -78,6 +79,7 @@ export function readThreadCreationClaim(
     projectId: claim.projectId,
     incognito: claim.incognito,
     modelId: claim.modelId,
+    modelGgufVariant: claim.modelGgufVariant,
     createdAt: claim.createdAt,
   };
 }
