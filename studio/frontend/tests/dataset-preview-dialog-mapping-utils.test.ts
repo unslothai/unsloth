@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   deriveDefaultMapping,
+  getAvailableRoles,
   getUnselectedInstructionColumns,
   getViewerColumnSelections,
   isMappingComplete,
@@ -88,7 +89,7 @@ test("viewer summary warns only for a present unselected instruction column", ()
   assert.deepEqual(getUnselectedInstructionColumns(base, selections), []);
 });
 
-test("audio instruction omission does not use the empty-first-value reason", () => {
+test("audio VLM mapping selects audio, instruction, and text together", () => {
   const data = {
     ...base,
     is_audio: true,
@@ -103,9 +104,17 @@ test("audio instruction omission does not use the empty-first-value reason", () 
       },
     ],
   };
-  const selections = getViewerColumnSelections(data, false, {});
+  const mapping = deriveDefaultMapping(data, false, undefined, true, true);
 
-  assert.deepEqual(getUnselectedInstructionColumns(data, selections, true), [
-    { column: "instruction", reason: "unsupported_audio_mapping" },
+  assert.deepEqual(mapping, {
+    audio: "audio",
+    instruction: "user",
+    text: "text",
+  });
+  assert.deepEqual(getAvailableRoles(false, undefined, true, true), [
+    "audio",
+    "user",
+    "text",
   ]);
+  assert.equal(isMappingComplete(mapping, false, undefined, true), true);
 });

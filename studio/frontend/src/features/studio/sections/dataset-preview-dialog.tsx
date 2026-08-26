@@ -174,6 +174,8 @@ export function DatasetPreviewDialog({
     datasetSystemPrompt,
     selectedModel,
     modelType,
+    isVisionModel,
+    isAudioModel,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       manualMapping: s.datasetManualMapping,
@@ -184,6 +186,8 @@ export function DatasetPreviewDialog({
       datasetSystemPrompt: s.datasetSystemPrompt,
       selectedModel: s.selectedModel,
       modelType: s.modelType,
+      isVisionModel: s.isVisionModel,
+      isAudioModel: s.isAudioModel,
     })),
   );
   const { startError, startBlocked, stopRequested, startTrainingRun } =
@@ -191,6 +195,7 @@ export function DatasetPreviewDialog({
 
   // Treat backend-reported image data as VLM even if the prop hasn't caught up.
   const effectiveIsAudio = !!data?.is_audio;
+  const isAudioVlm = effectiveIsAudio && isVisionModel && isAudioModel;
   const effectiveIsVlm = !effectiveIsAudio && (isVlm || !!data?.is_image);
 
   const isRawFormat = isRawTextDatasetFormat(datasetFormat);
@@ -211,6 +216,7 @@ export function DatasetPreviewDialog({
     effectiveIsVlm,
     datasetFormat,
     effectiveIsAudio,
+    isAudioVlm,
   );
   const isHfDataset = datasetSource === "huggingface";
   const readyForTraining =
@@ -412,6 +418,7 @@ export function DatasetPreviewDialog({
       effectiveIsVlm,
       datasetFormat,
       effectiveIsAudio,
+      isAudioVlm,
     );
     if (Object.keys(derived).length === 0) return;
     setManualMapping(derived);
@@ -422,6 +429,7 @@ export function DatasetPreviewDialog({
     effectiveIsVlm,
     datasetFormat,
     effectiveIsAudio,
+    isAudioVlm,
     manualMapping,
     setManualMapping,
   ]);
