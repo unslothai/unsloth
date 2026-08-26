@@ -218,7 +218,8 @@ def main() -> int:
                 "undeclared": undeclared,
             },
             indent = 2,
-        )
+        ),
+        encoding = "utf-8",
     )
 
     info(
