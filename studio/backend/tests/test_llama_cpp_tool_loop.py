@@ -333,7 +333,11 @@ def test_none_tool_choice_never_executes_model_tool_calls(monkeypatch):
     def fail_execute_tool(name, arguments, **_kwargs):
         raise AssertionError(f"unexpected tool execution: {name} {arguments}")
 
+    def fail_autoinject(*_args, **_kwargs):
+        raise AssertionError("tool_choice=none must not autoinject retrieval")
+
     monkeypatch.setattr("core.inference.tools.execute_tool", fail_execute_tool)
+    monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
 
     events = list(
         backend.generate_chat_completion_with_tools(
@@ -349,6 +353,7 @@ def test_none_tool_choice_never_executes_model_tool_calls(monkeypatch):
             ],
             tool_choice = "none",
             max_tool_iterations = 1,
+            rag_scope = {"thread_id": "t1", "autoinject": True},
         )
     )
 
