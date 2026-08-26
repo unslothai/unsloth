@@ -837,9 +837,8 @@ def test_install_sh_trims_only_surrounding_whitespace_in_an_existing_id(tmp_path
 def test_install_sh_rejects_an_id_holding_a_nul_byte(tmp_path):
     """A NUL must be caught before the shell silently drops it.
 
-    Command substitution cannot carry a NUL, so `<32 hex>\\0<32 hex>` reads back
-    as a valid token, while the backend keeps the byte and reports "". The
-    launcher would then hold an id its own backend never reports.
+    Command substitution cannot carry one, so `<32 hex>\\0<32 hex>` reads back
+    valid while the backend keeps the byte and reports "".
     """
     src = INSTALL_SH.read_text(encoding = "utf-8")
     assert (
@@ -869,9 +868,9 @@ def test_install_sh_rejects_an_id_holding_a_nul_byte(tmp_path):
 def test_install_sh_reports_a_failed_read_instead_of_regenerating(tmp_path):
     """A read that FAILS is not the same answer as a malformed id.
 
-    `-r` can pass while the read itself errors (a transient fault on an
-    NFS/FUSE-backed root). Flattening that into "no id" let the publish path
-    replace a valid incumbent that a running backend still reports.
+    `-r` can pass while the read errors, on an NFS or FUSE backed root.
+    Flattening that into "no id" let the publish path replace a valid
+    incumbent a running backend still reports.
     """
     src = INSTALL_SH.read_text(encoding = "utf-8")
     assert (

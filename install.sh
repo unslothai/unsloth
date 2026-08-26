@@ -1043,28 +1043,27 @@ _css_install_id_is_valid() {
     [ "${#1}" -eq 64 ]
 }
 
-# Echoes the id stored at $1 if it satisfies the contract, nothing otherwise.
-# Returns 1 when the path could not be READ at all, which is not the same
-# answer: a read that fails may still be sitting on a valid id.
+# Echoes the id at $1 when it satisfies the contract, nothing otherwise.
+# Returns 1 when the path could not be READ, a different answer: a failed read
+# may still be sitting on a valid id.
 _css_read_valid_install_id() {
     # Regular files only: a FIFO here (or a symlink to one, or to a device)
     # would park the installer on the open, waiting for a writer forever.
     [ -f "$1" ] || return 0
-    # A NUL cannot live in a shell variable, so command substitution drops it:
-    # <32 hex>\0<32 hex> would read back as a perfectly valid token while the
-    # backend, which keeps the byte, still reports "". Catch it before it
-    # disappears, by mapping NULs to a character a variable can hold.
+    # A NUL cannot live in a shell variable, so command substitution drops it
+    # and <32 hex>\0<32 hex> would read back valid while the backend, which
+    # keeps the byte, reports "". Catch it by mapping NULs to a real character.
     if [ -n "$({ tr -dc '\000' < "$1" | tr '\000' 'N'; } 2>/dev/null)" ]; then
         return 0
     fi
     # Group the redirect, or the shell's own "cannot open" escapes 2>/dev/null.
-    # A failed read is reported, never flattened into "no id": permissions, or
-    # a transient error on an NFS/FUSE-backed root, must not license a rewrite.
+    # A failed read is reported, never flattened into "no id": permissions or a
+    # transient NFS/FUSE fault must not license a rewrite.
     _cvi_id=$({ cat "$1"; } 2>/dev/null) || return 1
-    # Trim what the backend's .strip() trims, the SURROUNDING whitespace only.
+    # Trim what the backend's .strip() trims, SURROUNDING whitespace only.
     # Deleting interior whitespace would mint a 64-hex token out of bytes the
-    # backend reads as something else, leaving the launcher holding an id its
-    # own backend never reports.
+    # backend reads otherwise, leaving the launcher holding an id it never
+    # reports.
     _cvi_id=${_cvi_id#"${_cvi_id%%[![:space:]]*}"}
     _cvi_id=${_cvi_id%"${_cvi_id##*[![:space:]]}"}
     if _css_install_id_is_valid "$_cvi_id"; then
