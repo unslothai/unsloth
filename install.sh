@@ -1036,9 +1036,8 @@ _smart_apt_install() {
 # app (is_valid_studio_root_id). Nothing else is an id: no backend reports it,
 # and the launcher holds it in a single-quoted assignment, so a planted value
 # with a quote in it would be launcher code.
-# Subshell bodies so LC_ALL=C is scoped to the check: the character classes
-# below must mean the same bytes whatever locale the installer inherits, and
-# the contract is pure ASCII.
+# Subshell bodies scope LC_ALL=C to the check: the classes below must mean the
+# same bytes in any inherited locale, and the contract is pure ASCII.
 _css_install_id_is_valid() (
     LC_ALL=C
     export LC_ALL
@@ -1057,10 +1056,9 @@ _css_read_valid_install_id() (
     # Regular files only: a FIFO here (or a symlink to one, or to a device)
     # would park the installer on the open, waiting for a writer forever.
     [ -f "$1" ] || return 0
-    # A zero-length file cannot be holding an id, and -s answers that from
-    # stat, without a read. So an empty file we also cannot read stays "no id"
-    # and is replaced, as it was before this validation existed, instead of
-    # failing the install. A real id is 64 bytes and never reaches this.
+    # -s answers "no id" from stat, without a read, so an empty file we also
+    # cannot read is replaced as it was pre-validation instead of failing the
+    # install. A real id is 64 bytes and never reaches this.
     [ -s "$1" ] || return 0
     # A NUL cannot live in a shell variable, so command substitution drops it
     # and <32 hex>\0<32 hex> would read back valid while the backend, which

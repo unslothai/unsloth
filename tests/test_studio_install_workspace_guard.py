@@ -28,8 +28,7 @@ def _install_id_helpers() -> str:
 def _extract_create_studio_shortcuts() -> str:
     """The shipped helpers plus the whole create_studio_shortcuts body.
 
-    The function contains heredocs with their own `}` at column 0, so the real
-    end is found by asking `sh -n` which candidate close brace parses.
+    Heredocs carry their own `}` at column 0, so `sh -n` picks the real one.
     """
     src = INSTALL_SH.read_text(encoding = "utf-8")
     lines = src.splitlines()
@@ -933,8 +932,7 @@ def test_install_sh_reports_a_failed_read_instead_of_regenerating(tmp_path):
 def test_install_sh_replaces_an_empty_id_even_when_it_cannot_read_it(tmp_path):
     """Zero length is an answer stat can give: that file holds no id.
 
-    Refusing here would fail an install that succeeded before the id was
-    validated at all, since a zero-length file was simply replaced. The
+    Refusing would fail an install that pre-validation simply completed. The
     protection is for ids we cannot read, and an id is 64 bytes, never zero.
     """
     src = INSTALL_SH.read_text(encoding = "utf-8")
@@ -1027,9 +1025,8 @@ def test_install_sh_never_reads_a_non_regular_id_path(tmp_path):
 def test_create_studio_shortcuts_end_to_end_never_embeds_a_planted_id(tmp_path):
     """The REAL create_studio_shortcuts, not a reconstruction of it.
 
-    The helper-level tests above cannot catch a caller that validates and then
-    embeds something else, so this runs the shipped function over a planted id
-    and inspects the launcher it actually writes.
+    Helper-level tests cannot catch a caller that validates then embeds
+    something else, so this inspects the launcher the shipped function writes.
     """
     home = tmp_path / "home"
     studio_home = tmp_path / "studio"
