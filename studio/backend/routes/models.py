@@ -3839,7 +3839,6 @@ async def get_kv_cache_estimate(
                         _is_dflash_drafter_path,
                         _pick_dspark,
                     )
-
                     def _pick_dflash(candidates: list[str]) -> Optional[str]:
                         hits = sorted(f for f in candidates if _is_dflash_drafter_path(f))
                         return hits[0] if hits else None
