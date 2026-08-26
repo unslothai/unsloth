@@ -1201,11 +1201,15 @@ export const ja = {
       docs: "ドキュメント",
       agentDocs: "{agent} のセットアップドキュメントを開く",
       copyGeneratedCommand: "生成されたコマンドをコピー",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
       automaticSettingsNote:
-        "オプションを設定していない場合、Unsloth はモデルの推奨設定を自動的に適用します。",
-      configurationNote: "任意の設定を調整することもできます。下記または",
-      configurationDocs: "ドキュメント",
-      configurationFlagsSuffix: "でオプションを確認してください。",
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex には llama-server が提供する GGUF モデルが必要です。他のエージェントは transformers ベースのモデルも利用できます。Unsloth に読み込み済みのモデルを使うには --model を外してください。",
       subagent: {

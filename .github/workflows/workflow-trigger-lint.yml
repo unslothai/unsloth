@@ -138,6 +138,7 @@ jobs:
             tests/studio/test_ui_shard_engines.py \
             tests/studio/test_zoo_suite_parallel_isolation.py \
             tests/studio/test_ci_shell_suite_coverage.py \
+            tests/studio/test_pip_cache_naming.py \
             tests/studio/test_compile_caches_are_per_worker.py \
             tests/studio/test_composer_rtl_bidi_attribute.py \
             tests/studio/test_frontend_dep_removal.py \

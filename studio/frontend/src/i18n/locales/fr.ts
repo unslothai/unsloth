@@ -1245,12 +1245,15 @@ export const fr = {
       docs: "Documentation",
       agentDocs: "Ouvrir la documentation de configuration de {agent}",
       copyGeneratedCommand: "Copier la commande générée",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
       automaticSettingsNote:
-        "Unsloth applique automatiquement les réglages recommandés par le modèle si vous n’avez défini aucune option.",
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
-        "Vous pouvez aussi modifier n’importe quelle configuration. Consultez les détails ci-dessous ou la",
-      configurationDocs: "documentation",
-      configurationFlagsSuffix: "pour les options.",
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex nécessite un modèle GGUF servi par llama-server. Les autres agents peuvent aussi utiliser des modèles basés sur transformers ; retirez --model pour utiliser le modèle déjà chargé dans Unsloth.",
       subagent: {

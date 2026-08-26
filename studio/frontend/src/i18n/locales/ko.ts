@@ -1215,11 +1215,15 @@ export const ko = {
       docs: "문서",
       agentDocs: "{agent} 설정 문서 열기",
       copyGeneratedCommand: "생성된 명령 복사",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
       automaticSettingsNote:
-        "옵션을 지정하지 않으면 Unsloth가 모델의 권장 설정을 자동으로 적용합니다.",
-      configurationNote: "모든 구성을 조정할 수도 있습니다. 아래 내용을 확인하거나",
-      configurationDocs: "문서",
-      configurationFlagsSuffix: "에서 옵션을 확인하세요.",
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex에는 llama-server가 제공하는 GGUF 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 쓰려면 --model을 빼세요.",
       subagent: {

@@ -1193,11 +1193,15 @@ export const zhCN = {
       docs: "文档",
       agentDocs: "打开 {agent} 的配置文档",
       copyGeneratedCommand: "复制生成的命令",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
       automaticSettingsNote:
-        "如果你没有设置任何选项，Unsloth 会自动应用模型推荐的设置。",
-      configurationNote: "你也可以调整任何配置。请参阅下文或",
-      configurationDocs: "文档",
-      configurationFlagsSuffix: "了解可用选项。",
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex 需要通过 llama-server 提供服务的 GGUF 模型。其他智能体也可以使用基于 transformers 的模型；去掉 --model 即可使用 Unsloth 中已加载的模型。",
       subagent: {
