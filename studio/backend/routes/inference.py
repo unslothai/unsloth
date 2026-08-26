@@ -6123,7 +6123,9 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
         if isinstance(raw, str):
             raw = "".join(raw.split())
         try:
-            base64.b64decode(raw, validate = True)
+            # empty never raises, and is what a blank upload or a comma-less data: URI leaves.
+            if not base64.b64decode(raw, validate = True):
+                raise ValueError("empty audio payload")
         except Exception:
             raise HTTPException(
                 status_code = 400,

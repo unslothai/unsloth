@@ -9162,7 +9162,7 @@ def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
         except HTTPException:
             pytest.fail(f"the preflight refused {name} base64 that llama.cpp decodes")
     # undecodable input is still a 400, so dropping validate = True did not open the gate.
-    for bad in ("abc", "!!!!", "AA!!AA=="):
+    for bad in ("abc", "!!!!", "AA!!AA==", "   ", "data:audio/wav;base64", "\n\n"):
         with pytest.raises(HTTPException) as exc:
             asyncio.run(
                 inference_route._preflight_audio_for_switch(
