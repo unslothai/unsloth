@@ -850,6 +850,35 @@ UNWIRED: dict[str, str] = {
         "out for a reason of its own, this is what goes back in that hour "
         "instead of being reconstructed from a commit message."
     ),
+    "multi_gpu": (
+        "MEASURED AND REJECTED for the per-PR kernel, on two counts, and the "
+        "leg itself is fine: unsloth-probe-multigpu-r2-a280e2 is passed true, "
+        "failures [], with the DEVICE_COUNT > 1 bindings live for the first "
+        "time in this CI.\n"
+        "A/B, same commit, same day, three pairs across two accounts:\n"
+        "    A (5 legs)  1936.4  1980.3  2301.8\n"
+        "    B (+ this)  2125.1  2342.0  2482.1\n"
+        "B slower in 3 of 3 pairs by +188.7, +361.7 and +180.3, mean +243.6s. "
+        "The within-arm spread is ~360s, so no single pair settles it, but the "
+        "sign does not vary and the mechanism is not mysterious: a Kaggle "
+        "session has 4 vCPUs and a leg is mostly install, so a sixth "
+        "concurrent install costs wall clock that no scheduler recovers. Both "
+        "arms leave gpu1 idle for 870-1200s, so it was never a GPU capacity "
+        "problem.\n"
+        "THE BLOCKER IS THE SECOND COUNT, and it is worse than the time. The "
+        "Default leg passes 3 of 3 in arm A and FAILS 3 of 3 in arm B, every "
+        "time with the same error inside its own overlay:\n"
+        "    PicklingError: Can't pickle <class 'MonthDayNano'>\n"
+        "    at overlay_t4_Default/datasets/utils/_dill.py\n"
+        "MonthDayNano is a pyarrow type and none of this touches GPUs, so the "
+        "sixth concurrent install is perturbing another leg's overlay "
+        "resolution. Wiring this would trade multi-GPU coverage for a "
+        "reproducible red on a leg that has nothing to do with it, and the "
+        "cause would be invisible to whoever met it first.\n"
+        "WHAT WOULD UNBLOCK IT: understand the overlay interaction, or give "
+        "this leg its own kernel on the nightly schedule, where it installs "
+        "alone. The `legs` input and the schedule trigger both exist already."
+    ),
     "latest_compile": (
         "STILL UNKNOWN: nothing about the leg. It is GREEN end to end and is "
         "held out by a DEPENDENCY, which is why this note now reads as it "
@@ -1017,12 +1046,7 @@ UNWIRED: dict[str, str] = {
 # vision_failures [] and kernel_failures [], at 2.84GB peak reserved -- so it
 # co-tenants comfortably rather than displacing anything.
 KERNELS: tuple[tuple[str, ...], ...] = (
-    # multi_gpu LAST, and the position is not arbitrary. It is the only
-    # all-card leg, so it never enters the card queue at all -- ORDER filters it
-    # out and it gets its own lane -- but ORDER is still what the report is
-    # ordered by, and reading it beside the legs it runs beside is what a reader
-    # wants.
-    ("canary", "control", "gptoss", "vision_fla_compile", "default", "multi_gpu"),
+    ("canary", "control", "gptoss", "vision_fla_compile", "default"),
 )
 
 

@@ -532,10 +532,15 @@ def test_no_card_is_ever_asked_to_hold_more_than_it_has(tmp_path):
         if p["notebook"] not in {f"t4_{LEGS[n].name}.ipynb" for n in ALL_LEGS if LEGS[n].all_cards}
     ]
     assert set(p["cuda"] for p in pinned) == {"0", "1"}, stub.papermill
-    assert len(pinned) < len(stub.papermill), (
-        "no unpinned payload ran, so the exclusion above is filtering nothing "
-        "and this rule is not being asked the question it was narrowed for"
-    )
+    # ...and if any all-card leg is WIRED, it really did run and really did run
+    # unpinned. Conditional because the wired set has none today: multi_gpu was
+    # measured and held out. Asserting one unconditionally would go red on a
+    # scheduling change that is nothing to do with this rule.
+    unpinned = [p for p in stub.papermill if p not in pinned]
+    if any(LEGS[n].all_cards for n in ALL_LEGS):
+        assert unpinned, "an all-card leg is wired and no unpinned payload ran"
+    else:
+        assert not unpinned, unpinned
 
 
 def test_gptoss_starts_in_the_second_wave_so_the_prefetch_has_a_window(tmp_path):

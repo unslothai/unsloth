@@ -2432,15 +2432,26 @@ def test_an_unwired_note_says_what_is_unknown_or_what_replaced_it():
     """An unwired leg whose note reads as settled is a leg someone wires without
     running it.
 
-    Two reasons a leg is not wired, and they are not the same thing. A leg with
-    an open question says STILL UNKNOWN and names it. A leg that was REPLACED
-    has nothing unknown about it at all -- frontier is retired because
-    vision_fla_compile asserts everything it did and more -- and forcing that
-    note to claim an open question would be a lie in the file that exists to
-    stop lies of exactly that kind.
+    THREE reasons a leg is not wired, and they are not the same thing.
 
-    So the rule is: say which of the two it is, and if it was superseded, name
-    the leg that superseded it. A bare note passes neither branch.
+    A leg with an open question says STILL UNKNOWN and names it.
+
+    A leg that was REPLACED has nothing unknown about it at all -- frontier is
+    retired because vision_fla_compile asserts everything it did and more --
+    and forcing that note to claim an open question would be a lie in the file
+    that exists to stop lies of exactly that kind.
+
+    A leg that was MEASURED AND REJECTED is the third, added when multi_gpu hit
+    it: the leg passes on hardware and was still held out, because an A/B
+    showed it costing wall clock and breaking another leg. Nothing about it is
+    unknown and nothing replaced it, so the first two categories would both be
+    false. What that note owes the reader instead is the way back in, so it
+    must say WHAT WOULD UNBLOCK IT -- otherwise "rejected" reads as permanent
+    and the measurement behind it is never revisited.
+
+    So the rule is: say which of the three it is, name the superseding leg if
+    it was superseded, and name the unblock condition if it was rejected. A
+    bare note passes none of them.
     """
     from legs import LEGS, UNWIRED
     for name, note in UNWIRED.items():
@@ -2451,9 +2462,17 @@ def test_an_unwired_note_says_what_is_unknown_or_what_replaced_it():
                 f"retirement nobody can trace is a deletion with extra steps"
             )
             continue
-        assert (
-            "STILL UNKNOWN" in note
-        ), f"{name} note says neither what is open nor what replaced it"
+        if "MEASURED AND REJECTED" in note:
+            assert "WHAT WOULD UNBLOCK IT" in note, (
+                f"{name} says it was measured and rejected without saying what "
+                f"would change that; a rejection with no way back is a deletion "
+                f"that keeps costing a reader the time to re-derive it"
+            )
+            continue
+        assert "STILL UNKNOWN" in note, (
+            f"{name} note says none of: what is open, what replaced it, or "
+            f"what would unblock it"
+        )
 
 
 def test_grpo_stays_unwired_while_the_illegal_memory_access_is_open():
