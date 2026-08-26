@@ -48,7 +48,7 @@ try:
 except:
     MistralSdpaAttention = MistralAttention
     MistralFlashAttention2 = MistralAttention
-from unsloth_zoo.utils import Version, _get_dtype
+from unsloth_zoo.utils import Version
 
 
 def MistralAttention_fast_forward(

@@ -2328,9 +2328,6 @@ def has_internet(
         return False
 
 
-import psutil
-
-
 def _get_statistics(statistics = None, force_download = True):
     # Basic stats on which environment is in use: a README.md is downloaded from HF, all data public, so broken envs can be detected. Disable with UNSLOTH_DISABLE_STATISTICS.
     n_cpus = psutil.cpu_count(logical = False)
