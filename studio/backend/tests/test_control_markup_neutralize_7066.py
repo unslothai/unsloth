@@ -3082,7 +3082,15 @@ _CONTROLLER_MODULES = ("llama_cpp.py", "safetensors_agentic.py")
 # the catalog its own prompt advertised, which is a different bug, so closing it needs the
 # transport to say whether it templated the prompt. That is a product change and belongs in
 # its own PR; this entry keeps the gap visible and makes a FOURTH loop fail below.
-_CONTROLLER_MODULES_OUT_OF_SCOPE = ("studio_tool_loop.py",)
+# Keyed by ``(path under studio/backend, enclosing function)`` rather than by filename: a
+# SECOND controller in this module, or a same-named module elsewhere, must not inherit the
+# exemption this one earned.
+_CONTROLLER_SITES_OUT_OF_SCOPE = frozenset(
+    {("core/inference/studio_tool_loop.py", "stream_with_studio_tools")}
+)
+
+# The two loops the guard above resolves, as paths for the same reason.
+_CONTROLLER_MODULE_PATHS = frozenset({f"core/inference/{module}" for module in _CONTROLLER_MODULES})
 
 # Producers whose return value IS a sanitized catalog: the sweep, plus the two catalog
 # builders that wrap it. The builders are held to that below.
@@ -3265,10 +3273,17 @@ def _ctrl_sweep_roots(
     """
     roots = set()
     if isinstance(expr, ast.Call):
-        if _ctrl_called_name(expr, aliases) in _CATALOG_PRODUCERS and expr.args:
-            if isinstance(expr.args[0], ast.Name):
-                roots.add(expr.args[0].id)
-        for argument in expr.args:
+        if _ctrl_called_name(expr, aliases) in _CATALOG_PRODUCERS:
+            # Positional OR keyword: `neutralize_tool_descriptions(tools = tools, ...)` is the
+            # same call, and a guard that only reads `args[0]` would fail a rename of the
+            # argument style -- the refactor fragility this whole test exists to remove.
+            catalog = expr.args[0] if expr.args else None
+            for keyword in expr.keywords:
+                if keyword.arg == "tools":
+                    catalog = keyword.value
+            if isinstance(catalog, ast.Name):
+                roots.add(catalog.id)
+        for argument in list(expr.args) + [k.value for k in expr.keywords]:
             roots |= _ctrl_sweep_roots(argument, scopes, aliases, seen)
         return roots
     if isinstance(expr, (ast.IfExp, ast.BoolOp)):
@@ -3339,6 +3354,19 @@ def _ctrl_resolve(expr, scopes, aliases, module, seen):
             if not ok:
                 return False, why, False
             gates = gates or branch_gates
+        if gates and isinstance(expr, ast.BoolOp):
+            # NO PREDICATE TO READ, and short-circuit makes any operand reachable: `safe or None`
+            # evaluates to None exactly when the sweep emptied the catalog, which is the moment
+            # the allowlist matters most. Every operand has to gate.
+            for value in expr.values:
+                _ok, _why, value_gates = _ctrl_resolve(value, scopes, aliases, module, seen)
+                if not value_gates:
+                    return (
+                        True,
+                        f"line {expr.lineno}: an operand with no catalog is reachable by "
+                        "short-circuit, and nothing here proves the catalog is empty",
+                        False,
+                    )
         if gates and isinstance(expr, ast.IfExp):
             # WHICH branch gates is not enough on its own. `None if tools else <swept>` gates on
             # the swept side while selecting `None` exactly when there IS a catalog, so the
@@ -3548,6 +3576,17 @@ def test_the_resolver_holds_the_shapes_that_look_sanitized_on_one_path():
         "def loop(catalog):\n    catalog = catalog\n    ToolLoopController(tools = catalog)\n"
     )
     assert not ok
+    # SHORT-CIRCUIT reaches the None operand exactly when the sweep emptied the catalog.
+    ok, _why, gates = _ctrl_resolve_source(f"c = {swept}\nToolLoopController(tools = c or None)\n")
+    assert ok and not gates
+    ok, _why, gates = _ctrl_resolve_source(f"c = {swept}\nToolLoopController(tools = c or [])\n")
+    assert ok and gates
+    # THE KEYWORD SPELLING of the sweep is the same call, so the guard must still find its root.
+    ok, _why, gates = _ctrl_resolve_source(
+        "c = neutralize_tool_descriptions(tools = tools, markup = markup)\n"
+        "ToolLoopController(tools = None if not tools else c)\n"
+    )
+    assert ok and gates
     # A LAMBDA PARAMETER shadows the outer proof at runtime, so it must shadow it here.
     ok, why, _gates = _ctrl_resolve_source(
         f"safe = {swept}\nfactory = lambda safe: ToolLoopController(tools = safe)\n"
@@ -3558,24 +3597,38 @@ def test_the_resolver_holds_the_shapes_that_look_sanitized_on_one_path():
 def test_every_tool_loop_controller_is_classified():
     """A controller nobody listed is a controller nobody checked, so a new loop fails here.
 
-    The guard above covers the two local loops; `_CONTROLLER_MODULES_OUT_OF_SCOPE` names the
-    external one and says why. A fourth construction site belongs in one list or the other,
-    and this is what forces the choice (#7066).
+    Per SITE, not per file. The guard above resolves every site in the two local modules;
+    `_CONTROLLER_SITES_OUT_OF_SCOPE` names the external one and says why. A second controller
+    added to that same module is a different flow and has to be classified on its own (#7066).
     """
-    known = set(_CONTROLLER_MODULES) | set(_CONTROLLER_MODULES_OUT_OF_SCOPE)
+    backend = _REPO_ROOT / "studio" / "backend"
     found = set()
-    for path in sorted((_REPO_ROOT / "studio" / "backend").rglob("*.py")):
+    for path in sorted(backend.rglob("*.py")):
         if "tests" in path.parts:
             continue
         tree = _ctrl_parse(path)
-        if _ctrl_controller_sites(tree, _ctrl_aliases(tree)):
-            found.add(path.name)
+        relative = path.relative_to(backend).as_posix()
+        for call in _ctrl_controller_sites(tree, _ctrl_aliases(tree)):
+            enclosing = next(
+                (
+                    scope.name
+                    for scope in _ctrl_scopes(call)
+                    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
+                ),
+                "<module>",
+            )
+            found.add((relative, enclosing))
     assert found, "nothing builds a ToolLoopController any more"
-    assert found - known == set(), (
-        f"unclassified ToolLoopController site(s): {sorted(found - known)}. Add each to "
-        "_CONTROLLER_MODULES, or to _CONTROLLER_MODULES_OUT_OF_SCOPE with a reason."
+    covered = {site for site in found if site[0] in _CONTROLLER_MODULE_PATHS}
+    unclassified = found - covered - _CONTROLLER_SITES_OUT_OF_SCOPE
+    assert unclassified == set(), (
+        f"unclassified ToolLoopController site(s): {sorted(unclassified)}. Add the module to "
+        "_CONTROLLER_MODULES, or the site to _CONTROLLER_SITES_OUT_OF_SCOPE with a reason."
     )
-    assert set(_CONTROLLER_MODULES) <= found, "a checked module no longer builds a controller"
+    assert {site[0] for site in covered} == set(
+        _CONTROLLER_MODULE_PATHS
+    ), "a checked module no longer builds a controller"
+    assert _CONTROLLER_SITES_OUT_OF_SCOPE <= found, "an exempted site is gone; drop its entry"
 
 
 def test_the_sanitized_by_contract_catalog_is_sanitized_at_every_caller():
