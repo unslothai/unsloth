@@ -1466,6 +1466,19 @@ def _hip_runtime_version() -> Optional[tuple[int, int]]:
 _ROCM_UNNAMED_APU_ARCHES = frozenset({"gfx1103"})
 
 
+def _rocm_props_unified_status(props: Any) -> Optional[bool]:
+    try:
+        from core.training.worker import _rocm_classify_unified_memory
+        classification = _rocm_classify_unified_memory(props)
+        arch = str(classification[0] or "")
+        return bool(classification[1]) or (
+            arch.split(":")[0].strip().lower() in _ROCM_UNNAMED_APU_ARCHES
+        )
+    except Exception as e:
+        logger.debug("ROCm unified-memory classification failed: %s", e)
+        return None
+
+
 def _rocm_props_are_positively_unified(props: Any) -> bool:
     """Whether this part is KNOWN to be unified memory, not merely unclassified.
 
@@ -1487,33 +1500,7 @@ def _rocm_props_are_positively_unified(props: Any) -> bool:
     """
     if not IS_ROCM:
         return False
-    try:
-        from core.training.worker import _rocm_classify_unified_memory
-        return bool(_rocm_classify_unified_memory(props)[1])
-    except Exception as e:
-        logger.debug("ROCm unified-memory classification failed: %s", e)
-        return False
-
-
-def _rocm_props_are_an_unnamed_apu(props: Any) -> bool:
-    """True for an APU arch the shared classifier's positive set omits.
-
-    The exact arch list only names parts that never shipped as discrete GPUs.
-    Callers that combine unkeyed Windows usage counters still need a lone visible
-    device before attributing a shared-memory numerator.
-
-    Indexed rather than unpacked so a classifier that grows its tuple (#9198)
-    keeps working.
-    """
-    if not IS_ROCM:
-        return False
-    try:
-        from core.training.worker import _rocm_classify_unified_memory
-        arch = str(_rocm_classify_unified_memory(props)[0] or "")
-    except Exception as e:
-        logger.debug("ROCm unified-memory classification failed: %s", e)
-        return False
-    return arch.split(":")[0].strip().lower() in _ROCM_UNNAMED_APU_ARCHES
+    return _rocm_props_unified_status(props) is True
 
 
 def _rocm_props_total_is_carve_out(props: Any) -> bool:
@@ -1549,12 +1536,7 @@ def _rocm_props_total_is_carve_out(props: Any) -> bool:
     """
     if not IS_ROCM:
         return False
-    try:
-        from core.training.worker import _rocm_classify_unified_memory
-        if _rocm_classify_unified_memory(props)[1]:
-            return True
-    except Exception as e:
-        logger.debug("ROCm unified-memory classification failed: %s", e)
+    if _rocm_props_unified_status(props) is not False:
         return True
     hip_version = _hip_runtime_version()
     return (
@@ -1589,9 +1571,7 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
             # torch ordinals are 0-based relative to CUDA_VISIBLE_DEVICES.
             props = mod.get_device_properties(ordinal)
             total_bytes = props.total_memory
-            known_unified = _rocm_props_are_positively_unified(
-                props
-            ) or _rocm_props_are_an_unnamed_apu(props)
+            known_unified = _rocm_props_are_positively_unified(props)
             shared_memory = False
             try:
                 if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):

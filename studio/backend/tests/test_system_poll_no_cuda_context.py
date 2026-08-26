@@ -1095,6 +1095,16 @@ def test_rocm_unclassified_apu_keeps_the_driver_total_on_an_older_runtime(monkey
     assert inventory["shared_memory"] is True
 
 
+def test_rocm_unclassified_apu_keeps_the_driver_total_with_a_legacy_flag(monkeypatch):
+    mod = _rocm_mod(_FakeUnclassifiedApuProps())
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    inventory = hw._torch_get_device_inventory([0])[0]
+    assert inventory["total_gb"] == 100.0
+    assert inventory["shared_memory"] is True
+
+
 def test_rocm_unclassified_apu_keeps_the_driver_total_without_the_flag(monkeypatch):
     # A wheel that omits the field reads as 0 through getattr, exactly like a runtime
     # that never set it, so the arch set is again the only signal left.
