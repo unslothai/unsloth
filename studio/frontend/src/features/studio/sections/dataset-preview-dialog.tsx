@@ -436,8 +436,15 @@ export function DatasetPreviewDialog({
     [data, effectiveIsVlm, manualMapping],
   );
   const unselectedInstructionColumns = useMemo(
-    () => (data ? getUnselectedInstructionColumns(data, viewerSelections) : []),
-    [data, viewerSelections],
+    () =>
+      data
+        ? getUnselectedInstructionColumns(
+            data,
+            viewerSelections,
+            effectiveIsAudio,
+          )
+        : [],
+    [data, viewerSelections, effectiveIsAudio],
   );
 
   const sourceLabel = useMemo(() => {
@@ -733,7 +740,13 @@ export function DatasetPreviewDialog({
                   {unselectedInstructionColumns.length > 0 && (
                     <p className="mt-2 flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400">
                       <HugeiconsIcon icon={AlertCircleIcon} className="size-3.5" />
-                      {unselectedInstructionColumns.join(", ")} was not selected because its first value is empty.
+                      {unselectedInstructionColumns.some(
+                        ({ reason }) => reason === "unsupported_audio_mapping",
+                      )
+                        ? "This audio dataset is mapped as audio → transcript; instruction is not used for this training mode."
+                        : `${unselectedInstructionColumns
+                            .map(({ column }) => column)
+                            .join(", ")} was not selected because its first value is empty.`}
                     </p>
                   )}
                 </div>

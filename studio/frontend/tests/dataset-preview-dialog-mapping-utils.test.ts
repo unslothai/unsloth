@@ -83,7 +83,29 @@ test("viewer summary warns only for a present unselected instruction column", ()
   const data = { ...base, columns: [...base.columns, "instruction"] };
   const selections = getViewerColumnSelections(data, true, {});
   assert.deepEqual(getUnselectedInstructionColumns(data, selections), [
-    "instruction",
+    { column: "instruction", reason: "empty_first_value" },
   ]);
   assert.deepEqual(getUnselectedInstructionColumns(base, selections), []);
+});
+
+test("audio instruction omission does not use the empty-first-value reason", () => {
+  const data = {
+    ...base,
+    is_audio: true,
+    columns: ["audio", "instruction", "text"],
+    detected_audio_column: "audio",
+    detected_text_column: "text",
+    preview_samples: [
+      {
+        audio: "sample.wav",
+        instruction: "Transcribe this audio.",
+        text: "Hello",
+      },
+    ],
+  };
+  const selections = getViewerColumnSelections(data, false, {});
+
+  assert.deepEqual(getUnselectedInstructionColumns(data, selections, true), [
+    { column: "instruction", reason: "unsupported_audio_mapping" },
+  ]);
 });
