@@ -83,7 +83,10 @@ test("the prefetched model path is keyed to the model it was fetched for", () =>
     PREFETCH_PATH.includes("cachedPathRef.current?.key === pathKey"),
     "the guard must miss once the menu moved to another model",
   );
-  assert.ok(PREFETCH_PATH.includes("{ key: pathKey, path }"));
+  assert.match(
+    GGUF,
+    /cachedPathRef\.current = \{ key: pathKey, path: resolved \}/,
+  );
 });
 
 test("the link base is kept fresh for as long as the grid is on screen", () => {
@@ -131,12 +134,24 @@ test("the cached path is dropped when the inventory moves", () => {
   );
 });
 
-test("a prefetch for the previous model cannot evict the current one", () => {
+test("the pointer, the open and a cold copy share one request", () => {
   assert.ok(
-    PREFETCH_PATH.includes("if (pathKeyRef.current === pathKey)"),
+    PREFETCH_PATH.includes("resolveCachedPath()"),
+    "each resolve is a full scan of the Hugging Face caches",
+  );
+  assert.ok(
+    COPY_PATH.includes("await resolveCachedPath()"),
+    "a cold copy must join the prefetch already running, not start a third",
+  );
+  assert.match(GGUF, /if \(live\?\.key === pathKey\) \{\s*return live\.path;/);
+});
+
+test("a prefetch for the previous model cannot evict the current one", () => {
+  assert.match(
+    GGUF,
+    /if \(pathKeyRef\.current === pathKey\) \{\s*cachedPathRef\.current/,
     "a response that outlived the switch must not commit",
   );
-  assert.ok(COPY_PATH.includes("if (pathKeyRef.current === pathKey)"));
 });
 
 test("the model path starts resolving before the menu item is reachable", () => {

@@ -33,14 +33,17 @@ const TUNNEL = "https://live.trycloudflare.com";
 // fields ride with it.
 const AUTHED = {
   device_type: "linux",
-  chat_only: false,
-  chat_only_reason: null,
+  chat_only: true,
+  chat_only_reason: "mlx_unavailable",
+  chat_only_detail: "mlx-lm 0.19 is too old",
   version: "2026.1.1",
   cloudflare_url: TUNNEL,
   server_url: "http://10.0.0.4:8000",
   secure: true,
 };
 // What the same endpoint answers once the token expires: HTTP 200, no authed fields.
+// health_check ships chat_only in the unauthenticated body, but not the reason behind
+// it and not the tunnel: everything that fingerprints the host is authed-only.
 const UNAUTHED = { chat_only: false };
 // Authed, but sent while the hardware snapshot is still provisional: health_check ships
 // the tunnel fields before it knows a device_type. Here the tunnel has been stopped.
@@ -164,4 +167,24 @@ test("a failed read keeps the platform the backend measured", async () => {
     true,
     "a dropped poll threw away the measurement",
   );
+});
+
+test("an expired token does not throw away the reason the UI is explaining", async () => {
+  next = async () => AUTHED;
+  await fetchDeviceType({ force: true });
+  assert.equal(usePlatformStore.getState().chatOnlyReason, "mlx_unavailable");
+
+  // chat_only survives in the unauthenticated body; the reason behind it does not, and
+  // a settled reply is not provisional, so resolveVerdict has nothing to hold on to.
+  next = async () => UNAUTHED;
+  await fetchDeviceType({ force: true });
+
+  const kept = usePlatformStore.getState();
+  assert.equal(
+    kept.chatOnlyReason,
+    "mlx_unavailable",
+    "the greyed-out Train row loses its explanation, and the self-heal poll stops arming",
+  );
+  assert.equal(kept.chatOnlyDetail, "mlx-lm 0.19 is too old");
+  assert.equal(kept.chatOnly, true, "and the verdict itself was flipped");
 });

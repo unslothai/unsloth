@@ -305,19 +305,36 @@ export function QuantOptionsMenu({
   useEffect(() => {
     pathKeyRef.current = pathKey;
   }, [pathKey]);
+  // Every resolve goes through here so the pointer, the open and a cold copy share one
+  // request: each call costs the backend a full scan of the Hugging Face caches.
+  const inFlightRef = useRef<{ key: string; path: Promise<string> } | null>(null);
+  const resolveCachedPath = useCallback((): Promise<string> => {
+    const live = inFlightRef.current;
+    if (live?.key === pathKey) {
+      return live.path;
+    }
+    const path = getCachedModelPath(repoId, quant)
+      .then(({ path: resolved }) => {
+        // The request for a quant we switched off can land last; it must not evict.
+        if (pathKeyRef.current === pathKey) {
+          cachedPathRef.current = { key: pathKey, path: resolved };
+        }
+        return resolved;
+      })
+      .finally(() => {
+        if (inFlightRef.current?.key === pathKey) {
+          inFlightRef.current = null;
+        }
+      });
+    inFlightRef.current = { key: pathKey, path };
+    return path;
+  }, [repoId, quant, pathKey]);
   const prefetchCachedPath = useCallback(() => {
     if (!downloaded || cachedPathRef.current?.key === pathKey) {
       return;
     }
-    getCachedModelPath(repoId, quant)
-      .then(({ path }) => {
-        // The request for a quant we switched off can land last; it must not evict.
-        if (pathKeyRef.current === pathKey) {
-          cachedPathRef.current = { key: pathKey, path };
-        }
-      })
-      .catch(() => undefined);
-  }, [downloaded, repoId, quant, pathKey]);
+    void resolveCachedPath().catch(() => undefined);
+  }, [downloaded, pathKey, resolveCachedPath]);
   // An inventory bump while the menu is open changes the key under it, and no pointer
   // or open event is coming to notice: prefetchCachedPath's identity moves with the
   // key, so this re-runs and the copy still finds a path waiting for it.
@@ -332,12 +349,7 @@ export function QuantOptionsMenu({
       // Safari drops the click's clipboard permission after any other await.
       const cached = cachedPathRef.current;
       const path =
-        cached?.key === pathKey
-          ? cached.path
-          : (await getCachedModelPath(repoId, quant)).path;
-      if (pathKeyRef.current === pathKey) {
-        cachedPathRef.current = { key: pathKey, path };
-      }
+        cached?.key === pathKey ? cached.path : await resolveCachedPath();
       if (await copyToClipboard(path)) {
         toast.success("Copied path");
       } else {
@@ -348,7 +360,7 @@ export function QuantOptionsMenu({
         err instanceof Error ? err.message : "Failed to resolve model path",
       );
     }
-  }, [repoId, quant, pathKey]);
+  }, [pathKey, resolveCachedPath]);
   const handleCopyId = useCallback(async () => {
     const id = quant ? `${repoId}:${quant}` : repoId;
     if (await copyToClipboard(id)) {

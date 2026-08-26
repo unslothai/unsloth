@@ -179,10 +179,20 @@ export async function fetchDeviceType(options?: {
       // later forced refresh already picked up device_type and the tunnel
       // fields; writing either would reset device type or null the tunnel
       // fields. Forced refreshes are explicit re-reads, so they still write.
-      if (shouldKeepAuthoritativePlatform(options?.force) || superseded()) {
-        return usePlatformStore.getState().deviceType;
-      }
       const previous = usePlatformStore.getState();
+      // The authed-only fields are all-or-nothing, so one of them says which body this is.
+      // An unauthenticated reply carries no device_type, no chat_only_reason and no
+      // tunnel: it can only ever say less than is already stored, and the guard above
+      // already refuses it for a non-forced read. A forced read is the same reply, so it
+      // is refused too -- otherwise every poll made against an expired token walks a
+      // measurement back to a browser guess.
+      if (
+        shouldKeepAuthoritativePlatform(options?.force) ||
+        superseded() ||
+        (!("cloudflare_url" in data) && previous.fetched)
+      ) {
+        return previous.deviceType;
+      }
       // A provisional reply omits device_type, so a forced refresh during the warm would
       // fall back to the browser platform and relabel a WSL, SSH or remote host as local,
       // changing model filtering, paths and install commands. Keep the server's answer.
@@ -200,28 +210,6 @@ export async function fetchDeviceType(options?: {
         data,
         previous,
       );
-      // Authed-only, so they ride with device_type on the same terms: an expired token
-      // gets the unauthenticated body, which carries none of them, and nulling a live
-      // tunnel there leaves every copied preview link pointing at this machine. Keyed on
-      // whether the field is THERE, not on whether it is null: health_check ships all
-      // three to an authed caller before it knows a device_type, so a null from one of
-      // those is a tunnel that stopped, and treating it as absent keeps a dead URL.
-      const authedFields = "cloudflare_url" in data;
-      const cloudflareUrl = authedFields
-        ? (data.cloudflare_url ?? null)
-        : keepPlatform
-          ? previous.cloudflareUrl
-          : null;
-      const serverUrl = authedFields
-        ? (data.server_url ?? null)
-        : keepPlatform
-          ? previous.serverUrl
-          : null;
-      const secure = authedFields
-        ? (data.secure ?? false)
-        : keepPlatform
-          ? previous.secure
-          : false;
       // Cache only a server-reported platform. Unauthenticated responses fall
       // back to the browser platform, which can differ from the host (WSL,
       // SSH); keeping fetched=false retries once a token exists.
@@ -231,9 +219,11 @@ export async function fetchDeviceType(options?: {
         chatOnly,
         chatOnlyReason,
         chatOnlyDetail,
-        cloudflareUrl,
-        serverUrl,
-        secure,
+        // An authed null is a tunnel that stopped, not a field the reply left out: only
+        // an unauthenticated body omits these, and that one no longer reaches here.
+        cloudflareUrl: data.cloudflare_url ?? null,
+        serverUrl: data.server_url ?? null,
+        secure: data.secure ?? false,
         fetched: data.device_type !== undefined || keepPlatform,
         detectionDeferred: isDetectionDeferred(data),
       });
