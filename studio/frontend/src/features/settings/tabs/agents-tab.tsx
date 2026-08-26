@@ -33,7 +33,13 @@ import {
   listLocalModels,
   listModels,
 } from "@/features/chat";
-import { useHfTokenStore } from "@/features/hub";
+import {
+  ggufVariantDisplayLabel,
+  hfApiToken,
+  useHfTokenStore,
+  useHubModelSearch,
+  useOnlineStatus,
+} from "@/features/hub";
 import type { TranslationKey } from "@/i18n";
 import { useT } from "@/i18n";
 import { getApiBase, isTauri } from "@/lib/api-base";
@@ -54,11 +60,19 @@ import {
 import { SettingsSection } from "../components/settings-section";
 import { psSingle, shSingle } from "../components/usage-examples";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
-import { ggufVariantDisplayLabel } from "@/features/hub";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
-const EXAMPLE_MODEL_REPO = "unsloth/gemma-4-E4B-it-GGUF";
+const EXAMPLE_MODEL_REPO = "unsloth/Qwen3.8-27B-GGUF";
 const EXAMPLE_MODEL_VARIANT = "UD-Q4_K_XL";
+const EXAMPLE_MODEL_OPTIONS = [
+  "--context-length 32768",
+  "--temperature 1.0",
+  "--top-p 0.95",
+  "--top-k 20",
+  "--min-p 0.0",
+  "--presence-penalty 0.0",
+  "--reasoning-effort medium",
+].join(" ");
 const MODEL_RESULT_LIMIT = 7;
 const STATUS_POLL_MS = 5000;
 const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
@@ -219,6 +233,20 @@ function looksLikePath(value: string): boolean {
 // hugging face ids fold case; a path does not, since Linux paths are sensitive.
 function modelKey(model: string): string {
   return looksLikePath(model) ? model : model.toLowerCase();
+}
+
+function mergeModelOrder(primary: string[], fallback: string[]): string[] {
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  for (const model of [...primary, ...fallback]) {
+    const key = modelKey(model);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    ordered.push(model);
+  }
+  return ordered;
 }
 
 function isHuggingFaceRepo(model: string): boolean {
@@ -626,7 +654,17 @@ export function AgentsTab() {
   const t = useT();
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const hfToken = useHfTokenStore((s) => s.token);
+  const hfAccessToken = hfApiToken(hfToken);
+  const online = useOnlineStatus();
   const deviceType = usePlatformStore((s) => s.deviceType);
+  const { results: trendingGgufs } = useHubModelSearch("", {
+    channel: { owner: "unsloth", tags: ["gguf"] },
+    sortBy: "trendingScore",
+    sortDirection: "desc",
+    accessToken: hfAccessToken,
+    keepUnsupportedTags: true,
+    enabled: online,
+  });
   // The remote snippet runs on the client, so use the client platform, not deviceType.
   // Anchor the match: a bare includes("win") would also match "darwin".
   const [isWindowsClient] = useState(() => {
@@ -725,6 +763,17 @@ export function AgentsTab() {
   const [variantsFailed, setVariantsFailed] = useState(false);
 
   const labelFor = (model: string) => modelLabels[model] ?? model;
+  const trendingModels = useMemo(
+    () =>
+      trendingGgufs
+        .filter((model) => model.isGguf)
+        .map((model) => model.id),
+    [trendingGgufs],
+  );
+  const orderedModels = useMemo(
+    () => mergeModelOrder(trendingModels, models),
+    [models, trendingModels],
+  );
   const matchingModels = useMemo(() => {
     const tokens = modelSearch
       .trim()
@@ -733,8 +782,8 @@ export function AgentsTab() {
       .filter(Boolean);
     const matches =
       tokens.length === 0
-        ? models
-        : models.filter((model) => {
+        ? orderedModels
+        : orderedModels.filter((model) => {
             // Search both, so a scanned model is findable by name and by path.
             const haystack =
               `${model} ${modelLabels[model] ?? ""}`.toLowerCase();
@@ -748,7 +797,7 @@ export function AgentsTab() {
       ];
     }
     return matches;
-  }, [modelLabels, modelSearch, models, selectedModel]);
+  }, [modelLabels, modelSearch, orderedModels, selectedModel]);
 
   const visibleModels = matchingModels.slice(0, MODEL_RESULT_LIMIT);
   const preferredVariant = knownVariants[selectedModel] ?? null;
@@ -774,11 +823,17 @@ export function AgentsTab() {
   // A bare `unsloth start` attaches to whatever is loaded, which is the only way
   // to reach a native-grant GGUF: naming it would switch the server to another model.
   const attachOnly = selectedModel === attachOnlyModel;
-  const modelArgs = attachOnly
-    ? ""
-    : selectedVariant && !suffixVariant
+  const selectedModelArgs =
+    selectedVariant && !suffixVariant
       ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsShell)}`
       : `--model ${commandModelArg}`;
+  const selectedModelOptions =
+    modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO)
+      ? EXAMPLE_MODEL_OPTIONS
+      : "";
+  const modelArgs = attachOnly
+    ? ""
+    : [selectedModelArgs, selectedModelOptions].filter(Boolean).join(" ");
   // No key is passed: the CLI caches an explicit one per base, overwriting a working
   // saved key. Omitting it replays the saved key; the remote section covers first setup.
   const commandOs = isWindowsShell ? "windows" : "unix";
