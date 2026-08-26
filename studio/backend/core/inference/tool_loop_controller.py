@@ -111,6 +111,20 @@ def _heal_arg_key(tool_name: str) -> "str | None":
     return _HEAL_ARG_CACHE.get(tool_name)
 
 
+def _unreadable_arguments_summary(fragment: str) -> dict[str, str]:
+    """What stands in for a call whose arguments never finished arriving.
+
+    Small and parseable on purpose. The replayed `arguments` of an assistant tool call is
+    read as JSON by the server rendering the template, so anything that does not parse
+    fails the whole request rather than just that call.
+    """
+    return {
+        "error": (
+            f"arguments were cut off after {len(fragment)} characters and could not be read"
+        )
+    }
+
+
 _ONE_SHOT_TOOLS = frozenset({"render_html"})
 
 NoopReason = Literal["duplicate", "disabled", "render_html_repeat"]
@@ -191,11 +205,13 @@ class ToolCallDecision:
             "type": "function",
             "function": {
                 "name": self.tool_name,
-                # Replayed verbatim when it could not be read. `arguments` is a string in
-                # this format, so the fragment IS the honest value: the model then sees
-                # what it actually sent, cut off where it was cut off, next to the error
-                # saying so. Wrapping it in a sentinel key taught it to send that key back.
-                "arguments": fragment
+                # Whatever goes here MUST parse as JSON. llama-server parses it while
+                # rendering the template and answers 500 otherwise, which is what replaying
+                # the fragment verbatim caused: it is unparseable by definition, that being
+                # why it is here. So the replay is a short valid object that says the call
+                # was cut off, and the tool result carries the detail. The fragment itself
+                # is not worth resending -- it is the content that overflowed the window.
+                "arguments": json.dumps(_unreadable_arguments_summary(fragment))
                 if fragment is not None
                 else json.dumps(
                     self.arguments,

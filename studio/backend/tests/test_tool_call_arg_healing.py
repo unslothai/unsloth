@@ -190,14 +190,51 @@ def test_the_sentinel_never_reaches_the_tool_card():
     assert payload["arguments"] == {"raw": _TRUNCATED}
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        _TRUNCATED,
+        _TRUNCATED_PYTHON,
+        "not json at all",
+        '{"a": 1,',
+        '{"unterminated": "' + "x" * 4000,
+    ],
+)
+def test_replayed_arguments_always_parse_as_json(raw):
+    """The invariant that matters more than any of the wording below.
+
+    llama-server parses this field while rendering the template, so a value that does not
+    parse fails the WHOLE request, not just the one call. Replaying the fragment verbatim
+    looked like the honest thing to do and produced a live 500:
+
+        Failed to parse tool call arguments as JSON: [json.exception.parse_error.101]
+        parse error at line 1, column 7201: missing closing quote
+
+    A fragment is unparseable by definition, that being why it is here at all.
+    """
+    tool_call = _decision_for(raw).as_assistant_tool_call()
+
+    parsed = json.loads(tool_call["function"]["arguments"])
+    assert isinstance(parsed, dict)
+
+
+def test_a_replayed_unreadable_call_stays_small():
+    """The fragment is the content that overflowed the window; resending it is backwards."""
+    tool_call = _decision_for('{"path":"x","edits":[{"new_string":"' + "y" * 8000).as_assistant_tool_call()
+
+    assert len(tool_call["function"]["arguments"]) < 200
+
+
 def test_the_sentinel_never_reaches_the_model():
     """Replaying it taught the model a key that no tool declares."""
     tool_call = _decision_for(_TRUNCATED).as_assistant_tool_call()
 
     assert UNPARSED_ARGUMENTS_KEY not in json.dumps(tool_call)
-    # `arguments` is a string in this format, so the fragment is the honest value: what
-    # was sent, cut where it was cut, alongside the error saying so.
-    assert tool_call["function"]["arguments"] == _TRUNCATED
+    # This asserted the fragment was replayed verbatim, on the reasoning that `arguments`
+    # is a string in this format so the fragment was the honest value. It is a string the
+    # server PARSES, which the assertion did not consider, and the result was a live 500.
+    # The detail the model needs is in the tool result; the replay only has to be readable.
+    assert "cut off" in tool_call["function"]["arguments"]
 
 
 def test_a_readable_call_is_unaffected_at_both_boundaries():
