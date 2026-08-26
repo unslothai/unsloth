@@ -2815,6 +2815,18 @@ export function ModelConfigPage({
   // from here, so raw free memory would call a reload of the loaded model impossible.
   // Capping the free-based verdict at "tight" is honest under both readings: either
   // something else really is holding the card, or it is about to be given back.
+  // A fixed Manual placement is launched verbatim: load_model empties its probed GPU
+  // set (gpus = []) and emits --gpu-layers N --fit off, so the server-wide VRAM Budget
+  // never reaches the planner and cannot shrink this load. Discounting capacity by it
+  // there labelled placements that will load fine as exceeding -- a 16 GiB fixed
+  // placement on a 24 GiB card reads as over budget at 50%. Auto is still budgeted,
+  // because Auto is exactly the mode that hands the decision to the planner.
+  const memoryBudgetGovernsLaunch =
+    (runtimeConfig.gpuMemoryMode ?? "auto") !== "manual" ||
+    (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0;
+  const memoryEffectiveBudgetFraction = memoryBudgetGovernsLaunch
+    ? memoryVramBudgetFraction
+    : 1;
   const memoryFreeGpuCapacityGb = useMemo(() => {
     const pinned =
       pinnedGpuIds && pinnedGpuIds.length > 0
@@ -2828,14 +2840,16 @@ export function ModelConfigPage({
     // plain sum over a mixed inventory counted the iGPU's share of host RAM a second
     // time, and this figure is what freeGpuFit -- and through it the fit verdict --
     // is measured against.
-    return aggregateUsableFreeVramGb(pinned, memoryVramBudgetFraction);
-  }, [gpuDevices, pinnedGpuIds, memoryVramBudgetFraction]);
+    // The reserve keeps its budget-derived floor even for a fixed Manual placement:
+    // what is free right now still constrains the launch, whatever set the number.
+    return aggregateUsableFreeVramGb(pinned, memoryEffectiveBudgetFraction);
+  }, [gpuDevices, pinnedGpuIds, memoryEffectiveBudgetFraction]);
   const {
     gpuCapacityGb: memoryGpuCapacityGb,
     totalCapacityGb: memoryTotalCapacityGb,
     singleMemoryPool,
   } = resolveMemoryCapacityGb({
-      gpuBudgetFraction: memoryVramBudgetFraction,
+      gpuBudgetFraction: memoryEffectiveBudgetFraction,
       pinnedDevices:
         pinnedGpuIds && pinnedGpuIds.length > 0
           ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))

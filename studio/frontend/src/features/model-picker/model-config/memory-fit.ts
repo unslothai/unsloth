@@ -98,6 +98,7 @@ export interface MemoryFitEstimate {
   kvEstimable: boolean;
   /** A charged drafter whose cache could not be sized, so the figures are a floor. */
   drafterKvUnsized: boolean;
+  adaptersUnsized: boolean;
   /** `--n-cpu-moe` is set, so the GPU figure ignores it and reads high. */
   moeOffloadUnmodelled: boolean;
 }
@@ -201,7 +202,8 @@ export function resolveMemoryFit(
   // or a drafter that is a repository rather than a file on this disk, so its cache
   // is missing while its weights are counted. The advisory below still tells them
   // apart, because the two are not fixed the same way.
-  const bounded = !estimate.kvEstimable || estimate.drafterKvUnsized;
+  const bounded =
+    !estimate.kvEstimable || estimate.drafterKvUnsized || estimate.adaptersUnsized;
   return {
     rawGpuFit,
     gpuFit,

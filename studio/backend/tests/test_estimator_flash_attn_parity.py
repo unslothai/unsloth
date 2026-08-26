@@ -52,7 +52,11 @@ import importlib.util as _ilu  # noqa: E402
 
 import pytest  # noqa: E402
 
+import asyncio  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
 import routes.inference as ri  # noqa: E402
+from models.inference import EstimateMemoryRequest  # noqa: E402
 from core.inference.llama_cpp import _kv_bytes_per_elem  # noqa: E402
 
 # Reuse the GGUF blob builder rather than copying it, for the reason its first
@@ -96,6 +100,20 @@ def qwen3_shaped_gguf(tmp_path):
     path = tmp_path / "qwen3-shaped.gguf"
     path.write_bytes(_make_gguf_bytes("qwen3", fields))
     return str(path)
+
+
+def _estimate_through_route(**kwargs):
+    """Drive the real route far enough to capture what it hands the sizing call."""
+    try:
+        asyncio.run(
+            ri.estimate_memory(
+                EstimateMemoryRequest(**kwargs),
+                fastapi_request = None,
+                current_subject = "test",
+            )
+        )
+    except RuntimeError:
+        pass
 
 
 def _kv_bytes(
@@ -177,4 +195,127 @@ def test_a_quantized_v_in_the_extra_arguments_is_read_the_same_way(qwen3_shaped_
     assert extras == field, (
         f"extras priced {extras} where the field priced {field}; the launch cannot "
         f"tell the two apart, so neither should the estimate"
+    )
+
+
+# The round that followed: four placement inputs the estimate was reading wrong.
+# Each of these fails on the parent commit.
+
+
+def test_a_cpu_only_manual_launch_is_not_charged_for_a_pinned_card(monkeypatch, qwen3_shaped_gguf):
+    """Manual with zero layers is a CPU-only launch, and the loader drops the split
+    flags for it. Charging the pinned card count added per-device pipeline overhead
+    and replicated the context-linear compute term for buffers no card allocates:
+    measured on a two-card pin, 1039 -> 2105 MiB at 4k and 1417 -> 5129 MiB at 262k.
+
+    Driven through the route, because the defect was in what the route HANDS the
+    device count, not in the device count itself. Asserting the two helpers in
+    isolation passes on the unfixed tree."""
+    one = ri._gguf_runtime_bytes(qwen3_shaped_gguf, 32768, None, 4, "f16", False, None, None, n_devices = 1)
+    two = ri._gguf_runtime_bytes(qwen3_shaped_gguf, 32768, None, 4, "f16", False, None, None, n_devices = 2)
+    assert two.compute_bytes > one.compute_bytes, (
+        "a second device has to cost something, or this test proves nothing"
+    )
+
+    seen = {}
+
+    def _spy(*args, **kwargs):
+        seen["n_devices"] = kwargs.get("n_devices")
+        raise RuntimeError("stop here; the argument is the whole assertion")
+
+    monkeypatch.setattr(ri, "_gguf_memory_breakdown", _spy)
+    monkeypatch.setattr(
+        ri,
+        "_cached_estimate_config",
+        lambda *a, **kw: SimpleNamespace(
+            identifier = "local", gguf_file = qwen3_shaped_gguf, is_gguf = True,
+            gguf_variant = None, gguf_mmproj_file = None, gguf_mtp_file = None,
+            gguf_dspark_file = None, gguf_dflash_file = None,
+        ),
+    )
+    for layers, expected in ((0, 1), (40, 2)):
+        seen.clear()
+        _estimate_through_route(
+            model_path = qwen3_shaped_gguf,
+            gpu_memory_mode = "manual",
+            gpu_layers = layers,
+            selected_gpu_ids = [0, 1],
+        )
+        assert seen.get("n_devices") == expected, (
+            f"--gpu-layers {layers} with a two-card pin priced "
+            f"{seen.get('n_devices')} devices, expected {expected}"
+        )
+
+
+def test_an_inherited_gpu_layer_count_is_read_in_auto(monkeypatch, qwen3_shaped_gguf):
+    """Auto emits no -ngl on the fitting path, so LLAMA_ARG_N_GPU_LAYERS is the only
+    layer policy the child sees and llama.cpp's fitter will not overrule it
+    (common/fit.cpp:463, "n_gpu_layers already set by user")."""
+    monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS", raising = False)
+    assert ri._gguf_offloaded_layer_fraction("auto", None, 27, None) == 1.0
+
+    monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", "0")
+    assert ri._gguf_offloaded_layer_fraction("auto", None, 27, None) == 0.0
+
+    monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", "14")
+    half = ri._gguf_offloaded_layer_fraction("auto", None, 27, None)
+    assert 0.0 < half < 1.0, f"a partial inherited count priced {half}"
+
+    # -1 and auto are llama.cpp's own default, so they leave the fitter free to choose
+    # and are not an override.
+    for auto_value in ("-1", "auto", ""):
+        monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", auto_value)
+        assert ri._gguf_offloaded_layer_fraction("auto", None, 27, None) == 1.0
+
+
+def test_an_explicit_ngl_in_the_extras_still_beats_the_inherited_count(monkeypatch, qwen3_shaped_gguf):
+    """argv is parsed after the environment and wins, so an extras -ngl is the answer
+    whatever the env says."""
+    monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", "0")
+    assert ri._gguf_offloaded_layer_fraction("auto", None, 27, ["-ngl", "999"]) == 1.0
+
+
+def test_pass_through_adapters_are_charged_and_follow_the_base_placement(tmp_path, qwen3_shaped_gguf):
+    """llama.cpp loads every --lora / --control-vector into resident tensors on top of
+    the base model, on the base tensor's buffer type. The files term prices only the
+    target and its companions, so without this an adapter load was a fit on the base
+    model's size alone."""
+    from core.inference.llama_cpp import _sidecar_adapter_bytes
+
+    lora = tmp_path / "adapter.gguf"
+    size = 7 * 1024 * 1024
+    lora.write_bytes(b"\0" * size)
+    assert _sidecar_adapter_bytes(["--lora", str(lora)]) == size
+    # A named file that cannot be stat'd is the "engaged but unsized" case.
+    assert _sidecar_adapter_bytes(["--lora", str(tmp_path / "missing.gguf")]) is None
+    # And no adapters is zero, not None, so the marker stays off for every ordinary load.
+    assert _sidecar_adapter_bytes([]) == 0
+
+    # The helper pre-dates this; what is new is that the panel asks it. Driven through
+    # the breakdown so the test fails on a tree where the term is computed and dropped.
+    config = SimpleNamespace(
+        identifier = "local", gguf_file = qwen3_shaped_gguf, is_gguf = True,
+        gguf_variant = None, gguf_mmproj_file = None, gguf_mtp_file = None,
+        gguf_dspark_file = None, gguf_dflash_file = None,
+    )
+    bare = ri._gguf_memory_breakdown(config, qwen3_shaped_gguf, n_ctx = 4096)
+    with_lora = ri._gguf_memory_breakdown(
+        config, qwen3_shaped_gguf, n_ctx = 4096, llama_extra_args = ["--lora", str(lora)]
+    )
+    assert bare is not None and with_lora is not None
+    assert with_lora.weights_bytes - bare.weights_bytes == size, (
+        f"a {size}-byte adapter moved weights by "
+        f"{with_lora.weights_bytes - bare.weights_bytes}"
+    )
+    assert with_lora.total_bytes - bare.total_bytes == size
+    assert not with_lora.adapters_unsized
+
+    missing = ri._gguf_memory_breakdown(
+        config,
+        qwen3_shaped_gguf,
+        n_ctx = 4096,
+        llama_extra_args = ["--lora", str(tmp_path / "missing.gguf")],
+    )
+    assert missing is not None and missing.adapters_unsized, (
+        "an unsizable adapter has to mark the total a floor rather than vanish"
     )

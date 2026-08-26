@@ -8790,6 +8790,9 @@ class _GgufMemoryBreakdown(NamedTuple):
     # A drafter was charged whose cache could not be sized: --spec-draft-hf names a
     # repository, whose header is not on this disk to read.
     drafter_kv_unsized: bool
+    # A pass-through --lora / --control-vector naming a file that could not be stat'd,
+    # so its resident bytes are missing from the total. Same floor marker, same reason.
+    adapters_unsized: bool
     # Weights + KV + compute, wherever they sit: GPU, host RAM, or a unified pool.
     total_bytes: int
     # The part that lands on the GPU under the requested offload.
@@ -8847,7 +8850,25 @@ def _gguf_offloaded_layer_fraction(
     if override is not None:
         gpu_layers = override
     elif gpu_memory_mode != "manual":
-        return 1.0
+        # Auto emits no -ngl on the fitting path, so an inherited
+        # LLAMA_ARG_N_GPU_LAYERS is the only layer policy the child sees, and
+        # llama.cpp's fitter will not overrule it: common/fit.cpp:463 throws
+        # "n_gpu_layers already set by user" on any value the user really set, and
+        # the caller downgrades that to a warning, so the launch proceeds with the
+        # count as given. -1 and auto are its own default and leave the fitter free,
+        # which is why _env_fixes_gpu_layers excludes them. The loader has consulted
+        # this since the placement gate at llama_cpp.py:9156; the panel did not, and
+        # answered 1.0 for a launch running a prefix of the weights out of host RAM.
+        from core.inference.llama_cpp import _env_fixes_gpu_layers
+
+        if not _env_fixes_gpu_layers(os.environ):
+            return 1.0
+        try:
+            gpu_layers = int(str(os.environ.get("LLAMA_ARG_N_GPU_LAYERS", "")).strip())
+        except ValueError:
+            # llama.cpp's own std::stoi would throw on it and the child would never
+            # start, so there is no placement to model.
+            return 1.0
     if gpu_layers is None or gpu_layers < 0:
         return 1.0
     if gpu_layers == 0:
@@ -9812,6 +9833,23 @@ def _gguf_memory_breakdown(
 
     gpu_files_bytes = int(round(files_gb * (1024**3)))
     extras = list(llama_extra_args or ())
+    # Pass-through adapters are resident weights the files term never carried: it
+    # prices the target and its companions, and llama.cpp loads every --lora /
+    # --control-vector on top of the base model. They do not mmap (the file is read
+    # into a staging buffer and pushed with ggml_backend_tensor_set), so the bytes are
+    # resident whatever --load-mode says, and several adapters run to gigabytes. The
+    # loader has charged them since _sidecar_adapter_bytes; the panel had not, so a
+    # LoRA load could be shown as a fit on the base model's size alone. Placement
+    # follows the base tensor's buffer type, so these scale with the layer fraction
+    # exactly as the main weight does, not as a companion.
+    from core.inference.llama_cpp import _sidecar_adapter_bytes
+
+    adapter_bytes = _sidecar_adapter_bytes(extras)
+    # None is "engaged but unsized": a named file we cannot stat. The loader abstains
+    # from the whole figure there, which for a panel would hide the row; a floor with
+    # the marker on says more than silence does.
+    adapters_unsized = adapter_bytes is None
+    adapter_bytes = adapter_bytes or 0
     files_probe = dict(
         hf_token = hf_token,
         speculative_type = speculative_type,
@@ -9852,7 +9890,7 @@ def _gguf_memory_breakdown(
             else:
                 gpu_drafter_bytes = inherited
                 gpu_files_bytes += inherited
-    weights_bytes = gpu_files_bytes + host_drafter_bytes
+    weights_bytes = gpu_files_bytes + host_drafter_bytes + adapter_bytes
 
     # The drafter keeps its own KV cache and rollback state on top of its file, which
     # the loader budgets separately and the files term says nothing about. Priced
@@ -10007,7 +10045,12 @@ def _gguf_memory_breakdown(
         projector_runtime_bytes = int(mmproj_bytes * (LlamaCppBackend._MMPROJ_VRAM_SAFETY - 1.0))
         if _resolved_mmproj_offload(llama_extra_args) is False:
             host_companion_bytes = min(companion_bytes, mmproj_bytes)
-    gpu_weights = int(main_bytes * gpu_fraction) + companion_bytes - host_companion_bytes
+    gpu_weights = (
+        int(main_bytes * gpu_fraction)
+        + int(adapter_bytes * gpu_fraction)
+        + companion_bytes
+        - host_companion_bytes
+    )
     # Charged bytes with no local file behind them: a --spec-draft-hf repository. Its
     # weights are in the files term, but its cache grows with context like any other
     # and cannot be read off a header that is not here, so the total is a floor.
@@ -10071,6 +10114,7 @@ def _gguf_memory_breakdown(
         drafter_runtime_gpu_bytes = drafter_runtime_gpu_bytes,
         projector_runtime_bytes = projector_runtime_bytes,
         drafter_kv_unsized = drafter_kv_unsized,
+        adapters_unsized = adapters_unsized,
         total_bytes = weights_bytes + runtime_bytes,
         gpu_bytes = gpu_bytes,
         kv_estimable = runtime.kv_estimable,
@@ -13789,7 +13833,24 @@ async def estimate_memory(
             # matters there too, not just in tensor mode. Automatic placement
             # stays at one: _guard_device_count makes the same call.
             n_devices = _guard_device_count(
-                request.selected_gpu_ids or None,
+                # A pin names cards for a launch that puts something on them. When the
+                # effective layer count resolves to zero the launch is CPU-only, and
+                # the loader drops the split flags outright, so charging the pinned
+                # count added per-device pipeline overhead and replicated the
+                # context-linear compute term for buffers no card allocates: measured
+                # on a two-card pin, 1039 -> 2105 MiB at 4k and 1417 -> 5129 MiB at
+                # 262k. Asked of the same function the panel prices placement with, so
+                # the two cannot disagree about whether anything lands on a GPU.
+                None
+                if _gguf_offloaded_layer_fraction(
+                    request.gpu_memory_mode,
+                    request.gpu_layers,
+                    None,
+                    request.llama_extra_args,
+                    device_pin_governs = bool(request.selected_gpu_ids),
+                )
+                == 0.0
+                else request.selected_gpu_ids or None,
                 # Tensor mode replicates its buffers on every device in the pool, and
                 # on a Vulkan build _effective_gpu_count sees none of them. The probed
                 # inventory is the pool; None when nothing has probed it, which falls
@@ -13832,6 +13893,7 @@ async def estimate_memory(
             drafter_runtime_gpu_bytes = breakdown.drafter_runtime_gpu_bytes,
             projector_runtime_bytes = breakdown.projector_runtime_bytes,
             drafter_kv_unsized = breakdown.drafter_kv_unsized,
+            adapters_unsized = breakdown.adapters_unsized,
             total_bytes = breakdown.total_bytes,
             gpu_bytes = breakdown.gpu_bytes,
             kv_estimable = breakdown.kv_estimable,

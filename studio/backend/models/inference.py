@@ -834,6 +834,13 @@ class EstimateMemoryResponse(BaseModel):
         "are in weights_bytes but its context-scaled cache is missing, so total_bytes is a "
         "lower bound.",
     )
+    adapters_unsized: bool = Field(
+        False,
+        description = "True when a pass-through --lora / --lora-scaled / --control-vector / "
+        "--control-vector-scaled names a file that could not be stat'd. llama.cpp loads every "
+        "one of them into resident tensors on top of the base model, so those bytes are "
+        "missing from total_bytes and it is a lower bound.",
+    )
     total_bytes: int = Field(0, description = "Weights + KV + compute, wherever they land")
     gpu_bytes: int = Field(
         0, description = "The share of total_bytes that lands on the GPU under this offload"

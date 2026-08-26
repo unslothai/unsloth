@@ -36,6 +36,8 @@ export interface MemoryEstimate {
   /** A charged drafter whose cache could not be sized: `--spec-draft-hf` names a
    *  repository, so its header is not on this disk. The total is a floor. */
   drafterKvUnsized: boolean;
+  /** A pass-through adapter file that could not be sized, so the total is a floor. */
+  adaptersUnsized: boolean;
   /** Weights + KV + compute, wherever they land (VRAM, host RAM, or one unified pool). */
   totalBytes: number;
   /** The share of `totalBytes` that lands on the GPU under the requested offload. */
@@ -93,6 +95,7 @@ const UNAVAILABLE: MemoryEstimate = {
   drafterRuntimeGpuBytes: 0,
   projectorRuntimeBytes: 0,
   drafterKvUnsized: false,
+  adaptersUnsized: false,
   totalBytes: 0,
   gpuBytes: 0,
   kvEstimable: false,
@@ -115,6 +118,7 @@ interface ApiEstimateResponse {
   drafter_runtime_gpu_bytes: number;
   projector_runtime_bytes: number;
   drafter_kv_unsized: boolean;
+  adapters_unsized?: boolean;
   total_bytes: number;
   gpu_bytes: number;
   kv_estimable: boolean;
@@ -222,6 +226,9 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
     ),
     projectorRuntimeBytes: finiteBytes(body.projector_runtime_bytes, 0),
     drafterKvUnsized: flag(body.drafter_kv_unsized, false),
+    // Absent on a backend that predates the adapter term, and false is the right
+    // reading there: it charged no adapters, so it claimed no floor.
+    adaptersUnsized: flag(body.adapters_unsized, false),
     totalBytes: finiteBytes(body.total_bytes, 0),
     gpuBytes: finiteBytes(body.gpu_bytes, 0),
     // Absent on an older backend: treat the KV figure as unverified, the safe

@@ -30,6 +30,7 @@ const SIZED: MemoryFitEstimate = {
   totalBytes: 0,
   kvEstimable: true,
   drafterKvUnsized: false,
+  adaptersUnsized: false,
   moeOffloadUnmodelled: false,
 };
 
@@ -474,4 +475,20 @@ test("the draft cache note reads its OWN placement, not the target cache's", () 
   // Entirely on the GPU is the unremarkable case and gets no caption.
   assert.equal(resolveDraftCacheNote(4 * GB, 4 * GB), undefined);
   assert.equal(resolveDraftCacheNote(Number.NaN, 4 * GB), "host RAM");
+});
+
+test("an unsizable pass-through adapter marks the total a floor", () => {
+  // llama.cpp loads every --lora / --control-vector into resident tensors on top of
+  // the base model. When one is named but cannot be stat'd its bytes are missing, so
+  // the figure is a lower bound and has to say so, exactly as an unsized drafter does.
+  const bounded = resolveMemoryFit(
+    { ...SIZED, adaptersUnsized: true, totalBytes: 8 * GB, gpuBytes: 8 * GB },
+    IDLE_DISCRETE,
+  );
+  assert.equal(bounded.bounded, true);
+  const sized = resolveMemoryFit(
+    { ...SIZED, totalBytes: 8 * GB, gpuBytes: 8 * GB },
+    IDLE_DISCRETE,
+  );
+  assert.equal(sized.bounded, false);
 });
