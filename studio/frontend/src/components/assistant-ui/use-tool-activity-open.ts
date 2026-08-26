@@ -1,24 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
-import { useEffect, useState } from "react";
+import { useChatPreferencesStore } from "@/features/chat";
+import { useEffect, useRef, useState } from "react";
+import { resolveToolActivityOpen } from "./tool-activity-open-state";
 
-/** Shared automatic visibility for tool cards that manage their own open state. */
 export function useToolActivityOpen(isRunning: boolean, hasText: boolean) {
   const collapseByDefault = useChatPreferencesStore(
     (state) => state.collapseToolActivityByDefault,
   );
   const [open, setOpen] = useState(isRunning && !collapseByDefault);
+  const previousCollapseByDefault = useRef(collapseByDefault);
 
   useEffect(() => {
-    if (collapseByDefault) {
-      setOpen(false);
-    } else if (isRunning) {
-      setOpen(true);
-    } else if (hasText) {
-      setOpen(false);
-    }
+    const previousPreference = previousCollapseByDefault.current;
+    previousCollapseByDefault.current = collapseByDefault;
+    setOpen((currentOpen) =>
+      resolveToolActivityOpen({
+        currentOpen,
+        collapseByDefault,
+        previousCollapseByDefault: previousPreference,
+        isRunning,
+        hasText,
+      }),
+    );
   }, [isRunning, hasText, collapseByDefault]);
 
   return [open, setOpen] as const;

@@ -11,6 +11,9 @@ registerBundlerResolver();
 const { useChatPreferencesStore } = await import(
   "../src/features/chat/stores/chat-preferences-store.ts"
 );
+const { resolveToolActivityOpen } = await import(
+  "../src/components/assistant-ui/tool-activity-open-state.ts"
+);
 
 const read = (path: string) => readFile(new URL(path, import.meta.url), "utf8");
 const WHITESPACE = /\s+/g;
@@ -32,6 +35,55 @@ test("older saved preferences keep tool activity visible", async () => {
       .includes(
         "collapseToolActivityByDefault: saved?.collapseToolActivityByDefault ?? false",
       ),
+  );
+});
+
+test("manual expansion survives updates while activity is collapsed", () => {
+  assert.equal(
+    resolveToolActivityOpen({
+      currentOpen: true,
+      collapseByDefault: true,
+      previousCollapseByDefault: true,
+      isRunning: false,
+      hasText: true,
+    }),
+    true,
+  );
+});
+
+test("enabling collapsed activity closes an already open card", () => {
+  assert.equal(
+    resolveToolActivityOpen({
+      currentOpen: true,
+      collapseByDefault: true,
+      previousCollapseByDefault: false,
+      isRunning: true,
+      hasText: false,
+    }),
+    false,
+  );
+});
+
+test("disabling collapsed activity restores automatic visibility", () => {
+  assert.equal(
+    resolveToolActivityOpen({
+      currentOpen: false,
+      collapseByDefault: false,
+      previousCollapseByDefault: true,
+      isRunning: true,
+      hasText: false,
+    }),
+    true,
+  );
+  assert.equal(
+    resolveToolActivityOpen({
+      currentOpen: true,
+      collapseByDefault: false,
+      previousCollapseByDefault: false,
+      isRunning: false,
+      hasText: true,
+    }),
+    false,
   );
 });
 

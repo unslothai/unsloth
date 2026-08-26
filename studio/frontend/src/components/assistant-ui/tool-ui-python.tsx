@@ -5,13 +5,13 @@
 
 import { Spinner } from "@/components/ui/spinner";
 import { authFetch } from "@/features/auth";
-import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 
 import { SandboxFiles } from "./sandbox-files-view";
 import { isSandboxFileList, type SandboxFile } from "./sandbox-files";
 import {
   preferSanitizedFullToolOutput,
   useChatRuntimeStore,
+  useChatPreferencesStore,
   useToolAwaitingApproval,
   useToolOutputFor,
   useToolPaneScope,
