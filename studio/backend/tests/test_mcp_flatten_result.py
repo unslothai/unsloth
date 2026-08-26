@@ -364,8 +364,7 @@ def test_uri_query_and_fragment_are_not_part_of_the_name():
 
 
 def test_extension_only_in_the_query_is_not_an_image():
-    # the same defect in the other direction: a blob with no image extension in its
-    # path was rendered as one purely because its query named a .png
+    # the same defect the other way: a query naming a .png made a non-image render
     for uri in ("file:///out/download?name=gen.png", "file:///out/download#gen.png"):
         assert _flatten_result(_result(_blob_resource(mime = None, uri = uri))) == "", uri
 
@@ -428,8 +427,7 @@ def test_snake_case_mime_attribute_is_read_too():
 
 
 def test_registry_case_does_not_decide_whether_an_image_survives(monkeypatch):
-    # windows answers .jxl with image/JXL where linux and macos answer image/jxl;
-    # the media type is the same one either way (RFC 9110 8.3.1)
+    # windows answers .jxl with image/JXL, linux and macos image/jxl; same type per RFC 9110
     monkeypatch.setattr(
         mcp_client.mimetypes, "guess_type", lambda name, strict = True: ("image/JXL", None)
     )
