@@ -368,8 +368,10 @@ def test_web_search_description_names_the_usable_arguments():
     assert "no usable arguments" in description
 
 
+# The truthy values are the point: a falsy non-string was already short-circuited by
+# `not query`, while 123 or {"a": 1} reached .strip() and raised out of _web_search.
 @pytest.mark.parametrize("key", ["query", "url"])
-@pytest.mark.parametrize("value", [False, 0, [], {}])
+@pytest.mark.parametrize("value", [False, 0, [], {}, 123, {"a": 1}])
 def test_web_search_rejects_non_string_arguments(monkeypatch, key, value):
     _raise_if_search_backend(monkeypatch)
     result = tools.execute_tool("web_search", {key: value})
