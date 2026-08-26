@@ -425,3 +425,14 @@ def test_snake_case_mime_attribute_is_read_too():
     flat = _flatten_result(_result(direct))
     payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
     assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/jpeg"}]
+
+
+def test_registry_case_does_not_decide_whether_an_image_survives(monkeypatch):
+    # windows answers .jxl with image/JXL where linux and macos answer image/jxl;
+    # the media type is the same one either way (RFC 9110 8.3.1)
+    monkeypatch.setattr(
+        mcp_client.mimetypes, "guess_type", lambda name, strict = True: ("image/JXL", None)
+    )
+    flat = _flatten_result(_result(_blob_resource(mime = "application/jxl")))
+    payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)[1]
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/jxl"}]

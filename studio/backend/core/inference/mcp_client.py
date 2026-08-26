@@ -1076,8 +1076,11 @@ def _image_mime(mime: Any) -> Optional[str]:
     else:
         subtype = essence[len("application/") :] if essence.startswith("application/") else ""
         resolved = _IMAGE_SUBTYPES.get(subtype) or _uri_mime(f"file:///image.{subtype}")
-    # one gate for every branch: an image type the frontend can actually put in a URL
-    return resolved if resolved and _MEDIA_TYPE.match(resolved) else None
+    # one gate for every branch: an image type the frontend can actually put in a URL.
+    # Lowercased again because a registry-derived answer carries the host's spelling:
+    # Windows returns image/JXL for .jxl, where Linux and macOS return image/jxl.
+    resolved = resolved.lower() if resolved else ""
+    return resolved if _MEDIA_TYPE.match(resolved) else None
 
 
 def _resource_mime(obj: Any) -> Any:
