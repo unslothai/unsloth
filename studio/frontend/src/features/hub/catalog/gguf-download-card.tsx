@@ -295,11 +295,9 @@ export function QuantOptionsMenu({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const revealLabel =
     deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
-  // Keyed to the model it was fetched for: the run bar keeps one menu mounted and
-  // swaps repoId/quant under it, so an unkeyed cache copies the old quant's path.
+  // One menu stays mounted while the run bar swaps repoId/quant under it.
   const cachedPathRef = useRef<{ key: string; path: string } | null>(null);
   const pathKey = JSON.stringify([repoId, quant ?? null]);
-  // What the menu points at now, read by responses that outlive the switch.
   const pathKeyRef = useRef(pathKey);
   useEffect(() => {
     pathKeyRef.current = pathKey;
@@ -310,9 +308,7 @@ export function QuantOptionsMenu({
     }
     getCachedModelPath(repoId, quant)
       .then(({ path }) => {
-        // Switching quants leaves the old request in flight, and it can land last.
-        // Letting it evict the current entry costs the copy its cache hit, which is
-        // the awaited fetch and the lost clipboard activation all over again.
+        // The request for a quant we switched off can land last; it must not evict.
         if (pathKeyRef.current === pathKey) {
           cachedPathRef.current = { key: pathKey, path };
         }
@@ -356,9 +352,7 @@ export function QuantOptionsMenu({
         <button
           type="button"
           onClick={(e) => e.stopPropagation()}
-          // Reaching the menu item means passing over its trigger first, so start the
-          // path here rather than on open: the copy has to have it in hand, or the
-          // click awaits the fetch and Safari drops the clipboard permission again.
+          // The pointer crosses the trigger before the item, so start here, not on open.
           onPointerEnter={prefetchCachedPath}
           onFocus={prefetchCachedPath}
           aria-label={`More options for ${label}`}

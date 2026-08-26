@@ -56,9 +56,7 @@ type StudioT = ReturnType<typeof useT>;
 
 const PAGE_SIZE = 12;
 const RUNNING_POLL_INTERVAL_MS = 5000;
-// How often the copy-link base is re-read while this grid is on screen. A forced
-// re-read is one GET: fetchDeviceType spends its hardware wait once per page load,
-// not per call.
+// One GET: fetchDeviceType spends its hardware wait once per page load, not per call.
 const LINK_BASE_POLL_MS = 15000;
 
 const statusBadge: Record<string, { className: string }> = {
@@ -257,16 +255,10 @@ export function HistoryCardGrid({
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
   const { resumeTrainingRunFromHistory, startBlocked, stopRequested } =
     useTrainingActions();
-  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. Nothing else re-reads
-  // /api/health once the platform verdict settles, so the base is kept fresh here and
-  // never in the click, where Safari drops the clipboard permission across an await.
-  //
-  // Polled rather than read once, because the tunnel URL both arrives and leaves on
-  // the backend's schedule. It is published only after DNS and a public probe --
-  // cloudflare_tunnel.py bounds those at 15s + 45s and retries once over HTTP/2 -- so
-  // a grid that mounted first holds null and would copy a link only this machine can
-  // open; and when cloudflared exits, or another client stops the tunnel, the stored
-  // URL is dead. Neither is corrected by the focus listener while this tab keeps focus.
+  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. Never refreshed in the
+  // click -- Safari drops the clipboard permission across an await -- and nothing else
+  // re-reads /api/health once the verdict settles. Polled because the tunnel URL is
+  // published late (DNS, then a public probe) and can die without warning.
   useEffect(() => {
     const refreshLinkBase = () => {
       void fetchDeviceType({ force: true });

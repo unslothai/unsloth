@@ -1,22 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Safari only allows a clipboard write while the click that asked for it is still
-// live, so both copy buttons have to have their text ready before the handler runs.
-// The two ways that breaks:
-//
-//   1. Anything awaited ahead of the write. The write is then rejected and the user
-//      gets "Couldn't copy the link" -- no await may precede copyToClipboard.
-//   2. Prefetching the text without keying it to what is on screen. The run bar keeps
-//      one QuantOptionsMenu mounted and swaps repoId/quant under it, so an unkeyed
-//      cache silently copies the previously selected quant's path.
-//   3. Prefetching once and never again. The tunnel URL arrives on the backend's
-//      schedule (published only after DNS and a public probe) and can leave the same
-//      way, so a single read leaves the store holding null, or a dead hostname, for
-//      the rest of the session -- and the click can no longer correct it.
-//   4. Letting a stale response win. A prefetch for the quant the menu just moved off
-//      can land last; if it evicts the current entry the copy is back to awaiting a
-//      fetch inside the click.
+// Safari only honours a clipboard write while the click that asked for it is still
+// live, so both copy buttons must have their text in hand before the handler runs.
+// Each test below pins one way that breaks.
 //
 // Read from the source: the node suite has no DOM to click in.
 
@@ -31,7 +18,7 @@ function read(path: string): string {
 const HISTORY = read("features/studio/history-card-grid.tsx");
 const GGUF = read("features/hub/catalog/gguf-download-card.tsx");
 
-/** The braced block that starts at `from`, matched to its close. */
+/** The braced block opening after `from`, matched to its close. */
 function block(source: string, from: number): string {
   const open = source.indexOf("{", from);
   assert.notEqual(open, -1, "no block at anchor");
@@ -81,7 +68,7 @@ test("the preview link base is refreshed outside the click", () => {
   );
   assert.ok(
     HISTORY.includes("fetchDeviceType({ force: true })"),
-    "without a forced re-read the tunnel URL never lands and the link stays local",
+    "without a forced re-read the link stays local",
   );
   assert.ok(HISTORY.includes('window.addEventListener("focus"'));
 });
@@ -94,7 +81,7 @@ test("the prefetched model path is keyed to the model it was fetched for", () =>
   );
   assert.ok(
     PREFETCH_PATH.includes("cachedPathRef.current?.key === pathKey"),
-    "the prefetch guard must miss when the menu now points at another model",
+    "the guard must miss once the menu moved to another model",
   );
   assert.ok(PREFETCH_PATH.includes("{ key: pathKey, path }"));
 });
@@ -103,11 +90,11 @@ test("the link base is kept fresh for as long as the grid is on screen", () => {
   assert.match(
     HISTORY,
     /setInterval\(refreshLinkBase, LINK_BASE_POLL_MS\)/,
-    "one read cannot see a tunnel that is published late, or one that dies",
+    "one read misses a tunnel published late, or one that dies",
   );
   assert.ok(
     !/cloudflareUrl !== null/.test(HISTORY),
-    "a cached URL is not a reason to stop: it is exactly what goes stale",
+    "a cached URL is exactly what goes stale",
   );
   assert.ok(
     !COPY_PREVIEW.includes("setInterval") &&
@@ -133,7 +120,7 @@ test("the model path starts resolving before the menu item is reachable", () => 
   );
   assert.ok(
     trigger.includes("onPointerEnter={prefetchCachedPath}"),
-    "waiting for the menu to open leaves the copy click awaiting the fetch",
+    "on open is too late: the click would await the fetch",
   );
   assert.ok(trigger.includes("onFocus={prefetchCachedPath}"));
 });
