@@ -163,6 +163,25 @@ class Leg:
     # resolve the whole stack, so it resolves a consistent one, at the cost of
     # a download of a few minutes.
     system_site_packages: bool = True
+    # Does this leg want EVERY card visible rather than being pinned to one?
+    #
+    # False for every leg but `multi_gpu`, and the reason it exists is a branch
+    # no pinned leg can reach. unsloth/kernels/utils.py:170 binds
+    #
+    #     torch_gpu_device = torch.cuda.device   if DEVICE_COUNT > 1
+    #     torch_gpu_device = nullcontext shim    otherwise
+    #
+    # and build_kernel.py pins every payload with CUDA_VISIBLE_DEVICES, so
+    # every unsloth kernel this CI has ever run took the nullcontext branch.
+    # The same holds for the per-device rotary caches (multi_gpu_cos_cached /
+    # multi_gpu_sin_cached in unsloth/models/llama.py:1838 and gemma.py:280),
+    # the DEVICE_COUNT-sized CUDA_STREAMS / WEIGHT_BUFFERS / ABSMAX_BUFFERS
+    # arrays, and the temp_mlp device tuples at llama.py:1300.
+    #
+    # What makes covering it FREE is that the divergence is triggered by
+    # VISIBILITY, not by using both cards: the model still fits on one, so the
+    # leg co-tenants and the driver reserves only vram_gb on each card.
+    all_cards: bool = False
 
 
 # Files every leg needs: the version recorder, which makes a red leg
@@ -508,6 +527,59 @@ LEGS: dict[str, Leg] = {
         # its own run, as references/README.md requires, and wired in then.
         reference = "",
     ),
+    "multi_gpu": Leg(
+        # Small, and it has to be: this leg reserves its share on EVERY card, so
+        # a big appetite here would block gptoss (12.78 of the 13.0 budget) for
+        # its whole life rather than for the window the schedule has slack for.
+        vram_gb = 0.7,
+        name = "Multi_GPU",
+        summary = "Qwen3-0.6B with BOTH T4s visible: unsloth's DEVICE_COUNT > 1 bindings",
+        install = BASE_INSTALL,
+        entry = "run_t4_smoke.py",
+        files = SMOKE_FILES,
+        # THE WHOLE POINT, and it is a branch rather than a capacity.
+        # `unsloth/kernels/utils.py:170` binds `torch_gpu_device` to
+        # `torch.cuda.device` when DEVICE_COUNT > 1 and to a nullcontext shim
+        # otherwise -- and `build_kernel.py` pins every other payload with
+        # CUDA_VISIBLE_DEVICES, so every unsloth kernel this CI has ever run
+        # took the shim. The same is true of the DEVICE_COUNT-sized
+        # CUDA_STREAMS / WEIGHT_BUFFERS / ABSMAX_BUFFERS arrays
+        # (kernels/utils.py:211-250), the per-device rotary caches
+        # (models/llama.py:1838, gemma.py:280) and the temp_mlp device tuples
+        # (llama.py:1300).
+        #
+        # It is FREE because the divergence is triggered by VISIBILITY, not by
+        # using both cards. Qwen3-0.6B fits on one, so the leg co-tenants and
+        # the driver reserves 0.7 GB on each card rather than a whole one.
+        all_cards = True,
+        args = (
+            "--model",
+            "unsloth/Qwen3-0.6B",
+            # 20 for the same measured reason as the Default leg: at 10 this
+            # model learns the canary but not to stop after it, and the
+            # exact-match rule then fails on a training length rather than on a
+            # regression (unsloth-probe-defaultleg-r2-563e31 vs -s20-002d25).
+            "--max-steps",
+            "20",
+            "--require-multi-gpu",
+            "--expected-cards",
+            "2",
+            # NO --export-gguf, and this is a measurement rather than a saving.
+            # The bundle `install_llama_cpp` fetches for the notebook legs is
+            # the CPU one: on unsloth-probe-full-concurrent-417238 this exact
+            # model's llama-bench reported `backend CPU`, 604.15 MiB, 596.05 M
+            # params. A CPU llama.cpp cannot split across cards at all, so a
+            # two-card tensor-split assertion here could not fail and would not
+            # mean anything. The GGUF path is already covered by four other
+            # legs; adding a fifth export buys nothing and costs ~40s of a
+            # margin this leg does not have to spare.
+        ),
+        # Same situation as `canary` and `Default`: two library versions do not
+        # produce one fp16 trajectory, and this leg additionally changes how
+        # many cards the kernels see. A band here would go red on ordinary
+        # cross-version drift.
+        reference = "",
+    ),
     "gptoss": Leg(
         vram_gb = 12.78,
         name = "gptoss",
@@ -754,6 +826,32 @@ UNWIRED: dict[str, str] = {
         "latest-everything leg there is, so if the vision leg ever has to come "
         "out for a reason of its own, this is what goes back in that hour "
         "instead of being reconstructed from a commit message."
+    ),
+    "multi_gpu": (
+        "STILL UNKNOWN: whether a 4bit Qwen3-0.6B TRAINS with both cards "
+        "visible, and where accelerate puts the weights when it can choose.\n"
+        "Every measurement this repo has of a two-card load is a load and not "
+        "a train: unsloth-probe-vision-recon-c76ea3 saw Qwen3.5-2B split "
+        "897.7MB on cuda:0 and 1017.1MB on cuda:1 with both T4s visible, and "
+        "that probe never called a trainer. A sharded model trains through "
+        "accelerate's hooks or it does not, and guessing which would be "
+        "guessing about the exact thing the leg is for.\n"
+        "THE RULES ARE DELIBERATELY NOT ASSERTING IT. multi_gpu_failures "
+        "checks what is deterministic from DEVICE_COUNT -- the torch_gpu_device "
+        "binding, the stream and buffer array lengths, the rotary cache slots "
+        "-- and RECORDS parameters_by_device rather than requiring a spread. A "
+        "rule written before the answer is a rule written to match whatever "
+        "happens.\n"
+        "ONE SESSION ANSWERS IT, and the leg is built by the real "
+        "--legs multi_gpu path so the probe runs the shipped code rather than "
+        "an imitation. Wire it when a run reports passed true; if training a "
+        "sharded model fails, that is a finding worth filing and the leg gets "
+        "an explicit device_map instead.\n"
+        "NOT A BLOCKER, and worth saying because it looks like one: the "
+        "llama.cpp two-card tensor split is NOT part of this leg and cannot "
+        "be. install_llama_cpp fetches the CPU bundle for the notebook legs -- "
+        "unsloth-probe-full-concurrent-417238 has this model's llama-bench "
+        "reporting `backend CPU` -- so a split assertion there could not fail."
     ),
     "latest_compile": (
         "STILL UNKNOWN: nothing about the leg. It is GREEN end to end and is "

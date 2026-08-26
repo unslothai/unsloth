@@ -152,8 +152,16 @@ def build_payload_notebook(
     extra_args: tuple[str, ...] = (),
     reference: str | None = None,
 ) -> dict:
-    """A single-GPU notebook that installs one leg's stack and runs it."""
+    """A notebook that installs one leg's stack and runs it.
+
+    One GPU for every leg but the `all_cards` one, which is unpinned so that
+    unsloth's DEVICE_COUNT > 1 code path is reachable at all.
+    """
     root = _kernel_root(leg)
+    # Baked in HERE, at build time, from the leg's own declaration. The check
+    # in the verify cell compares against this constant rather than against
+    # anything the running kernel can see.
+    expected_visible = 2 if leg.all_cards else 1
     wanted = list(leg.files)
     if leg.entry not in wanted:
         wanted.append(leg.entry)
@@ -393,12 +401,23 @@ try:
         "name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "visible": __import__("os").environ.get("CUDA_VISIBLE_DEVICES"),
     }}), flush=True)
-    # Exactly one GPU must be visible: two would mean the driver failed to pin
-    # this payload to its own card, and accelerate would shard across both,
-    # which is a different test from the single T4 a Colab user gets. Zero
-    # means the payload cannot run at all on the hardware it was billed for.
-    assert torch.cuda.device_count() == 1, (
-        f"expected exactly 1 visible GPU, got {{torch.cuda.device_count()}}")
+    # EXACTLY the count this leg asked for, and the number is baked in at build
+    # time rather than read from the environment -- reading it from the same
+    # variable that sets it would make the check agree with whatever happened.
+    #
+    # 1 for every ordinary leg: two would mean the driver failed to pin this
+    # payload to its own card, and accelerate would shard across both, which is
+    # a different test from the single T4 a Colab user gets. Zero means the
+    # payload cannot run at all on the hardware it was billed for.
+    #
+    # 2 for the `multi_gpu` leg, which is deliberately unpinned so that
+    # unsloth's DEVICE_COUNT > 1 branch is reachable. A leg that asks for two
+    # and gets one still fails here, which is the case that matters: silently
+    # running it on one card would leave the multi-GPU claim asserted and
+    # untested, and green.
+    assert torch.cuda.device_count() == {expected_visible}, (
+        f"expected exactly {expected_visible} visible GPU(s), got "
+        f"{{torch.cuda.device_count()}}")
 except BaseException as exc:
     detail = f"{{type(exc).__name__}}: {{exc}}"
     print("{PAYLOAD_SENTINEL} GPU_UNUSABLE " + json.dumps(detail), flush=True)
@@ -569,6 +588,7 @@ def build_driver(
     after_gpu_concurrent: bool = False,
     shared_wheel_specs: tuple[str, ...] = (),
     overlays: dict[str, tuple[str, ...]] | None = None,
+    all_card: tuple[str, ...] = (),
 ) -> dict:
     """Kernel notebook that runs the payloads across the session's GPUs.
 
@@ -714,6 +734,15 @@ SHARED_WHEEL_SPECS = {shared_wheel_specs!r}
 # was.
 CPU_LANE = {cpu_lane!r}
 AFTER_GPU = {after_gpu!r}
+# ALL_CARD payloads want EVERY card visible rather than one. They are not in
+# the card queue either, because the queue hands out one card at a time and
+# there is no index to give them.
+#
+# They are NOT the same as AFTER_GPU. AFTER_GPU is unpinned AND waits for the
+# queue to drain; an ALL_CARD leg reserves its (small) share on every card
+# through _admit_all and then runs BESIDE the training legs, which is what
+# makes covering unsloth's DEVICE_COUNT > 1 branch cost nothing.
+ALL_CARD = {all_card!r}
 # When true, AFTER_GPU does not wait for the cards to drain. It is admitted to
 # a card by the same VRAM check the legs use, so it runs BESIDE a light leg
 # rather than behind the last one.
@@ -1010,7 +1039,11 @@ def run_one(name, gpu_index, idx):
 # (t4ci{{idx}}), which must stay distinct per PAYLOAD or two legs would share
 # an interpreter and the differing library sets this whole file exists to keep
 # apart would land in one tree.
-_queue = list(enumerate(ORDER))
+# ALL_CARD legs are filtered out here rather than left out of ORDER, so ORDER
+# stays the single declaration of what this kernel runs and the report's
+# ordering is unchanged. Their INDEX is preserved for run_one's numbering.
+_queue = [(i, n) for i, n in enumerate(ORDER) if n not in ALL_CARD]
+_all_card_queue = [(i, n) for i, n in enumerate(ORDER) if n in ALL_CARD]
 # Each card's FIRST leg is assigned here, by position, and not raced for. A
 # plain shared queue looked equivalent and was not: with payloads that finish
 # quickly -- stubs, or an install that dies in seconds -- card 0 could claim,
@@ -1057,6 +1090,41 @@ def _release(gpu_index, name):
     with pending_lock:
         card_load[gpu_index] -= VRAM_GB.get(name, 1.0)
         card_count[gpu_index] -= 1
+
+
+def _admit_all(name):
+    """Reserve room for `name` on EVERY card, or on none of them.
+
+    All or nothing, under one hold of `pending_lock`. A partial reservation is
+    the failure worth naming: the leg would hold a seat on card 0 while waiting
+    for card 1, which is capacity nothing is using and which can deadlock
+    against a big leg waiting for card 0.
+
+    An all-card leg costs a `card_count` slot on both cards while being ONE
+    process, so MAX_LEGS_PER_CARD -- a proxy for 4-vCPU contention rather than
+    for memory -- over-counts it by one. That conservatism is deliberate and it
+    is cheap here: it delays gptoss into slack the measured schedule already
+    has (776.3s of gpu1 idle on unsloth-probe-full-concurrent-417238).
+    """
+    want = VRAM_GB.get(name, 1.0)
+    with pending_lock:
+        for g in range(N_GPU):
+            if card_count[g] >= MAX_LEGS_PER_CARD:
+                return False
+            if card_count[g] and card_load[g] + want > CARD_VRAM_BUDGET_GB:
+                return False
+        for g in range(N_GPU):
+            card_load[g] += want
+            card_count[g] += 1
+    return True
+
+
+def _release_all(name):
+    want = VRAM_GB.get(name, 1.0)
+    with pending_lock:
+        for g in range(N_GPU):
+            card_load[g] -= want
+            card_count[g] -= 1
 
 
 def worker(gpu_index, seed):
@@ -1200,6 +1268,33 @@ for _g, _seed in enumerate(SEEDS):
 print("{DRIVER_SENTINEL}_SEEDS " + json.dumps(
     {{str(_g): _seed[1] for _g, _seed in enumerate(SEEDS)}}), flush=True)
 
+# The ALL_CARD lane(s). One thread each, waiting for room on every card at
+# once, then running UNPINNED so torch reports every device.
+#
+# Started before the card workers so the leg is queued for the first moment
+# both cards have a free slot, rather than after whatever the workers grab in
+# the same instant. It still cannot jump the seeds: those seats were taken
+# above, before any thread existed.
+all_card_threads = []
+for _idx, _name in _all_card_queue:
+    def _all_card_lane(idx=_idx, name=_name):
+        while not _admit_all(name):
+            # Every card is full. Something is running or the queue would be
+            # empty, so wait for a release rather than spin.
+            time.sleep(1.0)
+        try:
+            print("{DRIVER_SENTINEL}_ALL_CARD " + json.dumps(
+                {{"payload": name, "gpus": N_GPU}}), flush=True)
+            # gpu_index None means DO NOT PIN, which is the whole point: an
+            # index here would set CUDA_VISIBLE_DEVICES and the leg would
+            # measure the single-card branch under a multi-GPU name.
+            run_one(name, None, idx)
+        finally:
+            _release_all(name)
+    _t = threading.Thread(target = _all_card_lane, daemon = False)
+    _t.start()
+    all_card_threads.append(_t)
+
 threads = []
 for gpu_index in range(N_GPU):
     for slot in range(MAX_LEGS_PER_CARD):
@@ -1258,6 +1353,11 @@ if AFTER_GPU and AFTER_GPU_CONCURRENT:
     after_thread.start()
 
 for t in threads:
+    t.join()
+# Joined with the card workers, not after AFTER_GPU: an all-card leg runs
+# beside the training legs and must be finished before anything concludes the
+# cards are free.
+for t in all_card_threads:
     t.join()
 
 # On the NON-concurrent path AFTER_GPU wants every card, so it waits for the
@@ -1447,6 +1547,13 @@ def build_kernel(
     # same time, so the effect is not yet attributable to either. Off by default
     # until one variable at a time says otherwise.
     shared_wheel_specs = _shared_vcs_specs(leg_groups) if shared_wheels else ()
+    # Derived from the legs themselves rather than named again here: a second
+    # list of which legs want every card is a second thing to keep in step, and
+    # one that drifts silently -- a leg dropped from it simply gets pinned and
+    # its multi-GPU assertions go looking for a second card that is not there.
+    all_card = tuple(
+        payload for payload, leg in legs_by_payload.items() if leg.all_cards
+    )
     cpu_lane = after_gpu = None
     if studio:
         payloads.update(studio_payloads(**studio))
@@ -1473,6 +1580,7 @@ def build_kernel(
         after_gpu_concurrent = after_gpu_concurrent,
         shared_wheel_specs = shared_wheel_specs,
         overlays = overlays,
+        all_card = all_card,
     )
 
 

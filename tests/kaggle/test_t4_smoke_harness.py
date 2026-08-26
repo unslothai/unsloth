@@ -1550,6 +1550,9 @@ LEG_NAMES = (
     "gptoss",
     "grpo",
     "default",
+    # Unpinned by design (all_cards), so its generated cells differ from every
+    # other leg's: the visible-GPU assertion in the preamble compares against 2.
+    "multi_gpu",
     "latest_compile",
     "vision_fla_compile",
     # Retired in favour of vision_fla_compile and kept buildable: an unwired

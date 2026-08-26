@@ -300,6 +300,15 @@ def train_once(args, run_index: int) -> dict:
         result_kernels = None
         result_attention = None
 
+    # AFTER the load for the same reason as the block above: the rotary caches
+    # are built when the model is, so reading them before from_pretrained finds
+    # nothing and reports it as an absence.
+    result_multi_gpu = (
+        multi_gpu_facts(model) if getattr(args, "require_multi_gpu", False) else None
+    )
+    if result_multi_gpu is not None:
+        _log(f"multi-gpu: {json.dumps(result_multi_gpu)}")
+
     # Bound to a name so the saved config is checked against the adapter that
     # was actually requested, rather than against a list repeated further down.
     target_modules = [
@@ -549,6 +558,7 @@ def train_once(args, run_index: int) -> dict:
         "run_index": run_index,
         "kernels": result_kernels,
         "attention": result_attention,
+        "multi_gpu": result_multi_gpu,
         "metrics": stats.logs,
         "generated": generated,
         # Both, because they answer different questions when this goes red:
@@ -835,6 +845,135 @@ def batched_generation_failures(batch: dict | None, model: str | None = None) ->
             f"landed, delete the entry; the leg must not carry an excuse for a "
             f"bug that is gone"
         )
+    return out
+
+
+def multi_gpu_facts(model) -> dict:
+    """What unsloth BOUND, given how many cards this process can see.
+
+    The point of the multi_gpu leg is a branch no pinned payload can reach.
+    `unsloth/kernels/utils.py:170`:
+
+        if DEVICE_COUNT > 1:
+            torch_gpu_device = torch.cuda.device      # a real device switch
+        else:
+            def torch_gpu_device(device): return nullcontext()
+
+    `build_kernel.py` pins every ordinary payload with CUDA_VISIBLE_DEVICES, so
+    every unsloth kernel this CI has run took the nullcontext branch, and so did
+    the DEVICE_COUNT-sized CUDA_STREAMS / WEIGHT_BUFFERS / ABSMAX_BUFFERS arrays
+    and the per-device rotary caches in unsloth/models/llama.py.
+
+    Read off the IMPORTED MODULE, not recomputed from `device_count()`. The
+    binding is made once at import time, so asking torch how many cards there
+    are answers a different question -- and answers it the way the check wants,
+    which is the shape of a rule that cannot fail.
+    """
+    import torch
+
+    facts: dict = {"device_count": torch.cuda.device_count()}
+    try:
+        from unsloth.kernels import utils as _kernel_utils
+    except BaseException as exc:  # noqa: BLE001
+        facts["error"] = f"{type(exc).__name__}: {exc}"
+        return facts
+
+    binding = getattr(_kernel_utils, "torch_gpu_device", None)
+    facts["module_device_count"] = getattr(_kernel_utils, "DEVICE_COUNT", None)
+    # `torch.cuda.device` is a CLASS; the single-card fallback is a module-level
+    # function closing over nullcontext. Identity against the real thing rather
+    # than a name check, because both are bound to the same name.
+    facts["torch_gpu_device_is_real_switch"] = binding is torch.cuda.device
+    facts["torch_gpu_device_repr"] = repr(binding)[:200]
+    for name in ("CUDA_STREAMS", "WEIGHT_BUFFERS", "ABSMAX_BUFFERS"):
+        value = getattr(_kernel_utils, name, None)
+        facts[name.lower() + "_len"] = None if value is None else len(value)
+
+    # Where the weights actually sit. With two cards visible accelerate may
+    # shard, and whether it does is a MEASUREMENT rather than something to
+    # assert blind: kernel unsloth-probe-vision-recon-c76ea3 saw a model split
+    # 897.7 MB / 1017.1 MB across two T4s, but that was a different model and a
+    # different loader path.
+    by_device: dict[str, int] = {}
+    try:
+        for _, param in model.named_parameters():
+            key = str(param.device)
+            by_device[key] = by_device.get(key, 0) + param.numel()
+    except BaseException as exc:  # noqa: BLE001
+        facts["parameter_walk_error"] = f"{type(exc).__name__}: {exc}"
+    facts["parameters_by_device"] = by_device
+    facts["cuda_devices_holding_parameters"] = sorted(
+        d for d in by_device if d.startswith("cuda")
+    )
+
+    # The per-device rotary caches, sized by DEVICE_COUNT at construction. A
+    # list of length 1 on a two-card box means the model was built while
+    # unsloth believed there was one card.
+    for module in getattr(model, "modules", lambda: [])():
+        cached = getattr(module, "multi_gpu_cos_cached", None)
+        if cached is not None:
+            facts["rotary_cache_slots"] = len(cached)
+            break
+    return facts
+
+
+def multi_gpu_failures(facts: dict | None, *, expected_cards: int) -> list[str]:
+    """The rules, separated from the reading so they can be driven on CPU.
+
+    Deliberately NOT asserting that the parameters are spread across both
+    cards. Whether unsloth shards them or pins them to cuda:0 is exactly what
+    this leg is being run to find out, and a rule written before the answer is
+    a rule written to match whatever happens.
+    """
+    if not facts:
+        return ["the multi-GPU facts are missing, so nothing about the "
+                "DEVICE_COUNT > 1 path was measured on this run"]
+    if facts.get("error"):
+        return [f"unsloth.kernels.utils could not be read: {facts['error']}"]
+
+    out: list[str] = []
+    seen = facts.get("device_count")
+    if seen != expected_cards:
+        out.append(
+            f"this leg exists to exercise the multi-card path and torch sees "
+            f"{seen} card(s), not {expected_cards} -- the driver pinned it, so "
+            f"every assertion below would measure the single-card branch under "
+            f"a multi-GPU name"
+        )
+        # Everything after this measures the wrong machine, so say so once.
+        return out
+
+    if facts.get("module_device_count") != expected_cards:
+        out.append(
+            f"unsloth.kernels.utils.DEVICE_COUNT is "
+            f"{facts.get('module_device_count')!r} while torch sees "
+            f"{expected_cards}; the module was imported before the cards were "
+            f"visible, so its bindings are the single-card ones"
+        )
+    if not facts.get("torch_gpu_device_is_real_switch"):
+        out.append(
+            f"torch_gpu_device is not torch.cuda.device but "
+            f"{facts.get('torch_gpu_device_repr')!r} -- the nullcontext "
+            f"fallback, which performs NO device switch, so this run covered "
+            f"the same path a pinned leg already covers"
+        )
+    for name in ("cuda_streams", "weight_buffers", "absmax_buffers"):
+        length = facts.get(name + "_len")
+        if length is None or length < expected_cards:
+            out.append(
+                f"unsloth.kernels.utils.{name.upper()} has {length!r} entries "
+                f"for {expected_cards} cards, so a dequant on the second card "
+                f"has no stream or buffer of its own"
+            )
+    slots = facts.get("rotary_cache_slots")
+    if slots is not None and slots < expected_cards:
+        out.append(
+            f"the per-device rotary cache has {slots} slot(s) for "
+            f"{expected_cards} cards, so the model was built while unsloth "
+            f"believed there was one"
+        )
+    if not facts.get("cuda_devices_holding_parameters"):
+        out.append("no parameter is on a CUDA device at all")
     return out
 
 
@@ -1724,6 +1863,28 @@ def main() -> int:
         help = "also train the same rows with plain TRL and report both traces",
     )
     ap.add_argument(
+        # The multi-card leg, and it is the ONLY thing that makes unsloth's
+        # DEVICE_COUNT > 1 bindings reachable. build_kernel.py pins every other
+        # payload with CUDA_VISIBLE_DEVICES, so `torch_gpu_device` is the
+        # nullcontext shim in every run this CI has ever produced.
+        "--require-multi-gpu",
+        dest = "require_multi_gpu",
+        action = "store_true",
+        default = False,
+        help = "assert unsloth bound its multi-card code path, and record where "
+               "the weights landed",
+    )
+    ap.add_argument(
+        # How many cards this leg was BUILT for, so the check compares against a
+        # declaration rather than against whatever the session happened to give
+        # it. Reading device_count() on both sides of the comparison is how a
+        # rule ends up unable to fail.
+        "--expected-cards",
+        dest = "expected_cards",
+        type = int,
+        default = 2,
+    )
+    ap.add_argument(
         # Off by default: only the vendored-kernel leg is asking, and probing
         # imports in every leg would add imports to legs that never wanted them.
         "--kernel-provenance",
@@ -1845,6 +2006,11 @@ def main() -> int:
             # the command line.
             ("--gguf-quantization", args.gguf_quantization),
             ("--gguf-accept", args.gguf_accept),
+            # The CYCLE is what loads the model, so it is the only process that
+            # can read where unsloth bound its multi-card helpers. A parent that
+            # parsed this and kept it would report `multi_gpu: null` for every
+            # cycle and the leg would pass having measured nothing.
+            ("--expected-cards", args.expected_cards),
         ):
             cmd += [flag, str(value)]
         if args.export_gguf:
@@ -1854,6 +2020,8 @@ def main() -> int:
         # unsloth-probe-default-gguf-637565 and every cycle reported null.
         if args.kernel_provenance:
             cmd.append("--kernel-provenance")
+        if args.require_multi_gpu:
+            cmd.append("--require-multi-gpu")
         if args.force_sdpa:
             cmd.append("--force-sdpa")
         if args.strict_deterministic:
@@ -2008,6 +2176,18 @@ def main() -> int:
         )
         report["kernel_failures"] = kernel_broken
         failures += kernel_broken
+
+    # -1.5 the multi-card bindings. Read off cycle 0 for the same reason as the
+    # kernels above: the binding is made once, at import, so a per-cycle
+    # comparison compares a constant with itself.
+    if getattr(args, "require_multi_gpu", False):
+        report["multi_gpu"] = runs[0].get("multi_gpu")
+        multi_broken = multi_gpu_failures(
+            runs[0].get("multi_gpu"),
+            expected_cards = args.expected_cards,
+        )
+        report["multi_gpu_failures"] = multi_broken
+        failures += multi_broken
 
     # -1. the plain-TRL control arm, reported side by side and NOT asserted
     # equal. Two library stacks do not produce one fp16 trajectory -- frontier
