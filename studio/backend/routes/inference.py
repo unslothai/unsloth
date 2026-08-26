@@ -3225,6 +3225,11 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     """
     if getattr(payload, "mcp_enabled", False):
         return False
+    # Armed research appends Studio's own deep_research past every filter below, and no
+    # provider can run it, so such a selection is never purely hosted. Without this the
+    # request proxies through, the tool is never offered and arming research does nothing.
+    if getattr(payload, "deep_research_armed", False):
+        return False
     enabled = getattr(payload, "enabled_tools", None)
     # None means "every local tool"; an empty list selects nothing and never
     # reaches the loop anyway. Neither is a hosted-tool request.
@@ -3918,6 +3923,22 @@ def _full_access_tip(code_tools: list[str]) -> str:
     )
 
 
+# Armed Deep Research. Stated outright because the schema alone does not move a small model
+# off its prior: asked about 2026 it answers from 2024 training data with no sign it is
+# stale, and the base nudge's "otherwise answer normally" reads as permission to do so.
+# The exception is worded without "greetings" on purpose: with that word in the prompt a
+# 1.7B model opens a fresh chat by greeting the user instead of researching the question
+# (0/4 first-turn calls, against 4/4 with this wording).
+_TOOL_RESEARCH_TIP = (
+    "Deep Research is turned on for this conversation. For any question about the world "
+    "-- facts, events, laws, products, papers, prices, comparisons, anything that may have "
+    "changed since your training -- call deep_research instead of answering from memory, "
+    "even when you think you know the answer: the user asked for a researched, cited "
+    "report and your knowledge has a cutoff. If a message has no question in it, such as a "
+    "hello, a thanks, or a remark about you, reply normally. If a topic is too vague to "
+    "research well, ask one short clarifying question first."
+)
+
 _TOOL_ARTIFACT_TIP = (
     "For HTML, CSS, or JavaScript canvas requests, call render_html once when "
     "it is available with one complete self-contained HTML document in the code "
@@ -3952,10 +3973,15 @@ def _build_tool_action_nudge(
     code_tools = [name for name in _LOCAL_CODE_TOOLS if name in tool_names]
     has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
-    if not (has_web or has_code or has_artifact):
+    has_research = "deep_research" in tool_names
+    if not (has_web or has_code or has_artifact or has_research):
         return ""
     if full_access_only:
         return _full_access_tip(code_tools) if (full_access and has_code) else ""
+    date_line = f"The current date is {_date.today().isoformat()}. "
+    if not (has_web or has_code or has_artifact):
+        # Research alone: the base nudge's "otherwise answer normally" would undo the tip.
+        return date_line + _TOOL_RESEARCH_TIP
 
     model_size_b = _extract_model_size_b(model_name)
     compact_web_tip = model_size_b is not None and model_size_b < 9
@@ -3970,12 +3996,9 @@ def _build_tool_action_nudge(
             tool_tip_parts.append(_full_access_tip(code_tools))
     if has_artifact:
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
-    return (
-        f"The current date is {_date.today().isoformat()}. "
-        + _TOOL_BASE_NUDGE
-        + " "
-        + " ".join(tool_tip_parts)
-    )
+    if has_research:
+        tool_tip_parts.append(_TOOL_RESEARCH_TIP)
+    return date_line + _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
 
 # Nudge appended when the RAG knowledge-base tool is active: ground answers in
@@ -4397,6 +4420,13 @@ async def _select_request_tools(
         tools = apply_full_access_tool_descriptions(tools)
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
+    # getattr: callers hand in lighter payload objects than the request models, not all of
+    # which know this field.
+    if getattr(payload, "deep_research_armed", None):
+        # Appended past every filter above, including the tools_on gate: arming research in the
+        # composer is what offers this tool, and it is the only way the model can start a run.
+        from core.inference.tools import DEEP_RESEARCH_TOOL
+        tools = tools + [DEEP_RESEARCH_TOOL]
     return tools
 
 

@@ -1747,6 +1747,13 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
     )
+    deep_research_armed: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Offer the deep_research handoff tool for this turn. Set when the "
+            "composer has Deep Research armed; the model decides whether to use it."
+        ),
+    )
     confirm_tool_calls: Optional[bool] = Field(
         None,
         description = "[x-unsloth] When true, pause before each tool call and wait for the user to allow/deny it via POST /api/inference/tool-confirm.",
@@ -2190,6 +2197,13 @@ class ChatCountTokensRequest(BaseModel):
     mcp_enabled: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Append tools from every enabled MCP server",
+    )
+    deep_research_armed: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Offer the deep_research handoff tool. Its schema is in the prompt "
+            "whenever the composer armed research, so the count carries it too."
+        ),
     )
     rag_scope: Optional[dict] = Field(
         None,

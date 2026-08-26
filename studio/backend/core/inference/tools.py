@@ -4560,8 +4560,12 @@ def _render_html_reaches_network(arguments: dict) -> bool:
 # to pause them and their safety needs no argument scan. render_html is handled
 # separately above because a networked canvas does need approval.
 # search_conversation only reads this chat's own past turns, so auto mode would otherwise
-# prompt for approval on every call.
-_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base", "search_conversation"})
+# prompt for approval on every call. deep_research runs no code and reaches nothing either: it
+# only reports that the user's own armed research is starting, and without it here
+# is_high_risk_tool_call's unknown-name default would prompt on every handoff.
+_ALWAYS_SAFE_TOOLS = frozenset(
+    {"web_search", "search_knowledge_base", "search_conversation", "deep_research"}
+)
 
 
 def is_always_safe_tool(name: str) -> bool:
@@ -9960,6 +9964,58 @@ ALL_TOOLS = [
     SEARCH_CONVERSATION_TOOL,
 ]
 
+# Deliberately an ordinary tool with an ordinary result. Studio runs three tool loops -- one for
+# llama.cpp, one for safetensors, one for external providers -- and only a plain result behaves
+# the same in all three. The client starts the run off the tool events every loop already
+# publishes, so nothing here needs to know a research run exists.
+#
+# Never in ALL_TOOLS: it is offered only when the composer armed research.
+#
+# The client keys the handoff on this opening rather than on tool_end alone: a denied, skipped,
+# truncated or budget-exhausted call is closed by the same event, and only the result says the
+# call actually ran.
+DEEP_RESEARCH_STARTED_MARKER = "Deep Research has started"
+DEEP_RESEARCH_STARTED = (
+    f"{DEEP_RESEARCH_STARTED_MARKER} on that question. Reply with one short sentence saying you "
+    "are looking into it. Do not answer the question yourself and do not call this tool again; "
+    "the researched report arrives separately."
+)
+
+DEEP_RESEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "deep_research",
+        "description": (
+            "Start Deep Research on the user's question: a multi-step web investigation that "
+            "gathers current sources and writes a cited report, replacing your reply. The user "
+            "turned this on because they want researched answers, so call it for any question "
+            "about the world -- facts, events, laws, products, papers, prices, comparisons, "
+            "anything that may have changed since your training -- even when you think you know "
+            "the answer. Do not answer such questions from memory.\n"
+            "Do not call it for a message with no question in it, such as a hello or a thanks, or "
+            "for a request to write or transform text the user supplied.\n"
+            "If the topic is too vague to research well, do not call this yet: ask one short "
+            "clarifying question, then call it once the user has narrowed it down.\n"
+            "The question you pass is what gets researched, so make it specific and "
+            "self-contained: fold in what the conversation established rather than repeating "
+            "the user's words."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "The specific, self-contained question to research. Not the user's raw "
+                        "message unless it already reads as one."
+                    ),
+                },
+            },
+            "required": ["question"],
+        },
+    },
+}
+
 
 # OpenAI's function.name regex; MCP names that violate it would 400 the whole
 # request, so validate up front and skip with a warning.
@@ -10268,6 +10324,10 @@ def execute_tool(
             ),
             name,
         )
+    if name == "deep_research":
+        if not str(arguments.get("question") or "").strip():
+            return "Error: deep_research needs a question to investigate."
+        return DEEP_RESEARCH_STARTED
     if name == "web_search":
         return _fit_result_to_room(
             _web_search(
