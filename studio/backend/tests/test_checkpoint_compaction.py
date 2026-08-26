@@ -611,6 +611,39 @@ def test_a_real_client_tool_loop_still_takes_the_passthrough():
     assert inference_route._takes_tool_passthrough(with_catalog, _ToolCapableBackend()) is True
 
 
+def test_marked_python_history_keeps_compaction_on_the_fitted_path():
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+
+    branch = _memory_tool_branch()
+    branch[2]["tool_calls"][0]["function"]["name"] = "python"
+    branch[3]["name"] = "python"
+    payload = ChatCompletionRequest(
+        model = "local",
+        messages = branch,
+        thread_id = "thread-1",
+        enable_tools = False,
+        studio_tool_history = True,
+        context_overflow = "truncate_oldest",
+        context_policy = "rolling",
+        compaction_headroom_ratio = 0.0,
+        stream = True,
+    )
+
+    assert inference_route._only_studio_tool_history(payload) is True
+    assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is False
+    assert inference_route._rolling_context_policy(payload) == "truncate_oldest"
+    assert inference_route._request_context_policy(payload) == "rolling"
+    assert inference_route._request_compaction_headroom_ratio(payload) == 0.0
+
+    empty = ChatCompletionRequest(
+        model = "local",
+        messages = [{"role": "user", "content": "hello"}],
+        studio_tool_history = True,
+    )
+    assert inference_route._only_studio_tool_history(empty) is False
+
+
 def test_can_reset_false_replays_an_epoch_but_never_starts_one():
     """The second lock on the same door: `_fit_context` already routes a request that may
     not reset to the rolling window, so reaching here with False means something upstream
