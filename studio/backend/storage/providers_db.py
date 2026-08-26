@@ -8,7 +8,7 @@ per-function connections). API keys are NOT stored here: they live only in
 the browser (localStorage) and are sent encrypted per-request.
 
 Enabled model selections and discovered catalog IDs are stored server-side so
-remote Studio clients see the same connection state (#7281).
+remote Unsloth clients see the same connection state (#7281).
 """
 
 from __future__ import annotations

@@ -64,6 +64,7 @@ import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
 import { ggufCompactionRequestFields } from "../utils/auto-compaction";
 import {
   consumeQueuedChatRunSettings,
+  shouldPersistResolvedQueuedModel,
   snapshotQueuedChatRunSettings,
 } from "../utils/queued-chat-run-settings";
 import {
@@ -1890,8 +1891,7 @@ export async function buildLocalTokenCountExtras(
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
-    // Only truthiness is read server-side, to keep search_knowledge_base and its grounding nudge
-    // in the prompt; no retrieval runs for a count.
+    // the ids name the attached documents in the nudge server-side; no retrieval runs for a count.
     ...(ragOn
       ? {
           rag_scope: {
@@ -2149,6 +2149,7 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
 
 type QueuedResolvedModelRuntime = {
   checkpoint: string;
+  activeGgufVariant: string | null;
   supportsTools: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -2295,6 +2296,7 @@ function queuedResolvedModelFromStore(
   );
   return {
     checkpoint: state.params.checkpoint,
+    activeGgufVariant: state.activeGgufVariant,
     supportsTools: state.supportsTools,
     supportsReasoning: state.supportsReasoning,
     reasoningAlwaysOn: state.reasoningAlwaysOn,
@@ -2428,7 +2430,7 @@ function isGgufLocalRow(row: LocalModelInfo): boolean {
 function runsOnThisPlatform(row: LocalModelInfo): boolean {
   const platform = usePlatformStore.getState();
   // Until the backend reports it, chatOnly is a BROWSER guess: a Mac browser on
-  // a remote Linux Studio would hide every local safetensors model and fetch
+  // a remote Linux Unsloth would hide every local safetensors model and fetch
   // the default. Failing open is safe: validation refuses an ineligible pick.
   if (!platform.fetched || !platform.isChatOnly()) return true;
   if (isGgufLocalRow(row)) {
@@ -2885,7 +2887,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       label,
       // Older backends and non-Error throws carry no detail; still name the model that failed.
       detail:
-        detail || "The server did not report a reason. Check the Studio logs.",
+        detail || "The server did not report a reason. Check the Unsloth logs.",
       blamesModel,
     };
   }
@@ -3790,6 +3792,7 @@ async function resolveQueuedEmptyLocalModel(
           blockedByTrustRemoteCode: false,
           modelRuntime: {
             checkpoint,
+            activeGgufVariant: status.gguf_variant ?? null,
             supportsTools: status.supports_tools ?? false,
             supportsReasoning: status.supports_reasoning ?? false,
             reasoningAlwaysOn: status.reasoning_always_on ?? false,
@@ -3947,7 +3950,10 @@ export function createOpenAIStreamAdapter(
       const queuedRunSettings =
         consumeQueuedChatRunSettings(resolvedThreadId);
       let queuedEmptyModelRuntime: QueuedResolvedModelRuntime | null = null;
-      const persistResolvedQueuedModel = async (modelId: string) => {
+      const persistResolvedQueuedModel = async (
+        modelId: string,
+        modelGgufVariant: string | null,
+      ) => {
         if (
           !queuedRunSettings ||
           queuedRunSettings.params.checkpoint ||
@@ -3956,11 +3962,14 @@ export function createOpenAIStreamAdapter(
         ) {
           return;
         }
-        try {
-          await updateStoredChatThread(resolvedThreadId, { modelId });
-        } catch (error) {
-          throw error;
+        const storedThread = await readThreadRecord?.();
+        if (!shouldPersistResolvedQueuedModel(storedThread)) {
+          return;
         }
+        await updateStoredChatThread(resolvedThreadId, {
+          modelId,
+          modelGgufVariant,
+        });
       };
       if (queuedRunSettings) {
         runtime = { ...runtime, ...queuedRunSettings };
@@ -4030,6 +4039,10 @@ export function createOpenAIStreamAdapter(
                     queuedEmptyModelRuntime?.checkpoint ??
                     liveRuntime.params.checkpoint,
                 },
+                activeGgufVariant:
+                  queuedEmptyModelRuntime !== null
+                    ? queuedEmptyModelRuntime.activeGgufVariant
+                    : liveRuntime.activeGgufVariant,
                 supportsTools:
                   queuedEmptyModelRuntime?.supportsTools ??
                   liveRuntime.supportsTools,
@@ -4077,7 +4090,10 @@ export function createOpenAIStreamAdapter(
         const userMessageParentId =
           userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
-        await persistResolvedQueuedModel(params.checkpoint);
+        await persistResolvedQueuedModel(
+          params.checkpoint,
+          runtime.activeGgufVariant,
+        );
         const selectedCheckpoint = params.checkpoint.trim();
         const researchExternalSelection = parseExternalModelId(selectedCheckpoint);
         const researchExternalProvider = researchExternalSelection
@@ -4094,7 +4110,7 @@ export function createOpenAIStreamAdapter(
             ) !== true)
         ) {
           throw new Error(
-            "Deep research requires a selected local model or a connection whose provider supports Studio tools.",
+            "Deep research requires a selected local model or a connection whose provider supports Unsloth tools.",
           );
         }
         const reasoningRequested =
@@ -4377,6 +4393,10 @@ export function createOpenAIStreamAdapter(
                   queuedEmptyModelRuntime?.checkpoint ??
                   liveRuntime.params.checkpoint,
               },
+              activeGgufVariant:
+                queuedEmptyModelRuntime !== null
+                  ? queuedEmptyModelRuntime.activeGgufVariant
+                  : liveRuntime.activeGgufVariant,
               supportsTools:
                 queuedEmptyModelRuntime?.supportsTools ??
                 liveRuntime.supportsTools,
@@ -4416,7 +4436,10 @@ export function createOpenAIStreamAdapter(
             }
         : liveRuntime;
       const { params } = runtime;
-      await persistResolvedQueuedModel(params.checkpoint);
+      await persistResolvedQueuedModel(
+        params.checkpoint,
+        runtime.activeGgufVariant,
+      );
       const sandboxSessionId = await resolveSandboxSessionId(
         resolvedThreadId,
         readThreadRecord,
@@ -4576,7 +4599,7 @@ export function createOpenAIStreamAdapter(
       // Which side of the connection the Code pill runs code on. Hosted
       // `code_execution` and local `python` / `terminal` are two trust
       // boundaries, not two spellings of one feature, so the stored pill keeps
-      // meaning the provider's sandbox wherever it meant that before the Studio
+      // meaning the provider's sandbox wherever it meant that before the Unsloth
       // loop reached these providers. See code-tool-placement.ts.
       const { local: studioLocalCodeTools, hosted: hostedCodeToolsForThisTurn } =
         selectCodeToolNames({
@@ -5545,7 +5568,7 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // Studio executes the calls for any provider that advertises the
+              // Unsloth executes the calls for any provider that advertises the
               // capability. Providers that do not keep their provider-hosted
               // tool envelope in the branch below.
               // studioLocalCodeTools, not codeToolsEnabled: a Code pill that
@@ -5567,13 +5590,13 @@ export function createOpenAIStreamAdapter(
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
                       ...studioLocalCodeTools,
-                      // Hosted tools Studio has no local stand-in for. Their
-                      // pills stay lit whether or not a Studio tool is on, so
+                      // Hosted tools Unsloth has no local stand-in for. Their
+                      // pills stay lit whether or not an Unsloth tool is on, so
                       // listing only the local names here would silently drop
                       // Images (or Fetch) the moment Search, Code, MCP or a
                       // project's automatic RAG selected this branch. Search
                       // deliberately does not ride along: that is the one
-                      // Studio runs itself just above. Code rides along only
+                      // Unsloth runs itself just above. Code rides along only
                       // when it resolved to the provider's sandbox, which is
                       // mutually exclusive with the local names above.
                       ...(imageGenerationEnabledForThisTurn
@@ -5920,7 +5943,7 @@ export function createOpenAIStreamAdapter(
                         "context. They are saved and searchable, and relevant parts are " +
                         "brought back automatically."
                       : "The full conversation is still visible and saved. " +
-                        "Studio removed complete older turns from this request so the chat can continue.",
+                        "Unsloth removed complete older turns from this request so the chat can continue.",
                     duration: 8000,
                   });
                 }
@@ -6561,7 +6584,7 @@ export function createOpenAIStreamAdapter(
                   const idx =
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
-                  // Studio's local Codex loop follows the OpenAI tool-call delta with
+                  // Unsloth's local Codex loop follows the OpenAI tool-call delta with
                   // tool_start/tool_end events. Resolve the backend id now so all three
                   // event shapes update one run-unique card instead of leaving the raw
                   // provisional card beside a second execution card.

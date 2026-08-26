@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""CPU-only unit tests for the Kaggle Studio GPU harness.
+"""CPU-only unit tests for the Kaggle Unsloth GPU harness.
 
-The payload itself needs a GPU, a browser and a Studio install, and none of
+The payload itself needs a GPU, a browser and an Unsloth install, and none of
 that runs here. What does run is everything that decides whether a green tick
 means anything: the GPU-offload verdict, the polling predicates that separate
 "finished" from "has not started", the adapter check, the generated kernel
@@ -252,7 +252,7 @@ def test_auto_mode_gpu_layers_of_minus_one_is_not_treated_as_zero():
 
 
 def test_health_is_not_ready_until_hardware_detection_settles():
-    """Studio answers healthy while still detecting, and refuses to start a
+    """Unsloth answers healthy while still detecting, and refuses to start a
     training run or an export in that window."""
     assert not studio_client.health_is_ready({"status": "healthy", "hardware_detecting": True})
     assert studio_client.health_is_ready({"status": "healthy"})
@@ -829,7 +829,7 @@ def test_the_two_kaggle_legs_fit_the_account_side_by_side():
     notebook_group = notebook["jobs"]["t4-smoke"]["concurrency"]["group"]
 
     assert studio_group != notebook_group, (
-        "the two legs share a concurrency group again, so Studio waits out the "
+        "the two legs share a concurrency group again, so Unsloth waits out the "
         "whole notebook job for a Kaggle session that is free"
     )
     # Neither may be keyed on the ref: one account, so two branches of the SAME
@@ -913,12 +913,12 @@ def test_studio_is_sampled_harder_than_the_notebook_leg():
     # Share of the shared 50h CI allowance, and the stand-down floor that
     # enforces the priority: the cheap leg stops first so the expensive one
     # gets the tail of the week.
-    assert "The split is Studio 35, this leg 15" in notebook
+    assert "The split is Unsloth 35, this leg 15" in notebook
     assert "--reserve-hours 20" in notebook and "--reserve-hours 10" in studio
 
-    # The Studio block states the notebook leg's reserve in PROSE, so the number
+    # The Unsloth block states the notebook leg's reserve in PROSE, so the number
     # lives in two files and one of them is not executable. Raising the notebook
-    # reserve without touching that sentence leaves the Studio budget arguing from
+    # reserve without touching that sentence leaves the Unsloth budget arguing from
     # a figure that is no longer true, which is exactly how the "cheap leg yields
     # first" priority gets documented backwards. Assert the sentence agrees.
     assert "reserve-hours is 10 rather than the notebook leg's 20" in studio
@@ -1078,7 +1078,7 @@ def test_the_reporter_survives_the_shared_module_being_unavailable(monkeypatch, 
 
 
 class _RecordingStudio(studio_client.Studio):
-    """A Studio whose HTTP layer is a script, so login can be driven off-box."""
+    """An Unsloth whose HTTP layer is a script, so login can be driven off-box."""
 
     def __init__(self, responses):
         super().__init__(base_url = "http://127.0.0.1:0")
@@ -1175,7 +1175,7 @@ def test_the_ui_driver_gets_a_freshly_seeded_account():
     """The API path and the UI driver want OPPOSITE auth states, so the payload
     has to re-seed between them.
 
-    authenticate() retires the bootstrap password to get past Studio's forced
+    authenticate() retires the bootstrap password to get past Unsloth's forced
     change; the driver's first UI step waits for #new-password on that very
     form. Three hardware runs walked the whole cycle -- 412345d2 failed the API
     assertions on the gate, 9ddd8ae4 fixed those and failed the driver on a
@@ -1676,11 +1676,11 @@ def test_real_losses_still_count():
     assert studio_client.nonfinite_losses(status) == []
 
 
-# ------------------------------------------------------ which Studio gets started
+# ------------------------------------------------------ which Unsloth gets started
 
 
 def test_studio_is_launched_from_the_interpreter_running_the_payload(tmp_path, monkeypatch):
-    """The payload runs under the Studio venv, whose bin is NOT on PATH. A
+    """The payload runs under the Unsloth venv, whose bin is NOT on PATH. A
     global `unsloth` anywhere on PATH would otherwise win shutil.which() and
     the run would measure some other install instead of the checkout."""
     module = _load_payload()
@@ -1825,7 +1825,7 @@ def test_a_log_that_was_rotated_under_us_is_read_whole(tmp_path):
 
 
 def test_the_restart_that_reseeds_the_account_keeps_the_earlier_log(tmp_path, monkeypatch):
-    """assert_chat_ui() restarts Studio, and a truncating open threw away the
+    """assert_chat_ui() restarts Unsloth, and a truncating open threw away the
     backend log of every GPU assertion before the evidence was packaged."""
     module = _load_payload()
     session = _session(

@@ -4469,7 +4469,7 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
     payload = _count_request(
         [
             {"role": "system", "content": "Runtime rules."},
-            {"role": "system", "content": "Studio prompt."},
+            {"role": "system", "content": "Unsloth prompt."},
             {"role": "user", "content": "hello"},
         ]
     )
@@ -4478,7 +4478,7 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
     systems = [m for m in messages if m.get("role") in ("system", "developer")]
     assert len(systems) == 1, messages
     assert "Runtime rules." in systems[0].get("content", "")
-    assert "Studio prompt." in systems[0].get("content", "")
+    assert "Unsloth prompt." in systems[0].get("content", "")
 
 
 @pytest.mark.parametrize(

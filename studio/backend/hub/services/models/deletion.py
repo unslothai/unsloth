@@ -295,7 +295,7 @@ def _delete_gguf_variant_from_repos(
         if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
             companion_matches = _repo_file_matches(
                 target_repo,
-                # Companions: mmproj and the drafters Studio downloads (MTP with
+                # Companions: mmproj and the drafters Unsloth downloads (MTP with
                 # every variant, DSpark on opt-in). No main GGUF is left, so they
                 # cannot be launched; reclaim them with the last variant. An imatrix
                 # joins them: no longer offered as a variant, so a copy an older build
