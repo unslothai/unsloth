@@ -192,8 +192,7 @@ test("an eviction drops the pick, not just the loaded marks", () => {
     "utf8",
   );
   // Anchored on the branch, not on the file: other catches sit above it now.
-  // chatActiveModel, not status.active_model: a resident TTS model is not one
-  // chat can adopt, so this branch owns that case too.
+  // chatActiveModel, not status.active_model: this branch owns the resident-TTS case too.
   const branchStart = hook.indexOf("} else if (!chatActiveModel");
   const branch = hook.slice(
     branchStart,

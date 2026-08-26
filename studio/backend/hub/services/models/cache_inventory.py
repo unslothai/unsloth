@@ -433,9 +433,8 @@ def _cache_inventory_fields(
         capabilities["supports_vision"] = False
         capabilities["can_chat"] = False
     # Same rule for the speech-emitting half of the Audio page. The codec probe in
-    # _local_transformers_can_chat covers uncurated safetensors copies; a GGUF repo has no
-    # tokenizer_config to probe and llama-server loads one as a chat model quite happily,
-    # so the curated ids answer for those.
+    # _local_transformers_can_chat covers uncurated safetensors copies; a GGUF repo ships
+    # no tokenizer_config to probe, so the curated ids answer for those.
     if tts_only or is_curated_tts_repo_id(repo_id):
         capabilities["can_chat"] = False
     if hidden_infra:
@@ -1113,7 +1112,7 @@ def _scan_cached_models(
                     else (
                         "text-to-speech"
                         # The probe answers for a repo whose card says nothing, so the
-                        # Audio page (which selects rows by task) still lists it.
+                        # Audio page, which selects by task, still lists it.
                         if is_tts or local_metadata.get("pipeline_tag") == "text-to-speech"
                         else _cached_row_task(repo_info, gguf = False, selected = load_snapshot)
                     )

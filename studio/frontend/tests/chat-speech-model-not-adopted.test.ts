@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Audio page loads a TTS model into the same single inference slot chat reads,
-// and chat's local selection is re-derived from /status on every mount. So picking
-// a voice on the Audio page silently made it the chat model, and the backend then
-// answered the next chat turn by SYNTHESIZING the prompt instead of replying to it.
-// Nothing refused it anywhere along the way. These pin the three places that now do.
+// The Audio page loads a TTS model into the single slot chat reads, and chat's local
+// selection is re-derived from /status on every mount, so picking a voice silently made
+// it the chat model and the next turn came back as SYNTHESIZED speech. Nothing refused
+// it anywhere. These pin the places that now do.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -36,8 +35,7 @@ test("an ordinary chat model is not speech-only", () => {
   assert.equal(isSpeechOnlyStatus(status({ is_audio: false })), false);
 });
 
-// Whisper answers with transcripts, not speech, and the chat route branches on it
-// separately. It is the STT half of the Audio page and has its own guards.
+// Whisper answers with transcripts, and the chat route branches on it separately.
 test("whisper is not speech-only", () => {
   assert.equal(
     isSpeechOnlyStatus(status({ is_audio: true, audio_type: "whisper" })),
@@ -45,8 +43,8 @@ test("whisper is not speech-only", () => {
   );
 });
 
-// Gemma 3n takes audio IN and answers in text: an ordinary chat model that happens
-// to listen. Treating it as speech-only would lock a real chat model out of chat.
+// Gemma 3n takes audio IN and answers in text: treating it as speech-only would lock a
+// real chat model out of chat.
 test("an audio-input chat model is not speech-only", () => {
   assert.equal(
     isSpeechOnlyStatus(status({ is_audio: true, audio_type: "audio_vlm" })),
@@ -58,9 +56,8 @@ test("chat does not adopt the server's model when it only speaks", () => {
   const source = readSource(
     "../src/features/chat/lib/apply-inference-status-to-store.ts",
   );
-  // Guarded in tryAdoptServerActiveModel, not in resolveInferenceCheckpointId:
-  // the loaded-models indicator and the API monitor share that resolver and must
-  // go on naming a resident TTS model.
+  // In tryAdoptServerActiveModel, not resolveInferenceCheckpointId: the loaded-models
+  // indicator and the API monitor share that resolver and must go on naming one.
   const adopt = source.slice(
     source.indexOf("export async function tryAdoptServerActiveModel"),
   );
@@ -96,8 +93,8 @@ test("a TTS load announces its own runtime so chat re-reads the slot", () => {
   const events = readSource("../src/lib/model-lifecycle-events.ts");
   assert.match(events, /export type ModelRuntime =[^;]*"tts"/);
 
-  // Chat ignores its own loads when reconciling, so a TTS load announced as
-  // "chat" left chat naming a model the Audio page had already evicted.
+  // Chat ignores its own loads when reconciling, so a TTS load announced as "chat" left
+  // chat naming a model the Audio page had evicted.
   const audio = readSource("../src/features/audio/audio-page.tsx");
   assert.match(audio, /runtime: "tts",/);
   const hook = readSource(
@@ -110,9 +107,8 @@ test("a TTS load announces its own runtime so chat re-reads the slot", () => {
   assert.doesNotMatch(hook, /runtime === "tts"\) return;/);
 });
 
-// tryAdoptServerActiveModel is not the only door into params.checkpoint. These two
-// call sites resolve a resident model into the chat store on their own, so a guard
-// that lived only in the adopt helper still let a speech model become the chat pick.
+// tryAdoptServerActiveModel is not the only door into params.checkpoint: these two call
+// sites resolve a resident model into the chat store on their own.
 
 test("the Hub does not pin a speech model as the chat checkpoint", () => {
   const hub = readSource("../src/features/hub/hub-page.tsx");
@@ -124,12 +120,11 @@ test("the Hub does not pin a speech model as the chat checkpoint", () => {
     adopt,
     /checkpointId: isSpeechOnlyStatus\(status\)\s*\n?\s*\? null\s*\n?\s*: resolveInferenceCheckpointId\(status\),/,
   );
-  // null, not an early return: the empty-slot branch is what clears the pick the
-  // Audio load evicted, and skipping the call would leave it pointing at a 400.
+  // null, not an early return: the empty-slot branch clears the pick the Audio load
+  // evicted, and skipping the call would leave it pointing at a 400.
   assert.doesNotMatch(adopt, /if \(isSpeechOnlyStatus\(status\)\) return/);
-  // And say WHY it is null. A null checkpoint alone reads as the idle loop having
-  // freed the model, which the helper deliberately does not clear -- a stash reloads
-  // that one. An Audio load is not that, and hub-resident-status pins the branch.
+  // And say WHY it is null: a bare null reads as an idle eviction, which the helper
+  // deliberately keeps. hub-resident-status pins that branch.
   assert.match(adopt, /speechOnly: isSpeechOnlyStatus\(status\),/);
 });
 

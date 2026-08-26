@@ -410,11 +410,10 @@ async function syncInferenceStatusToStore(options?: {
 
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
-    // A TTS model in the slot is not a chat model, and the local selection is
-    // re-derived from this status on every mount, so adopting one made it the
-    // chat model without the user ever picking it. Treat the slot as empty: the
-    // eviction branch below then clears the stale pick, exactly as it does when
-    // an image or video load takes the slot.
+    // The local selection is re-derived from this status on every mount, so adopting a
+    // TTS model made it the chat model without the user picking it. Read the slot as
+    // empty and the eviction branch below clears the stale pick, as it does for an
+    // image or video load.
     const chatActiveModel =
       statusRes.active_model && !isSpeechOnlyStatus(statusRes);
     if (chatActiveModel && !isExternalSelectionActive) {
@@ -620,10 +619,9 @@ export function useChatModelRuntime() {
   useEffect(
     () =>
       subscribeModelLifecycle(({ runtime }) => {
-        // Dictation is a sidecar and takes no GPU ownership, so it evicts
-        // nothing. Chat's own loads already reconcile themselves. A "tts" load
-        // does NOT: it is the Audio page taking this very slot, so it has to be
-        // read back like an image or video load.
+        // Dictation is a sidecar and evicts nothing; chat's own loads reconcile
+        // themselves. A "tts" load does neither: it is the Audio page taking this very
+        // slot, so read it back like an image or video load.
         if (runtime === "chat" || runtime === "stt") return;
         // Both edges, not only the settle. The arbiter evicts chat inside the
         // image or video load POST, before the download starts, so waiting for

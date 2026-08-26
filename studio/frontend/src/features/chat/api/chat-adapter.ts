@@ -2376,12 +2376,10 @@ function isChattableCachedRepo(repo: {
   );
 }
 
-// Chat models are tagged "text-generation" or left null, so this is a list
-// rather than a "has a task" test. The picker routes these rows to the
-// Images/Video/Audio page on click; a background load has no routing step, so
-// without this the chat turn goes to a diffusion or a speech runtime -- for the
-// audio tasks the backend answers a chat completion with synthesized speech
-// rather than refusing it, so nothing downstream catches the mistake.
+// Chat models are tagged "text-generation" or left null, so this is a list rather than
+// a "has a task" test. The picker routes these rows to their own page on click; a
+// background load has no routing step. For the audio tasks the backend answers a chat
+// completion with synthesized speech rather than refusing it.
 const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
   "text-to-image",
   "text-to-video",
@@ -3805,9 +3803,9 @@ async function resolveQueuedEmptyLocalModel(
       // model with the recorded/default auto-load candidate.
       const status = await getInferenceStatus();
       abortSignal.throwIfAborted();
-      // The other door into adoption, and it bypasses tryAdoptServerActiveModel:
-      // a speech model in the slot is not one chat can queue against, so read it
-      // as an empty local server and let the sweep below load a real chat model.
+      // The other door into adoption, bypassing tryAdoptServerActiveModel: a speech
+      // model is not one chat can queue against, so read the slot as empty and let the
+      // sweep below load a real chat model.
       const checkpoint = isSpeechOnlyStatus(status)
         ? null
         : resolveInferenceCheckpointId(status);

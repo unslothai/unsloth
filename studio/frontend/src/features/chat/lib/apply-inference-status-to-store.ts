@@ -706,8 +706,8 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
     // Status endpoint unavailable: fall back to the normal auto-load path.
     return false;
   }
-  // A speech model in the slot is not something chat can adopt; let the sweep
-  // below pick a real chat model, which evicts it exactly as an image load would.
+  // Not something chat can adopt; the sweep below picks a real chat model, which evicts
+  // it exactly as an image load would.
   if (!status.active_model || isSpeechOnlyStatus(status)) {
     return false;
   }

@@ -309,10 +309,9 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     if not _safe_is_dir(path):
         return None
 
-    # Before every architecture test below: a TTS model is an ordinary causal LM
-    # wearing a codec vocabulary (Orpheus is LlamaForCausalLM), so the suffix rules
-    # answer True for one and chat auto-load then picks it -- they are small, and
-    # the backend answers a chat turn on one with synthesized speech.
+    # Before every architecture test below: a TTS model is an ordinary causal LM wearing
+    # a codec vocabulary (Orpheus is LlamaForCausalLM), so the suffix rules answer True
+    # and auto-load, which prefers the smallest, then picks it.
     if detect_local_tts_audio_type(path) is not None:
         return False
 

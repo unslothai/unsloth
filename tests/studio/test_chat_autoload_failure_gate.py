@@ -528,9 +528,8 @@ async function loadModel(payload: any) {
 
 // The speech-only verdict, mirroring
 // studio/frontend/src/features/chat/lib/speech-only-status.ts. Real logic rather than a
-// neutral stub: the queued path in the sliced region reads it to decide whether the
-// resident model is one chat may adopt at all, and a stub that always answered false
-// would keep every scenario green if that guard were removed.
+// neutral stub: a stub that always answered false would keep every scenario green if the
+// queued path's guard were removed.
 export function isSpeechOnlyStatus(status: any): boolean {
   return (
     Boolean(status?.is_audio) &&

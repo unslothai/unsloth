@@ -174,9 +174,8 @@ test("an empty status leaves the checkpoint pinned while idle unload is armed", 
 });
 
 test("a speech model in the slot clears the pick even while idle unload is armed", () => {
-  // Not the idle eviction the rule above is about: an Audio load took the single slot, the
-  // chat model is gone for good, and there is no stash to reload it. Holding the pick there
-  // left the Hub calling an evicted model Loaded and the next prompt returning a bare 400.
+  // Not the idle eviction the rule above is about: an Audio load took the single slot and
+  // no stash reloads the chat model, so holding the pick left the Hub calling it Loaded.
   const cleared: string[] = [];
   const adopted = adoptResidentModelStatus(
     { checkpointId: null, ggufVariant: null, speechOnly: true },

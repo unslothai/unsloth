@@ -264,9 +264,8 @@ export async function loadModel(
   options?: {
     signal?: AbortSignal;
     onRequestStart?: () => void;
-    /** What is taking the slot. The Audio page loads speech models through this
-     *  same endpoint, and chat ignores its own loads when reconciling, so one
-     *  announced as "chat" left chat naming a model the Audio page had evicted. */
+    /** What is taking the slot. Chat ignores its own loads when reconciling, so an
+     *  Audio load announced as "chat" left chat naming a model it had evicted. */
     runtime?: ModelRuntime;
   },
 ): Promise<LoadModelResponse> {

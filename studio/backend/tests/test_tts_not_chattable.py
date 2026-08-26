@@ -3,16 +3,15 @@
 
 """A TTS model must never be chat-loadable.
 
-The Audio page loads speech models into the same single inference slot chat
-reads, and ``openai_chat_completions`` answers a chat turn on one by
-SYNTHESIZING the prompt rather than refusing it -- so nothing downstream catches
-the mistake. Chat auto-load picks the smallest downloaded model, and TTS models
-are small, which made a speech model the default chat model on a fresh install.
+The Audio page loads speech models into the single slot chat reads, and
+``openai_chat_completions`` answers a turn on one by SYNTHESIZING the prompt
+rather than refusing it. Auto-load picks the smallest downloaded model and TTS
+models are small, so one became the default chat model on a fresh install.
 
-Architecture cannot answer this: Orpheus and OuteTTS are ``LlamaForCausalLM``
-and Spark is ``Qwen2ForCausalLM``, so the generative-suffix rule says "chat".
-The codec vocabulary in ``tokenizer_config.json`` is the signal, with the
-curated ids covering the GGUF companions that ship no tokenizer at all.
+Architecture cannot answer this -- Orpheus and OuteTTS are ``LlamaForCausalLM``,
+Spark is ``Qwen2ForCausalLM`` -- so the codec vocabulary in
+``tokenizer_config.json`` is the signal, with the curated ids covering the GGUF
+companions that ship no tokenizer at all.
 """
 
 from __future__ import annotations
@@ -101,11 +100,7 @@ def test_an_ordinary_chat_model_stays_chattable(tmp_path):
 
 
 def test_an_audio_input_chat_model_stays_chattable(tmp_path):
-    """Gemma 3n takes audio IN and answers in text, so it is an ordinary chat model.
-
-    Hiding it would cost a real chat model its own page, which is why the probe
-    answers only for the speech-emitting codecs.
-    """
+    """Gemma 3n takes audio IN and answers in text, so the probe must not claim it."""
     from hub.services.models.common import _local_transformers_can_chat
 
     path = _model_dir(
@@ -149,8 +144,7 @@ def test_the_tts_set_is_a_subset_of_the_classifier():
 
 
 def test_curated_tts_repo_ids_cover_the_gguf_companion():
-    """A GGUF repo carries no tokenizer_config, so the probe cannot see it, and
-    llama-server loads one as a chat model quite happily."""
+    """A GGUF repo carries no tokenizer_config, so only the ids can answer."""
     assert is_curated_tts_repo_id("unsloth/orpheus-3b-0.1-ft-GGUF")
     assert is_curated_tts_repo_id("UNSLOTH/Orpheus-3B-0.1-FT-GGUF")
     assert is_curated_tts_repo_id("unsloth/csm-1b")
@@ -164,8 +158,8 @@ def test_curated_tts_repo_ids_cover_the_gguf_companion():
 
 
 def test_a_curated_tts_repo_row_is_not_chat_loadable(tmp_path):
-    """can_chat is what auto-load (isChattableCachedRepo) filters on, and a GGUF
-    row's capabilities come from the file format alone."""
+    """can_chat is what auto-load filters on, and a GGUF row's capabilities come from
+    the file format alone."""
     from hub.services.models.cache_inventory import _cache_inventory_fields
 
     fields = _cache_inventory_fields(
@@ -187,11 +181,8 @@ def test_an_ordinary_gguf_repo_row_still_chats(tmp_path):
 
 
 def test_a_lora_over_a_speech_base_is_not_chattable(tmp_path):
-    """Studio trains Orpheus LoRAs, and an adapter resolves its base to decide this.
-
-    Without the probe the base classifies as a causal LM and every voice fine-tune
-    the user trained became chat-loadable too.
-    """
+    """Studio trains Orpheus LoRAs, and an adapter resolves its base to decide this, so
+    without the probe every voice fine-tune became chat-loadable too."""
     from hub.services.models.common import _local_path_can_chat
 
     base = _model_dir(tmp_path, "orpheus-base", ["LlamaForCausalLM"], _snac_tokens())

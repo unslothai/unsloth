@@ -74,9 +74,8 @@ export function adoptResidentModelStatus(
     // loop frees the model but keeps a stash the next request reloads, so clearing would drop
     // a selection that is coming back. Disarmed, nothing brings it back, and leaving the row
     // resident seeds the settings editor from a launch config nothing is running.
-    // A speech model in the slot is neither: /status DOES say which, the eviction was an
-    // Audio load rather than the idle loop, and no stash reloads the chat model. Holding the
-    // pick there left the Hub calling an evicted model Loaded.
+    // A speech model is neither: an Audio load took the slot, not the idle loop, and no
+    // stash reloads the chat model. Holding the pick left the Hub calling it Loaded.
     if (state.idleUnloadArmed && !status.speechOnly) {
       return false;
     }

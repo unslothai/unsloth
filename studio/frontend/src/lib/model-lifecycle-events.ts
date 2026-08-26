@@ -19,9 +19,9 @@ export const MODEL_LIFECYCLE_EVENT = "unsloth:model-lifecycle";
 /** Which runtime was released. Only these two own a page holding its status. */
 export type EjectedModelRuntime = "image" | "video";
 
-/** Every runtime the indicator lists. "tts" shares the chat slot rather than owning
- *  one, and is named apart from "chat" only so chat can tell a load it did not start
- *  (the Audio page taking the slot) from one it did and reconcile itself. */
+/** Every runtime the indicator lists. "tts" shares the chat slot rather than owning one,
+ *  and is named apart from "chat" only so chat can tell a load it did not start from
+ *  one it did. */
 export type ModelRuntime = "chat" | "image" | "video" | "stt" | "tts";
 
 export type ModelLifecycle = {

@@ -58,11 +58,10 @@ _HIDDEN_STT_REPO_IDS = frozenset(
 _HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS)
 
 # Curated Audio-page TTS checkpoints. Unlike the STT set these stay VISIBLE -- the Audio
-# page is where they belong -- but they are never chat models: a chat turn sent to one
-# comes back as synthesized speech, so they must not be chat-loadable. Config sniffing
-# cannot catch them (Orpheus and OuteTTS are LlamaForCausalLM, Spark is Qwen2ForCausalLM),
-# and the GGUF companions carry no tokenizer_config for the codec probe either, so the
-# curated ids are listed here and the probe covers uncurated copies.
+# page is where they belong -- but a chat turn on one comes back as synthesized speech,
+# so they must not be chat-loadable. Config sniffing cannot catch them (Orpheus and
+# OuteTTS are LlamaForCausalLM, Spark is Qwen2ForCausalLM) and a GGUF companion carries
+# no tokenizer_config for the codec probe, so the ids answer for those.
 _CURATED_TTS_REPO_IDS = frozenset(
     {
         "unsloth/orpheus-3b-0.1-ft",

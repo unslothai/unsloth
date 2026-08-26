@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tokenizer-based audio_type classification, with no heavy imports.
+"""Tokenizer-based audio_type classification.
 
-Lives directly under ``utils`` so the hub cache scanner can classify a snapshot
-without pulling in ``utils/models/__init__.py`` and the model-config stack.
-``utils.models.model_config`` re-exports these for its Hub-fetching probe, so
-the patterns have exactly one definition.
+Directly under ``utils`` so the cache scanner can classify a snapshot without
+dragging in ``utils/models/__init__.py`` and the model-config stack.
 """
 
 from __future__ import annotations
@@ -22,11 +20,8 @@ TTS_AUDIO_TYPES = frozenset({"snac", "csm", "bicodec", "dac"})
 
 
 def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
-    """Whether more than ``threshold`` tokens start with ``prefix``.
-
-    Equivalent to ``sum(...) > threshold`` but stops at the answer. Summing counted every
-    one of Orpheus's 28k codes to decide a question settled by the first 10,001.
-    """
+    """``sum(...) > threshold``, but stopping at the answer: summing counted all 28k of
+    Orpheus's codes to settle a question the first 10,001 decide."""
     count = 0
     for token in tokens:
         if token.startswith(prefix):
@@ -36,10 +31,9 @@ def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
     return False
 
 
-# Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json).
-# ORDER MATTERS: first match wins, so the specific codec fingerprints go before the
-# generic audio_vlm marker. Orpheus carries 28k <custom_token_N> SNAC codes AND a
-# stray <|audio|>; audio_vlm first typed it as audio-input, leaving is_audio False.
+# ORDER MATTERS: first match wins, so codec fingerprints precede the generic audio_vlm
+# marker. Orpheus carries 28k <custom_token_N> SNAC codes AND a stray <|audio|>, and
+# audio_vlm first typed it as audio-input.
 AUDIO_TOKEN_PATTERNS = {
     "csm": lambda tokens: "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens,
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
@@ -51,18 +45,15 @@ AUDIO_TOKEN_PATTERNS = {
         and "<|text_end|>" in tokens
     ),
     "snac": lambda tokens: _count_prefix_exceeds(tokens, "<custom_token_", 10000),
-    # Generic, so last. Gemma 3n <audio_soft_token>; Gemma 4 <|audio|> (not csm's
-    # <|AUDIO|>). Neither carries a codebook, so nothing above shadows them.
+    # Generic, so last. Gemma 3n <audio_soft_token>; Gemma 4 <|audio|>, not csm's <|AUDIO|>.
     "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
 }
 
-# Every substring a pattern above needs. A tokenizer_config whose text contains NONE of
-# these cannot match any pattern, whatever it holds, so the answer is settled without
-# parsing it. That matters because an ordinary text checkpoint carries a large
-# tokenizer_config and json.loads of it was the bulk of a cold /loras scan.
-# MUST cover every pattern: AUDIO_TOKEN_PATTERNS is lambdas, so this cannot be derived
-# from them, and a codec added there without its marker here would silently stop being
-# detected. test_audio_token_detection.py fails if the two drift.
+# Every substring a pattern needs, so text holding none of them is settled without a
+# parse -- json.loads of an ordinary large tokenizer_config was the bulk of a cold /loras
+# scan. The patterns are lambdas, so this cannot be derived from them; a codec added
+# there without its marker here would silently stop being detected, and
+# test_audio_token_detection.py fails when the two drift.
 AUDIO_TOKEN_MARKERS = (
     "<|AUDIO|>",  # csm
     "<|startoftranscript|>",  # whisper
@@ -78,17 +69,13 @@ AUDIO_TOKENIZER_CONFIG_PATHS = (
     "LLM/tokenizer_config.json",
 )
 
-# A codebook tokenizer runs to a few MB; anything past this is not one of ours, and the
-# inventory scan reads these on the event loop.
+# A codebook tokenizer runs to a few MB, and the inventory scan reads one per repo.
 _MAX_TOKENIZER_CONFIG_BYTES = 32 * 1024 * 1024
 
 
 def may_hold_audio_tokens(raw: str) -> bool:
-    """Whether a tokenizer_config's raw text is worth parsing.
-
-    Conservative: a false True only costs the parse that would have happened anyway.
-    A false False would misclassify, which is why the markers are pinned by a test.
-    """
+    """Whether a tokenizer_config's raw text is worth parsing. A false True costs only
+    the parse that would have happened anyway; a false False misclassifies."""
     return any(marker in raw for marker in AUDIO_TOKEN_MARKERS)
 
 
@@ -110,17 +97,14 @@ def is_audio_input_type(audio_type: Optional[str]) -> bool:
 
 
 def is_tts_audio_type(audio_type: Optional[str]) -> bool:
-    """True for a speech-emitting codec. audio_vlm is deliberately absent: Gemma 3n
-    takes audio in and answers in text, so it is an ordinary chat model."""
+    """True for a speech-emitting codec. audio_vlm is absent on purpose: Gemma 3n takes
+    audio in and answers in text."""
     return audio_type in TTS_AUDIO_TYPES
 
 
 def detect_local_tts_audio_type(directory) -> Optional[str]:
-    """The TTS codec a downloaded model directory fingerprints, or None.
-
-    Local files only, so it never reaches the Hub. Whisper and audio_vlm answer None:
-    this exists to keep speech-emitting models out of chat, and both of those chat.
-    """
+    """The TTS codec a downloaded model directory fingerprints, or None. Local files
+    only. Whisper and audio_vlm answer None: both of those chat."""
     try:
         root = Path(directory)
         if not root.is_dir():

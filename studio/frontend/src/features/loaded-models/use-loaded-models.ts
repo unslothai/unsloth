@@ -22,8 +22,8 @@ const NO_ENTRIES: LoadedModelEntry[] = [];
 
 const ALL_SOURCES: LoadedModelSource[] = ["chat", "image", "video", "stt"];
 
-// A TTS load takes the chat slot and is released by the chat unload, so it folds
-// into that source's row rather than adding one of its own.
+// A TTS load takes the chat slot and the chat unload releases it, so it folds into that
+// row rather than adding one.
 function sourceForRuntime(runtime: ModelRuntime): LoadedModelSource {
   return runtime === "tts" ? "chat" : runtime;
 }
