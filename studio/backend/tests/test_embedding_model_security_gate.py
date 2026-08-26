@@ -546,3 +546,57 @@ def test_security_block_is_not_swallowed_by_llama_fallback(monkeypatch):
     )
     with pytest.raises(embeddings.UnsafeEmbeddingModelError):
         embeddings._SentenceTransformersBackend().encode(["hi"])
+
+
+def _erroring_plan(model, backend, error):
+    return settings.EmbeddingModelResolveResponse(
+        embedding_model = model, backend = backend, error = error
+    )
+
+
+def test_a_sentence_transformers_plan_error_is_refused_not_persisted(client, monkeypatch):
+    """The PUT only raised on plan.error when the destination was llama.
+    is_embedding_model gates on the Hub's tags, so a feature-extraction repo that
+    publishes no loadable checkpoint passes that check and used to be persisted
+    even though the resolve endpoint had just said it cannot be loaded."""
+    c, saved = client
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    import utils.models as models
+
+    monkeypatch.setattr(models, "is_embedding_model", lambda *a, **k: True)
+    monkeypatch.setattr(
+        settings,
+        "_resolve_embedding_model_plan",
+        lambda model, token: _erroring_plan(
+            model, "sentence-transformers", "No sentence-transformers weights found."
+        ),
+    )
+
+    r = c.put("/embedding-model", json = {"embedding_model": "acme/gguf-only"})
+    # 409, so the client can still offer "save anyway" as it does for a GGUF error.
+    assert r.status_code == 409
+    assert "No sentence-transformers weights found." in r.json()["detail"]
+    assert "model" not in saved
+
+
+def test_forcing_over_a_failed_plan_stays_cache_only(client, monkeypatch):
+    """Save anyway over a failed plan recorded no backend, no repo and no pending
+    marker, so both loaders took their ordinary uncached path and fetched weights
+    invisibly at the first index, which is what this picker replaces."""
+    c, saved = client
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setattr(
+        settings,
+        "_resolve_embedding_model_plan",
+        lambda model, token: _erroring_plan(model, "sentence-transformers", "cannot resolve"),
+    )
+
+    r = c.put("/embedding-model", json = {"embedding_model": "acme/embedder", "force": True})
+
+    assert r.status_code == 200
+    assert saved["model"] == "acme/embedder"
+    # Nothing was validated, so nothing is claimed...
+    assert saved["backend"] is None
+    assert saved["gguf_repo"] is None
+    # ...but the loader still may not download behind the user's back.
+    assert saved["download_pending"] is True

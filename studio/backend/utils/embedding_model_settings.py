@@ -44,6 +44,10 @@ _cached: tuple[float, _StoredState] | None = None
 # save cannot repopulate the cache with the pre-save value for the whole TTL.
 _generation = 0
 _lock = threading.Lock()
+# Per-model, process-local: the last resolved GGUF repo this process saw for each
+# model. There is only one stored resolution record, so it belongs to whichever
+# model was saved last; see remembered_gguf_repo.
+_resolved_gguf_memo: dict[str, str] = {}
 
 
 def _invalidate_cache() -> None:
@@ -86,7 +90,32 @@ def get_stored_gguf_repo(model: str) -> str | None:
     """The GGUF repo stored alongside ``model``, or None when it was stored for a
     different model (a stale pair must not point the loader at the wrong weights)."""
     stored = _get_stored_state()
-    return stored[2] if stored[1] == model else None
+    if stored[1] != model:
+        return None
+    if stored[2]:
+        _remember_resolved_gguf_repo(model, stored[2])
+    return stored[2]
+
+
+def _remember_resolved_gguf_repo(model: str, repo: str) -> None:
+    """Keep this process's last resolved repo for ``model``."""
+    with _lock:
+        _resolved_gguf_memo[model] = repo
+
+
+def remembered_gguf_repo(model: str) -> str | None:
+    """The repo this process last saw resolved for ``model``, if any.
+
+    There is one stored resolution record, so saving model B immediately makes
+    ``get_stored_gguf_repo(A)`` None. A background ingestion pinned to A is still
+    running against A's off-convention mirror, and its identity would silently
+    move to the derived ``A-GGUF`` name mid-job, splitting one document set across
+    two vector-space tags. This memo is process-local and per model, so it lasts
+    exactly as long as the job that needs it; a later save for A refreshes it
+    through ``get_stored_gguf_repo``, and a reset drops it.
+    """
+    with _lock:
+        return _resolved_gguf_memo.get(model)
 
 
 def get_stored_backend(model: str) -> str | None:
@@ -254,5 +283,8 @@ def reset_rag_embedding_model() -> str:
             EMBEDDING_BACKEND_SETTING_KEY: None,
         }
     )
+    # A reset means "forget what was resolved", so the memo goes with the record.
+    with _lock:
+        _resolved_gguf_memo.clear()
     _invalidate_cache()
     return default_embedding_model()

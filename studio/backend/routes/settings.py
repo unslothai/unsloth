@@ -2217,6 +2217,23 @@ def _cached_snapshot_has_st_weights(model: str) -> bool:
         return False
 
 
+def _cached_st_weight_names(model: str) -> list[str]:
+    """Snapshot-relative names of the ST weights already on disk for ``model``."""
+    try:
+        from utils.utils import hf_cache_snapshot_dir
+
+        snapshot = hf_cache_snapshot_dir(model)
+        if snapshot is None:
+            return []
+        return sorted(
+            str(path.relative_to(snapshot))
+            for path in snapshot.rglob("*")
+            if path.suffix.lower() in _ST_WEIGHT_SUFFIXES and path.is_file()
+        )
+    except Exception:  # noqa: BLE001 - the plan stands without a file list
+        return []
+
+
 def _safetensors_plan(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
     """``(repo, files)`` for running ``model`` on sentence-transformers instead.
 
@@ -2224,6 +2241,12 @@ def _safetensors_plan(model: str, hf_token: Optional[str]) -> Optional[tuple[str
     more memory, which beats refusing the model or pulling a stranger's conversion."""
     if not _st_backend_available():
         return None
+    # A complete local snapshot is already the proof the remote listing would
+    # provide. Asking the Hub first meant that offline (HF_HUB_OFFLINE=1, or just
+    # no connectivity) the listing failed and this returned no plan at all, so a
+    # model sitting fully downloaded on disk could not be selected.
+    if _cached_snapshot_has_st_weights(model):
+        return (model, _cached_st_weight_names(model))
     weights = _st_weight_files(model, hf_token)
     return (model, weights) if weights else None
 
@@ -2575,10 +2598,13 @@ def update_embedding_model(
                     ),
                 )
         # The shared resolver already applied the bounded GGUF listing and the
-        # exact destination backend, so PUT and GET cannot disagree.
-        gguf_error = plan.error if destination_is_llama else None
-        if gguf_error:
-            raise HTTPException(status_code = 409, detail = gguf_error)
+        # exact destination backend, so PUT and GET cannot disagree. Any plan
+        # error counts, not just the llama ones: is_embedding_model gates on the
+        # Hub's tags, so a feature-extraction repo with no loadable checkpoint
+        # passes that check and used to be persisted here even though the resolve
+        # endpoint had just said this backend cannot load it.
+        if plan.error:
+            raise HTTPException(status_code = 409, detail = plan.error)
     trusted_backend = None
     trusted_gguf_repo = None
     trusted_download_pending = False
@@ -2592,6 +2618,14 @@ def update_embedding_model(
         # complete. That prevents a close/cancel from becoming an implicit
         # first-index download.
         trusted_download_pending = bool(plan.download_repo and not plan.cached)
+    else:
+        # Save anyway, over a plan that failed. There is no validated backend or
+        # repo to record, but leaving the marker off let both loaders take their
+        # ordinary uncached path and fetch weights invisibly at the first index,
+        # which is the exact behaviour this picker exists to replace. Cache-only
+        # instead: a model already on disk still indexes, and one that is not
+        # says so rather than starting a silent multi-GB transfer.
+        trusted_download_pending = True
     set_rag_embedding_model(
         model,
         gguf_repo = trusted_gguf_repo,

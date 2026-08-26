@@ -157,3 +157,53 @@ def test_a_concurrent_save_is_not_reverted_by_a_late_pending_clear(settings_stor
     assert ems.get_stored_gguf_repo("org/b") == "org/b-GGUF"
     assert ems.get_stored_backend("org/b") == "sentence-transformers"
     assert ems.get_stored_gguf_repo("org/a") is None
+
+
+def test_a_pinned_jobs_resolved_repo_survives_a_save_for_another_model(
+    settings_store, monkeypatch
+):
+    """There is one stored resolution record, so saving B takes A's repo away
+    while a linked-folder job pinned to A is still ingesting. Without the memo its
+    identity moves to the derived A-GGUF name mid-run, splitting one document set
+    across two vector-space tags."""
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    ems._resolved_gguf_memo.clear()
+    from core.rag import config
+
+    ems.set_rag_embedding_model(
+        "org/embedder-a", gguf_repo = "mirror/off-convention-GGUF", backend = "llama-server"
+    )
+    assert config.effective_gguf_repo_for_embedding_model("org/embedder-a") == (
+        "mirror/off-convention-GGUF"
+    )
+
+    ems.set_rag_embedding_model("org/embedder-b", gguf_repo = None, backend = None)
+
+    # The stored record is B's now, and the staleness rule still holds.
+    assert ems.get_stored_gguf_repo("org/embedder-a") is None
+    # But the pinned job keeps embedding through the same mirror.
+    assert config.effective_gguf_repo_for_embedding_model("org/embedder-a") == (
+        "mirror/off-convention-GGUF"
+    )
+    # A model this process never resolved is still derived, not invented.
+    assert config.effective_gguf_repo_for_embedding_model("org/never-seen") == (
+        config.gguf_repo_for_embedding_model("org/never-seen")
+    )
+
+
+def test_a_reset_drops_the_remembered_repo(settings_store, monkeypatch):
+    """Reset means forget what was resolved, memo included."""
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    ems._resolved_gguf_memo.clear()
+    from core.rag import config
+
+    ems.set_rag_embedding_model(
+        "org/embedder-a", gguf_repo = "mirror/off-convention-GGUF", backend = "llama-server"
+    )
+    assert ems.get_stored_gguf_repo("org/embedder-a") == "mirror/off-convention-GGUF"
+    ems.reset_rag_embedding_model()
+
+    assert ems.remembered_gguf_repo("org/embedder-a") is None
+    assert config.effective_gguf_repo_for_embedding_model("org/embedder-a") == (
+        config.gguf_repo_for_embedding_model("org/embedder-a")
+    )

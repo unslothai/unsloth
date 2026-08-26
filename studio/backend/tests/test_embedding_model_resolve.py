@@ -683,3 +683,37 @@ def test_a_cached_gguf_only_repo_is_not_reported_as_a_ready_st_model(client, mon
     body = _resolve(client, "org/real-st").json()
     assert body["cached"] is True
     assert body["error"] is None
+
+
+def test_a_cached_safetensors_model_is_selectable_offline(client, monkeypatch, tmp_path):
+    """On an auto install the llama path finds no GGUF and falls through to the
+    safetensors fallback, which proved the weights only through the remote
+    listing. Offline that listing fails, so a model sitting fully downloaded on
+    disk could not be selected at all."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model.safetensors").write_bytes(b"ST")
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: True)
+    monkeypatch.setattr(settings, "_st_backend_available", lambda: True)
+    monkeypatch.setattr(settings, "_sentence_transformers_fallback_allowed", lambda m: True)
+    # Offline: every remote probe fails.
+    monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
+    monkeypatch.setattr(settings, "_remote_embedding_gguf_plan", lambda c, t: None)
+    monkeypatch.setattr(settings, "_search_hub_for_gguf", lambda m, t: None)
+    monkeypatch.setattr(settings, "_cached_embedding_gguf", lambda c, require_variant = True: None)
+    monkeypatch.setattr(settings, "_hf_snapshot_size", lambda repo, token: None)
+    import utils.utils as utils
+
+    monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
+    monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
+
+    assert settings._safetensors_plan("org/st-only", None) == (
+        "org/st-only", ["model.safetensors"]
+    )
+
+    body = _resolve(client, "org/st-only").json()
+    assert body["backend"] == "sentence-transformers"
+    assert body["download_repo"] == "org/st-only"
+    assert body["cached"] is True
+    assert body["error"] is None
