@@ -52,9 +52,8 @@ def test_embedding_model_controls_stack_on_the_narrowest_viewports():
     # pinning the filename turned that move into a red build even though both responsive
     # classes came along untouched. Follow whichever settings surface renders the picker.
     # Dropping the classes still fails; relocating them no longer does.
-    # The combobox became EmbeddingModelPicker, so follow the component the same
-    # way the file is already followed: the contract is that the control stacks
-    # and fills the row under 360px, not what the control is called.
+    # The combobox became EmbeddingModelPicker; follow the component, since the
+    # contract is that the control stacks and fills the row under 360px.
     owners = [
         path
         for path in sorted(SETTINGS.rglob("*.tsx"))
@@ -68,8 +67,8 @@ def test_embedding_model_controls_stack_on_the_narrowest_viewports():
         if not (
             'className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"'
             in (source := path.read_text(encoding = "utf-8"))
-            # The fixed width has to give way at the breakpoint. flex-1 did that
-            # for the combobox; the picker trigger takes the full row instead.
+            # The fixed width has to give way at the breakpoint: flex-1 for the
+            # combobox, a full row for the picker trigger.
             and ("max-[360px]:w-full" in source or "max-[360px]:flex-1" in source)
         )
     ]

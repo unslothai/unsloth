@@ -33,9 +33,8 @@ MAX_EMBEDDING_MODEL_LENGTH = 512
 # of hitting sqlite each time. Writes invalidate immediately in-process; other
 # readers converge within the TTL.
 _CACHE_TTL_S = 2.0
-# typing.Optional, not `str | None`: `from __future__ import annotations` defers
-# annotations, but a type ALIAS is evaluated at import, and PEP 604 unions need
-# 3.10 while the packaged floor is 3.9.
+# typing.Optional, not `str | None`: the future import defers annotations, but a
+# type ALIAS is evaluated at import, and PEP 604 needs 3.10 over a 3.9 floor.
 _StoredState = tuple[Optional[str], Optional[str], Optional[str], Optional[str], bool]
 # (override model, resolved model, GGUF repo, backend, download pending)
 _cached: tuple[float, _StoredState] | None = None
@@ -44,9 +43,9 @@ _cached: tuple[float, _StoredState] | None = None
 # save cannot repopulate the cache with the pre-save value for the whole TTL.
 _generation = 0
 _lock = threading.Lock()
-# Per-model, process-local: the last (gguf_repo, backend, download_pending) this
-# process saw resolved for each model. There is only one stored resolution record,
-# so it belongs to whichever model was saved last; see remembered_gguf_repo.
+# Per-model, process-local: the last (gguf_repo, backend, download_pending) seen
+# for each model. The one stored record belongs to whichever model was saved last;
+# see remembered_gguf_repo.
 _resolved_gguf_memo: dict[str, tuple[Optional[str], Optional[str], bool]] = {}
 
 
@@ -110,13 +109,11 @@ def _remembered(model: str) -> tuple[str | None, str | None, bool] | None:
 def remembered_gguf_repo(model: str) -> str | None:
     """The repo this process last saw resolved for ``model``, if any.
 
-    There is one stored resolution record, so saving model B immediately makes
-    ``get_stored_gguf_repo(A)`` None. A background ingestion pinned to A is still
-    running against A's off-convention mirror, and its identity would silently
-    move to the derived ``A-GGUF`` name mid-job, splitting one document set across
-    two vector-space tags. This memo is process-local and per model, so it lasts
-    exactly as long as the job that needs it; a later save for A refreshes it
-    through ``get_stored_gguf_repo``, and a reset drops it.
+    One stored record, so saving B makes ``get_stored_gguf_repo(A)`` None while a
+    job pinned to A is still ingesting, moving its identity to the derived
+    ``A-GGUF`` mid-job and splitting one document set across two tags. The memo is
+    process-local and per model, so it lasts as long as the job; a later save for
+    A refreshes it, and a reset drops it.
     """
     remembered = _remembered(model)
     return remembered[0] if remembered else None
@@ -127,8 +124,7 @@ def get_stored_backend(model: str) -> str | None:
 
     Same staleness rule as the repo, and the same reason to survive it: on an auto
     CPU install a model with no GGUF resolves to sentence-transformers, so losing
-    that record when another model is saved drops a still-running job for it back
-    onto the hardware default and fails it looking for GGUF weights.
+    it drops a still-running job onto the hardware default, which has no GGUF.
     """
     stored = _get_stored_state()
     if stored[1] == model:
@@ -141,10 +137,9 @@ def get_stored_backend(model: str) -> str | None:
 def get_stored_download_pending(model: str) -> bool:
     """Whether ``model`` was activated before its required transfer finished.
 
-    Loaders use this marker to remain cache-only instead of recreating the
-    invisible first-index download the picker is designed to prevent. It outlives
-    another model's save for the same reason the backend does: forgetting it is
-    what re-enables the implicit download for a job still pinned to this model.
+    Loaders stay cache-only on this marker instead of recreating the invisible
+    first-index download. It outlives another model's save for the same reason the
+    backend does: forgetting it re-enables that download for a pinned job.
     """
     stored = _get_stored_state()
     if stored[1] == model:
@@ -158,10 +153,8 @@ def clear_stored_download_pending(model: str) -> bool:
     """Retire the pending marker for ``model`` once its weights are on disk.
 
     Nothing else clears it: the picker re-resolves after a transfer but does not
-    save again, so without this the marker outlives the download it described and
-    pins that model cache-only forever. A later eviction then reads as "not
-    downloaded yet" and only re-picking the model would recover. Callers are the
-    loaders, at the point where they have just proven the cache is complete.
+    save again, so the marker would outlive the download and pin the model
+    cache-only forever. Callers are the loaders, once the cache is proven complete.
     """
     stored = _get_stored_state()
     if stored[1] != model or not stored[4]:
@@ -175,15 +168,13 @@ def clear_stored_download_pending(model: str) -> bool:
         "download_pending": True,
     }
     # Conditional, not a plain upsert: a save for another model committing between
-    # the read above and this write would otherwise be reverted, putting this
-    # model's resolution back beside the other one's override and leaving that
-    # model to re-derive a backend and a companion repo it never resolved.
+    # the read and this write would otherwise be reverted onto this resolution.
     if not compare_and_set_app_setting(
         EMBEDDING_RESOLUTION_SETTING_KEY, expected, {**expected, "download_pending": False}
     ):
         return False
-    # The memo has to retire with the record, or a job pinned to this model keeps
-    # reading pending=True from it and stays cache-only after the download landed.
+    # Retire the memo with the record, or a pinned job keeps reading pending=True
+    # and stays cache-only after the download landed.
     _remember_resolution(model, (stored[0], stored[1], stored[2], stored[3], False))
     _invalidate_cache()
     return True

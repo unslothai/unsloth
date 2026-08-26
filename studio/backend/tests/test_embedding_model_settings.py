@@ -160,10 +160,8 @@ def test_a_concurrent_save_is_not_reverted_by_a_late_pending_clear(settings_stor
 
 
 def test_a_pinned_jobs_resolved_repo_survives_a_save_for_another_model(settings_store, monkeypatch):
-    """There is one stored resolution record, so saving B takes A's repo away
-    while a linked-folder job pinned to A is still ingesting. Without the memo its
-    identity moves to the derived A-GGUF name mid-run, splitting one document set
-    across two vector-space tags."""
+    """One stored record, so saving B takes A's repo away while a job pinned to A
+    is still ingesting, moving its identity to the derived A-GGUF mid-run."""
     monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
     ems._resolved_gguf_memo.clear()
     from core.rag import config
@@ -210,10 +208,9 @@ def test_a_reset_drops_the_remembered_repo(settings_store, monkeypatch):
 def test_a_pinned_jobs_backend_and_pending_survive_a_save_for_another_model(
     settings_store, monkeypatch
 ):
-    """On an auto CPU install a model with no GGUF resolves to sentence-transformers.
-    Losing that record when another model is saved dropped a still-running job for
-    it back onto the hardware default, which then failed looking for GGUF weights;
-    losing the pending marker re-enabled the implicit download the picker replaces."""
+    """On an auto CPU install a model with no GGUF resolves to
+    sentence-transformers; losing that record drops a still-running job onto the
+    hardware default, and losing the marker re-enables the implicit download."""
     monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
     ems._resolved_gguf_memo.clear()
 
@@ -238,8 +235,8 @@ def test_a_pinned_jobs_backend_and_pending_survive_a_save_for_another_model(
 
 
 def test_retiring_the_pending_marker_retires_it_in_the_memo_too(settings_store, monkeypatch):
-    """Otherwise a job pinned to this model keeps reading pending=True from the
-    memo and stays cache-only after the download landed."""
+    """Or a pinned job keeps reading pending=True and stays cache-only after the
+    download landed."""
     monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
     ems._resolved_gguf_memo.clear()
 

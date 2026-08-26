@@ -1810,10 +1810,8 @@ class EmbeddingModelResponse(BaseModel):
     is_custom: bool
     # Whether THIS model is held in memory right now, for the status line.
     loaded: bool = False
-    # Whether ANY embedder is resident, for the Unload action. Saving a new model
-    # does not release the old one, so asking only about the selected model left
-    # the previous model's weights (or its llama-server process) resident with no
-    # control to release them.
+    # Whether ANY embedder is resident, for the Unload action: saving a new model
+    # does not release the old one, so the selected model is the wrong question.
     backend_loaded: bool = False
 
 
@@ -2191,10 +2189,9 @@ def _st_backend_available() -> bool:
 def _is_st_weight_name(basename: str) -> bool:
     """Whether a filename is a checkpoint, not just something ending in a suffix.
 
-    ``.bin`` is the loose one: ``tokenizer.bin`` and friends share the extension
-    with real weights, so a directory holding only those looked like a complete
-    model. Same family test the Hub listing already applied; the local probes did
-    not, which is how a partial directory resolved as cached."""
+    ``.bin`` is the loose one: ``tokenizer.bin`` shares the extension with real
+    weights. The Hub listing already applied this family test; the local probes
+    did not, so a partial directory resolved as cached."""
     name = basename.lower()
     for suffix in _ST_WEIGHT_SUFFIXES:
         if not name.endswith(suffix):
@@ -2210,9 +2207,8 @@ def _st_weight_source(model: str, hf_token: Optional[str]) -> Optional[tuple[str
 
     A slashless name such as ``all-MiniLM-L6-v2`` resolves under the
     ``sentence-transformers/`` namespace, which is what the loader's own
-    ``st_repo_id_candidates`` encodes. Probing only the literal id meant the alias
-    reported no weights, the resolve refused it, and a forced save pinned it
-    cache-only: a download that worked before this picker existed.
+    ``st_repo_id_candidates`` encodes. Probing only the literal id refused the
+    alias outright and a forced save then pinned it cache-only.
     """
     from utils.utils import st_repo_id_candidates
 
@@ -2244,10 +2240,9 @@ def _st_weight_files(model: str, hf_token: Optional[str]) -> Optional[list[str]]
 def _cached_snapshot_has_st_weights(model: str) -> bool:
     """Whether the cached snapshot holds a checkpoint ST itself can open.
 
-    ``hf_cache_snapshot_is_loadable`` counts ``.gguf`` as a loadable weight, which
-    is right for the llama backend and wrong here: a cached feature-extraction repo
-    publishing config.json and GGUF only came back cached, skipped the Hub check
-    below, and persisted an ST backend with no checkpoint to load. No network."""
+    ``hf_cache_snapshot_is_loadable`` counts ``.gguf``, which is right for the
+    llama backend and wrong here: a cached GGUF-only repo would come back ready
+    with no checkpoint ST can load. No network."""
     try:
         from utils.utils import hf_cache_snapshot_dir
 
@@ -2286,10 +2281,8 @@ def _safetensors_plan(model: str, hf_token: Optional[str]) -> Optional[tuple[str
     more memory, which beats refusing the model or pulling a stranger's conversion."""
     if not _st_backend_available():
         return None
-    # A complete local snapshot is already the proof the remote listing would
-    # provide. Asking the Hub first meant that offline (HF_HUB_OFFLINE=1, or just
-    # no connectivity) the listing failed and this returned no plan at all, so a
-    # model sitting fully downloaded on disk could not be selected.
+    # A complete local snapshot is the same proof the listing gives, and works
+    # offline, where the listing fails and a downloaded model became unselectable.
     if _cached_snapshot_has_st_weights(model):
         return (model, _cached_st_weight_names(model))
     return _st_weight_source(model, hf_token)
@@ -2348,23 +2341,17 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
         if not is_local_path(model):
             return False
         p = Path(normalize_path(model)).expanduser()
-        # A .gguf is never openable by ST. Existence alone used to be enough, so
-        # an explicit RAG_EMBED_BACKEND=sentence-transformers pointed at a local
-        # GGUF reported "cached, ready" and only failed at the first index. Falling
-        # through instead reaches the no-loadable-weights error, which says so.
+        # ST cannot open a .gguf. Falling through reaches the no-loadable-weights
+        # error rather than reporting it ready and failing at the first index.
         if p.is_file() and p.suffix.lower() == ".gguf":
             return False
         if not p.exists():
             return False
-        # A directory has to hold a checkpoint, not merely exist. A folder with
-        # modules.json and no weights also passes is_embedding_model's local-path
-        # check, so it was reported cached and accepted without force, then failed
-        # at the first index when SentenceTransformer looked for the weights.
+        # A directory has to hold a checkpoint, not merely exist: modules.json
+        # alone also passes is_embedding_model's local-path check.
         if not p.is_dir():
             # SentenceTransformer takes a directory or a repo id, never a bare
-            # checkpoint. A standalone .safetensors used to report cached here, and
-            # a forced save then recorded it with no pending download, so the first
-            # index handed the file path straight to SentenceTransformer.
+            # checkpoint file.
             return False
         return any(_is_st_weight_name(child.name) and child.is_file() for child in p.rglob("*"))
     except Exception:  # noqa: BLE001 - filesystem oddity is a cache miss
@@ -2397,20 +2384,17 @@ def _resolve_embedding_model_plan(
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved, backend = backend, cached = True
             )
-        # A cached snapshot only counts if it holds a checkpoint ST can open. The
-        # shared loadable check accepts .gguf, so a cached GGUF-only repo reported
-        # ready here and skipped the Hub check below entirely.
+        # The shared loadable check accepts .gguf, so a cached GGUF-only repo
+        # would report ready here and skip the Hub check below.
         cached = hf_cache_snapshot_is_loadable(resolved) and _cached_snapshot_has_st_weights(
             resolved
         )
         source = None if cached else _st_weight_source(resolved, token)
         if not cached and source is None:
-            # is_embedding_model gates on the Hub's tags, so a repo tagged for
-            # feature-extraction that publishes only GGUF (or no loadable
-            # checkpoint at all) reaches here and would be offered as a snapshot
-            # download that SentenceTransformer cannot open once it lands. The
-            # llama-to-ST fallback already proves the weights exist before
-            # planning; this path is the one that did not.
+            # is_embedding_model gates on tags, so a feature-extraction repo
+            # publishing no loadable checkpoint reaches here and would be offered
+            # as a download ST cannot open. The llama-to-ST fallback already
+            # proves the weights exist; this path did not.
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved,
                 backend = backend,
@@ -2657,12 +2641,10 @@ def update_embedding_model(
                         "you may be offline)."
                     ),
                 )
-        # The shared resolver already applied the bounded GGUF listing and the
-        # exact destination backend, so PUT and GET cannot disagree. Any plan
-        # error counts, not just the llama ones: is_embedding_model gates on the
-        # Hub's tags, so a feature-extraction repo with no loadable checkpoint
-        # passes that check and used to be persisted here even though the resolve
-        # endpoint had just said this backend cannot load it.
+        # The shared resolver already applied the bounded listing and the exact
+        # destination backend, so PUT and GET cannot disagree. Any plan error
+        # counts, not just llama ones: is_embedding_model gates on tags, so a repo
+        # with no loadable checkpoint passes it and would be persisted anyway.
         if plan.error:
             raise HTTPException(status_code = 409, detail = plan.error)
     trusted_backend = None
@@ -2679,12 +2661,9 @@ def update_embedding_model(
         # first-index download.
         trusted_download_pending = bool(plan.download_repo and not plan.cached)
     else:
-        # Save anyway, over a plan that failed. There is no validated backend or
-        # repo to record, but leaving the marker off let both loaders take their
-        # ordinary uncached path and fetch weights invisibly at the first index,
-        # which is the exact behaviour this picker exists to replace. Cache-only
-        # instead: a model already on disk still indexes, and one that is not
-        # says so rather than starting a silent multi-GB transfer.
+        # Save anyway, over a failed plan: nothing validated to record, but the
+        # marker still has to go on or both loaders take their uncached path and
+        # fetch invisibly at the first index, which this picker exists to replace.
         trusted_download_pending = True
     set_rag_embedding_model(
         model,

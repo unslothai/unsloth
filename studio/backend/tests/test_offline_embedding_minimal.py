@@ -1123,8 +1123,7 @@ def test_an_uncached_model_online_still_loads_by_repo_id(monkeypatch):
 
 def test_a_module_declared_but_absent_makes_the_snapshot_incomplete(monkeypatch, tmp_path):
     """Only module roots already carrying weights were validated, so a snapshot
-    missing 0_Transformer entirely still passed on a complete 2_Dense, and the
-    loader was then pinned to a local snapshot it cannot load."""
+    missing 0_Transformer entirely passed on a complete 2_Dense."""
     from utils import utils
 
     snapshot = tmp_path / "snap"
@@ -1148,10 +1147,9 @@ def test_a_module_declared_but_absent_makes_the_snapshot_incomplete(monkeypatch,
 
 
 def test_an_eviction_between_the_check_and_the_snapshot_keeps_the_marker(monkeypatch):
-    """The marker was retired off the loadable check alone, so a cache eviction
-    landing between that check and hf_cache_snapshot_dir cleared it AND raised,
-    and the next indexing attempt was free to reach the Hub: exactly the silent
-    redownload the marker exists to prevent."""
+    """Retired off the loadable check alone, an eviction landing before
+    hf_cache_snapshot_dir cleared the marker AND raised, freeing the next attempt
+    to reach the Hub."""
     from core.rag import embeddings
     import utils.embedding_model_settings as ems
     import utils.utils as utils

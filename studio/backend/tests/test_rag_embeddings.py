@@ -872,9 +872,8 @@ def test_the_token_counter_follows_an_unloaded_sentence_transformer(monkeypatch)
 
 
 def test_a_local_gguf_selects_llama_even_on_a_gpu_box(monkeypatch, tmp_path):
-    """_resolve_auto answers sentence-transformers whenever a GPU is present, so
-    a GPU box pointed at a local .gguf planned an ST load of a GGUF file: resolve
-    called it cached and ready, and the load failed at the first index."""
+    """_resolve_auto answers sentence-transformers whenever a GPU is present, so a
+    GPU box pointed at a local .gguf planned an ST load of a GGUF file."""
     gguf = tmp_path / "embed.gguf"
     gguf.write_bytes(b"GGUF")
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
@@ -918,10 +917,9 @@ def test_an_explicit_backend_is_not_overridden_by_a_local_gguf(monkeypatch, tmp_
 
 
 def test_the_st_probe_warms_the_pinned_model_not_the_live_setting(monkeypatch):
-    """_get_backend resolves for the pinned model, but the ST probe warmed
-    model_name=None, which reads the live setting. A job pinned to A while
-    Settings had moved to B probed B, so a pending or unloadable B failed the
-    valid A job (or pushed it to llama-server) before its first encode."""
+    """_get_backend resolves for the pinned model, but the probe warmed
+    model_name=None, reading the live setting: a job pinned to A probed B once
+    Settings moved, failing the valid A job before its first encode."""
     warmed = []
 
     class _Probe:
@@ -942,11 +940,9 @@ def test_the_st_probe_warms_the_pinned_model_not_the_live_setting(monkeypatch):
 
 
 def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatch, tmp_path):
-    """The gate ran on the repo id before load_target was chosen. When the cache
-    holds an older revision than the Hub's current one, that scanned a commit the
-    load never opens, so an unsafe pickle present only in the cached revision
-    passed. evaluate_file_security recovers the repo and exact commit from a
-    canonical snapshot path, so it has to be given that path."""
+    """On the repo id the gate scanned the Hub's current commit while the load
+    opened an older cached one, so a pickle present only there passed.
+    evaluate_file_security recovers repo and commit from a snapshot path."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     scanned = []
@@ -989,9 +985,8 @@ def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatc
 
 
 def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch):
-    """_get_backend holds _backend_lock across the whole ST construction and _get
-    holds _lock across the model load, so a probe that took either made GET, PUT,
-    reset and unload on this setting wait out an entire load."""
+    """Both locks are held across a whole model load, so a probe taking either
+    made GET, PUT, reset and unload wait it out."""
     import threading
 
     embeddings._reset_backend()
@@ -1014,10 +1009,8 @@ def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch):
 
 
 def test_a_dead_llama_process_is_not_reported_as_loaded(monkeypatch):
-    """The subprocess can exit or be reaped between requests while the backend
-    object keeps its _model_repo, so the repo match alone reported a dead server
-    as resident. With the settings poll added this round, that showed the model as
-    Loaded and offered Unload until some later request self-healed the process."""
+    """The object keeps _model_repo after the subprocess exits, so the repo match
+    alone called a dead server resident and offered Unload for it."""
     alive = {"value": True}
     backend = SimpleNamespace(
         _model_repo = "org/resident-GGUF", _process_alive = lambda: alive["value"]

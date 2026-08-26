@@ -142,10 +142,9 @@ test("the action slot offers Download or Unload, not Reset to default", () => {
     "reset is reachable by picking the default in the list",
   );
   assert.match(SECTION, /settings\.general\.rag\.unload/);
-  // Unload is gated on backendLoaded, not loaded, and sits outside the
-  // Download/Save-anyway chain: saving a new model does not release the old one,
-  // so while an uncached pick shows Download the previous model can still be
-  // resident, and the only control that frees it was unreachable.
+  // Gated on backendLoaded, not loaded, and outside the Download chain: saving a
+  // new model does not release the old one, so the control that frees the
+  // previous model was unreachable while Download showed.
   assert.match(SECTION, /embeddingModel\?\.backendLoaded \? \(/);
   assert.ok(
     !SECTION.includes("): embeddingModel?.loaded ? ("),
@@ -323,10 +322,8 @@ test("a force save re-resolves even though the model string did not change", () 
 });
 
 test("the configured default stays reachable when the listing drops it", () => {
-  // The empty query is scoped to `unsloth`, so a RAG_EMBEDDING_MODEL naming a
-  // private repo, another owner's repo or a local path never appeared as a row.
-  // This PR also removed the "Reset to default" button, so getting back to it
-  // meant retyping the exact value into a field that no longer exists.
+  // The empty query is scoped to `unsloth`, so a private, other-owner or local
+  // default had no row, and "Reset to default" is gone.
   assert.match(PICKER, /rows\.push\(\{ id: fallback, sizeBytes: null \}\)/);
   assert.match(PICKER, /const fallback = defaultModel\?\.trim\(\)/);
   // A stale memo would pin the row to whatever the default was on first render.
@@ -336,10 +333,9 @@ test("the configured default stays reachable when the listing drops it", () => {
 });
 
 test("backend residency is re-read, not just loaded once on mount", () => {
-  // An already-running document job reaching its first encode makes a backend
-  // resident with no settings mutation, and the store loads only on mount, so
-  // Unload stayed hidden and the status stayed "On device" for as long as the tab
-  // was open. There is no lifecycle event to subscribe to, so this re-reads.
+  // A running job reaching its first encode makes a backend resident with no
+  // settings mutation, and the store loads only on mount. No lifecycle event to
+  // subscribe to, so this re-reads.
   assert.match(SECTION, /const RESIDENCY_POLL_MS = \d+;/);
   assert.match(SECTION, /window\.setInterval\(refresh, RESIDENCY_POLL_MS\)/);
   // A hidden tab must not poll, and must catch up the moment it is shown.
@@ -350,9 +346,8 @@ test("backend residency is re-read, not just loaded once on mount", () => {
 });
 
 test("the on-device dot follows the resolved repo, not the displayed id", () => {
-  // The inventory records what was fetched, not what was picked: llama-server
-  // opens the -GGUF companion and a slashless alias resolves under the canonical
-  // namespace, so an exact-id lookup left the dot off a fully downloaded model.
+  // The inventory records what was fetched, not what was picked, so an exact-id
+  // lookup left the dot off a fully downloaded model.
   assert.match(PICKER, /export function cachedRepoCandidates\(model: string\): string\[\]/);
   assert.match(PICKER, /`\$\{id\}-GGUF`/);
   assert.match(PICKER, /`sentence-transformers\/\$\{id\}`/);

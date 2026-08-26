@@ -77,9 +77,9 @@ def test_uncached_sentence_transformers_plan_reports_snapshot_size(client, monke
 
 
 def test_a_repo_with_no_loadable_checkpoint_is_refused_not_offered(client, monkeypatch):
-    """`is_embedding_model` gates on the Hub's tags, so a feature-extraction repo
-    publishing only GGUF reaches the direct sentence-transformers branch. Offering
-    it as a snapshot download ends in a transfer SentenceTransformer cannot open."""
+    """A feature-extraction repo publishing only GGUF passes the tag gate and
+    reaches the direct ST branch, where it would be offered as a download ST
+    cannot open."""
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
     monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
     import utils.utils as utils
@@ -643,11 +643,9 @@ def test_the_token_is_a_header_not_a_query_parameter(client, monkeypatch):
 def test_a_local_gguf_is_not_reported_as_a_ready_sentence_transformers_model(
     client, monkeypatch, tmp_path
 ):
-    """The presence probe accepted any existing local path, so with an explicit
-    RAG_EMBED_BACKEND=sentence-transformers a local .gguf came back cached and
-    ready and only failed at the first index. Under `auto` the backend resolver
-    now sends it to llama-server; this covers the explicit setting, where the
-    no-loadable-weights error is the honest answer."""
+    """The presence probe accepted any existing path. `auto` now routes a local
+    .gguf to llama-server; this covers an explicit sentence-transformers setting,
+    where the no-loadable-weights error is the honest answer."""
     gguf = tmp_path / "embed.gguf"
     gguf.write_bytes(b"GGUF")
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
@@ -669,10 +667,8 @@ def test_a_local_gguf_is_not_reported_as_a_ready_sentence_transformers_model(
 
 
 def test_a_cached_gguf_only_repo_is_not_reported_as_a_ready_st_model(client, monkeypatch, tmp_path):
-    """hf_cache_snapshot_is_loadable counts .gguf as a loadable weight, which is
-    right for the llama backend and wrong here: a cached feature-extraction repo
-    holding config.json and GGUF only came back cached, skipped the Hub weight
-    check and persisted an ST backend with no checkpoint to load."""
+    """hf_cache_snapshot_is_loadable counts .gguf, right for llama and wrong here:
+    a cached GGUF-only repo came back ready, skipping the Hub weight check."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     (snapshot / "config.json").write_text("{}")
@@ -699,10 +695,8 @@ def test_a_cached_gguf_only_repo_is_not_reported_as_a_ready_st_model(client, mon
 
 
 def test_a_cached_safetensors_model_is_selectable_offline(client, monkeypatch, tmp_path):
-    """On an auto install the llama path finds no GGUF and falls through to the
-    safetensors fallback, which proved the weights only through the remote
-    listing. Offline that listing fails, so a model sitting fully downloaded on
-    disk could not be selected at all."""
+    """The safetensors fallback proved weights only through the remote listing, so
+    offline a fully downloaded model could not be selected at all."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     (snapshot / "config.json").write_text("{}")
@@ -759,10 +753,9 @@ def test_a_local_dir_without_weights_is_not_already_present(client, monkeypatch,
 
 
 def test_a_slashless_alias_resolves_under_the_sentence_transformers_namespace(client, monkeypatch):
-    """SentenceTransformer resolves a slashless name like all-MiniLM-L6-v2 under
-    sentence-transformers/, which is what the loader's own st_repo_id_candidates
-    encodes. Probing only the literal id made the alias report no weights, so the
-    resolve refused a download that worked before this picker existed."""
+    """A slashless name resolves under sentence-transformers/, as the loader's own
+    st_repo_id_candidates encodes. Probing only the literal id refused a download
+    that worked before this picker existed."""
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
     listed = []
 
@@ -786,9 +779,7 @@ def test_a_slashless_alias_resolves_under_the_sentence_transformers_namespace(cl
 
 
 def test_a_bare_checkpoint_file_is_not_a_local_sentence_transformer(client, monkeypatch, tmp_path):
-    """SentenceTransformer takes a directory or a repo id, never a bare file. A
-    standalone .safetensors reported cached, and a forced save recorded it with no
-    pending download, so the first index handed the file path straight to it."""
+    """SentenceTransformer takes a directory or a repo id, never a bare file."""
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
     monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
     import utils.utils as utils
@@ -806,8 +797,7 @@ def test_a_bare_checkpoint_file_is_not_a_local_sentence_transformer(client, monk
 
 def test_a_tokenizer_bin_is_not_mistaken_for_a_checkpoint(client, monkeypatch, tmp_path):
     """.bin is the loose suffix: tokenizer.bin shares it with real weights, so a
-    directory holding only modules.json and tokenizer.bin resolved as cached and
-    passed is_embedding_model's local marker check, then failed at the first index."""
+    directory holding only that beside modules.json resolved as cached."""
     monkeypatch.setattr(settings, "_llama_backend_active", lambda *_: False)
     monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
     import utils.utils as utils

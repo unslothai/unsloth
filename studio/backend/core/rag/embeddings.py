@@ -466,11 +466,9 @@ def _get(model_name: str | None = None):
                     )
                 snapshot = hf_cache_snapshot_dir(name)
                 if snapshot is not None and download_pending:
-                    # Retired only once the snapshot path is in hand. Clearing it
-                    # off the loadable check alone meant an eviction landing in
-                    # between cleared the marker AND raised below, and the next
-                    # attempt was free to reach the Hub: the silent redownload the
-                    # marker exists to prevent.
+                    # Only once the snapshot path is in hand: off the loadable check
+                    # alone, an eviction in between cleared the marker AND raised,
+                    # freeing the next attempt to reach the Hub.
                     try:
                         from utils.embedding_model_settings import (
                             clear_stored_download_pending,
@@ -492,13 +490,11 @@ def _get(model_name: str | None = None):
                     )
                 elif _st_accepts_local_files_only(SentenceTransformer):
                     st_kwargs["local_files_only"] = True
-            # Scan what is actually about to be deserialized, which is why this runs
-            # after load_target is settled rather than on the repo id. When the cache
-            # holds an older revision than the Hub's current one, scanning `name`
-            # checked a commit this load never opens, and an unsafe pickle present
-            # only in the cached revision passed. evaluate_file_security recovers the
-            # repo id and exact commit from a canonical snapshot path, and falls back
-            # to a local fail-closed inspection when the Hub cannot answer.
+            # After load_target is settled, so this scans what is about to be
+            # deserialized: on the repo id it checked the Hub's current commit while
+            # the load opened an older cached one. evaluate_file_security recovers
+            # the repo and exact commit from a snapshot path, and fails closed
+            # locally when the Hub cannot answer.
             _guard_model_security(load_target, local_only)
             with _quiet_transformers_load() as report:
                 # The re-emit runs in finally: a load that raises after transformers
@@ -670,8 +666,8 @@ def _resolve_auto() -> str:
 def _model_is_local_gguf(model: str | None) -> bool:
     """Whether ``model`` names a local .gguf file, or a folder holding one.
 
-    Gated on ``is_local_path`` first so a plain repo id costs no filesystem walk
-    on the hot ``_get_backend`` path."""
+    Gated on ``is_local_path`` first: a plain repo id costs no filesystem walk on
+    the hot ``_get_backend`` path."""
     if not model:
         return False
     try:
@@ -690,15 +686,12 @@ def _resolve_auto_for_model(model_name: str | None = None) -> str:
     """``auto``, but honouring the backend recorded for the saved model.
 
     An embedder with no GGUF still runs on sentence-transformers, so the picker
-    records that choice rather than refusing the model; without this the hardware
-    default would send it to llama-server, which has nothing to open."""
+    records that choice; the hardware default would send it to llama-server,
+    which has nothing to open."""
     model = model_name or config.effective_embedding_model()
-    # A local .gguf is not a sentence-transformers artifact under any hardware.
-    # _resolve_auto answers "sentence-transformers" whenever a GPU is present, so
-    # without this a GPU box pointed at /models/embed.gguf planned an ST load of a
-    # GGUF: the resolve endpoint called it cached and ready, and the load failed at
-    # the first index. Only ``auto`` consults this, so an explicit
-    # RAG_EMBED_BACKEND is still honoured verbatim.
+    # A local .gguf is not a sentence-transformers artifact under any hardware,
+    # and _resolve_auto answers "sentence-transformers" whenever a GPU is present.
+    # Only ``auto`` consults this, so an explicit RAG_EMBED_BACKEND still wins.
     if _model_is_local_gguf(model):
         return "llama-server"
     try:
@@ -787,9 +780,8 @@ def _build_st_backend_or_fallback(model_name: str | None = None):
     this never mixes spaces. Re-raises if no embedder can start.
 
     ``model_name`` is the model the caller pinned. Warming ``None`` reads the live
-    setting instead, so a job pinned to A while Settings had moved to B probed B:
-    a pending or unloadable B failed the valid A job, or pushed it to llama-server,
-    before its first encode."""
+    setting, so a job pinned to A probed B once Settings moved, failing the valid
+    A job before its first encode."""
     backend = _SentenceTransformersBackend()
     try:
         backend.warm(model_name = model_name)
@@ -955,19 +947,17 @@ def _reset_backend() -> None:
 def backend_is_loaded(model_name: str | None = None) -> bool:
     """Whether ``model_name`` is resident, or any embedder when omitted.
 
-    Deliberately lock-free. ``_get_backend`` holds ``_backend_lock`` across the
-    whole ST construction, and ``_get`` holds ``_lock`` across the model load, so
-    taking either here made GET, PUT, reset and unload on this setting wait out an
-    entire model load. A status probe wants a snapshot, and both reads are single
-    attribute loads: the answer is either the pre-load or post-load value, and both
-    are true answers to "is something resident right now".
+    Deliberately lock-free: ``_backend_lock`` and ``_lock`` are both held across a
+    whole model load, so taking either here made GET, PUT, reset and unload wait it
+    out. Both reads are single attribute loads, and the pre- or post-load value is
+    equally true for "is something resident right now".
     """
     backend = _backend
     if backend is None:
         return False
     if model_name is None:
-        # Same reason as below: a llama backend whose process is gone is not
-        # resident, whichever model was asked about.
+        # A llama backend whose process is gone is not resident, whichever model
+        # was asked about.
         if _is_llama_backend(backend):
             try:
                 return bool(backend._process_alive())
@@ -978,9 +968,8 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
         return _model is not None and _name == model_name
     if _is_llama_backend(backend):
         try:
-            # The subprocess can exit or be reaped between requests while the
-            # backend object keeps its _model_repo, so the repo match alone
-            # reported a dead server as resident and offered Unload for it.
+            # The object keeps _model_repo after the subprocess exits or is
+            # reaped, so the repo match alone would call a dead server resident.
             if not backend._process_alive():
                 return False
             return backend._model_repo == config.effective_gguf_repo_for_embedding_model(model_name)

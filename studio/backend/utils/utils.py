@@ -620,12 +620,10 @@ def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
             # unrelated .incomplete blob left under the repository by another
             # revision or scoped GGUF job.
             return download_manifest.verify_against_disk(manifest, snapshot).ok
-        # No manifest: caches predating managed downloads have none, and every
-        # model already on disk before this build is one of them. Judge THIS
-        # snapshot's own links, not every blob in a cache directory it shares --
-        # a stray .incomplete from another revision or a scoped GGUF job used to
-        # condemn a model that was fully present, which then persisted as a
-        # pending download and refused to index.
+        # No manifest: every model on disk before this build is such a cache.
+        # Judge THIS snapshot's own links, not every blob in the cache directory it
+        # shares, or a stray .incomplete from another revision condemns a model
+        # that is fully present.
         if snapshot_has_broken_symlinks(snapshot):
             return False
 
@@ -651,12 +649,11 @@ def hf_cache_snapshot_is_loadable(model_name: str) -> bool:
                 if relative.is_absolute() or ".." in relative.parts:
                     continue
                 root = snapshot.joinpath(*relative.parts)
-                # A module the manifest declares but the snapshot does not have at
-                # all is a torn download, whatever the other modules hold. Only
-                # roots carrying weights were checked, so a snapshot missing
-                # 0_Transformer entirely still passed on a complete 2_Dense and the
-                # loader was then pinned to it. Existence is the whole test here:
-                # config-only modules such as Pooling have no weight family.
+                # A declared module the snapshot does not have at all is a torn
+                # download, whatever the others hold: checking only roots that
+                # carry weights passed a snapshot missing 0_Transformer entirely.
+                # Existence is the whole test, since config-only modules such as
+                # Pooling have no weight family.
                 if root != snapshot and not root.is_dir():
                     return False
                 if any(path == root or root in path.parents for path in weights):

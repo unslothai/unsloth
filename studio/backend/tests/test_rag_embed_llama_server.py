@@ -1397,9 +1397,8 @@ def test_the_planned_variant_landing_retires_the_pending_marker(monkeypatch, tmp
 
 
 def test_a_pinned_request_serves_the_pinned_models_gguf_not_the_live_setting(monkeypatch):
-    """One subprocess serves one GGUF. The lifecycle read the live setting, so a
-    job pinned to A kept tagging its vectors as A while this served B's weights
-    the moment Settings changed: mislabelled vectors, silently."""
+    """One subprocess serves one GGUF, and the lifecycle read the live setting, so
+    a job pinned to A served B's weights while still tagging its vectors A."""
     from core.rag import config
 
     b = LlamaServerBackend()
@@ -1427,8 +1426,8 @@ def test_a_pinned_request_serves_the_pinned_models_gguf_not_the_live_setting(mon
 
 
 def test_resolution_follows_the_pinned_model(monkeypatch, tmp_path):
-    """_resolve_model_path derived both the repo and the local-path probe from the
-    live setting, so the pinned model never reached either."""
+    """_resolve_model_path derived the repo and the local-path probe from the live
+    setting, so the pinned model reached neither."""
     from core.rag import config
 
     gguf = tmp_path / "pinned.gguf"
@@ -1455,9 +1454,8 @@ def test_resolution_follows_the_pinned_model(monkeypatch, tmp_path):
 
 
 def test_a_swap_cannot_land_between_readiness_and_the_request(monkeypatch):
-    """_ensure_ready(A) returning and A's POST landing were two steps, so another
-    model's swap could kill A's server and start B's in between; A then posted to
-    B and stored B's vectors under A's identity."""
+    """Readiness and the POST were two steps, so a swap in between landed A's
+    request on B's server, storing B's vectors under A's identity."""
     import threading
 
     b = LlamaServerBackend()

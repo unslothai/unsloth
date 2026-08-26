@@ -49,13 +49,11 @@ type EmbeddingModelPickerProps = {
 /** Repo ids an on-device copy of `model` can be filed under.
  *
  * The inventory records what was fetched, not what was picked, and the two differ
- * by exactly the two conventions the backend resolves through: llama-server opens
- * the `-GGUF` companion, and a slashless sentence-transformers alias resolves
- * under the canonical namespace. Comparing the displayed id straight against raw
- * inventory ids left the dot off even with the model fully downloaded.
+ * by the conventions the backend resolves through: llama-server opens the `-GGUF`
+ * companion, and a slashless alias resolves under `sentence-transformers/`.
  *
- * An off-convention mirror the server resolved is not derivable here and still
- * shows no dot; the row's own status line is what covers the selected model. */
+ * An off-convention mirror is not derivable here and still shows no dot; the
+ * row's own status line covers the selected model. */
 export function cachedRepoCandidates(model: string): string[] {
   const id = model.trim();
   if (!id) return [];
@@ -101,16 +99,15 @@ export function EmbeddingModelPicker({
       id: result.id,
       sizeBytes: result.estimatedSizeBytes ?? result.curatedSizeBytes ?? null,
     }));
-    // Keep the saved model reachable when the listing drops it (a local path,
-    // or a repo the query does not match).
+    // Keep the saved model reachable when the listing drops it: a local path, or
+    // a repo the query does not match.
     const selected = value.trim();
     if (selected && !rows.some((row) => row.id === selected)) {
       rows.push({ id: selected, sizeBytes: null });
     }
-    // The configured default the same way. The empty search is scoped to
-    // `unsloth`, so a RAG_EMBEDDING_MODEL naming a private repo, another owner's
-    // repo or a local path was absent from the list; with the old "Reset to
-    // default" button gone, getting back to it meant retyping it exactly.
+    // The configured default the same way: the empty search is scoped to
+    // `unsloth`, so a private, other-owner or local default had no row, and the
+    // old "Reset to default" button is gone.
     const fallback = defaultModel?.trim();
     if (fallback && !rows.some((row) => row.id === fallback)) {
       rows.push({ id: fallback, sizeBytes: null });

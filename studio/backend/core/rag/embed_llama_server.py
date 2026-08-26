@@ -112,11 +112,10 @@ class LlamaServerBackend:
         # re-enter on a mid-probe model change, which would self-deadlock a
         # non-reentrant lock held across the probe.
         self._dim: int | None = None
-        # One subprocess serves one GGUF, so readiness and the request that relies
-        # on it have to be one indivisible step. Without this, _ensure_ready(A)
-        # could return, another model's swap could kill A's server and start B's,
-        # and A's POST would land on B, storing B's vectors under A's identity.
-        # Reentrant because dim() -> encode() -> _post() re-enters on one thread.
+        # One subprocess serves one GGUF, so readiness and the request relying on
+        # it must be indivisible: otherwise a swap between them lands A's POST on
+        # B's server, storing B's vectors under A's identity. Reentrant because
+        # dim() -> encode() -> _post() re-enters on one thread.
         self._serve_lock = threading.RLock()
         self._model_path: str | None = None
         # Effective GGUF repo the cached path/dim belong to; a Settings change
@@ -429,9 +428,8 @@ class LlamaServerBackend:
         returning its local path. Re-resolves when the effective repo changed (a
         custom model was saved in Settings).
 
-        ``model_name`` is the model the caller pinned. Reading the live setting
-        here instead meant a job pinned to A kept tagging its vectors as A while
-        this resolved B's weights the moment Settings changed."""
+        ``model_name`` is the model the caller pinned; the live setting would
+        resolve B's weights for a job still tagging its vectors as A."""
         model = model_name or config.effective_embedding_model()
         # Captured once: if the setting changes mid-download, the path must stay
         # tagged with the repo it was resolved FOR, so _current() sees the new
@@ -827,9 +825,9 @@ class LlamaServerBackend:
         Double-checked so the current path takes no lock; self-heals after the
         chat reaper kills us and re-resolves after a Settings model change.
 
-        One subprocess serves one GGUF, so a request pinned to a model the live
-        server is not serving respawns onto it rather than silently answering
-        from the other model's weights."""
+        One subprocess serves one GGUF, so a request pinned to a model the server
+        is not serving respawns onto it rather than answering from the wrong
+        weights."""
         if self._current(model_name):
             return
         with self._lifecycle_lock:
@@ -917,9 +915,8 @@ class LlamaServerBackend:
         last_exc: Exception | None = None
         for attempt in range(2):
             with self._serve_lock:
-                # Held across readiness AND the request: a swap for another model
-                # can only happen between whole requests, never between the check
-                # and the POST that depends on it.
+                # Held across readiness AND the request, so a swap can only land
+                # between whole requests.
                 self._ensure_ready(model_name)
                 try:
                     resp = self._client.post(f"{self._base_url}{path}", json = payload)
@@ -945,9 +942,8 @@ class LlamaServerBackend:
         normalize = True,
     ):
         """Embed texts -> (N, dim) float32. ``model_name`` pins which GGUF serves
-        the request, so a job that started on one model is not silently answered
-        from another after a Settings change. Normalizes in Python to match the ST
-        backend."""
+        the request, so a Settings change cannot answer it from another model.
+        Normalizes in Python to match the ST backend."""
         with self._operation():
             return self._encode_active(texts, normalize = normalize, model_name = model_name)
 

@@ -244,12 +244,10 @@ def effective_gguf_repo_for_embedding_model(model: str) -> str:
         from utils.embedding_model_settings import get_stored_gguf_repo, remembered_gguf_repo
         stored = get_stored_gguf_repo(model)
         if stored is None:
-            # There is one stored resolution record, so saving another model
-            # takes this one's repo away while a job pinned to it is still
-            # ingesting. Falling straight through to the derived name would move
-            # that job's identity mid-run and split one document set across two
-            # vector-space tags. The memo is what this process last saw resolved
-            # for this exact model.
+            # One stored record, so saving another model takes this one's repo
+            # away while a job pinned to it is still ingesting; the derived name
+            # would move that job's identity mid-run and split one document set
+            # across two tags. The memo is what this process last saw for it.
             stored = remembered_gguf_repo(model)
     except Exception:  # noqa: BLE001 - store unavailable: fall back to the convention
         stored = None

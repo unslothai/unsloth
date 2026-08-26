@@ -6,11 +6,10 @@
 // download reads as 200 MB/s with 20s left. appendSample cannot save it either,
 // since a resumed model can start above where the last one stopped.
 //
-// Voice settings used to keep its own estimator and reset it by comparing the
-// watched model name. That copy is gone; the shared download manager owns the
-// only estimator now, and it gets the same property structurally instead --
-// samples live on the per-job runtime, and another model is another job. The
-// second test still pins what the reset is worth.
+// Voice settings used to keep its own estimator, reset by watching the model
+// name. That copy is gone: the shared manager owns the only estimator and gets
+// the property structurally, since samples live on the per-job runtime and
+// another model is another job. The second test pins what the reset is worth.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -34,8 +33,7 @@ test("each download's samples belong to its own job, not to the tab", () => {
     new URL("../src/features/hub/download-manager/poll-loop.ts", import.meta.url),
     "utf8",
   );
-  // Created empty on the per-job runtime, so a second model cannot inherit the
-  // first one's samples however fast the switch is.
+  // Empty per job, so a second model cannot inherit the first one's samples.
   assert.ok(
     /speedSamples:\s*\[\]/.test(pollLoopSource),
     "each job runtime should start with its own empty sample buffer",

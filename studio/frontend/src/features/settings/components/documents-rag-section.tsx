@@ -41,8 +41,8 @@ const EMBEDDING_DOWNLOAD_SCOPE = "rag-embedding";
  * is marked pending by the server and offered as a download. Its loader remains
  * cache-only, so closing or cancelling cannot turn into a first-index transfer.
  */
-// Whether an embedder is resident is not a function of anything this component
-// does, so it is re-read on a timer rather than only on a settings mutation.
+// Residency is not a function of anything this component does, so it is polled
+// rather than read only on a settings mutation.
 const RESIDENCY_POLL_MS = 5000;
 
 export function DocumentsRagSection(): ReactElement {
@@ -80,12 +80,10 @@ export function DocumentsRagSection(): ReactElement {
     void useEmbeddingModelStore.getState().load();
   }, []);
 
-  // Residency changes without a settings mutation: an already-running document
-  // job reaching its first encode makes a backend resident, and the store loads
-  // only on mount, so Unload stayed hidden and the status stayed "On device" for
-  // as long as the tab was open. There is no lifecycle event to subscribe to
-  // here, so re-read while this control is visible. Skipped on a hidden tab, and
-  // refreshed the moment it comes back, so a background tab costs nothing.
+  // Residency changes with no settings mutation: a running job reaching its
+  // first encode makes a backend resident, and the store loads only on mount.
+  // No lifecycle event to subscribe to, so re-read while visible; a hidden tab
+  // does not poll and catches up when it returns.
   useEffect(() => {
     const refresh = () => {
       if (document.hidden) return;
@@ -205,11 +203,9 @@ export function DocumentsRagSection(): ReactElement {
     setResolution(null);
     try {
       if (force) {
-        // A force save can leave the model string exactly as it was, so the
-        // savedModel effect does not re-run and nothing restores the plan this
-        // call cleared. The backend still marks an uncached model pending, so
-        // without a re-resolve the row offers no Download while the loader
-        // refuses to index. Ask for one explicitly.
+        // A force save can leave the model string unchanged, so the savedModel
+        // effect does not re-run and nothing restores the plan this call cleared,
+        // leaving no Download offered while the loader refuses to index.
         if (await persist(trimmed, null, true, reservation)) {
           setResolveNonce((n) => n + 1);
         }
@@ -268,8 +264,8 @@ export function DocumentsRagSection(): ReactElement {
         );
       } else if (outcome === "conflict") {
         // Not a failure: an earlier partial used a different transport and the
-        // Hub's own card is where it gets resumed. Saying "couldn't start" sends
-        // the user looking for a problem instead of for the row that fixes it.
+        // Hub's own card is where it resumes. "Couldn't start" would send the
+        // user looking for a problem instead of for that row.
         toast.info(t("settings.general.rag.downloadConflict"));
       } else if (outcome === "busy") {
         // The repo is occupied by a sibling transfer, which the downloads panel
@@ -451,10 +447,9 @@ export function DocumentsRagSection(): ReactElement {
                 {t("settings.general.rag.download")}
               </Button>
             ) : null}
-            {/* Not part of the chain above: saving a new model does not release
-                the old one, so while an uncached model shows Download the
-                previous model can still be resident, and the only control that
-                frees it was unreachable. backendLoaded asks about any embedder. */}
+            {/* Outside the chain above: saving a new model does not release the
+                old one, so while Download shows for an uncached pick the previous
+                model can still be resident. backendLoaded asks about any. */}
             {embeddingModel?.backendLoaded ? (
               <Button
                 variant="outline"

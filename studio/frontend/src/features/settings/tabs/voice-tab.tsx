@@ -1059,8 +1059,8 @@ export function VoiceTab() {
                       size="sm"
                       className="h-7 px-2 text-xs"
                       disabled={downloadingThisModel || sttDownloadStarting}
-                      // Restart the download; the sidecar error is sticky until
-                      // a new start(), so re-polling alone never clears it.
+                      // Restart: the sidecar error is sticky until a new
+                      // start(), so re-polling alone never clears it.
                       onClick={() => void beginSttDownload()}
                     >
                       {t("settings.voice.dictation.sttRetry")}
