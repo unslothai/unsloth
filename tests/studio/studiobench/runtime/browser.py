@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 
-# The engine matching the tester's desktop webview family. Studio ships as a Tauri app, so the
+# The engine matching the tester's desktop webview family. Unsloth ships as a Tauri app, so the
 # thing a user actually looks at is a system webview, not the browser they happen to have.
 #   Windows -> WebView2, which is Chromium: `channel="msedge"` is the closest available.
 #   macOS   -> WKWebView, which is WebKit.
@@ -40,7 +40,7 @@ def default_engine() -> tuple[str, dict, str]:
         {},
         (
             "WebKit, A PROXY FOR WebKitGTK: Playwright's webkit is a different "
-            "embedding of the same engine, not the GTK one Studio runs in on Linux"
+            "embedding of the same engine, not the GTK one Unsloth runs in on Linux"
         ),
     )
 

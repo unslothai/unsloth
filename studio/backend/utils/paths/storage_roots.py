@@ -318,8 +318,8 @@ def well_known_model_dirs() -> list[Path]:
 def _setup_cache_env() -> None:
     """Set cache env vars for HuggingFace, uv, and vLLM.
 
-    Explicit Hugging Face environment variables take precedence over Studio's
-    stored location. Studio seeds import-time variables once, while each later
+    Explicit Hugging Face environment variables take precedence over Unsloth's
+    stored location. Unsloth seeds import-time variables once, while each later
     worker receives its own captured cache location.
     """
     root = cache_root()
@@ -330,7 +330,7 @@ def _setup_cache_env() -> None:
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
         # unsloth_zoo defaults this to a bare relative name, which resolves
-        # against the CWD, and the Windows launcher runs Studio with
+        # against the CWD, and the Windows launcher runs Unsloth with
         # WorkingDirectory=%USERPROFILE%, so the cache landed in the user home.
         # Must be set before unsloth_zoo.compiler imports: it reads the value
         # at import time and puts it on sys.path.

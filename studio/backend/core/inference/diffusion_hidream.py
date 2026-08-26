@@ -7,7 +7,7 @@ The HiDream-ai/HiDream-I1-* repos name ``text_encoder_4`` (LlamaForCausalLM) and
 ``tokenizer_4`` in their model_index but do NOT ship the weights: the official example
 loads meta-llama/Meta-Llama-3.1-8B-Instruct separately and passes both components into
 ``HiDreamImagePipeline.from_pretrained``. That upstream repo is Hub-gated (manual
-approval), so Studio loads the open unsloth mirror instead -- byte-identical weights,
+approval), so Unsloth loads the open unsloth mirror instead -- byte-identical weights,
 no license wall at load time, and the unsloth org is already inside the loader's
 non-GGUF trust gate. ``output_hidden_states=True`` matches the official example: the
 pipeline's prompt encoder consumes the Llama hidden states, not the logits.
@@ -25,6 +25,7 @@ HIDREAM_FAMILY_NAME = "hidream-i1"
 
 # Open mirror of the gated meta-llama/Meta-Llama-3.1-8B-Instruct the pipeline expects.
 HIDREAM_LLAMA_REPO = "unsloth/Meta-Llama-3.1-8B-Instruct"
+HIDREAM_LLAMA_BF16_BYTES = 16_060_556_376
 
 
 def hidream_te4_kwargs(
@@ -90,9 +91,16 @@ def hidream_te4_kwargs(
     if fp8_engages and fam is not None:
         from .diffusion_te_prequant import (
             load_prequant_text_encoder,
-            resolve_te_prequant_source,
+            te_prequant_sources_for_base,
         )
-        source = resolve_te_prequant_source(fam, "text_encoder_4", "fp8")
+        source = te_prequant_sources_for_base(
+            fam,
+            HIDREAM_LLAMA_REPO,
+            te_quant_mode = te_quant_mode,
+            target = target,
+            components = ("text_encoder_4",),
+            standalone_component_bases = {"text_encoder_4": HIDREAM_LLAMA_REPO},
+        ).get("text_encoder_4")
         if source is not None:
             encoder = load_prequant_text_encoder(
                 HIDREAM_LLAMA_REPO,
@@ -108,6 +116,7 @@ def hidream_te4_kwargs(
                     "output_hidden_states": True,
                     "output_attentions": True,
                 },
+                local_files_only = local_files_only,
             )
             if encoder is not None:
                 return {"text_encoder_4": encoder, "tokenizer_4": tokenizer_4}

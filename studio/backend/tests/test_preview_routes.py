@@ -4,7 +4,7 @@
 """Security smoke for the public /p preview routes.
 
 Exercises the route layer with a real ``preview_router`` while stubbing the
-expensive model calls (``load_model_gated`` / ``openai_chat_completions``). Covers the
+expensive model calls (``load_model_for_preview`` / ``openai_chat_completions``). Covers the
 public-surface guarantees: HMAC capability gating (a valid ``?k=`` token or
 Bearer credential is required; missing/invalid/wrong-ref tokens 404 before any
 model load), path-traversal rejection, request sanitization (tools / provider
@@ -96,12 +96,13 @@ def client(tmp_path, monkeypatch, captured):
         captured["payload"] = payload
         return {"ok": True}
 
-    monkeypatch.setattr(preview, "load_model_gated", _fake_load_model)
+    monkeypatch.setattr(preview, "load_model_for_preview", _fake_load_model)
     monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
 
     app = FastAPI()
     app.include_router(preview.router, prefix = "/p")
     app.dependency_overrides[preview.get_current_subject] = lambda: "admin"
+    app.dependency_overrides[preview.authenticated_without_credential] = lambda: False
     # raise_server_exceptions=False so a 5xx surfaces as a response, not a throw.
     return TestClient(app, raise_server_exceptions = False)
 
@@ -121,11 +122,17 @@ def test_page_renders_with_csp(client):
     assert "messages: msgs,\n              stream: true," in r.text
 
 
+def test_page_renders_friendly_busy_message(client):
+    response = client.get(f"/p/demorun?k={_sig('demorun')}")
+    assert "Unsloth is currently using another model" in response.text
+
+
 def test_page_escapes_title(tmp_path, monkeypatch, captured):
     outputs = tmp_path / "outputs"
     # Run dir name carries an HTML-special char; the page must escape it.
     _make_run(outputs, name = "a<b")
     _use_test_secret(monkeypatch)
+    monkeypatch.setattr(preview, "get_preview_sharing_enabled", lambda: True)
     from utils.paths import storage_roots as _sr
 
     monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
@@ -177,6 +184,18 @@ def test_list_previews_omits_capability_when_sharing_disabled(client, monkeypatc
     body = r.json()
     # Don't hand out credentials that 404; signal the disabled state instead.
     assert body["sharing_enabled"] is False
+    assert body["data"][0]["key"] is None
+    assert body["data"][0]["share_url"] is None
+
+
+def test_list_previews_omits_capability_for_keyless_caller(client, monkeypatch):
+    monkeypatch.setattr(
+        preview,
+        "list_preview_targets",
+        lambda: [{"ref": "demorun", "is_latest": True}],
+    )
+    client.app.dependency_overrides[preview.authenticated_without_credential] = lambda: True
+    body = client.get("/p").json()
     assert body["data"][0]["key"] is None
     assert body["data"][0]["share_url"] is None
 
@@ -243,6 +262,9 @@ def test_chat_payload_sanitized(client, captured):
             "confirm_tool_calls": True,
             "session_id": "abc",
             "rag_scope": {"project_id": "x"},
+            "enable_thinking": True,
+            "reasoning_effort": "high",
+            "preserve_thinking": True,
         },
     )
     assert r.status_code == 200
@@ -263,6 +285,9 @@ def test_chat_payload_sanitized(client, captured):
     assert p.provider_type is None
     assert p.provider_base_url is None
     assert p.external_model is None
+    assert p.enable_thinking is False
+    assert p.reasoning_effort == "none"
+    assert p.preserve_thinking is False
     # Adapter pinned on for LoRA: a caller can't flip the shared backend to base.
     assert p.use_adapter is True
     # Generation cost capped on this public surface (no override sent -> ceiling).
@@ -281,6 +306,7 @@ def test_merged_checkpoint_strips_use_adapter(tmp_path, monkeypatch, captured):
     (merged / "config.json").write_text(json.dumps({"_name_or_path": "some/base"}))
 
     _use_test_secret(monkeypatch)
+    monkeypatch.setattr(preview, "get_preview_sharing_enabled", lambda: True)
     from utils.paths import storage_roots as _sr
 
     monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
@@ -292,7 +318,7 @@ def test_merged_checkpoint_strips_use_adapter(tmp_path, monkeypatch, captured):
         captured["payload"] = payload
         return {"ok": True}
 
-    monkeypatch.setattr(preview, "load_model_gated", _fake_load)
+    monkeypatch.setattr(preview, "load_model_for_preview", _fake_load)
     monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
 
     app = FastAPI()
@@ -326,7 +352,7 @@ def test_streaming_holds_lock_until_drained(tmp_path, monkeypatch, captured):
     async def _fake_chat(payload, request, subject):
         return StreamingResponse(_gen())
 
-    monkeypatch.setattr(preview, "load_model_gated", _fake_load_model)
+    monkeypatch.setattr(preview, "load_model_for_preview", _fake_load_model)
     monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
 
     async def _run():
@@ -495,3 +521,418 @@ def test_chat_rate_limited_returns_429(client, monkeypatch):
     r = client.post(url, json = body)
     assert r.status_code == 429
     assert r.headers.get("retry-after")
+
+
+# Model-slot ownership regressions.
+import threading
+from types import SimpleNamespace
+
+from fastapi import HTTPException
+
+import routes.inference as inference
+from core.inference import llama_keepwarm
+from models.inference import LoadRequest
+
+
+@pytest.fixture(autouse = True)
+def reset_admitted_inference():
+    with llama_keepwarm._lock:
+        llama_keepwarm._admitted_inference = 0
+    yield
+    with llama_keepwarm._lock:
+        llama_keepwarm._admitted_inference = 0
+
+
+@pytest.fixture
+def slot_state():
+    def _reset():
+        with inference._preview_slot_lock:
+            inference._preview_resident_ident = None
+
+    _reset()
+    yield
+    _reset()
+
+
+@pytest.fixture
+def fake_slot(slot_state, monkeypatch):
+    state = {"ident": None, "loads": [], "load_kwargs": []}
+
+    async def _fake_impl(load_req, fastapi_request, subject, **kwargs):
+        state["loads"].append(load_req.model_path)
+        state["load_kwargs"].append(kwargs)
+        if state.get("fail_load"):
+            state["ident"] = None
+            raise HTTPException(status_code = 500, detail = "load failed")
+        state["ident"] = load_req.model_path
+
+    monkeypatch.setattr(inference, "_load_model_impl", _fake_impl)
+    monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: state["ident"])
+    monkeypatch.setattr(
+        llama_keepwarm, "other_admitted_inference_count", lambda: state.get("busy", 0)
+    )
+    return state
+
+
+def _run_middleware(app, path):
+    mw = llama_keepwarm.LlamaKeepWarmMiddleware(app)
+    scope = {"type": "http", "method": "POST", "path": path}
+    sent = []
+
+    async def _receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def _send(msg):
+        sent.append(msg)
+
+    asyncio.run(mw(scope, _receive, _send))
+    return sent
+
+
+def _reset_keepwarm_counters():
+    llama_keepwarm._pending = 0
+    llama_keepwarm._preview_pending = 0
+    llama_keepwarm._inflight = 0
+    llama_keepwarm._preview_inflight = 0
+
+
+def test_preview_load_refused_when_studio_model_is_loaded(fake_slot):
+    fake_slot["ident"] = "owner-model"
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt"),
+                SimpleNamespace(app = None),
+                "admin",
+            )
+        return exc.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 503
+    assert exc.headers.get("Retry-After")
+    assert fake_slot["loads"] == []
+    assert fake_slot["ident"] == "owner-model"
+
+
+def test_preview_does_not_borrow_studio_owned_lora(fake_slot, tmp_path):
+    checkpoint = tmp_path / "lora-checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "adapter_config.json").write_text("{}", encoding = "utf-8")
+    fake_slot["ident"] = str(checkpoint)
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = str(checkpoint)),
+                SimpleNamespace(app = None),
+                "admin",
+            )
+        return exc.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 503
+    assert fake_slot["loads"] == []
+    assert not inference._is_preview_resident(str(checkpoint))
+
+
+def test_preview_can_swap_out_prior_preview_model(fake_slot):
+    for path in ("/outputs/run/ckpt-a", "/outputs/run/ckpt-b"):
+        asyncio.run(
+            inference.load_model_for_preview(
+                LoadRequest(model_path = path), SimpleNamespace(app = None), "admin"
+            )
+        )
+    assert fake_slot["loads"] == ["/outputs/run/ckpt-a", "/outputs/run/ckpt-b"]
+    assert fake_slot["ident"] == "/outputs/run/ckpt-b"
+
+
+@pytest.mark.parametrize("owner", ["diffusion", "video"])
+def test_preview_load_refused_while_image_or_video_owns_gpu(fake_slot, monkeypatch, owner):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: owner)
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt"),
+                SimpleNamespace(app = None),
+                "admin",
+            )
+        return exc.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 503
+    assert exc.headers.get("Retry-After")
+    assert fake_slot["loads"] == []  # never reached the load, so nothing was evicted
+
+
+def test_preview_maps_atomic_gpu_refusal_to_503(fake_slot, monkeypatch):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: None)
+    swap_notes = []
+    monkeypatch.setattr(llama_keepwarm, "note_preview_swap", lambda: swap_notes.append(True))
+
+    async def _lose_gpu_ownership(*args, **kwargs):
+        assert kwargs["allow_gpu_owner_eviction"] is False
+        raise gpu_arbiter.GpuOwnerBusyError(gpu_arbiter.DIFFUSION)
+
+    monkeypatch.setattr(inference, "_load_model_impl", _lose_gpu_ownership)
+
+    async def _run():
+        with pytest.raises(HTTPException) as excinfo:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt-a"),
+                SimpleNamespace(scope = {"path": "/p/a/v1/chat/completions"}),
+                "admin",
+            )
+        return excinfo.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 503
+    assert "image or video" in exc.detail
+    assert inference._get_preview_resident() is None
+    assert swap_notes == []
+
+
+def test_preview_reload_failure_restores_prior_ownership(slot_state, monkeypatch):
+    resident = {"ident": "/outputs/run/ckpt-A"}
+    monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: resident["ident"])
+    monkeypatch.setattr(llama_keepwarm, "other_admitted_inference_count", lambda: 0)
+    llama_keepwarm._pending = 0
+    llama_keepwarm._preview_pending = 0
+    inference._set_preview_resident("/outputs/run/ckpt-A")  # A is preview-owned
+
+    async def _clear_then_fail(load_req, fastapi_request, subject, **kwargs):
+        inference._set_preview_resident(None)  # mirror _load_model_impl reclaiming slot
+        raise HTTPException(status_code = 500, detail = "spawn failed")  # A still resident
+
+    monkeypatch.setattr(inference, "_load_model_impl", _clear_then_fail)
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt-B"),
+                SimpleNamespace(app = None, scope = {"path": "/p/b/v1/chat/completions"}),
+                "admin",
+            )
+        return exc.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 500
+    assert inference._is_preview_resident("/outputs/run/ckpt-A")
+
+
+def test_cancelled_json_response_does_not_claim_slot(slot_state):
+    import inspect
+    import threading
+
+    src = inspect.getsource(inference.openai_chat_completions)
+    assert src.count("_mark_cancelled_json_response_failed(request, cancel_event)") == 3
+
+    _reset_keepwarm_counters()
+    inference._set_preview_resident("/outputs/run/ckpt")
+
+    async def _app(scope, receive, send):
+        cancelled = threading.Event()
+        cancelled.set()
+        inference._mark_cancelled_json_response_failed(
+            _types.SimpleNamespace(scope = scope), cancelled
+        )
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_app, "/v1/chat/completions")
+    assert inference._is_preview_resident("/outputs/run/ckpt")
+    _reset_keepwarm_counters()
+
+
+def test_queued_preview_does_not_deadlock_studio_switch():
+    from core.inference import llama_keepwarm as kw
+    async def _run():
+        _reset_keepwarm_counters()
+        kw._admitted_inference = 0
+        preview._preview_lock = asyncio.Lock()
+        assert not inference._auto_switch_process_lock.locked()
+
+        studio_holds_gate = asyncio.Event()
+        queued_has_serializer = asyncio.Event()
+        await preview._preview_lock.acquire()
+        kw._note_start(is_preview = True)
+
+        async def _receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def _send(_message):
+            return None
+
+        async def queued_preview_app(scope, receive, send):
+            serializer_waiting = kw.begin_preview_serializer_wait(scope)
+            locked = False
+            try:
+                await preview._preview_lock.acquire()
+                locked = True
+                queued_has_serializer.set()
+                await kw.resume_preview_after_serializer(scope)
+                serializer_waiting = False
+                await inference._acquire_swap_gate()
+                try:
+                    await send({"type": "http.response.start", "status": 200})
+                    await send({"type": "http.response.body", "body": b""})
+                finally:
+                    inference._auto_switch_process_lock.release()
+            finally:
+                if serializer_waiting:
+                    kw.cancel_preview_serializer_wait(scope)
+                if locked:
+                    preview._preview_lock.release()
+
+        async def studio_switch_app(scope, receive, send):
+            kw.note_admitted_inference(scope)
+            await inference._acquire_swap_gate()
+            try:
+                async with kw.inference_lifecycle_gate():
+                    studio_holds_gate.set()
+                    await inference._wait_for_model_switch_idle(current_request_counted = True)
+            finally:
+                inference._auto_switch_process_lock.release()
+            await send({"type": "http.response.start", "status": 200})
+            await send({"type": "http.response.body", "body": b""})
+
+        preview_scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/p/run/ckpt/v1/chat/completions",
+            "headers": [],
+        }
+        studio_scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "headers": [(b"authorization", b"Bearer valid")],
+        }
+        queued_preview = asyncio.create_task(
+            kw.LlamaKeepWarmMiddleware(queued_preview_app)(preview_scope, _receive, _send)
+        )
+        while kw._preview_pending != 1:
+            await asyncio.sleep(0)
+        assert kw._preview_inflight == 1  # only active preview A, not queued B
+
+        studio_switch = asyncio.create_task(
+            kw.LlamaKeepWarmMiddleware(studio_switch_app)(studio_scope, _receive, _send)
+        )
+        await asyncio.wait_for(studio_holds_gate.wait(), 1)
+
+        preview._preview_lock.release()
+        await asyncio.wait_for(queued_has_serializer.wait(), 1)
+        kw._note_end(is_preview = True)
+
+        await asyncio.wait_for(asyncio.gather(queued_preview, studio_switch), 2)
+        assert kw._inflight == 0
+        assert kw._pending == 0
+        assert kw._preview_inflight == 0
+        assert kw._preview_pending == 0
+        assert kw._admitted_inference == 0
+
+    asyncio.run(_run())
+
+
+def test_admitted_inference_counter_excludes_previews():
+    from core.inference import llama_keepwarm as kw
+
+    kw._admitted_inference = 0
+    kw._inflight += 1  # non-preview request tracked pre-auth (never reached the hook)
+    try:
+        assert kw.other_admitted_inference_count() == 0  # unadmitted in-flight not counted
+        scope = {"path": "/v1/chat/completions"}
+        kw.note_admitted_inference(scope)  # passed auth, reached the inference hook
+        assert kw.other_admitted_inference_count() == 1
+        kw.note_admitted_inference(scope)  # idempotent per scope
+        assert kw.other_admitted_inference_count() == 1
+        kw.note_admitted_inference({"path": "/p/run/v1/chat/completions"})
+        assert kw.other_admitted_inference_count() == 1
+        kw._note_admitted_end()  # middleware _finish balances the admit
+        assert kw.other_admitted_inference_count() == 0
+    finally:
+        kw._inflight = 0
+        kw._admitted_inference = 0
+
+
+@pytest.mark.parametrize("status, claimed", [(200, True), (400, False)])
+def test_middleware_claims_slot_only_on_success(slot_state, status, claimed):
+    _reset_keepwarm_counters()
+    checkpoint = "/outputs/run/ckpt-a"
+    inference._set_preview_resident(checkpoint)
+
+    async def _app(scope, receive, send):
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_app, "/v1/chat/completions")
+    assert inference._is_preview_resident(checkpoint) is (not claimed)
+    _reset_keepwarm_counters()
+
+
+def test_slot_claim_happens_before_admitted_decrement(slot_state, monkeypatch):
+    _reset_keepwarm_counters()
+    llama_keepwarm._admitted_inference = 0
+    inference._set_preview_resident("/outputs/run/ckpt-a")
+    observed = {}
+    real_claim = llama_keepwarm._claim_non_preview_slot
+
+    def _spy():
+        observed["admitted_at_claim"] = llama_keepwarm._admitted_inference
+        real_claim()
+
+    monkeypatch.setattr(llama_keepwarm, "_claim_non_preview_slot", _spy)
+
+    async def _app(scope, receive, send):
+        llama_keepwarm.note_admitted_inference(scope)  # passed auth, reached the inference hook
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_app, "/v1/chat/completions")
+    assert observed["admitted_at_claim"] == 1
+    assert llama_keepwarm._admitted_inference == 0  # decremented afterwards
+    assert not inference._is_preview_resident("/outputs/run/ckpt-a")  # claimed for Unsloth
+    _reset_keepwarm_counters()
+    llama_keepwarm._admitted_inference = 0
+
+
+def test_preview_rechecks_ownership_after_admitted_count(fake_slot, monkeypatch):
+    fake_slot["ident"] = "/outputs/run/ckpt-a"
+    inference._set_preview_resident("/outputs/run/ckpt-a")
+
+    def _finish_studio_request() -> int:
+        thread = threading.Thread(target = inference._set_preview_resident, args = (None,))
+        thread.start()
+        thread.join()
+        return 0
+
+    monkeypatch.setattr(llama_keepwarm, "other_admitted_inference_count", _finish_studio_request)
+
+    async def _run():
+        with pytest.raises(HTTPException) as excinfo:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt-b"),
+                SimpleNamespace(scope = {"path": "/p/b/v1/chat/completions"}),
+                "admin",
+            )
+        return excinfo.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 503
+    assert fake_slot["loads"] == []
+
+
+def test_preview_swap_marker_skipped_for_same_target_borrow():
+    import inspect
+
+    src = inspect.getsource(inference.load_model_for_preview)
+    guard = src.index("if not same_target:")
+    begin = src.index("note_preview_swap_begin()", guard)
+    check = src.index("other_admitted_inference_count()")
+    assert guard < begin < check
+    assert "note_preview_swap_begin()" in src[guard : guard + 200]

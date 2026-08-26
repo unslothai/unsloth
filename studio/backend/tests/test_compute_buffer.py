@@ -56,7 +56,13 @@ except ImportError:
     )
     sys.modules["httpx"] = _httpx_stub
 
-from core.inference.llama_cpp import _FIT_MIN_CTX, LlamaCppBackend
+from core.inference.llama_cpp import (
+    _FIT_MIN_CTX,
+    _kv_bytes_per_elem,
+    _planned_main_cache_types,
+    _planned_scratch_cache_type,
+    LlamaCppBackend,
+)
 
 MIB = 1024 * 1024
 GIB = 1024 * MIB
@@ -76,6 +82,31 @@ def _backend(
     b._key_length_mla = mla  # non-None -> MLA (compressed attention)
     b._architecture = arch  # GGUF general.architecture (e.g. 'deepseek4')
     b._pooling_type = pooling_type
+    return b
+
+
+def _backend_from_gguf_local(
+    n_layers = 80,
+    embd = 8192,
+    n_kv_heads = 8,
+    head_dim = 128,
+):
+    """Backend that can also estimate KV bytes, for the planner cells below.
+
+    A real ``__init__`` (not ``__new__`` like ``_backend`` above) so every
+    attribute the KV estimator reads exists at its default; only the handful of
+    dims these cells vary are overridden. These tests are about which cache type
+    is priced, not about GGUF parsing.
+    """
+    b = LlamaCppBackend()
+    b._vocab_size = 248_320
+    b._embedding_length = embd
+    b._n_layers = n_layers
+    b._n_kv_heads = n_kv_heads
+    b._kv_key_length = head_dim
+    b._kv_value_length = head_dim
+    b._context_length = 262_144
+    assert b._can_estimate_kv()
     return b
 
 
@@ -438,7 +469,7 @@ class TestContextBufferLayerSplit:
 
     def test_kimi_k3_1m_four_gpu_reserve(self):
         # The reported case: Kimi-K3 UD-IQ1_M, 1M ctx, 4 GPUs, ub 512. llama.cpp
-        # allocated 4.0 GiB per device; Studio reserved 1.5 GiB.
+        # allocated 4.0 GiB per device; Unsloth reserved 1.5 GiB.
         b = _backend(embd = 7168, mla = 576)
         gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16", layer_split = True) / (
             1024**3
@@ -710,7 +741,7 @@ class TestPipelineParallelPredicate:
 
     @pytest.mark.parametrize("flag", ["-ngl", "--gpu-layers", "--n-gpu-layers"])
     def test_finite_gpu_layers_below_the_count_disables(self, flag):
-        # User extras land after Studio's -ngl -1, so this last-wins.
+        # User extras land after Unsloth's -ngl -1, so this last-wins.
         assert self._off([flag, "1"], n_layers = 93) is True
         assert self._off([f"{flag}=1"], n_layers = 93) is True
 
@@ -1222,3 +1253,124 @@ class TestSplitRateRecheckAfterSelection:
         slots = "".join(inspect.getsource(LlamaCppBackend._slots_that_fit_on_gpu).split())
         assert "self._select_gpus_split_aware(" in slots
         assert "split_extra_bytes=split_extra_bytes," in slots
+
+
+# ── The scratch rate keys off the LIGHTER axis ───────────────────────────────
+#
+# Since ggml-org/llama.cpp#23792 Unsloth no longer rewrites the requested type for the
+# tensor attempt, so an asymmetric pair is reachable in the one mode with no --fit
+# valve. The budget resolves ONE scalar, the heavier axis, for KV bytes; handing that
+# to _compute_buffer_ctx_bytes prices a q4_0 K cache as if nothing were quantized,
+# because the dequant branch gates on bytes/elem < 2.0.
+
+
+class TestScratchTakesTheLighterAxis:
+    """_planned_scratch_cache_type is the seam that keeps the two terms honest:
+    heavier axis for KV bytes, lighter axis for the dequant scratch."""
+
+    @pytest.mark.parametrize(
+        "k,v,expected",
+        [
+            ("f16", "f16", "f16"),
+            ("q8_0", "q8_0", "q8_0"),
+            ("q4_0", "f16", "q4_0"),  # the shape the heavier scalar hides
+            ("f16", "q4_0", "q4_0"),  # and with the axes swapped
+            ("q8_0", "q4_0", "q4_0"),
+            ("f32", "q8_0", "q8_0"),
+        ],
+    )
+    def test_it_picks_the_quantized_axis_whichever_side_it_is_on(self, k, v, expected):
+        extras = ["--cache-type-k", k, "--cache-type-v", v]
+        assert _planned_scratch_cache_type(None, extras) == expected
+        # And the budget still takes the heavier one, so the two disagree exactly
+        # when they should.
+        heavier = max(_planned_main_cache_types(None, extras), key = _kv_bytes_per_elem)
+        assert (heavier != expected) == (_kv_bytes_per_elem(k) != _kv_bytes_per_elem(v))
+
+    def test_a_managed_symmetric_request_leaves_both_terms_equal(self):
+        """Unsloth emits one type on both axes, so nothing changes for the common
+        case -- this fix must not move the fit for a plain q8_0 load."""
+        for kv in ("f16", "q8_0", "q4_0", "iq4_nl"):
+            assert _planned_scratch_cache_type(kv, None) == kv
+
+    def test_extras_beat_the_managed_field_per_axis(self):
+        """Extras are appended last and win per axis, so the scratch must follow
+        them, not the field the UI sent."""
+        assert _planned_scratch_cache_type("f16", ["--cache-type-k", "q4_0"]) == "q4_0"
+
+    def test_it_reads_the_inherited_env_when_nothing_else_sets_a_type(self):
+        env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0", "LLAMA_ARG_CACHE_TYPE_V": "f16"}
+        assert _planned_scratch_cache_type(None, None, env) == "q4_0"
+
+    @pytest.mark.parametrize("k,v", [("q4_0", "f16"), ("f16", "q4_0")])
+    def test_the_asymmetric_pair_selects_the_dequant_rate(self, k, v):
+        """The point of the seam: at the same context the asymmetric pair must
+        cost what the quantized axis really allocates, not the KQ-mask floor."""
+        b = _backend()
+        extras = ["--cache-type-k", k, "--cache-type-v", v]
+        heavier = max(_planned_main_cache_types(None, extras), key = _kv_bytes_per_elem)
+        lighter = _planned_scratch_cache_type(None, extras)
+
+        heavy_rate = b._compute_buffer_ctx_bytes(131_072, 2048, heavier)
+        light_rate = b._compute_buffer_ctx_bytes(131_072, 2048, lighter)
+
+        assert light_rate > heavy_rate, (light_rate, heavy_rate)
+        # Same answer as a symmetric quantized cache: the scratch is per-tensor
+        # work on the quantized axis, not something the f16 axis discounts.
+        assert light_rate == b._compute_buffer_ctx_bytes(131_072, 2048, "q4_0")
+
+
+class TestTensorFitPricesTheQuantizedAxis:
+    """End to end through the planner: the advertised context must not exceed
+    what an honest per-axis price allows. Tensor mode has no --fit valve, so an
+    optimistic context OOMs at startup instead of spilling."""
+
+    @staticmethod
+    def _plan(
+        b,
+        cache_type,
+        scratch_type,
+        ub,
+        ngpu = 4,
+        per_gpu = 48_000,
+    ):
+        return b._plan_tensor_parallel(
+            gpus = [(i, per_gpu) for i in range(ngpu)],
+            model_size = 60 * 1024**3,
+            target_ctx = 262_144,
+            max_target_ctx = 262_144,
+            total_by_idx = {i: per_gpu for i in range(ngpu)},
+            cache_type_kv = cache_type,
+            scratch_cache_type_kv = scratch_type,
+            n_parallel = 1,
+            swa_full = False,
+            kv_unified = True,
+            n_ubatch = ub,
+            flash_attn = False,
+        )
+
+    def test_an_asymmetric_pair_is_capped_like_its_quantized_axis(self):
+        """-ctk q4_0 -ctv f16 at a raised micro-batch. Priced from the heavier
+        axis alone the planner advertises the full 262144; the quantized axis
+        cannot hold it."""
+        b = _backend_from_gguf_local()
+        optimistic = self._plan(b, "f16", None, 2048)[0]
+        honest = self._plan(b, "f16", "q4_0", 2048)[0]
+
+        assert honest < optimistic, (honest, optimistic)
+        # Still a real context, not the 2048 floor: the fix must not collapse the
+        # fit, only stop it over-advertising.
+        assert honest > 2048, honest
+        # It comes out BELOW a symmetric q4_0 load, which is right and worth
+        # pinning: the asymmetric pair pays f16 KV bytes on both axes (the heavier
+        # axis budgets storage) AND the full quantized dequant scratch. Both terms
+        # conservative is the point; neither one alone describes this launch.
+        assert honest < self._plan(b, "q4_0", "q4_0", 2048)[0]
+
+    def test_a_symmetric_request_is_unchanged(self):
+        """Default and explicit scratch type agree when both axes match, so no
+        existing load moves."""
+        b = _backend_from_gguf_local()
+        for kv in ("f16", "q8_0", "q4_0"):
+            for ub in (512, 2048):
+                assert self._plan(b, kv, None, ub) == self._plan(b, kv, kv, ub)

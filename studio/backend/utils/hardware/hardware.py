@@ -581,7 +581,7 @@ def _detect_hardware_locked() -> DeviceType:
                 xpu_ok = False
             if xpu_ok:
                 # Forced XPU on a hybrid host: unsloth's device_type picks
-                # CUDA before XPU and ignores this Studio-only env var, so
+                # CUDA before XPU and ignores this Unsloth-only env var, so
                 # hide CUDA or spawned workers would silently train on CUDA.
                 if force_xpu and not cuda_hidden and not cuda_unavailable:
                     os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -1447,6 +1447,25 @@ def _hip_runtime_version() -> Optional[tuple[int, int]]:
         return None
 
 
+# APU architectures that are unified memory but sit outside the shared
+# classifier's positive set. That set is the list of parts whose SHARED POOL SIZE
+# drives a lower set_per_process_memory_fraction cap, and it names anything else
+# from hipDeviceProp_t::integrated; a Phoenix / Hawk Point iGPU on a runtime that
+# leaves that flag at 0 is therefore in neither, and reads as "not unified".
+#
+# Harmless for the cap and for the total, and wrong for a NUMERATOR: clr never
+# assigned deviceProps.integrated before tag rocm-6.2.0 (so HIP SDK for Windows
+# 5.5.1 / 5.7.1 / 6.1.2 leave it 0 in a zero-initialised struct, which is what
+# _HIP_INTEGRATED_FLAG_MIN above already encodes), and the legacy R0000 property
+# ABI still does not assign it on any version -- while paldevice.cpp inflates
+# globalMemSize_ off settings().apuSystem_ in both cases.
+#
+# gfx1103 Phoenix / Hawk Point is an integrated part and never shipped as a
+# discrete board, so naming it here can only ever upgrade a part whose
+# props.total_memory really does span host memory.
+_ROCM_UNNAMED_APU_ARCHES = frozenset({"gfx1103"})
+
+
 def _rocm_props_are_positively_unified(props: Any) -> bool:
     """Whether this part is KNOWN to be unified memory, not merely unclassified.
 
@@ -1454,6 +1473,17 @@ def _rocm_props_are_positively_unified(props: Any) -> bool:
     purpose, because a total that is too small hides models. Anything that adds
     host-shared memory to a used figure needs the stricter question: on a
     discrete card, shared bytes are not part of ``props.total_memory``.
+
+    "Uncertain" is what this must not accept. A part the classifier can NAME as
+    an APU is not uncertain, whichever way the classifier's own answer went: on
+    Windows the backend is PAL, and paldevice.cpp adds the WDDM shared heap to
+    globalMemSize_ for any ``Pal::GpuType::Integrated`` part, which is a property
+    of the DEVICE and not of whether HIP filled in the props struct's integrated
+    field. So a gfx1103 Phoenix on a pre-6.2 runtime already carries a
+    pool-scoped total, and answering False here pairs that pool with Dedicated
+    Usage alone, which plateaus at the BIOS carve-out. Measured shape: 17.0 GB
+    total, 8 GiB resident, published as 1.90 used and 15.10 free.
+
     """
     if not IS_ROCM:
         return False
@@ -1465,18 +1495,53 @@ def _rocm_props_are_positively_unified(props: Any) -> bool:
         return False
 
 
+def _rocm_props_are_an_unnamed_apu(props: Any) -> bool:
+    """True for an APU arch the shared classifier's positive set omits.
+
+    Only ever asked of a LONE visible device, and only to settle the numerator.
+    Beside a discrete card the same chip's props.total_memory is the one number
+    this module cannot scope -- #9198 keeps a hybrid iGPU on its carve-out for
+    exactly that reason, and the Dedicated+Shared sum needs a single adapter
+    above the noise floor to be attributable in the first place, so upgrading
+    there could only take a reading away. On a lone APU neither applies.
+
+    Indexed rather than unpacked so a classifier that grows its tuple (#9198)
+    keeps working.
+    """
+    if not IS_ROCM:
+        return False
+    try:
+        from core.training.worker import _rocm_classify_unified_memory
+        arch = str(_rocm_classify_unified_memory(props)[0] or "")
+    except Exception as e:
+        logger.debug("ROCm unified-memory classification failed: %s", e)
+        return False
+    return arch.split(":")[0].strip().lower() in _ROCM_UNNAMED_APU_ARCHES
+
+
 def _rocm_props_total_is_carve_out(props: Any) -> bool:
     """True when ``props.total_memory`` may understate what torch can actually use.
 
-    On a unified-memory ROCm APU the two totals are NOT the same number:
-    ``props.total_memory`` is the dedicated carve-out while ``hipMemGetInfo``'s
-    total spans the GTT pool, which is the figure the rest of this module treats
-    as authoritative (_apply_unified_memory_correction adopts it over amd-smi's
-    for exactly this reason). Reporting the carve-out would undo that correction
-    and budget a 128 GiB Strix Halo as ~8 GiB. There is no context-free source for
-    the GTT total, so only APUs pay mem_get_info; every discrete device keeps the
-    free inventory. Same classifier the training worker and the llama.cpp backend
-    use, so all three agree on what an APU is.
+    On some stacks ``props.total_memory`` is the dedicated carve-out while
+    ``hipMemGetInfo``'s total spans the GTT pool. MAY, not does: measured on a
+    Windows gfx1151 (driver 32.0.21041.1000, torch 2.11.0+rocm7.13.0) the two
+    agree at 89.47 GB against a 32 GB BIOS carve-out, and on a Linux gfx1151 they
+    agree at 64 GB, so on both APUs tested props.total_memory already spans the
+    pool and this returning True buys nothing. Callers must therefore compare the
+    two and adopt only a larger driver total, never adopt it outright.
+
+    The gap this module DOES have provenance for is a different pair:
+    _apply_unified_memory_correction adopts torch's total over amd-smi's, because
+    amd-smi reports the carve-out. That is torch against amd-smi, not
+    props.total_memory against hipMemGetInfo, and it is not evidence for this one.
+    A stack where these two disagree is inferred from reports of an understated
+    total, not yet reproduced; #8862 and #7449 are about used VRAM reading
+    Unknown, which is a different fault.
+
+    There is no context-free source for the GTT total, so only APUs pay
+    mem_get_info; every discrete device keeps the free inventory. Same classifier
+    the training worker and the llama.cpp backend use, so all three agree on what
+    an APU is.
 
     "Not unified" is not the same answer as "discrete". That classifier knows an APU
     by the driver's integrated flag or by a hardcoded arch set, so a gfx1103 Phoenix
@@ -1527,13 +1592,17 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
             # torch ordinals are 0-based relative to CUDA_VISIBLE_DEVICES.
             props = mod.get_device_properties(ordinal)
             total_bytes = props.total_memory
-            if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
-                try:
-                    total_bytes = mod.mem_get_info(ordinal)[1]
-                except Exception as e:
-                    # Keep the carve-out rather than dropping the device: an
-                    # understated total still beats no device at all.
-                    logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
+            try:
+                if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
+                    # Only a WIDER total, same as _rocm_windows_per_device_vram.
+                    # The classifier fails open, so a discrete card reaches here
+                    # too, and a total below props.total_memory would hide models
+                    # this device can hold.
+                    total_bytes = max(int(mod.mem_get_info(ordinal)[1]), int(total_bytes))
+            except Exception as e:
+                # Keep the carve-out rather than dropping the device: an
+                # understated total still beats no device at all.
+                logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
             devices.append(
                 {
                     "index": phys_idx,
@@ -2132,6 +2201,252 @@ def _rocm_windows_perf_counter_vram_by_adapter(
         return None
 
 
+# DirectX writes one record per adapter here, keyed by a GUID, holding the same
+# AdapterLuid the counter instances are named after alongside the Description
+# string torch reports as props.name and the gfx target it reports as
+# gcnArchName. Those are the join keys capacity ranking lacks.
+_WINDOWS_DIRECTX_KEY = r"SOFTWARE\Microsoft\DirectX"
+
+
+def _parse_adapter_luid(instance_name: str) -> Optional[int]:
+    """The 64-bit LUID in a ``GPU Adapter Memory`` instance name, or None.
+
+    Instances are named ``luid_0x<high>_0x<low>_phys_<n>``; DirectX stores the
+    same value as one 64-bit ``AdapterLuid``, so recombine the halves.
+    """
+    m = re.match(r"luid_0x([0-9a-f]+)_0x([0-9a-f]+)", instance_name.strip(), re.IGNORECASE)
+    if m is None:
+        return None
+    try:
+        return (int(m.group(1), 16) << 32) | int(m.group(2), 16)
+    except ValueError:
+        return None
+
+
+_ADAPTER_NAME_NOISE = re.compile(r"\((?:tm|r)\)|[™®]", re.IGNORECASE)
+
+
+def _normalize_adapter_name(name: str) -> str:
+    """A GPU name in the one spelling both sides of the join can agree on.
+
+    DirectX takes its Description from the driver INF and HIP fills props.name
+    from the ASIC record, so the same card reaches the two sides with the
+    trademark marks and the spacing around them differing -- "AMD Radeon(TM)
+    780M Graphics" against "AMD Radeon 780M Graphics". Nothing here merges two
+    different models, and a collision between two that did normalize alike is
+    caught by the count check in _attribute_adapter_useds_by_key.
+    """
+    return " ".join(_ADAPTER_NAME_NOISE.sub(" ", name).split()).casefold()
+
+
+def _parse_adapter_family_gfx(family: str) -> str:
+    """The gfx target in a DirectX ``AdapterFamily``, or "" when it holds none.
+
+    The AMD driver writes ``AMD_NAVI44:gfx1200``; torch reports the same target
+    as ``props.gcnArchName``, which on Linux carries feature suffixes
+    (``gfx1201:sramecc-:xnack-``) the comparison has to drop.
+    """
+    for token in str(family).split(":"):
+        token = token.strip().lower()
+        if re.fullmatch(r"gfx[0-9a-f]+", token):
+            return token
+    return ""
+
+
+def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, str]]:
+    """``{luid: {"name": description, "gfx": arch}}`` for the AMD adapters DirectX records.
+
+    ``gfx`` is absent when the driver wrote no ``AdapterFamily``.
+
+    All or nothing: a record this cannot read makes the map incomplete, and an
+    incomplete map is indistinguishable from a complete one at the join, which
+    would then pair a visible card with a hidden same-named card's counter. So
+    any failure past the point where a subkey is known to be an adapter returns
+    ``{}``, which drops the caller back to capacity ranking. Same for off
+    Windows or without the key.
+    """
+    if platform.system() != "Windows":
+        return {}
+    try:
+        import winreg
+    except ImportError:
+        return {}
+    by_luid: dict[int, Dict[str, str]] = {}
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DIRECTX_KEY) as dx_key:
+            for index in range(winreg.QueryInfoKey(dx_key)[0]):
+                subkey = winreg.EnumKey(dx_key, index)
+                # Adapter records are GUID-named; ShaderCache and any future
+                # named subkey are not adapters and are not ours to read.
+                if not (subkey.startswith("{") and subkey.endswith("}")):
+                    continue
+                with winreg.OpenKey(dx_key, subkey) as adapter_key:
+                    vendor_id, _ = winreg.QueryValueEx(adapter_key, "VendorId")
+                    if int(vendor_id) != _AMD_PCI_VENDOR_ID:
+                        continue
+                    luid, _ = winreg.QueryValueEx(adapter_key, "AdapterLuid")
+                    description, _ = winreg.QueryValueEx(adapter_key, "Description")
+                    try:
+                        family, _ = winreg.QueryValueEx(adapter_key, "AdapterFamily")
+                    except OSError:
+                        family = ""
+                name = str(description).strip()
+                if not name:
+                    # An AMD adapter this cannot name: see the all-or-nothing note.
+                    return {}
+                record = {"name": name}
+                gfx = _parse_adapter_family_gfx(str(family))
+                if gfx:
+                    record["gfx"] = gfx
+                by_luid[int(luid)] = record
+    except Exception as e:
+        logger.debug("DirectX adapter registry read declined: %s", e)
+        return {}
+    return by_luid
+
+
+def _adapter_counter_capacity(meta: Dict[str, Any]) -> float:
+    """The capacity a ``Dedicated Usage`` counter for this device can actually fill.
+
+    That counter measures the dedicated segment, so the carve-out is its ceiling.
+    ``total_bytes`` is what the user is SHOWN, and on a unified APU may be the
+    whole driver pool, against which a counter no visible card could hold still
+    fits. Rank or bound a counter with this, never ``total_bytes``. The fallback
+    keeps it right on a ``dev_meta`` built before ``dedicated_bytes`` existed.
+    """
+    return float(meta.get("dedicated_bytes", meta["total_bytes"]))
+
+
+def _attribute_adapter_useds_by_key(
+    useds_by_key: dict[str, list[float]],
+    positions_by_key: dict[str, list[int]],
+    dev_meta: list[Dict[str, Any]],
+) -> Optional[tuple[list[Optional[float]], float]]:
+    """Pair each key's counters with the devices carrying that key, or decline.
+
+    Returns ``(per_device_used_bytes, aggregate_used_bytes)``, or None when any
+    key's counters are not exactly its devices'. Several devices under one key
+    (two cards of a model, two cards of an arch) leave per-device unknown --
+    nothing says which counter is which ordinal -- while still contributing to
+    the aggregate, which the pairing does not change.
+    """
+    assigned: list[Optional[float]] = [None] * len(dev_meta)
+    total_used = 0.0
+    for key, positions in positions_by_key.items():
+        useds = useds_by_key.get(key, [])
+        # Fewer counters than cards under this key means a visible card has no
+        # reading; more means a same-keyed adapter HIP does not enumerate, or one
+        # adapter emitting several _phys_N instances. Either way this key's
+        # counters are not exactly its devices'.
+        if len(useds) != len(positions):
+            return None
+        # Largest usage against the largest capacity: any other pairing of the
+        # same multiset only makes the check below stricter, never truer.
+        by_capacity = sorted(positions, key = lambda p: -_adapter_counter_capacity(dev_meta[p]))
+        for used, position in zip(sorted(useds, reverse = True), by_capacity):
+            # A usage above its own card's capacity: a record outliving its
+            # hardware, so the key is not identifying what it appears to.
+            if used > _adapter_counter_capacity(dev_meta[position]):
+                return None
+            total_used += used
+        if len(positions) == 1:
+            assigned[positions[0]] = useds[0]
+    return assigned, total_used
+
+
+def _match_adapter_used_by_luid(
+    adapters: list[tuple[str, float]], dev_meta: list[Dict[str, Any]]
+) -> Optional[tuple[list[Optional[float]], float]]:
+    """Attribute per-adapter used bytes to torch devices on the adapter LUID.
+
+    Joins each counter to a DirectX adapter record by the LUID in its instance
+    name, then to a torch device by what the record and the device agree on.
+    Identity, not capacity, so it resolves the single-GPU case that
+    _match_adapter_used_to_devices can never force (nothing smaller exists to
+    exceed) and stays right when a busy foreign adapter outweighs an idle card.
+
+    The model name is tried first, because it separates two cards of one arch
+    (a 9070 beside a 9070 XT) where the arch cannot. DirectX takes it from the
+    driver INF and HIP from the ASIC record, so the two spellings CAN differ by
+    more than normalizing fixes, and a declined name join then falls to the gfx
+    target -- which is also what tells an iGPU from the dGPU beside it. The arch
+    pass runs only when every AMD record has one, so a driver too old to write
+    ``AdapterFamily`` cannot leave a hidden card's counter looking like the
+    visible card's.
+
+    Measured on a Windows gfx1151 (driver 32.0.21041.1000): DirectX said
+    "AMD Radeon(TM) 8060S Graphics" and so did ``props.name``, an exact match, so
+    the name pass carried it. That driver wrote NO ``AdapterFamily`` at all, so
+    the gfx fallback was unavailable on the one machine this has been measured
+    on. The two keys are therefore not the belt and braces this reads as: a
+    driver that both spells the name differently and omits ``AdapterFamily``
+    declines the join outright and drops back to capacity ranking. That is the
+    safe direction, but it means the name pass is load bearing in practice.
+
+    Returns ``(per_device_used_bytes, aggregate_used_bytes)``, or None when
+    neither key establishes the join, so the caller falls back to capacity
+    ranking.
+    """
+    records = _windows_amd_adapter_records_by_luid()
+    if not records:
+        return None
+
+    useds_by_luid: dict[int, list[float]] = {}
+    for instance, used in adapters:
+        luid = _parse_adapter_luid(instance)
+        if luid is not None and luid in records:
+            useds_by_luid.setdefault(luid, []).append(used)
+
+    best: Optional[tuple[list[Optional[float]], float]] = None
+    best_resolved = -1
+
+    for field, record_key, device_key in (
+        (
+            "name",
+            lambda record: _normalize_adapter_name(record["name"]),
+            lambda meta: _normalize_adapter_name(str(meta.get("name", ""))),
+        ),
+        (
+            "gfx",
+            lambda record: record["gfx"],
+            lambda meta: _parse_adapter_family_gfx(str(meta.get("gfx", ""))),
+        ),
+    ):
+        if not all(record.get(field) for record in records.values()):
+            continue
+        useds_by_key: dict[str, list[float]] = {}
+        for luid, useds in useds_by_luid.items():
+            useds_by_key.setdefault(record_key(records[luid]), []).extend(useds)
+        positions_by_key: dict[str, list[int]] = {}
+        for position, meta in enumerate(dev_meta):
+            positions_by_key.setdefault(device_key(meta), []).append(position)
+        if "" in positions_by_key:  # a visible device carrying no such key
+            continue
+        # AMD usage this key cannot place, so the key is not identifying
+        # reliably: a card whose Description differs from its props.name leaves
+        # its own counter under one key while a hidden card sits under the
+        # device's, and the pairing would hand over the hidden card's bytes.
+        # Declining drops a masked second AMD card back to capacity ranking,
+        # which is where it already was.
+        if set(useds_by_key) - set(positions_by_key):
+            continue
+        matched = _attribute_adapter_useds_by_key(useds_by_key, positions_by_key, dev_meta)
+        if matched is not None:
+            # Same-keyed cards leave those devices unknown and feed only the
+            # aggregate (#7452). That is a result, not a reason to stop, and it
+            # is not all-or-nothing: a host with one uniquely named card beside
+            # two same-named ones of different arch resolves ONE device by name
+            # and all three by gfx. So rank passes by how many devices they
+            # actually place, keep the first on a tie, and stop early only on a
+            # pass that leaves nothing for a later one to improve.
+            resolved = sum(used is not None for used in matched[0])
+            if resolved == len(dev_meta):
+                return matched
+            if resolved > best_resolved:
+                best, best_resolved = matched, resolved
+    return best
+
+
 def _match_adapter_used_to_devices(
     adapter_useds: list[float], device_totals: list[float]
 ) -> list[Optional[float]]:
@@ -2147,6 +2462,12 @@ def _match_adapter_used_to_devices(
     counters number EXACTLY the visible devices AND capacity forces the mapping;
     otherwise every device is unknown. Best-effort but correct for the common
     loaded-card case (#7072). Returns a list aligned to ``device_totals``.
+
+    ``device_totals`` must be the DEDICATED capacity each counter can fill, never a
+    unified-memory total. A widened total reranks its device, raises the threshold
+    that forces a pairing, and lifts the ceiling below which a usage is judged
+    impossible, which costs other devices their readings and admits counters that
+    belong to no visible card.
     """
     n = len(device_totals)
     if n == 0:
@@ -2231,7 +2552,9 @@ def _rocm_windows_aggregate_used_bytes(
     the visible set therefore holds those cards and nothing else. It fails closed if
     that is wrong: a second instance for one adapter makes the list longer than the
     visible set, which returns None rather than a total. Verify it before widening
-    this, not before trusting it.
+    this, not before trusting it. ``device_totals`` carries the same requirement as
+    _match_adapter_used_to_devices: dedicated capacity, never a unified total, or
+    the check above stops rejecting usages no visible card could hold.
 
     Deliberately NOT the noise filter _match_adapter_used_to_devices uses. Dropping
     sub-threshold counters and summing the rest is safe for per-device attribution,
@@ -2265,7 +2588,9 @@ def _rocm_windows_aggregate_used_bytes(
     return float(sum(useds))
 
 
-def _rocm_windows_unified_used_bytes() -> Optional[float]:
+def _rocm_windows_unified_used_bytes(
+    dedicated: Optional[list[tuple[str, float]]] = None,
+) -> Optional[float]:
     """Used VRAM for a unified-memory ROCm APU on Windows, from the WDDM counters.
 
     Dedicated Usage alone saturates at the carve-out on an APU and is wrong past
@@ -2290,8 +2615,13 @@ def _rocm_windows_unified_used_bytes() -> Optional[float]:
     would silently add a foreign adapter's bytes. Returns ``None`` unless exactly
     one adapter clears the noise floor, matching the caution in
     ``_rocm_windows_aggregate_used_bytes``.
+
+    ``dedicated`` lets a caller that already holds a Dedicated Usage snapshot
+    hand it over: each query is an out-of-process PowerShell call, and re-sampling
+    would also answer from a different instant than the caller's own attribution.
     """
-    dedicated = _rocm_windows_perf_counter_vram_by_adapter()
+    if dedicated is None:
+        dedicated = _rocm_windows_perf_counter_vram_by_adapter()
     if not dedicated:
         return None
     candidates = [
@@ -2312,21 +2642,34 @@ def _rocm_windows_unified_used_bytes() -> Optional[float]:
     if shared is None:
         return None
     shared_used = next((used for name, used in shared if name == instance), 0.0)
+    # A negative cooked counter is a broken reading, not low usage. The caller
+    # clamps the upper bound only, and the payload derives free as total minus
+    # used, so a negative sum publishes negative used and a free above total.
+    # Decline for the same reason a failed Shared query declines: nothing here
+    # can tell how much of the reading is wrong.
+    if dedicated_used < 0.0 or shared_used < 0.0:
+        return None
     return dedicated_used + shared_used
 
 
 def _rocm_windows_per_device_vram(
     device_indices: list[int], adapters: Optional[list[tuple[str, float]]] = None
 ) -> tuple[list[Dict[str, Any]], Optional[float]]:
-    """Per-GPU VRAM on Windows AMD/ROCm: total from torch properties (reliable),
-    used from the per-adapter Dedicated Usage counter.
+    """Per-GPU VRAM on Windows AMD/ROCm: total from torch properties, widened to
+    the driver pool on a unified APU, used from the per-adapter Dedicated Usage
+    counter.
 
     Returns ``([{index, visible_ordinal, name, used_gb, total_gb}], aggregate_gb)``
-    per visible GPU (``used_gb`` is ``None`` when the counter is unavailable or the
-    pairing is not capacity-forced), or ``([], None)`` when torch can't enumerate
-    devices so callers fall through to the torch last resort. ``aggregate_gb`` is the
-    visible set's total used VRAM, which survives a pairing no single device can
-    claim (#7452), and ``None`` when even that is not established.
+    per visible GPU, or ``([], None)`` when torch can't enumerate devices so callers
+    fall through to the torch last resort. ``aggregate_gb`` is the visible set's
+    total used VRAM, which survives a pairing no single device can claim (#7452),
+    and ``None`` when even that is not established.
+
+    ``used_gb`` is ``None`` when the counter is unavailable, when the pairing is not
+    capacity-forced, or when this device's total was widened to the unified pool --
+    that counter measures the dedicated segment, so it is not a numerator for a
+    total spanning the shared one. The two totals are kept apart internally for the
+    same reason: the counters are ranked against the carve-out, never the pool.
     """
     if platform.system() != "Windows":
         return [], None
@@ -2338,12 +2681,124 @@ def _rocm_windows_per_device_vram(
     for ordinal, phys_idx in enumerate(device_indices):
         try:
             props = mod.get_device_properties(ordinal)
+            total_bytes = int(props.total_memory)
+            # What the Dedicated Usage counters are RANKED against, which is not
+            # what is shown to the user: that counter measures the dedicated
+            # segment, so the carve-out is its ceiling and the pool is not.
+            # Ranking against a widened total puts a 2 GiB APU reading above a
+            # 10 GiB discrete one and admits a counter no visible card can hold.
+            dedicated_bytes = total_bytes
+            # On a unified-memory APU props.total_memory CAN be the dedicated
+            # carve-out rather than what torch can use; same correction, and the
+            # same APU-only price for a context, as _torch_get_device_inventory.
+            # Measured on a Windows gfx1151, driver 32.0.21041.1000 with torch
+            # 2.11.0+rocm7.13.0, props.total_memory already spans the GTT pool
+            # (89.47 GB against a 32 GB BIOS carve-out), so the split is a
+            # property of some stacks and not of Windows. Hence the comparison
+            # below rather than an unconditional adopt: this has to be inert
+            # where the two agree. The free half of the reading is the untrusted
+            # one either way, the total is fine.
+            total_is_pool = False
+            # Whether the driver CONFIRMED this total reaches the pool, as opposed
+            # to it merely not having been widened. A probe that fails leaves a
+            # carve-out-sized total standing, and a unified part is exactly where
+            # that is possible, so the two are not the same question.
+            pool_confirmed = False
+            # POSITIVELY unified, not _rocm_props_total_is_carve_out, and this is
+            # the gate on the probe rather than only on what the probe's answer is
+            # used for. mem_get_info attaches a primary HIP context worth ~612 MiB
+            # that is never released, main reaches this function without ever
+            # calling it, and the carve-out classifier deliberately fails open for
+            # an unclassified DISCRETE card. Gating on it would therefore have made
+            # a telemetry poll take 612 MiB off every discrete GPU on the host, to
+            # obtain a total that is then not used for anything: only a positively
+            # unified part takes the widened total or the unified numerator.
+            unified = False
+            try:
+                # Inside the try with the probe it gates: both are probes, and a
+                # probe that throws must cost this device its correction, not its
+                # place in the list.
+                unified = _rocm_props_are_positively_unified(props)
+                if not unified and len(device_indices) == 1:
+                    # The classifier names an APU from hipDeviceProp_t::integrated
+                    # or from the shared-pool arch set that sizes the memory-fraction
+                    # cap. A gfx1103 Phoenix on a pre-6.2 runtime is in neither, and
+                    # PAL does not consult either: it adds the WDDM shared heap to
+                    # globalMemSize_ for any Pal::GpuType::Integrated part, which is
+                    # a fact about the DEVICE. So that part reaches here with a
+                    # pool-scoped total and, unpatched, the Dedicated-only numerator
+                    # that plateaus at the BIOS carve-out -- the same overstated-free
+                    # reading on a device the classifier misses. Reported shape: a
+                    # Windows 780M on 24295 MiB of RAM reads a 17303 MiB total
+                    # (ComfyUI-Zluda#387), which is an 8 GiB carve-out plus 75% of
+                    # the WDDM shared heap. Hold 12 GiB there and Dedicated is 7.90,
+                    # so free publishes as 9.00 with 12 GiB resident.
+                    unified = _rocm_props_are_an_unnamed_apu(props)
+                if unified and hasattr(mod, "mem_get_info"):
+                    pool_bytes = int(mod.mem_get_info(ordinal)[1])
+                    # >= not >, and the equal case is the ONLY one that occurs.
+                    # hipMemGetInfo's total and hipDeviceProp_t::totalGlobalMem
+                    # are both device->info().globalMemSize_ in clr (hip_memory.cpp,
+                    # hip_device.cpp); only `free` is sourced separately. So these
+                    # two numbers are the same variable read twice and can never
+                    # differ on an AMD backend.
+                    #
+                    # That makes this look like a tautology, and taken alone it is.
+                    # What carries it is the conjunction at pool_scoped below:
+                    # on Windows the backend is PAL, and paldevice.cpp adds 50-75%
+                    # of the WDDM shared heap to globalMemSize_ whenever
+                    # settings().apuSystem_, which is Pal::GpuType::Integrated --
+                    # the same flag that fills hipDeviceProp_t::integrated and so
+                    # the same one _rocm_classify_unified_memory gates on. A part
+                    # this classifier calls unified therefore HAS a pool-scoped
+                    # total by construction, which is the proof the equality alone
+                    # does not supply. Measured twice: 89.465 GB under a 32 GB
+                    # carve-out here, and 107.87 GB under a 96 GB VGM in
+                    # ROCm/TheRock#3032, matching the PAL formula exactly.
+                    #
+                    # Linux is the opposite regime -- globalMemSize_ is the KFD
+                    # framebuffer heap and CAN be carve-out sized -- but this
+                    # function returns ([], None) off Windows, so it never applies.
+                    pool_confirmed = pool_bytes >= total_bytes
+                    # Kept for the shrink guard, not because widening is reachable:
+                    # per the above, pool_bytes > total_bytes cannot hold on AMD.
+                    # The classifier says carve-out for a discrete card on an
+                    # unsettled runtime too, and unlike the inventory this path
+                    # carries a used: a shrunk total reports past 100% utilization
+                    # and zero free.
+                    if pool_bytes > total_bytes:
+                        logger.debug(
+                            "ROCm unified memory: ordinal %d total %.2f -> %.2f GB (driver pool)",
+                            ordinal,
+                            total_bytes / (1024**3),
+                            pool_bytes / (1024**3),
+                        )
+                        total_bytes = pool_bytes
+                        total_is_pool = True
+            except Exception as e:
+                logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
             dev_meta.append(
                 {
                     "index": phys_idx,
                     "visible_ordinal": ordinal,
                     "name": props.name,
-                    "total_bytes": int(props.total_memory),
+                    "total_bytes": total_bytes,
+                    "dedicated_bytes": dedicated_bytes,
+                    # Second join key for _match_adapter_used_by_luid (#8863).
+                    "gfx": str(getattr(props, "gcnArchName", "") or ""),
+                    "total_is_pool": total_is_pool,
+                    # Whether Shared Usage belongs in this device's numerator is
+                    # a question about the PART, not about whether this call
+                    # happened to widen anything. On the measured gfx1151 the two
+                    # totals already agree, so total_is_pool stays false while the
+                    # total is pool-scoped all the same, and Dedicated alone would
+                    # be paired with it. It is also the stricter question:
+                    # _rocm_props_total_is_carve_out fails open, so a discrete
+                    # card can widen, and shared bytes are host memory its
+                    # props.total_memory never counted. Same test
+                    # get_gpu_memory_info applies before summing the two counters.
+                    "positively_unified": unified,
+                    "pool_confirmed": pool_confirmed,
                 }
             )
         except Exception as e:
@@ -2358,15 +2813,86 @@ def _rocm_windows_per_device_vram(
         adapters = _rocm_windows_perf_counter_vram_by_adapter()
     aggregate_gb: Optional[float] = None
     if adapters:
-        adapter_useds = [used for _, used in adapters]
-        totals = [d["total_bytes"] for d in dev_meta]
-        assigned = _match_adapter_used_to_devices(adapter_useds, totals)
-        aggregate_bytes = _rocm_windows_aggregate_used_bytes(adapter_useds, totals)
+        # LUID first: it answers by identity, where capacity ranking declines
+        # unless the sizes force a pairing -- which one visible GPU never does.
+        by_luid = _match_adapter_used_by_luid(adapters, dev_meta)
+        if by_luid is not None:
+            assigned, aggregate_bytes = by_luid
+        else:
+            adapter_useds = [used for _, used in adapters]
+            # Capacities the counters can fill, not the displayed totals.
+            totals = [_adapter_counter_capacity(d) for d in dev_meta]
+            assigned = _match_adapter_used_to_devices(adapter_useds, totals)
+            aggregate_bytes = _rocm_windows_aggregate_used_bytes(adapter_useds, totals)
         if aggregate_bytes is not None:
             aggregate_gb = round(aggregate_bytes / (1024**3), 2)
     else:
         # Counter unavailable: show every GPU with a correct total, used unknown.
         assigned = [None] * len(dev_meta)
+
+    # A pool-scoped total needs a numerator that spans the same ground. Dedicated
+    # Usage does not: it saturates at the carve-out and is wrong past it, so
+    # pairing it with the pool total would report a loaded card as mostly free,
+    # and the caller derives free as total minus used.
+    # _rocm_windows_unified_used_bytes sums Dedicated and Shared for exactly this
+    # (#9362 measured the plateau at ~30.5 GiB on a gfx1151 and the overflow
+    # landing in Shared). A decline still has to null the reading rather than
+    # leave the carve-out figure standing under a pool-sized total.
+    #
+    # Pool-scoped covers both ways to get there: a total this call widened, and a
+    # confirmed APU whose props.total_memory already spanned the pool, which is
+    # what the measured gfx1151 does. Keying on the widening alone would leave
+    # that host, the one this PR is about, on the plateaued counter. Being a UMA
+    # part is not enough by itself though: it says what the device is, not what
+    # scope the retained total has, and an APU whose driver probe failed still
+    # carries a carve-out-sized one that Dedicated Usage is the right numerator
+    # for. Hence pool_confirmed.
+    pool_scoped = [
+        m["total_is_pool"] or (m["positively_unified"] and m["pool_confirmed"]) for m in dev_meta
+    ]
+    if any(pool_scoped):
+        only = dev_meta[0] if len(dev_meta) == 1 else None
+        # Two conditions beyond "this device wants the sum", both of which the
+        # matcher applies to its own readings and the unified helper does not:
+        #
+        #   adapters falsy   the Dedicated query already failed. Passing None
+        #                    reads as "no snapshot supplied" and pays for the
+        #                    same failing PowerShell call a second time, on a
+        #                    path that polls, only to return unknown anyway.
+        #   a NON-ZERO sub-threshold row
+        #                    the helper picks the lone counter above the noise
+        #                    floor, which on a masked host can be a hidden GPU
+        #                    while the visible APU is the small one; its usage
+        #                    would then be published as the APU's. The matcher
+        #                    declines exactly this shape, requiring every dropped
+        #                    counter to be an EXACT zero, so the same rule holds
+        #                    here. An adapter at zero has nothing committed and
+        #                    cannot be the holder of the survivor's bytes.
+        wants_sum = only is not None and pool_scoped[0] and only["positively_unified"]
+        placeholders_only = bool(adapters) and all(
+            used == 0 for _, used in adapters if used < _ROCM_WIN_ADAPTER_MIN_BYTES
+        )
+        unified_used = (
+            _rocm_windows_unified_used_bytes(adapters) if wants_sum and placeholders_only else None
+        )
+        if unified_used is not None:
+            # Every other reading is clamped on its way through the matcher.
+            # This one bypasses it, and the payload derives free as total minus
+            # used, so an unclamped sum publishes negative free. The lower bound
+            # is belt and braces: the helper already declines a negative reading
+            # at source, and this keeps the guarantee local to the consumer that
+            # publishes the number.
+            unified_used = max(0.0, min(unified_used, float(only["total_bytes"])))
+        assigned = [
+            (unified_used if scoped else used) for scoped, used in zip(pool_scoped, assigned)
+        ]
+        # The aggregate is the visible set's exact total, so it survives only
+        # when every pool-scoped member got a figure.
+        aggregate_gb = (
+            round(unified_used / (1024**3), 2)
+            if unified_used is not None and len(dev_meta) == 1
+            else None
+        )
 
     devices: list[Dict[str, Any]] = []
     for meta, used_bytes in zip(dev_meta, assigned):
@@ -4395,7 +4921,7 @@ def dataset_map_num_proc(
     Return a safe ``num_proc`` for ``Dataset.map()`` and ``Dataset.filter()``.
 
     Returns ``None`` on spawn platforms (Windows, macOS). ``None`` -- not ``1``
-    -- is the disable sentinel: ``datasets`` >= 4.1 (Studio pins 4.3.0) takes
+    -- is the disable sentinel: ``datasets`` >= 4.1 (Unsloth pins 4.3.0) takes
     the pool branch for any ``num_proc >= 1``, so ``1`` still builds a
     ``Pool(1)``.
 
@@ -4552,7 +5078,7 @@ def _num_proc_override_is_set() -> bool:
 def _bounded_by_the_shared_policy(
     desired: Optional[int], serial_as_none: bool = True
 ) -> Optional[int]:
-    """Apply the training-side num_proc policy to a Studio request.
+    """Apply the training-side num_proc policy to an Unsloth request.
 
     ``format_conversion.py`` and ``chat_templates.py`` hand this straight to
     ``Dataset.map``, so without it a container with 2GB and eight cores still got
@@ -4564,7 +5090,7 @@ def _bounded_by_the_shared_policy(
     auto path reads this process's CPU affinity and cgroup quota while
     ``safe_num_proc`` reads the host's ``os.cpu_count()``: a 2-core container on
     a 64-core box asked for 21 workers and got them bounded only by memory.
-    Studio's own caps are then applied to whatever the policy chose, since the
+    Unsloth's own caps are then applied to whatever the policy chose, since the
     multi-GPU fork-deadlock cap is knowledge the policy does not have -- except
     over the escape hatch, which is uncapped by contract.
     """

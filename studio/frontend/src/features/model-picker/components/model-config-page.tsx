@@ -118,6 +118,7 @@ import {
   isServedByMlx,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
+  perModelConfigStorageChanged,
   readAdvancedSettingsOpen,
   resolveInitialConfig,
   saveAdvancedSettingsOpen,
@@ -842,7 +843,7 @@ function GpuMemorySettings({
                 <span className="min-w-0 truncate text-ui-12 text-nav-fg/80">
                   GPU {d.index}: {d.name}
                   {d.memoryTotalGb
-                    ? ` · ${Math.round(d.memoryTotalGb)} GB`
+                    ? ` · ${Math.round(d.memoryTotalGb)} GiB`
                     : ""}
                 </span>
                 <Switch
@@ -1003,12 +1004,15 @@ function LoadModeRow({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>Mmap/Mlock</span>
           <InfoHint>
-            How the weights are read off disk (--load-mode). Auto memory-maps
-            unless a device cannot, which is the default. mmap forces the
-            mapping, mlock keeps the model in RAM rather than letting it swap or
-            compress, mmap+mlock does both, DirectIO streams the file where the
-            platform supports it, and None asks for no special mode. Model
-            Memory, in Settings, owns this when either of its toggles is on.
+            How the weights are read off disk (--load-mode). Auto is the
+            default: Unsloth picks None when it can prove the model fits without
+            paging, since a mapped read is slower, and otherwise leaves the
+            choice to llama.cpp, which memory-maps unless a device cannot. mmap
+            forces the mapping, mlock keeps the model in RAM rather than letting
+            it swap or compress, mmap+mlock does both, DirectIO streams the file
+            where the platform supports it, and None asks for no special mode.
+            Model Memory, in Settings, owns this when either of its toggles is
+            on.
           </InfoHint>
         </div>
         <Select
@@ -2093,15 +2097,7 @@ export function ModelConfigPage({
     // rewrite live input: typing --agent during the window cleared the box instead
     // of showing the error, and a long paste could be trimmed behind the cursor.
     const configAtStart = configRef.current;
-    // What STORAGE holds for this model, which is not always what the panel shows:
-    // an active model seeds the panel from loadedConfig, the config the resident
-    // model is running with. The hydrated record is written against this instead,
-    // or opening the panel replaces settings the user never touched here -- a legacy
-    // config just migrated in, one saved from another origin -- with the runtime.
-    const storedAtStart = resolveInitialConfig(
-      configId,
-      target.ggufVariant,
-    ).config;
+    const storedAtStart = resolveInitialConfig(configId, target.ggufVariant);
     const rememberAtStart = rememberRef.current;
     const localAtStart = configAtStart.llamaExtraArgs;
     // The denylist, not the catalogue: sanitizing a stored list needs only the flags
@@ -2235,6 +2231,13 @@ export function ModelConfigPage({
           configRef.current === configAtStart &&
           rememberRef.current === rememberAtStart
         ) {
+          const storedConfig = resolveInitialConfig(
+            configId,
+            target.ggufVariant,
+          );
+          if (perModelConfigStorageChanged(storedAtStart, storedConfig)) {
+            return;
+          }
           setExtraArgsLoadable(hydratedIsLoadable);
           setConfig(serverConfig);
           setRemember(true);
@@ -2242,10 +2245,6 @@ export function ModelConfigPage({
           if (hasNonDefaultAdvanced(serverConfig)) {
             setAutoOpenAdvanced(true);
           }
-          // Onto the stored record, not the shown one: see storedAtStart. The row
-          // outranks both, so the shared settings still land in local storage for
-          // the load paths that never open this panel.
-          //
           // Unconditionally, because savePerModelConfig says "no settings" by
           // DELETING the entry: a merge that comes out default is a clear that has
           // to travel, not a write to skip. Clearing a model's only remembered
@@ -2253,7 +2252,10 @@ export function ModelConfigPage({
           // case, and skipping it stranded the old flag here for model-selector's
           // quick select to reload without ever opening this panel. Writing when
           // no record exists is already a no-op.
-          const rememberedConfig = fromApiOverride(resolvedRow, storedAtStart);
+          const rememberedConfig = fromApiOverride(
+            resolvedRow,
+            storedConfig.config,
+          );
           // Same budget as any other write, so the same clean-up: eviction is silent
           // and still reports success, and a dropped model would keep applying its
           // server row to API loads while the picker showed defaults, with nothing

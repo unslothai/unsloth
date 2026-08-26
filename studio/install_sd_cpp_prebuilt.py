@@ -66,7 +66,7 @@ _MIRROR_ONLY_TAG_RE = re.compile(r"^master-\d+-[0-9a-f]+-u[0-9a-f]+$")
 # bundle from a CUDA one instead of reusing whatever binary happens to be on disk.
 INSTALL_RECORD = ".unsloth-sd-cpp-install.json"
 
-# Marks the directory as one Studio created, so an uninstall never wipes a user's own tree.
+# Marks the directory as one Unsloth created, so an uninstall never wipes a user's own tree.
 OWNERSHIP_MARKER = ".unsloth-studio-owned"
 
 
@@ -94,7 +94,7 @@ def installed_accelerator(root: Path) -> Optional[str]:
     The memo wins over the file, but only while the file is exactly the one it could not replace.
     It exists for a record that stayed readable and stale (still naming the PREVIOUS accelerator)
     after a successful install, where trusting the file re-downloads the bundle on every selection.
-    Once anything else rewrites that file -- the installer CLI, another Studio -- the content no
+    Once anything else rewrites that file -- the installer CLI, another Unsloth -- the content no
     longer matches the snapshot and the file is the newer answer again.
 
     Only a SUCCESSFUL read that disagrees retires the memo. A record we cannot read right now is
@@ -119,7 +119,7 @@ def installed_accelerator(root: Path) -> Optional[str]:
 # place) otherwise means the accelerator reads as the PREVIOUS one, or as unknown, forever -- and
 # either is a mismatch for a GPU target, so every later engine selection re-downloads the same
 # multi-GB bundle. Keyed on the snapshot so it only speaks for the record it saw: once anything
-# else updates that file (the installer CLI, another Studio), the file is newer and wins again.
+# else updates that file (the installer CLI, another Unsloth), the file is newer and wins again.
 _INSTALLED_ACCELERATOR_MEMO: dict[str, tuple[str, Optional[str]]] = {}
 
 
@@ -381,7 +381,7 @@ def default_install_dir() -> Path:
 
     The same placement ``install_llama_prebuilt.default_managed_llama_dir`` uses for
     llama.cpp, and the whisper.cpp / node installs use for theirs: the tree goes
-    *under* the Studio home, so side-by-side Studios stay isolated and nothing outside
+    *under* the Unsloth home, so side-by-side Unsloth instances stay isolated and nothing outside
     the home is ever claimed. The legacy default home ``~/.unsloth/studio`` still maps
     to ``~/.unsloth/stable-diffusion.cpp`` so an existing install is reused.
 
@@ -671,7 +671,7 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
         key = keys[str(dest)]
         if key in reserved:
             raise RuntimeError(f"symlink at a reserved installer path: {member.filename!r}")
-        # Nor may one POINT at them: the marker is already there on a root Studio owns, so
+        # Nor may one POINT at them: the marker is already there on a root Unsloth owns, so
         # sd-cli -> marker leaves _locate_sd_cli reporting an empty file as the executable.
         landing = _plan_resolve(
             Path(os.path.normpath(key.parent / link_target)), base, replaced, archive
@@ -932,10 +932,10 @@ def install(
     # Refuse to extract into a pre-existing non-empty dir we do not own: merging would overwrite the user's files.
     if not _may_own:
         raise RuntimeError(
-            f"sd.cpp install target already exists and is not a Studio-managed directory: {target}. "
+            f"sd.cpp install target already exists and is not an Unsloth-managed directory: {target}. "
             f"Refusing to extract prebuilt binaries into it to avoid overwriting or mixing them "
             f"into your files. Remove or move that directory, or install into a different, empty "
-            f"location (pass a different --install-dir / set the Studio sd.cpp install dir)."
+            f"location (pass a different --install-dir / set the Unsloth sd.cpp install dir)."
         )
     used_repo, release, chosen = _resolve_with_fallback(accelerator, token)
 

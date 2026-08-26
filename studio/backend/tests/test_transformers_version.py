@@ -3896,7 +3896,7 @@ class TestDamagedLatestSidecarRepairHandoff:
         # _probe_tier walks _PROBE_TIER_ORDER provisioning each tier it tries. With only
         # the latest dir redirected, the 530, 550 and 510 targets were the REAL ones under
         # ~/.unsloth/studio, so running this file wrote a fake transformers 5.99.0 whose
-        # CONFIG_MAPPING_NAMES is {"brandnew": "C"} into the developer's own Studio.
+        # CONFIG_MAPPING_NAMES is {"brandnew": "C"} into the developer's own Unsloth.
         #
         # It then failed the next run of this same class: _lowest_tier_for("brandnew")
         # found it in tier 530 and returned "530" where the test asserts "latest". Three
@@ -3960,7 +3960,7 @@ class TestDamagedLatestSidecarRepairHandoff:
         }
         assert not stray, (
             f"_patch leaves {stray} pointing outside tmp_path. A repair or probe that "
-            f"provisions one of those writes test fixture data into the real Studio "
+            f"provisions one of those writes test fixture data into the real Unsloth "
             f"install, which poisons tier resolution for every later run on that machine."
         )
 

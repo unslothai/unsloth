@@ -1858,6 +1858,238 @@ class TestOpenAICompatibilityHelpers:
         assert chat_messages == [{"role": "user", "content": "hi"}]
         assert image_b64 is None
 
+    def test_latest_image_wins_over_earlier_turns(self):
+        def turn(letter):
+            return {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"what is {letter}?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{letter}"},
+                    },
+                ],
+            }
+
+        payload = ChatCompletionRequest(
+            messages = [
+                turn("AAAA"),
+                {"role": "assistant", "content": "the first one"},
+                turn("BBBB"),
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "BBBB"
+
+    def test_single_image_still_returned(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,AAAA"},
+                        },
+                    ],
+                }
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "AAAA"
+
+    def test_payloadless_later_image_keeps_earlier_one(self):
+        def turn(url):
+            return {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+            }
+
+        for empty_url in ("data:image/png;base64,", "data:image/png;base64"):
+            payload = ChatCompletionRequest(
+                messages = [
+                    turn("data:image/png;base64,AAAA"),
+                    {"role": "assistant", "content": "a cat"},
+                    turn(empty_url),
+                ]
+            )
+
+            _, _, image_b64 = _extract_content_parts(payload.messages)
+
+            assert image_b64 == "AAAA", empty_url
+
+    def test_user_attachment_outranks_assistant_generated_image(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,USERPHOTO"},
+                        },
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "here is a cartoon of it"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,GENERATED"},
+                        },
+                    ],
+                },
+                {"role": "user", "content": "what colour was the shirt?"},
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "USERPHOTO"
+
+    def test_assistant_only_image_is_still_returned(self):
+        payload = ChatCompletionRequest(
+            messages = [
+                {"role": "user", "content": "show me something"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "here you go"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,GENERATED"},
+                        },
+                    ],
+                },
+                {"role": "user", "content": "describe it"},
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "GENERATED"
+
+    def test_first_image_wins_within_one_message(self):
+        # The composer allows multi-select, and findLatestUserImageBase64
+        # (chat-adapter.ts) names the first of them, so this must agree.
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "compare these"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,LEFT"},
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,RIGHT"},
+                        },
+                    ],
+                }
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "LEFT"
+
+    def test_later_turn_still_wins_over_a_multi_image_turn(self):
+        # Per-message first, per-thread latest: the two rules compose.
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "compare these"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,LEFT"},
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,RIGHT"},
+                        },
+                    ],
+                },
+                {"role": "assistant", "content": "two cats"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "and this?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,LATER"},
+                        },
+                    ],
+                },
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "LATER"
+
+    def test_payloadless_part_does_not_claim_the_message_slot(self):
+        # An empty data URL is not an image, so the first real one still wins.
+        payload = ChatCompletionRequest(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "compare these"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,"},
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,RIGHT"},
+                        },
+                    ],
+                }
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "RIGHT"
+
+    def test_earlier_real_image_survives_a_payloadless_opening_turn(self):
+        # The old helper latched "" here and suppressed every later image, so
+        # the request reached the model with none.
+        def turn(url):
+            return {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+            }
+
+        payload = ChatCompletionRequest(
+            messages = [
+                turn("data:image/png;base64,"),
+                {"role": "assistant", "content": "I cannot see an image"},
+                turn("data:image/png;base64,REAL"),
+            ]
+        )
+
+        _, _, image_b64 = _extract_content_parts(payload.messages)
+
+        assert image_b64 == "REAL"
+
 
 # =====================================================================
 # _friendly_error — httpx transport failures
@@ -2469,6 +2701,107 @@ class TestGgufVisionToolRouting:
         self._consume_response(response)
 
         assert captured["kwargs"]["disable_parallel_tool_use"] is True
+
+    def test_enabled_tools_web_search_only_enters_gguf_tool_loop(self, monkeypatch):
+        """#9730: enable_tools + enabled_tools: ["web_search"] on a local GGUF
+        must enter Studio's loop with that catalog, not answer from memory."""
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+        captured = {}
+
+        def _plain(**kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**kwargs):
+            captured["kwargs"] = kwargs
+            yield {"type": "content", "text": "The current version of the Linux kernel is 6.10."}
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "Qwen3.5-2B-MTP-GGUF",
+            context_length = 4096,
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {
+                    "role": "user",
+                    "content": (
+                        "Search the web for the current version of the Linux kernel, "
+                        "then answer in one sentence."
+                    ),
+                }
+            ],
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            permission_mode = "off",
+            tool_choice = {"type": "function", "function": {"name": "web_search"}},
+            max_tokens = 512,
+            temperature = 0.0,
+            stream = True,
+        )
+
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        self._consume_response(response)
+
+        assert "kwargs" in captured
+        assert [t["function"]["name"] for t in captured["kwargs"]["tools"]] == ["web_search"]
+        assert captured["kwargs"]["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "web_search"},
+        }
+        assert captured["kwargs"]["permission_mode"] == "off"
+
+    def test_forced_tool_choice_must_be_in_the_selected_gguf_catalog(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+
+        def _tools(**_kwargs):
+            raise AssertionError("invalid forced choice must not start generation")
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "run python"}],
+            enable_tools = True,
+            enabled_tools = ["web_search"],
+            permission_mode = "off",
+            tool_choice = {"type": "function", "function": {"name": "python"}},
+            stream = True,
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            self._drive(
+                openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+            )
+
+        assert exc.value.status_code == 400
+        assert exc.value.detail["error"]["param"] == "tool_choice"
 
     def test_confirm_tool_calls_requires_streaming_for_gguf_tools(self, monkeypatch):
         import routes.inference as inf_mod
@@ -3981,7 +4314,10 @@ class TestApiMonitorProviderAndCompletionStreams:
             async def is_disconnected(self):
                 return False
 
-        async def fake_send(*_args, **_kwargs):
+        upstream_bodies = []
+
+        async def fake_send(_client, built_request, *_args, **_kwargs):
+            upstream_bodies.append(json.loads(built_request.content))
             return httpx.Response(200, content = b"")
 
         async def fake_items(*_args, **_kwargs):
@@ -4028,7 +4364,12 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor_id = monitor_id,
         )
         chunks = [chunk async for chunk in response.body_iterator]
-        return SimpleNamespace(chunks = chunks, body = "".join(chunks), monitor = monitor)
+        return SimpleNamespace(
+            chunks = chunks,
+            body = "".join(chunks),
+            monitor = monitor,
+            upstream_bodies = upstream_bodies,
+        )
 
     def test_passthrough_stream_preheader_dispatched_with_timeout(self, monkeypatch):
         async def _run():
@@ -5005,6 +5346,62 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_completions_stream_requests_usage_only_for_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = "/v1/completions")
+                method = "POST"
+
+                async def json(self):
+                    return {"prompt": "hi", "stream": True}
+
+                async def is_disconnected(self):
+                    return False
+
+            upstream_bodies = []
+
+            async def fake_send(_client, built_request, *_args, **_kwargs):
+                upstream_bodies.append(json.loads(built_request.content))
+                return httpx.Response(200, content = b"")
+
+            async def fake_items(*_args, **_kwargs):
+                yield (
+                    b'data: {"choices":[{"text":"ok","finish_reason":"stop"}]}\n\n'
+                    b'data: {"choices":[],"usage":{"prompt_tokens":3,'
+                    b'"completion_tokens":2,"total_tokens":5}}\n\n'
+                    b"data: [DONE]\n\n"
+                )
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
+                ),
+            )
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+
+            response = await openai_completions(Request(), current_subject = "test")
+            body = b"".join([chunk async for chunk in response.body_iterator])
+
+            assert upstream_bodies[0]["stream_options"]["include_usage"] is True
+            assert b'"usage"' not in body
+            [entry] = monitor.snapshot()
+            assert entry["prompt_tokens"] == 3
+            assert entry["completion_tokens"] == 2
+            assert entry["total_tokens"] == 5
+
+        asyncio.run(_run())
+
     def test_completions_non_streaming_post_error_finalizes_monitor(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -5815,6 +6212,26 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_passthrough_requests_usage_for_monitor_without_exposing_it(self, monkeypatch):
+        async def _run():
+            result = await self._run_passthrough_stream(
+                monkeypatch,
+                [
+                    'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
+                    'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+                    'data: {"id":"chatcmpl-test","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}',
+                ],
+            )
+
+            assert result.upstream_bodies[0]["stream_options"]["include_usage"] is True
+            assert '"usage"' not in result.body
+            [entry] = result.monitor.snapshot()
+            assert entry["prompt_tokens"] == 3
+            assert entry["completion_tokens"] == 2
+            assert entry["total_tokens"] == 5
+
+        asyncio.run(_run())
+
     def test_passthrough_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -6594,10 +7011,16 @@ class TestApiMonitorProviderAndCompletionStreams:
             async def fake_send(*_args, **_kwargs):
                 return httpx.Response(200, content = b"")
 
-            async def fake_items(*_args, **_kwargs):
+            async def fake_items(
+                *_args,
+                post_first_item_read_timeout_s = None,
+                **_kwargs,
+            ):
                 yield 'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}'
                 yield 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
-                await asyncio.Event().wait()  # upstream never closes
+                timeout = post_first_item_read_timeout_s()
+                await asyncio.sleep(timeout)
+                raise httpx.ReadTimeout("upstream never closed")
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)

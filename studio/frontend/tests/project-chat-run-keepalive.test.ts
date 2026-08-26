@@ -335,7 +335,7 @@ test("the landing does not restore a chat that was deleted while it was away", (
 test("no restore path puts a deleted chat back on screen", () => {
   // Three places put a retained id back: ProjectLanding's resume effect (pinned above),
   // NonceThreadResumeRestore, and the remembered-nonce reopen. All three ask the RUNTIME
-  // whether it still knows the thread, and Studio deletes by tombstoning storage rather than
+  // whether it still knows the thread, and Unsloth deletes by tombstoning storage rather than
   // calling runtime.threads.delete(), so all three still answer yes after a delete. Guarding
   // one fixes nothing.
   const restore = componentSource(provider, "function NonceThreadResumeRestore({");
@@ -354,7 +354,7 @@ test("no restore path puts a deleted chat back on screen", () => {
 test("a delayed first send keeps the creation inputs it was sent under", () => {
   // The adapter is rebuilt every render and handed to the core via __internal_setOptions, so
   // initialize() reads the provider's LATEST projectId. send() awaits every incomplete
-  // attachment before handleSend and Studio's PDF/DOCX/text adapters extract there, so with
+  // attachment before handleSend and Unsloth's PDF/DOCX/text adapters extract there, so with
   // the provider surviving a project switch a document send materializes in whichever project
   // is on screen by then.
   const thread = readFileSync(

@@ -197,7 +197,7 @@ def test_ensure_weight_tying_defaults_on_for_a_tied_pair_in_modules_to_save():
 
 
 def test_ensure_weight_tying_covers_callers_that_pass_modules_to_save_themselves():
-    """Studio's CPT path routes both names itself, so nothing is 'moved' by the redirect."""
+    """Unsloth's CPT path routes both names itself, so nothing is 'moved' by the redirect."""
     from unsloth.models._utils import _redirect_embedding_targets, _resolve_ensure_weight_tying
 
     target_modules, modules_to_save, moved = _redirect_embedding_targets(
