@@ -255,7 +255,8 @@ def _is_generative_chat_config(config: dict) -> bool:
     if any(key in config for key in _MULTIMODAL_CONFIG_KEYS):
         return True
     # whisper is the audio model rather than wearing one, so it carries no such sub-config.
-    return _model_type_is_audio(config.get("model_type"))
+    # the MLX worker refuses ASR and TTS outright, so only a Transformers host serves these.
+    return not _host_serves_mlx() and _model_type_is_audio(config.get("model_type"))
 
 
 def _model_type_is_audio(model_type) -> bool:

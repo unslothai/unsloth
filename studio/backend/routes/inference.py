@@ -6116,12 +6116,14 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
     the array handed back under ``decoded`` for the audio branch to reuse.
     """
     if target_is_gguf:
-        # _prepare_audio_for_llama's own lenient decode: strict would refuse wrapped base64.
         raw = audio_preflight["b64"]
         if isinstance(raw, str) and raw.startswith("data:"):
             raw = raw.split(",", 1)[1] if "," in raw else ""
+        # whitespace out then validate: wrapped base64 still passes, "!!!!" no longer decodes to empty.
+        if isinstance(raw, str):
+            raw = "".join(raw.split())
         try:
-            base64.b64decode(raw)
+            base64.b64decode(raw, validate = True)
         except Exception:
             raise HTTPException(
                 status_code = 400,

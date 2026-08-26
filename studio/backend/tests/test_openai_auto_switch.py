@@ -8926,6 +8926,27 @@ def test_a_whisper_checkpoint_is_switchable(tmp_path):
     assert resolver._model_type_is_audio(None) is False
 
 
+def test_an_mlx_host_does_not_advertise_an_asr_checkpoint(tmp_path, monkeypatch):
+    """The MLX worker refuses ASR outright at worker.py:823 and TTS at 1103, so a Whisper
+    checkpoint on Apple Silicon can only be loaded to fail. Same host-capability rule as
+    _host_has_a_non_gguf_backend, not a prediction about the load."""
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "whisper-large-v3")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        '{"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper"}'
+    )
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
+    assert resolver.local_servable_model(info) is None
+    # an audio VLM declares a multimodal sub-config, which MLX does serve, so it stays listed.
+    (path / "config.json").write_text(
+        '{"architectures": ["Gemma3nForConditionalGeneration"], "model_type": "gemma3n",'
+        ' "audio_config": {}}'
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+
 def test_an_empty_auto_map_is_not_remote_code(tmp_path):
     """The consent gate reads auto_map for truthiness (_config_has_auto_map in
     utils/security/consent.py), so an empty or null mapping names no implementation and
@@ -9141,13 +9162,14 @@ def test_the_gguf_audio_preflight_takes_the_base64_llama_cpp_takes():
         except HTTPException:
             pytest.fail(f"the preflight refused {name} base64 that llama.cpp decodes")
     # undecodable input is still a 400, so dropping validate = True did not open the gate.
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(
-            inference_route._preflight_audio_for_switch(
-                {"b64": "abc", "continue_final": False}, True
+    for bad in ("abc", "!!!!", "AA!!AA=="):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                inference_route._preflight_audio_for_switch(
+                    {"b64": bad, "continue_final": False}, True
+                )
             )
-        )
-    assert exc.value.status_code == 400
+        assert exc.value.status_code == 400, bad
 
 
 def test_a_non_gguf_audio_target_is_refused_without_a_decoder(monkeypatch):
