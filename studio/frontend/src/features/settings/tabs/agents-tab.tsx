@@ -70,7 +70,6 @@ const EXAMPLE_MODEL_OPTIONS = [
   "--top-p 0.95",
   "--top-k 20",
   "--min-p 0.0",
-  "--presence-penalty 0.0",
   "--reasoning-effort medium",
 ].join(" ");
 const MODEL_RESULT_LIMIT = 7;
@@ -662,7 +661,7 @@ export function AgentsTab() {
     sortBy: "trendingScore",
     sortDirection: "desc",
     accessToken: hfAccessToken,
-    keepUnsupportedTags: true,
+    keepUnsupportedTags: false,
     enabled: online,
   });
   // The remote snippet runs on the client, so use the client platform, not deviceType.
@@ -1133,6 +1132,7 @@ export function AgentsTab() {
     // absence there is not evidence.
     if (
       looksLikePath(restored) ||
+      isHuggingFaceRepo(restored) ||
       discoveredKeys.has(modelKey(restored)) ||
       (active && modelKey(active.model) === modelKey(restored))
     ) {

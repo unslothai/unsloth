@@ -26,7 +26,6 @@ test("the default model uses its recommended thinking settings", () => {
     "--top-p 0.95",
     "--top-k 20",
     "--min-p 0.0",
-    "--presence-penalty 0.0",
     "--reasoning-effort medium",
   ]) {
     assert.ok(options.includes(option), `${option} is in the default command`);
@@ -36,6 +35,7 @@ test("the default model uses its recommended thinking settings", () => {
       "modelKey(selectedModel) === modelKey(EXAMPLE_MODEL_REPO)",
     ),
   );
+  assert.ok(!options.includes("--presence-penalty"));
 });
 
 test("the model dropdown loads live trending GGUFs", () => {
@@ -45,6 +45,11 @@ test("the model dropdown loads live trending GGUFs", () => {
   assert.ok(request.includes('tags: ["gguf"]'));
   assert.ok(request.includes('sortBy: "trendingScore"'));
   assert.ok(request.includes('sortDirection: "desc"'));
+  assert.ok(request.includes("keepUnsupportedTags: false"));
   assert.ok(TAB.includes("mergeModelOrder(trendingModels, models)"));
   assert.ok(TAB.includes("[...primary, ...fallback]"));
+});
+
+test("restored Hub selections remain valid while uncached", () => {
+  assert.ok(TAB.includes("isHuggingFaceRepo(restored)"));
 });
