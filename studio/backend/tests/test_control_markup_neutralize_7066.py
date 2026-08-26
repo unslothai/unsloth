@@ -3068,24 +3068,295 @@ def test_vendor_extension_fields_are_swept_not_dropped():
     assert list(out[0]["function"]["parameters"]["properties"]) == ["city"]
 
 
+_INFERENCE_DIR = _REPO_ROOT / "studio" / "backend" / "core" / "inference"
+
+# The local tool loops. Each builds the controller prepare_call authorizes against, so
+# each has to hand it a catalog that traces back to the sweep.
+_CONTROLLER_MODULES = ("llama_cpp.py", "safetensors_agentic.py")
+
+# Producers whose return value IS a sanitized catalog. The sweep itself, plus the two
+# catalog builders that wrap it; the builders are held to that below.
+_SWEEP = "neutralize_tool_descriptions"
+_CATALOG_PRODUCERS = frozenset(
+    {_SWEEP, "renderable_tool_catalog", "renderable_tool_catalog_for_targets"}
+)
+
+# A parameter the CALLER is required to hand a sanitized catalog. Only the narrowed
+# catalog qualifies, and the contract is not taken on trust: every production call site
+# that supplies one is resolved with the same resolver by the test below.
+_SANITIZED_BY_CONTRACT = {
+    ("safetensors_agentic.py", "run_safetensors_tool_loop"): frozenset({"renderable_tools"}),
+}
+
+_NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+
+def _ctrl_parse(path):
+    """Parse *path* with parent links, so a call site can find its enclosing scopes."""
+    tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            child._ctrl_parent = parent
+    return tree
+
+
+def _ctrl_aliases(tree):
+    """``as`` bindings, so ``neutralize_tool_descriptions as _neutralize_...`` still counts.
+
+    Whole-tree rather than module level: llama_cpp.py imports the sweep inside the loop.
+    """
+    aliases = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = alias.name.rsplit(".", 1)[-1]
+    return aliases
+
+
+def _ctrl_called_name(call, aliases):
+    func = call.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+    return aliases.get(name, name)
+
+
+def _ctrl_target_names(target):
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, ast.Starred):
+        return _ctrl_target_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [name for element in target.elts for name in _ctrl_target_names(element)]
+    return []  # attribute / subscript targets are not local names
+
+
+def _ctrl_scopes(node):
+    """The function and module scopes enclosing *node*, innermost first."""
+    chain = []
+    current = getattr(node, "_ctrl_parent", None)
+    while current is not None:
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
+            chain.append(current)
+        current = getattr(current, "_ctrl_parent", None)
+    return chain
+
+
+def _ctrl_bindings(scope):
+    """``name -> every expression bound to it`` DIRECTLY in *scope*.
+
+    Nested scopes are not descended into, so an inner helper's rebinding of the same name
+    is not mistaken for the outer one. Every binding has to resolve, not just one: a name
+    that is swept on one branch and raw on another is not a sanitized catalog.
+    """
+    bindings = {}
+
+    def record(target, value):
+        for name in _ctrl_target_names(target):
+            bindings.setdefault(name, []).append(value)
+
+    def visit(node):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, _NESTED_SCOPES):
+                continue
+            if isinstance(child, ast.Assign):
+                for target in child.targets:
+                    record(target, child.value)
+            elif isinstance(child, (ast.AnnAssign, ast.AugAssign)) and child.value is not None:
+                record(child.target, child.value)
+            elif isinstance(child, ast.NamedExpr):
+                record(child.target, child.value)
+            elif isinstance(child, (ast.For, ast.AsyncFor)):
+                record(child.target, child.iter)  # element of an unresolved iterable
+            elif isinstance(child, (ast.With, ast.AsyncWith)):
+                for item in child.items:
+                    if item.optional_vars is not None:
+                        record(item.optional_vars, item.context_expr)
+            visit(child)
+
+    visit(scope)
+    return bindings
+
+
+def _ctrl_params(scope):
+    if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return set()
+    args = scope.args
+    names = {arg.arg for arg in args.posonlyargs + args.args + args.kwonlyargs}
+    for extra in (args.vararg, args.kwarg):
+        if extra is not None:
+            names.add(extra.arg)
+    return names
+
+
+def _ctrl_sweep_carries_profile(call):
+    """The sweep has to be given THIS turn's markup profile.
+
+    Sweeping under the default profile drops what the renderer keeps and keeps what it
+    drops, so the authorized catalog stops matching the prompt the model was shown.
+    """
+    profile = call.args[2] if len(call.args) >= 3 else None
+    for keyword in call.keywords:
+        if keyword.arg == "markup":
+            profile = keyword.value
+    if profile is None:
+        return False
+    return not (isinstance(profile, ast.Constant) and profile.value is None)
+
+
+def _ctrl_resolve(expr, scopes, aliases, module, seen):
+    """Does *expr* provably evaluate to a sanitized tool catalog?
+
+    Returns ``(ok, why)``. This walks the dataflow rather than the source text: hoisting
+    the sweep into a local, rewrapping the call or renaming the variable all still
+    resolve, while handing the controller the raw catalog does not.
+    """
+    if isinstance(expr, ast.Constant) and expr.value is None:
+        return True, "no catalog (the controller does not gate)"
+    if isinstance(expr, (ast.List, ast.Tuple, ast.Set)) and not expr.elts:
+        return True, "empty catalog"
+    if isinstance(expr, ast.Dict) and not expr.keys:
+        return True, "empty catalog"
+    if isinstance(expr, ast.Starred):
+        return _ctrl_resolve(expr.value, scopes, aliases, module, seen)
+    if isinstance(expr, ast.IfExp):
+        for branch in (expr.body, expr.orelse):
+            ok, why = _ctrl_resolve(branch, scopes, aliases, module, seen)
+            if not ok:
+                return False, why
+        return True, "every branch is sanitized"
+    if isinstance(expr, ast.BoolOp):
+        for value in expr.values:
+            ok, why = _ctrl_resolve(value, scopes, aliases, module, seen)
+            if not ok:
+                return False, why
+        return True, "every operand is sanitized"
+    if isinstance(expr, ast.Call):
+        name = _ctrl_called_name(expr, aliases)
+        if name == _SWEEP:
+            if not _ctrl_sweep_carries_profile(expr):
+                return False, f"line {expr.lineno}: {_SWEEP} was not given a markup profile"
+            return True, "swept at the construction site"
+        if name in _CATALOG_PRODUCERS:
+            return True, f"built by {name}"
+        if name in ("list", "tuple") and len(expr.args) == 1 and not expr.keywords:
+            return _ctrl_resolve(expr.args[0], scopes, aliases, module, seen)
+        return False, f"line {expr.lineno}: {name}(...) is not a sanitized catalog"
+    if isinstance(expr, ast.Name):
+        if expr.id in seen:
+            return True, "already being resolved"
+        for scope in scopes:
+            bindings = _ctrl_bindings(scope)
+            if expr.id in bindings:
+                for value in bindings[expr.id]:
+                    ok, why = _ctrl_resolve(
+                        value, scopes, aliases, module, seen | {expr.id}
+                    )
+                    if not ok:
+                        return False, f"{expr.id} -> {why}"
+                return True, f"{expr.id} is sanitized"
+            if expr.id in _ctrl_params(scope):
+                allowed = _SANITIZED_BY_CONTRACT.get(
+                    (module, getattr(scope, "name", "")), frozenset()
+                )
+                if expr.id in allowed:
+                    return True, f"{expr.id} is sanitized by the caller's contract"
+                return False, (
+                    f"{expr.id} is a parameter of {getattr(scope, 'name', '?')} with no "
+                    "sanitizing contract"
+                )
+        return False, f"{expr.id} is unbound here"
+    return False, f"line {getattr(expr, 'lineno', '?')}: {type(expr).__name__} is not resolvable"
+
+
+def _ctrl_controller_sites(tree, aliases):
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _ctrl_called_name(node, aliases) == "ToolLoopController"
+    ]
+
+
+def _ctrl_catalog_argument(call):
+    for keyword in call.keywords:
+        if keyword.arg == "tools":
+            return keyword.value
+    return call.args[0] if call.args else None
+
+
 def test_tool_loop_controllers_are_built_from_the_sanitized_catalog():
     """The controller is what prepare_call authorizes against, and llama-server's
     structured delta.tool_calls path reaches it without passing _enabled_tool_names at
-    all, so sanitizing only the gates left a dropped tool executable by name (#7066)."""
-    for module in ("llama_cpp.py", "safetensors_agentic.py"):
-        source = (_REPO_ROOT / "studio" / "backend" / "core" / "inference" / module).read_text(
-            encoding = "utf-8"
-        )
-        start = source.index("ToolLoopController(")
-        window = source[start : start + 200]
-        # Either sanitized at construction, or handed the catalog the caller already
-        # narrowed to what every template this turn could select would advertise.
-        assert "neutralize_tool_descriptions" in window or "_authorized" in window, module
-    agentic = (
-        _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "safetensors_agentic.py"
-    ).read_text(encoding = "utf-8")
-    assert "renderable_tools" in agentic
-    assert "neutralize_tool_descriptions(tools, None, markup)" in agentic
+    all, so sanitizing only the gates left a dropped tool executable by name (#7066).
+
+    Asserted on the dataflow, not on source text near the construction site. The window
+    this used to scan was emptied by #9773 hoisting the very same sweep one statement up
+    into a local, and a formatter rewrapping the call would have done the same: a test a
+    reformat can break is not testing what it claims.
+    """
+    checked = 0
+    for module in _CONTROLLER_MODULES:
+        tree = _ctrl_parse(_INFERENCE_DIR / module)
+        aliases = _ctrl_aliases(tree)
+        sites = _ctrl_controller_sites(tree, aliases)
+        assert sites, f"{module} no longer builds a ToolLoopController"
+        for call in sites:
+            catalog = _ctrl_catalog_argument(call)
+            assert catalog is not None, f"{module}:{call.lineno}: no catalog was passed"
+            ok, why = _ctrl_resolve(catalog, _ctrl_scopes(call), aliases, module, frozenset())
+            assert ok, f"{module}:{call.lineno}: the controller catalog is not sanitized: {why}"
+            checked += 1
+    assert checked >= len(_CONTROLLER_MODULES)
+
+
+def test_the_sanitized_by_contract_catalog_is_sanitized_at_every_caller():
+    """``renderable_tools`` is the one catalog the loop takes on trust, so the trust is
+    checked: every production caller that supplies it must pass a swept catalog (#7066)."""
+    wanted = {name for names in _SANITIZED_BY_CONTRACT.values() for name in names}
+    callers = 0
+    for path in sorted((_REPO_ROOT / "studio" / "backend").rglob("*.py")):
+        if "tests" in path.parts:
+            continue
+        tree = _ctrl_parse(path)
+        aliases = _ctrl_aliases(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg not in wanted:
+                    continue
+                ok, why = _ctrl_resolve(
+                    keyword.value, _ctrl_scopes(node), aliases, path.name, frozenset()
+                )
+                assert ok, f"{path.name}:{node.lineno}: {keyword.arg} is not sanitized: {why}"
+                callers += 1
+    assert callers, "no caller supplies the sanitized-by-contract catalog any more"
+
+
+def test_every_catalog_producer_returns_a_swept_catalog():
+    """The resolver trusts the catalog builders, so they must actually run the sweep and
+    must never hand their own ``tools`` argument straight back (#7066)."""
+    tree = _ctrl_parse(_INFERENCE_DIR / "chat_template_helpers.py")
+    aliases = _ctrl_aliases(tree)
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    for producer in sorted(_CATALOG_PRODUCERS - {_SWEEP}):
+        node = functions.get(producer)
+        assert node is not None, f"{producer} is gone; the resolver still trusts it"
+        called = {
+            _ctrl_called_name(call, aliases)
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+        }
+        assert called & _CATALOG_PRODUCERS, f"{producer} no longer sweeps the catalog"
+        raw = node.args.args[0].arg
+        for statement in ast.walk(node):
+            if isinstance(statement, ast.Return) and isinstance(statement.value, ast.Name):
+                assert statement.value.id != raw, (
+                    f"{producer}:{statement.lineno} returns its unswept {raw} argument"
+                )
 
 
 @pytest.mark.parametrize("role", ["user", "system", "tool", "ipython"])
