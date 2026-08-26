@@ -57,7 +57,11 @@ import {
   createMcpStdioSnapshot,
   resolveMcpStdioUrl,
 } from "./mcp-server-form";
-import { buildMcpOAuthFormPayload } from "./utils/mcp-oauth-form";
+import {
+  type McpOAuthSecretOwner,
+  buildMcpOAuthFormPayload,
+  mcpOAuthSecretPlaceholder,
+} from "./utils/mcp-oauth-form";
 type HeaderRow = { id: string; key: string; value: string };
 type ArgumentRow = { id: string; value: string };
 type FormTransport = "unknown" | "http" | "stdio";
@@ -73,7 +77,9 @@ type FormState = {
   useOauth: boolean;
   oauthClientId: string;
   oauthClientSecret: string;
-  hasOauthClientSecret: boolean;
+  // Not a bare "a secret exists" flag: the hint below has to know whether an
+  // edit has moved the form off the client/address the stored secret belongs to.
+  storedSecretOwner: McpOAuthSecretOwner | null;
 };
 
 const EMPTY_FORM: FormState = {
@@ -87,7 +93,7 @@ const EMPTY_FORM: FormState = {
   useOauth: false,
   oauthClientId: "",
   oauthClientSecret: "",
-  hasOauthClientSecret: false,
+  storedSecretOwner: null,
 };
 
 function newRowId(): string {
@@ -512,7 +518,9 @@ export function ChatMcpServersDialog({
       useOauth: server.use_oauth ?? false,
       oauthClientId: server.oauth_client_id ?? "",
       oauthClientSecret: "",
-      hasOauthClientSecret: server.has_oauth_client_secret ?? false,
+      storedSecretOwner: server.has_oauth_client_secret
+        ? { url: server.url, clientId: server.oauth_client_id ?? "" }
+        : null,
     };
 
     if (isHttpAddress(server.url)) {
@@ -1101,11 +1109,11 @@ export function ChatMcpServersDialog({
                             oauthClientSecret: e.target.value,
                           }))
                         }
-                        placeholder={
-                          form.hasOauthClientSecret
-                            ? "Leave blank to keep the stored secret"
-                            : "Optional client secret"
-                        }
+                        placeholder={mcpOAuthSecretPlaceholder(
+                          form.storedSecretOwner,
+                          form.url,
+                          form.oauthClientId,
+                        )}
                         autoComplete="new-password"
                       />
                     </div>
