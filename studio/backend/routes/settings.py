@@ -1982,9 +1982,7 @@ def _hf_files_size(repo: str, files: list[str], hf_token: Optional[str]) -> Opti
         info = model_info(repo, files_metadata = True, token = hf_token)
         wanted = set(files)
         total = sum(
-            sibling.size or 0
-            for sibling in (info.siblings or [])
-            if sibling.rfilename in wanted
+            sibling.size or 0 for sibling in (info.siblings or []) if sibling.rfilename in wanted
         )
         return total or None
     except Exception:  # noqa: BLE001 - size is advisory, never a blocker
@@ -2030,9 +2028,7 @@ def resolve_embedding_model(
 
     # A local .gguf (file or folder) is already the artifact; nothing to fetch.
     if _resolves_as_local_gguf(resolved):
-        return EmbeddingModelResolveResponse(
-            embedding_model = resolved, backend = backend, cached = True
-        )
+        return EmbeddingModelResolveResponse(embedding_model = resolved, backend = backend, cached = True)
     local_error = _local_gguf_backend_error(resolved)
     if local_error:
         return EmbeddingModelResolveResponse(
