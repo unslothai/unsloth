@@ -88,12 +88,21 @@ def _make_backend(monkeypatch, streams: list[object], payloads: list[dict]):
 
     @contextlib.contextmanager
     def fake_stream_with_retry(
-        _client, _url, payload, _cancel_event, headers = None, first_token_deadline = None
+        _client,
+        _url,
+        payload,
+        _cancel_event,
+        headers = None,
+        first_token_deadline = None,
     ):
         payloads.append(copy.deepcopy(payload))
         yield type("FakeResponse", (), {"status_code": 200, "chunks": streams.pop(0)})()
 
-    def fake_iter_text_cancellable(response, _cancel_event, first_token_deadline = None):
+    def fake_iter_text_cancellable(
+        response,
+        _cancel_event,
+        first_token_deadline = None,
+    ):
         yield from response.chunks
 
     monkeypatch.setattr(backend, "_stream_with_retry", fake_stream_with_retry)
@@ -120,15 +129,11 @@ def _tool_results(events: list[dict]) -> list[str]:
 def test_a_tool_repeating_one_answer_is_told_so(monkeypatch):
     """The arguments vary every time, so only the RESULT can reveal the dead end."""
 
-    streams = [
-        [_call(f"attempt {i}", i), _done()] for i in range(_MAX_IDENTICAL_TOOL_RESULTS)
-    ]
+    streams = [[_call(f"attempt {i}", i), _done()] for i in range(_MAX_IDENTICAL_TOOL_RESULTS)]
     streams.append([_sse({"content": "I will work from what I have."}), _done()])
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
-    monkeypatch.setattr(
-        "core.inference.tools.execute_tool", lambda *_a, **_k: _TRUNCATION_NOTICE
-    )
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: _TRUNCATION_NOTICE)
 
     results = _tool_results(_run(backend))
 
@@ -141,15 +146,11 @@ def test_a_tool_repeating_one_answer_is_told_so(monkeypatch):
 def test_the_run_is_not_stopped_only_the_model_is_told(monkeypatch):
     """Hard-stopping a turn that is otherwise healthy trades one dead end for a worse one."""
 
-    streams = [
-        [_call(f"attempt {i}", i), _done()] for i in range(_MAX_IDENTICAL_TOOL_RESULTS)
-    ]
+    streams = [[_call(f"attempt {i}", i), _done()] for i in range(_MAX_IDENTICAL_TOOL_RESULTS)]
     streams.append([_sse({"content": "Working from what I have."}), _done()])
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
-    monkeypatch.setattr(
-        "core.inference.tools.execute_tool", lambda *_a, **_k: _TRUNCATION_NOTICE
-    )
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: _TRUNCATION_NOTICE)
 
     events = _run(backend)
 
@@ -160,10 +161,7 @@ def test_the_run_is_not_stopped_only_the_model_is_told(monkeypatch):
 def test_changing_results_are_never_interrupted(monkeypatch):
     """Polling is the case a result-keyed guard has to leave alone."""
 
-    streams = [
-        [_call(f"attempt {i}", i), _done()]
-        for i in range(_MAX_IDENTICAL_TOOL_RESULTS + 2)
-    ]
+    streams = [[_call(f"attempt {i}", i), _done()] for i in range(_MAX_IDENTICAL_TOOL_RESULTS + 2)]
     streams.append([_sse({"content": "Done."}), _done()])
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
@@ -250,9 +248,9 @@ def test_a_tool_is_not_priced_at_zero_behind_a_finished_call(monkeypatch):
     assert received, "the tool never ran"
     budget = received[0]
     if budget is not None:
-        assert budget > 0, (
-            "the call was priced at zero, so it could only ever return a truncation notice"
-        )
+        assert (
+            budget > 0
+        ), "the call was priced at zero, so it could only ever return a truncation notice"
 
 
 def test_a_repeat_that_stops_repeating_resets(monkeypatch):
@@ -263,9 +261,7 @@ def test_a_repeat_that_stops_repeating_resets(monkeypatch):
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, streams, payloads)
     _answers = iter(["same", "same", "different", "same"])
-    monkeypatch.setattr(
-        "core.inference.tools.execute_tool", lambda *_a, **_k: next(_answers)
-    )
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: next(_answers))
 
     results = _tool_results(_run(backend))
 

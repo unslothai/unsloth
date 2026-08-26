@@ -26139,10 +26139,8 @@ class LlamaCppBackend:
                                         _result_budget < _MIN_USEFUL_RESULT_TOKENS
                                         and self._effective_context_length
                                     ):
-                                        _roomier, _n_roomier = (
-                                            compact_completed_tool_arguments(
-                                                conversation, protect_last = 1
-                                            )
+                                        _roomier, _n_roomier = compact_completed_tool_arguments(
+                                            conversation, protect_last = 1
                                         )
                                         if _n_roomier:
                                             conversation[:] = _roomier
@@ -26184,9 +26182,7 @@ class LlamaCppBackend:
                                     # Known before the tool runs, so there is no reason to
                                     # spend calls rediscovering it: the repeat guard below
                                     # would reach the same conclusion three calls later.
-                                    _starved_call[0] = (
-                                        _result_budget < _MIN_USEFUL_RESULT_TOKENS
-                                    )
+                                    _starved_call[0] = _result_budget < _MIN_USEFUL_RESULT_TOKENS
                                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
                                     if accepts_kwarg(execute_tool, "conversation_token_counter"):
                                         # The admission check estimates a result's size by
@@ -26277,9 +26273,10 @@ class LlamaCppBackend:
                     # keys on the result for the same reason and never fires while results
                     # are still changing, which is what makes this safe for polling.
                     if isinstance(result, str):
-                        _result_key = (decision.tool_name, hashlib.sha1(
-                            result.encode("utf-8", "replace")
-                        ).hexdigest())
+                        _result_key = (
+                            decision.tool_name,
+                            hashlib.sha1(result.encode("utf-8", "replace")).hexdigest(),
+                        )
                         if _result_key == _last_tool_result_key[0]:
                             _identical_result_runs[0] += 1
                         else:
