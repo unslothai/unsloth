@@ -33,7 +33,6 @@ from tests.utils.ocr_eval import OCRModelEvaluator
 
 
 ## Dataset Preparation
-from datasets import load_dataset
 
 dataset = load_dataset("lbourdois/OCR-liboaccn-OPUS-MIT-5M-clean", "en", split = "train")
 train_dataset = dataset.select(range(2000))
@@ -75,12 +74,9 @@ train_dataset = [format_data(sample) for sample in train_dataset]
 eval_dataset = [format_data(sample) for sample in eval_dataset]
 
 ## Setup OCR main evaluation function and helpers
-import os
-import torch
 from tqdm import tqdm
 import pandas as pd
 from jiwer import wer, cer
-from qwen_vl_utils import process_vision_info
 
 ocr_evaluator = OCRModelEvaluator()
 model_comparison_results = {}

@@ -31,7 +31,6 @@ from ..device_type import (
 )
 from ..bnb_availability import native_kernels_ready
 from .fp8 import weight_dequant, fp8_linear
-import functools
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
@@ -55,7 +54,6 @@ if DEVICE_TYPE == "xpu":
 
 
 # tl.math.tanh now is libdevice.tanh
-import triton
 import triton.language as tl
 
 if Version(triton.__version__) >= Version("3.0.0"):

@@ -65,7 +65,6 @@ import subprocess
 import traceback
 import psutil
 import re
-from transformers.models.llama.modeling_llama import logger
 from .models.loader_utils import (
     get_model_name,
     _resolve_hub_repo_cached_file,
@@ -6025,18 +6024,10 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = outtype)
 
 
-from .models.loader_utils import (
-    get_model_name,
-    _resolve_hub_repo_cached_file,
-    _tokenizer_cache_dir,
-    _tokenizer_wants_local_only,
-)
-
 # Imported lazily at the two call sites below: a zoo older than the one that made
 # its own bitsandbytes import optional would otherwise break `import unsloth` on a
 # host without bnb, which is the whole point of the guards above.
 from unsloth_zoo.llama_cpp import (
-    install_llama_cpp,
     convert_to_gguf as _convert_to_gguf,
 )
 

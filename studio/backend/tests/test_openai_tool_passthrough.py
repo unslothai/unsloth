@@ -2126,11 +2126,7 @@ class TestFriendlyErrorHttpx:
         assert _friendly_error(RuntimeError("unrelated")) == "An internal error occurred"
 
 
-from routes.inference import (  # noqa: E402
-    _drop_empty_assistant_sentinels,
-    _openai_messages_for_gguf_chat,
-    _openai_messages_for_passthrough,
-)
+from routes.inference import _openai_messages_for_passthrough  # noqa: E402
 
 
 class TestDropEmptyAssistantSentinels:

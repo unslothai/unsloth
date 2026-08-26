@@ -852,24 +852,6 @@ def test_the_leaked_kernel_warning_does_not_strand_the_handler(tmp_path):
     assert _deletions(tmp_path), "no delete was attempted, so nothing could leak"
 
 
-def _failing_kaggle(bin_dir: Path, record: Path) -> None:
-    """A `kaggle` that records the call and then refuses it, so nothing is ever
-    released and release() reaches its leaked-kernel warning."""
-    bin_dir.mkdir(parents = True, exist_ok = True)
-    shim = bin_dir / "kaggle"
-    shim.write_text(
-        textwrap.dedent(f"""\
-        #!{sys.executable}
-        import sys, pathlib
-        pathlib.Path({str(record)!r}).open("a").write(" ".join(sys.argv[1:]) + "\\n")
-        sys.stderr.write("500 Server Error\\n")
-        sys.exit(1)
-        """),
-        encoding = "utf-8",
-    )
-    shim.chmod(0o755)
-
-
 def test_the_leaked_warning_is_still_a_github_annotation(tmp_path, monkeypatch, capsys):
     """Routing it through the safe writer must not add the [launch] prefix.
 

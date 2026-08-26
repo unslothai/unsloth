@@ -148,7 +148,6 @@ print(f"{'='*80}")
 
 
 from transformers import pipeline
-import torch
 
 output_audio_path = "lasa_audio.wav"
 input_text = "Hey there my name is Elise, <giggles> and I'm a speech generation model that can sound like a person."

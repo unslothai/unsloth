@@ -223,8 +223,6 @@ if __name__ == "__main__":
         loftq_config = None,
     )
 
-    from unsloth import is_bfloat16_supported
-
     trainer = SFTTrainer(
         model = model,
         tokenizer = tokenizer,

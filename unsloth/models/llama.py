@@ -135,7 +135,7 @@ from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM, PeftModelForSequenceClassification
 from ..save import patch_saving_functions
-import re, os, inspect, math, sys
+import re, os, inspect, sys
 import types
 
 try:

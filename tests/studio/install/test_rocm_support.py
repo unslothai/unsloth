@@ -6052,8 +6052,6 @@ class TestHipSdkInstalledButDeviceInaccessible:
 # TEST: --rocm-gfx forwarding -- setup.sh/setup.ps1 forward their resolved gfx
 # arch to install_llama_prebuilt.py so the per-gfx prebuilt is picked.
 
-_SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
-
 
 class TestNormalizeForwardedGfx:
     """A forwarded gfx string is reduced to a single clean gfx token."""
@@ -6407,7 +6405,6 @@ def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
 # TEST: WSL ROCDXG fixes -- drop-in persistence + system-HIP-before-bundle
 
 
-_INSTALL_SH_PATH = PACKAGE_ROOT / "install.sh"
 _LLAMA_CPP_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
 
 
