@@ -2703,21 +2703,6 @@ def _rocm_windows_per_device_vram(
                 # probe that throws must cost this device its correction, not its
                 # place in the list.
                 unified = _rocm_props_are_positively_unified(props)
-                if not unified and len(device_indices) == 1:
-                    # The classifier names an APU from hipDeviceProp_t::integrated
-                    # or from the shared-pool arch set that sizes the memory-fraction
-                    # cap. A gfx1103 Phoenix on a pre-6.2 runtime is in neither, and
-                    # PAL does not consult either: it adds the WDDM shared heap to
-                    # globalMemSize_ for any Pal::GpuType::Integrated part, which is
-                    # a fact about the DEVICE. So that part reaches here with a
-                    # pool-scoped total and, unpatched, the Dedicated-only numerator
-                    # that plateaus at the BIOS carve-out -- the same overstated-free
-                    # reading on a device the classifier misses. Reported shape: a
-                    # Windows 780M on 24295 MiB of RAM reads a 17303 MiB total
-                    # (ComfyUI-Zluda#387), which is an 8 GiB carve-out plus 75% of
-                    # the WDDM shared heap. Hold 12 GiB there and Dedicated is 7.90,
-                    # so free publishes as 9.00 with 12 GiB resident.
-                    unified = _rocm_props_are_an_unnamed_apu(props)
                 if unified and hasattr(mod, "mem_get_info"):
                     pool_bytes = int(mod.mem_get_info(ordinal)[1])
                     # >= not >, and the equal case is the ONLY one that occurs.
