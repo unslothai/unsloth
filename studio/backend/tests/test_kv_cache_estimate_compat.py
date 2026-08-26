@@ -77,6 +77,9 @@ def _call(monkeypatch, path: Path | None, **overrides):
         spec_draft_cache_type = None,
         ctx_checkpoints = None,
         disable_vision = False,
+        n_batch = None,
+        n_ubatch = None,
+        tensor_parallel = False,
         request = None,
         current_subject = "test",
     )

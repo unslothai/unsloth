@@ -37,6 +37,7 @@ import {
   computeModelMemory,
   estimateCacheKey,
   estimateIsUnsized,
+  extraArgsAddResidentFiles,
   extraArgsOwnPlacement,
   extraArgsShapeKvCache,
 } from "@/lib/model-memory";
@@ -75,6 +76,10 @@ interface Estimate {
   specFixedBytes: number | null;
   /** llama.cpp's compute buffers, which every launch reserves. */
   computeBytes: number | null;
+  /** The planner's own GPU-resident total, which supersedes the segment sum. */
+  gpuTotalBytes: number | null;
+  /** What the planner still reserves at the shortest context. */
+  gpuFloorBytes: number | null;
   /** The configured drafter could not be priced, so the total is a floor. */
   specUnpriced: boolean;
 }
@@ -135,6 +140,8 @@ const MISS: Estimate = {
   kvCheckpointBytes: null,
   specFixedBytes: null,
   computeBytes: null,
+  gpuTotalBytes: null,
+  gpuFloorBytes: null,
   specUnpriced: false,
 };
 
@@ -179,6 +186,12 @@ const WATCHED_STORAGE_KEYS = [
   CHAT_GPU_MEMORY_MODE_KEY,
   CHAT_SPECULATIVE_TYPE_KEY,
 ];
+
+/** Subscriber for a disabled bar: nothing to watch, nothing to unwatch. */
+const subscribeNothing = () => () => {};
+
+/** Snapshot for a disabled bar. Constant, so it can never force a re-render. */
+const readZeroEpoch = () => 0;
 
 let configEpoch = 0;
 let lastConfigSignature = "";
@@ -276,6 +289,10 @@ function budgetIsMeaningful(config: PerModelConfig | undefined): boolean {
   // box has the launch reserve a full-context cache while the bar priced the
   // compact sliding window, and the row reads as a comfortable fit.
   if (extraArgsShapeKvCache(config.llamaExtraArgs)) return false;
+  // And these add resident files nothing here priced -- a LoRA, a control
+  // vector, a hand-named drafter. The total would be short by whatever they
+  // weigh, with no sign of it in the bar.
+  if (extraArgsAddResidentFiles(config.llamaExtraArgs)) return false;
   return (
     config.selectedGpuIds == null &&
     (config.gpuLayers == null || config.gpuLayers < 0) &&
@@ -312,6 +329,9 @@ async function fetchEstimate(
     specDraftCacheType: config?.specDraftCacheDtype,
     ctxCheckpoints: config?.ctxCheckpoints,
     disableVision: config?.disableVision,
+    nBatch: config?.nBatch,
+    nUbatch: config?.nUbatch,
+    tensorParallel: config?.tensorParallel,
   })
     .then((r) => {
       const estimate: Estimate = {
@@ -323,6 +343,8 @@ async function fetchEstimate(
         kvCheckpointBytes: r.kv_checkpoint_bytes ?? null,
         specFixedBytes: r.spec_fixed_bytes ?? null,
         computeBytes: r.compute_bytes ?? null,
+        gpuTotalBytes: r.gpu_bytes ?? null,
+        gpuFloorBytes: r.gpu_floor_bytes ?? null,
         specUnpriced: r.spec_unpriced === true,
       };
       // A 200 that could size nothing arrives down the success path, so
@@ -357,15 +379,22 @@ export function useModelMemory(
     key: string;
     estimate: Estimate;
   } | null>(null);
-  const epoch = useSyncExternalStore(
-    subscribeToConfigChanges,
-    readConfigEpoch,
-    () => 0,
-  );
-
   // Opt-in, off by default. Checked here rather than at each render site so a
   // disabled bar also costs no request.
   const enabled = useChatRuntimeStore((state) => state.showMemoryBar);
+
+  // Read before the subscription below, because that subscription is not free:
+  // subscribeToConfigChanges watches the whole chat runtime store, which ticks on
+  // every streamed token. Every row in the list mounts this hook, so subscribing
+  // unconditionally meant each token woke every mounted row to re-read a snapshot
+  // it would not use -- including with the feature switched off entirely. Both
+  // branches are module-level constants, so swapping between them resubscribes
+  // once on toggle rather than on every render.
+  const epoch = useSyncExternalStore(
+    enabled ? subscribeToConfigChanges : subscribeNothing,
+    enabled ? readConfigEpoch : readZeroEpoch,
+    () => 0,
+  );
 
   // Whether the number the caller handed us is a dedicated VRAM pool at all.
   // On a Vulkan iGPU the backend reports free shared system RAM minus a host
@@ -405,6 +434,9 @@ export function useModelMemory(
       specDraftCacheType: config?.specDraftCacheDtype,
       ctxCheckpoints: config?.ctxCheckpoints,
       disableVision: config?.disableVision,
+      nBatch: config?.nBatch,
+      nUbatch: config?.nUbatch,
+      tensorParallel: config?.tensorParallel,
     });
     return {
       // Identity for the request is the row's own load target; the saved config
@@ -495,6 +527,8 @@ export function useModelMemory(
       specBytes: estimate?.specBytes,
       specFixedBytes: estimate?.specFixedBytes,
       computeBytes: estimate?.computeBytes,
+      gpuTotalBytes: estimate?.gpuTotalBytes,
+      gpuFloorBytes: estimate?.gpuFloorBytes,
       nCtx: estimate?.nCtx,
       // The dedicated-only aggregate, never the combined one. On a discrete card
       // beside a Vulkan iGPU the combined total adds the iGPU's allowance, which

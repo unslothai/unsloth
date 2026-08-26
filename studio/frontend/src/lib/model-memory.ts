@@ -35,6 +35,23 @@ export interface ModelMemoryInput {
    * its own, but it still has to count against the total.
    */
   computeBytes?: number | null;
+  /**
+   * The load planner's own GPU-resident total, which supersedes the sum of the
+   * segments when present.
+   *
+   * The segments are assembled here from separate fields and so can only include
+   * what this file knows to ask for; the planner's figure already applies the
+   * inherited environment, resolves companions through the loader's search roots
+   * and counts every buffer. Segment geometry still comes from the individual
+   * terms -- this decides the verdict, not the picture.
+   */
+  gpuTotalBytes?: number | null;
+  /**
+   * What the planner still reserves at the shortest context: drafter weights,
+   * flat compute buffers, recurrent rollback state. None of it shrinks when the
+   * context does, so it is the floor an auto-fitted row is judged against.
+   */
+  gpuFloorBytes?: number | null;
   /** The share of specBytes a shorter context cannot reduce (drafter weights). */
   specFixedBytes?: number | null;
   /** Total VRAM of the GPU the model would load onto. */
@@ -144,7 +161,10 @@ export function computeModelMemory(
   const budgetGb = gpuGb * fraction;
   const kvGb = toGb(input.kvBytes) + toGb(input.computeBytes);
   const specGb = toGb(input.specBytes);
-  const totalGb = modelGb + kvGb + specGb;
+  // The planner's total when it gave one, since it accounts for terms these
+  // segments cannot see. Falls back to the sum for a backend too old to send it.
+  const segmentSumGb = modelGb + kvGb + specGb;
+  const totalGb = toGb(input.gpuTotalBytes) || segmentSumGb;
 
   // Only the weights are a hard verdict: they are what they are. The context
   // term is a reservation the loader is free to shrink when nothing pinned it,
@@ -156,8 +176,14 @@ export function computeModelMemory(
   // shrink them. So the hard floor is the weights plus that fixed share -- if
   // target and drafter weights together do not fit, saying "fits" because the
   // context is unpinned describes a load that cannot open at any length.
+  // The planner's floor when it gave one: it names every fixed term, including
+  // the flat compute buffer and a Hybrid Mamba target's rollback state, which
+  // the drafter-weights figure alone misses. Both can be several GiB, and both
+  // survive any context reduction, so folding them into the reducible part let
+  // auto-fit suppress an overage nothing could fix.
   const specFixedGb = toGb(input.specFixedBytes);
-  const irreducibleGb = modelGb + specFixedGb;
+  const irreducibleGb =
+    toGb(input.gpuFloorBytes) || modelGb + specFixedGb;
   const status: ModelMemoryStatus =
     irreducibleGb > budgetGb
       ? "model-exceeds"
@@ -260,6 +286,37 @@ export const KV_SHAPING_ARGS = [
   "--ctx-checkpoints",
 ];
 
+/**
+ * Pass-through args that make the launch hold files this estimate never sized.
+ *
+ * A LoRA, a control vector, an explicit projector or a hand-named drafter are
+ * all resident bytes chosen in the extras box, and none of them reach the
+ * planner through the structured settings. Unlike the KV-shaping flags these do
+ * not reshape a term that was priced -- they add one that was not -- so the
+ * total is a floor rather than an answer and the bar abstains.
+ */
+export const RESIDENT_ADDING_ARGS = [
+  "--lora",
+  "--lora-scaled",
+  "--control-vector",
+  "--control-vector-scaled",
+  "--mmproj",
+  "--model-draft",
+  "-md",
+  "--spec-draft-hf",
+];
+
+/** Whether pass-through args add resident files this estimate did not price. */
+export function extraArgsAddResidentFiles(
+  args: string[] | null | undefined,
+): boolean {
+  if (!args || args.length === 0) return false;
+  return args.some((arg) => {
+    const token = String(arg ?? "").split("=")[0].trim();
+    return RESIDENT_ADDING_ARGS.includes(token);
+  });
+}
+
 /** Whether pass-through args resize the KV cache, so the priced figure stops applying. */
 export function extraArgsShapeKvCache(
   args: string[] | null | undefined,
@@ -302,6 +359,10 @@ export interface EstimateCacheKeyParts {
   ctxCheckpoints?: number | null;
   /** Vision off frees the projector, which changes the footprint. */
   disableVision?: boolean | null;
+  /** Compute buffers scale with these, so they re-key the answer. */
+  nBatch?: number | null;
+  nUbatch?: number | null;
+  tensorParallel?: boolean | null;
 }
 
 /**
@@ -327,6 +388,9 @@ export function estimateCacheKey(parts: EstimateCacheKeyParts): string {
     parts.specDraftCacheType ?? "",
     parts.ctxCheckpoints ?? "default",
     parts.disableVision ? "novision" : "",
+    parts.nBatch ?? "default",
+    parts.nUbatch ?? "default",
+    parts.tensorParallel ? "tp" : "",
   ].join("\x00");
 }
 

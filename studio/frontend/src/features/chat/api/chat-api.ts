@@ -1318,6 +1318,9 @@ export interface KvCacheEstimate {
   /** The planner's complete GPU-resident figure, and its everything-total. */
   gpu_bytes: number | null;
   total_bytes: number | null;
+  /** What still lands on the card at the shortest context: the share no context
+   *  reduction can recover. */
+  gpu_floor_bytes: number | null;
 }
 
 export interface KvCacheEstimateOptions {
@@ -1333,6 +1336,11 @@ export interface KvCacheEstimateOptions {
   specDraftCacheType?: string | null;
   /** --ctx-checkpoints; each adds an SWA snapshot per slot. */
   ctxCheckpoints?: number | null;
+  /** Batch and micro-batch size the compute buffers scale with. */
+  nBatch?: number | null;
+  nUbatch?: number | null;
+  /** Tensor mode replicates buffers on every device in the pool. */
+  tensorParallel?: boolean | null;
   /** Vision off frees the projector, so it is not charged. */
   disableVision?: boolean;
   signal?: AbortSignal;
@@ -1355,6 +1363,9 @@ export async function estimateKvCache(
     specDraftNMax,
     specDraftCacheType,
     ctxCheckpoints,
+    nBatch,
+    nUbatch,
+    tensorParallel,
     disableVision,
     signal,
   } = options;
@@ -1373,6 +1384,11 @@ export async function estimateKvCache(
     params.set("spec_draft_cache_type", specDraftCacheType);
   if (ctxCheckpoints != null && ctxCheckpoints >= 0)
     params.set("ctx_checkpoints", String(ctxCheckpoints));
+  // The compute buffers scale with these, and the planner defaults them when
+  // they are absent, which underprices a config that raised either.
+  if (nBatch && nBatch > 0) params.set("n_batch", String(nBatch));
+  if (nUbatch && nUbatch > 0) params.set("n_ubatch", String(nUbatch));
+  if (tensorParallel) params.set("tensor_parallel", "true");
   if (disableVision) params.set("disable_vision", "true");
   const response = await authFetch(
     `/api/models/kv-cache-estimate?${params}`,

@@ -64,6 +64,18 @@ _MLA_NO_HEAD = {
 }
 
 
+# An ordinary GQA model with nothing special about it, for asserting that the
+# shared machinery ran at all.
+_PLAIN_GQA = {
+    "context_length": 32768,
+    "block_count": 32,
+    "attention.head_count": 32,
+    "attention.head_count_kv": 8,
+    "embedding_length": 4096,
+    "attention.key_length": 128,
+    "attention.value_length": 128,
+}
+
 # A sliding-window model, which is the only shape where --ctx-checkpoints costs
 # anything: each checkpoint is an SWA snapshot per slot.
 _SWA_MODEL = {
@@ -132,6 +144,9 @@ def _call_route(
             spec_draft_cache_type = None,
             ctx_checkpoints = ctx_checkpoints,
             disable_vision = disable_vision,
+            n_batch = None,
+            n_ubatch = None,
+            tensor_parallel = False,
             request = None,
             current_subject = "test",
         )
@@ -579,6 +594,9 @@ class TestAutoAbstainsOverASidecar:
                 spec_draft_cache_type = None,
                 ctx_checkpoints = None,
                 disable_vision = False,
+                n_batch = None,
+                n_ubatch = None,
+                tensor_parallel = False,
                 request = None,
                 current_subject = "test",
             )
@@ -602,3 +620,59 @@ class TestAutoAbstainsOverASidecar:
         # nothing.
         out = self._call(monkeypatch, tmp_path, sidecar = "dspark-model-Q8_0.gguf", supports = False)
         assert out["spec_unpriced"] is False
+
+
+class TestThePlannerFiguresArrive:
+    """The route delegates to the load planner for the terms it cannot derive
+    itself, inside a try/except so a planner that cannot size a model still
+    leaves the KV bar drawn.
+
+    That except is the hazard: every earlier version of this delegation failed
+    into it silently and returned nulls that looked like "not sizeable" rather
+    than "the call is broken". These assert the figures are actually present for
+    a model the planner can size, so a signature drift or an unresolved
+    parameter fails the suite instead of quietly blanking the bar.
+    """
+
+    def test_the_planner_terms_are_populated(self, monkeypatch, tmp_path):
+        model_dir = tmp_path / "planner-model"
+        gguf = _write_gguf(model_dir / "model-Q4_K_M.gguf", _PLAIN_GQA)
+        monkeypatch.setattr(
+            models_routes,
+            "_resolve_quant_gguf",
+            lambda _repo, _quant, _local: (str(gguf), 4_000_000_000),
+        )
+        monkeypatch.setattr(models_routes, "is_local_path", lambda _p: True, raising = False)
+        out = asyncio.run(
+            models_routes.get_kv_cache_estimate(
+                repo_id = str(model_dir),
+                quant = "Q4_K_M",
+                n_ctx = 8192,
+                cache_type_kv = None,
+                n_parallel = 1,
+                speculative_type = None,
+                spec_draft_n_max = None,
+                spec_draft_cache_type = None,
+                ctx_checkpoints = None,
+                disable_vision = False,
+                n_batch = None,
+                n_ubatch = None,
+                tensor_parallel = False,
+                request = None,
+                current_subject = "test",
+            )
+        )
+        assert out["compute_bytes"], (
+            "the planner delegation failed into its except; every launch reserves "
+            "compute buffers, so a null here means the call broke rather than that "
+            "the model has none"
+        )
+        assert out["gpu_bytes"], "no authoritative GPU total"
+        assert out["gpu_floor_bytes"], "no irreducible floor"
+        # The floor is what survives shrinking the context, so it cannot exceed
+        # the full plan, and for a context-sensitive model it should be smaller.
+        assert out["gpu_floor_bytes"] <= out["gpu_bytes"]
+        assert out["gpu_floor_bytes"] < out["gpu_bytes"], (
+            "the floor equals the full plan, so the second pricing did not use a "
+            "shorter context and cannot separate reducible from fixed"
+        )

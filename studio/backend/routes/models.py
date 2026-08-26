@@ -283,6 +283,13 @@ from utils.paths.path_utils import is_appledouble_metadata
 router = APIRouter()
 logger = get_logger(__name__)
 
+# The shortest context worth pricing, used to separate the part of a footprint
+# that shrinks with context from the part that does not. Not zero: zero means
+# "the model's native length" to the planner, which is the opposite of what this
+# asks. One llama.cpp KV stream pads to 256, so a smaller number would not make
+# the cache any smaller and only invites a divide-by-zero somewhere downstream.
+_MIN_PRICED_CONTEXT = 256
+
 
 def derive_model_type(
     is_vision: bool,
@@ -3701,6 +3708,20 @@ async def get_kv_cache_estimate(
         ge = 0,
         description = "--ctx-checkpoints; each one adds an SWA snapshot per slot",
     ),
+    n_batch: Optional[int] = Query(
+        None,
+        ge = 1,
+        description = "--batch-size; the compute buffers scale with it",
+    ),
+    n_ubatch: Optional[int] = Query(
+        None,
+        ge = 1,
+        description = "--ubatch-size; the dominant term in the flat compute buffer",
+    ),
+    tensor_parallel: bool = Query(
+        False,
+        description = "Tensor mode replicates compute buffers on every device in the pool",
+    ),
     disable_vision: bool = Query(
         False,
         description = "Load a vision GGUF without its mmproj, freeing the projector's VRAM",
@@ -3740,6 +3761,7 @@ async def get_kv_cache_estimate(
             "gpu_bytes": None,
             "compute_bytes": None,
             "total_bytes": None,
+            "gpu_floor_bytes": None,
         }
         try:
             from utils.models.model_config import is_local_path
@@ -4006,6 +4028,7 @@ async def get_kv_cache_estimate(
             planner_gpu = None
             planner_compute = None
             planner_total = None
+            planner_floor = None
             planner_unsized = False
             try:
                 from routes.inference import (
@@ -4028,12 +4051,48 @@ async def get_kv_cache_estimate(
                         disable_vision = disable_vision,
                         spec_draft_n_max = spec_draft_n_max,
                         spec_draft_cache_type = spec_draft_cache_type,
+                        n_batch = n_batch,
+                        n_ubatch = n_ubatch,
+                        tensor_parallel = tensor_parallel,
                     )
                     if _b is not None:
                         planner_gpu = int(_b.gpu_bytes) or None
                         planner_compute = int(_b.compute_bytes) or None
                         planner_total = int(_b.total_bytes) or None
                         planner_unsized = bool(_b.drafter_kv_unsized)
+                        # The same plan priced at the shortest context worth
+                        # asking for. Whatever is still there cannot be reduced by
+                        # shortening context: the drafter's weights, the flat
+                        # compute buffer, a Hybrid Mamba target's recurrent
+                        # rollback state. Taken by difference against the real
+                        # plan rather than by naming those terms, because naming
+                        # them is how this route kept missing one; the planner
+                        # decides what is fixed, and asking it twice cannot drift
+                        # from itself.
+                        #
+                        # This is what an unpinned row's hard verdict must be
+                        # drawn against. Auto-fit can shrink the cache, so a
+                        # context-driven overage is not a failure, but nothing it
+                        # can do touches this floor.
+                        _floor = _gguf_memory_breakdown(
+                            _cfg,
+                            path,
+                            n_ctx = _MIN_PRICED_CONTEXT,
+                            speculative_type = speculative_type,
+                            n_parallel = n_parallel,
+                            cache_type_kv = cache_type_kv,
+                            ctx_checkpoints = ctx_checkpoints,
+                            disable_vision = disable_vision,
+                            spec_draft_n_max = spec_draft_n_max,
+                            spec_draft_cache_type = spec_draft_cache_type,
+                            n_batch = n_batch,
+                            n_ubatch = n_ubatch,
+                            tensor_parallel = tensor_parallel,
+                        )
+                        if _floor is not None:
+                            planner_floor = (
+                                min(int(_floor.gpu_bytes) or 0, planner_gpu or 0) or None
+                            )
             except Exception as e:
                 logger.debug(f"planner breakdown failed for '{repo_id}' {quant}: {e}")
 
@@ -4057,6 +4116,9 @@ async def get_kv_cache_estimate(
                 "gpu_bytes": planner_gpu,
                 "compute_bytes": planner_compute,
                 "total_bytes": planner_total,
+                # What remains on the card at the shortest context, so a caller
+                # can tell a context-driven overage from one no context fixes.
+                "gpu_floor_bytes": planner_floor,
                 # The planner saw a drafter whose cache it could not size, so its
                 # own total is a floor.
                 "spec_unpriced": spec_unpriced or planner_unsized,
