@@ -19,12 +19,11 @@ const DISABLE_DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 // DISABLE_DMABUF first, so it never gets there unless we honour it ourselves.
 const FORCE_DMABUF: &str = "WEBKIT_FORCE_DMABUF_RENDERER";
 // Turns accelerated compositing off outright, a level above the transport switches above.
-// Unlike DISABLE_DMABUF, do not assume WebKit special-cases "0" here, so presence alone is
-// treated as an operator override and our own setting below is the documented way off.
+// WebKit is not assumed to special-case "0" here, so presence alone is an operator override
+// and the setting below is the documented way off.
 const DISABLE_COMPOSITING: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
-// Ours, not WebKit's. 1 forces the compositing workaround on, 0 forces it off. It exists so
-// a report from a host outside the narrow rule below can be settled without shipping a new
-// predicate for every configuration.
+// Ours, not WebKit's. 1 forces the compositing workaround on, 0 forces it off, so a report
+// from outside the narrow rule below is settled without shipping a new predicate.
 const DISABLE_COMPOSITING_SETTING: &str = "UNSLOTH_WEBKIT_DISABLE_COMPOSITING";
 // Comma-joined list of the variables we set, so a relaunch tells our own inherited output
 // from an operator's value. Tauri's process::restart does not env_clear. WebKit never reads it.
@@ -56,7 +55,7 @@ enum RenderingWorkaround {
     ForceSharedMemoryOnNvidia,
     DisableDmabuf,
     /// Not a transport at all. The others choose how buffers reach the compositor; this
-    /// stops WebKit compositing on the GPU in the first place.
+    /// stops WebKit compositing on the GPU at all.
     DisableCompositing,
 }
 
@@ -172,23 +171,17 @@ fn rendering_plan(
 
     // A freeze, not a transport failure, and none of the switches below reach it. The
     // WebKit web process stops executing about 45 seconds in and never resumes: every
-    // frontend timer stops together while the native watchdog, in a different process,
-    // keeps answering. Measured on one Wayland NVIDIA host under FORCE_SHM, under
-    // DISABLE_DMABUF and under neither, all three freezing, and fixed both by turning
-    // accelerated compositing off and by leaving Wayland altogether.
+    // frontend timer stops together while the native watchdog, in another process, keeps
+    // answering. One Wayland NVIDIA host froze under FORCE_SHM, under DISABLE_DMABUF and
+    // under neither, and ran clean with compositing off or off Wayland.
     //
-    // It is deliberately NOT gated on Wayland plus NVIDIA. A second NVIDIA Wayland host
-    // was measured on the same driver and the same WebKitGTK and does not freeze at all,
-    // so that predicate would take accelerated compositing away from a machine that is
-    // demonstrably fine.
-    //
-    // The two axes that separate the affected host from the healthy one are mixed GPU
-    // vendors (an Intel iGPU beside the NVIDIA dGPU) and the open kernel module. Requiring
-    // BOTH is overfitted on purpose. With one host on each side neither axis is
-    // established as the cause, and the conservative reading is the one that leaves every
-    // machine measured so far exactly as it is today. Anyone outside the rule who reports
-    // the same freeze gets UNSLOTH_WEBKIT_DISABLE_COMPOSITING=1, which is why that setting
-    // exists: a support answer that survives a restart, instead of a widened guess.
+    // Not gated on Wayland plus NVIDIA alone: a second host on the same driver and the
+    // same WebKitGTK does not freeze, and that predicate would take accelerated
+    // compositing off a machine that is demonstrably fine. The two axes separating them
+    // are mixed GPU vendors (an Intel iGPU beside the NVIDIA dGPU) and the open kernel
+    // module. Requiring BOTH is overfitted on purpose: with one host on each side neither
+    // axis is established, so the conservative rule leaves every measured machine as it is
+    // today. Anyone outside it reporting the same freeze gets the setting above.
     let compositing_setting = env(DISABLE_COMPOSITING_SETTING);
     let requested = |wanted: &str| compositing_setting.as_deref() == Some(OsStr::new(wanted));
     if !requested("0")
@@ -350,9 +343,9 @@ fn nvidia_driver_loaded() -> bool {
 
 /// Is more than one GPU vendor present, e.g. an Intel iGPU beside an NVIDIA dGPU?
 ///
-/// Reads PCI vendor ids straight out of sysfs. No GL context and no device is opened, so
-/// this is safe before GTK init, which is the same constraint that stops the NVIDIA probe
-/// asking which GPU will actually render.
+/// Reads PCI vendor ids out of sysfs, opening no device and no GL context, so it is safe
+/// before GTK init. That is the same constraint that stops the NVIDIA probe asking which
+/// GPU will actually render.
 fn mixed_gpu_vendors_in(dir: &str) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
@@ -366,9 +359,9 @@ fn mixed_gpu_vendors_in(dir: &str) -> bool {
         if !name.starts_with("card") || name.contains('-') {
             continue;
         }
-        // A card with no readable vendor is a virtual framebuffer (simpledrm and friends).
-        // Counting "missing" as a vendor of its own makes every such host look hybrid, and
-        // hosts with one are not rare: this workspace's own box has exactly that card0.
+        // A card with no readable vendor is a virtual framebuffer (simpledrm and friends),
+        // and such hosts are not rare. Counting "missing" as a vendor of its own would make
+        // every one of them look hybrid.
         let Ok(vendor) = std::fs::read_to_string(entry.path().join("device/vendor")) else {
             continue;
         };
@@ -1203,8 +1196,8 @@ mod tests {
             RenderingPlan::PreserveEnvironment
         );
     }
-    // The compositing rule. Two real hosts sit on either side of it, and the tests are
-    // named after what each one measured rather than after the branch they exercise.
+    // The compositing rule. Two real hosts sit on either side of it, and these tests are
+    // named after what each one measured rather than after the branch it exercises.
 
     const WAYLAND: &[(&str, &str)] = &[(WAYLAND_DISPLAY, "wayland-0")];
 
@@ -1222,9 +1215,9 @@ mod tests {
     #[test]
     fn the_healthy_nvidia_wayland_host_is_left_alone() {
         // Linux Mint 22, Cinnamon on Wayland, two discrete NVIDIA cards on the proprietary
-        // module, same driver and same WebKitGTK as the host above. It does not freeze, so
-        // gating on Wayland plus NVIDIA alone would take compositing off a machine that is
-        // measurably fine. It keeps the transport workaround it has today.
+        // module, same driver and same WebKitGTK as the host above, and it does not freeze.
+        // Gating on Wayland plus NVIDIA alone would take compositing off a machine that is
+        // measurably fine, so it keeps the transport workaround it has today.
         let plan = plan_on_graphics(WAYLAND, true, false, false);
         assert_ne!(
             plan,
@@ -1238,8 +1231,8 @@ mod tests {
 
     #[test]
     fn either_axis_alone_is_not_enough() {
-        // Requiring both is the whole point: with one host on each side neither axis is
-        // established, so a machine matching only one keeps today's behaviour.
+        // With one host on each side neither axis is established on its own, so a machine
+        // matching only one keeps today's behaviour.
         for (mixed, open) in [(true, false), (false, true)] {
             assert_eq!(
                 plan_on_graphics(WAYLAND, true, mixed, open),
@@ -1265,8 +1258,8 @@ mod tests {
 
     #[test]
     fn the_setting_settles_a_report_without_a_new_predicate() {
-        // A host outside the rule that reports the same freeze, and the opposite case: a
-        // host inside it that the rule is wrong about. Both without shipping code.
+        // Both directions without shipping code: a host outside the rule that reports the
+        // same freeze, and a host inside it that the rule is wrong about.
         let forced: &[(&str, &str)] = &[(DISABLE_COMPOSITING_SETTING, "1")];
         assert_eq!(
             plan_on_graphics(forced, false, false, false),
@@ -1293,9 +1286,8 @@ mod tests {
 
     #[test]
     fn a_virtual_framebuffer_does_not_make_a_host_look_hybrid() {
-        // card0 with no readable vendor is a virtual framebuffer, and this workspace's own
-        // box has one beside eight NVIDIA cards. Counting a missing vendor as its own
-        // would make every such host match the rule.
+        // A card with no readable vendor is a virtual framebuffer, and hosts pair one with
+        // real GPUs. Counting a missing vendor as its own would make them all match.
         let dir = std::env::temp_dir().join(format!("unsloth-drm-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let card = |name: &str| dir.join(name).join("device");
