@@ -26,11 +26,7 @@ def _step(job: dict, name: str) -> dict:
 
 def test_workspace_contracts_run_on_all_supported_platforms() -> None:
     job = _workflow()["jobs"]["workspace-contracts"]
-    assert job["strategy"]["matrix"]["os"] == [
-        "ubuntu-latest",
-        "macos-15",
-        "windows-latest",
-    ]
+    assert job["strategy"]["matrix"]["os"] == ["ubuntu-latest", "macos-15", "windows-latest"]
 
 
 def test_durable_research_lane_covers_handoff_progress_and_storage() -> None:
@@ -52,11 +48,7 @@ def test_frontend_lane_runs_the_full_contract_suite() -> None:
 
 def test_native_lane_runs_full_tests_on_all_supported_platforms() -> None:
     job = _workflow()["jobs"]["native-contracts"]
-    assert job["strategy"]["matrix"]["os"] == [
-        "ubuntu-22.04",
-        "macos-15",
-        "windows-latest",
-    ]
+    assert job["strategy"]["matrix"]["os"] == ["ubuntu-22.04", "macos-15", "windows-latest"]
     command = _step(job, "Run full Tauri contract suite")["run"]
     assert command.strip() == "cargo test -- --test-threads=1"
 
