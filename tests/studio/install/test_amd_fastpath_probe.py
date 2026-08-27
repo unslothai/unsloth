@@ -636,3 +636,20 @@ def test_a_named_arch_resolves_a_host_no_ordinal_can(monkeypatch):
         env = {"HIP_VISIBLE_DEVICES": "1", "UNSLOTH_ROCM_GFX_ARCH": "gfx1103"},
     )
     assert _needs_pass() is True
+
+
+def test_a_rocm_pin_is_not_asked_a_hardware_question(monkeypatch):
+    """A pin commits to an index regardless of the visible GPU, which is why every hardware
+    gate above it is skipped. The family question is a hardware question and belongs with
+    them: asked under a pin, it answers for whatever card the machine running the probe
+    happens to have, which is how the end-to-end CLI case began failing on an AMD box."""
+    _rocm_torch(
+        monkeypatch,
+        family = "gfx110x-all",
+        gfx = ("gfx1151",),
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm6.4"},
+    )
+    assert _needs_pass() is False
+    # The same stale family without a pin is exactly what the repair is for.
+    _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1151",))
+    assert _needs_pass() is True

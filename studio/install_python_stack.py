@@ -2206,6 +2206,12 @@ def _rocr_visible_subset(gfx_devices: "list[str]") -> "tuple[list[str], bool]":
             continue
         if 0 <= _idx < len(gfx_devices):
             _kept.append(gfx_devices[_idx])
+    # An out-of-range index keeps the whole list, deliberately. _pick_visible_index warns and
+    # falls back to GPU 0 for exactly that value, and says so is the same reading setup.ps1's
+    # Resolve-VisibleGpuIndex uses; a second, stricter rule here would split the two. It also
+    # costs more than it saves: ROCR_VISIBLE_DEVICES=1 on a one-GPU box is a typo, and reading
+    # it as "no GPU" withdraws the repair from the single-GPU hosts this PR exists for rather
+    # than installing a wheel they can use once the variable is fixed.
     return (_kept or gfx_devices), _unresolved
 
 
@@ -3231,7 +3237,11 @@ def _amd_torch_needs_dependency_pass() -> bool:
     # the old one, or the reported gfx1103 on a generic wheel with no kernels for it, would
     # be repaired on a fresh install and never on an update. Forcing the pass costs a
     # dependency pass, not a reinstall: _ensure_rocm_torch still decides, and it keeps a
-    # family that already matches. So ask only what it asks, and only where it would act.
+    # family that already matches. So ask only what it asks, and only where it would act --
+    # and not under a pin, which commits to an index regardless of the visible GPU and skips
+    # every hardware gate above for that reason. This is a hardware question.
+    if _explicit_rocm_torch_index_url() is not None:
+        return False
     return _rocm_torch_family_needs_repair(_runtime_gfx_target(_infer_linux_amd_gfx_arch())[0])
 
 
@@ -3665,14 +3675,24 @@ def _ensure_rocm_torch() -> None:
                 # "reinstalling for this GPU", install nothing, and leave the family it
                 # just called incompatible in place on every update. The target's own AMD
                 # index needs no host ROCm version, so use it when there is no generic tag.
-                if _generic_pytorch_rocm_tag(ver) is None and _want:
-                    _arch_index_url = _amd_arch_index_url(_runtime_gfx)
-                    if _arch_index_url is not None:
-                        _arch_index_pkgs = (
-                            _ROCM_TORCH_PKG_SPECS["rocm7.2"]
-                            if _want in _ROCM_GFX_TORCH211_LEAVES
-                            else _ROCM_ARCH_INDEX_TORCH_PKG_SPEC
-                        )
+                if _generic_pytorch_rocm_tag(ver) is None:
+                    if _want:
+                        _arch_index_url = _amd_arch_index_url(_runtime_gfx)
+                        if _arch_index_url is not None:
+                            _arch_index_pkgs = (
+                                _ROCM_TORCH_PKG_SPECS["rocm7.2"]
+                                if _want in _ROCM_GFX_TORCH211_LEAVES
+                                else _ROCM_ARCH_INDEX_TORCH_PKG_SPEC
+                            )
+                    else:
+                        # The replacement GPU has no AMD per-arch index at all: gfx942, gfx950
+                        # and the other datacentre parts live only on the generic one. With no
+                        # readable host version there is no tag either, so the branch would
+                        # announce the reinstall and install nothing, leaving the stale
+                        # per-arch wheels -- which carry no kernels for this GPU -- in place on
+                        # every update. Take the newest generic index this installer knows:
+                        # a generic-only target is by definition one it carries.
+                        ver = max(_ROCM_TORCH_INDEX)
 
     # gfx906 (MI50 / Radeon VII): is this the runtime GPU target? Used below to skip
     # the generic bitsandbytes wheel (no gfx906 kernels). This must hold even under

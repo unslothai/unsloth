@@ -1055,3 +1055,30 @@ def test_the_torch_floor_applies_to_the_family_not_to_the_missing_kernel_gate(gf
         torch_probe = _ROCM_ARCH_TORCH,
         installed_family = leaf.lower(),
     )
+
+
+@pytest.mark.parametrize("gfx", ["gfx942", "gfx950"])
+def test_a_generic_only_replacement_gpu_still_gets_a_wheel(gfx):
+    """The datacentre parts live only on the generic index, so a stale per-arch install that
+    outlives its GPU has no AMD leaf to be repaired onto. With no readable host version there
+    is no generic tag either, so the branch announced the reinstall and installed nothing --
+    leaving wheels with no kernels for this GPU in place on every update."""
+    calls = _run_install(
+        gfx_devices = (gfx,),
+        inferred = None,
+        rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+    )
+    assert _GENERIC in calls, calls
+    assert "carries no" in _run_install.printed, _run_install.printed
+
+
+def test_a_rocr_mask_index_out_of_range_keeps_todays_fallback():
+    """_pick_visible_index warns and falls back to GPU 0 for an out-of-range index, and says
+    that is the reading setup.ps1's Resolve-VisibleGpuIndex uses. A stricter rule here would
+    split the two, and would withdraw the repair from the single-GPU hosts this PR exists for:
+    ROCR_VISIBLE_DEVICES=1 on a one-GPU box is a typo, not a request for no GPU."""
+    assert _target(["gfx1103"], "kfd", {"ROCR_VISIBLE_DEVICES": "1"}) == "gfx1103"
+    assert _target(["gfx1103"], "kfd", {"ROCR_VISIBLE_DEVICES": "0,9"}) == "gfx1103"
+    assert _target(["gfx1103", "gfx1200"], "kfd", {"ROCR_VISIBLE_DEVICES": "1"}) == "gfx1200"
