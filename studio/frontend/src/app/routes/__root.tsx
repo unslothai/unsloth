@@ -16,6 +16,7 @@ import {
   ChatPage,
   type ChatSearch,
   clearNewChatDraft,
+  hydrateModelDisclaimerPreference,
   StopRunningChatsDialog,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -154,6 +155,7 @@ function ChatSettingsHydrationMount() {
   );
   useEffect(() => {
     void hydratePersistedSettings();
+    hydrateModelDisclaimerPreference().catch(() => undefined);
   }, [hydratePersistedSettings]);
   return null;
 }
