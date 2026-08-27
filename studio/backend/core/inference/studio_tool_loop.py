@@ -716,7 +716,11 @@ class _Turn:
                         else pending_before + new_name
                     )
                     suppress_name = True
-                if isinstance(extra, dict) and extra:
+                # Only once a name has announced the next call: metadata that
+                # arrives alone belongs to the call that just closed, and
+                # parking it there loses the signature outright when no further
+                # call follows.
+                if suppress_name and isinstance(extra, dict) and extra:
                     # Announced with the name, so it describes the call being
                     # announced. Merging it into the closed call leaves that
                     # call wearing another call's thoughtSignature and the new
@@ -862,6 +866,40 @@ class _Turn:
         # Later id-less fragments continue the last call, finished or not.
         self.open_key_by_index[index] = open_key
 
+    def _announced_but_unopened(self) -> list[dict[str, Any]]:
+        """Calls a name announced that no argument fragment ever opened.
+
+        A tool that takes no parameters can be announced and then simply end,
+        and ``_normalized_call`` already reads empty arguments as ``{}``, so
+        dropping these runs one fewer tool than the model asked for.
+
+        A name that repeats or extends the one the slot already holds is left
+        alone: that is exactly how llama-server resends a name, or grows one,
+        and it is indistinguishable from a second no-argument call to the same
+        tool, so inventing a call there would run a tool twice off one request.
+        Read rather than flushed, so a later argument fragment that does open
+        the call still opens it, and this stops reporting it.
+        """
+        out: list[dict[str, Any]] = []
+        for index in sorted(self.pending_name_by_index):
+            name = self.pending_name_by_index[index]
+            if not name:
+                continue
+            held = self.by_index.get(self.open_key_by_index.get(index, index))
+            held_name = held["function"]["name"] if held is not None else ""
+            if held_name and (held_name.startswith(name) or name.startswith(held_name)):
+                continue
+            call: dict[str, Any] = {
+                "id": "",
+                "type": "function",
+                "function": {"name": name, "arguments": ""},
+            }
+            extra = self.pending_extra_by_index.get(index)
+            if extra:
+                call["extra_content"] = dict(extra)
+            out.append(call)
+        return out
+
     def calls(self, taken: set[str] | None = None) -> list[dict[str, Any]]:
         """Every call this turn produced, with ids unique across the whole run.
 
@@ -873,7 +911,9 @@ class _Turn:
         seen: set[str] = taken if taken is not None else set()
         out: list[dict[str, Any]] = []
         for position, call in enumerate(
-            [self.by_index[key] for key in self.order] + list(self.healed)
+            [self.by_index[key] for key in self.order]
+            + self._announced_but_unopened()
+            + list(self.healed)
         ):
             normalized = _normalized_call(call, fallback_id = f"call_{self.round}_{position}")
             if normalized is None:

@@ -382,3 +382,44 @@ def test_one_argument_streamed_a_character_at_a_time_stays_linear():
         turn.merge_structured([_delta(0, None, ch)])
     assert time.perf_counter() - started < 2.0
     assert _shape(turn) == [("write", payload)]
+
+
+def test_metadata_arriving_alone_stays_on_the_call_that_closed():
+    # No name, so nothing announces another call: the signature is this call's.
+    # Parking it lost it outright when no further call followed.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured([{"index": 0, "extra_content": {"google": {"thought_signature": "SIG"}}}])
+
+    assert _shape(turn) == [("alpha", '{"a":1}')]
+    entries = [turn.by_index[key] for key in turn.order]
+    assert entries[0]["extra_content"] == {"google": {"thought_signature": "SIG"}}
+
+
+def test_a_call_announced_by_name_only_is_still_reported():
+    # A tool that takes no parameters can be announced and then simply end, and
+    # _normalized_call already reads empty arguments as {}.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured([_delta(0, "beta", "")])
+
+    reported = [(call["function"]["name"], call["function"]["arguments"]) for call in turn.calls()]
+    assert reported == [("alpha", '{"a":1}'), ("beta", "{}")]
+    ids = [call["id"] for call in turn.calls()]
+    assert len(set(ids)) == len(ids)
+
+    # And a later fragment that does open it opens it, rather than adding a
+    # second call beside the one this reported.
+    turn.merge_structured([_delta(0, None, '{"b":2}')])
+    assert _shape(turn) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
+
+
+def test_a_name_resent_or_grown_after_a_call_closed_invents_nothing():
+    # Indistinguishable from a second no-argument call to the same tool, so the
+    # conservative reading is the one that does not run a tool twice.
+    for resent in ("alpha", "alpha_long"):
+        turn = _Turn()
+        turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+        turn.merge_structured([_delta(0, resent, "")])
+
+        assert _shape(turn) == [("alpha", '{"a":1}')]

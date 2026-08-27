@@ -6968,6 +6968,16 @@ export function createOpenAIStreamAdapter(
                   const idx =
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
+                  // The chunk is cast, not validated, and llama-server has
+                  // shipped `arguments` as a decoded object rather than the
+                  // string the API specifies. Reading it as a string aborted
+                  // the whole adapter, so hold it to the type the accumulator
+                  // is written against, which is what the backend already does
+                  // with its own isinstance check.
+                  const deltaArgs =
+                    typeof call.function?.arguments === "string"
+                      ? call.function.arguments
+                      : "";
                   // Unsloth's local Codex loop follows the OpenAI tool-call delta with
                   // tool_start/tool_end events. Resolve the backend id now so all three
                   // event shapes update one run-unique card instead of leaving the raw
@@ -7009,7 +7019,7 @@ export function createOpenAIStreamAdapter(
                     !!stablePartId && matched?.toolCallId === stablePartId;
                   // Whitespace after a closing brace is legal JSON and says
                   // nothing about another call.
-                  const bringsArgs = !!call.function?.arguments?.trim();
+                  const bringsArgs = !!deltaArgs.trim();
                   const closedSlot = slotIsClosed && !namesThisCall;
                   // A name reaching a closed slot cannot be read yet: the same
                   // tool called twice announces itself exactly as llama-server
@@ -7028,10 +7038,14 @@ export function createOpenAIStreamAdapter(
                   // closed call and its name is that call's, resent. Only a
                   // delta with no argument text at all announces the next one.
                   const defersToNextCall =
-                    closedSlot && !opensNextCall && !call.function?.arguments;
+                    closedSlot && !opensNextCall && !deltaArgs;
                   const suppressName =
                     defersToNextCall && !!call.function?.name;
-                  if (defersToNextCall && call.extra_content !== undefined) {
+                  // Only once a name has announced the next call: metadata that
+                  // arrives alone belongs to the card that just closed, and
+                  // parking it there loses the signature outright when no
+                  // further call follows.
+                  if (suppressName && call.extra_content !== undefined) {
                     // Announced with the name, so it describes the call being
                     // announced. Left on the closed card it gives that call
                     // another call's signature and the new call none, and
@@ -7059,7 +7073,7 @@ export function createOpenAIStreamAdapter(
                   ) {
                     codexRoundToolCallIds.push(stablePartId);
                   }
-                  const argsFragment = call.function?.arguments ?? "";
+                  const argsFragment = deltaArgs;
                   streamedChars +=
                     argsFragment.length + (call.function?.name?.length ?? 0);
                   if (existing) {
@@ -7105,7 +7119,7 @@ export function createOpenAIStreamAdapter(
                     const prevExtra = (existing as PositionedToolCallPart)
                       .extra_content;
                     // Metadata parked for the next call is not this card's.
-                    const incomingExtra = defersToNextCall
+                    const incomingExtra = suppressName
                       ? undefined
                       : call.extra_content;
                     if (
@@ -7412,6 +7426,49 @@ export function createOpenAIStreamAdapter(
             throw streamError;
           }
         }
+        // A tool that takes no parameters can be announced by name and then
+        // simply end, so the arguments that would have opened its card never
+        // arrive. The stream is over, so the name is not waiting for anything
+        // any more and dropping it would show one card fewer than the model
+        // asked for.
+        //
+        // A name that repeats or extends the one the slot already holds is
+        // left alone: that is exactly how llama-server resends a name, or
+        // grows one, and it cannot be told apart from a second no-argument
+        // call to the same tool, so inventing a card there would show a call
+        // the model never made. Same rule as the backend's.
+        for (const [pendingIdx, pendingName] of pendingNameByIndex) {
+          if (!pendingName) continue;
+          const slot = findStreamedToolCallPartIndex(
+            toolCallParts,
+            undefined,
+            pendingIdx,
+          );
+          const heldName =
+            slot === -1 ? "" : (toolCallParts[slot].toolName ?? "");
+          if (
+            heldName &&
+            (heldName.startsWith(pendingName) ||
+              pendingName.startsWith(heldName))
+          ) {
+            continue;
+          }
+          const parkedExtra = pendingExtraByIndex.get(pendingIdx);
+          toolCallParts.push({
+            type: "tool-call" as const,
+            toolCallId: mintSplitToolCallId(pendingIdx),
+            toolName: pendingName,
+            argsText: "",
+            args: {},
+            textCursor: cumulativeText.length,
+            ...(parkedExtra !== undefined
+              ? { extra_content: parkedExtra }
+              : {}),
+            ...(pendingIdx !== undefined ? { _delta_index: pendingIdx } : {}),
+          } as PositionedToolCallPart);
+        }
+        pendingNameByIndex.clear();
+        pendingExtraByIndex.clear();
         // The model asked for Deep Research, so the run takes over from here and its card
         // replaces this reply. Not after Stop: the user ended the turn before it got there.
         if (deepResearchHandoff.question !== null && !runSignal.aborted) {
