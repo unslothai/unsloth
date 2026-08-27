@@ -191,7 +191,19 @@ function isImmediatelyInvoked(node: ts.Node): boolean {
     current = parent;
     parent = parent.parent;
   }
-  return Boolean(parent) && ts.isCallExpression(parent) && parent.expression === current;
+  if (!parent) return false;
+  if (ts.isCallExpression(parent) && parent.expression === current) return true;
+  // `.call(...)` and `.apply(...)` invoke on the spot too, but they put a
+  // property access between the function expression and the call, so the check
+  // above reads the body as deferred and the walk never looks inside it.
+  return (
+    ts.isPropertyAccessExpression(parent) &&
+    parent.expression === current &&
+    (parent.name.text === "call" || parent.name.text === "apply") &&
+    Boolean(parent.parent) &&
+    ts.isCallExpression(parent.parent) &&
+    parent.parent.expression === parent
+  );
 }
 
 /** Nodes whose bodies run when called, not when the module loads. */
@@ -403,6 +415,14 @@ test("the scan catches every shape the regex version missed", () => {
     [
       "immediately invoked function expression",
       `import { K } from "${BARREL}";\nconst a = (function () { return K; })();\n`,
+    ],
+    [
+      "function expression invoked through call",
+      `import { K } from "${BARREL}";\nconst a = (function () { return K; }).call(undefined);\n`,
+    ],
+    [
+      "function expression invoked through apply",
+      `import { K } from "${BARREL}";\nconst a = (function () { return K; }).apply(undefined, []);\n`,
     ],
     [
       "computed instance field name",
