@@ -367,8 +367,9 @@ def test_kfd_topology_answers_when_neither_userland_probe_is_installed():
     assert _GENERIC not in calls, calls
 
 
-@pytest.mark.parametrize("mask", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES",
-                                  "CUDA_VISIBLE_DEVICES"])
+@pytest.mark.parametrize(
+    "mask", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
+)
 @pytest.mark.parametrize("value", ["", "-1"])
 def test_a_mask_that_selects_no_gpu_is_not_undone_by_kfd(mask, value):
     """An empty (or -1) visible-device mask selects NO GPU, and KFD is filtered by none.
@@ -386,8 +387,7 @@ def test_a_mask_that_selects_no_gpu_is_not_undone_by_kfd(mask, value):
 def test_a_mask_naming_a_device_still_reaches_kfd():
     """The guard is only for a mask that selects nothing: one that names an ordinal leaves
     a runtime-only host exactly as it was."""
-    calls = _run_install(gfx_devices = (), kfd = ("gfx1103",),
-                         env = {"HIP_VISIBLE_DEVICES": "0"})
+    calls = _run_install(gfx_devices = (), kfd = ("gfx1103",), env = {"HIP_VISIBLE_DEVICES": "0"})
     assert f"{_AMD}/gfx110X-all/" in calls, calls
 
 

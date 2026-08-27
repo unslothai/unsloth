@@ -1842,9 +1842,7 @@ def _runtime_gfx_target(
     # then means "the user said none", not "this host has no ROCm userland", which is the
     # shape the fallback exists for. A mask that names a device is unaffected.
     _mask = _first_set_visible_mask()
-    _mask_selects_no_gpu = (
-        _mask is not None and (os.environ.get(_mask) or "").strip() in ("", "-1")
-    )
+    _mask_selects_no_gpu = _mask is not None and (os.environ.get(_mask) or "").strip() in ("", "-1")
     if not gfx_devices and not _mask_selects_no_gpu:
         # The kernel's own topology: one entry per GPU node, in node order.
         gfx_devices = _kfd_gfx_targets()
