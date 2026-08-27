@@ -342,14 +342,31 @@ def test_a_moe_load_spills_expert_tensors_not_dense_ffn():
 def test_lm_head_is_only_spilled_after_ffn():
     """43% of generation on its own, 16% on top of an already host-bound step, so
     it is never the first rung."""
-    # 4608, not 5632: the planner no longer withholds a pipeline GiB from a
-    # SINGLE card, so the old figure left a deficit the FFN alone covered and
-    # lm_head was never reached.
-    tight = _plan(_Stub(), model_size = 60 * GIB, kv = 2 * GIB, free_mib = 4608)
-    assert tight is not None
-    assert tight.spilled_lm_head is True
-    assert tight.spilled_blocks, "lm_head is never the first rung"
-    assert tight.ot_patterns[-1] == LM_HEAD_SPILL_PATTERN
+    # Stated over a sweep rather than at one hand-picked card size, because the
+    # cost gate can decline any given one and a single fixture would then retire
+    # its own assertion silently, looking like a pass.
+    #
+    # Through the SEAM the lm_head rung is currently unreachable on this model,
+    # and that is a real consequence of the gate rather than a gap in the sweep:
+    # under 4 GiB the load does not fit even with everything spilled, from 4 to
+    # 8 GiB the gate declines (20536 ms against 18307 ms at 4096, narrowing to
+    # 11634 against 12333 at 8192), and by 12 GiB a plain FFN spill covers the
+    # deficit without ever reaching lm_head. Reaching for lm_head means the
+    # deficit is large, and a large deficit is exactly where the fitter wins --
+    # it frees a moved layer's cache share as well as its weights, where -ot
+    # frees only the bytes it moves. The ORDER is still the claim, so it is
+    # asserted of every plan the seam produces, and the ungated ladder ordering
+    # is pinned directly in test_offload_planner.py.
+    spilled_anything = False
+    for free_mib in (4096, 4608, 5632, 6144, 8192, 10240, 12288, 14336):
+        plan = _plan(_Stub(), model_size = 60 * GIB, kv = 2 * GIB, free_mib = free_mib)
+        if plan is None or not plan.spills_anything:
+            continue
+        spilled_anything = True
+        if plan.spilled_lm_head:
+            assert plan.spilled_blocks, "lm_head is never the first rung"
+            assert plan.ot_patterns[-1] == LM_HEAD_SPILL_PATTERN
+    assert spilled_anything, "no card size spilled at all, so the sweep tested nothing"
 
 
 def test_the_lm_head_pattern_is_anchored():
@@ -425,11 +442,20 @@ def test_the_measured_cache_floors_the_planners_own_estimate():
 
 def test_the_seam_hands_the_planner_studios_cache_size():
     """The byte-accurate number is computed at the call site and was previously
-    only tested for nonzero. A bigger measured cache has to buy more spill."""
+    only tested for nonzero. A bigger measured cache has to reach the planner.
+
+    Measured as predicted cost rather than as blocks spilled. Those agreed until
+    the cost gate landed, and now do not: the 10 GiB cache leaves a deficit so
+    large that spilling FFN alone has to move 9.3 GiB, where llama.cpp's own
+    fitter reaches the same target moving 5.7 GiB -- because a moved LAYER frees
+    its share of the cache too, and a moved FFN tensor does not. So the big-cache
+    case is declined, and counting its blocks would now read as the cache not
+    having arrived at all. The cost is the honest witness either way.
+    """
     small = _plan(_Stub(), kv = 2 * GIB, free_mib = 14 * 1024)
     large = _plan(_Stub(), kv = 10 * GIB, free_mib = 14 * 1024)
     assert small is not None and large is not None
-    assert len(large.spilled_blocks) > len(small.spilled_blocks)
+    assert large.predicted_request_ms > small.predicted_request_ms > 0.0
 
 
 # --------------------------------------------------------------- the revocation
@@ -1250,10 +1276,19 @@ def test_a_multi_gpu_separate_drafter_declines_rather_than_booking_it_on_device_
     # that card's layers actually go.
     assert _plan(stub, separate_draft = True, **two_cards) is None
 
-    # Only the drafter is refused: the same two cards without one still plan, and
-    # really spill, so the abstain is not the whole configuration being dropped.
+    # Only the drafter is refused. The control is the REASON, not the outcome:
+    # the same two cards without a drafter also decline now, but on cost, and a
+    # cost decline would satisfy a "did it abstain" control while proving nothing
+    # about the drafter. Distinguishing the two is the whole point of a control.
     without = _plan(stub, **two_cards)
-    assert without is not None and without.spills_anything
+    assert without is not None, "the drafter is what the seam refuses, not the cards"
+    if not without.spills_anything:
+        # It may still decline -- on this pair the spill does not beat the fitter
+        # by the margin -- but it must decline for THAT reason. A per-device
+        # decline here would mean the cards were the problem all along and the
+        # drafter assertion above proved nothing.
+        assert "not worth it" in without.reason, without.reason
+        assert "device by device" not in without.reason, without.reason
 
     # Single card is unchanged: there the flat charge IS the right one.
     one_card = _plan(_Stub(), free_mib = 14 * 1024, separate_draft = True)

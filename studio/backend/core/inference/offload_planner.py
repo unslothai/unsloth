@@ -32,6 +32,7 @@ from core.inference.offload_cost_model import (
     Placement,
     TensorGroup,
     generation_penalty_ms,
+    rank,
 )
 from core.inference.offload_layout import (
     LM_HEAD_PATTERN,
@@ -136,6 +137,29 @@ class PlanOptions:
     # of the VRAM footprint and into the host one; charging them to VRAM anyway
     # would spill FFN blocks for a deficit the child never has.
     kv_on_host: bool = False
+    # The request shape the plan is SCORED at. ``rank`` refuses to bake one in,
+    # for good reason: a long prompt with a short reply and a short prompt with a
+    # long reply rank placements differently, and the planner spent its whole
+    # life scoring only the second. Prefill-weighted by default because that is
+    # the shape of a chat turn carrying any context at all, and the shape #9861
+    # measured (a ~2.3K token prompt, 128 generated).
+    workload_prompt_tokens: int = 2048
+    workload_generated_tokens: int = 256
+    n_ubatch: int = 512
+    # How much of llama.cpp's own predicted penalty a plan must remove before it
+    # is worth deviating from ``--fit on`` at all. Not 0: the two outcomes are
+    # not symmetric. #9861 measured all 33 cells where the planner declined at
+    # 0.93x to 1.16x -- abstaining is nearly free -- while planning a cell it
+    # should not have cost up to 8x. A near-tie is therefore not worth taking,
+    # and this is the margin that says so.
+    min_penalty_reduction: float = 0.10
+    # Whether that comparison may VETO a plan. Default off, so this module keeps
+    # answering the question it always answered -- "what placement covers the
+    # deficit" -- and every existing caller and test still gets that answer. The
+    # launch seam in llama_cpp.py turns it on, because it is the only caller that
+    # has an alternative: when the planner declines, it emits ``--fit on``. A
+    # caller asking the planner what it CAN do is not asking whether it should.
+    require_cost_win: bool = False
 
 
 @dataclass(frozen = True)
@@ -161,6 +185,14 @@ class Plan:
     # this was planned for. 0.0 when nothing is spilled. Reported so callers can
     # surface the real cost instead of implying a spill is free.
     predicted_gen_penalty_ms: float = 0.0
+    # The two sides of the cost gate, in ms for a whole request of
+    # ``PlanOptions``'s workload shape: this placement, and what llama.cpp's own
+    # fitter would have cost instead. Both 0.0 when the gate did not run (no
+    # spill to weigh, or a caller who is not choosing). Reported rather than
+    # only logged, because "the planner declined" is not an answer anyone can
+    # check without the numbers it declined on.
+    predicted_request_ms: float = 0.0
+    predicted_fit_request_ms: float = 0.0
     reason: str = ""
 
     @property
@@ -206,6 +238,42 @@ def _select_blocks(
     return chosen, freed
 
 
+def _ffn_group(layout: ModelLayout, spilled: int) -> TensorGroup:
+    """The spillable FFN bytes as one group, charged the way they are read.
+
+    MoE experts are charged their ROUTED fraction, since only ``n_expert_used``
+    of ``n_expert`` are touched per generated token, which is why MoE tolerates
+    spilling far better than a fully activated dense FFN.
+    """
+    if layout.is_moe and layout.n_expert and layout.n_expert_used:
+        return TensorGroup(
+            "experts",
+            spilled,
+            Access.SCATTERED,
+            activation_fraction = layout.n_expert_used / layout.n_expert,
+        )
+    return TensorGroup("ffn", spilled, Access.CONTIGUOUS)
+
+
+def _spill_placement(
+    layout: ModelLayout, chosen: Sequence[BlockLayout], spill_lm_head: bool
+) -> Placement:
+    """This plan's spill, as something the cost model can price.
+
+    ``-ot`` moves the named weights and nothing else, so the attention cache
+    stays on the device: ``kv_host_bytes`` is 0 here by construction. That is the
+    whole of the planner's claimed advantage over a layer fitter, and pricing it
+    is how :func:`_fit_fallback_placement` gets to argue back.
+    """
+    groups: list[TensorGroup] = []
+    spilled = sum(b.spillable_bytes for b in chosen)
+    if spilled:
+        groups.append(_ffn_group(layout, spilled))
+    if spill_lm_head and layout.lm_head_bytes:
+        groups.append(TensorGroup("lm_head", layout.lm_head_bytes, Access.SINGLE_MATVEC))
+    return Placement(host_groups = groups)
+
+
 def _spill_penalty_ms(
     layout: ModelLayout, chosen: Sequence[BlockLayout], spill_lm_head: bool, host: HostProfile
 ) -> float:
@@ -213,29 +281,109 @@ def _spill_penalty_ms(
 
     Spilled weights are read by the CPU backend, not streamed to the GPU: ggml
     only migrates an op at batch >= 32 and decode is batch 1, so the cost tracks
-    host cores. MoE experts are charged their ROUTED fraction, since only
-    ``n_expert_used`` of ``n_expert`` are touched per token, which is why MoE
-    tolerates spilling far better than a fully activated dense FFN.
+    host cores.
     """
-    groups: list[TensorGroup] = []
-    spilled = sum(b.spillable_bytes for b in chosen)
-    if spilled:
-        if layout.is_moe and layout.n_expert and layout.n_expert_used:
-            groups.append(
-                TensorGroup(
-                    "experts",
-                    spilled,
-                    Access.SCATTERED,
-                    activation_fraction = layout.n_expert_used / layout.n_expert,
-                )
-            )
-        else:
-            groups.append(TensorGroup("ffn", spilled, Access.CONTIGUOUS))
-    if spill_lm_head and layout.lm_head_bytes:
-        groups.append(TensorGroup("lm_head", layout.lm_head_bytes, Access.SINGLE_MATVEC))
-    if not groups:
+    placement = _spill_placement(layout, chosen, spill_lm_head)
+    if not placement.host_groups:
         return 0.0
-    return generation_penalty_ms(Placement(host_groups = groups), host)
+    return generation_penalty_ms(placement, host)
+
+
+def _fit_fallback_placement(
+    layout: ModelLayout,
+    opts: PlanOptions,
+    budget: int,
+    n_ctx: int,
+    *,
+    quantised: bool,
+    kv_bytes_floor: int,
+    kv_on_host: bool,
+) -> Optional[Placement]:
+    """What llama.cpp's own fitter would place here, priced the same way.
+
+    This is the arm the planner is really competing against. When the planner
+    abstains the launch path emits ``--fit on`` and no ``-ngl``, and fitting
+    lowers the offloaded layer count until the load fits -- moving WHOLE layers,
+    attention and FFN together, and dragging each moved layer's share of the
+    attention cache to the host with it (``-ngl`` drags the cache off, ``-ot``
+    does not). The output tensor rides the layer list at ``n_layer_all``, so it
+    is the first thing to leave once the count drops below the layer count.
+
+    Modelling it matters because the fallback is CHEAPER than a spill whenever
+    the model nearly fitted anyway: few layers move, the cache mostly stays, and
+    the planner's own placement has bought very little for its host round trip.
+    #9861's two worst cells are exactly that shape -- an 8B with 11 GiB free,
+    where the planner spilled 22 and 29 of 36 blocks and landed at 0.19x and
+    0.21x against a fitter that had barely anything to move.
+
+    ``None`` when even moving every layer does not fit, i.e. there is no viable
+    fallback to lose to and the planner should say whatever it has to say.
+    """
+    blocks = list(layout.blocks)
+    if not blocks:
+        return None
+    resident = all_resident_bytes(
+        layout,
+        n_ctx,
+        kv_quantised = quantised,
+        kv_bytes_floor = kv_bytes_floor,
+        kv_on_host = kv_on_host,
+    )
+    # The cache follows the layer, so a layer moved to host takes its share with
+    # it. Per-layer rather than per-attention-layer: SWA already makes the
+    # planner abstain upstream, so the shares are uniform by the time we get here.
+    kv_total = 0 if kv_on_host else cache_bytes(
+        layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor
+    )
+    kv_per_layer = kv_total / len(blocks)
+
+    # The cache is RESERVED at n_ctx but only the live prefix is ever read, and
+    # reading is what costs. Pricing the reservation charges a 32K allocation for
+    # a 2K conversation, which is the single biggest thumb on the scale in favour
+    # of spilling: it makes any placement that moves cache look catastrophic and
+    # the planner's own -ot placement look free by comparison. The reporter on
+    # #9861 flagged the same gap from the measurement side -- 32768 allocated,
+    # about 2.2K ever live. Feasibility above still uses the full reservation,
+    # because llama.cpp really does allocate it.
+    live_tokens = min(n_ctx, max(1, opts.workload_prompt_tokens + opts.workload_generated_tokens))
+    kv_live_per_layer = cache_bytes(
+        layout, live_tokens, kv_quantised = quantised
+    ) / len(blocks) if not kv_on_host else 0.0
+
+    # llama.cpp keeps the FIRST n_gpu_layers on the device, so the host takes the
+    # trailing ones. Walk out from the end until the remainder fits.
+    host_weights = 0
+    host_spillable = 0
+    for moved, block in enumerate(reversed(blocks), start = 1):
+        host_weights += block.spillable_bytes + block.resident_bytes
+        host_spillable += block.spillable_bytes
+        freed = host_weights + int(kv_per_layer * moved) + layout.lm_head_bytes
+        if resident - freed <= budget:
+            groups: list[TensorGroup] = []
+            if host_spillable:
+                groups.append(_ffn_group(layout, host_spillable))
+            attention = host_weights - host_spillable
+            if attention:
+                # Attention, norms and routers: dense, read in full every token.
+                groups.append(TensorGroup("layers", attention, Access.CONTIGUOUS))
+            if layout.lm_head_bytes:
+                groups.append(
+                    TensorGroup("lm_head", layout.lm_head_bytes, Access.SINGLE_MATVEC)
+                )
+            live_kv = int(kv_live_per_layer * moved)
+            if live_kv:
+                # NOT ``kv_host_bytes``. That field carries the 20.1x rate, which
+                # was calibrated on ``--no-kv-offload``: cache on the host while
+                # attention still runs on the GPU, so every token drags the whole
+                # thing back across the link. A layer the fitter moved is not in
+                # that regime -- its attention runs on the CPU backend, next to
+                # its own cache -- so it reads at host speed like any other host
+                # tensor. Charging it 20.1x instead made one moved layer score
+                # worse than two gigabytes of moved weights, and no plan could
+                # ever lose to the fitter.
+                groups.append(TensorGroup("kv (moved layers)", live_kv, Access.CONTIGUOUS))
+            return Placement(host_groups = groups)
+    return None
 
 
 def _kv_elem_bytes(quantised: bool) -> int:
@@ -655,6 +803,7 @@ def _plan_at(
             host_ram_bytes,
             quantised = quantised,
             kv_bytes_floor = kv_bytes_floor,
+            budget = budget,
             reason = (
                 f"the whole load fits in VRAM ({needed / GIB:.2f} of "
                 f"{budget / GIB:.2f} GiB usable), so nothing is spilled"
@@ -721,6 +870,7 @@ def _plan_at(
             host_ram_bytes,
             quantised = quantised,
             kv_bytes_floor = kv_bytes_floor,
+            budget = budget,
             reason = (
                 f"spilled the FFN of {len(chosen)} of {len(layout.blocks)} blocks "
                 f"({freed / GIB:.2f} GiB) to cover a {deficit / GIB:.2f} GiB deficit, "
@@ -762,6 +912,7 @@ def _plan_at(
                 host_ram_bytes,
                 quantised = quantised,
                 kv_bytes_floor = kv_bytes_floor,
+                budget = budget,
                 reason = (
                     f"spilled every block's FFN ({freed / GIB:.2f} GiB) plus lm_head "
                     f"({layout.lm_head_bytes / GIB:.2f} GiB) to cover a "
@@ -769,6 +920,83 @@ def _plan_at(
                 ),
             )
     return None
+
+
+def _cost_gate(
+    layout: ModelLayout,
+    opts: PlanOptions,
+    n_ctx: int,
+    chosen: Sequence[BlockLayout],
+    spill_lm_head: bool,
+    budget: int,
+    *,
+    quantised: bool,
+    kv_bytes_floor: int,
+) -> tuple[Optional[Plan], float, float]:
+    """An abstaining Plan when ``--fit on`` is as good as this spill, else None.
+
+    Both arms are scored with ``rank``, so PREFILL is counted. That is the half
+    the planner never priced: it called ``generation_penalty_ms`` alone, and
+    #9861 duly measured prefill slower in 43 of 43 planned cells, an exceptionless
+    result that only a structural cause explains.
+
+    Prefill is where a spill is worst and a fitter is best. Spilled FFN bytes are
+    streamed once per ubatch at FULL size -- a 512-token ubatch selects
+    essentially every expert, so MoE sparsity buys nothing -- while the fitter's
+    moved layers are simply not on the critical path for the resident ones.
+    """
+    plan = _spill_placement(layout, chosen, spill_lm_head)
+    if not plan.host_groups:
+        return None, 0.0, 0.0
+    fallback = _fit_fallback_placement(
+        layout,
+        opts,
+        budget,
+        n_ctx,
+        quantised = quantised,
+        kv_bytes_floor = kv_bytes_floor,
+        kv_on_host = opts.kv_on_host,
+    )
+    if fallback is None:
+        # Nothing to lose to: the fitter cannot place this load either, so the
+        # spill is the only thing standing between the caller and a failed launch.
+        return None, 0.0, 0.0
+
+    scored = rank(
+        [plan, fallback],
+        opts.host,
+        n_generated = opts.workload_generated_tokens,
+        n_prompt = opts.workload_prompt_tokens,
+        n_ubatch = opts.n_ubatch,
+    )
+    plan_ms = _score_of(plan, scored)
+    fit_ms = _score_of(fallback, scored)
+    if plan_ms <= fit_ms * (1.0 - opts.min_penalty_reduction):
+        return None, plan_ms, fit_ms
+    return Plan(
+        n_ctx = n_ctx,
+        predicted_request_ms = plan_ms,
+        predicted_fit_request_ms = fit_ms,
+        reason = (
+            f"planning this load is not worth it: the spill costs "
+            f"{plan_ms:.0f} ms against {fit_ms:.0f} ms for llama.cpp's own fit "
+            f"over {opts.workload_prompt_tokens} prompt and "
+            f"{opts.workload_generated_tokens} generated tokens, so it is left to --fit on"
+        ),
+    ), plan_ms, fit_ms
+
+
+def _score_of(placement: Placement, scored: Sequence[tuple[Placement, float]]) -> float:
+    """``rank`` sorts, so the order it returns is not the order it was given.
+
+    Matched on identity rather than equality: two placements can compare equal
+    (an empty spill and an empty fallback both hold no groups) and picking the
+    wrong one would silently compare a candidate against itself.
+    """
+    for candidate, score in scored:
+        if candidate is placement:
+            return score
+    raise KeyError("placement was not ranked")
 
 
 def _finish(
@@ -781,9 +1009,31 @@ def _finish(
     *,
     quantised: bool = False,
     kv_bytes_floor: int = 0,
+    budget: Optional[int] = None,
     reason: str = "",
 ) -> Plan:
-    """Assemble patterns, decide the load mode, and account for both sides."""
+    """Assemble patterns, decide the load mode, and account for both sides.
+
+    Also the one gate: every plan that spills anything is scored against what
+    llama.cpp's own fitter would have done with the same budget, and dropped if
+    it does not win by a margin. Feasibility was the only test before this, so a
+    spill that COULD cover the deficit was always taken, however badly it paid.
+    """
+    plan_ms = fit_ms = 0.0
+    if opts.require_cost_win and budget is not None and (chosen or spill_lm_head):
+        declined, plan_ms, fit_ms = _cost_gate(
+            layout,
+            opts,
+            n_ctx,
+            chosen,
+            spill_lm_head,
+            budget,
+            quantised = quantised,
+            kv_bytes_floor = kv_bytes_floor,
+        )
+        if declined is not None:
+            return declined
+
     patterns: list[str] = []
     indices = sorted(b.index for b in chosen)
     if indices:
@@ -847,6 +1097,8 @@ def _finish(
         vram_bytes = vram_bytes,
         host_bytes = host_bytes,
         predicted_gen_penalty_ms = _spill_penalty_ms(layout, chosen, spill_lm_head, opts.host),
+        predicted_request_ms = plan_ms,
+        predicted_fit_request_ms = fit_ms,
         reason = reason,
     )
 

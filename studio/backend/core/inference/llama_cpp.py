@@ -25132,6 +25132,12 @@ class LlamaCppBackend:
                 # reserve. Both are in the footprint that produced the use_fit
                 # verdict, so omitting them makes the deficit too small.
                 extra_resident_bytes = extra_gpu_bytes,
+                # This is the only caller with somewhere else to go: declining
+                # here falls through to ``--fit on`` (see the fitting path
+                # below), so this is the one place a cost comparison can act on
+                # its answer. Everywhere else the planner is asked what it CAN
+                # place, which is a different question and keeps its old answer.
+                require_cost_win = True,
                 # Spilled decode runs on the CPU backend (ggml migrates an op to the
                 # GPU only at batch >= 32, and decode is batch 1), so the penalty
                 # tracks core count. Read the real one, not a default.
