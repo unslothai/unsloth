@@ -622,8 +622,11 @@ def _get_new_mapper():
         # rather than here where the whole thing would already be in memory. The real
         # file is around 50KB.
         tree = ast.parse(new_mapper)
-        source_table = None
-        for node in tree.body:
+        # Every module-level binding of a literal dict, in source order. Which one the
+        # exported tables come from depends on WHERE the fetched module calls its
+        # builder, so the binding is chosen once that call has been located, below.
+        literal_bindings = []
+        for index, node in enumerate(tree.body):
             # `AnnAssign` too: this function exists to understand NEWER mapper.py
             # revisions, and a plain type annotation upstream
             # (`__INT_TO_FLOAT_MAPPER: dict = {...}`) would otherwise turn the probe
@@ -636,37 +639,33 @@ def _get_new_mapper():
                 value = node.value
             else:
                 continue
-            if value is None:
+            if value is None or not targets:
                 continue
-            if "__INT_TO_FLOAT_MAPPER" in targets:
-                # The LAST assignment is the one the module is left with:
-                # `__INT_TO_FLOAT_MAPPER = {}` followed by a real one would otherwise
-                # have made the probe read the empty first value and return nothing.
-                # Reading on rather than breaking, so the final binding wins.
-                source_table = ast.literal_eval(value)
-        pass
-        if not source_table:
-            return {}, {}, {}, {}, {}
+            try:
+                literal = ast.literal_eval(value)
+            except Exception:
+                # Not data. `X = build_mappers(Y)` is the ordinary case here.
+                continue
+            if not isinstance(literal, dict):
+                continue
+            for name in targets:
+                literal_bindings.append((index, name, literal))
 
-        # A newer mapper.py may carry entry shapes this builder does not know; the
-        # caller already treats an empty result as "the probe found nothing".
-        tables = build_mappers(source_table)
+        def _binding_at(name, before):
+            """What `name` holds when the statement at index `before` runs.
 
-        # The fp8 tables can also gain entries as plain subscript assignments rather
-        # than through the source table, e.g.
-        # `FLOAT_TO_FP8_ROW_MAPPER["org/model-fp8"] = "unsloth/model-fp8-row"`. The exec
-        # this replaced picked those up, and a row-scaled entry in particular cannot be
-        # expressed through the source table without also creating a block entry, so
-        # dropping them would quietly take the row half of the probe down. They are data
-        # like everything else here: literal subscript, literal value, nothing named or
-        # called is ever evaluated.
-        by_name = {
-            "INT_TO_FLOAT_MAPPER": tables[0],
-            "FLOAT_TO_INT_MAPPER": tables[1],
-            "MAP_TO_UNSLOTH_16bit": tables[2],
-            "FLOAT_TO_FP8_BLOCK_MAPPER": tables[3],
-            "FLOAT_TO_FP8_ROW_MAPPER": tables[4],
-        }
+            The LAST assignment before that point, not the last in the file:
+            `__INT_TO_FLOAT_MAPPER = {}` followed by a real one has to read the real
+            one, while a real one followed by a rebind AFTER the builder ran leaves the
+            exported tables built from what the builder actually saw. Reading the final
+            binding in that second shape reversed the module's own state and reported
+            support for names importing the fetched mapper does not install.
+            """
+            found = None
+            for index, bound, literal in literal_bindings:
+                if bound == name and (before is None or index <= before):
+                    found = literal
+            return found
 
         # Statements that really RUN when the module is imported, not every node in
         # the file. `ast.walk` also reaches inside function and class bodies and into
@@ -821,15 +820,22 @@ def _get_new_mapper():
         # terms as everything else here, and only when the fetched module really does
         # call it: a `def` that is never called still runs nothing.
         def _calls_the_builder(node):
-            """Whether this executed node is the `build_mappers(...)` call itself."""
-            for child in ast.walk(node) if isinstance(node, ast.AST) else ():
-                if (
-                    isinstance(child, ast.Call)
-                    and isinstance(child.func, ast.Name)
-                    and child.func.id == "build_mappers"
-                ):
-                    return True
-            return False
+            """Whether this executed node IS the `build_mappers(...)` call.
+
+            The node itself, not `ast.walk` over it. `_executed_nodes` yields the
+            parent statement as well as its executed expressions, and walking the
+            parent descended back into the deferred children the yield had already
+            excluded: `unused = lambda: build_mappers(__INT_TO_FLOAT_MAPPER)` was
+            yielded as an `Assign`, and the walk found the call inside the lambda body,
+            so the builder's aliases were applied even though importing the fetched
+            mapper never calls it. The call node is yielded in its own right whenever
+            it really runs, so matching it exactly loses nothing.
+            """
+            return (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "build_mappers"
+            )
 
         builder_body = []
         # From the EXECUTED nodes, the same set the ordered walk below uses. A raw walk
@@ -837,14 +843,82 @@ def _get_new_mapper():
         # call, and the additions were then applied by the fallback at the end even
         # though `_executed_nodes` had correctly left the call out - fabricating
         # aliases that importing the fetched mapper never installs.
-        builder_called = any(
-            _calls_the_builder(node) for node, _shadowed in _executed_nodes(tree.body)
-        )
+        #
+        # The statement it runs in is recorded too: the tables the fetched module
+        # exports are the ones the builder saw WHEN IT RAN, so a source table rebound
+        # afterwards must not be the one this reads.
+        builder_call = None
+        builder_index = None
+        for index, statement in enumerate(tree.body):
+            for node, _shadowed in _executed_nodes([statement]):
+                if _calls_the_builder(node):
+                    builder_call = node
+                    builder_index = index
+                    break
+            if builder_call is not None:
+                break
+        builder_called = builder_call is not None
         if builder_called:
             for statement in tree.body:
                 if isinstance(statement, ast.FunctionDef) and statement.name == "build_mappers":
                     builder_body = statement.body
                     break
+
+        # The table the builder was HANDED, read where the call runs. A fetched mapper
+        # that builds its exports from one table and then rebinds
+        # `__INT_TO_FLOAT_MAPPER` leaves the module exporting the first one; reading the
+        # final binding instead reported mappings for the second, and querying one of
+        # those names raised the upgrade-only NotImplementedError for a model the newer
+        # mapper does not support either.
+        source_name = "__INT_TO_FLOAT_MAPPER"
+        source_table = None
+        if builder_call is not None:
+            argument = None
+            if builder_call.args:
+                argument = builder_call.args[0]
+            else:
+                for keyword in builder_call.keywords:
+                    if keyword.arg is not None:
+                        argument = keyword.value
+                        break
+            if isinstance(argument, ast.Name):
+                source_name = argument.id
+            elif argument is not None:
+                # `build_mappers({...})` hands over a literal directly, so there is no
+                # binding to read and no later rebind that could change it.
+                try:
+                    literal = ast.literal_eval(argument)
+                except Exception:
+                    literal = None
+                if isinstance(literal, dict):
+                    source_table = literal
+        if source_table is None:
+            # `None` for the cutoff when the builder was not located: the call still
+            # ran somewhere unreadable, and the last binding is the best available
+            # answer, exactly as before.
+            source_table = _binding_at(source_name, builder_index)
+        if not source_table:
+            return {}, {}, {}, {}, {}
+
+        # A newer mapper.py may carry entry shapes this builder does not know; the
+        # caller already treats an empty result as "the probe found nothing".
+        tables = build_mappers(source_table)
+
+        # The fp8 tables can also gain entries as plain subscript assignments rather
+        # than through the source table, e.g.
+        # `FLOAT_TO_FP8_ROW_MAPPER["org/model-fp8"] = "unsloth/model-fp8-row"`. The exec
+        # this replaced picked those up, and a row-scaled entry in particular cannot be
+        # expressed through the source table without also creating a block entry, so
+        # dropping them would quietly take the row half of the probe down. They are data
+        # like everything else here: literal subscript, literal value, nothing named or
+        # called is ever evaluated.
+        by_name = {
+            "INT_TO_FLOAT_MAPPER": tables[0],
+            "FLOAT_TO_INT_MAPPER": tables[1],
+            "MAP_TO_UNSLOTH_16bit": tables[2],
+            "FLOAT_TO_FP8_BLOCK_MAPPER": tables[3],
+            "FLOAT_TO_FP8_ROW_MAPPER": tables[4],
+        }
 
         # Only the helper CALLS from the builder, not everything its body does: it
         # starts by binding its own `INT_TO_FLOAT_MAPPER = {}` and friends, and the

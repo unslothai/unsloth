@@ -55,14 +55,28 @@ def _own_expressions(node):
     `_module_level_statements`, with function bodies excluded, so only the statement's
     own expressions are read here. A `lambda` body is deferred as well and is pruned
     for the same reason.
+
+    Pruned by EXPANSION rather than by refusing to push a `Lambda`. Refusing to push
+    one left the lambda seeded from the statement itself unpruned, so
+    `unused = lambda: pytest.importorskip("torch")` was read as a module-level import
+    and the guard demanded that an import-light file move to the heavy runner. It also
+    dropped the parts of a lambda that DO run where it is written: a default is
+    evaluated at definition time, so `lambda x = pytest.importorskip("torch"): x` really
+    does load torch during collection. Both follow from expanding a lambda to its
+    defaults wherever it is met, including when it is the default of another lambda.
     """
-    pending = [child for child in ast.iter_child_nodes(node) if isinstance(child, ast.expr)]
+
+    def _expansion(current):
+        if isinstance(current, ast.Lambda):
+            arguments = current.args
+            return arguments.defaults + [d for d in arguments.kw_defaults if d is not None]
+        return list(ast.iter_child_nodes(current))
+
+    pending = [child for child in _expansion(node) if isinstance(child, ast.expr)]
     while pending:
         current = pending.pop()
         yield current
-        for child in ast.iter_child_nodes(current):
-            if isinstance(child, ast.Lambda):
-                continue
+        for child in _expansion(current):
             if isinstance(child, ast.expr):
                 pending.append(child)
 
@@ -674,3 +688,55 @@ def test_the_redirect_job_is_triggered_by_what_it_protects():
         f"triggered by changes to them: {missing}. A PR touching only that code would "
         f"skip the job and the suites would run only after merge."
     )
+
+
+def test_a_lambda_body_is_not_a_module_level_import(tmp_path):
+    """A `lambda` runs when it is CALLED, and collection never calls this one.
+
+    The walk refused to descend into a lambda it met as a child, but the one attached
+    to the statement itself seeded the walk, so `unused = lambda:
+    pytest.importorskip("torch")` was reported as a module-level import of torch and
+    the guard demanded that an import-light file be moved to the heavy runner.
+    """
+    spellings = {
+        "assigned lambda": 'import pytest\nunused = lambda: pytest.importorskip("torch")\n',
+        "lambda in a list": 'import pytest\nunused = [lambda: pytest.importorskip("torch")]\n',
+        "lambda returning a lambda": (
+            'import pytest\nunused = lambda: (lambda: pytest.importorskip("torch"))\n'
+        ),
+        # The inner lambda is only CREATED when the outer one is called, so even its
+        # default is deferred with it.
+        "default of a lambda inside a lambda body": (
+            'import pytest\n'
+            'unused = lambda: (lambda x = pytest.importorskip("torch"): x)\n'
+        ),
+    }
+    for description, source in spellings.items():
+        sample = tmp_path / "sample.py"
+        sample.write_text(source)
+        assert _module_level_heavy_imports(sample) == set(), description
+
+
+def test_a_lambda_default_is_still_a_module_level_import(tmp_path):
+    """The half of a lambda that is NOT deferred.
+
+    Defaults are evaluated where the lambda is written, so
+    `lambda x = pytest.importorskip("torch"): x` loads torch during collection exactly
+    as a bare import does. Skipping the lambda wholesale would have missed it.
+    """
+    spellings = {
+        "positional default": 'import pytest\nunused = lambda x = pytest.importorskip("torch"): x\n',
+        "keyword-only default": (
+            'import pytest\nunused = lambda *, x = pytest.importorskip("torch"): x\n'
+        ),
+        # A lambda that is itself the DEFAULT of another lambda is created where the
+        # outer one is written, so its own default is evaluated there too.
+        "lambda as another lambda's default": (
+            'import pytest\n'
+            'unused = lambda x = (lambda y = pytest.importorskip("torch"): y): x\n'
+        ),
+    }
+    for description, source in spellings.items():
+        sample = tmp_path / "sample.py"
+        sample.write_text(source)
+        assert _module_level_heavy_imports(sample) == {"torch"}, description

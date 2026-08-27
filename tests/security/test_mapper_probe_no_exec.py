@@ -492,3 +492,75 @@ def test_a_helper_call_that_binds_one_parameter_twice_is_skipped(monkeypatch):
         tables = loader_utils._get_new_mapper()
     for table in tables:
         assert not any("vendor/twice" in str(key) for key in table)
+
+
+def test_a_builder_call_inside_a_lambda_does_not_run_the_builder(monkeypatch):
+    """A deferred call to `build_mappers` is not a call.
+
+    `_executed_nodes` yields the parent statement as well as the expressions that run,
+    and the builder search walked the parent - descending back into exactly the
+    deferred children the yield had excluded. `unused = lambda:
+    build_mappers(__INT_TO_FLOAT_MAPPER)` therefore applied the fetched builder's
+    aliases, fabricating support that importing that mapper never installs.
+    """
+    lines = REAL_MAPPER.splitlines(True)
+    insert = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers(")) + 1
+    deferred = (
+        "".join(
+            lines[:insert]
+            + ['    _add_with_lower(MAP_TO_UNSLOTH_16bit, "vendor/deferred", "unsloth/deferred")\n']
+            + lines[insert:]
+        ).replace("= build_mappers(__INT_TO_FLOAT_MAPPER)", "= ({}, {}, {}, {}, {})")
+        + "\nunused = lambda: build_mappers(__INT_TO_FLOAT_MAPPER)\n"
+    )
+    assert "= build_mappers(__INT_TO_FLOAT_MAPPER)" not in deferred.replace(
+        "unused = lambda: build_mappers(__INT_TO_FLOAT_MAPPER)", ""
+    )
+    with _serving(deferred, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    for table in tables:
+        assert not any("vendor/deferred" in str(key) for key in table)
+
+
+def test_the_source_table_is_read_where_the_builder_runs(monkeypatch):
+    """A source table rebound AFTER the builder ran is not what the module exports.
+
+    Taking the last binding in the file reversed the module's own state: a mapper that
+    builds its exports from one table and then assigns a different
+    `__INT_TO_FLOAT_MAPPER` was reported as supporting the names in the second one, and
+    querying those raised the upgrade-only NotImplementedError.
+    """
+    rebound = REAL_MAPPER + (
+        '\n__INT_TO_FLOAT_MAPPER = {"vendor/rebound-bnb-4bit": ("vendor/rebound",)}\n'
+    )
+
+    with _serving(REAL_MAPPER, monkeypatch):
+        expected = loader_utils._get_new_mapper()
+    with _serving(rebound, monkeypatch):
+        got = loader_utils._get_new_mapper()
+
+    assert any(expected), "the real mapper produced nothing, so this proves nothing"
+    assert got == expected, "a rebind after the builder call was read as the source"
+    for table in got:
+        assert not any("rebound" in str(key) for key in table)
+
+
+def test_a_source_table_rebound_before_the_builder_is_the_one_read(monkeypatch):
+    """The other half: the last binding BEFORE the call still wins.
+
+    `__INT_TO_FLOAT_MAPPER = {}` followed by the real table is the shape this rule was
+    written for, and it has to keep reading the real one.
+    """
+    lines = REAL_MAPPER.splitlines(True)
+    start = next(
+        i for i, line in enumerate(lines) if line.startswith("__INT_TO_FLOAT_MAPPER")
+    )
+    emptied = "".join(lines[:start] + ["__INT_TO_FLOAT_MAPPER = {}\n"] + lines[start:])
+
+    with _serving(REAL_MAPPER, monkeypatch):
+        expected = loader_utils._get_new_mapper()
+    with _serving(emptied, monkeypatch):
+        got = loader_utils._get_new_mapper()
+
+    assert any(expected)
+    assert got == expected, "an earlier empty binding was read instead of the real one"
