@@ -174,7 +174,7 @@ _SAMPLING_FIELDS = {
 # Public, ordered tuple of the sampling fields callers resolve.
 SAMPLING_FIELD_NAMES = tuple(_SAMPLING_FIELDS)
 
-# Fields the Studio Chat UI adopts as *per-model recommendations* from the backend
+# Fields the Unsloth Chat UI adopts as *per-model recommendations* from the backend
 # `.inference` block. Its frontend `mergeBackendRecommendedInference`
 # (presets/preset-policy.ts) seeds exactly these five and never reads repetition_penalty,
 # so the server auto-recommends the same five for request parity. repetition_penalty stays a
@@ -229,7 +229,7 @@ def _operator_sampling_override(field: str):
 
 @lru_cache(maxsize = 128)
 def _recommended_sampling(model_id: str) -> Dict[str, Any]:
-    """Per-model recommended sampling, resolved through the SAME path the Studio Chat UI uses.
+    """Per-model recommended sampling, resolved through the SAME path the Unsloth Chat UI uses.
 
     The Chat UI seeds its sampling from the ``.inference`` block of the load/status responses,
     which is exactly :func:`load_inference_config` (model-specific YAML -> family defaults

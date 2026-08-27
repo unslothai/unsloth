@@ -1117,7 +1117,7 @@ def test_probe_detects_post_rename_ngram_mod_flavor(tmp_path):
     assert caps["supports_ngram_mod"] is True
     assert caps["spec_draft_n_max_flag"] == "--spec-draft-n-max"
     # The build's own depth, off the same line: a pass-through --spec-type makes
-    # the child run on this rather than on anything Studio emits, and the Hybrid
+    # the child run on this rather than on anything Unsloth emits, and the Hybrid
     # Mamba rollback reserve scales by it.
     assert caps["spec_draft_n_max_default"] == 16
 
@@ -3071,7 +3071,7 @@ def test_a_hanging_binary_is_probed_once_per_model_load(tmp_path, monkeypatch):
 def test_a_missing_binary_is_not_cached_so_it_is_seen_as_soon_as_it_lands(tmp_path):
     """The found:False early return sits above the cache and costs a stat rather than a
     subprocess, so it must stay uncached: an install finishing mid-session has to be
-    picked up without a Studio restart."""
+    picked up without an Unsloth restart."""
     binary = tmp_path / "llama-server"
     _clear_caps_cache()
 

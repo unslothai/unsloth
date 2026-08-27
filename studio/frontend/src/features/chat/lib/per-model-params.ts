@@ -26,6 +26,7 @@ export const PERSISTED_INFERENCE_PARAM_KEYS = [
   "systemVariables",
   "trustRemoteCode",
   "fastMode",
+  "seed",
 ] as const satisfies readonly PersistedInferenceParamKey[];
 
 /** What the memory records. `maxSeqLength` is left out: the context belongs to

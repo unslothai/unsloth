@@ -95,7 +95,7 @@ def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:
     export of a clip that size runs to hundreds of MB, and holding it as one ``bytes`` (then again
     in the response) let a couple of concurrent export clicks exhaust the process. The MP4 route
     already streams from disk; this makes the transcodes behave the same way."""
-    # Ownership-gate like /file: only transcode a Studio-owned clip (readable sidecar), so a guessed stem for a foreign MP4 cannot be re-encoded out either.
+    # Ownership-gate like /file: only transcode an Unsloth-owned clip (readable sidecar), so a guessed stem for a foreign MP4 cannot be re-encoded out either.
     path = owned_video_path(video_id)
     if path is None:
         return None
@@ -268,7 +268,7 @@ def _sidecar_path(video_id: str) -> Path:
     return gallery_dir() / f"{video_id}.json"
 
 
-# Sidecar keys every genuine Studio record carries. delete()/clear() own a pair only when its sidecar has all of these, so a
+# Sidecar keys every genuine Unsloth record carries. delete()/clear() own a pair only when its sidecar has all of these, so a
 # hand-dropped MP4 with a partial sidecar is neither counted as ours nor destroyed. Key-presence only.
 _REQUIRED_META = (
     "prompt",
@@ -301,7 +301,7 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
 
 
 def owned_video_path(video_id: str) -> Optional[Path]:
-    """Resolve an id to its MP4 only when it is a Studio-owned clip (a readable sidecar), else
+    """Resolve an id to its MP4 only when it is an Unsloth-owned clip (a readable sidecar), else
     None. The serve and export routes use this instead of video_path() so a guessed stem for a
     hand-dropped/orphan MP4 -- which list_videos/delete/clear already treat as not ours -- can't
     be streamed or transcoded out. Mirrors the delete/clear ownership guard."""
@@ -370,7 +370,7 @@ def set_flags(
     archived: Optional[bool] = None,
 ) -> Optional[dict[str, Any]]:
     """Patch one clip's pin/archive flags and return its updated record, or None when the id is
-    not a Studio-owned clip. Ownership-gated like delete: a guessed stem for a hand-dropped or
+    not an Unsloth-owned clip. Ownership-gated like delete: a guessed stem for a hand-dropped or
     orphan MP4 must not become flaggable."""
     # Ownership check and write under one lock, so a concurrent clear cannot delete the pair
     # between them and leave this reporting success for a clip that is already gone.
@@ -410,7 +410,7 @@ def delete(video_id: str) -> bool:
 
 
 def clear(include_archived: bool = False) -> int:
-    """Delete Studio-owned gallery pairs (readable sidecar); return how many were removed.
+    """Delete Unsloth-owned gallery pairs (readable sidecar); return how many were removed.
 
     Archived clips are SPARED by default: archiving is how a user sets something aside, so a
     "clear the gallery" action that destroyed the archive would defeat it. Pass

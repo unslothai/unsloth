@@ -1247,7 +1247,7 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
 def test_legacy_migration_is_idempotent_and_non_destructive():
     """The v1->v2 localStorage migration (unsloth_load_settings -> unsloth_model_configs)
     is invoked on every store read, so it must be idempotent: repeated reads, browser
-    reloads, and Studio restarts must never re-migrate, duplicate records, or overwrite
+    reloads, and Unsloth restarts must never re-migrate, duplicate records, or overwrite
     a newer per-model config."""
     raw = _read("features/model-picker/model-config/per-model-config.ts")
     src = " ".join(raw.split())
@@ -2622,7 +2622,7 @@ def test_api_reach_copy_is_limited_to_gguf_models():
     GGUFs only."""
     src = " ".join(_read("features/hub/catalog/hub-model-settings-view.tsx").split())
     assert "{(target.apiLoadable ?? target.isGguf)" in src
-    assert "Saved settings apply everywhere Studio loads this model." in src
+    assert "Saved settings apply everywhere Unsloth loads this model." in src
 
 
 def test_backfill_includes_a_standalone_gguf_with_no_variant():
@@ -2665,7 +2665,7 @@ def test_override_writes_are_ordered_per_model():
 
 
 def test_backfill_skips_future_schema_local_records():
-    """loadPerModelConfig refuses to apply a record written by a newer Studio and eviction
+    """loadPerModelConfig refuses to apply a record written by a newer Unsloth and eviction
     refuses to drop one, because this client cannot interpret that schema."""
     src = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     listing = src[src.index("export function listPerModelConfigs()") :]
@@ -2868,8 +2868,14 @@ def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
     )
     assert "loadedConfig={settingsTargetIsResident ? activeModelConfig : null}" in hub
     assert "settingsTargetIsResident ? activeGgufContextLength : null" in hub
-    # The loadable identifier, as every other status reader records it.
-    assert "checkpointId: resolveInferenceCheckpointId(status)," in hub
+    # The loadable identifier, as every other status reader records it -- except for a
+    # speech model, which chat cannot adopt at all. speechOnly rides beside the null so
+    # the helper can tell it from the empty slot the idle-unload rule is about.
+    assert (
+        "checkpointId: isSpeechOnlyStatus(status) ? null "
+        ": resolveInferenceCheckpointId(status), "
+        "speechOnly: isSpeechOnlyStatus(status)," in hub
+    )
     assert "setCheckpoint(status.active_model" not in hub
     chat = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
     assert "return status.model_identifier ?? status.active_model;" in chat, "the rule this mirrors"
@@ -3096,7 +3102,9 @@ def test_an_empty_status_is_read_against_the_idle_unload_setting():
     # A failed read keeps the last answer. The default is disarmed, which is the side
     # that clears the checkpoint, so falling back to it would drop a live selection.
     assert ".catch(() => idleUnloadArmed.current)" in hub
-    assert "if (state.idleUnloadArmed) { return false; }" in adopt
+    # An Audio load taking the single slot is not an idle eviction: nothing stashes the
+    # chat model, so the exemption must not swallow that case.
+    assert "if (state.idleUnloadArmed && !status.speechOnly) { return false; }" in adopt
     assert "actions.clearCheckpoint?.();" in adopt
 
 
@@ -3372,7 +3380,7 @@ def test_autoload_local_rows_follow_the_picker_policy():
 
 
 def test_default_model_download_is_visible_and_cancellable():
-    """On a genuinely empty device Studio still fetches a model, but as a managed
+    """On a genuinely empty device Unsloth still fetches a model, but as a managed
     download with progress and a Cancel, never an inline pull inside /load."""
     src = _read("features/chat/api/chat-adapter.ts")
     helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
@@ -3441,16 +3449,22 @@ def test_indexed_local_loads_are_remembered_without_bypassing_leases():
     assert "token" not in store.lower().replace("isPathLikeId", "")
 
 
-def test_autoload_skips_image_and_video_rows():
-    """The backend tags a row with a task only for image/video models, and the
-    picker routes those away on click. A background load has no routing step."""
+def test_autoload_skips_rows_chat_cannot_answer():
+    """The backend tags a row with a task only for the models that own another page,
+    and the picker routes those away on click. A background load has no routing step.
+    The audio tasks are here because the chat route answers a turn on a speech model by
+    synthesizing the prompt rather than refusing it, so nothing downstream catches it."""
     src = _read("features/chat/api/chat-adapter.ts")
-    tasks = src.split("const IMAGE_OR_VIDEO_TASKS", 1)[1].split("]", 1)[0]
+    tasks = src.split("const NON_CHAT_TASKS", 1)[1].split("]", 1)[0]
     assert '"text-to-image"' in tasks
     assert '"text-to-video"' in tasks
     assert '"image-diffusion-unsupported"' in tasks
+    assert '"text-to-speech"' in tasks
+    assert '"text-to-audio"' in tasks
+    assert '"audio-to-audio"' in tasks
+    assert '"automatic-speech-recognition"' in tasks
     policy = src.split("function isAutoLoadableLocalRow", 1)[1].split("\n}", 1)[0]
-    assert 'IMAGE_OR_VIDEO_TASKS.has(row.task ?? "")' in policy
+    assert 'NON_CHAT_TASKS.has(row.task ?? "")' in policy
 
 
 def test_remembered_matching_uses_the_same_case_rules_as_the_dedupe_key():
@@ -3559,6 +3573,16 @@ def test_cached_rows_classify_chat_capability_too():
     assert "_local_transformers_can_chat(classify_snapshot)" in fields
 
 
+def test_cached_codec_evidence_enriches_an_existing_hub_result():
+    """Search results outrank cached metadata, but they must not erase a decoder
+    discovered from the local tokenizer files for the same repo."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    evidence = src.split("const hubEvidenceById = useMemo", 1)[1]
+    evidence = evidence.split("const capsById = useMemo", 1)[0]
+    assert evidence.count("const existing = map.get(c.repo_id);") == 2
+    assert evidence.count("audioType: existing.audioType ?? c.audio_type") == 2
+
+
 def test_every_load_target_comparison_uses_the_same_case_rules():
     """Source dedupe, remembered matching, and tried-candidate keys all compare
     load targets, so they must agree on POSIX case."""
@@ -3582,16 +3606,16 @@ def test_the_default_variant_lookup_takes_the_run_signal():
     assert helper.index("} catch {") < helper.index("abortSignal?.throwIfAborted();")
 
 
-def test_cached_rows_get_the_same_image_and_video_gate_as_local_rows():
-    """Cached diffusion repos carry their task on the row and report can_chat
-    true on file format alone."""
+def test_cached_rows_get_the_same_non_chat_gate_as_local_rows():
+    """Cached diffusion and speech repos carry their task on the row and report can_chat
+    true on file format alone. Both inventories, or one of them still offers the row."""
     src = _read("features/chat/api/chat-adapter.ts")
     cached = src.split("function isChattableCachedRepo", 1)[1].split("\n}\n", 1)[0]
-    assert 'IMAGE_OR_VIDEO_TASKS.has(repo.task ?? "")' in cached
+    assert 'NON_CHAT_TASKS.has(repo.task ?? "")' in cached
     local = src.split("function isAutoLoadableLocalRow", 1)[1].split("\n}", 1)[0]
-    assert 'IMAGE_OR_VIDEO_TASKS.has(row.task ?? "")' in local
+    assert 'NON_CHAT_TASKS.has(row.task ?? "")' in local
     # A chat GGUF is tagged text-generation, so the gate is a list, not "has a task".
-    tasks = src.split("const IMAGE_OR_VIDEO_TASKS", 1)[1].split("]", 1)[0]
+    tasks = src.split("const NON_CHAT_TASKS", 1)[1].split("]", 1)[0]
     assert '"text-generation"' not in tasks
 
 
@@ -3648,7 +3672,7 @@ def test_non_chat_conditional_generation_is_excluded_before_the_suffix_check():
 
 def test_format_gates_wait_for_the_server_reported_platform():
     """The store's initial chatOnly is a browser guess: a Mac browser on a remote
-    Linux Studio would hide every local safetensors model."""
+    Linux Unsloth would hide every local safetensors model."""
     src = _read("features/chat/api/chat-adapter.ts")
     gate = src.split("function runsOnThisPlatform", 1)[1].split("\n}", 1)[0]
     assert "if (!platform.fetched || !platform.isChatOnly()) return true;" in gate

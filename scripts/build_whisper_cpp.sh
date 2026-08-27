@@ -1,7 +1,7 @@
 #!/bin/sh
-# Build whisper.cpp's whisper-server for Studio's GGUF dictation engine.
+# Build whisper.cpp's whisper-server for Unsloth's GGUF dictation engine.
 #
-# Installs into the managed Studio home so the backend's binary discovery
+# Installs into the managed Unsloth home so the backend's binary discovery
 # (core/inference/stt_ggml_sidecar.py::find_whisper_server_binary) picks it up:
 #   <UNSLOTH_STUDIO_HOME>/whisper.cpp/build/bin/whisper-server   (custom home)
 #   ~/.unsloth/whisper.cpp/build/bin/whisper-server              (default)
@@ -32,7 +32,7 @@ command -v git >/dev/null 2>&1 || { echo "ERROR: git is required" >&2; exit 1; }
 command -v cmake >/dev/null 2>&1 || { echo "ERROR: cmake is required" >&2; exit 1; }
 
 # Same policy as studio/setup.sh's _assert_studio_owned_or_absent: never delete
-# a directory under a custom Studio home unless Studio itself created it (the
+# a directory under a custom Unsloth home unless Unsloth itself created it (the
 # marker file below). Protects a user-managed whisper.cpp/src from rm -rf.
 STUDIO_OWNED_MARKER=".unsloth-studio-owned"
 if [ "$CUSTOM_STUDIO_HOME" = true ] && [ -e "$INSTALL_DIR" ] && \

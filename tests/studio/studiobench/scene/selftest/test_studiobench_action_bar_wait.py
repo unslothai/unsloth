@@ -3,7 +3,7 @@
 
 """The action bar is WAITED for, not sampled for once.
 
-WHAT THIS PROTECTS, and it is a liveness property rather than a timing one. Studio mounts the
+WHAT THIS PROTECTS, and it is a liveness property rather than a timing one. Unsloth mounts the
 assistant action bar with `hideWhenRunning` (studio/frontend/src/components/assistant-ui/
 thread.tsx), so while a turn is generating there is no Copy, no Delete and no More anywhere in the
 tree. Four scene actions need one of those controls, and every film schedules them after a
@@ -27,7 +27,7 @@ WHY NODE AND THE REAL SOURCES. `MENU_JS` is the string that ships inside `scene/
 `waitForActionButton` is the function that ships inside `scene/dom.js`; a Python re-implementation
 of either would pass forever while the shipped pair drifted. So node runs both, against a shim of
 the handful of DOM globals they touch, with the ACTION BAR ARRIVING LATE -- which is the one thing
-that cannot be shimmed away, because it is the thing under test. No browser, no Studio, and if
+that cannot be shimmed away, because it is the thing under test. No browser, no Unsloth, and if
 node is missing the test SKIPS rather than passing on a substitute.
 """
 

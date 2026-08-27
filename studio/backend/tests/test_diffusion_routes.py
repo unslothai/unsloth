@@ -1575,7 +1575,7 @@ def test_the_plan_refuses_an_impossible_precision_before_anything_is_staged(clie
 
 def test_the_plan_does_not_probe_the_gpu_while_training_holds_it(client, monkeypatch):
     """An UNCACHED scheme sends assert_precision_available into a quantise-and-matmul smoke
-    probe, which initialises CUDA and allocates in the Studio process. /images/load refuses
+    probe, which initialises CUDA and allocates in the Unsloth process. /images/load refuses
     outright while a trainer is running, for exactly that reason -- but the UI asks for the
     plan first, so the probe ran before that guard had a say. Staging files needs no GPU, so
     the plan is answered; the load still refuses the same pick afterwards."""
@@ -1816,7 +1816,7 @@ def test_download_plan_surfaces_a_gated_base_as_a_400(client, monkeypatch):
         "'black-forest-labs/FLUX.1-dev' is gated on Hugging Face and this model cannot be "
         "downloaded without it. Accept its licence at "
         "https://huggingface.co/black-forest-labs/FLUX.1-dev, then add a Hugging Face token "
-        "that has access in Studio settings and try again."
+        "that has access in Unsloth settings and try again."
     )
 
     def _plan(model_path, **kwargs):

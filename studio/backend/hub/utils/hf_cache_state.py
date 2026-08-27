@@ -73,7 +73,7 @@ def hf_partials_are_resumable(hub_cache: Optional[str] = None) -> bool:
     On 1.18+ this also asks whether the download worker will put the 1.17 writer back
     (:mod:`hub.utils.resumable_partials`), since a restored resumer makes partials reusable again.
     That half turns on the filesystem the partial is on, so *hub_cache* names the root being asked
-    about. Studio remembers several and they need not lock alike: without it, a selected cache on a
+    about. Unsloth remembers several and they need not lock alike: without it, a selected cache on a
     network mount would condemn a local cache's partials to the abandoned-partial sweep. Omitting it
     asks about the cache in force, which is where a new download lands.
 
@@ -521,17 +521,32 @@ def latest_snapshot_from_cache_path(
         return None
 
 
-def _repo_dir_has_broken_snapshot_symlinks(repo_dir: Path) -> bool:
-    latest = latest_snapshot_dir(repo_dir)
-    if latest is None:
-        return False
+def snapshot_has_broken_symlinks(snapshot: Path) -> bool:
+    """Whether ``snapshot`` links to a blob that is not finalized.
+
+    Scoped to one snapshot on purpose. A ``.incomplete`` blob under ``blobs/``
+    belongs to whichever revision or scoped file set is fetching it, and the cache
+    is shared, so its presence says nothing about the revision being validated.
+    What does is a link this snapshot owns whose target is not there yet.
+
+    Windows hydrates the cache with copies rather than links, so there is nothing
+    to dangle: a half-fetched file is simply absent, which the payload inventory
+    catches instead.
+    """
     try:
-        for entry in latest.rglob("*"):
+        for entry in snapshot.rglob("*"):
             if entry.is_symlink() and not entry.exists():
                 return True
     except OSError:
         return False
     return False
+
+
+def _repo_dir_has_broken_snapshot_symlinks(repo_dir: Path) -> bool:
+    latest = latest_snapshot_dir(repo_dir)
+    if latest is None:
+        return False
+    return snapshot_has_broken_symlinks(latest)
 
 
 def iter_repo_cache_dirs(

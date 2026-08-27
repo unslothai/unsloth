@@ -649,7 +649,7 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
             )
             proc.start()
         # Adopted like every other spawn site: the bind above is the CHILD arming PDEATHSIG,
-        # which is Linux only, and the Windows job object can fail to take when Studio already
+        # which is Linux only, and the Windows job object can fail to take when Unsloth already
         # runs inside an incompatible host job. This record is what is left in that case.
         _adopt_probe_pid(proc.pid)
         _CHILD_PROBE_SPAWN_ERRORS = 0
