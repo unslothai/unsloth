@@ -3087,21 +3087,31 @@ def _resident_xformers_build_torch() -> "str | None":
     return recorded.strip() if isinstance(recorded, str) and recorded.strip() else None
 
 
-def _resync_torch_coupled_packages(release_before: str) -> None:
-    """Re-settle the packages whose compiled extensions are tied to the torch release.
+def _resync_torch_coupled_packages(label_before: str) -> bool:
+    """Re-settle the packages whose compiled extensions are tied to the torch build.
 
-    Only after a repair that actually MOVED the release: the common case restores the
-    same wheel the venv already had, and reinstalling around it would add minutes to
-    every update for nothing.
+    Returns False when this pass left the venv in a state the caller must re-verify --
+    see the torchao note below. True means nothing here can have disturbed the repair.
 
-    torchao's cpp extensions are torch-release-specific, and step 4 above chose its pin
-    from the torch this repair has just replaced -- typically 0.17.0 selected for a
+    The two are gated differently because they are coupled to different things.
+
+    torchao's cpp extensions are tied to the torch RELEASE, and step 4 above chose its
+    pin from the torch this repair has just replaced: typically 0.17.0 selected for a
     2.11 that the <2.11.0 repair spec then took down to 2.10, whose matched build is
-    0.16.0. Leaving the wrong one installed silently drops to the slow fallback.
+    0.16.0. Leaving the wrong one installed silently drops to the slow fallback. A
+    repair that kept the release cannot have invalidated it, and reinstalling around it
+    would add minutes to every update for nothing.
 
-    xFormers is stricter still: its _C.pyd is linked against ONE exact (torch, CUDA)
-    pair, and beside any other pair torch.ops.load_library raises, which
-    xformers/_cpp_lib.py downgrades to a log line -- so the import "succeeds" with
+    --no-deps is not an optimisation here, it is the whole safety of the call. torchao
+    depends on torch, so a --force-reinstall that resolves dependencies re-resolves
+    torch from the unpinned default index -- which on Windows is the 2.11.0+cpu wheel
+    this repair exists to remove, reinstalled moments after removing it, with the
+    verification already behind us. The caller re-verifies as well.
+
+    xFormers is tied to the exact (torch, CUDA) PAIR, so the flavor alone moving is
+    enough to break it: 2.10.0+cu124 to 2.10.0+cu128 keeps the release and invalidates
+    the extension. Beside a pair it was not built for, torch.ops.load_library raises,
+    which xformers/_cpp_lib.py downgrades to a log line, so the import "succeeds" with
     memory-efficient attention, SwiGLU and the sparse ops silently gone. This script
     never installs xFormers (install.ps1 does, and its wheel selection is not
     reconstructible here), so the only correct action is to remove a resident one that
@@ -3112,24 +3122,29 @@ def _resync_torch_coupled_packages(release_before: str) -> None:
     Never fatal. Both are secondary to the flavor invariant this function exists for,
     and neither is worth failing an update that has just fixed the actual defect.
     """
-    _release_after = str(_probe_installed_torch_version() or "").split("+", 1)[0]
-    if not _release_after or _release_after == release_before:
-        return
+    _label_after = str(_probe_installed_torch_version() or "")
+    if not _label_after or _label_after == label_before:
+        return True
+    _touched_torch = False
+    if _label_after.split("+", 1)[0] != str(label_before).split("+", 1)[0]:
+        try:
+            _spec = _select_torchao_spec(_label_after)
+            if not _exact_distribution_spec_is_installed(_spec):
+                _note(f"torch {_label_after} after repair -- reinstalling {_spec}")
+                _touched_torch = True
+                pip_install_try(
+                    "Re-matching torchao to the repaired torch",
+                    "--force-reinstall",
+                    "--no-deps",
+                    "--no-cache-dir",
+                    _spec,
+                )
+        except Exception as e:
+            _safe_print(f"   [WARN] could not re-match torchao after the repair: {e}")
     try:
-        _spec = _select_torchao_spec(_probe_installed_torch_version())
-        if not _exact_distribution_spec_is_installed(_spec):
-            _note(f"torch {_release_after} after repair -- reinstalling {_spec}")
-            pip_install_try(
-                "Re-matching torchao to the repaired torch",
-                "--force-reinstall",
-                "--no-cache-dir",
-                _spec,
-            )
-    except Exception as e:
-        _safe_print(f"   [WARN] could not re-match torchao after the repair: {e}")
-    try:
+        # The full label, not the release: the pair is what the extension is linked to.
         _built_for = _resident_xformers_build_torch()
-        if _built_for and _built_for != _probe_installed_torch_version():
+        if _built_for and _built_for != _label_after:
             _note(
                 f"xFormers was built for torch {_built_for}, which is no longer "
                 f"installed -- removing it so attention falls back to torch SDPA"
@@ -3137,6 +3152,7 @@ def _resync_torch_coupled_packages(release_before: str) -> None:
             _uninstall_distribution("xformers")
     except Exception as e:
         _safe_print(f"   [WARN] could not re-check xFormers after the repair: {e}")
+    return not _touched_torch
 
 
 def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
@@ -3315,7 +3331,7 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     _trio = [_torch_pkg, _vision_pkg, _audio_pkg]
     if _is_windows_arm64():
         _trio = [_torch_pkg, _vision_pkg]
-    _release_before = str(installed_version).split("+", 1)[0]
+    _label_before = str(installed_version)
     # --force-reinstall, not install.ps1's uv-only --reinstall-package trio: pip_install
     # falls back to pip when uv fails, and _build_pip_cmd would hand pip a flag it has no
     # word for. Same effect on the packages named here, which is all that is passed.
@@ -3338,8 +3354,17 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     # update would exit 0 and record the requested tag over a build that never arrived.
     _now = _installed_flavor_tag_now()
     if _now == expected:
-        _resync_torch_coupled_packages(_release_before)
-        return True
+        if _resync_torch_coupled_packages(_label_before):
+            return True
+        # The resync ran a pip install that could, in principle, have moved torch. It
+        # uses --no-deps precisely so it cannot, but the verification this function
+        # exists for was already behind us at that point, and a silent regression here
+        # would be indistinguishable from the bug the whole change is about.
+        _after = _installed_flavor_tag_now()
+        if _after in (expected, ""):
+            return True
+        _safe_print("   [WARN] the post-repair package resync changed the torch build.")
+        return _warn_wrong_flavor(expected, _after)
     if not _now:
         # Unreadable. Ambiguity must not fail an update by itself, so fall back to the
         # weaker verdict, which for a CPU expectation is simply "accept".

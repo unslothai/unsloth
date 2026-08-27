@@ -1666,22 +1666,49 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
             ),
             patch.object(stack_mod, "_note", lambda *a, **k: None),
         ):
-            stack_mod._resync_torch_coupled_packages(before)
+            calls["ok"] = stack_mod._resync_torch_coupled_packages(before)
         return calls
 
     def test_a_release_that_moved_re_pins_torchao(self):
-        calls = self._resync("2.11.0", "2.10.0+cu124")
+        calls = self._resync("2.11.0+cu124", "2.10.0+cu124")
         assert calls["torchao"], "torchao must be re-selected for the new release"
         assert any("torchao==0.16.0" in " ".join(c) for c in calls["torchao"])
 
-    def test_a_release_that_did_not_move_does_nothing(self):
+    def test_a_build_that_did_not_move_at_all_does_nothing(self):
         # The common case restores the wheel the venv already had. Reinstalling around
         # it would add minutes to every update for nothing.
-        calls = self._resync("2.10.0", "2.10.0+cu124", resident_xformers = "2.11.0+cu128")
-        assert calls == {"torchao": [], "removed": []}
+        calls = self._resync("2.10.0+cu124", "2.10.0+cu124", resident_xformers = "2.11.0+cu128")
+        assert calls["torchao"] == []
+        assert calls["removed"] == []
+        assert calls["ok"] is True
+
+    def test_a_flavor_change_alone_still_rechecks_xformers(self):
+        # 2.10.0+cu124 -> 2.10.0+cu128 keeps the release, so torchao is untouched, but
+        # the extension is linked to the exact (torch, CUDA) PAIR and is now unloadable.
+        calls = self._resync("2.10.0+cu124", "2.10.0+cu128", resident_xformers = "2.10.0+cu124")
+        assert calls["torchao"] == [], "the release did not move; torchao is fine"
+        assert calls["removed"] == ["xformers"]
+        assert calls["ok"] is True, "nothing here touched torch"
+
+    def test_the_torchao_reinstall_cannot_drag_torch_back(self):
+        # torchao depends on torch, so a --force-reinstall that resolves dependencies
+        # re-resolves it from the unpinned default index -- on Windows, the 2.11.0+cpu
+        # wheel the repair had just removed, moments after removing it.
+        calls = self._resync("2.11.0+cu124", "2.10.0+cu124")
+        assert calls["torchao"], "the release moved, so torchao is re-pinned"
+        assert all("--no-deps" in c for c in calls["torchao"])
+
+    def test_a_pass_that_ran_a_torch_touching_install_asks_to_be_re_verified(self):
+        calls = self._resync("2.11.0+cu124", "2.10.0+cu124")
+        assert calls["ok"] is False
+
+    def test_a_pass_that_installed_nothing_does_not(self):
+        calls = self._resync("2.11.0+cu124", "2.10.0+cu124", installed_spec = True)
+        assert calls["torchao"] == []
+        assert calls["ok"] is True
 
     def test_a_torchao_already_matching_is_left_alone(self):
-        calls = self._resync("2.11.0", "2.10.0+cu124", installed_spec = True)
+        calls = self._resync("2.11.0+cu124", "2.10.0+cu124", installed_spec = True)
         assert calls["torchao"] == []
 
     def test_a_mismatched_xformers_is_removed(self):
@@ -1693,12 +1720,14 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert calls["removed"] == []
 
     def test_an_absent_xformers_is_not_touched(self):
-        calls = self._resync("2.11.0", "2.10.0+cu124", resident_xformers = None)
+        calls = self._resync("2.11.0+cu124", "2.10.0+cu124", resident_xformers = None)
         assert calls["removed"] == []
 
     def test_an_unreadable_torch_after_the_repair_does_nothing(self):
-        calls = self._resync("2.11.0", None, resident_xformers = "2.11.0+cu128")
-        assert calls == {"torchao": [], "removed": []}
+        calls = self._resync("2.11.0+cu124", None, resident_xformers = "2.11.0+cu128")
+        assert calls["torchao"] == []
+        assert calls["removed"] == []
+        assert calls["ok"] is True
 
     def test_neither_half_can_fail_the_update(self, capsys):
         # Both are secondary to the flavor invariant, which has just fixed the real
@@ -1716,7 +1745,7 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
                 side_effect = RuntimeError("unreadable"),
             ),
         ):
-            assert stack_mod._resync_torch_coupled_packages("2.11.0") is None
+            assert stack_mod._resync_torch_coupled_packages("2.11.0+cu124") is True
         out = capsys.readouterr().out
         assert "could not re-match torchao" in out
         assert "could not re-check xFormers" in out
