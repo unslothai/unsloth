@@ -463,8 +463,16 @@ test("the settings deep link parks focus somewhere that outlives the banner", ()
   );
 });
 
-test("the frame itself can hold that focus", () => {
-  assert.match(readTagWithRef("frameRef"), /tabIndex=\{-1\}/);
+test("the frame itself can hold that focus, and shows it", () => {
+  const tag = readTagWithRef("frameRef");
+  assert.match(tag, /tabIndex=\{-1\}/);
+  // outline-none suppresses the ring the tabIndex would otherwise paint, so
+  // without a replacement the keyboard user lands on an unmarked canvas.
+  assert.match(
+    tag,
+    /focus-visible:ring/,
+    "the restored focus target needs a visible focus treatment",
+  );
 });
 
 // Alert is assertive and atomic, so any change inside it re-reads the title,

@@ -225,7 +225,13 @@ export function ArtifactHtmlFrame({
     <div
       ref={frameRef}
       tabIndex={-1}
-      className={cn("relative outline-none", fill ? "h-full" : undefined)}
+      className={cn(
+        // outline-none drops the UA ring the tabIndex above would otherwise
+        // paint; the focus-visible ring puts one back for the keyboard user
+        // this element exists to catch, inset so it sits over the canvas.
+        "relative outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+        fill ? "h-full" : undefined,
+      )}
     >
       <iframe
         ref={iframeRef}
