@@ -715,7 +715,7 @@ def _hybrid_reserve_backend(tmp_path: Path, *, caps = None):
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
     sidecar = tmp_path / "dflash-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
-    backend._get_gguf_size_bytes = lambda path: (0 if str(path) == str(sidecar) else 8 * gb)
+    backend._get_gguf_size_bytes = lambda path: 0 if str(path) == str(sidecar) else 8 * gb
     backend._can_estimate_kv = lambda: True
     backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
     backend._estimate_compute_buffer_bytes = lambda **kwargs: 1
@@ -738,15 +738,18 @@ def _hybrid_reserve_backend(tmp_path: Path, *, caps = None):
         backend._ssm_conv_kernel = 4
 
     backend._read_gguf_metadata = read_metadata
-    backend.probe_server_capabilities = lambda _binary = None: caps or {
-        "mtp_token": "draft-mtp",
-        "supports_dflash": True,
-        "supports_ngram_mod": True,
-        "spec_draft_n_max_flag": "--spec-draft-n-max",
-        # Or the launch clamps the four slots to one and the per-slot state,
-        # which is what these tests measure, shrinks with them.
-        "supports_kv_unified": True,
-    }
+    backend.probe_server_capabilities = lambda _binary = None: (
+        caps
+        or {
+            "mtp_token": "draft-mtp",
+            "supports_dflash": True,
+            "supports_ngram_mod": True,
+            "spec_draft_n_max_flag": "--spec-draft-n-max",
+            # Or the launch clamps the four slots to one and the per-slot state,
+            # which is what these tests measure, shrinks with them.
+            "supports_kv_unified": True,
+        }
+    )
     return backend, gguf, sidecar
 
 
@@ -1707,8 +1710,8 @@ def test_vulkan_igpu_backing_bound_preserves_placement_and_host_headroom(
     """The raw planner reading never lets host-backed credit lose system headroom."""
     backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 15 * 1024, 0)])
     _restore_host_guard(backend)
-    backend._get_gpu_memory = (
-        lambda _binary = None, **_kw: LlamaCppBackend._get_gpu_free_memory_vulkan(_binary)
+    backend._get_gpu_memory = lambda _binary = None, **_kw: (
+        LlamaCppBackend._get_gpu_free_memory_vulkan(_binary)
     )
     backend._get_gguf_size_bytes = lambda _path: gguf_mib * 1024**2
     monkeypatch.setattr(
@@ -2109,9 +2112,9 @@ def test_an_unmapped_load_that_fits_is_left_exactly_as_asked(tmp_path, monkeypat
 
     cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
 
-    assert _unmapped_tokens(cmd) == list(
-        extra_args
-    ), f"the fitting load lost the mode it asked for: {cmd}"
+    assert _unmapped_tokens(cmd) == list(extra_args), (
+        f"the fitting load lost the mode it asked for: {cmd}"
+    )
     assert backend.last_load_warning is None
 
 
@@ -2148,6 +2151,120 @@ def test_the_override_reaches_the_env_twin_llama_cpp_reads_first(tmp_path, monke
     assert launched["cmd"], "the unmapped oversized load never spawned llama-server"
     assert "LLAMA_ARG_NO_MMAP" not in launched["env"]
     assert "memory mapping instead" in (backend.last_load_warning or "")
+
+
+def _override_log(monkeypatch):
+    """Collect the pageable-override log line. structlog, so caplog cannot see it."""
+    import core.inference.llama_cpp as llama_cpp
+
+    lines = []
+    monkeypatch.setattr(
+        llama_cpp.logger,
+        "warning",
+        lambda msg, *a, **kw: lines.append(msg % a if a else msg),
+    )
+    return lines
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_the_warning_opt_out_never_disables_the_pageable_override(
+    tmp_path, monkeypatch, extra_args
+):
+    """UNSLOTH_ALLOW_HOST_OFFLOAD silences the warning and nothing else.
+
+    The override is what lets an oversized unmapped load finish at all: "none" and
+    "mlock" allocate the whole model in host RAM, so the same shortfall is an OOM kill
+    rather than slow paging. Gating it on the message meant setting the deprecated
+    escape turned a load that works into one that is killed, which is the opposite of
+    what an opt-out from a REFUSAL was ever meant to do. The message goes; the rewrite
+    stays, and the log still names it so the load is traceable."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+    logged = _override_log(monkeypatch)
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert cmd, "the unmapped oversized load never spawned llama-server"
+    assert not _unmapped_tokens(cmd), f"the opt-out left the child loading unmapped: {cmd}"
+    # The opt-out did its one job, and only that job.
+    assert backend.last_load_warning is None
+    assert [line for line in logged if "Overriding the unmapped load mode" in line], logged
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_the_opt_out_on_a_fitting_unmapped_load_changes_nothing(tmp_path, monkeypatch, extra_args):
+    """The control for the case above. Silenced or not, a load with room to run is
+    left exactly as asked and nothing is logged about an override."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 64_000, monkeypatch = monkeypatch
+    )
+    monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+    logged = _override_log(monkeypatch)
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert _unmapped_tokens(cmd) == list(extra_args), f"the fitting load lost its mode: {cmd}"
+    assert backend.last_load_warning is None
+    assert not [line for line in logged if "Overriding the unmapped load mode" in line], logged
+
+
+def _apu_backend(tmp_path, *, gguf_gb, avail_mib, monkeypatch):
+    """A ROCm unified-memory APU: the weights load into system RAM, and the APU's
+    reported GPU pool IS that RAM.
+
+    The discrete host guard is left stubbed off, as it effectively is on this host:
+    ``_shared_gpu_ids`` is populated for Vulkan alone (the Vulkan probe is what reports
+    an iGPU), so on ROCm the APU's pool is credited against the weights as if it were
+    dedicated VRAM, the spill prices out at zero and the guard abstains. The APU
+    preflight is the only reading that sees the shortfall."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 60_000, 60_000)])
+    backend._get_gguf_size_bytes = lambda _path: int(gguf_gb * 1024**3)
+    backend._amd_apu_wants_unified_memory = lambda *_a, **_kw: True
+    backend._apu_ram_shortfall_message = LlamaCppBackend._apu_ram_shortfall_message
+    # nothing pinned, so the preflight re-asks the gate; no marker here, so it abstains
+    backend._arch_gate_survivors = lambda _binary = None: []
+    backend._select_gpus = lambda *args, **kw: (None, True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: avail_mib)
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+    return backend, gguf
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_an_oversized_unmapped_apu_load_is_paged_before_it_launches(
+    tmp_path, monkeypatch, extra_args
+):
+    """The APU preflight only RECORDED its shortfall, and the discrete guard next door
+    cannot re-find it (the APU's reported pool covers the weights), so an unmapped
+    oversized APU load reached the child unchanged and was OOM-killed. It is the
+    condition that drives the override, not whichever guard happened to word it."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = 64.6, avail_mib = 46 * 1024, monkeypatch = monkeypatch
+    )
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert cmd, "the unmapped oversized APU load never spawned llama-server"
+    assert not _unmapped_tokens(cmd), f"the APU child still loads unmapped: {cmd}"
+    assert "unified-memory APU" in (backend.last_load_warning or "")
+    assert "memory mapping instead" in (backend.last_load_warning or "")
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_an_unmapped_apu_load_that_fits_is_left_exactly_as_asked(tmp_path, monkeypatch, extra_args):
+    """The control. Same APU, same request, room to run: no shortfall, so the mode the
+    user chose survives untouched and no warning is invented."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = 64.6, avail_mib = 92 * 1024, monkeypatch = monkeypatch
+    )
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert _unmapped_tokens(cmd) == list(extra_args), f"the fitting APU load lost it: {cmd}"
+    assert backend.last_load_warning is None
 
 
 def _unmapped_tokens(cmd):

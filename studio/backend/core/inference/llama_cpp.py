@@ -4720,6 +4720,14 @@ def _report_live_llama_timings(callback, chunk) -> None:
 # system RAM, so hold back the same margin rather than inventing a larger one.
 _IGPU_HOST_RESERVE_MIB = 1024
 _HOST_RAM_HEADROOM_MIB = 2048
+# Appended to whichever shortfall warning an oversized non-pageable launch produced,
+# after _page_an_oversized_unmapped_load rewrote the mode. One string, so the three
+# call sites cannot describe the same override differently.
+_PAGEABLE_OVERRIDE_NOTE = (
+    " This model was set to load without memory mapping, which reads every byte into "
+    "RAM up front and cannot complete at this size, so Unsloth loaded it with memory "
+    "mapping instead."
+)
 _CGROUP_ROOT = "/sys/fs/cgroup"
 _PROC_SELF_CGROUP = "/proc/self/cgroup"
 
@@ -8960,6 +8968,7 @@ class LlamaCppBackend:
         child_has_no_gpu: bool = False,
         avail_mib: Optional[int] = None,
         shared_gpu_ids: Iterable[int] = (),
+        honor_opt_out: bool = True,
     ) -> Optional[str]:
         """Warning when the weights alone do not fit in free VRAM plus available RAM.
 
@@ -8982,6 +8991,11 @@ class LlamaCppBackend:
         from the old refusal, so all it does now is silence the warning. Still honoured
         so existing scripts and docs keep working.
 
+        ``honor_opt_out=False`` prices the shortfall with that variable ignored, for a
+        caller that needs the FACT rather than the warning. Silencing the message must
+        never disable the pageable-load override, which is what lets an oversized
+        unmapped load finish at all: see ``_page_an_oversized_unmapped_load``.
+
         ``avail_mib`` overrides the host figure for a caller that runs before the resident
         owners are released; the launch reads what is available now. ``shared_gpu_ids``
         names Vulkan iGPUs whose reported free memory overlaps the host pool. Either
@@ -8993,12 +9007,7 @@ class LlamaCppBackend:
         model_path = _extra_args_device(argv, self._ARGV_MODEL)
         if not model_path:
             return None
-        # the user's own opt-out, so read the real environment, not the curated child env
-        if os.environ.get("UNSLOTH_ALLOW_HOST_OFFLOAD", "").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-        ):
+        if honor_opt_out and self._host_offload_warning_opted_out():
             logger.info("UNSLOTH_ALLOW_HOST_OFFLOAD set: skipping the host-RAM preflight.")
             return None
         # rpc places layers on remote devices this cannot size, in either spelling
@@ -9096,6 +9105,80 @@ class LlamaCppBackend:
             "or more quantized GGUF, or more free memory, would run faster."
         )
 
+    @staticmethod
+    def _host_offload_warning_opted_out() -> bool:
+        """Whether UNSLOTH_ALLOW_HOST_OFFLOAD silences the host-RAM warning.
+
+        The user's own opt-out, so it reads the REAL environment rather than the
+        curated child env. DEPRECATED and warning-scoped: it was the escape from a
+        refusal that no longer exists, so all it may do is suppress a message. It must
+        never reach a decision that changes what the child runs.
+        """
+        return os.environ.get("UNSLOTH_ALLOW_HOST_OFFLOAD", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+
+    def _page_an_oversized_unmapped_load(
+        self, cmd: Iterable[str], env: Optional[dict], oversized
+    ) -> tuple[list, Optional[str]]:
+        """Rewrite a launch that is BOTH oversized and non-pageable into a pageable one.
+
+        Returns ``(cmd, note)``: the argv to launch, and the sentence to append to
+        whatever warning is emitted, or None when nothing was overridden and ``cmd``
+        comes back unchanged.
+
+        The host-RAM shortfall is survivable only because the weights are mmap'd: the
+        whole premise is that the spill pages in from disk as the model runs. Modes
+        "none" and "mlock" have no such fallback -- upstream sets use_mmap for
+        mmap/mmap+mlock/auto and nothing else (llama-model-loader.cpp), so those two
+        read the weights into a buffer llama.cpp allocates. The same shortfall is then
+        an allocation failure or an OOM kill during loading, not slow generation.
+        Reached by ``--load-mode``, by the deprecated ``--no-mmap`` / ``--no-direct-io``
+        spellings, and by the LLAMA_ARG_* twins llama.cpp reads before argv, so the
+        EFFECTIVE state is what decides, not the tokens Unsloth happens to have emitted.
+
+        This never blocks a load, so the unmapped request is OVERRIDDEN rather than
+        refused: the pageable equivalent goes in (a lock is kept, as mmap+mlock) so the
+        load the user asked for can actually finish. Only on a real shortfall -- an
+        unmapped load that fits is exactly what was asked for and is left byte for byte
+        as written. Said out loud, since a silent override is its own surprise: in the
+        returned note when a warning is emitted, and in the log either way, so a load
+        whose warning was silenced is still traceable.
+
+        One helper for every launch that can discover a shortfall (the APU preflight,
+        the discrete host guard, the arch-crash retry), because the decision belongs to
+        the CONDITION and not to any one warning: a site that only recorded, or a
+        warning the environment suppressed, would otherwise skip the remap and hand the
+        child a load it cannot complete. ``oversized`` is the per-site shortfall
+        predicate, called only once the cheap non-pageable test has passed, so a
+        comfortable launch pays for no pricing.
+        """
+        # The caller's own list back on every no-op path, not a rebuilt copy: an
+        # untouched launch must stay byte for byte, and the same token objects, as
+        # whatever built it.
+        original = cmd if isinstance(cmd, list) else list(cmd or ())
+        _mlock_now, _reserves_ram_now = resolve_effective_memory_state(original, env)
+        if not _reserves_ram_now:
+            return original, None
+        try:
+            if not (oversized() if callable(oversized) else oversized):
+                return original, None
+        except Exception:
+            # Advisory pricing: an unreadable host or GGUF leaves the launch alone.
+            logger.debug("Could not price the load for a pageable override.", exc_info = True)
+            return original, None
+        paged, overridden = force_pageable_load(original, env)
+        if not overridden:
+            return original, None
+        logger.warning(
+            "Overriding the unmapped load mode (%s) for an oversized model: it would "
+            "allocate the whole model in host RAM instead of paging it in.",
+            ", ".join(overridden),
+        )
+        return paged, _PAGEABLE_OVERRIDE_NOTE
+
     @property
     def last_load_warning(self) -> Optional[str]:
         """Advisory notice from the most recent load, or None. Read by the route."""
@@ -9120,6 +9203,19 @@ class LlamaCppBackend:
         logger.warning(message)
         if self._last_load_warning is None:
             self._last_load_warning = message
+
+    def _amend_load_warning(self, note: Optional[str]) -> None:
+        """Append to the notice already recorded for this load, if there is one.
+
+        The pageable-load override can be settled after an earlier guard has already
+        recorded its warning: the APU preflight runs long before ``cmd`` and ``env``
+        exist, which is where the override has to be applied. First notice wins, so
+        that earlier text is what the route hands back, and appending is what keeps the
+        override named in the message the user actually sees. A load whose warning was
+        suppressed has nothing to amend and keeps the log line as its only record.
+        """
+        if note and self._last_load_warning:
+            self._last_load_warning += note
 
     def _fits_without_paging(
         self,
@@ -19420,6 +19516,16 @@ class LlamaCppBackend:
                 else:
                     self._gpu_ids = None
 
+                # Did the APU preflight below find a shortfall. Carried to the launch
+                # site, which is where `cmd` and `env` first exist and so the only place
+                # the pageable-load override can be applied. Without it an oversized
+                # unmapped load on an APU is never remapped: _shared_gpu_ids is
+                # populated for Vulkan alone, so the discrete guard downstream credits
+                # the APU's reported GPU pool against the weights, finds no spill and
+                # abstains, while the RAM this launch actually loads into cannot hold
+                # them. "none" and "mlock" do not mmap, so that is an OOM kill.
+                _apu_ram_oversized = False
+
                 # Unified-memory APUs load weights into system RAM (under WSL the VM
                 # cap, not the ROCm-reported VRAM, is the real ceiling); refuse an
                 # oversize load the OS would otherwise kill mid-flight. Base model
@@ -19452,6 +19558,11 @@ class LlamaCppBackend:
                                 _gated_pin,
                             )
                             _ram_msg = None
+                    # The condition, not the message: read after the arch-gate skip
+                    # above, so a launch the gate moves onto discrete cards is not
+                    # remapped for a shortfall it no longer has. Independent of
+                    # UNSLOTH_ALLOW_HOST_OFFLOAD, which this preflight never consulted.
+                    _apu_ram_oversized = bool(_ram_msg)
                     self._record_load_warning(_ram_msg)
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
@@ -20931,71 +21042,78 @@ class LlamaCppBackend:
                         # The whole visible set stays in use, only its order is fixed.
                         self._pin_visible_gpu_order_for_split(env)
 
+                _child_has_no_gpu = (
+                    # each names a device present but unusable, so it owns the empty pool
+                    _arch_gate_forced_cpu
+                    or _paravirtual_cpu_forced
+                    # neither says a device exists, so an empty pool stays unreadable
+                    or (
+                        bool(_detected_gpus)
+                        and (
+                            _cpu_only_zero_offload or self._binary_ships_no_gpu_backend(binary, env)
+                        )
+                    )
+                )
                 # reads the argv the child gets, not the mid-fit state that produced it
                 _offload_msg = self._launch_host_shortfall_message(
                     cmd,
                     _detected_gpus,
                     env,
-                    child_has_no_gpu = (
-                        # each names a device present but unusable, so it owns the empty pool
-                        _arch_gate_forced_cpu
-                        or _paravirtual_cpu_forced
-                        # neither says a device exists, so an empty pool stays unreadable
-                        or (
-                            bool(_detected_gpus)
-                            and (
-                                _cpu_only_zero_offload
-                                or self._binary_ships_no_gpu_backend(binary, env)
-                            )
-                        )
-                    ),
+                    child_has_no_gpu = _child_has_no_gpu,
                     shared_gpu_ids = _shared_gpu_ids,
                 )
-                # The warning above is survivable only because the weights are mmap'd:
-                # its whole premise is that the spill pages in from disk as the model
-                # runs. Modes "none" and "mlock" have no such fallback -- upstream sets
-                # use_mmap for mmap/mmap+mlock/auto and nothing else, so those two read
-                # the weights into a buffer llama.cpp allocates. The same shortfall is
-                # then an allocation failure or an OOM kill during loading, not slow
-                # generation, and the advisory would be describing a load that cannot
-                # happen. Reached by --load-mode, by the deprecated --no-mmap /
-                # --no-direct-io spellings, and by the LLAMA_ARG_* twins llama.cpp reads
-                # before argv, so the effective state is what decides.
-                #
-                # This guard never blocks a load, so the unmapped request is OVERRIDDEN
-                # rather than refused: swap in the pageable equivalent (a lock is kept,
-                # as mmap+mlock) so the load the user asked for can actually finish.
-                # Only on a shortfall -- an unmapped load that fits is exactly what was
-                # asked for and is left alone. Said out loud in the warning, since a
-                # silent override is its own surprise.
-                if _offload_msg:
-                    _mlock_now, _reserves_ram_now = resolve_effective_memory_state(cmd, env)
-                    if _reserves_ram_now:
-                        cmd, _pageable_overrode = force_pageable_load(cmd, env)
-                        if _pageable_overrode:
-                            logger.warning(
-                                "Overriding the unmapped load mode (%s) for an oversized "
-                                "model: it would allocate the whole model in host RAM "
-                                "instead of paging it in.",
-                                ", ".join(_pageable_overrode),
-                            )
-                            _offload_msg += (
-                                " This model was set to load without memory mapping, "
-                                "which reads every byte into RAM up front and cannot "
-                                "complete at this size, so Unsloth loaded it with "
-                                "memory mapping instead."
-                            )
-                            # The recorded state has to describe the argv that launches,
-                            # or the reload comparator judges this child against a mode
-                            # it no longer runs. The snapshot too: the arch-crash retry
-                            # restores it over `cmd`, which now carries the override.
-                            self._memory_state = resolve_effective_memory_state(cmd, env)
-                            _mem_policy_for_cmd = (
-                                _mem_host_resident,
-                                self._memory_state,
-                                self._memory_policy_active,
-                                self._memory_mlock_applicable,
-                            )
+
+                def _launch_is_oversized() -> bool:
+                    """Whether SOMETHING about to launch does not fit, warning aside.
+
+                    Three readings, because one alone misses a shape the override has
+                    to cover. The APU preflight, whose shortfall this guard cannot see:
+                    _shared_gpu_ids covers Vulkan only, so a ROCm APU's reported pool is
+                    credited here as if it were dedicated VRAM and the spill prices out
+                    at zero. The warning just produced, which is the discrete case. And,
+                    only when the deprecated opt-out silenced that warning, the same
+                    pricing with the opt-out ignored: the variable's contract is that it
+                    hides a message, and hiding a message must not withdraw the rewrite
+                    that makes the load possible.
+                    """
+                    if _apu_ram_oversized or _offload_msg:
+                        return True
+                    if not self._host_offload_warning_opted_out():
+                        return False
+                    return bool(
+                        self._launch_host_shortfall_message(
+                            cmd,
+                            _detected_gpus,
+                            env,
+                            child_has_no_gpu = _child_has_no_gpu,
+                            shared_gpu_ids = _shared_gpu_ids,
+                            honor_opt_out = False,
+                        )
+                    )
+
+                cmd, _pageable_note = self._page_an_oversized_unmapped_load(
+                    cmd, env, _launch_is_oversized
+                )
+                if _pageable_note:
+                    # Only onto a warning that is actually emitted; when the opt-out
+                    # suppressed it the override still went to the log, which is what
+                    # keeps a silenced load traceable. With no message of its own the
+                    # APU preflight's is the one the route returns, so amend that.
+                    if _offload_msg:
+                        _offload_msg += _pageable_note
+                    else:
+                        self._amend_load_warning(_pageable_note)
+                    # The recorded state has to describe the argv that launches, or the
+                    # reload comparator judges this child against a mode it no longer
+                    # runs. The snapshot too: the arch-crash retry restores it over
+                    # `cmd`, which now carries the override.
+                    self._memory_state = resolve_effective_memory_state(cmd, env)
+                    _mem_policy_for_cmd = (
+                        _mem_host_resident,
+                        self._memory_state,
+                        self._memory_policy_active,
+                        self._memory_mlock_applicable,
+                    )
                 self._record_load_warning(_offload_msg)
 
                 # Captured before any text-only fallback strips it from cmd.
@@ -21632,27 +21750,28 @@ class LlamaCppBackend:
                         # the set the respawn reaches, and both are wider than their
                         # upstream twins (the same weights against a NARROWED pool), so
                         # a shortfall that still stands is re-recorded here.
+                        #
+                        # Both are also kept in a variable: the pageable-load override
+                        # at the END of this block, after every rewrite `cmd` still has
+                        # coming, reads them as its shortfall condition and amends
+                        # whichever one first-notice-wins recorded.
                         self._begin_load_warnings()
                         # The APU RAM preflight upstream ran against the CRASHED
                         # selection. The mirror shape (crash on the dGPU, retry on the
                         # unified-memory sibling) makes the respawn the first load into
                         # system RAM, so price it here too. Advisory: the respawn goes
                         # ahead either way.
+                        _retry_apu_msg = None
                         if model_size is not None and _retry_wants_unified:
-                            self._record_load_warning(
-                                self._apu_ram_shortfall_message(
-                                    model_size + _mmproj_pinned_bytes,
-                                    self._available_system_memory_mib(),
-                                )
+                            _retry_apu_msg = self._apu_ram_shortfall_message(
+                                model_size + _mmproj_pinned_bytes,
+                                self._available_system_memory_mib(),
                             )
+                            self._record_load_warning(_retry_apu_msg)
                         # host guard credited the whole pool; the respawn reaches only _remaining
-                        self._record_load_warning(
-                            self._launch_host_shortfall_message(
-                                cmd,
-                                [row for row in _detected_gpus if row[0] in set(_remaining)],
-                                env,
-                            )
-                        )
+                        _retry_rows = [row for row in _detected_gpus if row[0] in set(_remaining)]
+                        _retry_host_msg = self._launch_host_shortfall_message(cmd, _retry_rows, env)
+                        self._record_load_warning(_retry_host_msg)
                         logger.warning(
                             f"llama-server crashed with a HIP kernel-image error on "
                             f"GPU(s) {_crashed} -- the llama.cpp build has no kernels "
@@ -21817,6 +21936,37 @@ class LlamaCppBackend:
                                 "recomputed Model Memory (%s).",
                                 " ".join(_retry_managed) if _retry_managed else "no page-lock",
                             )
+
+                        # Last, because everything above still rewrites `cmd`: the
+                        # tensor-split drop, the split-mode drop, the fit's load-mode
+                        # strip and the re-armed page-lock. The narrowed pool is where a
+                        # load that FIT its first placement can meet its first shortfall,
+                        # and nothing upstream remapped it, so an unmapped respawn would
+                        # allocate the whole model in host RAM and be OOM-killed. Same
+                        # condition, same helper, before the respawn rather than after.
+                        def _retry_is_oversized() -> bool:
+                            if _retry_apu_msg or _retry_host_msg:
+                                return True
+                            # The opt-out silences the message, never the rewrite.
+                            if not self._host_offload_warning_opted_out():
+                                return False
+                            return bool(
+                                self._launch_host_shortfall_message(
+                                    cmd, _retry_rows, env, honor_opt_out = False
+                                )
+                            )
+
+                        cmd, _retry_pageable_note = self._page_an_oversized_unmapped_load(
+                            cmd, env, _retry_is_oversized
+                        )
+                        if _retry_pageable_note:
+                            # Onto whichever notice first-notice-wins kept above; a
+                            # suppressed one leaves the log line as the only record,
+                            # which is the intended contract for the opt-out.
+                            self._amend_load_warning(_retry_pageable_note)
+                            # From the argv, like the fit-strip above: `cmd` is what
+                            # the respawn runs, and the record has to match it.
+                            self._memory_state = resolve_effective_memory_state(cmd, env)
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
 
                 # Flash-attention kernels hard-crash at startup on some ROCm/GPU

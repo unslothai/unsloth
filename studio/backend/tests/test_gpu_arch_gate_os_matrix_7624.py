@@ -1250,9 +1250,120 @@ class TestArchCrashRetryEnv:
         assert launches, "the first launch never ran, so the retry is not what was tested"
         # The repricing is the point, not a block: the respawn goes ahead and carries
         # the advisory the narrowed pool produced.
-        assert "does not fit in GPU memory" in (
-            capture["backend"].last_load_warning or ""
-        ), "the retry did not reprice the spill against the narrowed pool"
+        assert "does not fit in GPU memory" in (capture["backend"].last_load_warning or ""), (
+            "the retry did not reprice the spill against the narrowed pool"
+        )
+
+    def _arch_retry_launches(self, tmp_path, monkeypatch, capture, **kwargs):
+        """The narrowed-pool retry above, plus whatever the caller asks the load for.
+
+        Returns ``(first_argv, retry_argv)``: the crashed launch and the respawn, told
+        apart by the mask, since the unrelated --fit off retry spawns each twice."""
+        torch = self._big_then_small_discrete(monkeypatch)
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            host_offload_stub = LlamaCppBackend._host_offload_shortfall_message,
+            capture = capture,
+            **kwargs,
+        )
+        assert launches, "the first launch never ran, so the retry is not what was tested"
+        _retry = [cmd for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        return launches[0][0], _retry[0]
+
+    @pytest.mark.parametrize(
+        "extra_args",
+        [["--no-mmap"], ["--load-mode", "none"], ["--load-mode=none"], ["--no-direct-io"]],
+        ids = ["no-mmap", "load-mode-none", "load-mode-none-equals", "no-direct-io"],
+    )
+    def test_the_narrowed_retry_pages_an_unmapped_respawn(
+        self, tmp_path, monkeypatch, probe_env, extra_args
+    ):
+        """The shortfall the retry discovers is its FIRST one, so nothing upstream
+        remapped the load: the original placement held the model in VRAM and the
+        discrete guard abstained. "none" and "mlock" do not mmap, so respawning that
+        argv unchanged allocates the whole 30 GB in a 20 GB host and is OOM-killed
+        rather than paged. The override belongs to the condition, so it runs here too,
+        before the respawn."""
+        capture = {}
+        first, retry = self._arch_retry_launches(
+            tmp_path,
+            monkeypatch,
+            capture,
+            model_bytes = 30 * 1024**3,
+            intent_kwargs = {"extra_args": list(extra_args)},
+        )
+
+        # The first launch fit the card it pinned, so it is left exactly as asked --
+        # which is what makes the retry the first place the shortfall can be found.
+        assert _unmapped_tokens(first) == list(extra_args), f"the fitting launch changed: {first}"
+        assert not _unmapped_tokens(retry), f"the respawn still loads unmapped: {retry}"
+        assert "memory mapping instead" in (capture["backend"].last_load_warning or "")
+
+    @pytest.mark.parametrize(
+        "extra_args",
+        [["--no-mmap"], ["--load-mode", "none"], ["--load-mode=none"], ["--no-direct-io"]],
+        ids = ["no-mmap", "load-mode-none", "load-mode-none-equals", "no-direct-io"],
+    )
+    def test_a_narrowed_retry_that_fits_keeps_the_mode_it_was_given(
+        self, tmp_path, monkeypatch, probe_env, extra_args
+    ):
+        """The control. Same crash and same narrowing, on a model the 4000 MiB survivor
+        plus a 20 GB host holds comfortably: no shortfall, so both argvs keep the
+        unmapped mode the user chose."""
+        capture = {}
+        first, retry = self._arch_retry_launches(
+            tmp_path,
+            monkeypatch,
+            capture,
+            model_bytes = 2 * 1024**3,
+            intent_kwargs = {"extra_args": list(extra_args)},
+        )
+
+        assert _unmapped_tokens(first) == list(extra_args), f"the first launch changed: {first}"
+        assert _unmapped_tokens(retry) == list(extra_args), f"the respawn changed: {retry}"
+        assert capture["backend"].last_load_warning is None
+
+    def test_the_retry_pages_an_unmapped_respawn_the_opt_out_silenced(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """UNSLOTH_ALLOW_HOST_OFFLOAD hides the retry's warning. It must not also hand
+        the respawn back the load mode that cannot complete."""
+        monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+        capture = {}
+        _first, retry = self._arch_retry_launches(
+            tmp_path,
+            monkeypatch,
+            capture,
+            model_bytes = 30 * 1024**3,
+            intent_kwargs = {"extra_args": ["--no-mmap"]},
+        )
+
+        assert not _unmapped_tokens(retry), f"the silenced respawn still loads unmapped: {retry}"
+        assert capture["backend"].last_load_warning is None
+
+
+def _unmapped_tokens(cmd):
+    """The tokens in ``cmd`` that select a mode llama.cpp does not mmap.
+
+    Copied from test_llama_cpp_placement.py rather than imported: these two files are
+    separate harnesses and neither imports the other."""
+    out = []
+    for i, token in enumerate(cmd):
+        if token in ("--no-mmap", "-no-mmap", "--no-direct-io", "-ndio"):
+            out.append(token)
+        elif token in ("--load-mode", "-lm") and i + 1 < len(cmd):
+            if cmd[i + 1].strip().lower() in ("none", "mlock"):
+                out.extend([token, cmd[i + 1]])
+        elif token.split("=", 1)[0] in ("--load-mode", "-lm") and "=" in token:
+            if token.split("=", 1)[1].strip().lower() in ("none", "mlock"):
+                out.append(token)
+    return out
 
 
 class TestManualSplitLaunchesRespectTheGate:
@@ -2689,9 +2800,9 @@ class TestTheApuRetryRecomputesThePageLock:
     def test_the_respawn_onto_the_apu_gets_the_lock(self, tmp_path, monkeypatch, probe_env):
         launches, capture = self._run(tmp_path, monkeypatch, mlock = True)
         retry = [(cmd, env) for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
-        assert (
-            retry
-        ), f"the arch-crash retry never targeted the APU: {[_visibility(e) for _c, e in launches]}"
+        assert retry, (
+            f"the arch-crash retry never targeted the APU: {[_visibility(e) for _c, e in launches]}"
+        )
         cmd, _env = retry[0]
         assert "--mlock" in cmd or "mmap+mlock" in " ".join(cmd), cmd
         # And the record agrees with the child, or the reload that would apply
