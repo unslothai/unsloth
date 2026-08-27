@@ -273,9 +273,9 @@ def test_a_root_with_no_installed_metadata_is_left_alone(tmp_path):
     """
     got = _run_on_hostile_tree(tmp_path, apply = True, omit_metadata = True)
     assert got["affected"] is True, "the layout is still the hostile one"
-    assert got["applied"] is False, (
-        "the patch installed itself with no way to tell a dependency from the user's own module"
-    )
+    assert (
+        got["applied"] is False
+    ), "the patch installed itself with no way to tell a dependency from the user's own module"
     assert got["dumps"].startswith("PicklingError"), got["dumps"]
 
 
@@ -369,9 +369,9 @@ def test_the_widening_only_covers_modules_that_import_back():
     namespace_like.__spec__ = types.SimpleNamespace(name = "namespace_like", origin = None)
     sys.modules["namespace_like"] = namespace_like
     try:
-        assert not _dill_module_is_importable_by_name(namespace_like, *installed), (
-            "a module with no file backing it is not safely importable by name"
-        )
+        assert not _dill_module_is_importable_by_name(
+            namespace_like, *installed
+        ), "a module with no file backing it is not safely importable by name"
     finally:
         del sys.modules["namespace_like"]
 
@@ -543,16 +543,10 @@ def test_only_recorded_files_are_treated_as_dependency_owned(tmp_path):
     # well would claim the whole `bothns` directory and put a co-located
     # `bothns/myconfig.py` back on the dependency side.
     (root / "both-1.0.dist-info").mkdir()
-    (root / "both-1.0.dist-info" / "RECORD").write_text(
-        "bothns/cloud.py,,\n", encoding = "utf-8"
-    )
-    (root / "both-1.0.dist-info" / "top_level.txt").write_text(
-        "bothns\n", encoding = "utf-8"
-    )
+    (root / "both-1.0.dist-info" / "RECORD").write_text("bothns/cloud.py,,\n", encoding = "utf-8")
+    (root / "both-1.0.dist-info" / "top_level.txt").write_text("bothns\n", encoding = "utf-8")
     (root / "eggy.egg-info").mkdir()
-    (root / "eggy.egg-info" / "installed-files.txt").write_text(
-        "../eggmod.py\n", encoding = "utf-8"
-    )
+    (root / "eggy.egg-info" / "installed-files.txt").write_text("../eggmod.py\n", encoding = "utf-8")
     (root / "myproj.py").write_text("VALUE = 1\n", encoding = "utf-8")
 
     files, dirs = _dill_distribution_paths(str(root))
@@ -564,9 +558,9 @@ def test_only_recorded_files_are_treated_as_dependency_owned(tmp_path):
         "are real distributions' real modules, and dropping them leaves them "
         "pickled by value with the original PicklingError intact"
     )
-    assert "sourceless/__init__.pyc".replace("/", os.sep) in rel, (
-        "a bytecode-only deployment records .pyc, and it is just as installed"
-    )
+    assert (
+        "sourceless/__init__.pyc".replace("/", os.sep) in rel
+    ), "a bytecode-only deployment records .pyc, and it is just as installed"
     assert "singlemod.py" in rel and "eggmod.py" in rel
     assert "myproj.py" not in rel, "a file no distribution recorded is claimed"
     assert not any("dist-info" in r or ".data" in r or "__pycache__" in r for r in rel)
@@ -603,9 +597,7 @@ def test_a_project_module_under_a_shared_namespace_stays_by_value(tmp_path):
     (root / "ns" / "cloud.py").write_text("X = 1\n", encoding = "utf-8")
     (root / "ns" / "myconfig.py").write_text("VALUE = 1\n", encoding = "utf-8")
     (root / "nsdist-1.0.dist-info").mkdir()
-    (root / "nsdist-1.0.dist-info" / "RECORD").write_text(
-        "ns/cloud.py,,\n", encoding = "utf-8"
-    )
+    (root / "nsdist-1.0.dist-info" / "RECORD").write_text("ns/cloud.py,,\n", encoding = "utf-8")
     installed = _dill_distribution_paths(str(root))
 
     for name, filename, expected in (
@@ -613,9 +605,7 @@ def test_a_project_module_under_a_shared_namespace_stays_by_value(tmp_path):
         ("ns.myconfig", "myconfig.py", False),
     ):
         module = types.ModuleType(name)
-        module.__spec__ = types.SimpleNamespace(
-            name = name, origin = str(root / "ns" / filename)
-        )
+        module.__spec__ = types.SimpleNamespace(name = name, origin = str(root / "ns" / filename))
         sys.modules[name] = module
         try:
             assert _dill_module_is_importable_by_name(module, *installed) is expected, (
@@ -676,12 +666,8 @@ def test_a_bytecode_only_package_still_finds_its_metadata(tmp_path):
     """
     from unsloth.import_fixes import _dill_install_root
 
-    assert _dill_install_root("/opt/layer/python/pyarrow/__init__.pyc") == (
-        "/opt/layer/python"
-    )
-    assert _dill_install_root("/opt/layer/python/pyarrow/__init__.py") == (
-        "/opt/layer/python"
-    )
+    assert _dill_install_root("/opt/layer/python/pyarrow/__init__.pyc") == ("/opt/layer/python")
+    assert _dill_install_root("/opt/layer/python/pyarrow/__init__.py") == ("/opt/layer/python")
     assert _dill_install_root("/opt/layer/python/dill.py") == "/opt/layer/python"
 
 

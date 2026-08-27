@@ -5695,7 +5695,7 @@ def _dill_distribution_paths(root):
         # so containment is checked after resolving, never on the raw text.
         if not full.startswith(prefix):
             return
-        head = full[len(prefix):].split(os.sep, 1)[0]
+        head = full[len(prefix) :].split(os.sep, 1)[0]
         if head == "__pycache__" or head.endswith((".dist-info", ".egg-info", ".data")):
             return
         files.add(full)
@@ -5739,7 +5739,11 @@ def _dill_distribution_paths(root):
     return files, dirs
 
 
-def _dill_module_is_importable_by_name(module, files = (), dirs = ()):
+def _dill_module_is_importable_by_name(
+    module,
+    files = (),
+    dirs = (),
+):
     """Whether pickling `module` BY REFERENCE is valid AND in scope.
 
     Valid exactly when an unpickler can get the same object back with
