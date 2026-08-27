@@ -3921,6 +3921,61 @@ def get_app_setting(key: str, fallback = None):
         conn.close()
 
 
+def get_app_settings(keys: list[str]) -> dict[str, Any]:
+    """Read a set of settings from one SQLite snapshot.
+
+    Values that form one logical record must not be fetched through separate
+    connections: a concurrent multi-key upsert could otherwise leave a reader
+    pairing one save's first field with another save's remaining fields.
+    Missing keys are omitted from the result.
+    """
+    unique = list(dict.fromkeys(keys))
+    if not unique:
+        return {}
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" for _ in unique)
+        rows = conn.execute(
+            f"SELECT key, value_json FROM app_settings WHERE key IN ({placeholders})",
+            unique,
+        ).fetchall()
+        return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
+    finally:
+        conn.close()
+
+
+def compare_and_set_app_setting(key: str, expected: Any, value: Any) -> bool:
+    """Write ``value`` to ``key`` only while it still holds ``expected``.
+
+    A read-then-upsert cannot express "clear this flag": another save committing
+    in the gap is silently reverted by the write that follows it. Comparing inside
+    one immediate transaction makes a losing update a no-op instead. Returns
+    whether the write happened.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
+        current = _json_loads(row["value_json"], None) if row is not None else None
+        if current != expected:
+            conn.rollback()
+            return False
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (key, json.dumps(value), datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
 def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
     if not settings:
         return {}

@@ -783,14 +783,30 @@ export const ja = {
         sectionTitle: "ドキュメントと RAG",
         embeddingModel: "埋め込みモデル",
         embeddingModelDescription: "ドキュメントのインデックス作成と検索に使用する Hugging Face モデルまたはローカルパス。デフォルトは {defaultModel} です。",
-        searchPlaceholder: "埋め込みモデルを検索",
+        searchPlaceholder: "HF 上の任意のモデルを検索",
         reindexWarning: "新しくインデックスされるドキュメントにのみ影響します。モデルを変更した後は、既存のドキュメントを再アップロードしてください。",
         emptyError: "Hugging Face モデル ID またはローカルパスを入力してください。",
         loadError: "埋め込みモデル設定の読み込みに失敗しました。",
         saveError: "埋め込みモデルの保存に失敗しました。",
         saved: "埋め込みモデルを保存しました。",
         saveAnyway: "そのまま保存",
-        resetAction: "デフォルトに戻す",
+        recommended: "推奨",
+        onDevice: "このデバイス",
+        searching: "Hugging Face を検索中…",
+        checking: "確認中…",
+        noResults: "埋め込みモデルが見つかりません",
+        download: "ダウンロード",
+        unload: "アンロード",
+        unloadFailed: "埋め込みモデルをアンロードできませんでした",
+        downloadingStatus: "ダウンロード中…",
+        notDownloaded: "未ダウンロード",
+        notDownloadedSized: "未ダウンロード · {size}",
+        loaded: "読み込み済み",
+        downloading: "{model} をダウンロード中",
+        downloadingDescription: "進捗はダウンロードパネルに表示されます。完了後にインデックス作成で使用されます。",
+        downloadFailed: "ダウンロードを開始できませんでした",
+        downloadConflict: "このダウンロードは Hub から再開してください",
+        downloadBusy: "ダウンロードはすでに進行中です",
       },
       storage: {
         sectionTitle: "ストレージ",
@@ -1172,6 +1188,7 @@ export const ja = {
         processMemory: "プロセスメモリ",
         notInstalled: "未インストール",
         unknown: "不明",
+        vramWithShared: "{vram} VRAM + {shared} 共有メモリ",
       },
     },
     agents: {
@@ -1201,6 +1218,15 @@ export const ja = {
       docs: "ドキュメント",
       agentDocs: "{agent} のセットアップドキュメントを開く",
       copyGeneratedCommand: "生成されたコマンドをコピー",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex には llama-server が提供する GGUF モデルが必要です。他のエージェントは transformers ベースのモデルも利用できます。Unsloth に読み込み済みのモデルを使うには --model を外してください。",
       subagent: {

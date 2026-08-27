@@ -775,7 +775,7 @@ export const zhCN = {
         embeddingModel: "Embedding 模型",
         embeddingModelDescription:
           "用于为文档建立索引和搜索的 Hugging Face 模型或本地路径。默认值为 {defaultModel}。",
-        searchPlaceholder: "搜索嵌入模型",
+        searchPlaceholder: "搜索 HF 上的任意模型",
         reindexWarning:
           "仅影响新建立索引的文档。更改模型后请重新上传已有文档。",
         emptyError: "请输入 Hugging Face 模型 ID 或本地路径。",
@@ -783,7 +783,23 @@ export const zhCN = {
         saveError: "保存 embedding 模型失败。",
         saved: "Embedding 模型已保存。",
         saveAnyway: "仍然保存",
-        resetAction: "重置为默认值",
+        recommended: "推荐",
+        onDevice: "本机",
+        searching: "正在搜索 Hugging Face…",
+        checking: "检查中…",
+        noResults: "未找到 embedding 模型",
+        download: "下载",
+        unload: "卸载",
+        unloadFailed: "无法卸载 embedding 模型",
+        downloadingStatus: "正在下载…",
+        notDownloaded: "未下载",
+        notDownloadedSized: "未下载 · {size}",
+        loaded: "已加载",
+        downloading: "正在下载 {model}",
+        downloadingDescription: "进度显示在下载面板中。下载完成后即可用于建立索引。",
+        downloadFailed: "无法开始下载",
+        downloadConflict: "请在 Hub 中继续此下载",
+        downloadBusy: "下载已在进行中",
       },
       storage: {
         sectionTitle: "存储",
@@ -1165,6 +1181,7 @@ export const zhCN = {
         processMemory: "进程内存",
         notInstalled: "未安装",
         unknown: "未知",
+        vramWithShared: "{vram} 显存 + {shared} 共享内存",
       },
     },
     agents: {
@@ -1193,6 +1210,15 @@ export const zhCN = {
       docs: "文档",
       agentDocs: "打开 {agent} 的配置文档",
       copyGeneratedCommand: "复制生成的命令",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex 需要通过 llama-server 提供服务的 GGUF 模型。其他智能体也可以使用基于 transformers 的模型；去掉 --model 即可使用 Unsloth 中已加载的模型。",
       subagent: {

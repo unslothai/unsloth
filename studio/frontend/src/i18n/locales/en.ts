@@ -795,7 +795,7 @@ export const en = {
         embeddingModel: "Embedding model",
         embeddingModelDescription:
           "Hugging Face model or local path used to index and search your documents. Default is {defaultModel}.",
-        searchPlaceholder: "Search embedding models",
+        searchPlaceholder: "Search any model on HF",
         reindexWarning:
           "Only affects newly indexed documents. Re-upload existing ones after changing the model.",
         emptyError: "Enter a Hugging Face model id or local path.",
@@ -803,7 +803,24 @@ export const en = {
         saveError: "Failed to save the embedding model.",
         saved: "Embedding model saved.",
         saveAnyway: "Save anyway",
-        resetAction: "Reset to default",
+        recommended: "Recommended",
+        onDevice: "On device",
+        searching: "Searching Hugging Face…",
+        checking: "Checking…",
+        noResults: "No embedding models found",
+        download: "Download",
+        unload: "Unload",
+        unloadFailed: "Couldn't unload the embedding model",
+        downloadingStatus: "Downloading…",
+        notDownloaded: "Not downloaded",
+        notDownloadedSized: "Not downloaded · {size}",
+        loaded: "Loaded",
+        downloading: "Downloading {model}",
+        downloadingDescription:
+          "Progress is in the downloads panel. Indexing uses it once it lands.",
+        downloadFailed: "Couldn't start the download",
+        downloadConflict: "Resume this download from the Hub",
+        downloadBusy: "Download already in progress",
       },
       storage: {
         sectionTitle: "Storage",
@@ -1185,6 +1202,8 @@ export const en = {
         processMemory: "Process memory",
         notInstalled: "Not installed",
         unknown: "Unknown",
+        // {vram} is the dedicated total, {shared} the shared pool beside it.
+        vramWithShared: "{vram} VRAM + {shared} shared",
       },
     },
     agents: {

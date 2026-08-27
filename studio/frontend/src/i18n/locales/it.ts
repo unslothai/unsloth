@@ -786,7 +786,7 @@ export const it = {
         embeddingModel: "Modello di embedding",
         embeddingModelDescription:
           "Modello Hugging Face o percorso locale usato per indicizzare e cercare nei tuoi documenti. Il valore predefinito è {defaultModel}.",
-        searchPlaceholder: "Cerca modelli di embedding",
+        searchPlaceholder: "Cerca qualsiasi modello su HF",
         reindexWarning:
           "Vale solo per i documenti indicizzati da ora in poi. Ricarica quelli esistenti dopo aver cambiato modello.",
         emptyError:
@@ -796,7 +796,24 @@ export const it = {
         saveError: "Salvataggio del modello di embedding non riuscito.",
         saved: "Modello di embedding salvato.",
         saveAnyway: "Salva comunque",
-        resetAction: "Ripristina il valore predefinito",
+        recommended: "Consigliato",
+        onDevice: "Sul dispositivo",
+        searching: "Ricerca su Hugging Face…",
+        checking: "Verifica…",
+        noResults: "Nessun modello di embedding trovato",
+        download: "Scarica",
+        unload: "Scarica dalla memoria",
+        unloadFailed: "Impossibile scaricare il modello di embedding",
+        downloadingStatus: "Download in corso…",
+        notDownloaded: "Non scaricato",
+        notDownloadedSized: "Non scaricato · {size}",
+        loaded: "Caricato",
+        downloading: "Download di {model}",
+        downloadingDescription:
+          "L'avanzamento è nel pannello dei download. L'indicizzazione lo userà al termine.",
+        downloadFailed: "Impossibile avviare il download",
+        downloadConflict: "Riprendi questo download dall'Hub",
+        downloadBusy: "Download già in corso",
       },
       storage: {
         sectionTitle: "Archiviazione",
@@ -1184,6 +1201,7 @@ export const it = {
         processMemory: "Memoria del processo",
         notInstalled: "Non installato",
         unknown: "Sconosciuto",
+        vramWithShared: "{vram} di VRAM + {shared} di memoria condivisa",
       },
     },
     agents: {
@@ -1213,6 +1231,15 @@ export const it = {
       docs: "Documentazione",
       agentDocs: "Apri la documentazione di configurazione di {agent}",
       copyGeneratedCommand: "Copia il comando generato",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex richiede un modello GGUF servito da llama-server. Gli altri agenti possono usare anche modelli basati su transformer; rimuovi --model per usare il modello già caricato in Unsloth.",
       subagent: {

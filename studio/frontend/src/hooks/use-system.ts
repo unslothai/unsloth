@@ -22,6 +22,8 @@ export interface GpuDevice {
   shared_memory?: boolean;
   /** A unified host pool (ROCm APU): a total, but not a VRAM ceiling. */
   unified_memory?: boolean;
+  /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
+  shared_memory_host_backed_gb?: number | null;
 }
 
 export interface SystemGpuInfo {

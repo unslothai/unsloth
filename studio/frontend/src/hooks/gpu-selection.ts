@@ -15,6 +15,8 @@ export interface SystemGpuDevice {
    *  these with a discrete card, and a pin naming only the discrete card can
    *  still spill to host RAM. */
   sharedMemory: boolean;
+  /** host-backed portion of memoryTotalGb when sharedMemory is true. */
+  sharedMemoryHostBackedGb?: number | null;
   /** Whether `index` is safe to send as gpu_ids. */
   pinnable: boolean;
   /** Whether the separate DiffusionGemma runner can use this physical ID. */

@@ -13,6 +13,14 @@ export interface MemoryTotalDevice {
   memory_total_gb?: number;
   /** True when the reported GPU budget comes from shared system memory. */
   shared_memory?: boolean;
+  /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
+  shared_memory_host_backed_gb?: number | null;
+}
+
+export interface GpuMemoryTotalsGb {
+  dedicated: number;
+  shared: number;
+  total: number;
 }
 
 export interface VramReportingGpu {
@@ -30,26 +38,131 @@ export interface VramReportingGpu {
 export function aggregateGpuMemoryTotalGb(
   devices: MemoryTotalDevice[],
 ): number {
-  // A probe reading, so it is not trusted to be a usable number: `?? 0` only defends
-  // against null and undefined, and one NaN or Infinity in the list poisons the sum
-  // and every fit verdict measured against it.
+  return gpuMemoryTotalsGb(devices).total;
+}
+
+export function gpuMemoryTotalsGb(
+  devices: MemoryTotalDevice[],
+): GpuMemoryTotalsGb {
   const size = (device: MemoryTotalDevice) => {
     const total = device.memory_total_gb ?? 0;
     return Number.isFinite(total) && total > 0 ? total : 0;
   };
-  const dedicated = devices
-    .filter((device) => !device.shared_memory)
-    .reduce((sum, device) => sum + size(device), 0);
-  const shared = Math.max(
-    0,
-    ...devices.filter((device) => device.shared_memory).map(size),
+  const dedicatedDevices = roundToDevicePrecision(
+    devices
+      .filter((device) => !device.shared_memory)
+      .reduce((sum, device) => sum + size(device), 0),
   );
-  return Math.round((dedicated + shared) * 100) / 100;
+  const sharedPool = devices
+    .filter((device) => device.shared_memory)
+    .reduce(
+      (totals, device) => {
+        const total = size(device);
+        const hostBackedReported = device.shared_memory_host_backed_gb;
+        const hostBackedKnown =
+          Number.isFinite(hostBackedReported) &&
+          (hostBackedReported as number) >= 0;
+        const hostBacked = hostBackedKnown
+          ? Math.min(total, hostBackedReported as number)
+          : total;
+        return {
+          hostBacked: Math.max(totals.hostBacked, hostBacked),
+          reserved:
+            totals.reserved + (hostBackedKnown ? total - hostBacked : 0),
+        };
+      },
+      { hostBacked: 0, reserved: 0 },
+    );
+  const shared = roundToDevicePrecision(sharedPool.hostBacked);
+  const dedicated = roundToDevicePrecision(
+    dedicatedDevices + sharedPool.reserved,
+  );
+  return {
+    dedicated,
+    shared,
+    total: roundToDevicePrecision(dedicated + shared),
+  };
+}
+
+export function gpuSharedHostMemoryGb(devices: MemoryTotalDevice[]): number {
+  return gpuMemoryTotalsGb(devices).shared;
+}
+
+export function systemRamAvailableOutsideSharedPoolGb(
+  availableGb: number,
+  hostBackedSharedPoolGb: number,
+): number {
+  const available =
+    Number.isFinite(availableGb) && availableGb > 0 ? availableGb : 0;
+  const shared =
+    Number.isFinite(hostBackedSharedPoolGb) && hostBackedSharedPoolGb > 0
+      ? hostBackedSharedPoolGb
+      : 0;
+  return roundToDevicePrecision(
+    Math.max(0, available - shared),
+  );
+}
+
+function roundToDevicePrecision(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+export interface MemoryCapacityDevice {
+  memoryTotalGb: number;
+  sharedMemory: boolean;
+  sharedMemoryHostBackedGb?: number | null;
+}
+
+function budgetedGpuMemoryGb(
+  devices: MemoryCapacityDevice[],
+  budget: number,
+): { total: number; independent: number } {
+  let dedicated = 0;
+  let reserved = 0;
+  let partialSharedDemand = 0;
+  let fullySharedDemand = 0;
+  let sharedPool = 0;
+  for (const device of devices) {
+    const total =
+      Number.isFinite(device.memoryTotalGb) && device.memoryTotalGb > 0
+        ? device.memoryTotalGb
+        : 0;
+    const deviceCapacity = total * budget;
+    if (!device.sharedMemory) {
+      dedicated += deviceCapacity;
+      continue;
+    }
+    const reportedHostBacked = device.sharedMemoryHostBackedGb;
+    const hostBacked =
+      Number.isFinite(reportedHostBacked) &&
+      (reportedHostBacked as number) >= 0
+        ? Math.min(total, reportedHostBacked as number)
+        : total;
+    const deviceReserved = total - hostBacked;
+    reserved += Math.min(deviceReserved, deviceCapacity);
+    const deviceSharedDemand = Math.max(0, deviceCapacity - deviceReserved);
+    if (deviceReserved > 0) {
+      partialSharedDemand += deviceSharedDemand;
+    } else {
+      // fully shared vulkan rows may be duplicate icd views of one physical device.
+      fullySharedDemand = Math.max(fullySharedDemand, deviceSharedDemand);
+    }
+    sharedPool = Math.max(sharedPool, hostBacked);
+  }
+  return {
+    total: roundToDevicePrecision(
+      dedicated +
+        reserved +
+        Math.min(sharedPool, partialSharedDemand + fullySharedDemand),
+    ),
+    independent: roundToDevicePrecision(dedicated + reserved),
+  };
 }
 
 export interface MemoryCapacityInput {
   /** The devices a pin names, or empty when the load may use the whole host. */
-  pinnedDevices: { memoryTotalGb: number; sharedMemory: boolean }[];
+  pinnedDevices: MemoryCapacityDevice[];
+  hostDevices?: MemoryCapacityDevice[];
   /** Aggregate GPU budget of the whole inventory, for the unpinned case. */
   hostGpuTotalGb: number;
   /** The same aggregate with shared-memory devices left out, for the unpinned case.
@@ -87,15 +200,16 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   /** One pool for both figures, so a caller shows one number rather than two. */
   singleMemoryPool: boolean;
 } {
-  const pinnedGpuCapacityGb = aggregateGpuMemoryTotalGb(
+  const pinnedTotals = gpuMemoryTotalsGb(
     input.pinnedDevices.map((device) => ({
       memory_total_gb: device.memoryTotalGb,
       shared_memory: device.sharedMemory,
+      shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
     })),
   );
   // One flag for both answers, so the capacity and the pool question cannot
   // disagree about which devices they are describing.
-  const pinGoverns = pinnedGpuCapacityGb > 0;
+  const pinGoverns = pinnedTotals.total > 0;
   // The host figure comes from aggregateGpuMemoryTotalGb on the caller's side, which
   // guards itself, but this is a plain number on a public interface and a non-finite
   // one here would make every figure below NaN.
@@ -103,19 +217,12 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
     Number.isFinite(input.hostGpuTotalGb) && input.hostGpuTotalGb > 0
       ? input.hostGpuTotalGb
       : 0;
-  const rawGpuCapacityGb = pinGoverns ? pinnedGpuCapacityGb : hostGpuTotalGb;
+  const rawGpuCapacityGb = pinGoverns ? pinnedTotals.total : hostGpuTotalGb;
   // The dedicated-only figure for the same governing set. A pin answers for itself;
   // unpinned takes the caller's, falling back to the full aggregate, which is the
   // right answer on every host that has no shared device at all.
   const rawDedicatedCapacityGb = pinGoverns
-    ? aggregateGpuMemoryTotalGb(
-        input.pinnedDevices
-          .filter((device) => !device.sharedMemory)
-          .map((device) => ({
-            memory_total_gb: device.memoryTotalGb,
-            shared_memory: false,
-          })),
-      )
+    ? pinnedTotals.dedicated
     : Number.isFinite(input.hostDedicatedGpuTotalGb) &&
         (input.hostDedicatedGpuTotalGb as number) >= 0
       ? (input.hostDedicatedGpuTotalGb as number)
@@ -131,8 +238,27 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
     input.gpuBudgetFraction <= 1
       ? input.gpuBudgetFraction
       : 1;
-  const gpuCapacityGb = Math.round(rawGpuCapacityGb * budget * 100) / 100;
+  const capacityDevices = pinGoverns
+    ? input.pinnedDevices
+    : (input.hostDevices ?? []);
+  const capacityDeviceTotals = gpuMemoryTotalsGb(
+    capacityDevices.map((device) => ({
+      memory_total_gb: device.memoryTotalGb,
+      shared_memory: device.sharedMemory,
+      shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
+    })),
+  );
+  const canBudgetByDevice =
+    capacityDevices.length > 0 &&
+    Math.abs(capacityDeviceTotals.total - rawGpuCapacityGb) <= 0.01;
+  const budgetedGpuMemory = canBudgetByDevice
+    ? budgetedGpuMemoryGb(capacityDevices, budget)
+    : null;
+  const gpuCapacityGb =
+    budgetedGpuMemory?.total ??
+    Math.round(rawGpuCapacityGb * budget * 100) / 100;
   const dedicatedCapacityGb =
+    budgetedGpuMemory?.independent ??
     Math.round(rawDedicatedCapacityGb * budget * 100) / 100;
   // Same guard as the device totals: psutil's figure arrives over the wire too, and a
   // non-finite one would turn the ceiling below into NaN, which classifyMemoryFit
@@ -146,8 +272,7 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   // calling that one pool hides the GPU verdict on the only figure that would catch
   // a fixed placement too large for the card.
   const sharesSystemRam = pinGoverns
-    ? input.pinnedDevices.length > 0 &&
-      input.pinnedDevices.every((device) => device.sharedMemory)
+    ? pinnedTotals.shared > 0 && pinnedTotals.dedicated === 0
     : input.hostSharesSystemRam;
   const singleMemoryPool = input.unifiedMemory || sharesSystemRam;
   return {
@@ -251,6 +376,8 @@ export interface FreeVramDevice {
   memoryTotalGb?: number;
   /** True when this device's budget is a capped view of the host's own RAM. */
   sharedMemory?: boolean;
+  /** Host-backed portion of memoryTotalGb when sharedMemory is true. */
+  sharedMemoryHostBackedGb?: number | null;
 }
 
 /**
@@ -265,8 +392,9 @@ export interface FreeVramDevice {
  * total of 0 (`hardware.py` zeroes it for an iGPU on one path), and `usableFreeVramGb`
  * then falls back to the raw free reading with no reserve subtracted at all.
  *
- * Several shared devices are several views of one pool, so the largest is taken
- * rather than their sum -- two iGPUs on one host do not have two pools.
+ * Fully shared devices are views of one pool, so only the largest is taken. A
+ * partially shared APU also has an independent reserved segment, which remains
+ * additive while its host-backed demand is capped by the common pool.
  */
 export function aggregateUsableFreeVramGb(
   devices: FreeVramDevice[],
@@ -274,14 +402,63 @@ export function aggregateUsableFreeVramGb(
 ): number {
   const usable = (device: FreeVramDevice) =>
     usableFreeVramGb(device.memoryFreeGb ?? 0, device.memoryTotalGb ?? 0, fraction);
-  const dedicated = devices
-    .filter((device) => !device.sharedMemory)
-    .reduce((sum, device) => sum + usable(device), 0);
-  const shared = Math.max(
-    0,
-    ...devices.filter((device) => device.sharedMemory).map(usable),
-  );
+  let dedicated = 0;
+  let reserved = 0;
+  let partialSharedDemand = 0;
+  let partialSharedFree = 0;
+  let fullySharedDemand = 0;
+  let fullySharedFree = 0;
+  for (const device of devices) {
+    const deviceUsable = usable(device);
+    if (!device.sharedMemory) {
+      dedicated += deviceUsable;
+      continue;
+    }
+    const total =
+      Number.isFinite(device.memoryTotalGb) && (device.memoryTotalGb as number) > 0
+        ? (device.memoryTotalGb as number)
+        : 0;
+    if (total === 0) {
+      fullySharedDemand = Math.max(fullySharedDemand, deviceUsable);
+      fullySharedFree = Math.max(fullySharedFree, deviceUsable);
+      continue;
+    }
+    const reportedHostBacked = device.sharedMemoryHostBackedGb;
+    const hostBacked =
+      Number.isFinite(reportedHostBacked) &&
+      (reportedHostBacked as number) >= 0
+        ? Math.min(total, reportedHostBacked as number)
+        : total;
+    const deviceReserved = total - hostBacked;
+    const deviceCapacity = usableFreeVramGb(total, total, fraction);
+    const deviceSharedCapacity = Math.max(0, deviceCapacity - deviceReserved);
+    const deviceSharedDemand = Math.min(deviceUsable, deviceSharedCapacity);
+    reserved += Math.min(
+      deviceReserved,
+      Math.max(0, deviceUsable - deviceSharedDemand),
+    );
+    if (deviceReserved > 0) {
+      partialSharedDemand += deviceSharedDemand;
+      const free =
+        Number.isFinite(device.memoryFreeGb) && (device.memoryFreeGb as number) > 0
+          ? (device.memoryFreeGb as number)
+          : 0;
+      const deviceSharedFree = Math.min(hostBacked, free);
+      partialSharedFree = Math.max(partialSharedFree, deviceSharedFree);
+    } else {
+      fullySharedDemand = Math.max(fullySharedDemand, deviceSharedDemand);
+      fullySharedFree = Math.max(fullySharedFree, deviceSharedDemand);
+    }
+  }
+  const sharedFree = Math.max(partialSharedFree, fullySharedFree);
   // Devices arrive rounded to 2dp and the reserve is a fraction of them, so the sum
   // reintroduces float error the same way the totals aggregate does.
-  return Math.round((dedicated + shared) * 100) / 100;
+  return (
+    Math.round(
+      (dedicated +
+        reserved +
+        Math.min(sharedFree, partialSharedDemand + fullySharedDemand)) *
+        100,
+    ) / 100
+  );
 }
