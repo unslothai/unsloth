@@ -127,6 +127,10 @@ def _validate_url(url: str) -> str:
     return trimmed
 
 
+OAUTH_CLIENT_ID_FIELD = "oauth_client_id"
+OAUTH_CLIENT_SECRET_FIELD = "oauth_client_secret"
+
+
 def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     """Trim header names, drop empties, coerce values to str; None if empty."""
     if not headers:
@@ -361,13 +365,21 @@ async def update_mcp_server(
         and "headers_json" not in changes
     ):
         changes["headers_json"] = None
+    # `old` is a masked read, so it never carries the stored secret value and no
+    # comparison against it can see one being removed. Decide from presence
+    # instead: the secret changed when a replacement was supplied, or when an
+    # existing one is being cleared. A blank field on an unchanged row -- what
+    # the edit dialog sends on a rename -- is neither.
+    secret_changed = OAUTH_CLIENT_SECRET_FIELD in changes and (
+        bool(changes[OAUTH_CLIENT_SECRET_FIELD])
+        or bool(old.get(mcp_servers_db.HAS_OAUTH_CLIENT_SECRET_KEY))
+    )
     # Clear persisted OAuth tokens when the URL changes or OAuth is disabled;
     # fastmcp keys tokens by URL and would otherwise let a re-pointed server
     # silently inherit the old account's credentials.
-    oauth_config_changed = any(
-        changes.get(field) != old.get(field)
-        for field in ("oauth_client_id", "oauth_client_secret")
-        if field in changes
+    oauth_config_changed = secret_changed or (
+        OAUTH_CLIENT_ID_FIELD in changes
+        and changes[OAUTH_CLIENT_ID_FIELD] != old.get(OAUTH_CLIENT_ID_FIELD)
     )
     if bool(old.get("use_oauth")) and (
         ("url" in changes and changes["url"] != old["url"])
@@ -388,8 +400,11 @@ async def update_mcp_server(
     # them and let the next send re-probe; a rename leaves them valid. Live stdio sessions for the
     # old endpoint close too. Gate on a real value change, not mere presence: the edit dialog
     # resends url/headers/oauth unchanged on a rename, which must not drop the session.
-    invalidates_tools = any(
-        changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS
+    invalidates_tools = secret_changed or any(
+        changes[k] != old.get(k)
+        for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS
+        # Handled by `secret_changed`: `old` cannot supply a value to compare.
+        if k != OAUTH_CLIENT_SECRET_FIELD
     )
     mcp_servers_db.update_server(server_id, changes)
     if invalidates_tools:

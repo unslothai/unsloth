@@ -328,6 +328,75 @@ def test_changing_client_id_clears_stored_secret(tmp_path, monkeypatch):
     assert row["oauth_client_secret"] is None
 
 
+def test_removing_the_stored_secret_drops_tokens_and_cached_tools(tmp_path, monkeypatch):
+    """Clearing the secret is a credential change like any other.
+
+    `old` is a masked read, so it never carries the stored secret value; a
+    comparison against it cannot see the removal. Leaving the persisted tokens
+    and the cached tools in place would let the server keep answering under
+    credentials the user just revoked."""
+    from models.mcp_servers import McpServerUpdate
+    from routes import mcp_servers as routes
+
+    _store_calendar_server(tmp_path, monkeypatch)
+    cleared_token_urls = []
+    invalidated_ids = []
+
+    async def clear_tokens(url):
+        cleared_token_urls.append(url)
+
+    monkeypatch.setattr(routes, "clear_oauth_tokens_async", clear_tokens)
+    monkeypatch.setattr(routes, "invalidate_tool_cache", invalidated_ids.append)
+    asyncio.run(
+        routes.update_mcp_server(
+            "calendar",
+            # Same client ID and URL: only the secret goes away.
+            McpServerUpdate(
+                oauth_client_id = "configured-client-id",
+                oauth_client_secret = None,
+            ),
+            current_subject = "test-user",
+        )
+    )
+
+    assert mcp_servers_db.get_server("calendar")["oauth_client_secret"] is None
+    assert cleared_token_urls == ["https://calendarmcp.googleapis.com/mcp/v1"]
+    assert invalidated_ids == ["calendar"]
+
+
+def test_resending_an_unchanged_client_id_keeps_tokens_and_cached_tools(tmp_path, monkeypatch):
+    """The edit dialog resends every OAuth field on a rename, and a blank secret
+    field means "keep the stored one" -- neither is a credential change."""
+    from models.mcp_servers import McpServerUpdate
+    from routes import mcp_servers as routes
+
+    _store_calendar_server(tmp_path, monkeypatch)
+    cleared_token_urls = []
+    invalidated_ids = []
+
+    async def clear_tokens(url):
+        cleared_token_urls.append(url)
+
+    monkeypatch.setattr(routes, "clear_oauth_tokens_async", clear_tokens)
+    monkeypatch.setattr(routes, "invalidate_tool_cache", invalidated_ids.append)
+    asyncio.run(
+        routes.update_mcp_server(
+            "calendar",
+            McpServerUpdate(
+                display_name = "Google Calendar",
+                oauth_client_id = "configured-client-id",
+            ),
+            current_subject = "test-user",
+        )
+    )
+
+    assert mcp_servers_db.get_server("calendar")["oauth_client_secret"] == (
+        "configured-client-secret"
+    )
+    assert cleared_token_urls == []
+    assert invalidated_ids == []
+
+
 def test_changing_url_clears_stored_secret(tmp_path, monkeypatch):
     from models.mcp_servers import McpServerUpdate
     from routes import mcp_servers as routes

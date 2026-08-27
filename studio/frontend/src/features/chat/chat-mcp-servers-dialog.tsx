@@ -643,8 +643,8 @@ export function ChatMcpServersDialog({
         : form.url.trim();
       if (url === null || formGenerationRef.current !== generation) return;
       const result = await testMcpServer({
-        serverId: view.kind === "edit" ? view.id : undefined,
         url,
+        serverId: view.kind === "edit" ? view.id : undefined,
         headers: headersToObject(form.headers),
         ...buildMcpOAuthFormPayload(
           stdio ? false : form.useOauth,

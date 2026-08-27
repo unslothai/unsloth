@@ -202,8 +202,8 @@ export function testMcpServer(payload: {
   return mcpRequest("/test", {
     method: "POST",
     body: {
-      server_id: payload.serverId ?? null,
       url: payload.url,
+      server_id: payload.serverId ?? null,
       headers: payload.headers ?? null,
       use_oauth: payload.useOauth ?? false,
       oauth_client_id: payload.oauthClientId ?? null,
