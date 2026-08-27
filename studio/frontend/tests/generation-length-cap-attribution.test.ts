@@ -23,9 +23,18 @@ test("a cap the prompt left room for is the limit that was hit", () => {
   );
 });
 
-test("exactly reaching the window still counts as the cap", () => {
+test("hitting the cap and the context wall together is context-bound", () => {
+  // Retargeted. This asserted the cap wins at equality, which is exactly backwards: when
+  // promptTokens + cap equals the window, both limits are reached in the same token, so
+  // raising Max Tokens creates no room at all and the Context Length remedy is the only
+  // one that can work.
   assert.equal(
     maxTokensIsTheLimit({ cap: 1096, contextLength: 4096, promptTokens: 3000 }),
+    false,
+  );
+  // One token of headroom and the cap really is what stopped it.
+  assert.equal(
+    maxTokensIsTheLimit({ cap: 1095, contextLength: 4096, promptTokens: 3000 }),
     true,
   );
 });

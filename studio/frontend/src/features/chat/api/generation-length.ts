@@ -32,5 +32,8 @@ export function maxTokensIsTheLimit({
   if (promptTokens === null) {
     return true;
   }
-  return promptTokens + cap <= window;
+  // Strictly below, not at. At equality the cap and the physical context wall are hit
+  // in the same token, so raising Max Tokens creates no room and the advice to do so is
+  // the one thing that cannot help. The context length is the lever there.
+  return promptTokens + cap < window;
 }

@@ -27491,32 +27491,61 @@ class LlamaCppBackend:
                                 _length_continuations,
                                 _MAX_LENGTH_CONTINUATIONS,
                             )
+                            # Candidate first, exactly as the partial-answer branch above
+                            # does. This one mutated `conversation` directly and checked
+                            # neither the fit nor the caller's cap: a thought that reached
+                            # the context wall makes the retry prompt window-sized, and
+                            # with no evictable history the recovery request is the one
+                            # thing that must not be rejected.
+                            _cand_l = list(conversation)
                             append_assistant_turn(
-                                conversation,
+                                _cand_l,
                                 {
                                     "role": "assistant",
                                     "content": _unfinished_thought_progress(reasoning_accum),
                                 },
                                 continue_final_message = continue_final_message,
                             )
-                            conversation.append(
+                            _cand_l.append(
                                 {
                                     "role": "user",
                                     "content": _continue_after_length_message(),
                                 }
                             )
                             _fu_l = _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
-                            _accumulated_completion_tokens += _fu_l.get("completion_tokens", 0)
-                            _it_l = _iter_timings or {}
-                            _accumulated_predicted_ms += _it_l.get("predicted_ms", 0)
-                            _accumulated_predicted_n += _it_l.get("predicted_n", 0)
-                            # Blank first so the route resets its text cursor, as the
-                            # re-prompt below does; otherwise the retry reads as a hang.
-                            if _continuation_credits < _MAX_CONTINUATION_CREDITS:
-                                _continuation_credits += 1
-                            yield {"type": "status", "text": ""}
-                            yield {"type": "status", "text": _CONTINUE_AFTER_LENGTH_STATUS}
-                            continue
+                            _spent_l = _fu_l.get("completion_tokens", 0) or int(
+                                payload.get("max_tokens") or 0
+                            )
+                            _cap_left_l = _loop_budget_left(_spent_l)
+                            if _cap_left_l == 0 or not _loop_continuation_fits(
+                                _cand_l, safe_tools, _reasoning_kw
+                            ):
+                                logger.info(
+                                    "Not continuing the thought: %s",
+                                    "the caller's output cap is spent"
+                                    if _cap_left_l == 0
+                                    else "the retry prompt would not be served",
+                                )
+                                _length_continuations -= 1
+                                _effective_enable_thinking = enable_thinking
+                                _effective_reasoning_effort = reasoning_effort
+                            else:
+                                conversation[:] = _cand_l
+                                if _cap_left_l is not None:
+                                    _continuation_max_tokens = _cap_left_l
+                                _accumulated_completion_tokens += _fu_l.get(
+                                    "completion_tokens", 0
+                                )
+                                _it_l = _iter_timings or {}
+                                _accumulated_predicted_ms += _it_l.get("predicted_ms", 0)
+                                _accumulated_predicted_n += _it_l.get("predicted_n", 0)
+                                # Blank first so the route resets its text cursor, as the
+                                # re-prompt below does; else the retry reads as a hang.
+                                if _continuation_credits < _MAX_CONTINUATION_CREDITS:
+                                    _continuation_credits += 1
+                                yield {"type": "status", "text": ""}
+                                yield {"type": "status", "text": _CONTINUE_AFTER_LENGTH_STATUS}
+                                continue
 
                         if (
                             _iter_finish_reason == "length"
@@ -27922,6 +27951,17 @@ class LlamaCppBackend:
                             if decision.tool_call_id:
                                 denied_message["tool_call_id"] = decision.tool_call_id
                             conversation.append(denied_message)
+                            # The denial is itself the `tool` message that makes the
+                            # template render the call it refused, so declining an
+                            # oversized write COSTS the prompt the very arguments it
+                            # declined to afford. The bulk compaction deliberately skips
+                            # denials now that replies are paired with their call, so
+                            # without this the user gets a context error in place of the
+                            # refusal they asked for.
+                            if decision.tool_call_id:
+                                conversation[:] = compact_refused_tool_arguments(
+                                    conversation, decision.tool_call_id
+                                )
                             if _forced_tool_call_pending:
                                 _forced_tool_call_pending = False
                             continue
@@ -28214,10 +28254,27 @@ class LlamaCppBackend:
                                 # the tool catalogue, so the offset stays only as the
                                 # fallback for a tokenizer call that raises.
                                 _exact_prompt_tokens: Optional[int] = None
+                                # Counted WITH a stand-in tool message for the call about
+                                # to run, exactly as the admission gate prices it. Qwen
+                                # and templates like it render an assistant tool call only
+                                # once a `tool` reply follows, so counting `conversation`
+                                # as it stands omits this call's own arguments -- and the
+                                # result is then handed room those arguments already
+                                # occupy. Empty content, because a result can be cut to
+                                # its notice but the call itself cannot be unsent.
+                                _size_probe: dict = {
+                                    "role": "tool",
+                                    "name": decision.tool_name,
+                                    "content": "",
+                                }
+                                if decision.tool_call_id:
+                                    _size_probe["tool_call_id"] = decision.tool_call_id
                                 try:
                                     _exact_prompt_tokens = self.count_chat_tokens(
                                         neutralize_control_markup_in_messages(
-                                            conversation, _markup_cache, self.markup_profile
+                                            [*conversation, _size_probe],
+                                            _markup_cache,
+                                            self.markup_profile,
                                         ),
                                         None,
                                         safe_tools,

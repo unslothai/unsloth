@@ -394,6 +394,11 @@ def _reply_floor(context_length: int) -> int:
 # How much of a completed call's arguments has to be at stake before replacing them with a
 # receipt is worth the edit. Below this the placeholder is a wash against what it removes,
 # and the model loses sight of its own last action for nothing.
+# Fields naming the call's destination rather than its payload.
+_PATH_KEYS = frozenset({"path", "file_path", "filePath"})
+# Longest path worth repeating inside every elided leaf's receipt.
+_RECEIPT_PATH_MAX_CHARS = 120
+
 _ARG_COMPACTION_FLOOR_CHARS = 1024
 # Once the arguments AS A WHOLE are worth reclaiming, the bar each string has to clear
 # drops to this. Not zero: a receipt is about 100 characters, so eliding anything shorter
@@ -493,9 +498,24 @@ def _compacted_arguments(
         only the tests noticed they had stopped meeting.
         """
         nonlocal elided
+        # The destination is never expendable: it is the one field that says WHICH file
+        # the call touched, and the receipt promises the content can be found there. A
+        # deeply nested path over the aggregate floor was being elided like content,
+        # leaving later turns unable to name the file they had just changed.
+        if key in _PATH_KEYS:
+            return value
         if isinstance(value, str) and len(value) >= _leaf_floor:
             elided += len(value)
-            where = f" to {path}" if path and key != "path" else ""
+            # Named in the receipt only when repeating it is cheaper than the field it
+            # points at. Every elided leaf embeds this, so a 500-character path across
+            # four leaves costs more than the content removed and the whole compaction
+            # is rejected by the size check below. The `path` field is preserved
+            # verbatim either way, so nothing is lost by leaving it out here.
+            where = (
+                f" to {path}"
+                if path and key not in _PATH_KEYS and len(str(path)) <= _RECEIPT_PATH_MAX_CHARS
+                else ""
+            )
             # `old_string` names text the edit REMOVED. The completed phrase says the
             # content is already written and the file on disk holds it, which of the two
             # halves of a replacement is true only of `new_string`; said of the old text
@@ -815,7 +835,15 @@ def _blamed_role(message: dict) -> str:
     """
     role = str(message.get("role") or "")
     if role == "assistant" and message.get("tool_calls"):
-        return "assistant_tool_call"
+        # Split again by whether a FILE is involved. The file wording reached an
+        # oversized `python`, `terminal`, web or MCP call and told the user to ask for a
+        # smaller file when the payload was a program, a command or a query -- naming the
+        # wrong cause and offering an action that cannot shrink it.
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") if isinstance(call, dict) else None
+            if isinstance(function, dict) and str(function.get("name") or "") in _FILE_WRITING_TOOLS:
+                return "assistant_tool_call"
+        return "assistant_tool_payload"
     return role
 
 

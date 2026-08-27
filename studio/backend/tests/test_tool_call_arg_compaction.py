@@ -685,3 +685,46 @@ def test_a_non_file_tool_is_not_told_it_wrote_nothing(tool_name):
     assert "nothing was written" not in replayed
     assert "already written" not in replayed
     assert "the call already ran" in replayed
+
+
+def test_the_destination_path_survives_aggregate_compaction():
+    """The receipt promises the content is on disk, so the field naming WHICH file is
+    the one thing that can never be spent. Once the aggregate floor lowers the per-leaf
+    bar to 256, a long nested path was elided like content."""
+    long_path = "src/" + "very_long_directory_name/" * 20 + "module.py"
+    assert len(long_path) > 256
+    edits = [
+        {"old_string": "a" * 300, "new_string": "b" * 300},
+        {"old_string": "c" * 300, "new_string": "d" * 300},
+    ]
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_call("c1", "edit_file", path = long_path, edits = edits)],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": "edit_file", "content": "Applied 2 edits"},
+    ]
+
+    fitted, compacted = compact_completed_tool_arguments(messages)
+
+    assert compacted == 1
+    replayed = fitted[0]["tool_calls"][0]["function"]["arguments"]
+    assert long_path in replayed, "the model can no longer name the file it just changed"
+    assert "a" * 300 not in replayed
+
+
+@pytest.mark.parametrize(
+    "tool_name, expect_file_wording",
+    [("edit_file", True), ("python", False), ("terminal", False), ("mcp__s__t", False)],
+)
+def test_the_refusal_blames_a_file_only_when_a_file_is_involved(tool_name, expect_file_wording):
+    """`_blamed_role` sent every oversized tool call to the file advice, so a program or
+    an MCP payload was answered with "ask for a smaller file"."""
+    from core.inference.context_window import _blamed_role  # noqa: PLC0415
+
+    message = {"role": "assistant", "tool_calls": [_call("c1", tool_name, code = "x")]}
+
+    role = _blamed_role(message)
+
+    assert role == ("assistant_tool_call" if expect_file_wording else "assistant_tool_payload")

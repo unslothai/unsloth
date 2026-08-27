@@ -209,6 +209,14 @@ _ROLE_ADVICE = {
         "The file the model passed to a tool does not fit on its own",
         "ask for a smaller file, or raise the Context Length before retrying",
     ),
+    # The same shape with no file in it: an oversized program, command, query or MCP
+    # payload. "Ask for a smaller file" names the wrong thing and cannot be acted on, so
+    # this one says what is actually true of every tool.
+    "assistant_tool_payload": (
+        "Most of this prompt is what the model passed to a tool",
+        "What the model passed to a tool does not fit on its own",
+        "ask for less in one call, or raise the Context Length before retrying",
+    ),
     # The reply resumed after it hit Max Tokens: the user cannot split or shorten it.
     "assistant": (
         "Most of this prompt is the reply being continued",
