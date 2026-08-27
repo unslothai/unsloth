@@ -96,7 +96,6 @@ export const en = {
       showLess: "Show less",
       settings: "Settings",
       api: "API",
-      unforgettable: "Unforgettable",
       lightMode: "Light Mode",
       darkMode: "Dark Mode",
       guidedTour: "Guided Tour",
@@ -198,7 +197,6 @@ export const en = {
       apiKeys: "API",
       remoteLan: "Remote & LAN",
       agents: "Agents",
-      unforgettable: "Unforgettable",
       keyboardShortcuts: "Shortcuts",
       debugging: "Logs",
       about: "About",
@@ -459,69 +457,6 @@ export const en = {
       // Not rendered: extra terms the settings search matches this tab on, so
       // the pane is still reachable by searching for debug or an error.
       keywords: "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
-    },
-    unforgettable: {
-      title: "Unforgettable",
-      description:
-        "Episode defaults and approver settings for the memory-aware model. Chat history is not memory.",
-      openDashboard: "Open Unforgettable dashboard",
-      episode: {
-        title: "Episode defaults",
-        description:
-          "Copied onto chat completions when the selected model is unforgettable.",
-        planner: "Planner",
-        plannerDescription: "Ask a supervisor model for a temporary plan.",
-        plannerHint:
-          "Working memory only. The plan is not written to the notebook.",
-        plannerModel: "Planner model",
-        plannerModelDescription: "Optional model id for the planner complete.",
-        modelPlaceholder: "Leave blank for the inner model",
-        highStakes: "High stakes",
-        highStakesDescription:
-          "Drop sim and inferred rows from world retrieve.",
-        highStakesHint:
-          "Can also require confirm before retrying the world after sim.",
-        confirmRetry: "Confirm world retry",
-        confirmRetryDescription:
-          "Show an Allow/Deny card before retrying the world.",
-        confirmDefault: "Default",
-        confirmAlways: "Always",
-        confirmNever: "Never",
-        skipStanding: "Skip standing playbooks",
-        skipStandingDescription: "Do not inject compiled standing procedures.",
-        adapter: "Attach adapter",
-        adapterDescription: "Shrink standing for a trained sidecar adapter.",
-        adapterNone: "None",
-        adapterHint:
-          "Live LoRA attach is not wired yet; this still shrinks standing.",
-        testCommand: "Test command",
-        testCommandDescription:
-          "Sim harness command. Overrides a stored test command procedure.",
-        maxClones: "Max sim clones",
-        maxSimTurns: "Max sim turns",
-        budgetDescription: "Leave blank for the code default (1 clone / 8 turns).",
-      },
-      approver: {
-        title: "Approver",
-        description:
-          "Optional voter for admit, review, mine, compile, and promote.",
-        voter: "Voter",
-        voterOff: "Off",
-        voterAdvisory: "Advisory",
-        voterBinding: "Binding",
-        voterHint: "Binding deny blocks admit and promote unless you force.",
-        voterModel: "Voter model",
-        supervisorUrl: "Supervisor URL",
-        supervisorTimeout: "Supervisor timeout (seconds)",
-      },
-      store: {
-        title: "Notebook",
-        description: "Structured memory lives next to Studio, not in RAG.",
-        path: "memory.db",
-        namespace: "Namespace",
-        notRag:
-          "Unforgettable is not a second RAG. Chat history and rag.db are not the notebook.",
-      },
     },
     voice: {
       title: "Voice",
@@ -860,7 +795,7 @@ export const en = {
         embeddingModel: "Embedding model",
         embeddingModelDescription:
           "Hugging Face model or local path used to index and search your documents. Default is {defaultModel}.",
-        searchPlaceholder: "Search embedding models",
+        searchPlaceholder: "Search any model on HF",
         reindexWarning:
           "Only affects newly indexed documents. Re-upload existing ones after changing the model.",
         emptyError: "Enter a Hugging Face model id or local path.",
@@ -868,7 +803,24 @@ export const en = {
         saveError: "Failed to save the embedding model.",
         saved: "Embedding model saved.",
         saveAnyway: "Save anyway",
-        resetAction: "Reset to default",
+        recommended: "Recommended",
+        onDevice: "On device",
+        searching: "Searching Hugging Face…",
+        checking: "Checking…",
+        noResults: "No embedding models found",
+        download: "Download",
+        unload: "Unload",
+        unloadFailed: "Couldn't unload the embedding model",
+        downloadingStatus: "Downloading…",
+        notDownloaded: "Not downloaded",
+        notDownloadedSized: "Not downloaded · {size}",
+        loaded: "Loaded",
+        downloading: "Downloading {model}",
+        downloadingDescription:
+          "Progress is in the downloads panel. Indexing uses it once it lands.",
+        downloadFailed: "Couldn't start the download",
+        downloadConflict: "Resume this download from the Hub",
+        downloadBusy: "Download already in progress",
       },
       storage: {
         sectionTitle: "Storage",
@@ -1250,6 +1202,8 @@ export const en = {
         processMemory: "Process memory",
         notInstalled: "Not installed",
         unknown: "Unknown",
+        // {vram} is the dedicated total, {shared} the shared pool beside it.
+        vramWithShared: "{vram} VRAM + {shared} shared",
       },
     },
     agents: {
@@ -1370,6 +1324,9 @@ export const en = {
         showAllQuantizations: "Show all quantizations",
         showAllQuantizationsDescription:
           "On: list every quantization in “On Device”, including not downloaded. Off: show only downloaded quantizations.",
+        showMemoryBar: "Show VRAM usage bar",
+        showMemoryBarDescription:
+          "Chart each downloaded model's estimated VRAM use under its row: weights, KV cache at the context it will load with, and any speculative draft reserve.",
       },
       menu: {
         title: "Chat menu",
@@ -2381,81 +2338,15 @@ export const en = {
       modelWeights: "Model weights",
     },
   },
-  unforgettable: {
-    page: {
-      title: "Unforgettable",
-      loading: "Resolving memory.db…",
-      searchPlaceholder: "Search memory…",
-      settings: "Settings",
-    },
-    inject: {
-      label: "Last inject",
-      standing: "standing",
-      retrieve: "retrieve",
-      traj: "trajectories",
-      none: "No episode has written an inject split yet.",
-    },
-    tiles: {
-      proposed: "needs review",
-      active: "notebook",
-      compiled: "compiled",
-      archived: "archive",
-      noneLive: "none live",
-    },
-    trust: { label: "Trust" },
-    kinds: { label: "Kinds" },
-    workspace: {
-      inbox: "Inbox",
-      notebook: "Notebook",
-      standing: "Standing",
-      archive: "Archive",
-      sidecar: "Sidecar",
-      hygiene: "Hygiene",
-    },
-    queue: {
-      empty: "Nothing in this view.",
-      askVoter: "Ask voter",
-      mine: "Mine drafts",
-      applyReview: "Apply review",
-      applyMine: "Apply mine",
-      applied: "Voter applied",
-    },
-    inspector: {
-      noSelection: "Select a record to inspect.",
-      admit: "Admit",
-      reject: "Reject",
-      save: "Save draft",
-      force: "Force",
-      compile: "Compile",
-      uncompile: "Uncompile",
-      deprecate: "Deprecate",
-      admitted: "Admitted",
-      rejected: "Rejected",
-      saved: "Saved",
-      compiled: "Compiled",
-      uncompiled: "Removed from standing",
-      deprecated: "Deprecated",
-    },
-    hygiene: {
-      compact: "Preview compact",
-      compactApply: "Apply compact",
-      contradictions: "Contradictions",
-      admissions: "Admissions",
-      rollouts: "Rollouts",
-    },
-    sidecar: {
-      empty:
-        "Pack and train from the CLI. Promoted adapters appear here.",
-      promote: "Promote",
-      rollback: "Rollback",
-      promoted: "Adapter promoted",
-      rolledBack: "Adapter rolled back",
-    },
-    errors: {
-      load: "Could not load memory",
-      action: "Action failed",
-      loadSettings: "Could not load Unforgettable settings",
-      saveSettings: "Could not save Unforgettable settings",
-    },
+  modelMemory: {
+    readout:
+      "Weights {model} + context {context} = {total} of {budget} usable VRAM",
+    readoutWithSpec:
+      "Weights {model} + KV {kv} + MTP draft {spec} = {total} of {budget} usable VRAM",
+    // Measured against llama.cpp: the cache is allocated at context creation,
+    // sized to n_ctx, so the rate is what a longer context actually costs.
+    kvRate: "KV reserved, ~{rate}/token",
+    oomLikely: "With current settings OOM likely",
+    tooLarge: "Larger than VRAM, will offload to CPU. A smaller quantization runs faster",
   },
 } as const;

@@ -100,7 +100,6 @@ export const ru = {
       showLess: "Показать меньше",
       settings: "Настройки",
       api: "API",
-      unforgettable: "Unforgettable",
       lightMode: "Светлая тема",
       darkMode: "Тёмная тема",
       guidedTour: "Обзор интерфейса",
@@ -199,7 +198,6 @@ export const ru = {
       remoteLan: "Удалённый доступ и LAN",
       about: "О программе",
       data: "Данные",
-      unforgettable: "Unforgettable",
       agents: "Агенты",
       debugging: "Журналы",
       voice: "Голос",
@@ -459,69 +457,6 @@ export const ru = {
       morePending: "Ещё строки продолжают читаться; они появятся при следующем обновлении.",
       staleSession: "Запись журнала в файл отключена, поэтому это предыдущий сеанс, который не будет обновляться.",
       keywords: "отладка журнал журналы лог логи ошибка ошибки сбой трассировка диагностика поиск неисправностей debug log",
-    },
-    unforgettable: {
-      title: "Unforgettable",
-      description:
-        "Episode defaults and approver settings for the memory-aware model. Chat history is not memory.",
-      openDashboard: "Open Unforgettable dashboard",
-      episode: {
-        title: "Episode defaults",
-        description:
-          "Copied onto chat completions when the selected model is unforgettable.",
-        planner: "Planner",
-        plannerDescription: "Ask a supervisor model for a temporary plan.",
-        plannerHint:
-          "Working memory only. The plan is not written to the notebook.",
-        plannerModel: "Planner model",
-        plannerModelDescription: "Optional model id for the planner complete.",
-        modelPlaceholder: "Leave blank for the inner model",
-        highStakes: "High stakes",
-        highStakesDescription:
-          "Drop sim and inferred rows from world retrieve.",
-        highStakesHint:
-          "Can also require confirm before retrying the world after sim.",
-        confirmRetry: "Confirm world retry",
-        confirmRetryDescription:
-          "Show an Allow/Deny card before retrying the world.",
-        confirmDefault: "Default",
-        confirmAlways: "Always",
-        confirmNever: "Never",
-        skipStanding: "Skip standing playbooks",
-        skipStandingDescription: "Do not inject compiled standing procedures.",
-        adapter: "Attach adapter",
-        adapterDescription: "Shrink standing for a trained sidecar adapter.",
-        adapterNone: "None",
-        adapterHint:
-          "Live LoRA attach is not wired yet; this still shrinks standing.",
-        testCommand: "Test command",
-        testCommandDescription:
-          "Sim harness command. Overrides a stored test command procedure.",
-        maxClones: "Max sim clones",
-        maxSimTurns: "Max sim turns",
-        budgetDescription: "Leave blank for the code default (1 clone / 8 turns).",
-      },
-      approver: {
-        title: "Approver",
-        description:
-          "Optional voter for admit, review, mine, compile, and promote.",
-        voter: "Voter",
-        voterOff: "Off",
-        voterAdvisory: "Advisory",
-        voterBinding: "Binding",
-        voterHint: "Binding deny blocks admit and promote unless you force.",
-        voterModel: "Voter model",
-        supervisorUrl: "Supervisor URL",
-        supervisorTimeout: "Supervisor timeout (seconds)",
-      },
-      store: {
-        title: "Notebook",
-        description: "Structured memory lives next to Studio, not in RAG.",
-        path: "memory.db",
-        namespace: "Namespace",
-        notRag:
-          "Unforgettable is not a second RAG. Chat history and rag.db are not the notebook.",
-      },
     },
     voice: {
       title: "Голос",
@@ -863,7 +798,7 @@ export const ru = {
         embeddingModel: "Модель эмбеддингов",
         embeddingModelDescription:
           "Модель Hugging Face или локальный путь для индексации и поиска по вашим документам. По умолчанию {defaultModel}.",
-        searchPlaceholder: "Поиск embedding-моделей",
+        searchPlaceholder: "Поиск любой модели на HF",
         reindexWarning:
           "Влияет только на вновь индексируемые документы. После смены модели загрузите существующие документы заново.",
         emptyError: "Введите ID модели Hugging Face или локальный путь.",
@@ -871,7 +806,24 @@ export const ru = {
         saveError: "Не удалось сохранить модель эмбеддингов.",
         saved: "Модель эмбеддингов сохранена.",
         saveAnyway: "Всё равно сохранить",
-        resetAction: "Восстановить значение по умолчанию",
+        recommended: "Рекомендуется",
+        onDevice: "На устройстве",
+        searching: "Поиск в Hugging Face…",
+        checking: "Проверка…",
+        noResults: "Модели эмбеддингов не найдены",
+        download: "Скачать",
+        unload: "Выгрузить",
+        unloadFailed: "Не удалось выгрузить модель эмбеддингов",
+        downloadingStatus: "Загрузка…",
+        notDownloaded: "Не загружено",
+        notDownloadedSized: "Не загружено · {size}",
+        loaded: "Загружено",
+        downloading: "Загрузка {model}",
+        downloadingDescription:
+          "Прогресс виден на панели загрузок. После завершения он будет использован для индексации.",
+        downloadFailed: "Не удалось начать загрузку",
+        downloadConflict: "Возобновите эту загрузку в Hub",
+        downloadBusy: "Загрузка уже выполняется",
       },
       storage: {
         sectionTitle: "Хранилище",
@@ -1260,6 +1212,7 @@ export const ru = {
         processMemory: "Память процесса",
         notInstalled: "Не установлено",
         unknown: "Неизвестно",
+        vramWithShared: "{vram} VRAM + {shared} общей памяти",
       },
     },
     agents: {
@@ -1390,6 +1343,9 @@ export const ru = {
         showAllQuantizations: "Показывать все квантизации",
         showAllQuantizationsDescription:
           "Включено: показываются все квантизации из раздела «On Device», в том числе не скачанные. Выключено: показываются только скачанные квантизации.",
+        showMemoryBar: "Показывать шкалу использования VRAM",
+        showMemoryBarDescription:
+          "Показывает под строкой каждой скачанной модели её ожидаемое потребление VRAM: веса, KV-кеш при той длине контекста, с которой модель будет загружена, и резерв для спекулятивного черновика.",
       },
       menu: {
         title: "Меню чата",
@@ -2427,81 +2383,13 @@ export const ru = {
       modelWeights: "Веса модели",
     },
   },
-  unforgettable: {
-    page: {
-      title: "Unforgettable",
-      loading: "Resolving memory.db…",
-      searchPlaceholder: "Search memory…",
-      settings: "Settings",
-    },
-    inject: {
-      label: "Last inject",
-      standing: "standing",
-      retrieve: "retrieve",
-      traj: "trajectories",
-      none: "No episode has written an inject split yet.",
-    },
-    tiles: {
-      proposed: "needs review",
-      active: "notebook",
-      compiled: "compiled",
-      archived: "archive",
-      noneLive: "none live",
-    },
-    trust: { label: "Trust" },
-    kinds: { label: "Kinds" },
-    workspace: {
-      inbox: "Inbox",
-      notebook: "Notebook",
-      standing: "Standing",
-      archive: "Archive",
-      sidecar: "Sidecar",
-      hygiene: "Hygiene",
-    },
-    queue: {
-      empty: "Nothing in this view.",
-      askVoter: "Ask voter",
-      mine: "Mine drafts",
-      applyReview: "Apply review",
-      applyMine: "Apply mine",
-      applied: "Voter applied",
-    },
-    inspector: {
-      noSelection: "Select a record to inspect.",
-      admit: "Admit",
-      reject: "Reject",
-      save: "Save draft",
-      force: "Force",
-      compile: "Compile",
-      uncompile: "Uncompile",
-      deprecate: "Deprecate",
-      admitted: "Admitted",
-      rejected: "Rejected",
-      saved: "Saved",
-      compiled: "Compiled",
-      uncompiled: "Removed from standing",
-      deprecated: "Deprecated",
-    },
-    hygiene: {
-      compact: "Preview compact",
-      compactApply: "Apply compact",
-      contradictions: "Contradictions",
-      admissions: "Admissions",
-      rollouts: "Rollouts",
-    },
-    sidecar: {
-      empty:
-        "Pack and train from the CLI. Promoted adapters appear here.",
-      promote: "Promote",
-      rollback: "Rollback",
-      promoted: "Adapter promoted",
-      rolledBack: "Adapter rolled back",
-    },
-    errors: {
-      load: "Could not load memory",
-      action: "Action failed",
-      loadSettings: "Could not load Unforgettable settings",
-      saveSettings: "Could not save Unforgettable settings",
-    },
+  modelMemory: {
+    readout:
+      "Веса {model} + контекст {context} = {total} из {budget} доступной VRAM",
+    readoutWithSpec:
+      "Веса {model} + KV {kv} + черновик MTP {spec} = {total} из {budget} доступной VRAM",
+    kvRate: "KV зарезервирован, ~{rate}/токен",
+    oomLikely: "При текущих настройках вероятна нехватка памяти",
+    tooLarge: "Больше объёма VRAM, часть уйдёт на CPU. Меньшая квантизация работает быстрее",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -98,7 +98,6 @@ export const ko = {
       showLess: "간략히 보기",
       settings: "설정",
       api: "API",
-      unforgettable: "Unforgettable",
       lightMode: "라이트 모드",
       darkMode: "다크 모드",
       guidedTour: "가이드 투어",
@@ -197,7 +196,6 @@ export const ko = {
       remoteLan: "원격 및 LAN",
       about: "정보",
       data: "데이터",
-      unforgettable: "Unforgettable",
       agents: "에이전트",
       debugging: "로그",
       voice: "음성",
@@ -457,69 +455,6 @@ export const ko = {
       morePending: "아직 더 많은 줄을 읽고 있습니다. 다음 새로 고침에 표시됩니다.",
       staleSession: "파일 로깅이 꺼져 있으므로 이것은 이전 세션이며 업데이트되지 않습니다.",
       keywords: "디버그 디버깅 로그 오류 에러 충돌 스택 추적 진단 문제 해결 debug log logs error",
-    },
-    unforgettable: {
-      title: "Unforgettable",
-      description:
-        "Episode defaults and approver settings for the memory-aware model. Chat history is not memory.",
-      openDashboard: "Open Unforgettable dashboard",
-      episode: {
-        title: "Episode defaults",
-        description:
-          "Copied onto chat completions when the selected model is unforgettable.",
-        planner: "Planner",
-        plannerDescription: "Ask a supervisor model for a temporary plan.",
-        plannerHint:
-          "Working memory only. The plan is not written to the notebook.",
-        plannerModel: "Planner model",
-        plannerModelDescription: "Optional model id for the planner complete.",
-        modelPlaceholder: "Leave blank for the inner model",
-        highStakes: "High stakes",
-        highStakesDescription:
-          "Drop sim and inferred rows from world retrieve.",
-        highStakesHint:
-          "Can also require confirm before retrying the world after sim.",
-        confirmRetry: "Confirm world retry",
-        confirmRetryDescription:
-          "Show an Allow/Deny card before retrying the world.",
-        confirmDefault: "Default",
-        confirmAlways: "Always",
-        confirmNever: "Never",
-        skipStanding: "Skip standing playbooks",
-        skipStandingDescription: "Do not inject compiled standing procedures.",
-        adapter: "Attach adapter",
-        adapterDescription: "Shrink standing for a trained sidecar adapter.",
-        adapterNone: "None",
-        adapterHint:
-          "Live LoRA attach is not wired yet; this still shrinks standing.",
-        testCommand: "Test command",
-        testCommandDescription:
-          "Sim harness command. Overrides a stored test command procedure.",
-        maxClones: "Max sim clones",
-        maxSimTurns: "Max sim turns",
-        budgetDescription: "Leave blank for the code default (1 clone / 8 turns).",
-      },
-      approver: {
-        title: "Approver",
-        description:
-          "Optional voter for admit, review, mine, compile, and promote.",
-        voter: "Voter",
-        voterOff: "Off",
-        voterAdvisory: "Advisory",
-        voterBinding: "Binding",
-        voterHint: "Binding deny blocks admit and promote unless you force.",
-        voterModel: "Voter model",
-        supervisorUrl: "Supervisor URL",
-        supervisorTimeout: "Supervisor timeout (seconds)",
-      },
-      store: {
-        title: "Notebook",
-        description: "Structured memory lives next to Studio, not in RAG.",
-        path: "memory.db",
-        namespace: "Namespace",
-        notRag:
-          "Unforgettable is not a second RAG. Chat history and rag.db are not the notebook.",
-      },
     },
     voice: {
       title: "음성",
@@ -856,7 +791,7 @@ export const ko = {
         embeddingModel: "임베딩 모델",
         embeddingModelDescription:
           "문서를 색인하고 검색하는 데 사용되는 Hugging Face 모델 또는 로컬 경로입니다. 기본값은 {defaultModel}입니다.",
-        searchPlaceholder: "임베딩 모델 검색",
+        searchPlaceholder: "HF의 모든 모델 검색",
         reindexWarning:
           "새로 색인되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 업로드하세요.",
         emptyError: "Hugging Face 모델 ID 또는 로컬 경로를 입력하세요.",
@@ -864,7 +799,23 @@ export const ko = {
         saveError: "임베딩 모델을 저장하지 못했습니다.",
         saved: "임베딩 모델이 저장되었습니다.",
         saveAnyway: "그래도 저장",
-        resetAction: "기본값으로 재설정",
+        recommended: "추천",
+        onDevice: "기기에 있음",
+        searching: "Hugging Face 검색 중…",
+        checking: "확인 중…",
+        noResults: "임베딩 모델을 찾을 수 없습니다",
+        download: "다운로드",
+        unload: "언로드",
+        unloadFailed: "임베딩 모델을 언로드할 수 없습니다",
+        downloadingStatus: "다운로드 중…",
+        notDownloaded: "다운로드되지 않음",
+        notDownloadedSized: "다운로드되지 않음 · {size}",
+        loaded: "로드됨",
+        downloading: "{model} 다운로드 중",
+        downloadingDescription: "진행 상황은 다운로드 패널에 표시됩니다. 완료되면 색인에 사용됩니다.",
+        downloadFailed: "다운로드를 시작할 수 없습니다",
+        downloadConflict: "Hub에서 이 다운로드를 재개하세요",
+        downloadBusy: "이미 다운로드가 진행 중입니다",
       },
       storage: {
         sectionTitle: "저장소",
@@ -1251,6 +1202,7 @@ export const ko = {
         processMemory: "프로세스 메모리",
         notInstalled: "설치되지 않음",
         unknown: "알 수 없음",
+        vramWithShared: "{vram} VRAM + {shared} 공유 메모리",
       },
     },
     agents: {
@@ -1376,6 +1328,9 @@ export const ko = {
         showAllQuantizations: "모든 양자화 표시",
         showAllQuantizationsDescription:
           "켬: 아직 다운로드하지 않은 항목을 포함해 ‘On Device’의 모든 양자화를 표시합니다. 끔: 다운로드한 양자화만 표시합니다.",
+        showMemoryBar: "VRAM 사용량 막대 표시",
+        showMemoryBarDescription:
+          "다운로드한 모델의 행 아래에 예상 VRAM 사용량을 표시합니다. 가중치, 실제로 로드될 컨텍스트 길이 기준 KV 캐시, 그리고 추측 디코딩 초안용 예약 공간으로 나뉩니다.",
       },
       menu: {
         title: "채팅 메뉴",
@@ -2399,81 +2354,13 @@ export const ko = {
       modelWeights: "모델 가중치",
     },
   },
-  unforgettable: {
-    page: {
-      title: "Unforgettable",
-      loading: "Resolving memory.db…",
-      searchPlaceholder: "Search memory…",
-      settings: "Settings",
-    },
-    inject: {
-      label: "Last inject",
-      standing: "standing",
-      retrieve: "retrieve",
-      traj: "trajectories",
-      none: "No episode has written an inject split yet.",
-    },
-    tiles: {
-      proposed: "needs review",
-      active: "notebook",
-      compiled: "compiled",
-      archived: "archive",
-      noneLive: "none live",
-    },
-    trust: { label: "Trust" },
-    kinds: { label: "Kinds" },
-    workspace: {
-      inbox: "Inbox",
-      notebook: "Notebook",
-      standing: "Standing",
-      archive: "Archive",
-      sidecar: "Sidecar",
-      hygiene: "Hygiene",
-    },
-    queue: {
-      empty: "Nothing in this view.",
-      askVoter: "Ask voter",
-      mine: "Mine drafts",
-      applyReview: "Apply review",
-      applyMine: "Apply mine",
-      applied: "Voter applied",
-    },
-    inspector: {
-      noSelection: "Select a record to inspect.",
-      admit: "Admit",
-      reject: "Reject",
-      save: "Save draft",
-      force: "Force",
-      compile: "Compile",
-      uncompile: "Uncompile",
-      deprecate: "Deprecate",
-      admitted: "Admitted",
-      rejected: "Rejected",
-      saved: "Saved",
-      compiled: "Compiled",
-      uncompiled: "Removed from standing",
-      deprecated: "Deprecated",
-    },
-    hygiene: {
-      compact: "Preview compact",
-      compactApply: "Apply compact",
-      contradictions: "Contradictions",
-      admissions: "Admissions",
-      rollouts: "Rollouts",
-    },
-    sidecar: {
-      empty:
-        "Pack and train from the CLI. Promoted adapters appear here.",
-      promote: "Promote",
-      rollback: "Rollback",
-      promoted: "Adapter promoted",
-      rolledBack: "Adapter rolled back",
-    },
-    errors: {
-      load: "Could not load memory",
-      action: "Action failed",
-      loadSettings: "Could not load Unforgettable settings",
-      saveSettings: "Could not save Unforgettable settings",
-    },
+  modelMemory: {
+    readout:
+      "가중치 {model} + 컨텍스트 {context} = 사용 가능한 VRAM {budget} 중 {total}",
+    readoutWithSpec:
+      "가중치 {model} + KV {kv} + MTP 초안 {spec} = 사용 가능한 VRAM {budget} 중 {total}",
+    kvRate: "KV 사전 예약, 약 {rate}/토큰",
+    oomLikely: "현재 설정에서는 메모리 부족이 발생할 수 있습니다",
+    tooLarge: "VRAM보다 커서 CPU로 오프로드됩니다. 더 작은 양자화가 더 빠릅니다",
   },
 } satisfies DeepPartialMessageTree<typeof en>;
