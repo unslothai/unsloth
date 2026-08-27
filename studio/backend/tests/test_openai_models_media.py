@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -330,7 +331,7 @@ def test_classified_catalog_tags_task(monkeypatch):
 
     class _Model(BaseModel):
         id: str
-        task: str | None = None
+        task: Optional[str] = None
 
     monkeypatch.setattr(models_mod, "_local_model_task", lambda m: "text-to-image")
     plain = object()
