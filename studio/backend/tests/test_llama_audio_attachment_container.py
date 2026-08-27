@@ -170,3 +170,82 @@ def test_soundfile_duration_limit_stops_before_concatenating(monkeypatch):
         raise AssertionError("expected SoundFile to stop at the decoded-duration limit")
 
     assert decoded_blocks == [4, 1]
+
+
+def test_audio_input_decode_is_bounded_by_the_duration_limit(monkeypatch):
+    """The non-GGUF audio-input path decodes with torchaudio, which used to
+    materialize the whole waveform before any duration check. A low-bitrate AMR
+    or WMA under the 25 MB upload cap can still hold hours of PCM."""
+    loads: list[dict] = []
+
+    class _FakeTorchaudio:
+        @staticmethod
+        def info(_path):
+            return types.SimpleNamespace(sample_rate = 16_000, num_frames = 16_000 * 60 * 60)
+
+        @staticmethod
+        def load(path, **kwargs):
+            loads.append(kwargs)
+            raise AssertionError("an over-limit file must not be decoded")
+
+    monkeypatch.setitem(sys.modules, "torchaudio", _FakeTorchaudio)
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 30 * 60)
+
+    try:
+        inference_route._decode_audio_base64(base64.b64encode(b"long recording").decode())
+    except inference_route._DecodedAudioTooLongError:
+        pass
+    else:
+        raise AssertionError("expected the decoded-duration limit to be enforced")
+    assert loads == []
+
+
+def test_audio_input_decode_bounds_a_container_that_hides_its_length(monkeypatch):
+    """A container whose header does not report num_frames is still read only one
+    frame past the cap, so nothing longer is ever held in memory."""
+    import torch
+
+    loads: list[dict] = []
+    limit_frames = 16_000 * 30 * 60
+
+    class _FakeTorchaudio:
+        @staticmethod
+        def info(_path):
+            return types.SimpleNamespace(sample_rate = 16_000, num_frames = 0)
+
+        @staticmethod
+        def load(path, **kwargs):
+            loads.append(kwargs)
+            # Exactly the bound the caller asked for: a stream that never ends.
+            return torch.zeros((1, kwargs["num_frames"])), 16_000
+
+    monkeypatch.setitem(sys.modules, "torchaudio", _FakeTorchaudio)
+    monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 30 * 60)
+
+    try:
+        inference_route._decode_audio_base64(base64.b64encode(b"endless stream").decode())
+    except inference_route._DecodedAudioTooLongError:
+        pass
+    else:
+        raise AssertionError("expected the backstop check to reject the over-limit read")
+    assert loads == [{"num_frames": limit_frames + 1}]
+
+
+def test_audio_input_decode_passes_a_short_recording_through(monkeypatch):
+    import torch
+
+    class _FakeTorchaudio:
+        transforms = types.SimpleNamespace()
+
+        @staticmethod
+        def info(_path):
+            return types.SimpleNamespace(sample_rate = 16_000, num_frames = 16_000)
+
+        @staticmethod
+        def load(_path, **_kwargs):
+            return torch.ones((2, 16_000)), 16_000
+
+    monkeypatch.setitem(sys.modules, "torchaudio", _FakeTorchaudio)
+    out = inference_route._decode_audio_base64(base64.b64encode(b"short").decode())
+    assert out.shape == (16_000,)
+    assert out.dtype == np.float32

@@ -17368,9 +17368,35 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
         tmp.write(raw)
         tmp_path = tmp.name
     try:
-        waveform, sr = torchaudio.load(tmp_path)
+        # A small compressed file (amr/wma/opus) can hold hours of PCM, so bound
+        # the decode the same way the GGUF path does rather than materializing it
+        # and checking after.
+        try:
+            probe = torchaudio.info(tmp_path)
+            rate = int(getattr(probe, "sample_rate", 0) or 0)
+            frames = int(getattr(probe, "num_frames", 0) or 0)
+        except Exception:  # noqa: BLE001 - a container info cannot read is still loadable
+            rate, frames = 0, 0
+        limit = rate * _MAX_AUDIO_SECONDS
+        if limit and frames > limit:
+            raise _DecodedAudioTooLongError(
+                f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+            )
+        # One frame past the cap, so a container that misreports its length is
+        # still never fully read.
+        waveform, sr = (
+            torchaudio.load(tmp_path, num_frames = limit + 1)
+            if limit
+            else torchaudio.load(tmp_path)
+        )
     finally:
         os.unlink(tmp_path)
+
+    # Backstop for a container that reported neither rate nor length.
+    if sr > 0 and waveform.shape[-1] > sr * _MAX_AUDIO_SECONDS:
+        raise _DecodedAudioTooLongError(
+            f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+        )
 
     if waveform.shape[0] > 1:
         waveform = waveform.mean(dim = 0, keepdim = True)
@@ -19872,6 +19898,13 @@ async def produce_openai_chat_completions(
                 )
                 system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
                 system_prompt = _apply_current_date_prompt(system_prompt, request)
+            except _DecodedAudioTooLongError as e:
+                # A limit the caller can act on, not a server fault.
+                api_monitor.fail(monitor_id, str(e))
+                raise HTTPException(
+                    status_code = 413,
+                    detail = f"Audio is too long (max {_MAX_AUDIO_SECONDS // 60} minutes).",
+                )
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 raise

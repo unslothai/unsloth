@@ -6,7 +6,7 @@ use crate::native_backend_lease::{
 use crate::native_path_policy::{
     classify_artifact_path, classify_native_attachment_path, classify_native_dataset_path,
     classify_native_document_folder, classify_native_model_path, is_audio_only_3gp,
-    is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub, is_text_attachment_name,
+    is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub, is_compiled_fortran_mod, is_text_attachment_name,
     reveal_target, ClassifiedPath, NativeArtifactKind,
 };
 use serde::Serialize;
@@ -792,6 +792,11 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     }
     if is_binary_tracker_mod(path, &bytes) {
         return Err("Tracker .mod audio files are not supported as text attachments.".to_string());
+    }
+    if is_compiled_fortran_mod(path, &bytes) {
+        return Err(
+            "Compiled Fortran .mod modules are not supported as text attachments.".to_string(),
+        );
     }
     let mime_type = attachment_payload_mime_type(path, &bytes)
         .ok_or_else(|| "Only chat attachments can be read inline.".to_string())?;

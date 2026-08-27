@@ -16,6 +16,7 @@ import {
   isBinaryPropertyList,
   isBinaryTrackerModule,
   isBinaryVobSubSubtitle,
+  isCompiledFortranModule,
   pickerAcceptForTextBasenames,
   readTextAttachment,
 } from "../src/features/chat/text-attachment-accept.ts";
@@ -797,6 +798,61 @@ test("tracker MOD binaries are distinguished from text module files", async () =
     await isBinaryTrackerModule(new File([tracker], "track.bin")),
     false,
   );
+});
+
+test("compiled Fortran modules are rejected, text .mod files are not", async () => {
+  // gfortran gzips its modules, so the tracker-header check never sees them.
+  const compiled = new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00]);
+  assert.equal(
+    await isCompiledFortranModule(new File([compiled], "kinds.mod")),
+    true,
+  );
+  assert.equal(
+    await isCompiledFortranModule(
+      new File(["module example.com/project\n"], "go.mod"),
+    ),
+    false,
+  );
+  // An uncompressed gfortran module is readable text and stays accepted.
+  assert.equal(
+    await isCompiledFortranModule(
+      new File(["GFORTRAN module version '15'\n"], "kinds.mod"),
+    ),
+    false,
+  );
+  assert.equal(
+    await isCompiledFortranModule(new File([compiled], "archive.gz")),
+    false,
+  );
+});
+
+test("a legacy code page subtitle survives instead of becoming noise", async () => {
+  // A Windows-authored .srt is often ANSI, not UTF-8. Decoding it leniently as
+  // UTF-8 replaced every accented byte; windows-1252 maps them all.
+  const srt = new Uint8Array([
+    ...new TextEncoder().encode("1\n00:00:01,000 --> 00:00:02,000\nCaf"),
+    0xe9, // "e-acute" in windows-1252, invalid on its own in UTF-8
+    0x0a,
+  ]);
+  const text = await readTextAttachment(new File([srt], "movie.srt"));
+  assert.match(text, /Caf\u00e9/);
+  assert.equal(text.includes("\uFFFD"), false);
+});
+
+test("valid UTF-8 keeps its own decoding", async () => {
+  const text = await readTextAttachment(
+    new File([new TextEncoder().encode("Caf\u00e9 \u2014 na\u00efve")], "notes.srt"),
+  );
+  assert.equal(text, "Caf\u00e9 \u2014 na\u00efve");
+});
+
+test("a preview cut mid-character stays UTF-8", async () => {
+  // The bounded preview slices at a byte offset, so the last character can be
+  // half-read. That is a truncation, not a legacy encoding.
+  const full = new TextEncoder().encode("caf\u00e9");
+  const cut = full.subarray(0, full.length - 1);
+  const text = await readTextAttachment(new File([cut], "notes.txt"));
+  assert.equal(text, "caf");
 });
 
 test("legacy M3U playlists are not advertised as UTF-8 text", () => {

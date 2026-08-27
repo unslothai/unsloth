@@ -481,6 +481,11 @@ fn has_soundtracker_pattern_data(bytes: &[u8], pattern_end: usize) -> bool {
     true
 }
 
+/// gfortran writes a compiled `.mod` module as gzip; text `go.mod` never is.
+pub fn is_compiled_fortran_mod(path: &Path, bytes: &[u8]) -> bool {
+    has_extension(path, "mod") && bytes.starts_with(b"\x1f\x8b")
+}
+
 /// Detect marker-bearing MODs and earlier 15-sample Soundtracker modules.
 pub fn is_binary_tracker_mod(path: &Path, bytes: &[u8]) -> bool {
     if !has_extension(path, "mod") {
@@ -1267,6 +1272,29 @@ mod tests {
         assert!(!is_binary_vobsub(
             Path::new("movie.txt"),
             b"\x00\x00\x01\xbapayload"
+        ));
+    }
+
+    #[test]
+    fn compiled_fortran_modules_are_detected_without_rejecting_go_mod() {
+        // gfortran gzips its module files; the tracker check reads a music header
+        // and never sees these.
+        assert!(is_compiled_fortran_mod(
+            Path::new("kinds.mod"),
+            b"\x1f\x8b\x08\x00GFORTRAN module"
+        ));
+        assert!(!is_compiled_fortran_mod(
+            Path::new("go.mod"),
+            b"module example.com/app\n\ngo 1.22\n"
+        ));
+        // An uncompressed gfortran module is readable text and stays accepted.
+        assert!(!is_compiled_fortran_mod(
+            Path::new("kinds.mod"),
+            b"GFORTRAN module version '15'\n"
+        ));
+        assert!(!is_compiled_fortran_mod(
+            Path::new("archive.gz"),
+            b"\x1f\x8b\x08\x00"
         ));
     }
 

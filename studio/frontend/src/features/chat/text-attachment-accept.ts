@@ -527,6 +527,15 @@ function hasSoundtrackerPatternData(
   return true;
 }
 
+/** gfortran writes a compiled `.mod` module as gzip; text `go.mod` never is. */
+export async function isCompiledFortranModule(file: File): Promise<boolean> {
+  if (!file.name.toLowerCase().endsWith(".mod")) {
+    return false;
+  }
+  const header = new Uint8Array(await file.slice(0, 2).arrayBuffer());
+  return header.length === 2 && header[0] === 0x1f && header[1] === 0x8b;
+}
+
 /** Detect marker-bearing MODs and earlier 15-sample Soundtracker modules. */
 export async function isBinaryTrackerModule(file: File): Promise<boolean> {
   if (!file.name.toLowerCase().endsWith(".mod")) {
@@ -608,7 +617,18 @@ export function decodeTextAttachmentBytes(
       throw error;
     }
   }
-  return new TextDecoder().decode(bytes);
+  try {
+    // stream:true drops a trailing partial character, which is what a bounded
+    // preview cuts, while still rejecting bytes that are not UTF-8 at all.
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes, {
+      stream: true,
+    });
+  } catch {
+    // Not UTF-8: a subtitle or editor export saved in a legacy single-byte code
+    // page. windows-1252 maps every byte, so the text arrives readable instead
+    // of as the replacement characters a lenient UTF-8 decode would produce.
+    return new TextDecoder("windows-1252").decode(bytes);
+  }
 }
 
 /** Decode editor text, including the BOM emitted by Windows Registry Editor. */
