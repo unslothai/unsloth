@@ -132,12 +132,18 @@ def settle(page, ms: int = SETTLE_MS) -> None:
     page.wait_for_timeout(ms)
 
 
-def open_page(page, base_url: str, *, fillers: int = 60, query: str = "") -> None:
+def open_page(
+    page,
+    base_url: str,
+    *,
+    fillers: int = 60,
+    query: str = "",
+) -> None:
     errors: list[str] = []
     page.on("pageerror", lambda e: errors.append(str(e)))
     page.goto(f"{base_url}/{PAGE}?fillers={fillers}{query}")
     try:
-        page.wait_for_function("() => window.__probeReady", timeout=30_000)
+        page.wait_for_function("() => window.__probeReady", timeout = 30_000)
     except Exception:
         # A page that never mounts looks exactly like a slow one. Say which.
         raise RuntimeError(
@@ -170,10 +176,10 @@ def run(base_url: str, pw) -> dict:
     # the branded builds trail Chromium by a few weeks, so a regression that
     # lands in Chromium first is invisible until Edge catches up.
     if ENGINE == "msedge":
-        browser = pw.chromium.launch(channel="msedge")
+        browser = pw.chromium.launch(channel = "msedge")
     else:
         browser = getattr(pw, ENGINE).launch()
-    context = browser.new_context(viewport={"width": 1200, "height": 900})
+    context = browser.new_context(viewport = {"width": 1200, "height": 900})
     page = context.new_page()
     console: list[str] = []
     page.on("console", lambda m: console.append(f"{m.type}: {m.text}"))
@@ -228,9 +234,7 @@ def run(base_url: str, pw) -> dict:
             p.append(f"4: {name} ignored the preference turning on while mounted")
 
     # --- 5 persistence ----------------------------------------------------
-    stored = page.evaluate(
-        "(k) => window.localStorage.getItem(k)", PREFERENCES_KEY
-    )
+    stored = page.evaluate("(k) => window.localStorage.getItem(k)", PREFERENCES_KEY)
     open_page(page, base_url)
     scene = probe(page)
     scene["preference_after_reload"] = page.evaluate("() => window.__getPreference()")
@@ -251,7 +255,7 @@ def run(base_url: str, pw) -> dict:
         card and the chevron closes one, so the two arms would differ by how
         much content collapsed rather than by which code path ran.
         """
-        fresh(page, base_url, False, query="&only=uncontrolled")
+        fresh(page, base_url, False, query = "&only=uncontrolled")
         page.evaluate(
             """() => document.querySelector('[data-probe="answer"]')
                        .scrollIntoView({block: "center"})"""
@@ -302,7 +306,7 @@ def run(base_url: str, pw) -> dict:
         p.append("7: the card stayed pinned open after approval was granted")
 
     # --- 8 strict mode ----------------------------------------------------
-    fresh(page, base_url, True, query="&strict=1")
+    fresh(page, base_url, True, query = "&strict=1")
     scene = probe(page)
     s["8_strict_mode"] = scene
     for card in ("controlled", "uncontrolled"):
@@ -313,7 +317,7 @@ def run(base_url: str, pw) -> dict:
         p.append(f"8: React reported a render loop: {loop_errors[0]}")
 
     # --- 9 rtl ------------------------------------------------------------
-    fresh(page, base_url, True, query="&rtl=1")
+    fresh(page, base_url, True, query = "&rtl=1")
     scene = probe(page)
     s["9_rtl"] = scene
     for card in ("controlled", "uncontrolled"):
@@ -321,9 +325,7 @@ def run(base_url: str, pw) -> dict:
             p.append(f"9: {card} is open under dir=rtl with the preference ON")
 
     # --- 10 reduced motion ------------------------------------------------
-    reduced = browser.new_context(
-        viewport={"width": 1200, "height": 900}, reduced_motion="reduce"
-    )
+    reduced = browser.new_context(viewport = {"width": 1200, "height": 900}, reduced_motion = "reduce")
     reduced_page = reduced.new_page()
     fresh(reduced_page, base_url, True)
     scene = probe(reduced_page)
@@ -351,7 +353,7 @@ def run(base_url: str, pw) -> dict:
     # --- 12 storage denied -------------------------------------------------
     # Safari private browsing and a cookies-blocked profile both surface as
     # localStorage throwing rather than as an absent API.
-    denied = browser.new_context(viewport={"width": 1200, "height": 900})
+    denied = browser.new_context(viewport = {"width": 1200, "height": 900})
     denied.add_init_script(
         """() => {
           const boom = () => { throw new DOMException("denied", "SecurityError"); };
@@ -369,9 +371,7 @@ def run(base_url: str, pw) -> dict:
         open_page(denied_page, base_url)
         scene = probe(denied_page)
         scene["preference"] = denied_page.evaluate("() => window.__getPreference()")
-        scene["declared_default"] = denied_page.evaluate(
-            "() => window.__getDefaultPreference()"
-        )
+        scene["declared_default"] = denied_page.evaluate("() => window.__getDefaultPreference()")
         scene["page_errors"] = denied_errors
         s["12_storage_denied"] = scene
         # Deliberately checked against the DECLARED default rather than against
@@ -387,9 +387,7 @@ def run(base_url: str, pw) -> dict:
         expected = "false" if scene["declared_default"] else "true"
         for card in CARDS:
             if scene[card]["aria_expanded"] != expected:
-                p.append(
-                    f"12: {card} does not match the declared default with storage denied"
-                )
+                p.append(f"12: {card} does not match the declared default with storage denied")
     except RuntimeError as exc:
         s["12_storage_denied"] = {"failed": str(exc)}
         p.append(f"12: the page does not survive a denied localStorage: {exc}")
@@ -408,7 +406,7 @@ def run(base_url: str, pw) -> dict:
         ("null", "null"),
         ("corrupt json", None),
     ]:
-        seeded = browser.new_context(viewport={"width": 1200, "height": 900})
+        seeded = browser.new_context(viewport = {"width": 1200, "height": 900})
         blob = (
             "{not json"
             if raw is None
@@ -418,8 +416,7 @@ def run(base_url: str, pw) -> dict:
         # script rather than passed. json.dumps also handles the corrupt-JSON
         # case, which has to survive being embedded as a string literal.
         seeded.add_init_script(
-            "window.localStorage.setItem("
-            f"{json.dumps(PREFERENCES_KEY)}, {json.dumps(blob)});"
+            f"window.localStorage.setItem({json.dumps(PREFERENCES_KEY)}, {json.dumps(blob)});"
         )
         seeded_page = seeded.new_page()
         try:
@@ -442,7 +439,7 @@ def run(base_url: str, pw) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--json", action = "store_true")
     options = ap.parse_args()
 
     base_url = os.environ.get("SMOKE_BASE_URL") or ""
@@ -451,8 +448,10 @@ def main() -> int:
         server = start_vite(PORT)
         base_url = f"http://127.0.0.1:{PORT}"
         wait_for_smoke_page(
-            f"{base_url}/{PAGE}", ENTRY, proc=server,
-            info=lambda m: print(m, file=sys.stderr),
+            f"{base_url}/{PAGE}",
+            ENTRY,
+            proc = server,
+            info = lambda m: print(m, file = sys.stderr),
         )
     try:
         with sync_playwright() as pw:
@@ -462,17 +461,17 @@ def main() -> int:
             stop_process(server)
 
     if options.json:
-        print(json.dumps(results, indent=2))
+        print(json.dumps(results, indent = 2))
     else:
-        print(json.dumps(results["scenes"], indent=2))
+        print(json.dumps(results["scenes"], indent = 2))
 
-    print(file=sys.stderr)
+    print(file = sys.stderr)
     if results["problems"]:
-        print(f"PROBLEMS ({ENGINE}):", file=sys.stderr)
+        print(f"PROBLEMS ({ENGINE}):", file = sys.stderr)
         for problem in results["problems"]:
-            print(f"  - {problem}", file=sys.stderr)
+            print(f"  - {problem}", file = sys.stderr)
         return 1
-    print(f"{ENGINE}: every scene matched its expectation", file=sys.stderr)
+    print(f"{ENGINE}: every scene matched its expectation", file = sys.stderr)
     return 0
 
 
