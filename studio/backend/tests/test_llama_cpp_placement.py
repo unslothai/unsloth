@@ -2857,9 +2857,9 @@ def test_the_override_note_reaches_the_warning_the_route_returns(tmp_path, monke
     assert any(msg and "does not fit in GPU memory" in msg for msg in seen), seen
     warning = backend.last_load_warning or ""
     assert "unified-memory APU" in warning, warning
-    assert "memory mapping instead" in warning, (
-        f"the override never reached the warning the route returns: {warning}"
-    )
+    assert (
+        "memory mapping instead" in warning
+    ), f"the override never reached the warning the route returns: {warning}"
 
 
 def test_the_note_is_appended_once_when_only_the_launch_guard_warned(tmp_path, monkeypatch):
