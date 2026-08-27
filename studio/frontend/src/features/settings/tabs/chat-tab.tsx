@@ -18,6 +18,10 @@ import {
   usePlusMenuPrefsStore,
   useSidebarOrganizationStore,
 } from "@/features/chat";
+import {
+  compactionStyleValue,
+  parseCompactionStyle,
+} from "@/features/chat/utils/auto-compaction";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useUserProfileStore } from "@/features/profile";
@@ -148,6 +152,22 @@ export function ChatTab() {
   );
   const setRememberParamsPerModel = useChatRuntimeStore(
     (state) => state.setRememberParamsPerModel,
+  );
+  const autoCompactEnabled = useChatRuntimeStore(
+    (state) => state.autoCompactEnabled,
+  );
+  const setAutoCompactEnabled = useChatRuntimeStore(
+    (state) => state.setAutoCompactEnabled,
+  );
+  const contextPolicy = useChatRuntimeStore((state) => state.contextPolicy);
+  const compactionHeadroomRatio = useChatRuntimeStore(
+    (state) => state.compactionHeadroomRatio,
+  );
+  const setContextPolicy = useChatRuntimeStore(
+    (state) => state.setContextPolicy,
+  );
+  const setCompactionHeadroomRatio = useChatRuntimeStore(
+    (state) => state.setCompactionHeadroomRatio,
   );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const setShowGreetingSloth = useUserProfileStore(
@@ -364,6 +384,56 @@ export function ChatTab() {
             checked={rememberParamsPerModel}
             onCheckedChange={setRememberParamsPerModel}
           />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.autoCompact")}
+          description={t("settings.chat.autoCompactDescription")}
+        >
+          <Switch
+            checked={autoCompactEnabled}
+            onCheckedChange={setAutoCompactEnabled}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.compactionStyle")}
+          description={t("settings.chat.compactionStyleDescription")}
+        >
+          <Select
+            value={compactionStyleValue(contextPolicy, compactionHeadroomRatio)}
+            onValueChange={(value) => {
+              const next = parseCompactionStyle(value);
+              setContextPolicy(next.contextPolicy);
+              setCompactionHeadroomRatio(next.compactionHeadroomRatio);
+            }}
+            disabled={!autoCompactEnabled}
+          >
+            <SelectTrigger
+              className="w-64"
+              aria-label={t("settings.chat.compactionStyle")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="inherit">
+                {t("settings.chat.compactionStyleInherit")}
+              </SelectItem>
+              <SelectItem value="checkpoint">
+                {t("settings.chat.compactionStyleCheckpoint")}
+              </SelectItem>
+              <SelectItem value="rolling:0.25">
+                {t("settings.chat.compactionStyleRollingDefault")}
+              </SelectItem>
+              <SelectItem value="rolling:0.1">
+                {t("settings.chat.compactionStyleRolling10")}
+              </SelectItem>
+              <SelectItem value="rolling:0.05">
+                {t("settings.chat.compactionStyleRolling5")}
+              </SelectItem>
+              <SelectItem value="rolling:0">
+                {t("settings.chat.compactionStyleRollingNone")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.pastedTextThreshold")}

@@ -61,6 +61,11 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
+import { ggufCompactionRequestFields } from "../utils/auto-compaction";
+import {
+  studioToolHistoryRequestFields,
+  type ToolHistoryMessage,
+} from "../utils/studio-tool-history";
 import {
   newDeepResearchHandoff,
   readDeepResearchToolEvent,
@@ -1194,6 +1199,26 @@ function canReplayToolCallWithoutRoleTool(part: ToolCallMessagePart): boolean {
   return getToolPartReplayMetadata(part).isServerSideBuiltin;
 }
 
+function toolCallPartSurvivesOpenAIReplay(part: ToolCallMessagePart): boolean {
+  if (!serializeAssistantToolCallPart(part)) return false;
+  if (
+    !serializeToolResultPart(part) &&
+    !canReplayToolCallWithoutRoleTool(part)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function studioToolHistoryRequestFieldsAfterReplay(
+  messages: readonly ToolHistoryMessage[],
+): { studio_tool_history?: true } {
+  return studioToolHistoryRequestFields(messages, {
+    toolCallSurvives: (part) =>
+      toolCallPartSurvivesOpenAIReplay(part as unknown as ToolCallMessagePart),
+  });
+}
+
 function sanitizeAssistantReplayText(text: string): string {
   // Same reason as the tool result above: the tokens the model wrote last turn
   // are renderer markup scoped to that message, not prose it should repeat.
@@ -1758,15 +1783,19 @@ export const CANVAS_FALLBACK_INSTRUCTION =
   "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
 
 /**
- * The OpenAI-form messages a completion would send. Mirrors the prune + system-prompt half of
- * createOpenAIStreamAdapter; the tool catalog is priced server-side instead, since --enable-tools
- * can inject schemas the client cannot see.
+ * The OpenAI-form history fields a completion would send. Mirrors the prune + system-prompt half
+ * of createOpenAIStreamAdapter; the tool catalog is priced server-side instead, since
+ * --enable-tools can inject schemas the client cannot see.
  */
-export async function buildOutboundMessagesForTokenCount(
+export async function buildLocalTokenCountHistory(
   messages: RunMessages,
   threadId: string | undefined,
-): Promise<OpenAIChatMessage[]> {
-  const outboundMessages = pruneOutboundHistory(messages, true)
+): Promise<{
+  messages: OpenAIChatMessage[];
+  studio_tool_history?: true;
+}> {
+  const survivingMessages = pruneOutboundHistory(messages, true);
+  const outboundMessages = survivingMessages
     .flatMap((message) => toOpenAIMessages(message, true))
     .filter((message): message is NonNullable<typeof message> =>
       Boolean(message),
@@ -1818,7 +1847,12 @@ export async function buildOutboundMessagesForTokenCount(
     }
   }
 
-  return outboundMessages as OpenAIChatMessage[];
+  return {
+    messages: outboundMessages as OpenAIChatMessage[],
+    ...studioToolHistoryRequestFieldsAfterReplay(
+      survivingMessages as unknown as ToolHistoryMessage[],
+    ),
+  };
 }
 
 /**
@@ -4703,7 +4737,6 @@ export function createOpenAIStreamAdapter(
         messages,
         !isExternalRequest,
       );
-
       // toOpenAIMessages emits assistant tool_calls + role="tool"
       // follow-ups; the backend Gemini translator rebuilds the
       // functionCall / functionResponse parts (with thoughtSignature).
@@ -5894,12 +5927,18 @@ export function createOpenAIStreamAdapter(
             messages: outboundMessages,
             stream: true,
             ...(continuation ? { continue_final_message: true } : {}),
+            ...studioToolHistoryRequestFieldsAfterReplay(
+              survivingMessages as unknown as ToolHistoryMessage[],
+            ),
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
             stream_options: { include_usage: true },
-            ...(activeModel?.isGguf === true
-              ? { context_overflow: "truncate_oldest" as const }
-              : {}),
+            ...ggufCompactionRequestFields({
+              isGguf: activeModel?.isGguf === true,
+              autoCompactEnabled: runtime.autoCompactEnabled,
+              contextPolicy: runtime.contextPolicy,
+              compactionHeadroomRatio: runtime.compactionHeadroomRatio,
+            }),
             temperature: params.temperature,
             top_p: params.topP,
             max_tokens: params.maxTokens,

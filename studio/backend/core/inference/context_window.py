@@ -997,6 +997,24 @@ def turn_diagnosis(
     }
 
 
+def clamp_compaction_headroom_ratio(value: Any) -> Optional[float]:
+    """Return a usable extra-trim ratio, or None when the caller left it unset.
+
+    ``ROLLING_COMPACTION_HEADROOM_RATIO`` already clamps the process default to
+    ``[0, 0.9]``. Per-request overrides go through the same gate so a UI slider
+    cannot ask the fitter to drop the entire prompt or to grow it.
+    """
+    if value is None:
+        return None
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return None
+    if ratio != ratio:  # NaN
+        return None
+    return max(0.0, min(0.9, ratio))
+
+
 def fit_rolling_context(
     messages: list[dict],
     *,
@@ -1007,6 +1025,7 @@ def fit_rolling_context(
     reserve_tokens: int = 0,
     sticky_dropped: int = 0,
     keeps_boundary: bool = False,
+    headroom_ratio: Optional[float] = None,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat into its real context by dropping oldest complete turns.
 
@@ -1055,6 +1074,10 @@ def fit_rolling_context(
     # Phase two, only if what is left still does not fit: move the boundary, taking a
     # chunk out rather than skimming to the brim so it can stay put for a while.
     trim_target = prompt_target
+    # The 5% floor on each eviction bite, given up only by a caller that asked for no
+    # extra trim. Keyed on the ratio and not on `headroom`, which `keeps_boundary = False`
+    # zeroes for every threadless and incognito request, none of which chose anything.
+    min_bite = True
     if current_tokens > prompt_target:
         # Summed, not max()'d: the reserve is spent immediately on recalled passages, so
         # counting it as headroom would hand back room that is already taken.
@@ -1065,11 +1088,17 @@ def fit_rolling_context(
         # with no persisted thread, or a request whose turns are not saved gets neither
         # the boundary nor a recall of what went, so there it is simply 25% less history
         # than plain eviction would have kept.
-        headroom = int(prompt_target * _COMPACTION_HEADROOM_RATIO) if keeps_boundary else 0
+        ratio = clamp_compaction_headroom_ratio(headroom_ratio)
+        if ratio is None:
+            ratio = _COMPACTION_HEADROOM_RATIO
+        min_bite = ratio > 0
+        headroom = int(prompt_target * ratio) if keeps_boundary else 0
         trim_target = max(1, prompt_target - reserve_tokens - headroom)
 
     while current_tokens > trim_target:
-        keep_ratio = min(0.95, trim_target / max(1, current_tokens))
+        keep_ratio = trim_target / max(1, current_tokens)
+        if min_bite:
+            keep_ratio = min(0.95, keep_ratio)
         candidate, dropped = truncate_oldest_messages(
             fitted,
             keep_ratio,

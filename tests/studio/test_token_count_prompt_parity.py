@@ -42,7 +42,7 @@ def _canvas_constants() -> str:
     return slice_between(
         read(ADAPTER),
         "export const CANVAS_TOOL_INSTRUCTION =",
-        "/**\n * The OpenAI-form messages",
+        "export async function buildLocalTokenCountHistory(",
     )
 
 
@@ -58,7 +58,7 @@ def _prune_helpers() -> str:
 def _outbound_builder() -> str:
     return slice_between(
         read(ADAPTER),
-        "export async function buildOutboundMessagesForTokenCount(",
+        "export async function buildLocalTokenCountHistory(",
         "/**\n * The reasoning fields a completion would send",
     )
 
@@ -195,12 +195,12 @@ def _count_script(seed_patch: str) -> str:
         f"""
         // @ts-nocheck
         import {{
-          buildOutboundMessagesForTokenCount,
+          buildLocalTokenCountHistory,
           estimateTokens,
           seed,
         }} from "./harness.ts";
         seed({seed_patch});
-        const outbound = await buildOutboundMessagesForTokenCount(
+        const {{ messages: outbound }} = await buildLocalTokenCountHistory(
           [{{ role: "user", text: "draw me a bar chart" }}],
           "thread-a",
         );

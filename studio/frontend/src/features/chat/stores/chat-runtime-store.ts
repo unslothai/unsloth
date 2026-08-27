@@ -63,6 +63,12 @@ import {
   normalizeStoredRagAutoInject,
 } from "../utils/mirrored-chat-settings";
 import { retryablePatchAfterFailure } from "../utils/settings-retry";
+import {
+  DEFAULT_AUTO_COMPACT_ENABLED,
+  DEFAULT_COMPACTION_HEADROOM_RATIO,
+  DEFAULT_CONTEXT_POLICY,
+  type LocalContextPolicy,
+} from "../utils/auto-compaction";
 import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
 import {
   THREAD_SCOPED_PARAM_KEYS,
@@ -2609,6 +2615,9 @@ type ChatRuntimeStore = {
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
   nudgeToolCalls: boolean;
+  autoCompactEnabled: boolean;
+  contextPolicy: LocalContextPolicy;
+  compactionHeadroomRatio: number;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
@@ -2950,6 +2959,9 @@ type ChatRuntimeStore = {
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
+  setAutoCompactEnabled: (enabled: boolean) => void;
+  setContextPolicy: (policy: LocalContextPolicy) => void;
+  setCompactionHeadroomRatio: (ratio: number) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setGpuMemoryMode: (mode: "auto" | "manual") => void;
@@ -2994,6 +3006,9 @@ type ScalarSettingKey =
   | "searchImages"
   | "autoHealToolCalls"
   | "nudgeToolCalls"
+  | "autoCompactEnabled"
+  | "contextPolicy"
+  | "compactionHeadroomRatio"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout"
   | "reasoningEnabled"
@@ -3044,6 +3059,9 @@ const SCALAR_SETTING_KEYS = [
   "searchImages",
   "autoHealToolCalls",
   "nudgeToolCalls",
+  "autoCompactEnabled",
+  "contextPolicy",
+  "compactionHeadroomRatio",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "reasoningEnabled",
@@ -3773,6 +3791,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeDiffusionCanvasByThreadId: {},
   autoHealToolCalls: true,
   nudgeToolCalls: true,
+  autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
+  contextPolicy: DEFAULT_CONTEXT_POLICY,
+  compactionHeadroomRatio: DEFAULT_COMPACTION_HEADROOM_RATIO,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
@@ -5162,6 +5183,42 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return {
         nudgeToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setAutoCompactEnabled: (autoCompactEnabled) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "autoCompactEnabled",
+        autoCompactEnabled,
+        state.autoCompactEnabled,
+      );
+      return {
+        autoCompactEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setContextPolicy: (contextPolicy) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "contextPolicy",
+        contextPolicy,
+        state.contextPolicy,
+      );
+      return {
+        contextPolicy,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setCompactionHeadroomRatio: (compactionHeadroomRatio) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "compactionHeadroomRatio",
+        compactionHeadroomRatio,
+        state.compactionHeadroomRatio,
+      );
+      return {
+        compactionHeadroomRatio,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
