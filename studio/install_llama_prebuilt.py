@@ -5218,12 +5218,8 @@ def looks_like_macos_loader_failure(text: str) -> bool:
     lowered = text.lower()
     if any(marker in lowered for marker in _MACOS_LOADER_FAILURE_MARKERS):
         return True
-    # Deliberately no bare "dyld[pid]:" prefix rule. DYLD_PRINT_LIBRARIES and
-    # friends make dyld narrate every image it loads under that same prefix, on a
-    # run that reached main perfectly well -- which, paired with llama-quantize's
-    # nonzero --version, would reject a healthy bundle for anyone who happens to
-    # have the diagnostic set. The prefix says who is speaking, not that anything
-    # went wrong; the markers above say what went wrong.
+    # No bare "dyld[pid]:" rule: DYLD_PRINT_LIBRARIES narrates a healthy load
+    # under that same prefix. It says who is speaking, not that anything failed.
     return looks_like_macos_incompatibility(text)
 
 
@@ -5262,12 +5258,10 @@ def macos_dyld_load_issues(
 ) -> list[str]:
     """Issue strings for every installed executable dyld refuses to load.
 
-    `--version` returns in about a second and forces dyld to resolve the whole
-    link graph, so this catches a missing dylib, a missing symbol and a too-new
-    slice for the cost of a process spawn -- unlike validate_server, which loads
-    a model and is gated off for checksummed bundles (#5854). Executables only:
-    a broken dylib surfaces through whichever binary links it, and the dylibs
-    themselves cannot be exec'd."""
+    `--version` costs a process spawn and still makes dyld resolve the whole link
+    graph, so it catches a missing dylib, a missing symbol or a too-new slice --
+    unlike validate_server, which loads a model and is off for checksummed bundles
+    (#5854). Executables only: a broken dylib surfaces through whatever links it."""
     issues: list[str] = []
     seen: set[Path] = set()
     for binary_path in binaries:
@@ -5279,9 +5273,8 @@ def macos_dyld_load_issues(
             continue
         seen.add(resolved)
         env = binary_env(binary_path, install_dir, host)
-        # The probe reads dyld's output, so keep the user's dyld diagnostics out
-        # of it: DYLD_PRINT_LIBRARIES narrates every image loaded, and
-        # DYLD_INSERT_LIBRARIES can fail on its own account and blame the bundle.
+        # Keep the user's dyld diagnostics out of output we are about to parse:
+        # DYLD_PRINT_* narrates, DYLD_INSERT_LIBRARIES can fail and blame the bundle.
         for noisy in [k for k in env if k.startswith("DYLD_PRINT_")]:
             env.pop(noisy, None)
         env.pop("DYLD_INSERT_LIBRARIES", None)
@@ -5295,19 +5288,12 @@ def macos_dyld_load_issues(
         if result.returncode == 0:
             continue
         output = (result.stdout + result.stderr).strip()
-        # A non-zero exit is NOT evidence of a bad link. llama-quantize answers
-        # --version by printing its quantization table and exiting non-zero, which
-        # is a binary that loaded perfectly; assert_macho_minos.sh in the llama.cpp
-        # fork makes the same distinction for the same reason. Treating the code as
-        # the verdict rejected every published prebuilt, walked the release history
-        # to its end and fell back to a source build.
-        #
-        # So require dyld's own signature. It names both the library it could not
-        # load and the dylib that asked for it, which is also better evidence than
-        # anything otool -L could yield here: an absolute install name absent from
-        # disk is the normal case for /usr/lib, whose members live in the shared
-        # cache, so "missing from disk" cannot separate the culprit from its
-        # healthy peers.
+        # A non-zero exit is not evidence of a bad link: llama-quantize answers
+        # --version by printing its table and exiting 1. Reading the code as the
+        # verdict rejected every published prebuilt and fell back to a source
+        # build. Require dyld's own signature instead -- it also names the dylib
+        # that asked, which otool -L cannot, since an absolute install name absent
+        # from disk is the normal case for /usr/lib's shared-cache members.
         if not looks_like_macos_loader_failure(output):
             continue
         detail = " | ".join(output.splitlines()[-5:]) or f"exit {result.returncode}"
@@ -5330,11 +5316,9 @@ def preflight_macos_installed_binaries(
     then died on first launch. Raising PrebuiltFallback here spends a source
     build instead of installing something that cannot start.
 
-    Only the static comparison needs the host version; dyld does not. An
-    unreadable or unparseable ``platform.mac_ver()`` used to skip both, deferring
-    to a runtime validation that is disabled by default for checksummed bundles
-    (#5854) -- so the one host that could still give a definitive answer was the
-    one that got no check at all."""
+    Only the static comparison needs the host version; dyld does not. Skipping
+    both on an unparseable ``platform.mac_ver()`` left that host with no check at
+    all, since the runtime validation it deferred to is off by default (#5854)."""
     if not host.is_macos:
         return
     if host.macos_version is not None:
@@ -6950,11 +6934,9 @@ def existing_install_matches_choice(
             )
         except Exception:
             return False
-    # The same check on the macOS side, and the one that reaches the users who
-    # matter most here: a bundle that cannot load is usually ALREADY installed by
-    # the time the installer learns to reject it. Without this, re-running the
-    # installer sees a matching fingerprint, reuses the broken tree and fails at
-    # first launch again. Returning False re-installs instead.
+    # The macOS side, and the one that reaches most affected users: a bundle that
+    # cannot load is usually already installed by the time the installer learns to
+    # reject it, so a matching fingerprint would reuse the broken tree forever.
     elif host.is_macos:
         try:
             preflight_macos_installed_binaries(
