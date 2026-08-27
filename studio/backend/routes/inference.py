@@ -17382,11 +17382,18 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
             raise _DecodedAudioTooLongError(
                 f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
             )
-        # One frame past the cap, so a container that misreports its length is
-        # still never fully read.
-        waveform, sr = (
-            torchaudio.load(tmp_path, num_frames = limit + 1) if limit else torchaudio.load(tmp_path)
-        )
+        if limit:
+            # One frame past the cap, so a container that misreports its length
+            # is still never fully read.
+            waveform, sr = torchaudio.load(tmp_path, num_frames = limit + 1)
+        else:
+            # info could not say how long this is, and loading it whole to find
+            # out is what the cap exists to prevent. Decode with the bounded
+            # reader the GGUF path uses, which stops at the cap as frames arrive.
+            import torch
+
+            samples, sr = _decode_audio_mono(raw)
+            waveform = torch.from_numpy(samples).unsqueeze(0)
     finally:
         os.unlink(tmp_path)
 

@@ -249,3 +249,59 @@ def test_audio_input_decode_passes_a_short_recording_through(monkeypatch):
     out = inference_route._decode_audio_base64(base64.b64encode(b"short").decode())
     assert out.shape == (16_000,)
     assert out.dtype == np.float32
+
+
+def test_audio_input_decode_stays_bounded_when_the_probe_fails(monkeypatch):
+    """info() failing does not license an unbounded load: a container it cannot
+    read is still handed to the bounded decoder rather than materialized whole."""
+    bounded: list[bytes] = []
+
+    class _FakeTorchaudio:
+        transforms = types.SimpleNamespace()
+
+        @staticmethod
+        def info(_path):
+            raise RuntimeError("unknown container")
+
+        @staticmethod
+        def load(*_a, **_k):
+            raise AssertionError("a probe failure must not fall back to a whole load")
+
+    monkeypatch.setitem(sys.modules, "torchaudio", _FakeTorchaudio)
+
+    def _bounded(raw):
+        bounded.append(raw)
+        return np.zeros(16_000, dtype = np.float32), 16_000
+
+    monkeypatch.setattr(inference_route, "_decode_audio_mono", _bounded)
+
+    out = inference_route._decode_audio_base64(base64.b64encode(b"amr bytes").decode())
+    assert out.shape == (16_000,)
+    assert bounded == [b"amr bytes"]
+
+
+def test_the_probe_failure_path_still_enforces_the_cap(monkeypatch):
+    """The bounded decoder raises at the cap, and that error is not swallowed."""
+
+    class _FakeTorchaudio:
+        @staticmethod
+        def info(_path):
+            raise RuntimeError("unknown container")
+
+        @staticmethod
+        def load(*_a, **_k):
+            raise AssertionError("a probe failure must not fall back to a whole load")
+
+    monkeypatch.setitem(sys.modules, "torchaudio", _FakeTorchaudio)
+
+    def _too_long(_raw):
+        raise inference_route._DecodedAudioTooLongError("decoded audio exceeds the limit")
+
+    monkeypatch.setattr(inference_route, "_decode_audio_mono", _too_long)
+
+    try:
+        inference_route._decode_audio_base64(base64.b64encode(b"hours of amr").decode())
+    except inference_route._DecodedAudioTooLongError:
+        pass
+    else:
+        raise AssertionError("expected the duration cap to be enforced")

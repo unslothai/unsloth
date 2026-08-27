@@ -5,6 +5,22 @@
 // rest decode via libsndfile, PyAV's bundled FFmpeg, or finally librosa.
 export const AUDIO_ACCEPT =
   "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/opus,audio/flac,audio/mp4,audio/aac,audio/aiff,audio/x-aiff,audio/x-caf,audio/x-ms-wma,audio/amr,audio/3gpp";
+// Browsers report an empty or wrong type for several of these containers, so
+// every surface that takes audio matches the name as well as the MIME.
+export const AUDIO_ACCEPT_EXTENSIONS =
+  ".wav,.mp3,.m4a,.ogg,.oga,.opus,.flac,.aac,.aiff,.aif,.aifc,.caf,.wma,.amr,.mp2";
+/** What an audio picker should offer: the MIME list plus those extensions. */
+export const AUDIO_PICKER_ACCEPT = `${AUDIO_ACCEPT},audio/x-m4a,${AUDIO_ACCEPT_EXTENSIONS}`;
+
+/** Whether a dropped or pasted file is audio, by MIME or, failing that, name. */
+export function isAudioAttachmentFile(file: File): boolean {
+  if (/^audio\//i.test(file.type)) {
+    return true;
+  }
+  const name = file.name.toLowerCase();
+  return AUDIO_ACCEPT_EXTENSIONS.split(",").some((ext) => name.endsWith(ext));
+}
+
 // Keep in sync with STT_AUDIO_RAW_MAX_BYTES in the backend upload limits.
 const MAX_AUDIO_SIZE_MB = 25;
 export const MAX_AUDIO_SIZE = MAX_AUDIO_SIZE_MB * 1024 * 1024;

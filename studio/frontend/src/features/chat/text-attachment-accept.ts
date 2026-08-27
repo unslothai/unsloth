@@ -605,25 +605,47 @@ function declaredGettextCharset(
 
 // Header block only: a body part can declare its own, but the message-level
 // charset is what an 8-bit single-part mail is written in.
-const EMAIL_HEADER_SCAN_BYTES = 64 * 1024;
-// Handles folded continuation lines, which start with space or tab.
+const DECLARATION_SCAN_BYTES = 64 * 1024;
+// Every Content-Type in the scan, not just the first: a multipart message keeps
+// the charset on its parts, and an mbox holds one per message. Folded
+// continuation lines start with space or tab.
 const EMAIL_CONTENT_TYPE_RE =
-  /(?:^|\r?\n)Content-Type:((?:[^\r\n]*)(?:\r?\n[ \t][^\r\n]*)*)/i;
+  /(?:^|\r?\n)Content-Type:((?:[^\r\n]*)(?:\r?\n[ \t][^\r\n]*)*)/gi;
 const EMAIL_CHARSET_RE = /charset[ \t]*=[ \t]*"?([A-Za-z0-9._-]+)"?/i;
+// vCard 2.1 puts the encoding on the property: `FN;CHARSET=windows-1252:...`.
+const VCARD_CHARSET_RE = /;[ \t]*CHARSET[ \t]*=[ \t]*"?([A-Za-z0-9._-]+)"?/gi;
 
-function declaredEmailCharset(
+/** Distinct charsets a container declares about itself, in encounter order. */
+function declaredContainerCharsets(
   bytes: Uint8Array,
   fileName: string,
-): string | null {
-  if (!/\.(?:eml|mbox)$/i.test(fileName)) {
-    return null;
+): string[] {
+  const isEmail = /\.(?:eml|mbox)$/i.test(fileName);
+  const isVCard = /\.vcf$/i.test(fileName);
+  if (!isEmail && !isVCard) {
+    return [];
   }
   // Headers are ASCII, so this scan cannot fail on the body's own encoding.
   const prefix = new TextDecoder("windows-1252").decode(
-    bytes.subarray(0, EMAIL_HEADER_SCAN_BYTES),
+    bytes.subarray(0, DECLARATION_SCAN_BYTES),
   );
-  const header = prefix.match(EMAIL_CONTENT_TYPE_RE)?.[1];
-  return header?.match(EMAIL_CHARSET_RE)?.[1] ?? null;
+  const found: string[] = [];
+  const add = (charset: string | undefined) => {
+    if (!charset) return;
+    if (!found.some((seen) => seen.toUpperCase() === charset.toUpperCase())) {
+      found.push(charset);
+    }
+  };
+  if (isEmail) {
+    for (const header of prefix.matchAll(EMAIL_CONTENT_TYPE_RE)) {
+      add(header[1]?.match(EMAIL_CHARSET_RE)?.[1]);
+    }
+  } else {
+    for (const property of prefix.matchAll(VCARD_CHARSET_RE)) {
+      add(property[1]);
+    }
+  }
+  return found;
 }
 
 /** Decode under a charset the file itself declared, or say why it could not. */
@@ -668,12 +690,20 @@ export function decodeTextAttachmentBytes(
       stream: truncated,
     });
   } catch {
-    // An 8-bit email body says which charset it is, so honour it rather than
-    // refusing a standards-valid message. Tried only after UTF-8 fails, so a
-    // modern message is never remapped by a stale declaration.
-    const emailCharset = declaredEmailCharset(bytes, fileName);
-    if (emailCharset) {
-      return decodeWithCharset(bytes, emailCharset);
+    // An 8-bit mail or vCard says which charset it is, so honour it rather than
+    // refusing a standards-valid file. Tried only after UTF-8 fails, so a modern
+    // one is never remapped by a stale declaration.
+    const declared = declaredContainerCharsets(bytes, fileName);
+    if (declared.length === 1) {
+      return decodeWithCharset(bytes, declared[0]!);
+    }
+    if (declared.length > 1) {
+      // Parts in different encodings: decoding the container as one unit would
+      // corrupt all but one of them, and this is not a MIME parser.
+      throw new UndecodableTextError(
+        fileName,
+        `It declares more than one charset (${declared.join(", ")}), and is read as one unit.`,
+      );
     }
     // Otherwise a legacy code page, but which one is not knowable from the
     // bytes: the same byte is a different letter in windows-1252, windows-1251
@@ -684,10 +714,11 @@ export function decodeTextAttachmentBytes(
 
 /** Bytes that are not UTF-8 and carry no marker saying what they are. */
 export class UndecodableTextError extends Error {
-  constructor(fileName: string) {
+  constructor(fileName: string, reason?: string) {
     super(
-      `${fileName || "This file"} is not UTF-8 text. It looks like a legacy ` +
-        "code page; convert it to UTF-8 before attaching it.",
+      `${fileName || "This file"} is not UTF-8 text. ${
+        reason ?? "It looks like a legacy code page."
+      } Convert it to UTF-8 before attaching it.`,
     );
     this.name = "UndecodableTextError";
   }

@@ -18,6 +18,9 @@ import {
   MAX_TEXT_ATTACHMENT_BYTES,
   decodeTextAttachmentBytes,
   isTextAttachmentName,
+} from "../src/features/chat/text-attachment-accept.ts";
+import { isAudioAttachmentFile } from "../src/lib/audio-utils.ts";
+import {
   isBinaryOfficeTemplate,
   isBinaryVobSubSubtitle,
   isCompiledFortranModule,
@@ -1021,6 +1024,83 @@ test("every basename the picker claims is one the drop paths accept", () => {
   // A name with no matching token stays out of both, rather than being widened.
   assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".gnumakefile"), false);
   assert.equal(isTextAttachmentName("GNUmakefile"), false);
+});
+
+test("a container declaring two charsets is refused, not part-decoded", async () => {
+  // Decoding the whole file with the first declaration would corrupt every
+  // later part, which is the failure mode the strict decoder exists to avoid.
+  const mixed = new Uint8Array([
+    ...new TextEncoder().encode(
+      "Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\n" +
+        "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf",
+    ),
+    0xe9,
+    ...new TextEncoder().encode(
+      "\r\n--b\r\nContent-Type: text/plain; charset=windows-1251\r\n\r\n",
+    ),
+    0xcf,
+    0xf0,
+  ]);
+  await assert.rejects(
+    readTextAttachment(new File([mixed], "thread.mbox")),
+    (error: Error) => {
+      assert.ok(error instanceof UndecodableTextError);
+      assert.match(error.message, /declares more than one charset/);
+      return true;
+    },
+  );
+});
+
+test("a multipart message whose parts agree is decoded with that charset", async () => {
+  // The outer header carries no charset, so reading only the first Content-Type
+  // rejected a file that says plainly what it is.
+  const eml = new Uint8Array([
+    ...new TextEncoder().encode(
+      "Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\n" +
+        "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf",
+    ),
+    0xe9,
+  ]);
+  assert.match(
+    await readTextAttachment(new File([eml], "message.eml")),
+    /Caf\u00e9/,
+  );
+});
+
+test("a vCard property charset is honoured like an email's", async () => {
+  // vCard 2.1 puts the encoding on the property rather than in a header.
+  const vcf = new Uint8Array([
+    ...new TextEncoder().encode(
+      "BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf",
+    ),
+    0xe9,
+    ...new TextEncoder().encode("\r\nEND:VCARD\r\n"),
+  ]);
+  assert.match(
+    await readTextAttachment(new File([vcf], "contact.vcf")),
+    /Caf\u00e9/,
+  );
+});
+
+test("compare mode takes the same audio files the chat composer does", () => {
+  // Browsers leave file.type empty for several of these containers, so a
+  // MIME-only check dropped them silently.
+  for (const name of ["clip.wma", "voice.amr", "note.caf", "take.aiff"]) {
+    assert.equal(isAudioAttachmentFile(new File([], name, { type: "" })), true);
+  }
+  assert.equal(
+    isAudioAttachmentFile(new File([], "song.mp3", { type: "audio/mpeg" })),
+    true,
+  );
+  assert.equal(isAudioAttachmentFile(new File([], "notes.txt", { type: "" })), false);
+  // The compare composer classifies through the shared helper, not file.type.
+  const composer = readFileSync(
+    new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.equal(/file\.type\.match\(\/\^audio/.test(composer), false);
+  assert.match(composer, /isAudioAttachmentFile\(file\)/);
+  assert.match(composer, /accept=\{AUDIO_PICKER_ACCEPT\}/);
 });
 
 test("legacy M3U playlists are not advertised as UTF-8 text", () => {

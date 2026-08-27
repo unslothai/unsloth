@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  AUDIO_ACCEPT,
+  AUDIO_PICKER_ACCEPT,
   fileToBase64,
   getAudioSizeError,
 } from "@/lib/audio-utils";
@@ -31,7 +31,7 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
   // extension. No .webm extension: it would claim video/webm files; real
   // audio webm (MediaRecorder) always reports the audio/webm MIME. .mp4 and
   // .m4v stay off for the same reason; only .m4a is audio-only.
-  accept = `${AUDIO_ACCEPT},audio/x-m4a,.wav,.mp3,.m4a,.ogg,.oga,.opus,.flac,.aac,.aiff,.aif,.aifc,.caf,.wma,.amr,.mp2`;
+  accept = AUDIO_PICKER_ACCEPT;
   private readonly attachmentIds = new Set<string>();
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {

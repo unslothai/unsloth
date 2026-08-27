@@ -43,7 +43,8 @@ import {
 } from "@/features/settings";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
-  AUDIO_ACCEPT,
+  AUDIO_PICKER_ACCEPT,
+  isAudioAttachmentFile,
   fileToBase64,
   getAudioSizeError,
 } from "@/lib/audio-utils";
@@ -954,7 +955,7 @@ export function SharedComposer({
         const file = files[i];
         if (!file) continue;
         // Handle audio files
-        if (file.type.match(/^audio\//i)) {
+        if (isAudioAttachmentFile(file)) {
           const sizeError = getAudioSizeError(file.size);
           if (sizeError) {
             audioSizeError ??= sizeError;
@@ -1005,7 +1006,7 @@ export function SharedComposer({
           // Let addFiles report audio size errors.
           const supported = files.some(
             (file) =>
-              file.type.match(/^audio\//i) ||
+              isAudioAttachmentFile(file) ||
               (file.type.match(/^image\/(jpeg|png|webp|gif)$/i) &&
                 file.size <= MAX_IMAGE_SIZE),
           );
@@ -2265,7 +2266,7 @@ export function SharedComposer({
           <input
             ref={audioInputRef}
             type="file"
-            accept={AUDIO_ACCEPT}
+            accept={AUDIO_PICKER_ACCEPT}
             className="hidden"
             onChange={(e) => {
               addFiles(e.target.files);
