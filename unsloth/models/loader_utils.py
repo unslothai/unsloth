@@ -970,7 +970,13 @@ def _get_new_mapper():
             """
             current = None
             for node, _shadowed in _executed_nodes(tree.body):
-                if _calls_the_builder(node):
+                # The SELECTED call, not merely the first builder call that runs: a
+                # validation call may sit above a mutation of the source table, and
+                # stopping at it built the exports from stale data. Identity, so two
+                # calls spelled the same way are still told apart.
+                if node is builder_call or (
+                    builder_call is None and _calls_the_builder(node)
+                ):
                     break
                 if isinstance(node, (ast.Assign, ast.AnnAssign)):
                     if node.value is None:
@@ -1098,7 +1104,13 @@ def _get_new_mapper():
         ordered = []
         for node, shadowed in _executed_nodes(tree.body):
             ordered.append((node, shadowed))
-            if builder_additions and _calls_the_builder(node):
+            # At the call that populates the EXPORTS. Applying them at the first
+            # builder call put them before a clear or a rebind written between the two,
+            # so aliases the fetched builder really does install were wiped and never
+            # reapplied.
+            if builder_additions and (
+                node is builder_call or (builder_call is None and _calls_the_builder(node))
+            ):
                 ordered.extend(builder_additions)
                 builder_additions = []
         # A call this could not locate - the builder ran somewhere unreadable - still

@@ -792,3 +792,68 @@ def test_an_addition_after_a_breaking_loop_is_still_read(monkeypatch):
         for table in tables
         if isinstance(table, dict)
     ), "an addition after a loop that only breaks was dropped"
+
+
+def test_a_mutation_between_two_builder_calls_is_replayed(monkeypatch):
+    """The source replay runs up to the SELECTED call, not the first one.
+
+    A validation call above a mutation of the source table made the probe stop early
+    and build the exports from stale data, so a model the fetched mapper really does
+    add got no upgrade notice.
+    """
+    lines = REAL_MAPPER.splitlines(True)
+    insert = next(
+        i for i, line in enumerate(lines)
+        if line.rstrip().endswith("= build_mappers(__INT_TO_FLOAT_MAPPER)")
+    )
+    while insert > 0 and not lines[insert - 1].rstrip().endswith((")", ":", "}", "]")):
+        insert -= 1
+    staged = "".join(
+        lines[:insert]
+        + [
+            "_checked = build_mappers(__INT_TO_FLOAT_MAPPER)\n",
+            '__INT_TO_FLOAT_MAPPER.update({"vendor/between-bnb-4bit": ("vendor/between",)})\n',
+        ]
+        + lines[insert:]
+    )
+    with _serving(staged, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    assert any(
+        "vendor/between" in str(key) for table in tables for key in table
+    ), "a mutation between the validation call and the real one was dropped"
+
+
+def test_builder_aliases_land_at_the_export_producing_call(monkeypatch):
+    """They are installed where the exports are built, not at an earlier call.
+
+    Applying them at the first builder call put them above a rebind written between
+    the two, so an alias the fetched builder really does install was wiped and never
+    reapplied.
+    """
+    lines = REAL_MAPPER.splitlines(True)
+    body = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers(")) + 1
+    added = (
+        lines[:body]
+        + ['    _add_with_lower(MAP_TO_UNSLOTH_16bit, "vendor/late-alias", "unsloth/late-alias")\n']
+        + lines[body:]
+    )
+    insert = next(
+        i for i, line in enumerate(added)
+        if line.rstrip().endswith("= build_mappers(__INT_TO_FLOAT_MAPPER)")
+    )
+    while insert > 0 and not added[insert - 1].rstrip().endswith((")", ":", "}", "]")):
+        insert -= 1
+    staged = "".join(
+        added[:insert]
+        + [
+            "_checked = build_mappers(__INT_TO_FLOAT_MAPPER)\n",
+            "MAP_TO_UNSLOTH_16bit = {}\n",
+        ]
+        + added[insert:]
+    )
+    with _serving(staged, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    assert any(
+        table.get("vendor/late-alias") == "unsloth/late-alias"
+        for table in tables if isinstance(table, dict)
+    ), "the builder's aliases were applied before a rebind that wiped them"

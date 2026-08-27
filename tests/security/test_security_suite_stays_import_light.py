@@ -162,6 +162,11 @@ _LOADER_ORIGINS = {
 }
 
 
+# How many times the alias table is rebuilt before it is taken as settled. A chain
+# longer than this is not something written by hand.
+_ALIAS_ROUNDS = 8
+
+
 def _loader_aliases(tree):
     """Names bound to one of those helpers, by an import or by an assignment.
 
@@ -174,41 +179,59 @@ def _loader_aliases(tree):
     # alias -> the helper it names, so a renamed `import_module` is not mistaken for
     # a renamed `importorskip`. A bare set lost that and `_guarded_roots` then read an
     # importlib call as a pytest skip guard.
-    aliases = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.level == 0:
-            for alias in node.names:
-                if _LOADER_ORIGINS.get(alias.name) == node.module:
-                    aliases[alias.asname or alias.name] = alias.name
-    # A second pass, because `load = importlib.import_module` may sit above the
-    # `from ... import ... as ...` that named another helper, and one pass in source
-    # order would then miss a chain. Repeated until nothing new is bound.
-    while True:
-        added = False
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+    #
+    # In SOURCE ORDER, last binding wins. Skipping a name already in the table meant an
+    # import alias could never be replaced, so
+    # `from pytest import importorskip as load` followed by
+    # `load = importlib.import_module` was still read as a skip guard while the call it
+    # names really imports. A binding whose value is not a loader at all takes the name
+    # OUT of the table for the same reason: it no longer holds one.
+    #
+    # Repeated until the table stops moving, since `load = other` may sit above the
+    # statement that gives `other` its meaning. Each round rebuilds from scratch
+    # against the previous round's answers, so a chain resolves without an earlier
+    # binding surviving a later one.
+    aliases: dict = {}
+    for _round in range(_ALIAS_ROUNDS):
+        previous = aliases
+        aliases = {}
+        for node in sorted(
+            (
+                child for child in ast.walk(tree)
+                if isinstance(child, (ast.ImportFrom, ast.Assign))
+            ),
+            key = lambda child: (getattr(child, "lineno", 0), getattr(child, "col_offset", 0)),
+        ):
+            if isinstance(node, ast.ImportFrom):
+                if node.level:
+                    continue
+                for alias in node.names:
+                    bound = alias.asname or alias.name
+                    if _LOADER_ORIGINS.get(alias.name) == node.module:
+                        aliases[bound] = alias.name
+                    else:
+                        aliases.pop(bound, None)
+                continue
+            if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
                 continue
             target, value = node.targets[0], node.value
-            if not isinstance(target, ast.Name) or target.id in aliases:
-                continue
+            held = None
             if isinstance(value, ast.Attribute):
-                held = value.attr
                 owner = value.value.id if isinstance(value.value, ast.Name) else None
-                if _LOADER_ORIGINS.get(held) != owner:
-                    continue
+                if _LOADER_ORIGINS.get(value.attr) == owner:
+                    held = value.attr
             elif isinstance(value, ast.Name):
                 if value.id in _LOADER_ORIGINS:
                     held = value.id
-                elif value.id in aliases:
-                    held = aliases[value.id]
-                else:
-                    continue
+                elif value.id in previous:
+                    held = previous[value.id]
+            if held is None:
+                aliases.pop(target.id, None)
             else:
-                continue
-            aliases[target.id] = held
-            added = True
-        if not added:
-            return aliases
+                aliases[target.id] = held
+        if aliases == previous:
+            break
+    return aliases
 
 
 def _loader_call_names(call, loaders):
@@ -355,7 +378,18 @@ def _guarded_roots(node, loaders):
     """
     roots = set()
     for statement in node.body:
-        if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+        # `torch = pytest.importorskip("torch")` is the ordinary spelling and skips
+        # exactly as the bare call does; reading only the statement form reported the
+        # later `from torch import ...` as unguarded and moved the whole file - and its
+        # unrelated import-light tests - onto the heavy runner.
+        held = None
+        if isinstance(statement, ast.Expr):
+            held = statement.value
+        elif isinstance(statement, ast.Assign):
+            held = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            held = statement.value
+        if not isinstance(held, ast.Call):
             # An import BEFORE the guard is reached first, and the light runner fails
             # there: `def t(): import torch; pytest.importorskip("torch")` never gets
             # to the skip. Scanning the whole body regardless of order recorded the
@@ -364,7 +398,7 @@ def _guarded_roots(node, loaders):
             if _reaches_a_heavy_dependency(statement, loaders):
                 break
             continue
-        call = statement.value
+        call = held
         function = call.func
         attribute = (
             function.attr
@@ -739,3 +773,61 @@ def test_a_lambda_default_is_still_a_module_level_import(tmp_path):
         sample = tmp_path / "sample.py"
         sample.write_text(source)
         assert _module_level_heavy_imports(sample) == {"torch"}, description
+
+
+def test_a_later_assignment_replaces_an_imported_alias(tmp_path):
+    """`load` stops being a skip guard once it is assigned the real importer.
+
+    An alias recorded from an import could never be replaced, so a call through the
+    reassigned name was still read as a pytest skip and the file stayed on the runner
+    where that call fails.
+    """
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "from pytest import importorskip as load\n"
+        "import importlib\n"
+        "load = importlib.import_module\n"
+        "def test_it():\n"
+        '    torch = load("torch")\n'
+    )
+    assert _body_level_heavy_imports(sample) == {"torch"}
+
+
+def test_an_imported_alias_still_wins_where_it_is_written_last(tmp_path):
+    """The other direction: source order decides, so the import can replace too."""
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "import importlib\n"
+        "load = importlib.import_module\n"
+        "from pytest import importorskip as load\n"
+        "def test_it():\n"
+        '    load("torch")\n'
+        "    import torch\n"
+    )
+    assert _body_level_heavy_imports(sample) == set()
+
+
+def test_an_assigned_skip_guard_still_guards(tmp_path):
+    """`torch = pytest.importorskip("torch")` skips exactly as the bare call does."""
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "import pytest\n"
+        "def test_it():\n"
+        '    torch = pytest.importorskip("torch")\n'
+        "    from torch import nn\n"
+        "    assert nn is not None\n"
+    )
+    assert _body_level_heavy_imports(sample) == set()
+
+
+def test_an_import_before_the_assigned_guard_is_still_reported(tmp_path):
+    """Order still decides: an import above the guard is reached first."""
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "import pytest\n"
+        "def test_it():\n"
+        "    from torch import nn\n"
+        '    torch = pytest.importorskip("torch")\n'
+        "    assert nn is not None\n"
+    )
+    assert _body_level_heavy_imports(sample) == {"torch"}
