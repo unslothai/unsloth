@@ -13,6 +13,8 @@ assigned to a GPU so the cache stays with it).
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
@@ -333,10 +335,25 @@ def test_a_load_that_needs_ffn_spilled_gets_the_ffn_pattern():
     assert got.ot_patterns and all("ffn" in p for p in got.ot_patterns)
 
 
-def test_a_moe_load_spills_expert_tensors_not_dense_ffn():
+def test_a_moe_load_is_declined_because_the_fitter_places_it_the_same_way():
+    """On MoE the seam now declines, and the numbers say why.
+
+    llama.cpp's fitter moves the trailing layers' expert tensors through
+    blk.<il>.ffn_(up|down|gate_up|gate)_(ch|)exps (fit.cpp:434-440) and keeps
+    every layer -- and so the whole cache -- on the device. That is the planner's
+    own strategy, so the two placements come out byte-identical and the gate
+    reports an exact tie rather than a near one. Measured the same way: 33.65
+    against 34.77 t/s on generation, 1.03x.
+
+    The pattern SHAPE this used to assert is a planner-level claim and is
+    asserted there, ungated, by test_offload_planner.py.
+    """
     got = _plan(_Stub(moe = 40), model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024)
     assert got is not None
-    assert got.ot_patterns and all("ffn" in p for p in got.ot_patterns)
+    assert not got.spills_anything
+    assert "not worth it" in got.reason
+    costs = re.findall(r"(\d+) ms", got.reason)
+    assert len(costs) == 2 and costs[0] == costs[1], got.reason
 
 
 def test_lm_head_is_only_spilled_after_ffn():

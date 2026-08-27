@@ -367,24 +367,23 @@ def _fit_fallback_placement(
         # architecture: both arms measured 33.65 against 34.77 t/s on generation,
         # a 1.03x tie.
         #
-        # It does not actually FIT on this architecture: it moves all of them.
-        # Measured 20.28 GiB of a 21.28 GiB model left on the host, leaving
-        # exactly 1.00 GiB on the card -- the SAME figure on a 12 GiB L4 and on a
-        # 16 GiB A100, so the four spare gigabytes on the bigger card bought
-        # nothing. Cache residency is prioritised absolutely and the weights take
-        # what is left, which is a fixed behaviour rather than a search.
+        # It moves close to the MINIMUM it needs, same as the planner. Measured
+        # from the fitter's own trace: n_part of 14, 23 and 31 partial layers on
+        # a 16 GiB A100, a 12 GiB L4 and an 8 GiB T4, against 13, 22 and 31
+        # blocks for the planner on the same cards. Near-identical placements.
         #
-        # Modelling it as an ideal fitter instead made the two placements
-        # identical (612 ms against 612 ms) and the gate declined every MoE cell,
-        # discarding a prefill win of 2.05x to 2.16x that is really there. The
-        # cost of that idealisation is larger than the cost of describing what
-        # the shipped build does.
-        #
-        # A tighter fitter upstream would make this pessimistic, and the honest
-        # place to notice that is a re-measurement, not a hedge here.
-        if not layout.spillable_bytes:
-            return None
-        return Placement(host_groups = [_ffn_group(layout, layout.spillable_bytes)])
+        # An earlier revision of this claimed the fitter moved EVERY expert,
+        # from a reading of CPU_Mapped in the benchmark. That was wrong:
+        # CPU_Mapped reports host-resident bytes only when mmap is off, and the
+        # fitter arm keeps mmap, so the figure was the size of the mapped FILE.
+        # The tell was that it came back byte-identical (20763.72 MiB) on three
+        # different cards -- a file size, not a decision.
+        host_experts = 0
+        for block in reversed(blocks):
+            host_experts += block.spillable_bytes
+            if resident - host_experts <= budget:
+                return Placement(host_groups = [_ffn_group(layout, host_experts)])
+        return None
 
     # Dense, where the whole-layer model IS what happens: measured n_part=0 with
     # n_layer 54 of 65 and 38 of 65, no overrides at all, and the cache off the

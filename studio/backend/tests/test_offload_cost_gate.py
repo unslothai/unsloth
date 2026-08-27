@@ -182,29 +182,36 @@ def moe_layout(n_blocks: int = 40) -> ModelLayout:
     )
 
 
-def test_the_moe_fallback_moves_every_expert_whatever_the_card_holds():
-    """Measured on the shipped build, and the invariance is the point.
+def test_the_moe_fallback_places_about_what_the_planner_places():
+    """Measured from the fitter's own trace, not from a buffer report.
 
-    ``--fit on`` left exactly 1.00 GiB of a 21.28 GiB MoE on the card on a 12 GiB
-    L4 AND on a 16 GiB A100. The bigger card's four spare gigabytes bought
-    nothing, so this is not a search that happens to converge low: cache
-    residency wins absolutely and the weights take what is left. A model that
-    assumed a fitter moves only what it must would call the two placements equal
-    and decline a prefill win of 2.05x to 2.16x that is really there.
+    n_part came back as 14, 23 and 31 partial layers on a 16 GiB A100, a 12 GiB
+    L4 and an 8 GiB T4, against 13, 22 and 31 spilled blocks for the planner on
+    the same cards. The two arrive at nearly the same placement, so on MoE the
+    gate should usually find them equivalent and decline, which is cheap.
+
+    A previous version of this test asserted the opposite -- that the fitter
+    moves EVERY expert regardless of card size -- on a misreading of CPU_Mapped,
+    which only counts host-resident bytes when mmap is off. The fitter arm keeps
+    mmap, so that figure was the size of the mapped file, and it was identical on
+    all three cards because a file size does not vary with VRAM.
     """
     layout = moe_layout()
     small = _fit_fallback_placement(
-        layout, gated(), 11 * GIB, 8192, quantised = False, kv_bytes_floor = 0, kv_on_host = False
+        layout, gated(), 11 * GIB, 8192, quantised = False, kv_bytes_floor = 0,
+        kv_on_host = False,
     )
     large = _fit_fallback_placement(
-        layout, gated(), 15 * GIB, 8192, quantised = False, kv_bytes_floor = 0, kv_on_host = False
+        layout, gated(), 15 * GIB, 8192, quantised = False, kv_bytes_floor = 0,
+        kv_on_host = False,
     )
     assert small is not None and large is not None
     moved = [sum(g.bytes_total for g in p.host_groups) for p in (small, large)]
-    assert moved[0] == moved[1] == layout.spillable_bytes
-    # The cache is never among what it moves, which is the half of the planner's
-    # premise that survived: on MoE both arms keep it resident, and generation
-    # duly measured 33.65 against 34.77 t/s, a 1.03x tie.
+    # A bigger card moves LESS, which is the property the discarded model lacked.
+    assert moved[0] > moved[1] > 0
+    assert all(m < layout.spillable_bytes for m in moved)
+    # The cache is never among what it moves: on MoE both arms keep it resident,
+    # and generation duly measured 33.65 against 34.77 t/s, a 1.03x tie.
     assert all(p.kv_host_bytes == 0 for p in (small, large))
 
 
