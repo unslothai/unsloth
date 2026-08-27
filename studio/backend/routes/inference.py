@@ -67,6 +67,10 @@ from core.inference.context_window import (
     estimate_messages_tokens_dense,
     truncate_oldest_messages as _truncate_oldest_messages,
 )
+from core.inference.memory_contract import (
+    build_memory_estimate,
+    project_estimate_memory_response,
+)
 from core.inference.stream_errors import LlamaStreamError
 from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
@@ -13905,25 +13909,20 @@ async def estimate_memory(
         )
         if breakdown is None:
             return EstimateMemoryResponse(available = False, reason = "unsizable")
-        return EstimateMemoryResponse(
-            available = True,
-            weights_bytes = breakdown.weights_bytes,
-            kv_bytes = breakdown.kv_bytes,
-            compute_bytes = breakdown.compute_bytes,
-            drafter_runtime_bytes = breakdown.drafter_runtime_bytes,
-            drafter_runtime_gpu_bytes = breakdown.drafter_runtime_gpu_bytes,
-            projector_runtime_bytes = breakdown.projector_runtime_bytes,
-            drafter_kv_unsized = breakdown.drafter_kv_unsized,
-            adapters_unsized = breakdown.adapters_unsized,
-            total_bytes = breakdown.total_bytes,
-            gpu_bytes = breakdown.gpu_bytes,
-            kv_estimable = breakdown.kv_estimable,
-            kv_on_gpu = breakdown.kv_on_gpu,
-            n_ctx = breakdown.n_ctx,
-            cache_type_kv = breakdown.cache_type_kv,
-            n_parallel = breakdown.n_parallel,
-            layer_count = breakdown.layer_count,
-            gpu_layers = breakdown.gpu_layers,
+        # Shaped through the canonical MemoryEstimate, the same one
+        # GET /models/kv-cache-estimate goes through, so the two routes cannot
+        # drift apart in vocabulary. The projection is what preserves THIS
+        # route's meaning of weights_bytes -- every resident file, not the quant
+        # file alone. Both mappings live together in
+        # core/inference/memory_contract.py.
+        estimate = build_memory_estimate(
+            breakdown,
+            # Not known here, and 0 rather than a stand-in: this route is given a
+            # resolved config and prices what the launch would hold, so nothing
+            # in it measured the single file the user picked. The legacy shape
+            # below does not carry the field, and inventing a value would put a
+            # wrong number on the canonical route for the sake of a non-null.
+            quant_file_bytes = 0,
             moe_offload_unmodelled = bool(
                 (request.gpu_memory_mode == "manual" and (request.n_cpu_moe or 0) > 0)
                 # Outside Manual the extras keep their expert-placement flags: /load
@@ -13936,6 +13935,7 @@ async def estimate_memory(
                 )
             ),
         )
+        return EstimateMemoryResponse(**project_estimate_memory_response(estimate))
 
     # Header walks and file stats are blocking; keep them off the event loop so a
     # slider drag cannot stall streaming chats.
