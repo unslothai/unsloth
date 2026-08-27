@@ -416,7 +416,7 @@ def _fake_torch_sized(specs, *, hip = "6.2.0"):
     return t
 
 
-_GIB = 1024 ** 3
+_GIB = 1024**3
 
 
 class TestTheUnifiedMemorySwapIsOnlyTakenWhenItPays:

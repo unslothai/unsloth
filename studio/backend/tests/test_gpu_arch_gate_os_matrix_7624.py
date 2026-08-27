@@ -2948,7 +2948,13 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
             vendor = "amd",
         )
 
-    def _load(self, tmp_path, monkeypatch, torch, env_extra = None):
+    def _load(
+        self,
+        tmp_path,
+        monkeypatch,
+        torch,
+        env_extra = None,
+    ):
         return _run_auto_load(
             monkeypatch, tmp_path, torch, None, returncode = None, env_extra = env_extra
         )
