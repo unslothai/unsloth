@@ -11,31 +11,56 @@ import { installLocalStorageFake } from "./helpers/kit.ts";
 installLocalStorageFake();
 register("./store-settings-resolver.mjs", import.meta.url);
 
-const { applyQwenThinkingParams, resolveQwenThinkingParams } = await import(
-  "../src/features/chat/utils/qwen-params.ts"
-);
-const { useChatRuntimeStore } = await import(
-  "../src/features/chat/stores/chat-runtime-store.ts"
-);
+const { applyQwenThinkingParams, resolveQwenThinkingParams } =
+  await import("../src/features/chat/utils/qwen-params.ts");
+const { useChatRuntimeStore } =
+  await import("../src/features/chat/stores/chat-runtime-store.ts");
 
-test("Qwen3.8 reuses the Qwen3.6 sampling table in both modes", () => {
-  for (const thinkingOn of [true, false]) {
-    const qwen36 = resolveQwenThinkingParams(
-      "unsloth/Qwen3.6-27B-GGUF",
-      thinkingOn,
-    );
-    const qwen38 = resolveQwenThinkingParams(
-      "unsloth/Qwen3.8-27B-GGUF",
-      thinkingOn,
-    );
+test("the Qwen3.8 frontend table matches the backend recommendations", () => {
+  const defaults = JSON.parse(
+    readFileSync(
+      new URL(
+        "../../backend/assets/configs/inference_defaults.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ) as {
+    families: Record<
+      string,
+      { sampling_modes: Record<string, Record<string, number>> }
+    >;
+  };
+  const modes = defaults.families["qwen3.8"].sampling_modes;
 
-    assert.deepEqual(qwen38, qwen36);
-    assert.equal(qwen38?.presencePenalty, 1.5);
+  for (const [thinkingOn, mode] of [
+    [true, "thinking"],
+    [false, "non_thinking"],
+  ] as const) {
+    const backend = modes[mode];
+    assert.deepEqual(
+      resolveQwenThinkingParams("unsloth/Qwen3.8-27B-GGUF", thinkingOn),
+      {
+        temperature: backend.temperature,
+        topP: backend.top_p,
+        topK: backend.top_k,
+        minP: backend.min_p,
+        presencePenalty: backend.presence_penalty,
+      },
+    );
   }
+
+  assert.deepEqual(
+    resolveQwenThinkingParams("unsloth/Qwen3.6-27B-GGUF", true),
+    { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0, presencePenalty: 1.5 },
+  );
 });
 
-test("the Qwen3.8 Think toggle puts 1.5 in the live chat settings", () => {
-  for (const thinkingOn of [true, false]) {
+test("the Qwen3.8 Think toggle applies the matching live settings", () => {
+  for (const [thinkingOn, temperature, presencePenalty] of [
+    [true, 1.0, 0.0],
+    [false, 0.7, 1.5],
+  ] as const) {
     const store = useChatRuntimeStore.getState();
     useChatRuntimeStore.setState({
       params: {
@@ -48,7 +73,9 @@ test("the Qwen3.8 Think toggle puts 1.5 in the live chat settings", () => {
 
     applyQwenThinkingParams(thinkingOn);
 
-    assert.equal(useChatRuntimeStore.getState().params.presencePenalty, 1.5);
+    const params = useChatRuntimeStore.getState().params;
+    assert.equal(params.temperature, temperature);
+    assert.equal(params.presencePenalty, presencePenalty);
   }
 });
 

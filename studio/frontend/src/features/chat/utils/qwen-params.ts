@@ -25,16 +25,24 @@ export function resolveQwenThinkingParams(
     normalized.includes("qwen3.5") ||
     normalized.includes("qwen3.6") ||
     normalized.includes("qwen3.8");
+  const qwen38Thinking = thinkingOn && normalized.includes("qwen3.8");
   const base = thinkingOn
-    ? { temperature: 0.6, topP: 0.95, topK: 20, minP: 0.0 }
+    ? {
+        temperature: qwen38Thinking ? 1.0 : 0.6,
+        topP: 0.95,
+        topK: 20,
+        minP: 0.0,
+      }
     : { temperature: 0.7, topP: 0.8, topK: 20, minP: 0.0 };
-  return needsPresencePenalty ? { ...base, presencePenalty: 1.5 } : base;
+  return needsPresencePenalty
+    ? { ...base, presencePenalty: qwen38Thinking ? 0.0 : 1.5 }
+    : base;
 }
 
 /**
  * Apply Qwen3-family recommended sampling parameters when the Think toggle
- * changes. Qwen3.5, Qwen3.6, and Qwen3.8 also need a presence_penalty bump on
- * top of the Qwen3 defaults.
+ * changes. Qwen3.8 uses its model-card thinking row; Qwen3.5, Qwen3.6 and the
+ * non-thinking modes keep their existing presence-penalty recommendation.
  *
  * Used by both the thread assistant UI and the shared chat composer so the
  * two call sites stay in sync.
