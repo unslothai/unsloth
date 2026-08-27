@@ -22205,6 +22205,11 @@ def _openai_model_objects() -> list[dict]:
         _quant = getattr(llama_backend, "hf_variant", None)
         if _quant and _quant_reference_resolves(entry["id"], _quant):
             entry["quant"] = _quant
+        # Every on-disk sibling quant, so a client can append ":<quant>" to pin
+        # any of them even while another one is resident (#9340).
+        _variants = _on_disk_quants_for(entry["id"])
+        if _variants:
+            entry["quants"] = list(_variants)
         _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if _ctx is not None:
             entry["context_length"] = _ctx
@@ -22247,6 +22252,24 @@ def _openai_model_objects() -> list[dict]:
 _CATALOG_CACHE: dict = {"at": 0.0, "models": []}
 # Ids the last catalog scan listed, rebuilt only when that scan is replaced.
 _ADVERTISED_CACHE: dict = {"at": None, "paths": {}}
+
+
+def _on_disk_quants_for(model_id: Optional[str]) -> tuple[str, ...]:
+    """On-disk quants advertised for *model_id*, from the resolver's index.
+
+    Same proof rule as the resident ``quant``: a cold index proves nothing, so
+    warm it and let the next response carry the list (#9340 — a client holding
+    several quants of one repo could not discover the others while one was
+    loaded, because the loaded entry replaced the catalog's row)."""
+    from core.inference.local_model_resolver import (
+        local_gguf_variants_for,
+        warm_index_soon,
+    )
+
+    if not model_id:
+        return ()
+    warm_index_soon()
+    return local_gguf_variants_for(model_id) or ()
 
 
 def _quant_reference_resolves(model_id: Optional[str], quant: str) -> bool:
@@ -22388,6 +22411,10 @@ async def _openai_catalog_objects() -> list[dict]:
             obj["quant"] = resident_quant
         elif quants:
             obj["quant"] = quants[0]
+        # All on-disk quants, preferred first; a client appends any of them to
+        # the id ("<id>:<quant>") to pin that variant (#9340).
+        if quants:
+            obj["quants"] = list(quants)
         display = getattr(info, "display_name", None)
         if display:
             obj["display_name"] = display

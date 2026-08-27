@@ -300,6 +300,78 @@ def test_a_loaded_alias_advertises_the_quant_that_is_actually_loaded(monkeypatch
     assert ids["publisher/Qwen3"]["quant"] == "Q8_0"
 
 
+def test_catalog_lists_every_on_disk_quant_so_a_client_can_pin_one(monkeypatch):
+    # #9340: two quants of one repo are on disk, but the listing named only one
+    # (the preferred or the resident), so an API client could not discover the
+    # other, let alone know "<id>:<quant>" is how you select it.
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(loaded = False))
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+
+    async def _fake_catalog():
+        return [_Info("/data/models/Qwen3", "Qwen3", model_id = "publisher/Qwen3")]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    monkeypatch.setattr(resolver, "local_gguf_quants", lambda info: ("Q8_0", "Q4_K_M"))
+
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    entry = ids["publisher/Qwen3"]
+    assert entry["quants"] == ["Q8_0", "Q4_K_M"]
+    # The head is the one a bare id serves, so quant and quants cannot disagree.
+    assert entry["quant"] == entry["quants"][0]
+
+
+def test_a_loaded_entry_still_lists_its_sibling_quants(monkeypatch):
+    # While one quant is resident the loaded row replaces the catalog row, so
+    # without this the other on-disk quant disappears from /v1/models entirely.
+    from core.inference.local_model_resolver import _LocalGgufEntry
+
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+    monkeypatch.setattr(
+        resolver,
+        "_scan",
+        (
+            1.0,
+            {
+                "publisher/qwen3": _LocalGgufEntry(
+                    "publisher/Qwen3",
+                    "/hf/models--publisher--Qwen3/snapshots/a",
+                    ("Q4_K_M", "Q8_0"),
+                )
+            },
+        ),
+    )
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+
+    llama = _FakeLlama()
+    llama.hf_variant = "Q8_0"
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
+    llama.model_identifier = "publisher/Qwen3"
+
+    entry = inf._openai_model_objects()[0]
+    assert entry["quant"] == "Q8_0"
+    assert entry["quants"] == ["Q4_K_M", "Q8_0"]
+
+
+def test_a_standalone_gguf_lists_no_quants_field(monkeypatch):
+    from core.inference.local_model_resolver import _LocalGgufEntry
+
+    monkeypatch.setattr(
+        resolver,
+        "_scan",
+        (1.0, {"qwen3-q4": _LocalGgufEntry("Qwen3-Q4", "/srv/models/Qwen3-Q4.gguf", ())}),
+    )
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+
+    llama = _FakeLlama()
+    llama.hf_variant = "Q4_K_M"
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
+
+    entry = inf._openai_model_objects()[0]
+    assert "quant" not in entry
+    assert "quants" not in entry
+
+
 def test_a_nested_model_directory_is_not_the_resident_one(monkeypatch):
     # Two indexed models can nest (/models/A holding A, /models/A/sub/B holding B). A
     # plain prefix test made loading B mark A resident, so a request for A was answered
