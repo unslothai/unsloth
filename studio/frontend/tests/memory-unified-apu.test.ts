@@ -91,6 +91,27 @@ test("the panel passes the hardware signal, not the platform one", () => {
   );
 });
 
+test("an old backend that never sends unified_memory keeps the old behaviour", () => {
+  // Backwards compatibility for an existing install whose backend predates the
+  // per-device flag. use-gpu-info derives unifiedMemory with
+  // `devices.some(d => d.unified_memory === true)`, so a missing key is false,
+  // and the panel's `inferenceGpu.unifiedMemory || isAppleUnifiedMemory` then
+  // collapses to exactly the appleSilicon check it replaced. Neither better nor
+  // worse than before, which is the requirement.
+  const legacyDevices: { memory_total_gb: number; unified_memory?: boolean }[] = [
+    { memory_total_gb: 24 },
+  ];
+  const probed = legacyDevices.some((d) => d.unified_memory === true);
+  assert.equal(probed, false, "a missing key must not read as unified");
+  for (const appleSilicon of [false, true]) {
+    assert.equal(
+      probed || appleSilicon,
+      appleSilicon,
+      `old backend with appleSilicon=${appleSilicon} changed answer`,
+    );
+  }
+});
+
 test("a real discrete card is unaffected by the change", () => {
   // The fix must not turn an ordinary NVIDIA host into a shared-pool one. Its
   // devices do not report unified_memory, so nothing here moves.

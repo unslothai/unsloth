@@ -63,6 +63,23 @@ class _EmptyBreakdown:
 EMPTY_BREAKDOWN = _EmptyBreakdown()
 
 
+class _Unset:
+    """Distinguishes "not overridden" from an override whose value is None.
+
+    ``gpu_bytes`` needs all three states -- a number, a real ``None`` meaning the
+    planner never ran, and "take whatever the breakdown had" -- and ``None``
+    cannot carry the third.
+    """
+
+    __slots__ = ()
+
+    def __bool__(self) -> bool:  # pragma: no cover - defensive
+        return False
+
+
+_UNSET = _Unset()
+
+
 def build_memory_estimate(
     breakdown: Any,
     *,
@@ -73,6 +90,10 @@ def build_memory_estimate(
     inherited_device_pin: bool = False,
     spec_unpriced: bool = False,
     moe_offload_unmodelled: bool = False,
+    gpu_bytes: Any = _UNSET,
+    compute_bytes: Any = _UNSET,
+    total_bytes: Any = _UNSET,
+    n_ctx: Any = _UNSET,
 ) -> MemoryEstimate:
     """Normalize a planner breakdown into the canonical estimate.
 
@@ -87,6 +108,14 @@ def build_memory_estimate(
     only to whatever resolved that file. Callers that genuinely do not know it
     should pass 0 rather than the resident total, since a wrong number here is
     exactly the confusion this module exists to end.
+
+    The four trailing overrides exist because ``/kv-cache-estimate`` derives those
+    figures from its own planner calls, with its own None handling, and they are
+    not the breakdown's. They are passed IN rather than assigned onto the returned
+    model afterwards: Pydantic does not validate assignment by default, so
+    mutating the model post-construction puts whatever it is handed straight onto
+    the wire. Measured, not assumed -- ``m.gpu_bytes = "not an int"`` succeeds on
+    pydantic 2.13, and so does setting a declared ``int`` field to ``None``.
     """
     resident = int(getattr(breakdown, "weights_bytes", 0) or 0)
     quant = int(quant_file_bytes or 0)
@@ -107,22 +136,36 @@ def build_memory_estimate(
         quant_file_bytes = quant,
         resident_files_bytes = resident,
         kv_bytes = int(getattr(breakdown, "kv_bytes", 0) or 0),
-        compute_bytes = int(getattr(breakdown, "compute_bytes", 0) or 0),
+        compute_bytes = (
+            int(getattr(breakdown, "compute_bytes", 0) or 0)
+            if isinstance(compute_bytes, _Unset)
+            else int(compute_bytes or 0)
+        ),
         drafter_runtime_bytes = int(getattr(breakdown, "drafter_runtime_bytes", 0) or 0),
         drafter_runtime_gpu_bytes = int(getattr(breakdown, "drafter_runtime_gpu_bytes", 0) or 0),
         projector_runtime_bytes = int(getattr(breakdown, "projector_runtime_bytes", 0) or 0),
         drafter_kv_unsized = bool(getattr(breakdown, "drafter_kv_unsized", False)),
         adapters_unsized = bool(getattr(breakdown, "adapters_unsized", False)),
-        total_bytes = int(getattr(breakdown, "total_bytes", 0) or 0),
+        total_bytes = (
+            int(getattr(breakdown, "total_bytes", 0) or 0)
+            if isinstance(total_bytes, _Unset)
+            else int(total_bytes or 0)
+        ),
         # Not `or 0`: zero is a real answer (an all-CPU launch) and must survive
         # distinct from None. See the field's own description.
         gpu_bytes = (
-            None if getattr(breakdown, "gpu_bytes", None) is None else int(breakdown.gpu_bytes)
+            (None if getattr(breakdown, "gpu_bytes", None) is None else int(breakdown.gpu_bytes))
+            if isinstance(gpu_bytes, _Unset)
+            else (None if gpu_bytes is None else int(gpu_bytes))
         ),
         gpu_floor_bytes = None if gpu_floor_bytes is None else int(gpu_floor_bytes),
         kv_estimable = bool(getattr(breakdown, "kv_estimable", True)),
         kv_on_gpu = bool(getattr(breakdown, "kv_on_gpu", True)),
-        n_ctx = int(getattr(breakdown, "n_ctx", 0) or 0),
+        n_ctx = (
+            int(getattr(breakdown, "n_ctx", 0) or 0)
+            if isinstance(n_ctx, _Unset)
+            else int(n_ctx or 0)
+        ),
         native_context = native_context,
         cache_type_kv = getattr(breakdown, "cache_type_kv", None),
         n_parallel = int(getattr(breakdown, "n_parallel", 1) or 1),

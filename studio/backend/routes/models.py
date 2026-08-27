@@ -4340,13 +4340,17 @@ async def get_kv_cache_estimate(
                 # The planner saw a drafter whose cache it could not size, so its
                 # own total is a floor.
                 spec_unpriced = spec_unpriced or planner_unsized,
+                # The planner's own figures, kept exactly as this route computed
+                # them above: planner_gpu preserves a real zero, the other two do
+                # not. Passed in rather than assigned onto the model afterwards,
+                # because Pydantic does not validate assignment by default and a
+                # post-construction write puts whatever it is handed straight
+                # onto the wire.
+                gpu_bytes = planner_gpu,
+                compute_bytes = planner_compute,
+                total_bytes = planner_total,
+                n_ctx = int(n_ctx),
             )
-            # The planner's own figures, kept exactly as this route computed them
-            # above: planner_gpu preserves a real zero, the other two do not.
-            _estimate.gpu_bytes = planner_gpu
-            _estimate.compute_bytes = planner_compute or 0
-            _estimate.total_bytes = planner_total or 0
-            _estimate.n_ctx = int(n_ctx)
             return project_kv_cache_estimate(
                 _estimate,
                 kv_bytes = int(kv) if kv else None,

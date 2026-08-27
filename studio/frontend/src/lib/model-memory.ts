@@ -152,6 +152,33 @@ function toGb(bytes?: number | null): number {
 export function computeModelMemory(
   input: ModelMemoryInput,
 ): ModelMemorySegments {
+  // A figure that is not a number cannot produce a verdict, only a confident
+  // looking one. `toGb` passes Infinity straight through, so an infinite
+  // weightsBytes reached the status ladder and came out "model-exceeds": a full
+  // red bar reading "Larger than VRAM" beside a weights figure of "0 GiB",
+  // because the formatter clamps what the verdict did not. JSON.parse turns
+  // 1e999 into Infinity, so a malformed response gets there without trying.
+  //
+  // `classifyMemoryFit` on the panel already answers "unknown" for exactly these
+  // inputs, so this was also the two surfaces disagreeing about the same bytes.
+  // Null and undefined are NOT covered here: those mean "has not arrived yet",
+  // which is an ordinary state the segments below already handle.
+  if (
+    [
+      input.weightsBytes,
+      input.kvBytes,
+      input.specBytes,
+      input.computeBytes,
+      input.gpuTotalBytes,
+      input.gpuFloorBytes,
+      input.specFixedBytes,
+      input.gpuGb,
+      input.nCtx,
+      input.budgetFraction,
+    ].some((value) => typeof value === "number" && !Number.isFinite(value))
+  ) {
+    return EMPTY;
+  }
   const gpuGb = input.gpuGb ?? 0;
   const modelGb = toGb(input.weightsBytes);
   if (gpuGb <= 0 || modelGb <= 0) return EMPTY;

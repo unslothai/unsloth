@@ -129,6 +129,73 @@ class TestTheCanonicalModel:
         assert out.native_context is None
 
 
+class TestTheRouteOverrides:
+    """The figures /kv-cache-estimate computes itself, passed in not assigned on."""
+
+    def test_gpu_bytes_carries_three_distinct_states(self):
+        # A number, a real None (planner never ran), and "use the breakdown's".
+        # None cannot express the third, which is why there is a sentinel.
+        assert build_memory_estimate(_BREAKDOWN, quant_file_bytes = 1, gpu_bytes = 0).gpu_bytes == 0
+        assert (
+            build_memory_estimate(_BREAKDOWN, quant_file_bytes = 1, gpu_bytes = None).gpu_bytes is None
+        )
+        # Omitted entirely: falls through to whatever the breakdown had.
+        assert (
+            build_memory_estimate(_BREAKDOWN, quant_file_bytes = 1).gpu_bytes == _BREAKDOWN.gpu_bytes
+        )
+
+    def test_the_other_overrides_apply(self):
+        out = build_memory_estimate(
+            _BREAKDOWN,
+            quant_file_bytes = 1,
+            compute_bytes = 11,
+            total_bytes = 22,
+            n_ctx = 33,
+        )
+        assert (out.compute_bytes, out.total_bytes, out.n_ctx) == (11, 22, 33)
+        # And None collapses to 0 for the three that are declared non-optional,
+        # matching what the route's `or None` handling produced before.
+        none_out = build_memory_estimate(
+            _BREAKDOWN,
+            quant_file_bytes = 1,
+            compute_bytes = None,
+            total_bytes = None,
+            n_ctx = None,
+        )
+        assert (none_out.compute_bytes, none_out.total_bytes, none_out.n_ctx) == (0, 0, 0)
+
+    def test_the_route_does_not_mutate_the_model_after_building_it(self):
+        """Pydantic does not validate assignment, so a post-build write is unchecked.
+
+        Measured rather than assumed: on pydantic 2.13,
+        ``m.gpu_bytes = "not an int"`` succeeds and puts that string on the wire,
+        and a declared ``int`` field accepts None the same way. The route used to
+        assign these four fields after construction; this pins that it does not
+        go back to doing so.
+        """
+        from pathlib import Path
+
+        source = (Path(__file__).resolve().parent.parent / "routes" / "models.py").read_text()
+        for field in ("gpu_bytes", "compute_bytes", "total_bytes", "n_ctx"):
+            assert f"_estimate.{field} =" not in source, (
+                f"routes/models.py assigns {field} onto a built MemoryEstimate. "
+                "Pass it to build_memory_estimate instead; assignment skips "
+                "validation entirely."
+            )
+
+    def test_assignment_really_is_unvalidated(self):
+        # The premise of the guard above. If a future pydantic or a model_config
+        # change makes assignment validate, this fails and the guard can relax.
+        from models.inference import MemoryEstimate
+
+        m = MemoryEstimate(available = True)
+        m.gpu_bytes = "not an int"
+        assert m.gpu_bytes == "not an int", (
+            "assignment now validates; the no-mutation guard above is no longer "
+            "load-bearing and its comment should be updated"
+        )
+
+
 class TestTheLegacyProjections:
     def test_estimate_memory_gets_the_resident_total(self, estimate):
         out = project_estimate_memory_response(estimate)
