@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A small HTTP client for Studio, and the state machines the payload polls.
+"""A small HTTP client for Unsloth, and the state machines the payload polls.
 
 Split out of ``run_studio_gpu.py`` so the parts that can be wrong in
 interesting ways can be tested without a GPU, a browser or a server. The
@@ -12,7 +12,7 @@ the same ``is_export_active: false`` as one that succeeded.
 
 Nothing here prints. ``Studio.token`` is set from the bootstrap password and is
 never logged, echoed or written to a report, and neither is ``Studio.password``
--- which IS held for the run, because Studio forces a password change on the
+-- which IS held for the run, because Unsloth forces a password change on the
 bootstrap account and the repo's Playwright driver needs whatever the current
 password is. Scrubbing it out of anything that leaves the machine is the
 caller's job.
@@ -49,11 +49,11 @@ MIN_ADAPTER_BYTES = 4096
 
 
 class StudioError(RuntimeError):
-    """An HTTP call to Studio that did not do what the payload needed."""
+    """An HTTP call to Unsloth that did not do what the payload needed."""
 
 
 class Studio:
-    """Bearer-authenticated JSON calls against a local Studio."""
+    """Bearer-authenticated JSON calls against a local Unsloth."""
 
     def __init__(
         self,
@@ -127,7 +127,7 @@ class Studio:
         *,
         username: str = "unsloth",
     ) -> None:
-        """Exchange the bootstrap password for a bearer token, retiring it if Studio insists.
+        """Exchange the bootstrap password for a bearer token, retiring it if Unsloth insists.
 
         A bootstrap account is created with ``must_change_password`` set, and
         ``get_current_subject`` turns that into
@@ -154,7 +154,7 @@ class Studio:
         every other value here. The caller is responsible for adding it to
         whatever scrubs the logs.
 
-        The passwords reach this function and Studio and go nowhere else. A
+        The passwords reach this function and Unsloth and go nowhere else. A
         StudioError from here is raised with the status code only.
         """
         status, payload = self.post(
@@ -193,10 +193,10 @@ class Studio:
 
 
 def health_is_ready(payload: Any) -> bool:
-    """Is this ``/api/health`` body a Studio that is done starting up?
+    """Is this ``/api/health`` body an Unsloth that is done starting up?
 
     Two conditions, and the second is the one that matters. ``status ==
-    "healthy"`` is what the repo's own wait-for-health.sh checks, but Studio
+    "healthy"`` is what the repo's own wait-for-health.sh checks, but Unsloth
     answers healthy while hardware detection is still running, and during that
     window it reports itself chat-only and refuses to start a training run or
     an export. A payload that raced that window would fail on the Train and
@@ -291,7 +291,7 @@ def adapter_verdict(output_dir: str | Path | None) -> tuple[bool, list[str], dic
     """Did the training run leave a real LoRA adapter on disk?
 
     This is the assertion that separates "the run reported completed" from
-    "the run produced something". Studio reports ``completed`` from the
+    "the run produced something". Unsloth reports ``completed`` from the
     worker's own bookkeeping; only the files say whether a save happened.
     """
     detail: dict = {"output_dir": str(output_dir) if output_dir else None}

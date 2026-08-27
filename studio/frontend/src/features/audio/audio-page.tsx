@@ -53,6 +53,11 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import {
+  PcmRecorder,
+  type SegmentRecorder,
+  createAudioRecorder,
+} from "@/features/chat/adapters/pcm-recorder";
+import {
   SttModelNotDownloadedError,
   StudioModelDictationAdapter,
   fetchSttStatus,
@@ -326,6 +331,7 @@ export function AudioPage({
   >([]);
   const [transcript, setTranscript] = useState("");
   const [transcribedName, setTranscribedName] = useState<string | null>(null);
+  const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [micRequestPending, setMicRequestPending] = useState(false);
   /** Safari and other WebKit builds ship no MediaRecorder, and an http LAN origin
@@ -348,7 +354,7 @@ export function AudioPage({
   fallbackClipRef.current = fallbackClip;
   const loadingMoreRef = useRef(false);
   const galleryRefreshGeneration = useRef(0);
-  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recorderRef = useRef<SegmentRecorder | null>(null);
   const recordStreamRef = useRef<MediaStream | null>(null);
   const discardRecordingRef = useRef(false);
   const selectedSttRepoRef = useRef<string | null>(selectedSttRepo);
@@ -443,6 +449,12 @@ export function AudioPage({
     }
   }, []);
 
+  const clearTranscript = useCallback(() => {
+    setTranscript("");
+    setTranscribedName(null);
+    setTranscriptError(null);
+  }, []);
+
   const refreshSttStatus = useCallback(async () => {
     const generation = ++sttStatusRefreshGeneration.current;
     try {
@@ -499,6 +511,10 @@ export function AudioPage({
         repoIdForSidecarKey: sttRepoIdForSidecarKey,
         engineForRepo: sttEngineForRepoId,
       });
+      // Shared sidecar: an adopted model strands the previous pick's transcript
+      // under it. null is the 5-minute idle unload, which must not delete it.
+      if (reconciled !== null && reconciled !== selectedSttRepoRef.current)
+        clearTranscript();
       selectedSttRepoRef.current = reconciled;
       setSelectedSttRepo(reconciled);
     } catch {
@@ -506,7 +522,7 @@ export function AudioPage({
       setSttLoadedModel(null);
       setSttLoadedEngine(null);
     }
-  }, []);
+  }, [clearTranscript]);
 
   const sttSelected = selectedSttRepo !== null;
   const sttReady = sttSelectionReady(
@@ -528,6 +544,7 @@ export function AudioPage({
       selectedSttRepoRef.current = null;
       sttLoadGeneration.current += 1;
       sttLoadedByThisPage.current = null;
+      clearTranscript();
       setSelectedSttRepo(null);
     };
     if (!owned) {
@@ -542,7 +559,7 @@ export function AudioPage({
     await unloadSttModel(sttEngineForRepoId(selected), claim);
     forget();
     await refreshSttStatus();
-  }, [refreshSttStatus, sttReady, sttLoadedModel]);
+  }, [clearTranscript, refreshSttStatus, sttReady, sttLoadedModel]);
 
   const ensureClipSrc = useCallback(async (clip: AudioGalleryClip) => {
     const cached = galleryCache.srcById.get(clip.id);
@@ -803,6 +820,7 @@ export function AudioPage({
           },
           {
             signal: controller.signal,
+            runtime: "tts",
             onRequestStart: () => {
               pending.requestStarted = true;
               // Queued prompts would otherwise start on the model this load replaces.
@@ -1035,7 +1053,7 @@ export function AudioPage({
           await startSttDownload(sidecarKey, hfApiToken(getHfToken()), engine);
           // STT owns its specialized transfer, but the existing mirror gives
           // it the same global Downloads row, progress and Cancel action as
-          // every other Studio model download. Do not reset an adopted row.
+          // every other Unsloth model download. Do not reset an adopted row.
           if (!isTrackingSttDownload(sidecarKey, engine)) {
             trackSttDownload(sidecarKey, {
               // Audio owns the final load through its active/selection
@@ -1208,6 +1226,7 @@ export function AudioPage({
         if (!transitionMode("transcribe")) return;
         const sidecarKey = sttSidecarKeyFor(id);
         const engine = sttEngineForRepoId(id);
+        if (selectedSttRepoRef.current !== id) clearTranscript();
         deferredSttLoad.current = null;
         selectedSttRepoRef.current = id;
         setSelectedSttRepo(id);
@@ -1301,6 +1320,7 @@ export function AudioPage({
       loadOrStageTtsModel(id, exactGguf, meta);
     },
     [
+      clearTranscript,
       ensureSttLoaded,
       isMac,
       loadOrStageTtsModel,
@@ -1590,6 +1610,8 @@ export function AudioPage({
       const controller = new AbortController();
       transcriptionAbort.current = controller;
       setBusy("transcribing");
+      // Or a failure reads as this file's transcript, exported under its name.
+      clearTranscript();
       setTranscribedName(name);
       try {
         const text = await transcribeAudioBlob(blob, {
@@ -1603,9 +1625,10 @@ export function AudioPage({
         if (!text) toast.info("The model heard no speech in that audio.");
       } catch (error) {
         if (controller.signal.aborted) return;
-        toast.error(
-          error instanceof Error ? error.message : "Transcription failed.",
-        );
+        const message =
+          error instanceof Error ? error.message : "Transcription failed.";
+        if (activeRef.current) setTranscriptError(message);
+        toast.error(message);
       } finally {
         if (transcriptionAbort.current === controller) {
           transcriptionAbort.current = null;
@@ -1614,7 +1637,13 @@ export function AudioPage({
         }
       }
     },
-    [selectedSttRepo, sttLoadedModel, sttLoadedEngine, refreshSttStatus],
+    [
+      clearTranscript,
+      selectedSttRepo,
+      sttLoadedModel,
+      sttLoadedEngine,
+      refreshSttStatus,
+    ],
   );
 
   const handleRecordToggle = useCallback(async () => {
@@ -1642,7 +1671,17 @@ export function AudioPage({
         return;
       }
       recordStreamRef.current = stream;
-      const recorder = new MediaRecorder(stream);
+      const recorder = createAudioRecorder(stream);
+      // WAV is uncompressed, so on the PCM path the byte cap is reached long
+      // before the 30 minute one. Express it as a duration the timer below
+      // already enforces, rather than letting the upload be refused.
+      const maxSeconds =
+        recorder instanceof PcmRecorder
+          ? Math.min(
+              RECORDING_MAX_SECONDS,
+              recorder.secondsWithin(RECORDING_MAX_BYTES),
+            )
+          : RECORDING_MAX_SECONDS;
       const chunks: Blob[] = [];
       let recordedBytes = 0;
       let limitHit: "duration" | "size" | null = null;
@@ -1654,7 +1693,7 @@ export function AudioPage({
         limitHit = reason;
         toast.warning(
           reason === "duration"
-            ? `Recording stopped at the ${RECORDING_MAX_SECONDS / 60} minute limit.`
+            ? `Recording stopped at the ${Math.floor(maxSeconds / 60)} minute limit.`
             : "Recording stopped: it reached the maximum upload size.",
         );
         try {
@@ -1665,7 +1704,7 @@ export function AudioPage({
       };
       const durationTimer = window.setTimeout(
         () => stopAtLimit("duration"),
-        RECORDING_MAX_SECONDS * 1000,
+        maxSeconds * 1000,
       );
       recorder.addEventListener("dataavailable", (event) => {
         if (event.data.size > 0) {
@@ -2118,7 +2157,7 @@ export function AudioPage({
                   hint={
                     recordingSupported
                       ? "Record a clip and it is transcribed when you stop."
-                      : "This browser cannot record. Open Studio over https or on localhost, or upload a file below."
+                      : "This browser cannot record. Open Unsloth over https or on localhost, or upload a file below."
                   }
                 >
                   <Button
@@ -2238,6 +2277,15 @@ export function AudioPage({
                     {transcript}
                   </p>
                 </>
+              ) : transcriptError ? (
+                <div className="flex flex-col gap-1" role="alert">
+                  <p className="text-ui-13 font-medium text-destructive">
+                    Could not transcribe {transcribedName ?? "that audio"}.
+                  </p>
+                  <p className="text-ui-13 text-muted-foreground">
+                    {transcriptError}
+                  </p>
+                </div>
               ) : busy !== "transcribing" ? (
                 <p className="text-ui-13 text-muted-foreground">
                   The transcript appears here. It is not stored: copy or

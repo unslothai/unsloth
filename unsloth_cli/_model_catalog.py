@@ -156,19 +156,114 @@ def exported_entries() -> List[ModelEntry]:
     return entries
 
 
-def _quant_labels(repo_id: str, repo_path: str) -> str:
-    from utils.models.model_config import _is_mmproj
+def _pinned_snapshot(repo_path: Path, load_id: Optional[str]) -> Optional[Path]:
+    """The snapshot a pinned row will open, when ``load_id`` names one inside this repo.
+
+    A pin beats ``refs/main``, because the inventory pins exactly when the ref would resolve
+    somewhere worse, so the ref names a revision this row never loads.
+    """
+    if not load_id:
+        return None
+    try:
+        candidate = Path(load_id)
+        snapshots = (repo_path / "snapshots").resolve(strict = False)
+        for path in (candidate, *candidate.parents):
+            if path.parent.resolve(strict = False) == snapshots and path.is_dir():
+                return path
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _reachable_snapshots(repo_path: Path, load_id: Optional[str] = None) -> List[Path]:
+    """The snapshots a load through this row could actually open.
+
+    The pinned one when the row carries a pin, else ``refs/main`` alone when it names one,
+    since that is what a bare repo id resolves to and another revision's quants are files the
+    selection cannot reach. A commit- or tag-pinned fetch leaves no ``refs/main``, and those
+    rows are pinned rather than dropped, so they describe every snapshot instead.
+    """
+    snapshots = repo_path / "snapshots"
+    try:
+        available = sorted(path for path in snapshots.iterdir() if path.is_dir())
+    except OSError:
+        return []
+    pinned = _pinned_snapshot(repo_path, load_id)
+    if pinned is not None:
+        # Returned as validated, not re-checked against `available`. inventory_scan resolves
+        # the snapshot it pins while cache_path keeps the configured spelling, so under a
+        # symlinked cache root the two name one directory and fail lexical equality, and the
+        # membership test would drop a good pin back onto the ref it was pinned away from.
+        return [pinned]
+    try:
+        # ValueError too: an undecodable ref raises UnicodeDecodeError, which is not an
+        # OSError, and uncaught it leaves _safe hiding every Downloaded row over one repo.
+        ref = (repo_path / "refs" / "main").read_text(encoding = "utf-8").strip()
+    except (OSError, ValueError):
+        ref = ""
+    if ref:
+        by_ref = snapshots / ref
+        if by_ref in available:
+            return [by_ref]
+    return available
+
+
+def _complete_quants(snapshot: Path) -> Optional[set]:
+    """The quant keys under *snapshot* a load can resolve, or None if unknown.
+
+    ``_preferred_complete_gguf`` narrows to this same set, so a label outside it names a
+    quant selecting the row can never reach.
+    """
+    try:
+        from hub.utils.inventory_scan import complete_snapshot_variants
+        complete = complete_snapshot_variants(str(snapshot))
+    except Exception:
+        return None
+    # Empty here means the check could not tell, not that nothing loads: a genuinely
+    # incomplete repo arrives partial and never reaches the picker. Describe what is on disk.
+    return set(complete) or None
+
+
+def _quant_labels(
+    repo_id: str,
+    repo_path: str,
+    load_id: Optional[str] = None,
+) -> str:
+    """The quants this cached GGUF repo offers, spelled the way Unsloth spells them.
+
+    Through ``list_local_gguf_variants``, which is what ``_preferred_complete_gguf`` picks the
+    load target with, so the label and the target cannot disagree. Globbing
+    ``snapshots/*/*.gguf`` missed a per-quant subdirectory, gave a split quant one label per
+    shard, and matched ``.GGUF`` only on Windows, where fnmatch normcases; the lister recurses,
+    groups shard families, and tests the suffix case-insensitively.
+
+    Scoped to the snapshot this row loads from and narrowed to the quants that snapshot can
+    actually serve, so the detail never advertises a variant selecting the row cannot reach.
+
+    Fails open to no detail, like every backend import here: a raise would leave ``_safe`` to
+    swallow the whole cached source and every Downloaded row with it.
+    """
+    try:
+        from hub.utils.gguf import list_local_gguf_variants
+    except ImportError:
+        return ""
 
     stem = repo_id.split("/")[-1].removesuffix("-GGUF").lower()
     quants = []
-    for file in sorted(Path(repo_path).glob("snapshots/*/*.gguf")):
-        if _is_mmproj(file.name) or file.name.lower().startswith("mtp-"):
+    for snapshot in _reachable_snapshots(Path(repo_path), load_id):
+        try:
+            variants, _ = list_local_gguf_variants(str(snapshot))
+        except Exception:
             continue
-        label = file.stem
-        if label.lower().startswith(stem + "-"):
-            label = label[len(stem) + 1 :]
-        if label not in quants:
-            quants.append(label)
+        complete = _complete_quants(snapshot)
+        for variant in variants:
+            if complete is not None and variant.quant not in complete:
+                continue
+            label = variant.display_label or variant.quant
+            if label.lower().startswith(stem + "-"):
+                label = label[len(stem) + 1 :]
+            if label and label not in quants:
+                quants.append(label)
     return ", ".join(quants)
 
 
@@ -320,7 +415,7 @@ def cached_entries() -> List[ModelEntry]:
             ModelEntry(
                 "Downloaded",
                 row["repo_id"],
-                _quant_labels(row["repo_id"], row["cache_path"]),
+                _quant_labels(row["repo_id"], row["cache_path"], row.get("load_id")),
                 _cached_gguf_load_id(row),
             )
         )

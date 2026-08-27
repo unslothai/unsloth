@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One session: one browser, one Studio, one pacer, N cells.
+"""One session: one browser, one Unsloth, one pacer, N cells.
 
 A SESSION IS THE UNIT OF COMPARISON. Every slope, ratio and A/B pair must be read within one of
 these, because cross-session drift on this app has been measured at 8% -- larger than most of the
@@ -1341,7 +1341,7 @@ def make_context(
 ) -> tuple[BenchContext, Session]:
     session_id = new_session_id()
     # THE LOCK THE CALLER IS ALREADY HOLDING. `run()` takes the output directory before it archives
-    # a payload or installs a Studio, so the `Recorder` adopts that lock rather than opening a
+    # a payload or installs an Unsloth, so the `Recorder` adopts that lock rather than opening a
     # second one against the same path. Without a caller's lock it takes its own, which is what
     # every test and every other consumer of a payload does.
     recorder = Recorder(paths.payload_jsonl, session_id, lock = out_lock)

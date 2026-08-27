@@ -175,6 +175,7 @@ from .diffusion_transformer_quant import (
     TQ_AUTO,
     DEFAULT_MIN_LINEAR_FEATURES,
     dense_transformer_supported,
+    dense_transformer_unsupported_reason,
     explain_unusable_scheme,
     normalize_transformer_quant,
     quantize_transformer,
@@ -237,7 +238,7 @@ def _gated_in_chain(exc: BaseException) -> Optional[BaseException]:
 
 
 def _hf_token_in_play(hf_token: Optional[str]) -> bool:
-    """Whether the failing Hub call carried ANY credential, not just Studio's own: with token=None
+    """Whether the failing Hub call carried ANY credential, not just Unsloth's own: with token=None
     huggingface_hub still falls back to HF_TOKEN or the cached CLI login, so keying off the request
     token alone loops an already-authenticated user."""
     if hf_token:
@@ -659,12 +660,12 @@ def _repo_access_message(repo: str, *, gated: bool) -> str:
         return (
             f"'{repo}' is gated on Hugging Face and this model cannot be downloaded without it. "
             f"Accept its licence at {url}, then add a Hugging Face token that has access in "
-            "Studio settings and try again."
+            "Unsloth settings and try again."
         )
     return (
         f"'{repo}' could not be read from Hugging Face (private, renamed or removed) and this "
         f"model cannot be downloaded without it. Check {url}, then add a Hugging Face token that "
-        "has access in Studio settings and try again."
+        "has access in Unsloth settings and try again."
     )
 
 
@@ -728,7 +729,7 @@ def _assert_base_repo_accessible(
     # downloaded gated base still loads once the token is cleared or expires. Excuses an ACCESS
     # verdict only, never a 404: a renamed or removed repo cannot be un-renamed by a stale copy.
     def _already_downloaded() -> bool:
-        """True when ``probe_file`` is on disk under EITHER root (Studio pins its live setting, the
+        """True when ``probe_file`` is on disk under EITHER root (Unsloth pins its live setting, the
         prefetch writes under huggingface_hub's import-time constant). Never raises. Exact for the
         native plan, which probes an asset it stages; a proxy for the diffusers plan, which probes
         the manifest, so a manifest-cached base with missing shards still dies mid-download on the
@@ -1407,9 +1408,7 @@ class DiffusionBackend:
                     "quant is skipped"
                 )
             elif not dense_transformer_supported(target):
-                reason = (
-                    "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
-                )
+                reason = dense_transformer_unsupported_reason(target)
             elif (
                 select_transformer_quant_scheme(
                     target,
@@ -2262,7 +2261,7 @@ class DiffusionBackend:
             except Exception:  # noqa: BLE001
                 pass
             # Rewrite a gated-repo 403 into the step that unblocks the user, then redact native paths:
-            # this text is surfaced verbatim and Studio can be shared. Guarded because on this daemon
+            # this text is surfaced verbatim and Unsloth can be shared. Guarded because on this daemon
             # thread anything escaping leaves _loading.error unset and load_progress() stuck forever.
             from utils.native_path_leases import redact_native_paths
 
@@ -4784,7 +4783,7 @@ class DiffusionBackend:
         quantize_ never has), then quantize_ converts only the frozen base linears (the
         ``lora_`` side path is excluded by name), then the loader compiles. That forces the
         dense path -- the prequant shortcut is skipped -- so a baked-LoRA load pays the dense
-        peak. Verified on the Studio stack: scale 0 reproduces the quantized base exactly.
+        peak. Verified on the Unsloth stack: scale 0 reproduces the quantized base exactly.
 
         Raises if the scheme is unsupported or quantisation fails, so ``load_pipeline``
         catches it and falls back to the GGUF build. Quantisation runs ON the device and

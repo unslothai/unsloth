@@ -205,7 +205,7 @@ class LlamaBackendStatusResponse(BaseModel):
         "auto",
         description = (
             "The recorded choice; 'auto' means hardware detection. A name this "
-            "build does not know was written by a newer Studio and is read-only."
+            "build does not know was written by a newer Unsloth and is read-only."
         ),
     )
     selection_applied: bool = Field(

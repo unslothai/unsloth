@@ -7232,6 +7232,33 @@ def test_local_inventory_classifies_off_the_event_loop(monkeypatch):
     assert idents and loop_ident not in idents, "classification ran on the event loop thread"
 
 
+def test_local_inventory_derives_speech_task_from_filesystem_codec(monkeypatch):
+    """A renamed non-GGUF TTS checkpoint has no family hint, so its tokenizer
+    decoder is the only evidence that can place it in the Audio picker."""
+    from hub.services.models import local_inventory
+
+    model = SimpleNamespace(id = "renamed-checkpoint")
+    model.model_copy = lambda update: SimpleNamespace(id = model.id, **update)
+    response = SimpleNamespace(models = [model])
+    response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+
+    async def scan(*_args):
+        return response
+
+    async def no_folders():
+        return []
+
+    monkeypatch.setattr(catalog_classification, "_local_model_task", lambda _row: None)
+    monkeypatch.setattr(catalog_classification, "_local_model_audio_type", lambda _row: "snac")
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: 0)
+
+    listed = asyncio.run(local_inventory.list_local_models_response("./renamed-tts-models"))
+    assert [(row.task, row.audio_type) for row in listed.models] == [("text-to-speech", "snac")]
+
+
 def test_local_inventory_classifies_a_superseded_result_off_the_event_loop(monkeypatch):
     """The give-up path serves the freshest scan it has, and classifies it the same way."""
     from hub.services.models import local_inventory
@@ -7379,6 +7406,49 @@ def test_cached_gguf_task_describes_the_revision_the_load_id_resolves_to(tmp_pat
     # The id resolves through refs/main to the llama revision, so the row must say so.
     assert row["load_id"] == "Org/Model-GGUF"
     assert row["task"] == "text-generation"
+
+
+def test_cached_community_orpheus_gguf_is_not_chat_loadable(tmp_path):
+    hub_cache = tmp_path / "hub"
+    repo_path = hub_cache / "models--QuantFactory--orpheus-3b-0.1-ft-GGUF"
+    snapshot = repo_path / "snapshots" / "revision"
+    gguf = snapshot / "orpheus-3b-0.1-ft-Q4_K_M.gguf"
+    _gguf_with_architecture(gguf, "llama")
+    (repo_path / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_path / "refs" / "main").write_text("revision")
+
+    revision = SimpleNamespace(
+        snapshot_path = snapshot,
+        files = [
+            SimpleNamespace(
+                file_name = gguf.name,
+                size_on_disk = 64,
+                file_path = gguf,
+                blob_path = gguf,
+            )
+        ],
+        refs = {"main"},
+        commit_hash = "revision",
+        last_modified = 1.0,
+        size_on_disk = 64,
+    )
+    repo_info = SimpleNamespace(
+        repo_id = "QuantFactory/orpheus-3b-0.1-ft-GGUF",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [revision],
+        size_on_disk = 64,
+        last_accessed = 1.0,
+        last_modified = 1.0,
+        nb_files = 1,
+    )
+
+    rows = cache_inventory._scan_cached_gguf(
+        cache_scans = [SimpleNamespace(repos = [repo_info])], active_hub_cache = hub_cache
+    )
+    row = next(row for row in rows if row["repo_id"] == repo_info.repo_id)
+    assert row["task"] == "text-to-speech"
+    assert row["capabilities"]["can_chat"] is False
 
 
 def test_every_row_key_the_scanner_emits_survives_the_response_schema():
