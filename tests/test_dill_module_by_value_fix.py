@@ -451,7 +451,7 @@ def test_that_rule_rejects_a_one_sided_conditional():
     ], "an import inside `if _IS_MLX:` is being counted as unconditional"
 
 
-def test_a_project_module_outside_the_install_root_keeps_its_by_value_state():
+def test_a_project_module_outside_the_install_root_keeps_its_by_value_state(tmp_path):
     """P1 from review, and it is a fingerprint-correctness rule rather than a
     tidiness one.
 
@@ -467,33 +467,36 @@ def test_a_project_module_outside_the_install_root_keeps_its_by_value_state():
         _dill_module_is_importable_by_name,
     )
 
-    root = _dill_install_root("/opt/layer/python/pyarrow/__init__.py")
-    assert root == "/opt/layer/python"
-    assert _dill_install_root("/opt/layer/python/dill.py") == "/opt/layer/python"
+    # Native paths, not POSIX literals: on Windows `os.path.realpath("/opt")`
+    # is `D:\\opt`, which took this test red on the cross-platform lane while
+    # the code under it was fine.
+    layer = tmp_path / "layer"
+    elsewhere = tmp_path / "project"
+    root = _dill_install_root(str(layer / "pyarrow" / "__init__.py"))
+    assert root == os.path.realpath(str(layer))
+    assert _dill_install_root(str(layer / "dill.py")) == os.path.realpath(str(layer))
     assert _dill_install_root(None) is None
 
     library = types.ModuleType("pretend_library")
     library.__spec__ = types.SimpleNamespace(
-        name = "pretend_library", origin = "/opt/layer/python/pretend_library.py"
+        name = "pretend_library", origin = str(layer / "pretend_library.py")
     )
     project = types.ModuleType("pretend_project")
     project.__spec__ = types.SimpleNamespace(
-        name = "pretend_project", origin = "/home/me/project/pretend_project.py"
+        name = "pretend_project", origin = str(elsewhere / "pretend_project.py")
     )
-    sys.modules["pretend_library"] = library
-    sys.modules["pretend_project"] = project
     # The user's own module in the SAME directory as the dependencies, which is
     # what `pip install --target .` and a Lambda bundle produce. Root
     # containment cannot separate it from `library`; installed metadata can.
     colocated = types.ModuleType("pretend_colocated")
     colocated.__spec__ = types.SimpleNamespace(
-        name = "pretend_colocated", origin = "/opt/layer/python/pretend_colocated.py"
+        name = "pretend_colocated", origin = str(layer / "pretend_colocated.py")
     )
     sys.modules["pretend_library"] = library
     sys.modules["pretend_project"] = project
     sys.modules["pretend_colocated"] = colocated
     try:
-        installed = frozenset({"/opt/layer/python/pretend_library.py"})
+        installed = frozenset({os.path.realpath(str(layer / "pretend_library.py"))})
         assert _dill_module_is_importable_by_name(library, installed)
         assert not _dill_module_is_importable_by_name(project, installed), (
             "a project module outside the install root would be pickled by "
@@ -705,9 +708,13 @@ def test_a_bytecode_only_package_still_finds_its_metadata(tmp_path):
     """
     from unsloth.import_fixes import _dill_install_root
 
-    assert _dill_install_root("/opt/layer/python/pyarrow/__init__.pyc") == ("/opt/layer/python")
-    assert _dill_install_root("/opt/layer/python/pyarrow/__init__.py") == ("/opt/layer/python")
-    assert _dill_install_root("/opt/layer/python/dill.py") == "/opt/layer/python"
+    # Built with the platform's own separators; a POSIX literal compares
+    # against a drive-qualified path on Windows and fails for the wrong reason.
+    layer = tmp_path / "layer"
+    expected = os.path.realpath(str(layer))
+    assert _dill_install_root(str(layer / "pyarrow" / "__init__.pyc")) == expected
+    assert _dill_install_root(str(layer / "pyarrow" / "__init__.py")) == expected
+    assert _dill_install_root(str(layer / "dill.py")) == expected
 
 
 def test_the_gate_reads_the_literal_path_the_way_dill_does(tmp_path):
