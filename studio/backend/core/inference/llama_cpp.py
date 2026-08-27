@@ -27575,9 +27575,7 @@ class LlamaCppBackend:
                                 "text": (
                                     _reasoning_cap_spent_message(max_tokens)
                                     if _reasoning_cap_spent
-                                    else _thinking_exhausted_message(
-                                        self._effective_context_length
-                                    )
+                                    else _thinking_exhausted_message(self._effective_context_length)
                                 ),
                             }
                             _meta = _build_metadata_event(
