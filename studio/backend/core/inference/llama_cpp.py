@@ -5427,6 +5427,9 @@ class LlamaCppBackend:
         # the GGUF alone can tell us.
         self._has_video_input: bool = False
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
+        # clip.projector_type, set at load: the family whose image-token ceiling KV
+        # admission sizes an image against.
+        self._mmproj_projector_type: Optional[str] = None
         # clip.has_vision_encoder, set at load; True keeps an undeclared projector capable.
         self._mmproj_accepts_image: bool = True
         # Monotonic timestamp set in _kill_process; read by load_model
@@ -19574,13 +19577,20 @@ class LlamaCppBackend:
                     if (_pv_mmproj_unpinnable or (disable_vision and not _dv_env_mmproj_kept))
                     else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
                 )
+                self._mmproj_projector_type = None
                 if launch_mmproj_path or os.path.isfile(_mmproj_probe):
                     try:
-                        from utils.models.gguf_metadata import mmproj_capabilities
+                        from utils.models.gguf_metadata import (
+                            mmproj_capabilities,
+                            read_mmproj_projector_type,
+                        )
 
                         has_audio, accepts_image = mmproj_capabilities(_mmproj_probe)
                         self._mmproj_has_audio = has_audio
                         self._mmproj_accepts_image = accepts_image
+                        # The family name, so KV admission can look up how many tokens
+                        # one image may become instead of assuming a ceiling.
+                        self._mmproj_projector_type = read_mmproj_projector_type(_mmproj_probe)
                     except Exception as e:
                         logger.debug(f"mmproj capability read failed: {e}")
 
