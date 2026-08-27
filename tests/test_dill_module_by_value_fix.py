@@ -353,9 +353,7 @@ def test_the_widening_only_covers_modules_that_import_back():
     # that landed in one.
     package_dir = os.path.dirname(os.path.realpath(sys.modules["json"].__file__ or ""))
     roots = (os.path.dirname(package_dir),)  # the package's install root
-    installed = frozenset(
-        {os.path.realpath(sys.modules["json"].__file__ or ""), "/x.py"}
-    )
+    installed = frozenset({os.path.realpath(sys.modules["json"].__file__ or ""), "/x.py"})
     real = sys.modules["json"]
     assert _dill_module_is_importable_by_name(real, installed)
 
@@ -397,9 +395,9 @@ def test_the_widening_only_covers_modules_that_import_back():
     namespace_like.__spec__ = types.SimpleNamespace(name = "namespace_like", origin = None)
     sys.modules["namespace_like"] = namespace_like
     try:
-        assert not _dill_module_is_importable_by_name(namespace_like, installed), (
-            "a module with no file backing it is not safely importable by name"
-        )
+        assert not _dill_module_is_importable_by_name(
+            namespace_like, installed
+        ), "a module with no file backing it is not safely importable by name"
     finally:
         del sys.modules["namespace_like"]
 
@@ -611,7 +609,8 @@ def test_only_recorded_files_are_treated_as_dependency_owned(tmp_path):
 
     assert "bothns/cloud.py".replace("/", os.sep) in rel
     assert not any(
-        r == "bothns" or (r.startswith("bothns" + os.sep) and r != os.path.join("bothns", "cloud.py"))
+        r == "bothns"
+        or (r.startswith("bothns" + os.sep) and r != os.path.join("bothns", "cloud.py"))
         for r in rel
     ), (
         "a distribution that ships both RECORD and top_level.txt had its name "

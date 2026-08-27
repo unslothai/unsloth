@@ -5863,7 +5863,11 @@ def fix_dill_module_by_value_pickling():
         return False
 
     @functools.wraps(original)
-    def _is_builtin_module(module, _original = original, _files = frozenset(owned_files)):
+    def _is_builtin_module(
+        module,
+        _original = original,
+        _files = frozenset(owned_files),
+    ):
         try:
             if _original(module):
                 return True
