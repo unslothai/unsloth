@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 import {
+  createBoundaryScan,
   splitTopLevelJsonObjects,
   toolCallReplayArguments,
 } from "../src/features/chat/tool-call-arguments.ts";
@@ -208,6 +209,7 @@ interface DeltaCall {
   id?: string;
   index?: number;
   function?: { name?: string; arguments?: string };
+  extra_content?: unknown;
 }
 
 interface LoopPart {
@@ -217,6 +219,7 @@ interface LoopPart {
   args?: Record<string, unknown>;
   _delta_index?: number;
   _has_stable_id?: boolean;
+  extra_content?: unknown;
 }
 
 /** The lifted loop, with the locals it closes over supplied by hand. */
@@ -252,9 +255,14 @@ function makeStream(): {
   }).outputText;
   return new Function(
     "splitTopLevelJsonObjects",
+    "createBoundaryScan",
     "findStreamedToolCallPartIndex",
     js,
-  )(splitTopLevelJsonObjects, findStreamedToolCallPartIndex) as {
+  )(
+    splitTopLevelJsonObjects,
+    createBoundaryScan,
+    findStreamedToolCallPartIndex,
+  ) as {
     feed: (batch: DeltaCall[]) => boolean;
     parts: LoopPart[];
   };
@@ -549,4 +557,95 @@ test("a name held for the next call grows across deltas", () => {
       ["web_search", '{"q":"x"}'],
     ]);
   }
+});
+
+test("whitespace carrying the repeated name is not the next call", () => {
+  // A provider that repeats the name on every delta and chunks the trailing
+  // whitespace separately is still writing to the call that closed, so its name
+  // is that call's resent. Parking it merged the two into "alphabeta".
+  const parts = run([
+    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+    [{ index: 0, function: { name: "alpha", arguments: " " } }],
+    [{ index: 0, function: { name: "beta", arguments: '{"b":2}' } }],
+  ]);
+
+  assert.deepEqual(shape(parts), [
+    ["alpha", '{"a":1} '],
+    ["beta", '{"b":2}'],
+  ]);
+});
+
+test("metadata announced with a name waits for that call", () => {
+  // Gemini stows the thought signature for the call being announced, so a
+  // name-only delta carrying one describes the next call, not the closed one.
+  const parts = run([
+    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+    [
+      {
+        index: 0,
+        function: { name: "beta" },
+        extra_content: { google: { thought_signature: "SIG" } },
+      },
+    ],
+    [{ index: 0, function: { arguments: '{"b":2}' } }],
+  ]);
+
+  assert.deepEqual(shape(parts), [
+    ["alpha", '{"a":1}'],
+    ["beta", '{"b":2}'],
+  ]);
+  assert.equal(parts[0].extra_content, undefined);
+  assert.deepEqual(parts[1].extra_content, {
+    google: { thought_signature: "SIG" },
+  });
+});
+
+test("the resumable scan agrees with scanning from the start", () => {
+  // The accumulator resumes the boundary scan instead of restarting it, which
+  // is only safe while the two agree for every string and every set of chunk
+  // boundaries.
+  const pieces = [
+    ..."{}\"\\ abc:,1[]".split(""),
+    '\\"',
+    '"a"',
+    "NaN",
+    "\n",
+    "\r\n",
+    "\t",
+    '{"a":1}',
+    "}{",
+  ];
+  // Deterministic, so a failure names one string rather than a mood.
+  let seed = 20260827;
+  const next = (n: number) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed % n;
+  };
+  for (let trial = 0; trial < 4000; trial += 1) {
+    let text = "";
+    for (let i = next(17); i > 0; i -= 1) text += pieces[next(pieces.length)];
+    const scan = createBoundaryScan();
+    let cut = 0;
+    let result = scan.feed("");
+    while (cut < text.length) {
+      cut = Math.min(text.length, cut + 1 + next(4));
+      result = scan.feed(text.slice(0, cut));
+    }
+    assert.deepEqual(result, splitTopLevelJsonObjects(text), text);
+  }
+});
+
+test("one argument streamed a character at a time stays linear", () => {
+  // Rescanning the whole accumulation per fragment made a 20 KB argument cost
+  // over a second on the thread that also paints the stream. Generous bound:
+  // this asserts the quadratic term is gone, not a particular machine's speed.
+  const payload = '{"code":"' + "x".repeat(20000) + '"}';
+  const stream = makeStream();
+  stream.feed([{ index: 0, function: { name: "write", arguments: "" } }]);
+  const started = performance.now();
+  for (const ch of payload) {
+    stream.feed([{ index: 0, function: { arguments: ch } }]);
+  }
+  assert.ok(performance.now() - started < 2000);
+  assert.deepEqual(shape(stream.parts), [["write", payload]]);
 });

@@ -298,3 +298,87 @@ def test_a_name_held_for_the_next_call_grows_across_deltas():
         turn.merge_structured([_delta(0, None, '{"q":"x"}')])
 
         assert _shape(turn) == [("alpha", '{"a":1}'), ("web_search", '{"q":"x"}')]
+
+
+def test_whitespace_carrying_the_repeated_name_is_not_the_next_call():
+    # A provider that repeats the name on every delta and chunks the trailing
+    # whitespace separately is still writing to the call that closed, so its
+    # name is that call's resent. Parking it merged the two names into
+    # "alphabeta", which matches no enabled tool and silently never runs.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured([_delta(0, "alpha", " ")])
+    turn.merge_structured([_delta(0, "beta", '{"b":2}')])
+
+    assert _shape(turn) == [("alpha", '{"a":1} '), ("beta", '{"b":2}')]
+
+
+def test_a_repeated_id_reaches_its_own_call_across_a_later_split():
+    # An id-less call opening after a stable-id call leaves the index pointing
+    # at the newer one. Matching the repeated id against only that call renamed
+    # it, gave it a second copy of the id and stranded the growth fragment.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id = "call_a")])
+    turn.merge_structured([_delta(0, "beta", '{"b":')])
+    turn.merge_structured([_delta(0, "alpha_long", "", call_id = "call_a")])
+
+    assert _shape(turn) == [("alpha_long", '{"a":1}'), ("beta", '{"b":')]
+    ids = [call["id"] for call in turn.calls()]
+    assert ids[0] == "call_a"
+    assert len(set(ids)) == len(ids)
+
+
+def test_metadata_announced_with_a_name_waits_for_that_call():
+    # Gemini stows the thoughtSignature for the call being announced, so a
+    # name-only delta carrying one describes the next call, not the closed one.
+    # Left behind it gives the closed call another call's signature and the new
+    # call none, and native replay rejects both.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured(
+        [_delta(0, "beta", None) | {"extra_content": {"google": {"thought_signature": "SIG"}}}]
+    )
+    turn.merge_structured([_delta(0, None, '{"b":2}')])
+
+    entries = [turn.by_index[key] for key in turn.order]
+    assert _shape(turn) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
+    assert entries[0].get("extra_content") is None
+    assert entries[1]["extra_content"] == {"google": {"thought_signature": "SIG"}}
+
+
+def test_the_resumable_scan_agrees_with_scanning_from_the_start():
+    # The accumulator resumes the boundary scan instead of restarting it, which
+    # is only safe while the two give the same answer for every string and every
+    # set of chunk boundaries.
+    import random
+
+    from core.inference.studio_tool_loop import _BoundaryScan
+
+    pieces = list('{}"\\ abc:,1[]') + ['\\"', '"a"', "NaN", "\n", "\r\n", "\t", '{"a":1}', "}{"]
+    rng = random.Random(20260827)
+    for _ in range(4000):
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 16)))
+        scan = _BoundaryScan()
+        cut = 0
+        result = scan.feed("")
+        while cut < len(text):
+            cut = min(len(text), cut + rng.randint(1, 4))
+            result = scan.feed(text[:cut])
+        assert result == _split_top_level_json_objects(text), text
+
+
+def test_one_argument_streamed_a_character_at_a_time_stays_linear():
+    # Rescanning the whole accumulation per fragment made a 10 KB argument cost
+    # seconds, which stalls the response for any tool that takes code or file
+    # content. Generous bound: this asserts the quadratic term is gone, not a
+    # particular machine's speed.
+    import time
+
+    payload = '{"code":"' + "x" * 20000 + '"}'
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "write", "")])
+    started = time.perf_counter()
+    for ch in payload:
+        turn.merge_structured([_delta(0, None, ch)])
+    assert time.perf_counter() - started < 2.0
+    assert _shape(turn) == [("write", payload)]

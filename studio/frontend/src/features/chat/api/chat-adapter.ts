@@ -107,6 +107,7 @@ import {
 } from "../codex-reasoning";
 
 import {
+  createBoundaryScan,
   splitTopLevelJsonObjects,
   toolCallReplayArguments,
 } from "../tool-call-arguments";
@@ -5282,8 +5283,26 @@ export function createOpenAIStreamAdapter(
       // rerun of the same stream reads the same way in a log.
       let splitToolCallSeq = 0;
       // A name that arrived at a slot whose object had closed, waiting for the
-      // arguments that say which call it names.
+      // arguments that say which call it names, and the metadata that arrived
+      // with it: Gemini stows the thought signature for the call being
+      // announced, so it travels with the name rather than landing on the call
+      // that has already closed.
       const pendingNameByIndex = new Map<number | undefined, string>();
+      const pendingExtraByIndex = new Map<number | undefined, unknown>();
+      // Resumable boundary scan per card, so an argument streamed in many
+      // fragments is scanned once rather than once per fragment.
+      const boundaryScans = new Map<
+        string,
+        ReturnType<typeof createBoundaryScan>
+      >();
+      const scanArgsText = (partId: string, text: string) => {
+        let scan = boundaryScans.get(partId);
+        if (!scan) {
+          scan = createBoundaryScan();
+          boundaryScans.set(partId, scan);
+        }
+        return scan.feed(text);
+      };
       const mintSplitToolCallId = (deltaIndex: number | undefined): string => {
         let candidate = "";
         do {
@@ -6976,7 +6995,10 @@ export function createOpenAIStreamAdapter(
                   // and a late id would claim it and glue onto it.
                   const slotIsClosed = (() => {
                     if (!matched?.argsText) return false;
-                    const held = splitTopLevelJsonObjects(matched.argsText);
+                    const held = scanArgsText(
+                      matched.toolCallId,
+                      matched.argsText,
+                    );
                     return held.complete.length > 0 && !held.tail;
                   })();
                   // An id names its call, so a fragment repeating the id this
@@ -7001,8 +7023,21 @@ export function createOpenAIStreamAdapter(
                   // finished card would draw the next call's arguments there.
                   const opensNextCall =
                     closedSlot && (bringsArgs || !!stablePartId);
+                  // Trailing whitespace is legal JSON belonging to the object
+                  // just closed, so a delta carrying it is still writing to the
+                  // closed call and its name is that call's, resent. Only a
+                  // delta with no argument text at all announces the next one.
+                  const defersToNextCall =
+                    closedSlot && !opensNextCall && !call.function?.arguments;
                   const suppressName =
-                    closedSlot && !opensNextCall && !!call.function?.name;
+                    defersToNextCall && !!call.function?.name;
+                  if (defersToNextCall && call.extra_content !== undefined) {
+                    // Announced with the name, so it describes the call being
+                    // announced. Left on the closed card it gives that call
+                    // another call's signature and the new call none, and
+                    // native replay rejects both.
+                    pendingExtraByIndex.set(idx, call.extra_content);
+                  }
                   if (suppressName) {
                     // Held across deltas, so a name streamed as "web" then
                     // "_search" opens its call as "web_search" rather than as
@@ -7043,7 +7078,7 @@ export function createOpenAIStreamAdapter(
                     // A delta carrying an id addresses its own call already.
                     const split = stablePartId
                       ? { complete: [], tail: "" }
-                      : splitTopLevelJsonObjects(merged);
+                      : scanArgsText(existing.toolCallId, merged);
                     // Whether the last segment is still being written decides
                     // who may go on writing to it.
                     const splitTailIsOpen = split.tail.length > 0;
@@ -7069,10 +7104,13 @@ export function createOpenAIStreamAdapter(
                     }
                     const prevExtra = (existing as PositionedToolCallPart)
                       .extra_content;
+                    // Metadata parked for the next call is not this card's.
+                    const incomingExtra = defersToNextCall
+                      ? undefined
+                      : call.extra_content;
                     if (
-                      call.extra_content !== undefined &&
-                      JSON.stringify(call.extra_content) !==
-                        JSON.stringify(prevExtra)
+                      incomingExtra !== undefined &&
+                      JSON.stringify(incomingExtra) !== JSON.stringify(prevExtra)
                     ) {
                       // Gemini puts the thought signature on the call, and
                       // the next turn is rejected without it.
@@ -7088,8 +7126,8 @@ export function createOpenAIStreamAdapter(
                       toolName: isSplit ? prevName || nextName : nextName,
                       argsText: slotText,
                       args: parsedArgs,
-                      ...(call.extra_content !== undefined && !isSplit
-                        ? { extra_content: call.extra_content }
+                      ...(incomingExtra !== undefined && !isSplit
+                        ? { extra_content: incomingExtra }
                         : prevExtra !== undefined
                           ? { extra_content: prevExtra }
                           : {}),
@@ -7097,6 +7135,11 @@ export function createOpenAIStreamAdapter(
                     };
                     toolCallParts[existingIndex] = updated;
                     if (isSplit) {
+                      // The slot keeps one segment rather than the whole string
+                      // it accumulated, so the resumable scan no longer
+                      // describes what it was reading.
+                      boundaryScans.delete(existing.toolCallId);
+                      boundaryScans.delete(updated.toolCallId);
                       // Appended, not inserted beside the slot, so a call the
                       // stream opened third reads third whichever index it
                       // reused. Where the branch below puts one, too.
@@ -7105,7 +7148,7 @@ export function createOpenAIStreamAdapter(
                           segments.slice(1),
                           nextName,
                           idx,
-                          call.extra_content,
+                          incomingExtra,
                           splitTailIsOpen,
                         ),
                       );
@@ -7151,6 +7194,14 @@ export function createOpenAIStreamAdapter(
                         ? nameFragment
                         : pendingName + nameFragment;
                     pendingNameByIndex.delete(idx);
+                    // The metadata that came with that parked name belongs to
+                    // this call, the one it was announcing.
+                    const parkedExtra = pendingExtraByIndex.get(idx);
+                    pendingExtraByIndex.delete(idx);
+                    const freshExtra =
+                      call.extra_content !== undefined
+                        ? call.extra_content
+                        : parkedExtra;
                     const argsText = freshIsSplit
                       ? freshSegments[0]
                       : argsFragment;
@@ -7173,8 +7224,8 @@ export function createOpenAIStreamAdapter(
                       argsText,
                       args: parsedArgs,
                       textCursor: cumulativeText.length,
-                      ...(call.extra_content !== undefined && !freshIsSplit
-                        ? { extra_content: call.extra_content }
+                      ...(freshExtra !== undefined && !freshIsSplit
+                        ? { extra_content: freshExtra }
                         : {}),
                       ...(stablePartId ? { _has_stable_id: true } : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
@@ -7186,7 +7237,7 @@ export function createOpenAIStreamAdapter(
                           freshSegments.slice(1),
                           freshName,
                           idx,
-                          call.extra_content,
+                          freshExtra,
                           freshTailIsOpen,
                         ),
                       );

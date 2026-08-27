@@ -642,9 +642,15 @@ test("a per-call thought signature forces a publish", () => {
     window.includes("replayStateChanged = true"),
     "a changed per-call extra_content does not force a publish",
   );
+  // Read off `incomingExtra`, which is `call.extra_content` except when the
+  // delta announced the NEXT call and parked its metadata for it.
   assert.ok(
-    window.includes("call.extra_content !== undefined"),
+    window.includes("incomingExtra !== undefined"),
     "the latch fires on calls that carry no extra_content at all",
+  );
+  assert.ok(
+    window.includes("? undefined\n                      : call.extra_content"),
+    "the latch no longer reads the delta's own extra_content",
   );
 
   // And the latch has to be honoured where the tool-call publish is decided.

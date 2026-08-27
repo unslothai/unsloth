@@ -429,6 +429,77 @@ def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
 
 
 @dataclass
+class _BoundaryScan:
+    """``_split_top_level_json_objects`` over a string that only ever grows.
+
+    One call's arguments arrive as many small fragments, and rescanning the
+    whole accumulation per fragment makes streaming one argument of length N
+    cost O(N^2): a 10 KB argument delivered a character at a time took about
+    five seconds, which stalls the response. The scan resumes where it stopped
+    instead, so the same argument costs one pass in total.
+
+    ``feed`` must be given the same string extended, never a rewritten one --
+    a fork rewrites a slot's arguments, so ``_Turn`` drops the scan for the
+    keys it touches and lets the next fragment start a fresh one.
+    """
+
+    depth: int = 0
+    start: int = -1
+    in_string: bool = False
+    escaped: bool = False
+    scanned: int = 0
+    complete: list[str] = field(default_factory = list)
+    # Junk at depth 0 or a segment that does not parse makes the whole string
+    # unsplittable, and appending to it can never make it splittable again.
+    unsplittable: bool = False
+
+    def feed(self, text: str) -> tuple[list[str], str]:
+        if self.unsplittable:
+            return [], text
+        i = self.scanned
+        while i < len(text):
+            ch = text[i]
+            if self.in_string:
+                if self.escaped:
+                    self.escaped = False
+                elif ch == "\\":
+                    self.escaped = True
+                elif ch == '"':
+                    self.in_string = False
+                i += 1
+                continue
+            if self.depth == 0:
+                if ch == "{":
+                    self.depth = 1
+                    self.start = i
+                    i += 1
+                    continue
+                if ch in " \t\n\r":
+                    i += 1
+                    continue
+                self.unsplittable = True
+                return [], text
+            if ch == '"':
+                self.in_string = True
+            elif ch == "{":
+                self.depth += 1
+            elif ch == "}":
+                self.depth -= 1
+                if self.depth == 0:
+                    segment = text[self.start : i + 1]
+                    try:
+                        json.loads(segment, parse_constant = _reject_json_constant)
+                    except (ValueError, TypeError, RecursionError):
+                        self.unsplittable = True
+                        return [], text
+                    self.complete.append(segment)
+                    self.start = -1
+            i += 1
+        self.scanned = len(text)
+        return list(self.complete), ("" if self.start == -1 else text[self.start :])
+
+
+@dataclass
 class _Turn:
     """Accumulated state for one provider turn."""
 
@@ -441,8 +512,16 @@ class _Turn:
     last_index: int | None = None
     split_seq: int = 0
     # A name that arrived at a closed slot, waiting for the arguments that say
-    # which call it names.
+    # which call it names, and the metadata that arrived with it. Gemini stows
+    # the thoughtSignature for the call being announced, so it has to travel
+    # with the name rather than land on the call that has already closed.
     pending_name_by_index: dict[int, str] = field(default_factory = dict)
+    pending_extra_by_index: dict[int, dict[str, Any]] = field(default_factory = dict)
+    # Which call each id names, so a fragment repeating an id reaches its own
+    # call even when a later call at that index is the one currently open.
+    key_by_call_id: dict[str, Any] = field(default_factory = dict)
+    # Resumable boundary scan per call, keyed the same as ``by_index``.
+    scan_by_key: dict[Any, _BoundaryScan] = field(default_factory = dict)
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
     text: list[str] = field(default_factory = list)
@@ -561,16 +640,20 @@ class _Turn:
             # belong to the newer call.
             key: Any = self.open_key_by_index.get(index, index)
             if isinstance(call_id, str) and call_id:
-                open_id = self.by_index.get(key, {}).get("id")
-                if open_id and open_id != call_id:
+                # An id beats the latest-index mapping, which only exists to
+                # place the fragments that carry no id: a fragment repeating an
+                # id goes back to the call wearing it wherever that call now
+                # sits, even when an id-less call opened at this index after it.
+                # Matching only against the open call renamed that newer call
+                # and gave it a second copy of the id.
+                owner = self.key_by_call_id.get(call_id)
+                if owner is not None:
+                    key = owner
+                elif self.by_index.get(key, {}).get("id"):
                     # Two distinct calls reported at the same index. Merging them
                     # concatenates their argument JSON into one unparseable blob
                     # and loses an intent, so key the second on its own id.
-                    # A fragment that names the call this index opened first goes
-                    # back to it: an id beats the latest-index mapping, which only
-                    # exists to place the fragments that carry no id.
-                    first_id = self.by_index.get(index, {}).get("id")
-                    key = index if first_id == call_id else (index, call_id)
+                    key = (index, call_id)
             # A closed object cannot take more content, so the next arguments to
             # reach a slot already holding one whole object belong to the next
             # parallel call. Forking on the accumulated text alone only catches
@@ -605,14 +688,22 @@ class _Turn:
             )
             slot_is_closed = False
             if held is not None and not names_this_call:
-                closed, unfinished = _split_top_level_json_objects(held["function"]["arguments"])
+                closed, unfinished = self._scan(key, held["function"]["arguments"])
                 slot_is_closed = bool(closed) and not unfinished
             # A name reaching a closed slot cannot be read yet: the same tool
             # called twice announces itself exactly as llama-server resends a
             # name it is still growing. So hold it until arguments say which
             # call it belongs to, rather than renaming the finished one.
+            extra = raw_call.get("extra_content")
+            # Trailing whitespace is legal JSON that belongs to the object just
+            # closed, so a delta carrying it is still writing to the closed call
+            # and its name is that call's, resent. Only a delta with no argument
+            # text at all is announcing the next one.
+            brings_any_args = isinstance(new_arguments, str) and bool(new_arguments)
+            defers_to_next_call = slot_is_closed and not opens_next_call and not brings_any_args
             suppress_name = False
-            if slot_is_closed and not opens_next_call:
+            suppress_extra = False
+            if defers_to_next_call:
                 if isinstance(new_name, str) and new_name:
                     # Held across deltas, so the two dialects the accumulator
                     # below reconciles have to be reconciled here too: a name
@@ -625,33 +716,48 @@ class _Turn:
                         else pending_before + new_name
                     )
                     suppress_name = True
+                if isinstance(extra, dict) and extra:
+                    # Announced with the name, so it describes the call being
+                    # announced. Merging it into the closed call leaves that
+                    # call wearing another call's thoughtSignature and the new
+                    # call with none, and native replay rejects both.
+                    self.pending_extra_by_index[index] = {
+                        **self.pending_extra_by_index.get(index, {}),
+                        **extra,
+                    }
+                    suppress_extra = True
             if slot_is_closed and opens_next_call:
                 self.split_seq += 1
                 key = (index, "_split", self.split_seq)
             self.last_index = index
             self.open_key_by_index[index] = key
             if key not in self.by_index:
-                self.by_index[key] = {
+                born = {
                     "id": "",
                     "type": "function",
                     # The name a name-only delta parked for whichever call the
-                    # arguments turned out to open.
+                    # arguments turned out to open, and the metadata that came
+                    # with it.
                     "function": {
                         "name": self.pending_name_by_index.pop(index, ""),
                         "arguments": "",
                     },
                 }
+                pending_extra = self.pending_extra_by_index.pop(index, None)
+                if pending_extra:
+                    born["extra_content"] = pending_extra
+                self.by_index[key] = born
                 # First-seen order, so a negative or out-of-order index cannot
                 # reorder parallel calls against what the model actually sent.
                 self.order.append(key)
             current = self.by_index[key]
             if isinstance(call_id, str) and call_id:
                 current["id"] = call_id
-            extra = raw_call.get("extra_content")
+                self.key_by_call_id.setdefault(call_id, key)
             # What the slot carried before this delta, so a fork below can hand
             # this delta's metadata to the call it actually closes.
             extra_before = current.get("extra_content")
-            if isinstance(extra, dict) and extra:
+            if isinstance(extra, dict) and extra and not suppress_extra:
                 # Gemini 3 stows this call's thoughtSignature here, and the
                 # native translator rejects a replayed functionCall without it.
                 # Per call, so it cannot ride along on the delta-level slot.
@@ -690,6 +796,18 @@ class _Turn:
                             extra if isinstance(extra, dict) and extra else None,
                         )
 
+    def _scan(self, key: Any, text: str) -> tuple[list[str], str]:
+        """``_split_top_level_json_objects(text)``, resuming the scan for ``key``.
+
+        The same answer as scanning from byte zero, at the cost of the bytes
+        this call added rather than of the whole accumulation.
+        """
+        scan = self.scan_by_key.get(key)
+        if scan is None:
+            scan = _BoundaryScan()
+            self.scan_by_key[key] = scan
+        return scan.feed(text)
+
     def _fork_glued_arguments(
         self,
         index: int,
@@ -701,10 +819,13 @@ class _Turn:
         incoming_extra: dict[str, Any] | None,
     ) -> None:
         """Give every call after the first in one slot a call of its own."""
-        complete, tail = _split_top_level_json_objects(current["function"]["arguments"])
+        complete, tail = self._scan(key, current["function"]["arguments"])
         segments = complete + ([tail] if tail else [])
         if len(segments) < 2:
             return
+        # Below rewrites this slot's arguments rather than extending them, so
+        # the resumable scan no longer describes the string it was reading.
+        self.scan_by_key.pop(key, None)
         # The slot keeps the object it opened with, under the name and id it
         # had. Nothing per-call rides along: extra_content carries this call's
         # thoughtSignature, and two calls claiming it is a rejected turn.

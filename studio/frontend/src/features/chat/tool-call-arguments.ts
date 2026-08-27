@@ -85,6 +85,82 @@ export function splitTopLevelJsonObjects(text: string): {
 }
 
 /**
+ * `splitTopLevelJsonObjects` over a string that only ever grows.
+ *
+ * One call's arguments arrive as many small fragments, and rescanning the whole
+ * accumulation per fragment makes streaming one argument of length N cost
+ * O(N^2): a 20 KB argument delivered a character at a time took about a second
+ * and a half on the thread that also paints the stream. The scan resumes where
+ * it stopped instead, so the same argument costs one pass in total.
+ *
+ * `feed` must be given the same string extended, never a rewritten one. A split
+ * rewrites a slot's `argsText`, so the caller drops the scan for the parts it
+ * touches and lets the next fragment start a fresh one.
+ */
+export function createBoundaryScan(): {
+  feed: (text: string) => { complete: string[]; tail: string };
+} {
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  let scanned = 0;
+  // Junk at depth 0 or a segment that does not parse makes the whole string
+  // unsplittable, and appending to it can never make it splittable again.
+  let unsplittable = false;
+  const complete: string[] = [];
+
+  return {
+    feed(text: string) {
+      if (unsplittable) return { complete: [], tail: text };
+      for (let i = scanned; i < text.length; i += 1) {
+        const ch = text[i];
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (ch === "\\") escaped = true;
+          else if (ch === '"') inString = false;
+          continue;
+        }
+        if (depth === 0) {
+          if (ch === "{") {
+            depth = 1;
+            start = i;
+            continue;
+          }
+          if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") continue;
+          unsplittable = true;
+          return { complete: [], tail: text };
+        }
+        if (ch === '"') {
+          inString = true;
+          continue;
+        }
+        if (ch === "{") depth += 1;
+        else if (ch === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            const segment = text.slice(start, i + 1);
+            try {
+              JSON.parse(segment);
+            } catch {
+              unsplittable = true;
+              return { complete: [], tail: text };
+            }
+            complete.push(segment);
+            start = -1;
+          }
+        }
+      }
+      scanned = text.length;
+      return {
+        complete: [...complete],
+        tail: start === -1 ? "" : text.slice(start),
+      };
+    },
+  };
+}
+
+/**
  * The `function.arguments` string to replay for a stored tool call.
  *
  * `argsText` is the text the provider streamed and is preferred so replay is
