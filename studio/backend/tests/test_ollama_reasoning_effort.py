@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ollama's OpenAI-compat proxy must carry Studio's thinking selection. #9649
+"""Ollama's OpenAI-compatible proxy must carry API thinking controls. #9649
 
 ``ExternalProviderClient.stream_chat_completion`` already maps thinking for
 Kimi, Mistral, vLLM and OpenRouter. Ollama documents ``reasoning_effort``
 values ``high`` / ``medium`` / ``low`` / ``none`` on ``/v1/chat/completions``,
-but the outbound body omitted the field, so a reasoning model kept its default
-thinking with no way to turn it off.
+but the outbound body omitted the field.
 """
 
 from __future__ import annotations
@@ -59,7 +58,7 @@ def _capture_body(provider_type: str, model: str, **kwargs) -> dict:
     return captured["body"]
 
 
-def test_unmarked_ollama_request_does_not_send_reasoning_effort():
+def test_ollama_request_without_controls_does_not_send_reasoning_effort():
     body = _capture_body("ollama", "thinkingcap-27b-bottlecap:latest")
     assert "reasoning_effort" not in body
     assert "thinking" not in body
@@ -108,7 +107,7 @@ def test_ollama_explicit_effort_wins_over_enable_thinking():
     "incoming, expected",
     [("minimal", "low"), ("xhigh", "max")],
 )
-def test_ollama_maps_studio_effort_aliases(incoming, expected):
+def test_ollama_maps_reasoning_effort_aliases(incoming, expected):
     body = _capture_body(
         "ollama",
         "thinkingcap-27b-bottlecap:latest",

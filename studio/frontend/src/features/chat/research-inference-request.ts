@@ -29,7 +29,6 @@ export function buildResearchInferenceRequest(input: {
   temperature: number;
   topP: number;
   maxTokens: number;
-  supportsReasoning: boolean;
   reasoningRequested: boolean;
   reasoningStyle: string;
   reasoningEffort: ReasoningEffort;
@@ -60,27 +59,20 @@ export function buildResearchInferenceRequest(input: {
     request.maxTokens = Math.min(8192, Math.floor(input.maxTokens));
   }
   if (
-    input.supportsReasoning &&
-    (input.reasoningStyle === "enable_thinking" ||
-      input.reasoningStyle === "enable_thinking_effort")
+    input.reasoningStyle === "enable_thinking" ||
+    input.reasoningStyle === "enable_thinking_effort"
   ) {
     request.enableThinking = input.reasoningRequested;
   }
   if (
-    input.supportsReasoning &&
+    input.reasoningRequested &&
     (input.reasoningStyle === "reasoning_effort" ||
       input.reasoningStyle === "enable_thinking_effort")
   ) {
-    if (input.reasoningRequested) {
-      request.reasoningEffort = input.clampReasoningEffort(
-        input.reasoningEffort,
-        input.reasoningEffortLevels,
-      );
-    } else if (input.reasoningEffortLevels.includes("none")) {
-      // Off-capable reasoning_effort (Ollama) must send "none". Omitting the
-      // field lets the model keep its default thinking.
-      request.reasoningEffort = "none";
-    }
+    request.reasoningEffort = input.clampReasoningEffort(
+      input.reasoningEffort,
+      input.reasoningEffortLevels,
+    );
   }
   return request;
 }

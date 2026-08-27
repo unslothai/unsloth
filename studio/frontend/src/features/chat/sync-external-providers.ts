@@ -30,7 +30,6 @@ import {
   setProviderModelCapabilities,
   supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
-  supportsPerModelReasoningPin,
   supportsProviderReasoningToggle,
 } from "./external-providers";
 
@@ -150,15 +149,6 @@ export function resolveSyncedModelIds(
   return prunedSaved.length > 0 ? prunedSaved : defaultModels;
 }
 
-function filterReasoningPinsToModels(
-  reasoningModelIds: string[] | undefined,
-  models: string[],
-): string[] | undefined {
-  if (reasoningModelIds === undefined) return undefined;
-  const enabled = new Set(models.map((model) => model.trim().toLowerCase()));
-  return reasoningModelIds.filter((id) => enabled.has(id.trim().toLowerCase()));
-}
-
 
 /** Carry browser-local provider knobs through a backend sync rebuild. */
 export function mergeLocalProviderOptions(
@@ -181,12 +171,6 @@ export function mergeLocalProviderOptions(
         : synced.promptCacheTtl,
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? (existing.isReasoningModel ?? synced.isReasoningModel)
-      : undefined,
-    reasoningModelIds: supportsPerModelReasoningPin(providerType)
-      ? filterReasoningPinsToModels(
-          existing.reasoningModelIds ?? synced.reasoningModelIds,
-          synced.models,
-        )
       : undefined,
     openaiContainerTtlMinutes:
       providerType === "openai" &&
@@ -321,9 +305,6 @@ export async function syncExternalProvidersFromBackend(
           : undefined,
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
           ? existing?.isReasoningModel === true
-          : undefined,
-        reasoningModelIds: supportsPerModelReasoningPin(uiProviderType)
-          ? existing?.reasoningModelIds
           : undefined,
         createdAt: existing?.createdAt ?? createdAt,
         updatedAt,

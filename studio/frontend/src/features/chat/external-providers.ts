@@ -42,17 +42,8 @@ export interface ExternalProviderConfig {
    * marker. Omitted = inherit Anthropic's default 5-minute pool.
    */
   promptCacheTtl?: "5m" | "1h";
-  /**
-   * User-pinned: this connection's model supports thinking controls.
-   * vLLM uses `enable_thinking`; Ollama uses OpenAI-compat `reasoning_effort`.
-   */
+  /** User-pinned: the loaded vLLM model supports `enable_thinking`. */
   isReasoningModel?: boolean;
-  /**
-   * Ollama: model ids marked as thinking-capable on this connection. An empty
-   * list means none; omit (with `isReasoningModel`) is the legacy all-models pin.
-   * vLLM ignores this.
-   */
-  reasoningModelIds?: string[];
   /**
    * Default idle-timeout (minutes) for new OpenAI shell containers. Pre-fills the
    * "Create container" dialog and is the TTL the auto-create-per-thread path POSTs
@@ -98,8 +89,8 @@ export function isPromptCacheTtl(value: unknown): value is "5m" | "1h" {
 }
 
 // Provider types exposing the connection-level "reasoning model" toggle.
-// vLLM and Ollama's OpenAI-compat endpoints don't advertise this per model.
-const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm", "ollama"]);
+// vLLM's OpenAI-compat endpoint doesn't advertise this per model.
+const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm"]);
 
 export function supportsProviderReasoningToggle(
   providerType: string | null | undefined,
@@ -107,76 +98,6 @@ export function supportsProviderReasoningToggle(
   return (
     providerType != null && REASONING_TOGGLE_PROVIDER_TYPES.has(providerType)
   );
-}
-
-/** Ollama is the only reasoning-toggle provider that serves a mixed catalog. */
-export function supportsPerModelReasoningPin(
-  providerType: string | null | undefined,
-): boolean {
-  return providerType === "ollama";
-}
-
-function modelIdKey(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-export function reasoningModelIdIsMarked(
-  markedIds: readonly string[],
-  modelId: string,
-): boolean {
-  const key = modelIdKey(modelId);
-  return markedIds.some((id) => modelIdKey(id) === key);
-}
-
-export function toggleReasoningModelId(
-  markedIds: readonly string[],
-  modelId: string,
-): string[] {
-  const key = modelIdKey(modelId);
-  if (markedIds.some((id) => modelIdKey(id) === key)) {
-    return markedIds.filter((id) => modelIdKey(id) !== key);
-  }
-  return [...markedIds, modelId];
-}
-
-export function normalizeReasoningModelIds(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const entry of value) {
-    if (typeof entry !== "string") continue;
-    const id = entry.trim();
-    if (!id) continue;
-    const key = id.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(id);
-  }
-  return out;
-}
-
-export function reasoningFieldsForProviderSave(
-  providerType: string,
-  isReasoningModel: boolean,
-  enabledModels: readonly string[],
-  markedIds: readonly string[],
-): Pick<ExternalProviderConfig, "isReasoningModel" | "reasoningModelIds"> {
-  if (!supportsProviderReasoningToggle(providerType)) {
-    return {};
-  }
-  if (!supportsPerModelReasoningPin(providerType)) {
-    return { isReasoningModel, reasoningModelIds: undefined };
-  }
-  if (!isReasoningModel) {
-    return { isReasoningModel: false, reasoningModelIds: undefined };
-  }
-  const enabledKeys = new Set(
-    enabledModels.map(modelIdKey).filter((id) => id.length > 0),
-  );
-  const marked = (normalizeReasoningModelIds(markedIds) ?? []).filter((id) =>
-    enabledKeys.has(modelIdKey(id)),
-  );
-  return { isReasoningModel: true, reasoningModelIds: marked };
 }
 
 // Known text-only providers on their main chat endpoint.
@@ -586,29 +507,6 @@ function mapLegacyPresetToProviderType(presetId: string): string {
   return presetId;
 }
 
-function resolveStoredReasoningModelIds(
-  raw: ExternalProviderConfig,
-  providerType: string,
-): string[] | undefined {
-  if (
-    !supportsPerModelReasoningPin(providerType) ||
-    raw.isReasoningModel !== true
-  ) {
-    return undefined;
-  }
-  if (raw.reasoningModelIds === undefined) {
-    // legacy connection-level pin: every enabled model was implied
-    return raw.models
-      .map((model) => model.trim())
-      .filter((model) => model.length > 0);
-  }
-  const stored = normalizeReasoningModelIds(raw.reasoningModelIds) ?? [];
-  const enabled = new Set(
-    raw.models.map((model) => modelIdKey(model)).filter((id) => id.length > 0),
-  );
-  return stored.filter((id) => enabled.has(modelIdKey(id)));
-}
-
 function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig {
   const providerType = raw.providerType.trim();
   return {
@@ -640,7 +538,6 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? raw.isReasoningModel === true
       : undefined,
-    reasoningModelIds: resolveStoredReasoningModelIds(raw, providerType),
     openaiContainerTtlMinutes:
       providerType === "openai" &&
       typeof raw.openaiContainerTtlMinutes === "number" &&

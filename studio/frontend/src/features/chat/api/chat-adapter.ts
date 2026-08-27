@@ -118,7 +118,6 @@ import { isSpeechOnlyStatus } from "../lib/speech-only-status";
 import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
-  externalReasoningOptionsFromProvider,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
@@ -4184,7 +4183,6 @@ export function createOpenAIStreamAdapter(
           temperature: params.temperature,
           topP: params.topP,
           maxTokens: params.maxTokens,
-          supportsReasoning: runtime.supportsReasoning,
           reasoningRequested,
           reasoningStyle: runtime.reasoningStyle,
           reasoningEffort: runtime.reasoningEffort,
@@ -5509,7 +5507,11 @@ export function createOpenAIStreamAdapter(
             ? getExternalReasoningCapabilities(
                 externalProvider.providerType,
                 externalSelection.modelId,
-                externalReasoningOptionsFromProvider(externalProvider),
+                {
+                  isReasoningProvider:
+                    externalProvider.isReasoningModel === true,
+                  baseUrl: externalProvider.baseUrl ?? null,
+                },
               )
             : {
                 supportsReasoning,

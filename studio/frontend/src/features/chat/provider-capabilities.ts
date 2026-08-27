@@ -982,94 +982,21 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
 }
 
 export interface ExternalReasoningResolveOptions {
-  /** Connection flagged as a reasoning model in provider config (vLLM, Ollama). */
+  /** vLLM connection flagged as a reasoning model in provider config. */
   isReasoningProvider?: boolean;
-  /**
-   * Ollama: model ids the user marked as thinking-capable. An explicit list
-   * (including empty) scopes the connection flag; omit it only for the legacy
-   * connection-wide pin. vLLM ignores this and stays connection-wide.
-   */
-  reasoningModelIds?: readonly string[];
   /** Provider base URL; used to detect custom Gemini OAI-compat gateways. */
   baseUrl?: string | null;
 }
 
-/** Pack a saved connection into the options `getExternalReasoningCapabilities` expects. */
-export function externalReasoningOptionsFromProvider(
-  provider:
-    | {
-        isReasoningModel?: boolean;
-        reasoningModelIds?: readonly string[];
-        baseUrl?: string | null;
-      }
-    | null
-    | undefined,
-): ExternalReasoningResolveOptions {
-  return {
-    isReasoningProvider: provider?.isReasoningModel === true,
-    reasoningModelIds: provider?.reasoningModelIds,
-    baseUrl: provider?.baseUrl ?? null,
-  };
-}
-
-const OLLAMA_REASONING_EFFORT_LEVELS = [
-  "none",
-  "low",
-  "medium",
-  "high",
-] as const;
-const OLLAMA_GPT_OSS_REASONING_EFFORT_LEVELS = ["low", "medium", "high"] as const;
-
-// vLLM / Ollama have no per-model reasoning signal on OpenAI-compat — pin via
-// the connection's "reasoning model" toggle. Ollama speaks reasoning_effort
-// (none|low|medium|high) and typically serves a mixed catalog, so the pin is
-// per model id when the user has marked one. vLLM speaks
-// chat_template_kwargs.enable_thinking and stays connection-wide.
-function ollamaReasoningModelIsPinned(
-  modelId: string,
-  reasoningModelIds: readonly string[] | undefined,
-): boolean {
-  if (reasoningModelIds === undefined) {
-    // Legacy connection-level pin: every model on the flagged server.
-    return true;
-  }
-  if (!modelId || reasoningModelIds.length === 0) return false;
-  return reasoningModelIds.some((id) => id.trim().toLowerCase() === modelId);
-}
-
+// vLLM has no per-model reasoning signal on OpenAI-compat — pin via user toggle.
 function resolveConnectionLevelReasoning(
   normalizedProvider: string,
-  modelId: string,
   options: ExternalReasoningResolveOptions | undefined,
 ): ExternalReasoningCapabilities | null {
-  if (!options?.isReasoningProvider) {
-    return null;
-  }
-  if (normalizedProvider === "vllm") {
+  if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
     return withEnableThinkingStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
-    });
-  }
-  if (normalizedProvider === "ollama") {
-    if (!ollamaReasoningModelIsPinned(modelId, options.reasoningModelIds)) {
-      return null;
-    }
-    const modelName = modelId.split("/").at(-1) ?? modelId;
-    if (modelName === "gpt-oss" || modelName.startsWith("gpt-oss:")) {
-      return {
-        ...withReasoningEffortStyle({
-          supportsReasoning: true,
-          supportsReasoningOff: false,
-          reasoningEffortLevels: OLLAMA_GPT_OSS_REASONING_EFFORT_LEVELS,
-        }),
-        reasoningAlwaysOn: true,
-      };
-    }
-    return withReasoningEffortStyle({
-      supportsReasoning: true,
-      supportsReasoningOff: true,
-      reasoningEffortLevels: OLLAMA_REASONING_EFFORT_LEVELS,
     });
   }
   return null;
@@ -1088,7 +1015,6 @@ export function getExternalReasoningCapabilities(
   const normalizedProvider = providerType?.trim().toLowerCase() ?? "";
   const connectionLevel = resolveConnectionLevelReasoning(
     normalizedProvider,
-    normalizedModel,
     options,
   );
   if (connectionLevel) {

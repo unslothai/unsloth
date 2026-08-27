@@ -17,13 +17,9 @@ const {
   providerSupportsFastMode,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
-const {
-  providerModelSupportsVision,
-  setProviderModelCapabilities,
-  reasoningFieldsForProviderSave,
-  supportsPerModelReasoningPin,
-  supportsProviderReasoningToggle,
-} = await import("../src/features/chat/external-providers.ts");
+const { providerModelSupportsVision, setProviderModelCapabilities } = await import(
+  "../src/features/chat/external-providers.ts"
+);
 
 // Every capability table is prefix-based, so an un-widened prefix silently drops a
 // control instead of failing loudly: a model with no reasoning entry loses its
@@ -174,117 +170,4 @@ test("a connection override cannot raise a documented per-model cap", () => {
   assert.equal(getExternalMaxOutputTokens("openai", "gpt-5.6-sol", 8192), 8192);
   // a vLLM server hosting an id borrowed from OpenAI has no documented cap of its own
   assert.equal(getExternalMaxOutputTokens("vllm", "gpt-5.6-sol", 131072), 131072);
-});
-
-test("Ollama offers the connection-level reasoning toggle, like vLLM", () => {
-  assert.equal(supportsProviderReasoningToggle("ollama"), true);
-  assert.equal(supportsProviderReasoningToggle("vllm"), true);
-  assert.equal(supportsProviderReasoningToggle("llama_cpp"), false);
-  assert.equal(supportsProviderReasoningToggle("custom"), false);
-  assert.equal(supportsPerModelReasoningPin("ollama"), true);
-  assert.equal(supportsPerModelReasoningPin("vllm"), false);
-});
-
-test("Ollama hides Thinking unless the connection is flagged as a reasoning model", () => {
-  const model = "thinkingcap-27b-bottlecap:latest";
-  const unmarked = getExternalReasoningCapabilities("ollama", model);
-  assert.equal(unmarked.supportsReasoning, false);
-  assert.equal(
-    getExternalReasoningCapabilities("ollama", model, {
-      isReasoningProvider: false,
-    }).supportsReasoning,
-    false,
-  );
-
-  const flagged = getExternalReasoningCapabilities("ollama", model, {
-    isReasoningProvider: true,
-    reasoningModelIds: [model],
-  });
-  assert.equal(flagged.supportsReasoning, true);
-  assert.equal(flagged.reasoningStyle, "reasoning_effort");
-  assert.equal(flagged.supportsReasoningOff, true);
-  assert.deepEqual([...flagged.reasoningEffortLevels], [
-    "none",
-    "low",
-    "medium",
-    "high",
-  ]);
-});
-
-test("Ollama only advertises Thinking for models pinned on the connection", () => {
-  const thinking = "thinkingcap-27b-bottlecap:latest";
-  const instruct = "llama3.2:latest";
-  const mixed = {
-    isReasoningProvider: true,
-    reasoningModelIds: [thinking],
-  } as const;
-
-  const pinned = getExternalReasoningCapabilities("ollama", thinking, mixed);
-  assert.equal(pinned.supportsReasoning, true);
-  assert.equal(pinned.reasoningStyle, "reasoning_effort");
-
-  const other = getExternalReasoningCapabilities("ollama", instruct, mixed);
-  assert.equal(other.supportsReasoning, false);
-
-  const noneMarked = getExternalReasoningCapabilities("ollama", thinking, {
-    isReasoningProvider: true,
-    reasoningModelIds: [],
-  });
-  assert.equal(noneMarked.supportsReasoning, false);
-
-  // Legacy connection-wide pin: no per-model list yet.
-  const legacy = getExternalReasoningCapabilities("ollama", instruct, {
-    isReasoningProvider: true,
-  });
-  assert.equal(legacy.supportsReasoning, true);
-
-  // vLLM stays connection-wide even if a leftover Ollama pin list is present.
-  assert.equal(
-    getExternalReasoningCapabilities("vllm", instruct, {
-      isReasoningProvider: true,
-      reasoningModelIds: [],
-    }).supportsReasoning,
-    true,
-  );
-});
-
-test("Ollama GPT-OSS reasoning stays on and only offers supported levels", () => {
-  for (const model of ["gpt-oss:20b", "registry.ollama.ai/library/gpt-oss:120b"]) {
-    const caps = getExternalReasoningCapabilities("ollama", model, {
-      isReasoningProvider: true,
-      reasoningModelIds: [model],
-    });
-    assert.equal(caps.supportsReasoning, true, model);
-    assert.equal(caps.reasoningAlwaysOn, true, model);
-    assert.equal(caps.supportsReasoningOff, false, model);
-    assert.deepEqual([...caps.reasoningEffortLevels], ["low", "medium", "high"], model);
-  }
-});
-
-test("Ollama save persists an explicit per-model pin, including none", () => {
-  assert.deepEqual(
-    reasoningFieldsForProviderSave(
-      "ollama",
-      true,
-      ["thinkingcap-27b-bottlecap:latest", "llama3.2:latest"],
-      ["thinkingcap-27b-bottlecap:latest", "dropped"],
-    ),
-    {
-      isReasoningModel: true,
-      reasoningModelIds: ["thinkingcap-27b-bottlecap:latest"],
-    },
-  );
-  assert.deepEqual(
-    reasoningFieldsForProviderSave(
-      "ollama",
-      true,
-      ["llama3.2:latest"],
-      [],
-    ),
-    { isReasoningModel: true, reasoningModelIds: [] },
-  );
-  assert.deepEqual(reasoningFieldsForProviderSave("vllm", true, ["m"], ["m"]), {
-    isReasoningModel: true,
-    reasoningModelIds: undefined,
-  });
 });

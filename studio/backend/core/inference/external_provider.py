@@ -590,7 +590,7 @@ def _apply_mistral_reasoning_controls(
             body["reasoning_effort"] = "high"
 
 
-# Ollama's OpenAI-compat /v1/chat/completions accepts these five values.
+# ollama's openai-compatible /v1/chat/completions accepts these five values.
 # https://docs.ollama.com/api/openai-compatibility
 _OLLAMA_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "max"})
 _OLLAMA_REASONING_EFFORT_ALIASES = {
@@ -602,12 +602,10 @@ _OLLAMA_REASONING_EFFORT_ALIASES = {
 def _apply_ollama_reasoning_controls(
     body: dict[str, Any], enable_thinking: Optional[bool], reasoning_effort: Optional[str]
 ) -> None:
-    """Map Studio thinking controls onto Ollama's ``reasoning_effort`` field.
+    """Map API thinking controls onto Ollama's ``reasoning_effort`` field.
 
-    Unmarked connections send neither ``enable_thinking`` nor
-    ``reasoning_effort``, so this leaves the body alone and Ollama keeps the
-    model's default. An explicit off is ``none``; an on without a level is
-    ``medium``, matching Studio's non-OpenAI / non-Anthropic default. #9649
+    Requests with neither control remain unchanged. An explicit off is
+    ``none``; an on without a level is ``medium``. #9649
     """
     effort = (reasoning_effort or "").strip().lower()
     if effort in _OLLAMA_REASONING_EFFORT_ALIASES:

@@ -69,16 +69,12 @@ import {
   CUSTOM_PROVIDER_DISPLAY_NAME,
   getProviderModelCapabilities,
   providerModelSupportsStudioTools,
-  reasoningFieldsForProviderSave,
-  reasoningModelIdIsMarked,
   setProviderModelCapabilities,
   removeExternalProviderApiKey,
-  supportsPerModelReasoningPin,
   supportsProviderMaxOutputTokens,
   supportsProviderReasoningToggle,
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
-  toggleReasoningModelId,
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
@@ -269,7 +265,6 @@ export function ChatProvidersSettings({
     CUSTOM_PROVIDER_DISPLAY_NAME,
   );
   const [isReasoningModel, setIsReasoningModel] = useState(false);
-  const [reasoningModelIds, setReasoningModelIds] = useState<string[]>([]);
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
@@ -286,8 +281,6 @@ export function ChatProvidersSettings({
   // llama.cpp hides the key field. Ollama and vLLM show an optional key:
   // Ollama cloud and secured vLLM need one; local servers leave it empty.
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
-  const showPerModelReasoningPin =
-    showReasoningToggle && supportsPerModelReasoningPin(providerType);
   // Unsloth runs Search, Code, MCP and RAG on this machine for any provider that
   // advertises the capability, with no extra opt-in. Say so where the
   // connection is created: the tool results also travel back to the provider as
@@ -330,10 +323,6 @@ export function ChatProvidersSettings({
       ? new Set([...selectedModelIds, ...parseManualModelIds(manualModelIds)])
           .size
       : selectedModelIds.length;
-  const enabledModelCandidates = useMemo(
-    () => [...new Set([...selectedModelIds, ...parseManualModelIds(manualModelIds)])],
-    [selectedModelIds, manualModelIds],
-  );
   const modelStatusLabel =
     !isManualModelList &&
     !remoteAllowsManual &&
@@ -525,7 +514,6 @@ export function ChatProvidersSettings({
     setModelSearchQuery("");
     setCustomProviderName(customProviderDisplayName(providerType));
     setIsReasoningModel(false);
-    setReasoningModelIds([]);
   }
 
   function openAddProvider() {
@@ -892,12 +880,9 @@ export function ChatProvidersSettings({
 
         authKind: created.auth_kind,
         authStatus: created.auth_status,
-        ...reasoningFieldsForProviderSave(
-          uiProviderType,
-          isReasoningModel,
-          modelsToSave,
-          reasoningModelIds,
-        ),
+        isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
+          ? isReasoningModel
+          : undefined,
         createdAt,
         updatedAt,
       };
@@ -1044,12 +1029,11 @@ export function ChatProvidersSettings({
                 maxOutputTokens: updated.max_output_tokens ?? undefined,
 
                 hasApiKey: updated.has_api_key,
-                ...reasoningFieldsForProviderSave(
+                isReasoningModel: supportsProviderReasoningToggle(
                   existing.providerType,
-                  isReasoningModel,
-                  modelsToSave,
-                  reasoningModelIds,
-                ),
+                )
+                  ? isReasoningModel
+                  : undefined,
                 updatedAt,
               }
             : provider,
@@ -1161,12 +1145,6 @@ export function ChatProvidersSettings({
       supportsProviderReasoningToggle(provider.providerType)
         ? provider.isReasoningModel === true
         : false,
-    );
-    setReasoningModelIds(
-      supportsPerModelReasoningPin(provider.providerType) &&
-        provider.isReasoningModel === true
-        ? (provider.reasoningModelIds ?? [...provider.models])
-        : [],
     );
     if (
       isCustomProviderType(provider.providerType) &&
@@ -1370,8 +1348,6 @@ export function ChatProvidersSettings({
                     setSelectedModelIds([]);
                     setManualModelIds("");
                     setModelSearchQuery("");
-                    setIsReasoningModel(false);
-                    setReasoningModelIds([]);
                     if (isCustomProviderType(value)) {
                       setCustomProviderName(customProviderDisplayName(value));
                     }
@@ -1610,87 +1586,26 @@ export function ChatProvidersSettings({
               ) : null}
 
               {showReasoningToggle ? (
-                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
                     htmlFor="provider-is-reasoning"
-                    className="pt-0.5 text-sm font-medium"
+                    className="text-sm font-medium"
                   >
                     Reasoning model
                   </Label>
-                  <div className="space-y-3">
-                    <label
-                      htmlFor="provider-is-reasoning"
-                      className="flex cursor-pointer items-center gap-2 text-sm"
-                    >
-                      <Checkbox
-                        id="provider-is-reasoning"
-                        checked={isReasoningModel}
-                        onCheckedChange={(checked) => {
-                          const on = checked === true;
-                          setIsReasoningModel(on);
-                          if (!on || !showPerModelReasoningPin) return;
-                          setReasoningModelIds((prev) => {
-                            const enabled = enabledModelCandidates;
-                            const kept = prev.filter((id) =>
-                              reasoningModelIdIsMarked(enabled, id),
-                            );
-                            if (kept.length > 0) return kept;
-                            return enabled.length === 1 ? enabled : [];
-                          });
-                        }}
-                      />
-                      {showPerModelReasoningPin
-                        ? "This server has reasoning models"
-                        : "This server runs a reasoning model"}
-                    </label>
-                    {showPerModelReasoningPin && isReasoningModel ? (
-                      <div className="space-y-2">
-                        <p className="text-xs leading-snug text-muted-foreground">
-                          Mark which models support thinking. Unmarked models
-                          keep their default, and Studio will not send a
-                          thinking control Ollama would reject.
-                        </p>
-                        {enabledModelCandidates.length === 0 ? (
-                          <p className="text-xs text-muted-foreground">
-                            Select models below, then mark the ones that support
-                            thinking.
-                          </p>
-                        ) : (
-                          <ul className="max-h-40 overflow-y-auto rounded-[8px] border border-border/70 bg-background/50">
-                            {enabledModelCandidates.map((model, index) => (
-                              <li
-                                key={model}
-                                className="flex cursor-pointer items-center gap-2.5 border-border/60 border-b px-3 py-2 last:border-b-0 hover:bg-muted/35"
-                                onClick={() => {
-                                  setReasoningModelIds((prev) =>
-                                    toggleReasoningModelId(prev, model),
-                                  );
-                                }}
-                              >
-                                <Checkbox
-                                  id={`provider-reasoning-model-${index}`}
-                                  aria-label={`Mark ${model} as a reasoning model`}
-                                  checked={reasoningModelIdIsMarked(
-                                    reasoningModelIds,
-                                    model,
-                                  )}
-                                  onCheckedChange={() => {
-                                    setReasoningModelIds((prev) =>
-                                      toggleReasoningModelId(prev, model),
-                                    );
-                                  }}
-                                  onClick={(event) => event.stopPropagation()}
-                                />
-                                <span className="min-w-0 break-all text-sm leading-tight">
-                                  {model}
-                                </span>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    ) : null}
-                  </div>
+                  <label
+                    htmlFor="provider-is-reasoning"
+                    className="flex cursor-pointer items-center gap-2 text-sm"
+                  >
+                    <Checkbox
+                      id="provider-is-reasoning"
+                      checked={isReasoningModel}
+                      onCheckedChange={(checked) =>
+                        setIsReasoningModel(checked === true)
+                      }
+                    />
+                    This server runs a reasoning model
+                  </label>
                 </div>
               ) : null}
               {runsStudioToolsLocally ? (
