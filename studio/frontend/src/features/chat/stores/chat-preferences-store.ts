@@ -61,7 +61,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       collapseThinkingByDefault: false,
       setCollapseThinkingByDefault: (collapseThinkingByDefault) =>
         set({ collapseThinkingByDefault }),
-      collapseToolActivityByDefault: false,
+      collapseToolActivityByDefault: true,
       setCollapseToolActivityByDefault: (collapseToolActivityByDefault) =>
         set({ collapseToolActivityByDefault }),
       pastedTextMinChars: PASTED_TEXT_DEFAULT_MIN_CHARS,
@@ -80,7 +80,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           showResponseModel: saved?.showResponseModel ?? false,
           collapseThinkingByDefault: saved?.collapseThinkingByDefault ?? false,
           collapseToolActivityByDefault:
-            saved?.collapseToolActivityByDefault ?? false,
+            saved?.collapseToolActivityByDefault ?? true,
           pastedTextMinChars: normalisePastedTextMinChars(
             saved?.pastedTextMinChars,
           ),

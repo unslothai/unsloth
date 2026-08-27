@@ -18,14 +18,14 @@ const { resolveToolActivityOpen, syncToolActivityPreference } = await import(
 const read = (path: string) => readFile(new URL(path, import.meta.url), "utf8");
 const WHITESPACE = /\s+/g;
 
-test("tool activity keeps its existing visible default", () => {
+test("tool activity is collapsed by default", () => {
   assert.equal(
     useChatPreferencesStore.getInitialState().collapseToolActivityByDefault,
-    false,
+    true,
   );
 });
 
-test("older saved preferences keep tool activity visible", async () => {
+test("older saved preferences inherit the collapsed default", async () => {
   const source = await read(
     "../src/features/chat/stores/chat-preferences-store.ts",
   );
@@ -33,7 +33,7 @@ test("older saved preferences keep tool activity visible", async () => {
     source
       .replace(WHITESPACE, " ")
       .includes(
-        "collapseToolActivityByDefault: saved?.collapseToolActivityByDefault ?? false",
+        "collapseToolActivityByDefault: saved?.collapseToolActivityByDefault ?? true",
       ),
   );
 });
