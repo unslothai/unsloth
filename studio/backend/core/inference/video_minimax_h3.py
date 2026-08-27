@@ -20,11 +20,13 @@ from typing import Any, Optional
 H3_GGUF_REPO = "unsloth/MiniMax-H3-GGUF"
 # The VAEs live beside the denoisers, so the native pick is one repo we control end to end. It was
 # Comfy-Org/MiniMax-H3, which put a community repack in the download path of BOTH H3 paths; an
-# install that already holds those bytes keeps using them through h3_legacy_source_repo below,
+# install that already holds those bytes keeps using them through h3_component_source below,
 # because the HF cache is keyed by repo id and repointing alone re-downloads ~6 GB.
 H3_COMPONENT_REPO = "unsloth/MiniMax-H3-GGUF"
 # Where the component files came from originally. Only for reusing an existing cache entry: a
-# fresh install never reads it.
+# fresh install never reads it. The pairing itself lives in diffusion_families'
+# _SD_CPP_LEGACY_SOURCES, which owns this decision for every mirrored asset; this name is what the
+# delete-cached claims read, and a test pins the two together.
 H3_LEGACY_COMPONENT_REPO = "Comfy-Org/MiniMax-H3"
 H3_VIDEO_VAE = "vae/minimax_h3_video_vae_fp16.safetensors"
 H3_AUDIO_VAE = "vae/minimax_h3_audio_vae_fp32.safetensors"
@@ -1074,17 +1076,21 @@ def h3_component_source() -> str:
     and fail outright offline. The mirror is byte identical (same sha256), so reusing the old
     entry loads the same weights. Fresh installs never take this branch.
 
+    ``prefer_cached_legacy_source`` rather than a probe of our own: it already owns this exact
+    mirror-to-repack decision for every other sd.cpp asset, and it counts BOTH cache roots.
+    That second part is the reason it has to be this one. The native fetch below passes
+    ``reuse_other_cache_root``, so a repack left behind by a cache-folder change is still
+    perfectly usable -- but only the OLD repo id can reach it, and a live-root-only probe would
+    call it absent and re-pull ~5.8 GB (offline, fail).
+
     PURE: table lookup plus a local stat, no network, so a download plan and the fetch that
     follows it agree on the source.
     """
-    if H3_COMPONENT_REPO == H3_LEGACY_COMPONENT_REPO:
-        return H3_COMPONENT_REPO
     try:
-        from .diffusion_families import cache_holds_files
-        cached = cache_holds_files(H3_LEGACY_COMPONENT_REPO, (H3_VIDEO_VAE, H3_AUDIO_VAE))
+        from .diffusion_families import prefer_cached_legacy_source
+        return prefer_cached_legacy_source(H3_COMPONENT_REPO, (H3_VIDEO_VAE, H3_AUDIO_VAE))
     except Exception:  # noqa: BLE001 -- an unreadable cache just means "not cached"
-        cached = False
-    return H3_LEGACY_COMPONENT_REPO if cached else H3_COMPONENT_REPO
+        return H3_COMPONENT_REPO
 
 
 def h3_native_hub_files(transformer_filename: str) -> tuple[tuple[str, str], ...]:

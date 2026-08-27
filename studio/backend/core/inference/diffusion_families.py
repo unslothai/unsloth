@@ -846,6 +846,12 @@ _SD_CPP_LEGACY_SOURCES: dict[str, str] = {
     "unsloth/z-image-turbo-comfyui": "Comfy-Org/z_image_turbo",
     "unsloth/flux.2-klein-9b-comfyui": "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
     "unsloth/wan2.2-ti2v-5b-gguf": "QuantStack/Wan2.2-TI2V-5B-GGUF",
+    # MiniMax-H3, where only PART of the mirror came from the repack: the two VAEs now sit beside
+    # the denoisers in the GGUF repo, and the int8 ConvRot conditioner beside the other
+    # prequantized checkpoints. That is why every caller passes the exact file list -- a denoiser
+    # the repack never carried simply misses the probe and keeps the mirror.
+    "unsloth/minimax-h3-gguf": "Comfy-Org/MiniMax-H3",
+    "unsloth/minimax-h3-fp8": "Comfy-Org/MiniMax-H3",
 }
 
 
