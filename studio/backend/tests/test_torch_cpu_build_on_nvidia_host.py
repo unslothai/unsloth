@@ -415,6 +415,11 @@ def test_export_and_video_stop_saying_no_accelerator_was_found(monkeypatch):
     monkeypatch.setattr(hw, "_has_torch", lambda: True)
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    # The verdict is re-derived against the live inventory, so the cards have to be in
+    # it. Without them the honest answer really is that this host has no GPU.
+    monkeypatch.setattr(
+        hw, "current_chat_only_verdict", lambda: (hw.CHAT_ONLY_REASON, hw.CHAT_ONLY_DETAIL)
+    )
 
     export = hw.export_capability()
     assert export["export_supported"] is False
@@ -658,3 +663,109 @@ def test_linux_amd_cards_are_inventoried_from_sysfs(monkeypatch, tmp_path):
 def test_the_sysfs_probe_is_silent_where_there_is_no_sysfs(monkeypatch):
     monkeypatch.setattr(hw.os, "listdir", lambda _p: (_ for _ in ()).throw(OSError("no such path")))
     assert hw._linux_amd_sysfs_records() == []
+
+
+# ========== Round four ==========
+
+
+def test_a_token_authenticated_cpu_pin_is_still_a_cpu_pin(monkeypatch, tmp_path):
+    """A pinned index may carry its credential in the query, which is supported.
+
+    A raw final-segment split sees "cpu?token=..." there, so the deliberate CPU build on
+    a GPU host was reported as broken and offered a repair that would replace it.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+
+    for pinned in (
+        "https://download.pytorch.org/whl/cpu?token=abc/",
+        "https://mirror.corp.example/whl/cpu#sha256=deadbeef",
+        "https://mirror.corp.example/whl/cpu//",
+        "https://user:pw@mirror.corp.example/whl/CPU",
+    ):
+        monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", pinned)
+        assert hw.classify_torch_build() is None, pinned
+
+    # A cu128 pin carrying the same token shape is not a CPU pin.
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/whl/cu128?token=abc")
+    assert hw.classify_torch_build() == "torch_cpu_build"
+
+
+@pytest.mark.parametrize(
+    "url,leaf",
+    [
+        ("https://download.pytorch.org/whl/cpu?token=x/", "cpu"),
+        ("https://download.pytorch.org/whl/cu128//", "cu128"),
+        ("https://download.pytorch.org/whl/cpu#f", "cpu"),
+        ("", ""),
+        ("   ", ""),
+    ],
+)
+def test_the_leaf_reader_matches_the_installers(url, leaf):
+    assert hw._torch_index_leaf(url) == leaf
+
+
+def test_the_chat_only_verdict_follows_the_inventory(monkeypatch):
+    """The inventory refreshes on a 60s TTL; the startup verdict never did.
+
+    An eGPU attached after launch, or a driver that finished restarting, left the
+    sidebar and the Export and Video pages saying no accelerator exists while
+    /api/system listed the card and published a mismatch.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "no_gpu")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
+    monkeypatch.setattr(
+        hw, "get_physical_gpu_inventory", lambda: {"devices": [{"vendor": "nvidia"}]}
+    )
+    assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
+
+    # And the reverse: a card that went away must not leave a mismatch behind.
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
+    monkeypatch.setattr(hw, "get_physical_gpu_inventory", lambda: {"devices": []})
+    assert hw.current_chat_only_verdict() == ("no_gpu", None)
+
+
+@pytest.mark.parametrize("frozen", ["mlx_unavailable", "detection_failed", "intel_mac", None])
+def test_the_other_verdicts_are_left_exactly_as_detection_set_them(monkeypatch, frozen):
+    # A 60 second probe cannot change any of these, and re-deriving them would fight
+    # detect_hardware() rather than follow it.
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", frozen)
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "whatever detection recorded")
+    monkeypatch.setattr(
+        hw, "get_physical_gpu_inventory", lambda: {"devices": [{"vendor": "nvidia"}]}
+    )
+    assert hw.current_chat_only_verdict() == (frozen, "whatever detection recorded")
+
+
+def test_a_probe_that_raises_keeps_the_frozen_verdict(monkeypatch):
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
+    monkeypatch.setattr(
+        hw, "classify_torch_build", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
+
+
+def test_export_and_video_read_the_refreshed_verdict(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "no_gpu")  # the STALE verdict
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
+    monkeypatch.setattr(hw, "_has_torch", lambda: True)
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        hw, "get_physical_gpu_inventory", lambda: {"devices": [{"vendor": "nvidia"}]}
+    )
+
+    assert hw.export_capability()["export_unsupported_reason"] == "torch_cpu_build"
+    assert hw.video_capability()["video_unsupported_reason"] == "torch_cpu_build"

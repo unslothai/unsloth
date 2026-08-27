@@ -536,6 +536,23 @@ def _relevant_visibility_masks() -> tuple[str, ...]:
     return tuple(masks)
 
 
+def _torch_index_leaf(url: str) -> str:
+    """Final path segment of a torch index URL, lowercased, query and fragment removed.
+
+    A token-authenticated pin is supported and common (.../whl/cpu?token=...), and a raw
+    final-segment split sees "cpu?token=..." there, so a deliberate CPU install on a GPU
+    host would be reported as broken and offered a repair. Trailing slashes come off the
+    PATH only, or a token ending in "/" is corrupted. Mirrors the installer's
+    _torch_index_leaf / _trim_index_path_slashes, which the same variable is read by.
+    """
+    value = str(url).strip().lower()
+    if not value:
+        return ""
+    path = re.fullmatch(r"([^?#]*)([?#].*)?", value)
+    path = path.group(1) if path else value
+    return path.rstrip("/").rsplit("/", 1)[-1]
+
+
 def _expected_cpu_flavor_was_chosen() -> bool:
     """Whether THIS install deliberately selected a CPU wheel.
 
@@ -550,8 +567,7 @@ def _expected_cpu_flavor_was_chosen() -> bool:
     outside the backend package. Never raises.
     """
     for var in ("UNSLOTH_TORCH_INDEX_FAMILY", "UNSLOTH_TORCH_INDEX_URL"):
-        value = (os.environ.get(var) or "").strip().lower().rstrip("/")
-        if value and value.rsplit("/", 1)[-1] == "cpu":
+        if _torch_index_leaf(os.environ.get(var) or "") == "cpu":
             return True
     try:
         path = os.path.join(sys.prefix, "unsloth_install_manifest.json")
@@ -1026,6 +1042,36 @@ def get_device() -> DeviceType:
     return ensure_hardware_detected()
 
 
+def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
+    """``(reason, detail)``, re-derived when the physical inventory can still change it.
+
+    detect_hardware() runs once at startup, but the inventory it consulted refreshes on
+    a 60 second TTL. An eGPU attached after launch, or a driver that finished restarting
+    after the first probe, flips the answer while the frozen verdict keeps saying
+    ``no_gpu``: /api/system would list the card and publish a mismatch while the sidebar
+    and the Export and Video pages went on insisting no accelerator exists. The reverse
+    is the same bug -- a card that goes away leaves a mismatch nobody can act on.
+
+    Only the three inventory-sensitive verdicts are re-derived. mlx_unavailable,
+    detection_failed and intel_mac describe things a 60 second probe cannot change, and
+    re-deriving those would fight detect_hardware() rather than follow it.
+
+    Never raises: a probe that cannot answer keeps the frozen verdict.
+    """
+    reason, detail = CHAT_ONLY_REASON, CHAT_ONLY_DETAIL
+    if reason not in ("no_gpu", "torch_cpu_build", "torch_cuda_unavailable"):
+        return reason, detail
+    try:
+        build_reason = classify_torch_build()
+        if build_reason is not None and get_physical_gpu_inventory().get("devices"):
+            return build_reason, _torch_version_label()
+    except Exception as e:
+        logger.debug("chat-only verdict refresh failed: %s", e)
+        return reason, detail
+    # torch can use no GPU and the OS can find none either, which is the plain answer.
+    return "no_gpu", None
+
+
 def _gpu_present_but_unusable_message(feature: str) -> Optional[str]:
     """The capability message for a host whose GPUs are real but unreachable by torch.
 
@@ -1036,10 +1082,11 @@ def _gpu_present_but_unusable_message(feature: str) -> Optional[str]:
     hardware they already own. Both reasons are surfaced verbatim by the Export and
     Video pages and by rejected export API calls.
     """
-    if CHAT_ONLY_REASON not in ("torch_cpu_build", "torch_cuda_unavailable"):
+    reason, detail = current_chat_only_verdict()
+    if reason not in ("torch_cpu_build", "torch_cuda_unavailable"):
         return None
-    installed = f" (installed {CHAT_ONLY_DETAIL})" if CHAT_ONLY_DETAIL else ""
-    if CHAT_ONLY_REASON == "torch_cpu_build":
+    installed = f" (installed {detail})" if detail else ""
+    if reason == "torch_cpu_build":
         return (
             f"This host has a GPU, but the installed PyTorch is a CPU-only build{installed}, "
             f"so {feature} cannot use it. Repair the installation from Settings to reinstall "
@@ -1069,7 +1116,7 @@ def export_capability() -> dict:
         }
     # No accelerator: name the blocker. Detection failure first -- the branches below all
     # describe a measured host, so a broken probe would tell a GPU box to install PyTorch.
-    if CHAT_ONLY_REASON == "detection_failed":
+    if current_chat_only_verdict()[0] == "detection_failed":
         reason = "detection_failed"
         message = (
             "Hardware detection failed on this host, so export is disabled. The server log records "
@@ -1088,7 +1135,7 @@ def export_capability() -> dict:
             "(NVIDIA, AMD, or Intel GPU) or Apple Silicon (MLX). Install PyTorch to enable export."
         )
     elif _gpu_present_but_unusable_message("export") is not None:
-        reason = CHAT_ONLY_REASON
+        reason = current_chat_only_verdict()[0]
         message = _gpu_present_but_unusable_message("export")
     else:
         reason = "no_accelerator"
@@ -1122,7 +1169,7 @@ def video_capability() -> dict:
         }
     # Detection failure first, as in export_capability: the branches below all describe a
     # measured host, so a broken probe would tell a GPU box to go buy a GPU.
-    if CHAT_ONLY_REASON == "detection_failed":
+    if current_chat_only_verdict()[0] == "detection_failed":
         reason = "detection_failed"
         message = (
             "Hardware detection failed on this host, so video generation is disabled. The server "
@@ -1172,7 +1219,7 @@ def video_capability() -> dict:
             "Intel GPU. Install PyTorch to enable video generation."
         )
     elif _gpu_present_but_unusable_message("video generation") is not None:
-        reason = CHAT_ONLY_REASON
+        reason = current_chat_only_verdict()[0]
         message = _gpu_present_but_unusable_message("video generation")
     else:
         reason = "no_accelerator"

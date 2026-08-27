@@ -1533,11 +1533,17 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
         generation = _hw_module.DETECTION_GENERATION
         device = _hw_module.DEVICE
         chat_only = bool(_hw_module.CHAT_ONLY)
-        reason = getattr(_hw_module, "CHAT_ONLY_REASON", None)
-        # Inside the guarded read, with the reason it belongs to. Read after it, a forced
-        # re-detect starting in between would pair this reply's reason with a detail from
-        # a different pass, or with none at all.
-        detail = getattr(_hw_module, "CHAT_ONLY_DETAIL", None)
+        # Refreshed, not the frozen global: the three inventory-sensitive verdicts can
+        # change after startup (an eGPU attached, a driver that finished restarting), and
+        # the sidebar would otherwise keep saying no accelerator exists while /api/system
+        # listed the card. Reason and detail come back together, which is what the note
+        # below requires -- read separately, a forced re-detect starting in between would
+        # pair this reply's reason with a detail from a different pass, or with none.
+        try:
+            reason, detail = _hw_module.current_chat_only_verdict()
+        except Exception:
+            reason = getattr(_hw_module, "CHAT_ONLY_REASON", None)
+            detail = getattr(_hw_module, "CHAT_ONLY_DETAIL", None)
         if (
             device is not None
             and _hw_module.DETECTION_COMPLETE.is_set()

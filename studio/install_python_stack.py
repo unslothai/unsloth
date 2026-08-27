@@ -6246,6 +6246,14 @@ def install_python_stack() -> int:
         torch_flavor_tag = _expected_torch_flavor_tag()
         if not _ensure_expected_torch_flavor(torch_flavor_tag):
             return 1
+    elif not NO_TORCH:
+        # Resolve it on the other platforms too, for the RECORD only: nothing here
+        # enforces it (step 13's repair set owns those hosts). Without this the manifest
+        # carries no flavor off Windows at all, so a Linux GPU box installed with a
+        # transient explicit CPU pin looks, on the next launch with that variable gone,
+        # like a CPU wheel beside a physical GPU -- which the backend reads as a broken
+        # install and offers to repair, reversing the choice the user made.
+        torch_flavor_tag = _expected_torch_flavor_tag()
 
     # 14. Final check (silent; third-party conflicts are expected)
     subprocess.run(
