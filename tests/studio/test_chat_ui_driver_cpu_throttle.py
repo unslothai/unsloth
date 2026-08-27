@@ -68,9 +68,7 @@ def test_the_refusal_precedes_the_cdp_session():
 
 
 def test_the_cdp_call_is_the_only_place_the_throttle_is_applied():
-    assert CODE.count("new_cdp_session") == 1, (
-        "a second CDP session would need its own refusal"
-    )
+    assert CODE.count("new_cdp_session") == 1, "a second CDP session would need its own refusal"
 
 
 def test_the_driver_still_parses():
