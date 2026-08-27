@@ -4,16 +4,13 @@
 /**
  * Prompt-queue event names and their detail shapes.
  *
- * Split out of prompt-queue-boundary so they can be read while a module is
- * still loading. thread.tsx registers its window listeners at module scope, and
- * features/chat is inside an import cycle, so reading these through the barrel
- * could land in the temporal dead zone and throw at import time -- the same
- * failure use-model-memory.ts hit with CHAT_GPU_MEMORY_MODE_KEY.
+ * Split out of prompt-queue-boundary so thread.tsx can read them from module
+ * scope: features/chat is in an import cycle, so reaching these through the
+ * barrel risks the temporal dead zone that crashed use-model-memory.ts.
  *
- * This module imports nothing on purpose. ESM evaluates dependencies before a
- * module body, so a module with no dependencies has nothing that can re-enter
- * it: its bindings are always initialized by the time any importer runs. Keep
- * it that way -- one import here reopens the hazard.
+ * Imports nothing on purpose. ESM evaluates dependencies first, so a module
+ * with none cannot be re-entered mid-initialization. One import reopens the
+ * hazard.
  */
 
 export const PROMPT_QUEUE_STOP_EVENT = "unsloth:prompt-queue-stop";

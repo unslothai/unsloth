@@ -196,14 +196,11 @@ function subscribeToConfigChanges(onChange: () => void): () => void {
 /**
  * localStorage keys whose cross-tab writes change what the bar should show.
  *
- * Read on call, not at module scope. This module sits inside an import cycle --
- * chat-runtime-store -> presets/preset-load-config -> features/model-picker ->
- * ... -> features/chat -> here -> chat-runtime-store -- so it can be evaluated
- * while chat-runtime-store is still initializing. Naming CHAT_GPU_MEMORY_MODE_KEY
- * at module scope then reads a `const` in its temporal dead zone and throws
- * "Cannot access 'CHAT_GPU_MEMORY_MODE_KEY' before initialization", which takes
- * the whole page down at import time rather than failing anything locally.
- * Inside a function the read happens after every module has finished loading.
+ * A function, not a module-scope array. This module is in an import cycle
+ * through features/chat, so it can be evaluated while chat-runtime-store is
+ * still initializing; naming these keys at module scope then reads a `const`
+ * in its temporal dead zone and throws at import time, taking the page down.
+ * By call time every module has finished loading.
  */
 const watchedStorageKeys = () => [
   PER_MODEL_CONFIG_STORAGE_KEY,

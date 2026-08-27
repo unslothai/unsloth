@@ -5,25 +5,20 @@
  * A value imported from the @/features/chat barrel must not be read while the
  * module is still loading.
  *
- * features/chat sits in an import cycle -- chat-runtime-store -> presets/
- * preset-load-config -> features/model-picker -> ... -> features/chat -- so a
- * module importing from the barrel can be evaluated while chat-runtime-store is
- * still initializing. Reading one of its `const` exports then hits the temporal
- * dead zone and throws at import time, which takes the whole page down rather
- * than failing anything locally:
+ * features/chat is in an import cycle, so a module importing from the barrel
+ * can be evaluated while chat-runtime-store is still initializing. Reading one
+ * of its `const` exports then hits the temporal dead zone and throws at import
+ * time, taking the whole page down:
  *
  *   [ansi-smoke] pageerror: Cannot access 'CHAT_GPU_MEMORY_MODE_KEY'
  *                           before initialization
  *
- * That shipped from hooks/use-model-memory.ts, whose WATCHED_STORAGE_KEYS array
- * listed the key at module scope. Reading inside a function is safe: by call
- * time every module has finished loading.
+ * That shipped from hooks/use-model-memory.ts. Reading inside a function is
+ * safe: by call time every module has finished loading.
  *
- * This walks the real TypeScript AST rather than matching source text. A regex
- * version of this guard missed four separate shapes -- a second import
- * declaration in the same file (both thread.tsx and pickers.tsx have one), an
- * aliased specifier, a parenthesized read, and any expression that is not a
- * const/let initializer, such as a bare call or a static class field.
+ * Walks the AST rather than the source text. A regex version missed four
+ * shapes: a second import declaration, an aliased specifier, a parenthesized
+ * read, and anything that is not a const/let initializer.
  */
 
 import assert from "node:assert/strict";
@@ -41,16 +36,13 @@ const BARREL = "@/features/chat";
 /**
  * Local names this module binds to values pulled from the chat barrel.
  *
- * A namespace import contributes its own name: `import * as chat` makes
- * `chat.ANYTHING` a read of the namespace object, and the object itself is what
- * is uninitialized, so flagging a module-scope mention of `chat` is exactly
- * right.
+ * A namespace import contributes its own name: the namespace object is what is
+ * uninitialized, so a module-scope mention of `chat` is itself the read.
  */
 function barrelValueNames(
   source: ts.SourceFile,
-  // A local module that re-exports barrel values hands out the same live ESM
-  // bindings, so importing from it is importing from the barrel. Callers that
-  // have the module graph pass a predicate; the default is the direct case.
+  // A re-export hands out the same live binding, so importing from a bridge is
+  // importing from the barrel. Callers with the module graph pass a predicate.
   carriesBarrelValues: (specifier: string) => boolean = (s) => s === BARREL,
 ): Set<string> {
   const names = new Set<string>();
@@ -59,8 +51,7 @@ function barrelValueNames(
     const specifier = statement.moduleSpecifier;
     if (!ts.isStringLiteral(specifier) || !carriesBarrelValues(specifier.text)) continue;
     const clause = statement.importClause;
-    // `import type { ... }` is erased before the code runs, so it cannot trip a
-    // temporal dead zone.
+    // Erased before the code runs, so it cannot trip a dead zone.
     if (!clause || clause.isTypeOnly) continue;
     if (clause.name) names.add(clause.name.text); // default import
     const bound = clause.namedBindings;
@@ -160,12 +151,9 @@ function declaredIn(scope: ts.Node): Set<string> {
       }
     }
   };
-  // `var` binds to the enclosing function or module, not to the block it is
-  // written in, so a function scope has to collect the ones nested inside it.
-  // Recording them only on the inner block left a later read in the function
-  // body resolving to the import instead of the local, which reported a file
-  // that never touches the barrel at that point. `let` and `const` keep block
-  // scoping and are gathered by addStatements above, per block.
+  // `var` binds to the enclosing function, not its block, so recording it only
+  // on the inner block left a later read resolving to the import instead of the
+  // local. `let`/`const` keep block scoping via addStatements above.
   if (isVarScope(scope)) collectHoistedVars(scope, out);
   if (ts.isSourceFile(scope) || ts.isBlock(scope) || ts.isModuleBlock(scope)) {
     addStatements(scope.statements);
@@ -197,10 +185,9 @@ function declaredIn(scope: ts.Node): Set<string> {
 /**
  * True when an enclosing scope re-declares this name, so it is not the import.
  *
- * Resolved per occurrence rather than per file. Suppressing the name everywhere
- * once it is shadowed anywhere was simpler but cut both ways: a genuine
- * top-level read stopped being reported as soon as any function took a parameter
- * of the same name, and this tree has 4969 functions.
+ * Per occurrence, not per file: suppressing a name everywhere once it was
+ * shadowed anywhere silenced genuine top-level reads, and this tree has 4969
+ * functions to shadow from.
  */
 function isShadowed(identifier: ts.Identifier): boolean {
   for (let node: ts.Node | undefined = identifier.parent; node; node = node.parent) {
@@ -213,16 +200,15 @@ function isShadowed(identifier: ts.Identifier): boolean {
 }
 
 /**
- * True when this identifier sits in a heritage clause that survives to runtime,
- * i.e. `class C extends K`. `implements` is erased, and so is `interface I
- * extends J`, but a base class is an ordinary expression evaluated when the
- * class is defined. TypeScript still wraps it in an ExpressionWithTypeArguments,
- * which `ts.isTypeNode` accepts, so it has to be excluded by hand.
+ * True when this identifier sits in a heritage clause that survives to runtime.
+ *
+ * A base class is evaluated when the class is defined, but TypeScript wraps it
+ * in an ExpressionWithTypeArguments, which `ts.isTypeNode` accepts, so it must
+ * be excluded by hand. `implements` and `interface I extends J` stay erased.
  */
 function inRuntimeHeritage(node: ts.Node): boolean {
-  // Follow the expression spine only. A type argument on the base class hangs
-  // off `typeArguments` rather than `expression`, so it stays erased, while
-  // `extends ns.K` and `extends makeBase(K)` are both reached.
+  // The expression spine only: a type argument hangs off `typeArguments`, so it
+  // stays erased, while `extends ns.K` and `extends makeBase(K)` are reached.
   let current: ts.Node = node;
   let parent = current.parent;
   while (parent && !ts.isExpressionWithTypeArguments(parent)) {
@@ -237,10 +223,8 @@ function inRuntimeHeritage(node: ts.Node): boolean {
   const declaration = clause.parent;
   if (!declaration) return false;
   if (!ts.isClassDeclaration(declaration) && !ts.isClassExpression(declaration)) return false;
-  // `declare class C extends K {}` emits no JavaScript at all, so its base is
-  // never evaluated and the name is never read. Without this the ambient
-  // declaration is reported as an eager read and the guard rejects a file that
-  // cannot crash.
+  // `declare class C extends K {}` emits no JavaScript, so its base is never
+  // evaluated and flagging it would reject a file that cannot crash.
   return !isAmbient(declaration);
 }
 
@@ -287,10 +271,9 @@ function isImmediatelyInvoked(node: ts.Node): boolean {
   ) {
     return true;
   }
-  // `new Promise(executor)` calls the executor synchronously before returning,
-  // so a function handed to it runs during initialization like an IIFE. Only
-  // Promise: an arbitrary callback argument may be stored and called much later,
-  // and treating those as eager would report reads that never happen at load.
+  // `new Promise(executor)` runs the executor before returning, so it is as
+  // eager as an IIFE. Promise only: an arbitrary callback may be stored and
+  // called long after load, and treating those as eager would over-report.
   if (
     ts.isNewExpression(parent) &&
     ts.isIdentifier(parent.expression) &&
@@ -326,10 +309,8 @@ function defersEvaluation(node: ts.Node): boolean {
     // An IIFE runs during module initialization like any other expression.
     return !isImmediatelyInvoked(node);
   }
-  // An instance field initializer runs at construction. A static one runs when
-  // the class is defined, which is module load, so it is NOT deferred. Either
-  // way the COMPUTED NAME is evaluated at class definition; the walk visits it
-  // with the outer deferral for that reason.
+  // An instance field initializer runs at construction; a static one runs at
+  // class definition, which is module load, so it is NOT deferred.
   if (ts.isPropertyDeclaration(node)) {
     const isStatic = ts
       .getModifiers(node)
@@ -347,8 +328,8 @@ function isNonReference(node: ts.Identifier): boolean {
   if (ts.isPropertyAccessExpression(parent) && parent.name === node) return true;
   if (ts.isPropertyAssignment(parent) && parent.name === node) return true;
   if (ts.isBindingElement(parent) && parent.propertyName === node) return true;
-  // `class C { static K = 1 }` -- a plain member label, not a read. Computed
-  // names are a different matter and are deliberately left to fall through.
+  // `class C { static K = 1 }` -- a label, not a read. Computed names fall
+  // through on purpose.
   if (
     (ts.isPropertyDeclaration(parent) ||
       ts.isMethodDeclaration(parent) ||
@@ -358,9 +339,8 @@ function isNonReference(node: ts.Identifier): boolean {
   ) {
     return true;
   }
-  // Type positions are erased before the code runs. Checked against every
-  // ancestor, not just the parent: in `type T = chat.Entry` the `chat` node's
-  // parent is a QualifiedName, and in `Foo<typeof K>` it is a type argument.
+  // Erased before the code runs. Every ancestor, not just the parent: in
+  // `type T = chat.Entry` the parent is a QualifiedName.
   if (insideTypeSyntax(node)) return true;
   return false;
 }
@@ -376,12 +356,9 @@ interface Targets {
  * The callables a scope's own statements declare, layered over the enclosing
  * scope's.
  *
- * Collected per scope rather than only at the top level. A helper declared
- * inside a function that is itself called during initialization is reached by
- * that outer call, so `function outer() { function inner() { return K; } return
- * inner(); }` needs `inner` visible while outer's body is walked; a map built
- * from `source.statements` alone leaves it unresolvable and the read inside it
- * unseen.
+ * Per scope rather than top level only: a helper declared inside a function
+ * that is itself called during initialization is reached by that outer call, so
+ * `inner` must be visible while outer's body is walked.
  */
 function collectTargets(statements: readonly ts.Statement[], inherited?: Targets): Targets {
   const targets: Targets = {
@@ -426,11 +403,9 @@ function declaringScopeOf(node: ts.Node): ts.Node | undefined {
 /**
  * True when this name really refers to that target here.
  *
- * A plain "is it shadowed anywhere above" test cannot answer this once helpers
- * resolve per scope, because a nested helper's own declaration IS a binding
- * above the call and reads as a shadow of itself. So walk out and ask which
- * comes first: the scope the target is declared in, or some other scope that
- * binds the same name.
+ * "Shadowed anywhere above" cannot answer this once helpers resolve per scope:
+ * a nested helper's own declaration is a binding above the call and reads as a
+ * shadow of itself. Walk out and ask which scope comes first.
  */
 function resolvesToTarget(identifier: ts.Identifier, target: ts.Node): boolean {
   const home = declaringScopeOf(target);
@@ -573,15 +548,10 @@ function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
     }
     const next = deferred || defersEvaluation(node);
     node.forEachChild((child) => {
-      // A computed member name is evaluated where the member is written, even
-      // when the body or initializer beneath it waits: `class C { [KEY] = 1 }`
-      // and `{ [KEY]() {} }` both read KEY as the class or object is created.
-      // Applies to every named member, not just fields, so a computed method
-      // name cannot hide an eager read behind its own deferred body.
-      // A decorator is applied where it is written, so `@decorate(K) method() {}`
-      // reads K as the class is defined even though the method body waits. Same
-      // reasoning as the computed name, and the same restoration of the outer
-      // state, or the deferral the member sets would hide the read.
+      // A computed name and a decorator are both evaluated where they are
+      // written, as the class or object is created, even though the body or
+      // initializer beneath them waits. Both carry the INCOMING state, so one
+      // inside a deferred function stays deferred.
       const eagerName =
         (child === (node as ts.NamedDeclaration).name && ts.isComputedPropertyName(child)) ||
         ts.isDecorator(child);
@@ -594,10 +564,8 @@ function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
 
 /**
  * True when this import/export contributes nothing at runtime, so it cannot
- * pull the target into the barrel's initialization.
- *
- * A bare `import "./x"` is kept: a side-effect import is the one clause-less
- * form that does evaluate the target.
+ * pull the target into the barrel's initialization. A bare `import "./x"` is
+ * kept: a side-effect import does evaluate the target.
  */
 function isErasedEdge(statement: ts.ImportDeclaration | ts.ExportDeclaration): boolean {
   if (ts.isImportDeclaration(statement)) {
@@ -607,8 +575,8 @@ function isErasedEdge(statement: ts.ImportDeclaration | ts.ExportDeclaration): b
     if (clause.name) return false; // default import
     const bound = clause.namedBindings;
     if (!bound || ts.isNamespaceImport(bound)) return false;
-    // `import {} from "./x"` still evaluates the target, and `every` is vacuously
-    // true on an empty list, so the length check is load-bearing.
+    // `import {}` still evaluates the target and `every` is vacuously true on
+    // an empty list, so the length check is load-bearing.
     return bound.elements.length > 0 && bound.elements.every((e) => e.isTypeOnly);
   }
   if (statement.isTypeOnly) return true;
@@ -644,9 +612,8 @@ function makeResolver(sources: Map<string, string>): Resolver {
     if (spec.startsWith("@/")) base = path.join(SRC, spec.slice(2));
     else if (spec.startsWith(".")) base = path.resolve(path.dirname(from), spec);
     else return null;
-    // The exact path first: this codebase writes the extension on 66 imports,
-    // and appending another produced "clipboard-payload.ts.ts", silently
-    // dropping those edges and shrinking the at-risk set.
+    // Exact path first: 66 imports here spell the extension, and appending a
+    // second one silently dropped those edges.
     const candidates = [
       base,
       `${base}.ts`,
@@ -670,11 +637,9 @@ function readAll(files: string[]): Map<string, string> {
 /**
  * Modules that hand out the barrel's own bindings, transitively.
  *
- * A bridge that does `export { K } from "@/features/chat"` re-exports the live
- * binding rather than a copy, so a consumer importing K from the bridge is
- * exposed to exactly the same dead zone. Without this the check silently stops
- * applying the moment someone introduces a bridge, which is an ordinary
- * refactor rather than an exotic one.
+ * A bridge re-exports the live binding rather than a copy, so its consumers sit
+ * in the same dead zone. Without this the check silently stops applying the
+ * moment someone adds a bridge, which is an ordinary refactor.
  */
 function barrelBearingModules(
   sources: Map<string, string>,
@@ -702,8 +667,7 @@ function barrelBearingModules(
         if (!specifier) {
           const clause = statement.exportClause;
           if (!clause || !ts.isNamedExports(clause)) continue;
-          // The LOCAL name is what was imported; `export { K as J }` still
-          // hands out the barrel's binding under a new name.
+          // The LOCAL name is what was imported, so `export { K as J }` counts.
           const reExports = clause.elements.some(
             (element) => !element.isTypeOnly && imported.has((element.propertyName ?? element.name).text),
           );
@@ -737,9 +701,8 @@ function barrelInitClosure(files: string[]): Set<string> {
       const spec =
         (ts.isImportDeclaration(st) || ts.isExportDeclaration(st)) && st.moduleSpecifier;
       if (!spec || !ts.isStringLiteral(spec)) continue;
-      // A type-only edge is erased and cannot drag a module into evaluation.
-      // `import { type A, type B }` sets no declaration-level flag but is just
-      // as erased as `import type { A, B }`, so check the specifiers too.
+      // An erased edge cannot drag a module into evaluation. Specifiers are
+      // checked too: `import { type A }` sets no declaration-level flag.
       if (isErasedEdge(st)) continue;
       const target = resolve(spec.text, file);
       if (target) out.push(target);
@@ -764,9 +727,8 @@ function barrelInitClosure(files: string[]): Set<string> {
 test("no module-scope read of a chat barrel value", () => {
   const files = walkSources(SRC);
   // Only a module the barrel can reach during its own initialization can be
-  // caught half-initialized by the cycle. A leaf that merely imports from the
-  // barrel is always evaluated after it, so an eager read there is safe and
-  // flagging it would demand unrelated refactors to keep this green.
+  // caught half-initialized. A leaf that merely imports from the barrel is
+  // always evaluated after it, so an eager read there is safe.
   const atRisk = barrelInitClosure(files);
   const sources = readAll(files);
   const resolve = makeResolver(sources);
@@ -775,8 +737,8 @@ test("no module-scope read of a chat barrel value", () => {
   let importers = 0;
   for (const file of files) {
     const text = sources.get(file) ?? "";
-    // No cheap text prefilter on BARREL here: a module importing through a
-    // bridge never spells the barrel's name, and skipping it was the hole.
+    // No text prefilter on BARREL: a module importing through a bridge never
+    // spells the name, and skipping it was the hole.
     const source = parse(file, text);
     const names = barrelValueNames(source, (specifier) => {
       if (specifier === BARREL) return true;
@@ -1071,8 +1033,7 @@ test("deferred reads and non-references are left alone", () => {
 });
 
 test("the barrel closure resolves imports that spell their extension", () => {
-  // The 66 such imports in this tree were invisible to the previous resolver,
-  // which appended a second extension and dropped the edge.
+  // Invisible to the previous resolver, which appended a second extension.
   const closure = barrelInitClosure(walkSources(SRC));
   for (const relative of [
     "features/chat/utils/clipboard-payload.ts",

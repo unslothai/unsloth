@@ -5,9 +5,9 @@ import {
 } from "./prompt-queue-events";
 import { localPromptQueueModelBoundary } from "./prompt-queue-model-boundary";
 
-// Re-exported so existing importers and the barrel keep their current paths.
-// A module-scope reader should import from ./prompt-queue-events directly: this
-// module has dependencies, so it can be caught mid-initialization by the cycle.
+// Re-exported so existing importers and the barrel keep their paths. Module
+// scope readers should use ./prompt-queue-events directly: this module has
+// dependencies, so the cycle can catch it mid-initialization.
 export {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
