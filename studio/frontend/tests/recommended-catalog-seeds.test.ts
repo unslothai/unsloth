@@ -258,6 +258,28 @@ test("a task row is sized against the device the load lands on", () => {
   assert.equal(hfModelFitsDevice(sdxl, loadScopedGpu(twoCards, true)), false);
 });
 
+test("a dedicated task device keeps RAM reserved by a shared GPU", () => {
+  const mixedHost = {
+    available: true,
+    budgetKnown: true,
+    memoryTotalGb: 48,
+    maxDeviceMemoryGb: 32,
+    loadDeviceMemoryGb: 16,
+    loadDeviceSharedMemory: false,
+    systemRamAvailableGb: 8,
+    systemRamAvailableHostGb: 40,
+  };
+  const sharedLoadDevice = {
+    ...mixedHost,
+    loadDeviceMemoryGb: 32,
+    loadDeviceSharedMemory: true,
+  };
+
+  assert.equal(loadScopedGpu(mixedHost, true).systemRamAvailableGb, 40);
+  assert.equal(loadScopedGpu(sharedLoadDevice, true).systemRamAvailableGb, 8);
+  assert.equal(loadScopedGpu(mixedHost, false), mixedHost);
+});
+
 test("both search lists judge a curated id the same way", () => {
   const oneCard = {
     available: true,

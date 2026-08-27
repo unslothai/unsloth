@@ -1116,6 +1116,10 @@ def test_probe_detects_post_rename_ngram_mod_flavor(tmp_path):
     assert caps["ngram_mod_flavor"] == "new"
     assert caps["supports_ngram_mod"] is True
     assert caps["spec_draft_n_max_flag"] == "--spec-draft-n-max"
+    # The build's own depth, off the same line: a pass-through --spec-type makes
+    # the child run on this rather than on anything Unsloth emits, and the Hybrid
+    # Mamba rollback reserve scales by it.
+    assert caps["spec_draft_n_max_default"] == 16
 
 
 @_NEEDS_BASH
@@ -1314,6 +1318,25 @@ def test_mtp_draft_n_max_ignored_when_binary_lacks_mtp():
         _spec_fallback_reason = "binary_no_mtp",
     )
     assert _draft_n_max_matches(backend, 8, speculative_type = "mtp")
+
+
+@pytest.mark.parametrize(
+    ("decided_at", "requested", "expected_match"),
+    [(2, 1, False), (2, 2, True), (None, 1, False), (1, 1, True)],
+)
+def test_partial_offload_stand_down_follows_the_draft_depth(decided_at, requested, expected_match):
+    # Auto's Hybrid Mamba stand-down engages nothing, so _speculative_type is
+    # "none" and the draft-mode arms cannot see it -- but the depth is what priced
+    # the rollback copies that made the placement partial, so a change must rerun
+    # the fit. The recorded value is what keeps that at one reload: an unrecorded
+    # depth compares against 0 forever and reloads on every Apply.
+    backend = _mtp_backend(
+        _requested_spec_mode = "auto",
+        _speculative_type = "none",
+        _spec_draft_n_max = decided_at,
+        _spec_fallback_reason = "mtp_partial_offload",
+    )
+    assert _draft_n_max_matches(backend, requested) is expected_match
 
 
 def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
@@ -3048,7 +3071,7 @@ def test_a_hanging_binary_is_probed_once_per_model_load(tmp_path, monkeypatch):
 def test_a_missing_binary_is_not_cached_so_it_is_seen_as_soon_as_it_lands(tmp_path):
     """The found:False early return sits above the cache and costs a stat rather than a
     subprocess, so it must stay uncached: an install finishing mid-session has to be
-    picked up without a Studio restart."""
+    picked up without an Unsloth restart."""
     binary = tmp_path / "llama-server"
     _clear_caps_cache()
 

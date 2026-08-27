@@ -45,6 +45,7 @@ Three things this deliberately gets right, each of which it got wrong first:
 from __future__ import annotations
 
 import ast
+import re
 import warnings
 from functools import lru_cache
 from pathlib import Path
@@ -54,6 +55,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _SELF = Path(__file__).resolve()
+
+_MAX_COLLECT_DEPTH = 25
 
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "temp", "build", "dist"}
 
@@ -81,26 +84,23 @@ _SIGNAL_ARG_INDEX = {"raise_signal": 0, "kill": 1}
 
 # A signal aimed at self dumps core only for these. SIGKILL, SIGTERM and SIGINT do not,
 # which is why SIGKILL is the recommended way to make a child vanish.
-_FATAL_SIGNALS = ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE", "SIGTRAP")
-_FATAL_SIGNAL_NUMBERS = {4, 5, 6, 7, 8, 11}  # SIGILL SIGTRAP SIGABRT SIGBUS SIGFPE SIGSEGV
+_FATAL_SIGNALS = ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE", "SIGTRAP", "SIGQUIT")
+# Linux dump-core defaults: 3 QUIT, 4 ILL, 5 TRAP, 6 ABRT, 7 BUS, 8 FPE, 11 SEGV.
+_FATAL_SIGNAL_NUMBERS = {3, 4, 5, 6, 7, 8, 11}
+
+# Whole names only: a variable merely spelled `SIGQUIT_HANDLER` names no signal.
+_FATAL_SIGNAL_RE = re.compile(r"\b(?:" + "|".join(_FATAL_SIGNALS) + r")\b")
 
 _PR_SET_DUMPABLE = 4
 
-# Raw-text prefilter, run before any parsing. The AST is a subset of the source, so a
-# file whose text holds none of these cannot match and parsing it is wasted work. This
-# is what keeps the check cheap: 32 of ~1050 files are actually parsed. Measured at
-# ~1.5s for the whole suite against ~9s with every file parsed. The scope and alias
-# analysis added since is what accounts for the difference from the 496ms this once
-# cost; the prefilter itself still admits the same 32 files.
-# Deliberately looser than `_CRASH_MARKERS`: matching `string_at(0)` exactly meant
-# `string_at( 0)` was skipped before it was ever parsed. The prefilter only decides what
-# to parse, so it should over-match and let the AST checks be the precise ones.
+# Raw-text prefilter, so only files that could match are parsed (32 of ~1050, ~1.5s
+# against ~9s). Deliberately looser than `_CRASH_MARKERS`: it only decides what to
+# parse, so it should over-match and leave precision to the AST checks. Matching
+# `string_at(0)` exactly once skipped `string_at( 0)` before it was ever parsed.
 _PREFILTER = ("string_at(", "abort(", "_sigsegv(") + _SIGNAL_DIRECTED
-# An aliased import carries none of the call shapes above: `from os import abort as die`
-# then `die()` has no "abort(" anywhere, so the prefilter skipped the file and the alias
-# resolution that would have caught it never ran. The import spelling is the one piece of
-# text such a file must contain, so match on that too. Costs one more scan of files that
-# import these names and nothing else.
+# An aliased import carries none of the shapes above: `from os import abort as die`
+# then `die()` has no "abort(" anywhere. The import spelling is the one text such a
+# file must contain, so match that too.
 _PREFILTER += ("import abort", "import string_at", "import raise_signal", "import kill")
 
 
@@ -153,17 +153,57 @@ def _called_name(node):
     return None
 
 
-def _prctl_clears_dumpable(node) -> bool:
-    """A prctl(PR_SET_DUMPABLE, 0, ...) call. The value argument matters: prctl(4, 1)
-    re-enables dumps, so treating any PR_SET_DUMPABLE call as suppression would bless a
-    crash that still dumps."""
+# Matched after stripping underscores and case, so `_libc`, `LibC` and `libc` are one
+# name. `tools._libc.prctl(...)` is the convention in test_bypass_permissions.py.
+_LIBC_NAMES = ("cdll", "ctypes", "libc")
+
+
+def _names_libc(name) -> bool:
+    return name.strip("_").lower() in _LIBC_NAMES
+
+
+def _libc_aliases(tree):
+    """Names bound to a real libc handle, e.g. `lib = ctypes.CDLL(None)`."""
+    out = set()
+    for node in ast.walk(tree):
+        pair = _assigned_pair(node)
+        if pair is None:
+            continue
+        target, value = pair
+        if isinstance(value, ast.Call) and _is_libc_handle(value.func):
+            out.add(target.id)
+    return out
+
+
+def _is_libc_handle(node, aliases = ()) -> bool:
+    """Whether this expression is a real libc handle, not a stand-in named like one."""
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Name) and (_names_libc(inner.id) or inner.id in aliases):
+            return True
+        if isinstance(inner, ast.Attribute) and _names_libc(inner.attr):
+            return True
+    return False
+
+
+def _prctl_dumpable_value(node, libc = ()):
+    """The value a prctl(PR_SET_DUMPABLE, v, ...) call sets, else None.
+
+    The value argument matters: prctl(4, 1) re-enables dumps, so treating any
+    PR_SET_DUMPABLE call as suppression would bless a crash that still dumps.
+    """
     if _called_name(node) != "prctl" or len(node.args) < 2:
-        return False
+        return None
+    # The receiver matters: a test's `fake.prctl(4, 1)` mock touches no kernel state, and
+    # crediting it let a mock override the real suppression on the line above.
+    if not isinstance(node.func, ast.Attribute) or not _is_libc_handle(node.func.value, libc):
+        return None
     cmd, value = node.args[0], node.args[1]
     cmd_ok = (isinstance(cmd, ast.Constant) and cmd.value == _PR_SET_DUMPABLE) or (
         isinstance(cmd, ast.Name) and cmd.id.endswith("PR_SET_DUMPABLE")
     )
-    return cmd_ok and isinstance(value, ast.Constant) and value.value == 0
+    if not cmd_ok or not isinstance(value, ast.Constant) or value.value not in (0, 1):
+        return None
+    return value.value
 
 
 def _fold(node, env):
@@ -198,11 +238,10 @@ def _assigned_pair(node):
 def _string_env(tree):
     """Name to foldable string, per scope, so same-named locals cannot collide.
 
-    One flat map let an unrelated function's `SCRIPT = "print(1)"` overwrite a
-    module-level `SCRIPT` that really does crash, and the executed script then went
-    unchecked. Functions are seeded from the module bindings and shadow them locally.
-    Annotated constants and strings assembled inside a test are folded either way,
-    so `_SAFE = _SUPPRESS + "ctypes.string_at(0)"` is still judged as what it becomes.
+    One flat map let an unrelated `SCRIPT = "print(1)"` overwrite a module-level
+    `SCRIPT` that really crashes. Functions are seeded from the module bindings and
+    shadow them locally; concatenations fold, so `_SUPPRESS + "string_at(0)"` is
+    judged as what it becomes.
     """
     owner = _enclosing_scopes(tree)
     module_env, scoped = {}, {}
@@ -221,27 +260,32 @@ def _string_env(tree):
     return owner, module_env, scoped
 
 
-def _iter_executable(scope):
+def _iter_executable(scope, enter_classes = True):
     """Nodes that run when `scope` runs, skipping bodies that need a separate call.
 
     Walking everything treated a call inside an uninvoked nested `def` as having
     already run, so a helper that suppresses cores blessed a crash it never covered.
     """
     for child in ast.iter_child_nodes(scope):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+        # Not a class body: it runs the moment the class is defined.
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        if not enter_classes and isinstance(child, ast.ClassDef):
             continue
         yield child
-        yield from _iter_executable(child)
+        yield from _iter_executable(child, enter_classes)
 
 
 def _rebound_names(scope):
     """Names this scope binds itself, which therefore no longer mean the import."""
     out = set()
-    for node in ast.walk(scope):
+    # Class bodies excluded: `class C: abort = ...` binds C.abort, not abort.
+    for node in _iter_executable(scope, enter_classes = False):
         pair = _assigned_pair(node)
         if pair is not None:
             out.add(pair[0].id)
-        elif isinstance(node, ast.arg):
+    for node in ast.walk(scope.args) if hasattr(scope, "args") else ():
+        if isinstance(node, ast.arg):
             out.add(node.arg)
     return out
 
@@ -249,10 +293,9 @@ def _rebound_names(scope):
 def _sequence_env(tree, owner):
     """Name to the elements of a list/tuple it is bound to.
 
-    Separate from `_string_env` because that one folds to a string and a command
-    vector does not fold. Flat by name rather than per scope: a false name collision
-    here can only add candidate strings to read, and reading one extra string is a
-    cheaper mistake than missing the script a child actually runs.
+    Separate from `_string_env`, which folds to a string; a command vector does not.
+    Flat by name rather than per scope: a collision only adds a candidate string to
+    read, which is cheaper than missing the script a child runs.
     """
     out = {}
     for node in ast.walk(tree):
@@ -268,17 +311,23 @@ def _sequence_env(tree, owner):
 def _snippets(tree):
     """Strings that actually reach a child interpreter.
 
-    A string only counts if it is passed as a call argument, directly or through a
-    name, a list/tuple, or a concatenation. That is what `subprocess.run([exe, "-c",
-    SCRIPT])` looks like. Treating every string literal as a candidate script meant an
-    ordinary expectation such as `assert "ctypes.string_at(0)" in text` was reported as
-    a deliberate crash, which would fail CI over a string nothing executes.
+    Only a call argument counts, directly or via a name, list/tuple or concatenation,
+    as in `subprocess.run([exe, "-c", SCRIPT])`. Counting every literal flagged
+    ordinary assertions over a string nothing executes.
     """
     owner, module_env, scoped = _string_env(tree)
     sequences = _sequence_env(tree, owner)
     out = []
 
-    def collect(node, env):
+    def collect(
+        node,
+        env,
+        depth = 0,
+    ):
+        # A deeply nested literal is not a command vector, and recursing all the way
+        # into one raised RecursionError out of a file the scan only wanted to skim.
+        if depth > _MAX_COLLECT_DEPTH:
+            return
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             out.append(node.value)
         elif isinstance(node, ast.JoinedStr):
@@ -301,17 +350,17 @@ def _snippets(tree):
                 # subprocess usage, and folding only strings meant the child script
                 # inside it was never read.
                 for element in sequences[node.id]:
-                    collect(element, env)
+                    collect(element, env, depth + 1)
         elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             for element in node.elts:
-                collect(element, env)
+                collect(element, env, depth + 1)
         elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             folded, _ = _fold(node, env)
             if folded is not None:
                 out.append(folded)
             else:
-                collect(node.left, env)
-                collect(node.right, env)
+                collect(node.left, env, depth + 1)
+                collect(node.right, env, depth + 1)
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -325,13 +374,10 @@ def _snippets(tree):
 def _crash_aliases(tree):
     """Names imported directly from a crashing module, e.g. `from os import abort`.
 
-    Needed so an aliased call is still recognised. A bare `abort()` is only fatal if it
-    came from `os` or `ctypes`; Playwright's `route.abort()` keeps its receiver and is
-    still correctly ignored.
-
-    Keyed by the name the call site uses and valued by the name the rules are written
-    against, because `from os import abort as die` binds `die` and a lookup of `die` in
-    `_CRASH_CALLS` finds nothing. Without the mapping an aliased import was invisible.
+    A bare `abort()` is only fatal from `os` or `ctypes`; Playwright's `route.abort()`
+    keeps its receiver and stays ignored. Keyed by the call-site name and valued by the
+    name the rules use, since `from os import abort as die` binds `die`, which finds
+    nothing in `_CRASH_CALLS`.
     """
     out = {}
     for node in ast.walk(tree):
@@ -376,8 +422,12 @@ def _is_crash_call(node, aliases = None) -> bool:
         return False
     # Only the signal argument, so a PID never reads as a signal.
     signal_argument = node.args[index]
+    # A string delivers nothing: `raise_signal("SIGQUIT")` is a TypeError, and the
+    # quoted name survives unparsing and matched as though it were the symbol.
+    if isinstance(signal_argument, ast.Constant) and isinstance(signal_argument.value, str):
+        return False
     rendered = ast.unparse(signal_argument)
-    if any(s in rendered for s in _FATAL_SIGNALS):
+    if _FATAL_SIGNAL_RE.search(rendered):
         return True
     # Numeric signals. `signal.raise_signal(11)` and `os.kill(pid, 6)` dump exactly the
     # same core as the named forms, so matching only symbolic names missed them.
@@ -392,11 +442,18 @@ def _enclosing_scopes(tree):
 
     def walk(scope, node):
         for child in ast.iter_child_nodes(node):
-            next_scope = (
-                child if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else scope
-            )
+            is_scope = isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+            next_scope = child if is_scope else scope
             owner[id(child)] = next_scope
             walk(next_scope, child)
+            if not is_scope:
+                continue
+            # Defaults and annotations run where the def sits, so they belong to the
+            # enclosing scope. A further scope nested inside one of them keeps its own.
+            for part in _definition_time(child):
+                for inner in ast.walk(part):
+                    if owner.get(id(inner)) is child:
+                        owner[id(inner)] = scope
 
     walk(tree, tree)
     return owner
@@ -419,22 +476,158 @@ def _position(node):
 _AFTER_EVERYTHING = (float("inf"), 0)
 
 
-def _clears_dumpable_before(scope, position) -> bool:
+_BRANCHING = (
+    ast.If,
+    ast.IfExp,
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.Try,
+    ast.Match,
+    ast.BoolOp,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+    ast.comprehension,
+)
+
+
+def _child_paths(scope, certain):
+    """`(child, certain)`. A branch's body may not run, but its `finally` always does."""
+    branching = isinstance(scope, _BRANCHING)
+    if isinstance(scope, ast.Try):
+        always = scope.finalbody  # a finally runs whatever the try did
+    elif isinstance(scope, ast.BoolOp):
+        always = scope.values[:1]  # only the first operand of a short circuit
+    elif isinstance(scope, (ast.If, ast.IfExp, ast.While)):
+        always = (scope.test,)  # the condition is evaluated before either branch
+    elif isinstance(scope, (ast.For, ast.AsyncFor, ast.comprehension)):
+        always = (scope.iter,)  # the iterable is evaluated before the first pass
+    elif isinstance(scope, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        always = scope.generators[:1]  # the outermost clause runs; its body may not
+    else:
+        always = ()
+    for child in ast.iter_child_nodes(scope):
+        yield child, certain and (not branching or any(child is node for node in always))
+
+
+def _definition_time(node):
+    """Parts of a def that run where it sits: defaults and decorators, not the body."""
+    defaults = list(node.args.defaults) + [d for d in node.args.kw_defaults if d is not None]
+    # Annotations run here too, unless `from __future__ import annotations` is on.
+    annotations = [
+        argument.annotation
+        for argument in ast.walk(node.args)
+        if isinstance(argument, ast.arg) and argument.annotation is not None
+    ]
+    returns = [node.returns] if getattr(node, "returns", None) is not None else []
+    return defaults + annotations + returns + list(getattr(node, "decorator_list", ()))
+
+
+def _dumpable_writes(
+    scope,
+    certain = True,
+    functions = None,
+    shadowed = (),
+    libc = (),
+):
+    """`(position, value, certain)` for each prctl dumpability write on this path.
+
+    With `functions`, a call to a local helper counts too, at the call's position, as
+    whatever that helper leaves dumpability set to.
+    """
+
+    def written(node):
+        value = _prctl_dumpable_value(node, libc)
+        if value is None and functions is not None:
+            value = _helper_leaves_dumpable(node, scope, functions, shadowed, libc)
+        return value
+
+    for child, child_certain in _child_paths(scope, certain):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            # The body waits for a call, but defaults and decorators run right here.
+            for part in _definition_time(child):
+                if isinstance(part, ast.Call) and written(part) is not None:
+                    yield _position(part), written(part), child_certain
+                yield from _dumpable_writes(part, child_certain, functions, shadowed, libc)
+            continue
+        if isinstance(child, ast.Call):
+            value = written(child)
+            if value is not None:
+                yield _position(child), value, child_certain
+        yield from _dumpable_writes(child, child_certain, functions, shadowed, libc)
+
+
+def _helper_leaves_dumpable(
+    call,
+    scope,
+    functions,
+    shadowed = (),
+    libc = (),
+):
+    """What a bare call to a local helper leaves dumpability at, else None."""
+    # Bare calls only, as in _suppressed: `obj.restore()` shares its trailing name with
+    # a local `def restore` but need not be it.
+    if not isinstance(call.func, ast.Name):
+        return None
+    target = functions.get(call.func.id)
+    if target is None:
+        return None
+    # A local `restore = lambda: None` before the call is not the module-level helper.
+    if call.func.id in shadowed:
+        return None
+    # Calling an `async def` builds a coroutine and runs none of its body.
+    if isinstance(target, ast.AsyncFunctionDef) and not _is_awaited(call, scope):
+        return None
+    # Body only: a default or decorator on the helper ran at definition time, so it is
+    # not something calling the helper does again.
+    writes = [
+        w
+        for statement in target.body
+        for w in _dumpable_writes(statement, libc = libc)
+        if w[2] or w[1] == 0
+    ]
+    return writes[-1][1] if writes else None
+
+
+def _clears_dumpable_before(
+    scope,
+    position,
+    inherited = False,
+    functions = None,
+    libc = (),
+) -> bool:
     """A prctl(4, 0, ...) on this scope's own path that runs before `position`.
 
     Order matters. Suppression placed after the fault does nothing, so accepting it
     anywhere in the scope blessed a child that still dumps.
     """
-    return any(
-        _prctl_clears_dumpable(node) and _position(node) < position
-        for node in _iter_executable(scope)
+    # A name this scope rebinds itself is not the module-level helper of that name.
+    shadowed = _rebound_names(scope) if hasattr(scope, "body") else ()
+    writes = sorted(
+        w
+        for w in _dumpable_writes(scope, functions = functions, shadowed = shadowed, libc = libc)
+        if w[0] < position
     )
+    # Only a write that certainly runs decides: a conditional restore may never run.
+    # A conditional clear still counts: platform-guarded prctl is the documented shape.
+    decisive = [w for w in writes if w[2] or w[1] == 0]
+    if decisive:
+        return decisive[-1][1] == 0
+    return inherited
 
 
-def _suppressed(node, scope, functions) -> bool:
+def _suppressed(
+    node,
+    scope,
+    functions,
+    inherited = False,
+    libc = (),
+) -> bool:
     """Whether this crash call is covered, directly or by a helper it calls first."""
     position = _position(node)
-    if _clears_dumpable_before(scope, position):
+    if _clears_dumpable_before(scope, position, inherited, functions, libc):
         return True
     # Following one level of local helper covers `suppress_core()` then the fault,
     # which is the natural shape once more than one test needs this.
@@ -453,7 +646,7 @@ def _suppressed(node, scope, functions) -> bool:
         # prctl never happens. Only an awaited one has actually cleared dumpability.
         if isinstance(target, ast.AsyncFunctionDef) and not _is_awaited(called, scope):
             continue
-        if _clears_dumpable_before(target, _AFTER_EVERYTHING):
+        if _clears_dumpable_before(target, _AFTER_EVERYTHING, libc = libc):
             return True
     return False
 
@@ -480,10 +673,11 @@ def _live_aliases(aliases, scope, rebound):
     return {bound: original for bound, original in aliases.items() if bound not in shadowed}
 
 
-def _unsuppressed_crashes(tree):
+def _unsuppressed_crashes(tree, inherited = False):
     """Crash calls in this tree whose core dump is not suppressed first."""
     owner = _enclosing_scopes(tree)
     functions = None
+    libc = _libc_aliases(tree)
     aliases = _crash_aliases(tree)
     rebound = {}
     out = []
@@ -493,7 +687,7 @@ def _unsuppressed_crashes(tree):
             continue
         if functions is None:
             functions = _functions_by_name(tree)
-        if not _suppressed(node, scope, functions):
+        if not _suppressed(node, scope, functions, inherited, libc):
             out.append((node, scope))
     return out
 
@@ -509,24 +703,107 @@ def _tree_crashes(tree) -> bool:
 
 
 _NESTED_EXEC = {"exec", "eval"}
+
+
+def _is_builtin_exec(func) -> bool:
+    if isinstance(func, ast.Name):
+        return func.id in _NESTED_EXEC
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr in _NESTED_EXEC
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "builtins"
+    )
+
+
 _MAX_SNIPPET_DEPTH = 5
 
 
-def _nested_scripts(tree):
+def _bindings_before(tree, scope, position):
+    """`(env, maybe)` for `scope` at `position`.
+
+    `env` holds what a name is definitely bound to there. `maybe` collects values a
+    name might still hold, because a rebind under a branch may not have run: dropping
+    the old value on `if False: INNER = "pass"` lost the crash it replaced.
+    """
+    env, maybe = {}, {}
+    # Python binds a name locally for the whole function if it is assigned anywhere in
+    # it, so a global of that name is never what the body reads, even above the assign.
+    shadowed = _rebound_names(scope) if scope is not tree else ()
+    for owner_scope in (tree, scope) if scope is not tree else (tree,):
+        # A nested scope runs after the module body, so a global assigned below the
+        # `def` is still bound by the time the call gets there.
+        limit = _AFTER_EVERYTHING if owner_scope is tree and scope is not tree else position
+        for node, certain in _assignments_before(owner_scope, limit):
+            pair = _assigned_pair(node)
+            if owner_scope is tree and pair[0].id in shadowed:
+                continue
+            folded, _ids = _fold(pair[1], env)
+            if not certain:
+                if folded is not None:
+                    maybe.setdefault(pair[0].id, []).append(folded)
+                continue
+            # A certain rebind definitely replaces what was there, foldable or not.
+            env.pop(pair[0].id, None)
+            maybe.pop(pair[0].id, None)
+            if folded is not None:
+                env[pair[0].id] = folded
+    return env, maybe
+
+
+def _assignments_before(
+    scope,
+    position,
+    certain = True,
+):
+    """`(assignment, certain)` in source order, before `position`."""
+    for child, child_certain in _child_paths(scope, certain):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        if _assigned_pair(child) is not None and _position(child) < position:
+            yield child, child_certain
+        yield from _assignments_before(child, position, child_certain)
+
+
+def _nested_scripts(tree, inherited = False):
     """Source a snippet hands to exec/eval, or on to another child interpreter.
 
     `SCRIPT = 'exec("import os; os.abort()")'` parses cleanly and holds no crash call
     of its own, so without this the crash one level down was never looked at.
     """
+    owner = _enclosing_scopes(tree)
+    functions = _functions_by_name(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        if _called_name(node) in _NESTED_EXEC:
+        scope = owner.get(id(node), tree)
+        # The builtin only, bare or via `builtins`: `Runner().exec(...)` is not it.
+        if _is_builtin_exec(node.func):
             argument = node.args[0] if node.args else None
-            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-                yield argument.value
+            # Bindings AT the exec, so a name reused afterwards is not what runs.
+            env, maybe = _bindings_before(tree, scope, _position(node))
+            # Same interpreter, so dumpability carries into the payload, including
+            # a restore a helper made between the clear and the exec.
+            carried = _clears_dumpable_before(
+                scope,
+                _position(node),
+                inherited = inherited,
+                functions = functions,
+                libc = _libc_aliases(tree),
+            )
+            payloads = []
+            if argument is not None:
+                folded, _ids = _fold(argument, env)
+                if folded is not None:
+                    payloads.append(folded)
+                if isinstance(argument, ast.Name):
+                    # A rebind that may not have run leaves the old value possible.
+                    payloads.extend(maybe.get(argument.id, ()))
+            for payload in payloads:
+                yield payload, carried
         else:
-            yield from _snippets_of_call(node)
+            for nested in _snippets_of_call(node):
+                yield nested, False
 
 
 def _snippets_of_call(node):
@@ -538,7 +815,11 @@ def _snippets_of_call(node):
                     yield element.value
 
 
-def _snippet_state(snippet: str, depth: int = 0):
+def _snippet_state(
+    snippet: str,
+    depth: int = 0,
+    inherited: bool = False,
+):
     """`(crashes, violates)` for a child script.
 
     The snippet is Python, so parse it and reuse the same call detector rather than
@@ -553,15 +834,14 @@ def _snippet_state(snippet: str, depth: int = 0):
             tree = ast.parse(snippet)
     except (SyntaxError, ValueError):
         crashes = any(marker in snippet for marker in _CRASH_MARKERS) or (
-            any(m in snippet for m in _SIGNAL_DIRECTED)
-            and any(s in snippet for s in _FATAL_SIGNALS)
+            any(m in snippet for m in _SIGNAL_DIRECTED) and _FATAL_SIGNAL_RE.search(snippet)
         )
-        suppressed = "prctl(4, 0" in snippet or "PR_SET_DUMPABLE, 0" in snippet
+        suppressed = inherited or "prctl(4, 0" in snippet or "PR_SET_DUMPABLE, 0" in snippet
         return crashes, crashes and not suppressed
-    crashes, violates = _tree_crashes(tree), bool(_unsuppressed_crashes(tree))
+    crashes, violates = _tree_crashes(tree), bool(_unsuppressed_crashes(tree, inherited))
     if depth < _MAX_SNIPPET_DEPTH:
-        for nested in _nested_scripts(tree):
-            inner_crashes, inner_violates = _snippet_state(nested, depth + 1)
+        for nested, carried in _nested_scripts(tree, inherited):
+            inner_crashes, inner_violates = _snippet_state(nested, depth + 1, carried)
             crashes = crashes or inner_crashes
             violates = violates or inner_violates
     return crashes, violates
@@ -824,6 +1104,296 @@ _FIXTURES = {
         "SCRIPT = \"exec('import os; os.abort()')\"\n"
         'subprocess.run([sys.executable, "-c", SCRIPT])\n',
         True,  # the SIGABRT is one level down, and dumps just the same
+    ),
+    # Six the guard still gets wrong, each verified against the current file.
+    "sigquit_is_a_core_dumping_signal": (
+        "import signal\ndef child():\n    signal.raise_signal(3)\n",
+        True,  # SIGQUIT dumps core by default
+    ),
+    "class_body_runs_with_its_enclosing_scope": (
+        "import ctypes\n"
+        "class Probe:\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # unlike a def, a class body executes immediately
+    ),
+    "rebinding_inside_an_unrelated_function": (
+        "from os import abort\n"
+        "abort()\n"
+        "def unrelated(mock):\n    abort = mock\n    return abort\n",
+        True,  # a nested local must not disarm the module-level alias
+    ),
+    "dumpability_restored_before_the_crash": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        True,  # the setting nearest the crash is the one that counts
+    ),
+    "exec_payload_reached_by_name": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"INNER = 'import os; os.abort()'\\nexec(INNER)\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # the payload is one name away, and still runs
+    ),
+    "suppression_above_a_nested_exec": (
+        "import subprocess, sys\n"
+        'SCRIPT = "import ctypes; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); '
+        "exec('import os; os.abort()')\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # same interpreter, so the prctl above covers the nested crash
+    ),
+    # Six more, each one a way the fixes above were themselves wrong.
+    "class_attribute_shadowing_a_crash_alias": (
+        "from os import abort\nclass C:\n    abort = lambda: None\nabort()\n",
+        True,  # that binds C.abort; the module name still crashes
+    ),
+    "restore_inside_a_branch_that_may_not_run": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    if False:\n        ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # a conditional restore cannot be assumed to have run
+    ),
+    "platform_guarded_suppression": (
+        "import ctypes, sys\n"
+        "def child():\n"
+        '    if sys.platform == "linux":\n'
+        "        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # the documented shape, since prctl is Linux-only
+    ),
+    "exec_payload_restores_dumpability": (
+        "import subprocess, sys\n"
+        'SCRIPT = "import ctypes; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); '
+        "exec('import ctypes, os; ctypes.CDLL(None).prctl(4, 1, 0, 0, 0); os.abort()')\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # inherited suppression is a starting state, not a blanket pass
+    ),
+    "helper_restores_dumpability_before_the_exec": (
+        "import subprocess, sys\n"
+        'SCRIPT = "import ctypes\\n'
+        "def restore():\\n    ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\\n"
+        "ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\\n"
+        "restore()\\n"
+        "exec('import os; os.abort()')\\n\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # the helper put dumping back, so the payload's abort does dump
+    ),
+    "exec_payload_name_reused_afterwards": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"INNER = 'pass'\\nexec(INNER)\\nINNER = 'import os; os.abort()'\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # exec runs what the name held at the time
+    ),
+    "signal_name_only_as_a_substring": (
+        "import signal\n"
+        "SIGQUIT_HANDLER = signal.SIGTERM\n"
+        "def child():\n    signal.raise_signal(SIGQUIT_HANDLER)\n",
+        False,  # SIGTERM does not dump, whatever the variable is called
+    ),
+    "prctl_value_the_kernel_rejects": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    ctypes.CDLL(None).prctl(4, 2, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # PR_SET_DUMPABLE takes 0 or 1; 2 is EINVAL and changes nothing
+    ),
+    "restore_inside_an_unmatched_case": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    match 0:\n        case 1:\n"
+        "            ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # a match arm is a branch, so it may never run
+    ),
+    "method_named_exec_is_not_the_builtin": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"INNER = 'import os; os.abort()'\\nRunner().exec(INNER)\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # only a bare exec/eval runs the string it is handed
+    ),
+    "payload_rebound_to_something_unfoldable": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"INNER = 'import os; os.abort()'\\nINNER = str('pass')\\nexec(INNER)\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # the rebind wins even when its value cannot be folded
+    ),
+    "payload_rebound_only_in_a_branch": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"INNER = 'import os; os.abort()'\\nif False:\\n"
+        "    INNER = 'pass'\\nexec(INNER)\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # a rebind that may not run leaves the old payload possible
+    ),
+    "guarded_clear_after_a_definite_restore": (
+        "import ctypes, sys\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\n"
+        '    if sys.platform == "linux":\n'
+        "        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # the guarded clear is the documented shape and comes last
+    ),
+    "global_assigned_below_the_exec": (
+        "import subprocess, sys\n"
+        'SCRIPT = "def run():\\n    exec(INNER)\\n'
+        "INNER = 'import os; os.abort()'\\nrun()\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # the body runs after the module, so the later global is bound
+    ),
+    "branch_candidate_then_a_definite_rebind": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"INNER = 'pass'\\nif cond:\\n    INNER = 'import os; os.abort()'\\n"
+        "INNER = 'pass'\\nexec(INNER)\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # the definite rebind rules out the branch value it replaced
+    ),
+    "helper_guarded_clear_before_a_nested_exec": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"import ctypes, sys\\ndef clear():\\n    if sys.platform == 'linux':\\n"
+        "        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\\nclear()\\n"
+        "exec('import os; os.abort()')\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # a guarded clear counts the same inside a helper as inline
+    ),
+    "restore_in_a_finally_before_a_later_crash": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    try:\n        pass\n"
+        "    finally:\n        ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        True,  # reaching the crash proves the finally ran and undid the clear
+    ),
+    "inherited_dumpability_through_two_execs": (
+        "import subprocess, sys\n"
+        'SCRIPT = "import ctypes; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); '
+        'exec(\\"exec(\'import os; os.abort()\')\\")"\n'
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # one interpreter throughout, so the clear reaches both levels
+    ),
+    "builtins_exec_payload": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"import builtins\\nbuiltins.exec('import os; os.abort()')\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # builtins.exec is the builtin, spelled out
+    ),
+    "payload_name_is_local_to_the_function": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"INNER = 'import os; os.abort()'\\ndef run():\\n    exec(INNER)\\n"
+        "    INNER = 'pass'\\nrun()\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # assigning INNER anywhere makes it local, so the global never applies
+    ),
+    "restore_in_a_short_circuited_operand": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    False and ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # the operand never evaluates, so the clear still stands
+    ),
+    "restore_in_a_method_default": (
+        "import ctypes\n"
+        "class C:\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    def f(x = ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)):\n        pass\n"
+        "    ctypes.string_at(0)\n",
+        True,  # a default runs where the def sits, so the restore beats the crash
+    ),
+    "crash_alias_as_a_lambda_parameter": (
+        "from os import abort\nf = lambda abort: abort()\nf(mock)\n",
+        False,  # the parameter shadows the import inside the lambda
+    ),
+    "signal_name_passed_as_a_string": (
+        "import signal\n" "def child():\n" '    signal.raise_signal("SIGQUIT")\n',
+        False,  # a string is a TypeError, and delivers no signal
+    ),
+    "helper_restore_inside_an_inherited_payload": (
+        "import subprocess, sys\n"
+        'SCRIPT = "import ctypes; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); '
+        'exec(\\"import ctypes, os\\\\ndef restore():\\\\n    '
+        'ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\\\\nrestore()\\\\nos.abort()\\")"\n'
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # an inherited clear does not outrank a helper restore in the payload
+    ),
+    "restore_in_a_parameter_annotation": (
+        "import ctypes\n"
+        "class C:\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    def f(x: ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)):\n        pass\n"
+        "    ctypes.string_at(0)\n",
+        True,  # an annotation evaluates where the def sits, like a default
+    ),
+    "lambda_default_runs_in_the_enclosing_scope": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    f = lambda x = ctypes.string_at(0): None\n",
+        False,  # the default belongs to the caller, which cleared first
+    ),
+    "restore_in_an_if_condition": (
+        "import subprocess, sys\n"
+        'SCRIPT = "import ctypes; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); '
+        'exec(\\"import ctypes, os\\\\nif ctypes.CDLL(None).prctl(4, 1, 0, 0, 0):'
+        '\\\\n    pass\\\\nos.abort()\\")"\n'
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # the condition runs before either branch, so the restore is certain
+    ),
+    "restore_inside_a_generator_expression": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    gen = (ctypes.CDLL(None).prctl(4, 1, 0, 0, 0) for _ in range(1))\n"
+        "    ctypes.string_at(0)\n",
+        False,  # a generator body does not run at construction
+    ),
+    "mocked_prctl_on_an_unrelated_object": (
+        "import ctypes\n"
+        "def child(fake):\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    fake.prctl(4, 1)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # a mock named prctl touches no kernel state
+    ),
+    "local_rebinding_of_a_helper_name": (
+        "import ctypes\n"
+        "def restore():\n"
+        "    ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    restore = lambda: None\n"
+        "    restore()\n"
+        "    ctypes.string_at(0)\n",
+        False,  # the local binding is not the module-level helper
+    ),
+    "aliased_libc_handle_still_suppresses": (
+        "import ctypes\n"
+        "lib = ctypes.CDLL(None)\n"
+        "def child():\n"
+        "    lib.prctl(4, 0, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # a handle bound to any name is still the real libc
+    ),
+    "outer_comprehension_iterable_is_certain": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    xs = [i for i in [ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)]]\n"
+        "    ctypes.string_at(0)\n",
+        True,  # the outermost iterable is evaluated immediately
+    ),
+    "imported_libc_handle_attribute": (
+        "import ctypes, tools\n"
+        "def child():\n"
+        "    tools._libc.prctl(4, 0, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # tools._libc.prctl is the convention in test_bypass_permissions.py
     ),
 }
 

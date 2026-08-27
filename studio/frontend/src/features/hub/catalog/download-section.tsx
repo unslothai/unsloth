@@ -11,6 +11,7 @@ export function DownloadSection({
   isDownloaded,
   isPartial = false,
   partialTransport = null,
+  partialResumable = false,
   modelFormat,
   canRun = true,
   isActive,
@@ -28,12 +29,14 @@ export function DownloadSection({
   onEject,
   onTrain,
   onChange,
+  showMemoryBar = true,
 }: {
   repoId: string;
   isGguf: boolean;
   isDownloaded: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  partialResumable?: boolean;
   modelFormat?: ModelInventoryFormat | null;
   canRun?: boolean;
   isActive: boolean;
@@ -51,6 +54,9 @@ export function DownloadSection({
   onEject?: () => void;
   onTrain?: () => void;
   onChange?: () => void;
+  /** False for diffusion / audio / video GGUFs, which do not load through
+   *  llama.cpp and so have nothing the KV estimator can say about them. */
+  showMemoryBar?: boolean;
 }) {
   if (isGguf || preferredGgufFile) {
     return (
@@ -70,6 +76,7 @@ export function DownloadSection({
         onUseInChat={onUseInChat}
         onEject={onEject}
         onChange={onChange}
+        showMemoryBar={showMemoryBar}
       />
     );
   }
@@ -79,6 +86,7 @@ export function DownloadSection({
       isDownloaded={isDownloaded}
       isPartial={isPartial}
       partialTransport={partialTransport}
+      partialResumable={partialResumable}
       modelFormat={modelFormat}
       canRun={canRun}
       isActive={isActive}

@@ -691,7 +691,7 @@ def test_start_watchdog_passes_everything_to_a_zoo_that_accepts_it(monkeypatch):
 
 
 def test_apply_xet_env_delegates_to_the_zoo(monkeypatch):
-    """One rule, in one place: Studio asks the zoo to size the worker rather than sizing it too."""
+    """One rule, in one place: Unsloth asks the zoo to size the worker rather than sizing it too."""
     import types
 
     import utils.hf_xet_fallback as shim
@@ -780,3 +780,579 @@ def test_a_zoo_that_can_resize_is_asked_for_the_workers_own_cache(monkeypatch):
     )
     assert shim.apply_xet_env({}, "/new/volume/hub") == {}
     assert seen["applied"] is True
+
+
+# --- free-RAM clamp (issue #9032) ---------------------------------------------------------------
+# The zoo sizes Xet's buffers from TOTAL RAM, which cannot see a loaded model. Unsloth clamps the
+# result to what is free. The bar: shrink under pressure, change nothing otherwise.
+
+_GB = 1_000_000_000
+_LIMIT = "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"
+
+
+def _fake_profile_cls():
+    import dataclasses
+
+    @dataclasses.dataclass(frozen = True)
+    class _Profile:
+        total_ram_bytes: int
+        available_ram_bytes: int
+        cpu_count: int = 16
+        ram_source: str = "psutil"
+        cpu_source: str = "affinity"
+        free_disk_bytes: int = 500 * _GB
+        disk_source: str = "statvfs"
+
+    return _Profile
+
+
+def _fake_tuning(
+    total,
+    available,
+    *,
+    calls = None,
+):
+    """Stand-in zoo sized like the real one (an eighth of total RAM), recording the profile it was
+    asked about so a test can prove the clamp re-asks rather than editing numbers itself."""
+    import types
+
+    profile_cls = _fake_profile_cls()
+
+    def _overrides(profile, **kwargs):
+        if calls is not None:
+            calls.append(profile)
+        limit = max(1 * _GB, profile.total_ram_bytes // 8)
+        return {
+            _LIMIT: str(limit),
+            "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE": str(limit // 2),
+            "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE": str(limit // 32),
+            "HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS": "8",
+            "HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY": "32",
+            "HF_XET_CLIENT_READ_TIMEOUT": "60s",
+        }
+
+    return types.SimpleNamespace(
+        xet_env_overrides = _overrides,
+        system_profile = lambda cache_dir = None: profile_cls(total, available),
+        _MIN_BUFFER_LIMIT = 1 * _GB,
+        _RAM_FRACTION = 8,
+    )
+
+
+def test_clamp_is_a_no_op_when_the_machine_has_room(monkeypatch):
+    """The design rests on this: an eighth of TOTAL cannot exceed a quarter of AVAILABLE unless RAM
+    is already held, so an idle machine keeps the zoo's numbers and no download gets slower."""
+    import utils.hf_xet_fallback as shim
+
+    calls = []
+    module = _fake_tuning(32 * _GB, 30 * _GB, calls = calls)
+    sized = module.xet_env_overrides(module.system_profile())
+    calls.clear()
+
+    env = dict(sized)
+    written = shim.clamp_to_available_ram(env, dict(sized), module = module)
+
+    assert written == sized, "an affordable budget must come back untouched"
+    assert env == sized
+    assert calls == [], "re-sizing a machine that fits would burn the zero-cost guarantee"
+
+
+def test_clamp_shrinks_a_budget_free_ram_cannot_afford(monkeypatch):
+    """Issue #9032: 32GB box, 27B GGUF resident, 8GB free. The zoo still hands out a 4GB buffer
+    because total RAM has not changed, and that on top of the loaded weights is the swap."""
+    import utils.hf_xet_fallback as shim
+
+    calls = []
+    module = _fake_tuning(32 * _GB, 8 * _GB, calls = calls)
+    unclamped = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+    calls.clear()
+
+    env = dict(unclamped)
+    written = shim.clamp_to_available_ram(env, dict(unclamped), module = module)
+
+    budget = 8 * _GB // 4
+    assert int(unclamped[_LIMIT]) > budget, "precondition: the unclamped budget overshoots"
+    assert int(written[_LIMIT]) <= budget, "the clamp has to bring it inside what is free"
+    assert env[_LIMIT] == written[_LIMIT], "the worker's env is what actually ships"
+    assert calls, "the zoo must be the one re-sizing, so its formulas stay the single source"
+    assert calls[0].total_ram_bytes < 32 * _GB, "it should be asked about a smaller machine"
+    # Every derived number moves together; a limit shrunk on its own would leave the per-file and
+    # concurrency values describing a budget that no longer exists.
+    assert int(written["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"]) < int(
+        unclamped["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"]
+    )
+
+
+def test_clamp_bottoms_out_at_the_zoos_own_floor(monkeypatch):
+    """Below the floor the answer is a different transport, not a tinier buffer: Xet has a minimum
+    it can work in, and ``_memory_pressure_reason`` routes a machine this tight to HTTP."""
+    import utils.hf_xet_fallback as shim
+
+    module = _fake_tuning(32 * _GB, 1 * _GB)
+    unclamped = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 1 * _GB))
+
+    written = shim.clamp_to_available_ram({}, dict(unclamped), module = module)
+    assert int(written[_LIMIT]) == module._MIN_BUFFER_LIMIT
+    assert int(written[_LIMIT]) < int(unclamped[_LIMIT])
+
+
+def test_clamp_never_writes_a_key_the_user_set(monkeypatch):
+    """The zoo's apply is setdefault, so a user-set variable never reaches ``sized`` and must not be
+    reintroduced here. Same mechanism covers HF_XET_HIGH_PERFORMANCE: the zoo drops its caps, no
+    budget key arrives, and the clamp stands down with it."""
+    import utils.hf_xet_fallback as shim
+
+    calls = []
+    module = _fake_tuning(32 * _GB, 1 * _GB, calls = calls)
+
+    # High-performance stand-down: no budget key in what the zoo wrote.
+    env = {"HF_XET_HIGH_PERFORMANCE": "1"}
+    assert shim.clamp_to_available_ram(env, {}, module = module) == {}
+    assert env == {"HF_XET_HIGH_PERFORMANCE": "1"}
+    assert calls == [], "with no caps to clamp there is nothing to re-size"
+
+    # A user-pinned per-file size is absent from `sized` for the same reason; clamping the rest must
+    # not write it back at our number.
+    sized = {_LIMIT: str(8 * _GB)}
+    env = {_LIMIT: str(8 * _GB), "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE": "999"}
+    written = shim.clamp_to_available_ram(env, sized, module = module)
+    assert set(written) == {_LIMIT}, "only keys the zoo wrote are ours to rewrite"
+    assert env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE"] == "999"
+
+
+def test_clamp_stands_down_when_ram_cannot_be_measured(monkeypatch):
+    """No psutil, no cgroup, or a zoo too old to expose a profile: absence of evidence is not
+    evidence of pressure, so the download runs as before."""
+    import types
+
+    import utils.hf_xet_fallback as shim
+
+    sized = {_LIMIT: str(8 * _GB)}
+
+    unmeasurable = _fake_tuning(0, 0)
+    assert shim.clamp_to_available_ram({}, dict(sized), module = unmeasurable) == sized
+
+    old_zoo = types.SimpleNamespace(apply_xet_env = lambda *a, **k: {})
+    assert shim.clamp_to_available_ram({}, dict(sized), module = old_zoo) == sized
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("no")
+
+    raising = types.SimpleNamespace(xet_env_overrides = _boom, system_profile = _boom)
+    assert (
+        shim.clamp_to_available_ram({}, dict(sized), module = raising) == sized
+    ), "a clamp must never be the thing that breaks a download"
+
+
+def test_clamp_holds_against_the_real_zoo_formulas():
+    """The fakes above pin the seam; this pins the arithmetic, so a zoo that changes how it sizes
+    cannot quietly reintroduce a budget bigger than free RAM."""
+    tuning = pytest.importorskip("unsloth_zoo.hf_xet_tuning")
+
+    idle = tuning.SystemProfile(
+        total_ram_bytes = 32 * 1024**3,
+        available_ram_bytes = 30 * _GB,
+        cpu_count = 24,
+        ram_source = "psutil",
+        cpu_source = "affinity",
+        free_disk_bytes = 500 * _GB,
+        disk_source = "statvfs",
+    )
+    import dataclasses
+
+    loaded = dataclasses.replace(idle, available_ram_bytes = 8 * _GB)
+
+    import types
+
+    import utils.hf_xet_fallback as shim
+
+    sized = dict(tuning.xet_env_overrides(idle, fail_fast = True))
+
+    def _module_for(profile):
+        return types.SimpleNamespace(
+            xet_env_overrides = tuning.xet_env_overrides,
+            system_profile = lambda cache_dir = None: profile,
+            _MIN_BUFFER_LIMIT = tuning._MIN_BUFFER_LIMIT,
+            _RAM_FRACTION = tuning._RAM_FRACTION,
+        )
+
+    assert (
+        shim.clamp_to_available_ram({}, dict(sized), module = _module_for(idle)) == sized
+    ), "30GB free must still buy the zoo's own 32GB-machine budget"
+
+    clamped = shim.clamp_to_available_ram({}, dict(sized), module = _module_for(loaded))
+    assert int(clamped[_LIMIT]) <= 8 * _GB // 4, "a 27B model resident must shrink the budget"
+    assert int(clamped[_LIMIT]) < int(sized[_LIMIT])
+
+
+def test_clamp_never_raises_a_value_the_zoo_had_lowered():
+    """The recompute runs without the throttled flag that a 429 backoff sets, so the clamp must take
+    the smaller of the two per key. Otherwise shrinking buffers would restore the stream ceiling."""
+    import utils.hf_xet_fallback as shim
+
+    module = _fake_tuning(32 * _GB, 8 * _GB)
+    unclamped = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+    # As if a 429 had halved the ceiling on the way in.
+    throttled = dict(unclamped, HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY = "4")
+
+    written = shim.clamp_to_available_ram({}, dict(throttled), module = module)
+    assert int(written[_LIMIT]) < int(throttled[_LIMIT]), "the budget still has to shrink"
+    assert (
+        written["HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY"] == "4"
+    ), "a clamp that raises anything is not a clamp"
+
+
+def test_free_ram_pressure_reason_applies_the_zoos_own_floor(monkeypatch):
+    """The threshold logic itself, now that both transport callers share this one helper."""
+    import utils.hf_xet_fallback as shim
+
+    monkeypatch.setattr(shim, "available_ram_bytes", lambda: (2 * _GB, 4 * _GB))
+    reason = shim.free_ram_pressure_reason()
+    assert reason is not None and "2.0GB RAM free" in reason
+
+    monkeypatch.setattr(shim, "available_ram_bytes", lambda: (4 * _GB, 4 * _GB))
+    assert shim.free_ram_pressure_reason() is None, "at the floor is not below it"
+
+    monkeypatch.setattr(shim, "available_ram_bytes", lambda: (30 * _GB, 4 * _GB))
+    assert shim.free_ram_pressure_reason() is None
+
+    monkeypatch.setattr(shim, "available_ram_bytes", lambda: (None, 4 * _GB))
+    assert shim.free_ram_pressure_reason() is None, "unmeasurable is not pressure"
+
+    def _boom():
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(shim, "available_ram_bytes", _boom)
+    assert shim.free_ram_pressure_reason() is None
+
+
+# --- concurrent-worker reservations --------------------------------------------------------------
+# A worker allocates in the child, after Popen returns, so free RAM does not move until well after
+# sizing. Without reservations, downloads starting together each read the same untouched number.
+
+
+@pytest.fixture(autouse = True)
+def clean_ledger():
+    """Autouse: sizing reserves RAM, so any clamp test leaves a reservation that would otherwise
+    follow the process into the next test and shrink its budget."""
+    import utils.hf_xet_fallback as shim
+
+    shim._budget_reservations.clear()
+    shim._pending_reservation.token = None
+    yield shim
+    shim._budget_reservations.clear()
+    shim._pending_reservation.token = None
+
+
+def test_workers_starting_together_do_not_promise_the_same_ram_twice(clean_ledger):
+    """Four downloads queued at once each used to take a quarter of the same snapshot, promising the
+    whole machine before any of them had allocated a byte."""
+    import os
+
+    shim = clean_ledger
+    module = _fake_tuning(32 * _GB, 8 * _GB)
+    sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+
+    promised, budgets = 0, []
+    for _ in range(4):
+        written = shim.clamp_to_available_ram({}, dict(sized), module = module)
+        shim.bind_worker_budget(os.getpid())  # this process stands in for a live worker
+        budgets.append(int(written[_LIMIT]))
+        promised += budgets[-1]
+
+    # Strictly under, not merely equal: without the ledger these four land on exactly 8GB, a
+    # quarter each of the same snapshot, which is the whole bug.
+    assert promised < 8 * _GB, f"four workers promised {promised / _GB:.2f}GB of 8GB free"
+    assert budgets[1] < budgets[0], "the second worker ignored what the first was already promised"
+
+
+def test_a_reservation_frees_when_its_worker_exits(clean_ledger):
+    """Held forever, one finished download would shrink every later one on the machine."""
+    import subprocess
+    import sys
+
+    shim = clean_ledger
+    module = _fake_tuning(32 * _GB, 8 * _GB)
+    sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+
+    dead = subprocess.Popen([sys.executable, "-c", ""])
+    dead.wait()
+    shim.clamp_to_available_ram({}, dict(sized), module = module)
+    shim.bind_worker_budget(dead.pid)
+
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() == 0, "a finished worker still held RAM"
+
+
+def test_a_spawn_that_never_happened_does_not_leak(clean_ledger):
+    """Popen raising must not strand the reservation its sizing took."""
+    shim = clean_ledger
+    module = _fake_tuning(32 * _GB, 8 * _GB)
+    sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+
+    shim.clamp_to_available_ram({}, dict(sized), module = module)
+    shim.bind_worker_budget(None)
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() == 0
+
+    # And one never bound at all ages out rather than pinning RAM for the process's life.
+    shim.clamp_to_available_ram({}, dict(sized), module = module)
+    for entry in shim._budget_reservations.values():
+        entry[2] -= shim._UNBOUND_RESERVATION_TTL + 1
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() == 0
+
+
+def test_one_download_on_an_idle_machine_is_still_untouched(clean_ledger):
+    """The ledger must not cost the common case: nothing is reserved yet, so sizing is the zoo's."""
+    shim = clean_ledger
+    module = _fake_tuning(32 * _GB, 30 * _GB)
+    sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 30 * _GB))
+
+    assert shim.clamp_to_available_ram({}, dict(sized), module = module) == sized
+
+
+def test_the_transport_gate_counts_ram_promised_to_running_downloads(clean_ledger, monkeypatch):
+    """The clamp bottoms out at Xet's floor, so enough simultaneous workers would still add up past
+    free RAM. Subtracting reservations sends the next one to HTTP instead.
+
+    Both halves of that guard are asserted, because the promise and the RAM reading cover different
+    moments: three just-admitted workers have taken nothing yet, so only the ledger can stop the
+    fourth; three that have finished allocating are already missing from `available`, which stops it
+    without the ledger. `os.getpid()` stands in for all three, so its own RSS is stubbed out rather
+    than credited three times against promises it has nothing to do with."""
+    import os
+
+    shim = clean_ledger
+    monkeypatch.setattr(shim, "available_ram_bytes", lambda: (8 * _GB, 4 * _GB))
+    assert shim.free_ram_pressure_reason() is None, "8GB free is not pressure on its own"
+
+    module = _fake_tuning(32 * _GB, 8 * _GB)
+    sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: 0)  # spawned, nothing allocated yet
+    promised = 0
+    for _ in range(3):
+        written = shim.clamp_to_available_ram({}, dict(sized), module = module)
+        shim.bind_worker_budget(os.getpid())
+        promised += int(written[_LIMIT])
+
+    reason = shim.free_ram_pressure_reason()
+    assert reason is not None, "three running downloads left too little RAM for a fourth on Xet"
+    assert "RAM free" in reason
+
+    # Same three workers once their buffers are resident: the promises are spent, and the RAM
+    # reading they have already moved is what refuses the fourth.
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: promised)
+    monkeypatch.setattr(shim, "available_ram_bytes", lambda: (8 * _GB - promised, 4 * _GB))
+    assert (
+        shim.free_ram_pressure_reason() is not None
+    ), "three allocated downloads left too little RAM for a fourth on Xet"
+
+
+def test_a_resident_promise_is_not_charged_against_free_ram_twice(clean_ledger, monkeypatch):
+    """Once a worker's buffers are resident, `available` has already dropped by them.
+
+    The reservation exists to cover the gap between sizing and allocation, so charging the whole
+    promise on top of a reading that already reflects it counts the same bytes twice for the
+    worker's entire lifetime. On an 8GB-free host that is the difference between the next Auto
+    download getting Xet and being told "only 2.0GB RAM free" while 4GB genuinely is."""
+    import os
+
+    shim = clean_ledger
+    module = _fake_tuning(32 * _GB, 8 * _GB)
+    sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+
+    written = shim.clamp_to_available_ram({}, dict(sized), module = module)
+    promise = int(written[_LIMIT])
+    shim.bind_worker_budget(os.getpid())
+
+    # Not yet allocated: the promise is the only thing standing between the sibling and this RAM.
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: 0)
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() == promise
+
+    # Allocated: `available` fell by `promise`, so the ledger must stop asking for it again.
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: promise)
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() == 0, "a resident promise was subtracted a second time"
+
+    # Half in flight leaves exactly the unmaterialized half reserved.
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: promise // 2)
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() == promise - promise // 2
+
+    # And the gate follows: 8GB free with one fully resident 2GB worker is 6GB, not 4GB, so Auto
+    # for the next download stays on Xet.
+    monkeypatch.setattr(shim, "available_ram_bytes", lambda: (8 * _GB - promise, 4 * _GB))
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: promise)
+    assert (
+        shim.free_ram_pressure_reason() is None
+    ), "the next Auto download was demoted to HTTP over RAM its sibling never took"
+
+
+def test_the_ledger_reads_a_real_workers_rss(clean_ledger):
+    """The credit above is only correct if the psutil read actually works on a live child."""
+    import subprocess
+    import sys
+
+    shim = clean_ledger
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"],
+        stdin = subprocess.PIPE,
+    )
+    try:
+        rss = shim._worker_rss(child.pid)
+        assert rss > 0, "a running interpreter reported no resident memory"
+    finally:
+        child.stdin.close()
+        child.wait(timeout = 30)
+
+    # An exited worker cannot be read, and an unreadable one keeps its whole promise reserved.
+    assert shim._worker_rss(child.pid) == 0 or not shim._pid_alive(child.pid)
+
+
+def test_concurrent_sizings_cannot_all_claim_the_same_free_ram(clean_ledger):
+    """The reservation tests above start workers one after another, which never exercises the race:
+    read the ledger, then reserve, with a gap in between. These threads sit in that gap together.
+
+    The barrier is in system_profile, which the clamp reads OUTSIDE the lock, so all four arrive at
+    the decision at once; the sleep in xet_env_overrides widens the read-to-reserve window that a
+    split critical section would leave open."""
+    import os
+    import threading
+    import time
+
+    shim = clean_ledger
+    workers = 4
+    barrier = threading.Barrier(workers)
+    profile_cls = _fake_profile_cls()
+    profile = profile_cls(32 * _GB, 8 * _GB)
+
+    def _overrides(prof, **kwargs):
+        time.sleep(0.02)
+        limit = max(1 * _GB, prof.total_ram_bytes // 8)
+        return {
+            _LIMIT: str(limit),
+            "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE": str(limit // 2),
+            "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE": str(limit // 32),
+            "HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS": "8",
+        }
+
+    def _profile_of(cache_dir = None):
+        barrier.wait(timeout = 10)
+        return profile
+
+    module = _types.SimpleNamespace(
+        xet_env_overrides = _overrides,
+        system_profile = _profile_of,
+        _MIN_BUFFER_LIMIT = 1 * _GB,
+        _RAM_FRACTION = 8,
+    )
+    sized = _overrides(profile)
+
+    granted: list[int] = []
+    lock = threading.Lock()
+
+    def _size():
+        written = shim.clamp_to_available_ram({}, dict(sized), module = module)
+        shim.bind_worker_budget(os.getpid())
+        with lock:
+            granted.append(int(written[_LIMIT]))
+
+    threads = [threading.Thread(target = _size) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout = 30)
+
+    assert len(granted) == workers, "a sizing thread never finished"
+    total = sum(granted)
+    assert total < 8 * _GB, (
+        f"{workers} concurrent sizings promised {total / _GB:.2f}GB of 8GB free; "
+        "the ledger read and the reservation are not one decision"
+    )
+    assert len(set(granted)) > 1, "identical budgets means they all read the same snapshot"
+
+
+def test_the_ledgers_liveness_probe_never_signals_on_windows(clean_ledger, monkeypatch):
+    """`os.kill(pid, 0)` is not a probe on Windows.
+
+    CPython's `os_kill_impl` routes every signal other than CTRL_C_EVENT/CTRL_BREAK_EVENT into
+    `OpenProcess(PROCESS_ALL_ACCESS)` + `TerminateProcess(handle, sig)`, so signal 0 KILLS the
+    target. The ledger prunes dead reservations on every sizing and on every capability probe, so
+    the old probe would terminate a running download merely because a second one was considered."""
+    import os as _os
+
+    import utils.process_lifetime as pl
+
+    shim = clean_ledger
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+
+    signalled: list[tuple] = []
+
+    def _forbidden(pid, sig):
+        signalled.append((pid, sig))
+        raise AssertionError("os.kill must never be reached on Windows")
+
+    monkeypatch.setattr(_os, "kill", _forbidden)
+
+    shim._pid_alive(_os.getpid())
+    assert signalled == [], "the liveness probe signalled the worker it was asking about"
+
+
+def test_a_running_worker_keeps_its_reservation_on_windows(clean_ledger, monkeypatch):
+    """The Windows probe must also answer correctly, or every reservation is pruned on sight and
+    concurrent workers go back to promising the same free RAM."""
+    import ctypes
+    import os as _os
+
+    import utils.process_lifetime as pl
+
+    shim = clean_ledger
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(_os, "kill", _fail_on_kill)
+
+    WAIT_TIMEOUT = 0x102
+
+    class _FakeKernel32:
+        def __init__(self, *_args, **_kwargs):
+            self.OpenProcess = _FakeFn(0xBEEF)
+            self.WaitForSingleObject = _FakeFn(WAIT_TIMEOUT)  # still running
+            self.CloseHandle = _FakeFn(1)
+
+    monkeypatch.setattr(ctypes, "WinDLL", _FakeKernel32, raising = False)
+
+    assert shim._pid_alive(4321) is True
+
+    module = _fake_tuning(32 * _GB, 8 * _GB)
+    sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+    shim.clamp_to_available_ram({}, dict(sized), module = module)
+    shim.bind_worker_budget(4321)
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() > 0, "a live Windows worker's reservation was pruned"
+
+    # And an exited worker (handle signalled) frees its reservation.
+    class _FakeKernel32Dead(_FakeKernel32):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.WaitForSingleObject = _FakeFn(0)  # WAIT_OBJECT_0: exited
+
+    monkeypatch.setattr(ctypes, "WinDLL", _FakeKernel32Dead, raising = False)
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() == 0, "an exited Windows worker still held RAM"
+
+
+class _FakeFn:
+    """A stand-in for a ctypes function pointer: assignable argtypes/restype, fixed return."""
+
+    def __init__(self, result):
+        self._result = result
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, *_args, **_kwargs):
+        return self._result
+
+
+def _fail_on_kill(pid, sig):
+    raise AssertionError("os.kill must never be reached on Windows")

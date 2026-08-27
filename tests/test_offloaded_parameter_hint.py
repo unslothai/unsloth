@@ -144,9 +144,19 @@ def test_the_original_error_is_still_reported():
     repo's ruff hook may merge the hint into the same f-string or split it out
     again, and either shape satisfies what this is actually checking.
     """
-    for anchor in ("Failed to save/merge model: {e}", "Failed to save model: {e}"):
-        i = SRC.index(anchor)
-        assert "_offloaded_parameter_hint" in SRC[i : i + 200]
+    for anchor in ("Failed to save/merge model: ", "Failed to save model: "):
+        # All occurrences, not the first: a docstring also quotes these messages.
+        windows = []
+        i = SRC.find(anchor)
+        assert i != -1, anchor
+        while i != -1:
+            windows.append(SRC[i : i + 200])
+            i = SRC.find(anchor, i + 1)
+        # `{e}` is empty when the exception has no args, so the type-leading form counts too.
+        assert any(
+            ("{e}" in w or "_describe_exception(e)" in w) and "_offloaded_parameter_hint" in w
+            for w in windows
+        ), anchor
 
 
 def test_it_still_raises_runtimeerror():

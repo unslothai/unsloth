@@ -918,6 +918,27 @@ def _is_stream(dataset):
 
 _SCAN_ROWS = 1024
 
+# A producer that truncates every row itself can say so and be believed without a
+# scan: scanning a lazily-tokenizing split (`with_transform`) would tokenize every
+# row in `__init__`, the exact eager pass it exists to avoid. Only a cap at or
+# below the enforced one counts.
+_TRUNCATION_ATTESTATION_ATTR = "_unsloth_truncated_to"
+
+
+def _attested_within_cap(dataset, cap):
+    """The split's own truncation-width claim, or None if it makes none.
+
+    Read from `__dict__`, not `getattr`: `_CappedBase.__getattr__` forwards to the
+    inner split, so a wrapper would inherit a guarantee it does not carry.
+    """
+    own = getattr(dataset, "__dict__", None)
+    if not isinstance(own, dict):
+        return None
+    claimed = own.get(_TRUNCATION_ATTESTATION_ATTR)
+    if not isinstance(claimed, int) or isinstance(claimed, bool):
+        return None
+    return claimed <= cap
+
 
 def pretokenized_within_cap(dataset, cap):
     """Whether every pre-tokenized row in `dataset` already fits `cap`.
@@ -936,6 +957,9 @@ def pretokenized_within_cap(dataset, cap):
     """
     if dataset is None:
         return True
+    attested = _attested_within_cap(dataset, cap)
+    if attested is not None:
+        return attested
     try:
         try:
             n = len(dataset)
@@ -2716,6 +2740,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "    _UNSLOTH_SCAN_ROWS = 1024\n"
                     "    def _unsloth_within_cap(_ds):\n"
                     "        if _ds is None: return True\n"
+                    # Believe a producer's own truncation claim: scanning a
+                    # `with_transform` split would tokenize every row in `__init__`,
+                    # the eager pass it exists to avoid. Read from `__dict__` so a
+                    # wrapper does not inherit the inner split's claim.
+                    "        _unsloth_own = getattr(_ds, '__dict__', None)\n"
+                    "        if isinstance(_unsloth_own, dict):\n"
+                    "            _unsloth_claim = _unsloth_own.get('_unsloth_truncated_to')\n"
+                    "            if isinstance(_unsloth_claim, int) and not isinstance(_unsloth_claim, bool):\n"
+                    "                return _unsloth_claim <= _unsloth_cap\n"
                     "        try:\n"
                     "            try:    _n = len(_ds)\n"
                     "            except Exception: _n = None\n"
@@ -3042,6 +3075,25 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # as a bare `StopIteration` naming nothing at all.
                     "        if _unsloth_emptied:\n"
                     "            raise ValueError('Unsloth: truncating to `max_length = ' + str(args.max_length) + '` left every row with no supervised token, so there is nothing to train on. The supervised part of your rows starts past that length: raise `max_length`, or set `truncation_mode = \"keep_end\"` if the completion sits at the end of each row.')\n"
+                    # A producer that truncates every row enforces the cap just as
+                    # `truncate_dataset` would, so keep padding-free rather than pay the
+                    # fallback for a guarantee already held. Unsloth's online tokenization
+                    # is this shape: a `with_transform` view capped on read, invisible
+                    # without reading -- and reading it all is the eager pass it avoids.
+                    # Not under `eval_packing`: that split is meant to be overlength and
+                    # the packer needs the `max_length` this branch clears.
+                    "    if not _unsloth_prep_truncates and not _unsloth_eval_packing:\n"
+                    "        def _unsloth_attests(_ds):\n"
+                    "            if _ds is None: return True\n"
+                    "            _own = getattr(_ds, '__dict__', None)\n"
+                    "            if not isinstance(_own, dict): return False\n"
+                    "            _claim = _own.get('_unsloth_truncated_to')\n"
+                    "            if not isinstance(_claim, int) or isinstance(_claim, bool): return False\n"
+                    "            return _claim <= _unsloth_cap\n"
+                    "        _unsloth_attest_eval = eval_dataset if 'eval_dataset' in locals() else None\n"
+                    "        _unsloth_attest_splits = list(_unsloth_attest_eval.values()) if isinstance(_unsloth_attest_eval, dict) else [_unsloth_attest_eval]\n"
+                    "        if _unsloth_attests(train_dataset) and all(_unsloth_attests(_s) for _s in _unsloth_attest_splits):\n"
+                    "            _unsloth_prep_truncates = True\n"
                     "    if _unsloth_prep_truncates:\n"
                     "        args.max_seq_length = args.max_length\n"
                     "        args.max_length = None\n"
@@ -4264,16 +4316,6 @@ def patch_trl_openenv():
     for function in RL_ADDITIONAL_FUNCTIONS["openenv"]:
         logger.info(f"Unsloth: Patching trl openenv with function: {function.__name__}")
         function()  # Call the function to apply the patch
-    return
-
-
-def patch_trl_vllm_generation():
-    # trl moved vllm stuff to trl/generation/vllm_generation.py
-    # We need to min_p patch it to not instantiate another vLLM instance if we already have one with fast_inference
-    # Find the instance of self.llm = LLM(..) (multiline) and wrap it around an if clause
-    for function in RL_ADDITIONAL_FUNCTIONS["vllm_generation"]:
-        logger.info(f"Unsloth: Patching trl VLLMGeneration with function: {function.__name__}")
-        function()
     return
 
 
