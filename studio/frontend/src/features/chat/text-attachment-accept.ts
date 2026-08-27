@@ -710,6 +710,21 @@ export async function readTextAttachment(file: File): Promise<string> {
   return decodeTextAttachmentBytes(bytes, file.name);
 }
 
+// Dropped with the File itself, so a removed attachment retains nothing.
+const decodedOnce = new WeakMap<File, string>();
+
+/** Decode once per file. The composer decodes while attaching, to report a bad
+ *  encoding there, and sending the same file must not read all of it again. */
+export async function readTextAttachmentOnce(file: File): Promise<string> {
+  const cached = decodedOnce.get(file);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const text = await readTextAttachment(file);
+  decodedOnce.set(file, text);
+  return text;
+}
+
 // MIME is unreliable for source files, so match by extension too.
 export const TEXT_ATTACHMENT_ACCEPT = [
   "text/plain,text/markdown,text/csv,text/tab-separated-values,text/xml,text/json,text/css",

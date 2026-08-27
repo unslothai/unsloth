@@ -22,6 +22,7 @@ import {
   isCompiledFortranModule,
   pickerAcceptForTextBasenames,
   readTextAttachment,
+  readTextAttachmentOnce,
   UndecodableTextError,
 } from "../src/features/chat/text-attachment-accept.ts";
 import {
@@ -961,6 +962,45 @@ test("the browser text cap matches the native one", () => {
   assert.equal(
     Number(native) * 1024 * 1024,
     MAX_TEXT_ATTACHMENT_BYTES,
+  );
+});
+
+test("a text attachment is read once, not once per stage", async () => {
+  // The composer decodes while attaching so a bad encoding is reported there;
+  // sending must reuse that answer rather than read the whole file again.
+  const file = new File(["hello"], "notes.txt");
+  let reads = 0;
+  const real = file.arrayBuffer.bind(file);
+  Object.defineProperty(file, "arrayBuffer", {
+    value: () => {
+      reads += 1;
+      return real();
+    },
+  });
+  assert.equal(await readTextAttachmentOnce(file), "hello");
+  assert.equal(await readTextAttachmentOnce(file), "hello");
+  assert.equal(reads, 1);
+  // A different file is its own entry, not a stale hit.
+  assert.equal(await readTextAttachmentOnce(new File(["bye"], "b.txt")), "bye");
+});
+
+test("both attachment stages go through the decode-once path", () => {
+  const provider = readFileSync(
+    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+    "utf8",
+  );
+  const adapter = provider.slice(
+    provider.indexOf("class TextAttachmentAdapter"),
+    provider.indexOf("class HtmlAttachmentAdapter"),
+  );
+  assert.ok(adapter.length > 0, "text adapter not found");
+  assert.equal(adapter.includes("readTextAttachmentOnce"), true);
+  // The unbounded read stays out of both stages.
+  assert.equal(/await readTextAttachment\(/.test(adapter), false);
+  // The size cap comes before any read, including the signature slices.
+  assert.ok(
+    adapter.indexOf("MAX_TEXT_ATTACHMENT_BYTES") <
+      adapter.indexOf("isBinaryPropertyList"),
   );
 });
 

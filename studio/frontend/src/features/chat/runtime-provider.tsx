@@ -64,7 +64,7 @@ import {
   isBinaryOfficeTemplate,
   isCompiledFortranModule,
   isBinaryVobSubSubtitle,
-  readTextAttachment,
+  readTextAttachmentOnce,
   UndecodableTextError,
 } from "./text-attachment-accept";
 import {
@@ -414,7 +414,7 @@ class TextAttachmentAdapter implements AttachmentAdapter {
     // Decodes here so an unreadable encoding is reported while attaching rather
     // than at send, where the composer has no room to explain it.
     try {
-      await readTextAttachment(file);
+      await readTextAttachmentOnce(file);
     } catch (error) {
       if (error instanceof UndecodableTextError) {
         toast.error(error.message);
@@ -432,7 +432,7 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const text = await readTextAttachment(attachment.file);
+    const text = await readTextAttachmentOnce(attachment.file);
     return {
       id: attachment.id,
       type: "document",
