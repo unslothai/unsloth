@@ -4426,7 +4426,6 @@ async def _select_request_tools(
     try:
         from core.unforgettable_host import in_inner_generate
         from unforgettable.tools.specs import CONTACT_TOOLS, MEMORY_TOOLS
-
         if in_inner_generate():
             have = {t["function"]["name"] for t in tools}
             extras = [

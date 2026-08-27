@@ -799,7 +799,6 @@ __all__ = [
 
 def _install_tool_patches() -> None:
     from core.unforgettable_patches import install
-
     install()
 
 

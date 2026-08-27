@@ -1946,9 +1946,7 @@ class InferenceBackend:
                     snap = None
                     try:
                         if _adapter_state is not None:
-                            adapter_state, snap = prepare_sidecar_adapter(
-                                self, _adapter_state
-                            )
+                            adapter_state, snap = prepare_sidecar_adapter(self, _adapter_state)
                             self._apply_adapter_state(adapter_state)
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()

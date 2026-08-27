@@ -44,13 +44,11 @@ def install() -> None:
     def execute_tool(name, arguments, *args, **kwargs):
         if _is_memory_or_rims_tool(name):
             from unforgettable.tools.handlers import dispatch
-
             result = dispatch(name, arguments or {})
         else:
             result = original(name, arguments, *args, **kwargs)
         try:
             from unforgettable.loop.runtime import note_tool_result
-
             note_tool_result(name, arguments or {}, result)
         except Exception:
             pass
