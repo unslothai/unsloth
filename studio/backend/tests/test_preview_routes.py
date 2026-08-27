@@ -143,7 +143,8 @@ def test_page_keeps_assistant_turn_for_reasoning_only_reply(client):
     # format_chat_prompt drops it, so the follow-up is never answered.
     text = client.get(f"/p/demorun?k={_sig('demorun')}").text
     assert "if (hasContent || hasReasoning)" in text
-    assert "reply.reasoning_content = reasoning" in text
+    assert "if (hasReasoning) reply.reasoning_content = reasoning" in text
+    assert "if (reasoning.trim())" in text
 
 
 def test_page_recovers_from_empty_reply(client):

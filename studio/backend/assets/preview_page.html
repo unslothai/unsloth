@@ -445,11 +445,13 @@
                 if (!choice) continue;
                 if (choice.finish_reason === "length") truncated = true;
                 const delta = choice.delta || {};
-                if (delta.reasoning_content) {
+                if (typeof delta.reasoning_content === "string") {
                   reasoning += delta.reasoning_content;
-                  think.hidden = false;
-                  thinkText.textContent = reasoning;
-                  down();
+                  if (reasoning.trim()) {
+                    think.hidden = false;
+                    thinkText.textContent = reasoning;
+                    down();
+                  }
                 }
                 if (delta.content) {
                   acc += delta.content;
@@ -478,7 +480,7 @@
           // prompt repeats a role and is dropped to keep alternation.
           if (hasContent || hasReasoning) {
             const reply = { role: "assistant", content: acc };
-            if (reasoning) reply.reasoning_content = reasoning;
+            if (hasReasoning) reply.reasoning_content = reasoning;
             msgs.push(reply);
           }
           cutoff.hidden = !truncated;
