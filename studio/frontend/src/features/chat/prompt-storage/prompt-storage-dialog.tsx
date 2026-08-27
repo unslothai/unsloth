@@ -2280,12 +2280,16 @@ export function PromptStorageDialog({
     }
   }, [open, refreshEntries, refreshLists]);
 
-  useEffect(() => {
+  // In the handler, not an effect keyed to activeTab. An effect leaves one render
+  // of the new tab still holding the old query, and the keep-a-row-selected pass
+  // runs in it and drops the row that tab had selected.
+  const selectTab = useCallback((tab: Tab) => {
+    setActiveTab(tab);
     setSearchQuery("");
     setShowSuggestions(false);
     setShowNewPrompt(false);
     setShowNewList(false);
-  }, [activeTab]);
+  }, []);
 
   // Clear the search too: an active one the new entry does not match keeps it
   // out of the filtered rail, and the effect below bounces the selection off it.
@@ -2340,13 +2344,16 @@ export function PromptStorageDialog({
   // Keep a row selected whenever the filtered rail is non-empty, so the detail
   // pane never sits blank next to a list full of prompts. During render, not in
   // an effect: an effect paints the blank pane once before correcting it.
-  if (filteredPrompts.length === 0) {
-    if (selectedPromptId !== null) setSelectedPromptId(null);
-  } else if (!filteredPrompts.some((e) => e.id === selectedPromptId)) {
-    setSelectedPromptId(filteredPrompts[0].id);
-  }
-
-  if (filteredLists.length === 0) {
+  // The visible tab only. searchQuery is shared, so filtering one collection also
+  // filters the hidden one, and correcting against that dropped the row selected
+  // there: switching back cleared the query and landed on the first row instead.
+  if (activeTab === "prompts") {
+    if (filteredPrompts.length === 0) {
+      if (selectedPromptId !== null) setSelectedPromptId(null);
+    } else if (!filteredPrompts.some((e) => e.id === selectedPromptId)) {
+      setSelectedPromptId(filteredPrompts[0].id);
+    }
+  } else if (filteredLists.length === 0) {
     if (selectedListId !== null) setSelectedListId(null);
   } else if (!filteredLists.some((e) => e.id === selectedListId)) {
     setSelectedListId(filteredLists[0].id);
@@ -2537,7 +2544,7 @@ export function PromptStorageDialog({
                 <button
                   key={tab}
                   type="button"
-                  onClick={() => setActiveTab(tab)}
+                  onClick={() => selectTab(tab)}
                   className={cn(
                     "rounded-md px-4 py-1.5 text-xs font-medium transition-all",
                     activeTab === tab

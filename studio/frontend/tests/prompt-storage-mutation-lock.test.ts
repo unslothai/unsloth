@@ -335,3 +335,24 @@ test("a finished create only moves the view its own form still owns", async () =
     "the guard skips the draft reset, leaving a saved prompt marked unsaved",
   );
 });
+
+// searchQuery is shared by both tabs, so filtering one collection filters the
+// hidden one too. Correcting the hidden tab's selection against that dropped the
+// row it had, and clearing the query in an effect left one render to do it in.
+test("only the visible tab's selection is corrected", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(source, /if \(activeTab === "prompts"\) \{\n\s+if \(filteredPrompts\.length === 0\)/);
+  assert.match(source, /const selectTab = useCallback\(\(tab: Tab\) => \{/);
+  assert.doesNotMatch(
+    source,
+    /\}, \[activeTab\]\);/,
+    "the per-tab reset is an effect again, which renders once with the old query",
+  );
+  assert.doesNotMatch(source, /onClick=\{\(\) => setActiveTab\(tab\)\}/);
+});
