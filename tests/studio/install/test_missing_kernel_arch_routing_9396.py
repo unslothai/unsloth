@@ -909,13 +909,19 @@ def test_a_stale_per_arch_family_is_repaired_even_when_the_rocm_version_is_unrea
     exit stands -- and the stale-family repair, the only thing that would notice, never runs.
     Those wheels carry no gfx1200 kernels, so every later update preserves a torch that faults."""
     calls = _run_install(
-        gfx_devices = ("gfx1200",), inferred = None, rocm_version = None,
-        torch_probe = _ROCM_ARCH_TORCH, installed_family = "gfx110x-all",
+        gfx_devices = ("gfx1200",),
+        inferred = None,
+        rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
     )
     assert f"{_AMD}/gfx120X-all/" in calls, calls
     # A family that already matches still takes the exit, so an up-to-date host is untouched.
     _run_install(
-        gfx_devices = ("gfx1200",), inferred = None, rocm_version = None,
-        torch_probe = _ROCM_ARCH_TORCH, installed_family = "gfx120x-all",
+        gfx_devices = ("gfx1200",),
+        inferred = None,
+        rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx120x-all",
     )
     assert "skipping torch reinstall" in _run_install.printed, _run_install.printed

@@ -791,7 +791,9 @@ def _visible_devices_pinned() -> bool:
 
 
 def _pick_visible_index(
-    num_tokens: int, warn: bool = True, masks: "tuple[str, ...] | None" = None
+    num_tokens: int,
+    warn: bool = True,
+    masks: "tuple[str, ...] | None" = None,
 ) -> int:
     """Resolve HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES
     to an index into a list of length num_tokens. Returns 0 (first GPU) for
@@ -3314,9 +3316,11 @@ def _ensure_rocm_torch() -> None:
         # Only an AMD per-arch install is inspected: _installed_rocm_wheel_family() answers
         # None for a generic or unknowable one, which nothing here should second-guess.
         _installed_family = _installed_rocm_wheel_family()
-        _stale_arch_family = _installed_family is not None and _installed_family != (
-            _GFX_TO_AMD_INDEX_ARCH.get(_unknown_ver_gfx or "") or ""
-        ).lower()
+        _stale_arch_family = (
+            _installed_family is not None
+            and _installed_family
+            != (_GFX_TO_AMD_INDEX_ARCH.get(_unknown_ver_gfx or "") or "").lower()
+        )
         if (
             _rocm_pin is None
             and not _inferred_linux_gfx
