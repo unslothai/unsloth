@@ -553,11 +553,7 @@ def algo_filter(user_text: str) -> FilterResult:
     return FilterResult(kept = kept, stripped = tuple(picked), skipped = False)
 
 
-def merge_filter(
-    original: str,
-    algo: FilterResult,
-    llm: Optional[FilterResult],
-) -> FilterResult:
+def merge_filter(original: str, algo: FilterResult, llm: Optional[FilterResult]) -> FilterResult:
     """Union algo and parsed LLM spans. Recompute kept so the LLM cannot restore algo strips."""
     spans = list(algo.stripped)
     seen = {_span_key(item.span) for item in spans}

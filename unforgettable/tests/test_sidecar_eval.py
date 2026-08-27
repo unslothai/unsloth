@@ -156,7 +156,14 @@ class _JudgeHost:
         self.text = text
         self.calls = []
 
-    async def supervise(self, purpose, messages, *, model = None, max_tokens = 400):
+    async def supervise(
+        self,
+        purpose,
+        messages,
+        *,
+        model = None,
+        max_tokens = 400,
+    ):
         self.calls.append({"purpose": purpose, "model": model})
         return self.text
 
