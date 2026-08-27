@@ -31,7 +31,13 @@ from test_video_routes import _FakeBackend  # noqa: E402
 
 @pytest.mark.parametrize(
     "size, expected",
-    [(None, None), ("", None), ("auto", None), ("768x512", (768, 512)), (" 1216 X 704 ", (1216, 704))],
+    [
+        (None, None),
+        ("", None),
+        ("auto", None),
+        ("768x512", (768, 512)),
+        (" 1216 X 704 ", (1216, 704)),
+    ],
 )
 def test_parse_video_size_ok(size, expected):
     assert _parse_openai_video_size(size) == expected
@@ -43,7 +49,9 @@ def test_parse_video_size_rejects(size):
         _parse_openai_video_size(size)
 
 
-@pytest.mark.parametrize("seconds, expected", [(None, None), ("", None), ("4", 4.0), ("2.5", 2.5), ("12", 12.0)])
+@pytest.mark.parametrize(
+    "seconds, expected", [(None, None), ("", None), ("4", 4.0), ("2.5", 2.5), ("12", 12.0)]
+)
 def test_parse_video_seconds_ok(seconds, expected):
     assert _parse_openai_video_seconds(seconds) == expected
 
@@ -72,7 +80,14 @@ class _GatedBackend(_FakeBackend):
         self.fail_with: str | None = None
         self.last_generate_kwargs: dict = {}
 
-    def generate(self, *, prompt, seed = None, cancel_event = None, **kwargs):
+    def generate(
+        self,
+        *,
+        prompt,
+        seed = None,
+        cancel_event = None,
+        **kwargs,
+    ):
         self.last_generate_kwargs = {"prompt": prompt, "seed": seed, **kwargs}
         if self.fail_with is not None:
             raise ValueError(self.fail_with)
@@ -130,12 +145,20 @@ def _multipart(fields: dict, files: dict | None = None) -> tuple[bytes, str]:
     return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
 
-def _create(client, fields: dict, files: dict | None = None):
+def _create(
+    client,
+    fields: dict,
+    files: dict | None = None,
+):
     body, content_type = _multipart(fields, files)
     return client.post("/v1/videos", content = body, headers = {"Content-Type": content_type})
 
 
-def _wait_terminal(client, video_id: str, timeout = 5.0) -> dict:
+def _wait_terminal(
+    client,
+    video_id: str,
+    timeout = 5.0,
+) -> dict:
     deadline = time.monotonic() + timeout
     video: dict = {}
     while time.monotonic() < deadline:
@@ -148,7 +171,12 @@ def _wait_terminal(client, video_id: str, timeout = 5.0) -> dict:
     raise AssertionError(f"job never reached a terminal state: {video}")
 
 
-def _save_clip(prompt: str, created_at: str, video_id: str | None = None, model: str = "unsloth/LTX-2.3-GGUF") -> dict:
+def _save_clip(
+    prompt: str,
+    created_at: str,
+    video_id: str | None = None,
+    model: str = "unsloth/LTX-2.3-GGUF",
+) -> dict:
     return gallery_module.save(
         b"OLD-MP4",
         {
@@ -171,7 +199,10 @@ def _save_clip(prompt: str, created_at: str, video_id: str | None = None, model:
 
 
 def test_create_like_the_sdk_poll_download_list_delete(client, backend):
-    resp = _create(client, {"prompt": "a red fox in snow", "model": "sora-2", "seconds": "4", "size": "768x512"})
+    resp = _create(
+        client,
+        {"prompt": "a red fox in snow", "model": "sora-2", "seconds": "4", "size": "768x512"},
+    )
     assert resp.status_code == 200, resp.json()
     job = resp.json()
     assert job["object"] == "video"
@@ -198,7 +229,10 @@ def test_create_like_the_sdk_poll_download_list_delete(client, backend):
     assert content.status_code == 200
     assert content.headers["content-type"].startswith("video/mp4")
     assert content.content == b"MP4-FAKE-BYTES"
-    assert client.get(f"/v1/videos/{job['id']}/content", params = {"variant": "video"}).status_code == 200
+    assert (
+        client.get(f"/v1/videos/{job['id']}/content", params = {"variant": "video"}).status_code
+        == 200
+    )
 
     listing = client.get("/v1/videos").json()
     assert listing["object"] == "list"
@@ -272,7 +306,10 @@ def test_a_failed_job_reports_its_error_and_keeps_it_after_the_next_job(client, 
     job = _create(client, {"prompt": "bad"}).json()
     failed = _wait_terminal(client, job["id"])
     assert failed["status"] == "failed" and failed["progress"] == 0
-    assert failed["error"] == {"code": "video_generation_failed", "message": "Prompt rejected by the model."}
+    assert failed["error"] == {
+        "code": "video_generation_failed",
+        "message": "Prompt rejected by the model.",
+    }
     content = client.get(f"/v1/videos/{job['id']}/content")
     assert content.status_code == 400
     assert content.json()["error"]["code"] == "video_generation_failed"
@@ -336,7 +373,9 @@ def test_missing_prompt_is_a_400_naming_the_param(client, backend):
     assert resp.json()["error"]["param"] == "prompt"
     resp = _create(client, {"model": "sora-2"})
     assert resp.status_code == 400 and resp.json()["error"]["param"] == "prompt"
-    resp = client.post("/v1/videos", content = b"not json", headers = {"Content-Type": "application/json"})
+    resp = client.post(
+        "/v1/videos", content = b"not json", headers = {"Content-Type": "application/json"}
+    )
     assert resp.status_code == 400 and "error" in resp.json()
 
 
@@ -382,13 +421,20 @@ def test_input_reference_upload_becomes_the_first_frame(client, backend, monkeyp
     captured: dict = {}
     monkeypatch.setattr(backend, "begin_generate", lambda **kwargs: captured.update(kwargs))
     png = b"\x89PNG\r\n\x1a\nfake"
-    resp = _create(client, {"prompt": "animate this"}, {"input_reference": ("frame.png", png, "image/png")})
+    resp = _create(
+        client, {"prompt": "animate this"}, {"input_reference": ("frame.png", png, "image/png")}
+    )
     assert resp.status_code == 200, resp.json()
     assert captured["first_frame"].startswith("data:image/png;base64,")
     assert captured["video_id"] == resp.json()["id"]
-    resp = _create(client, {"prompt": "x", "input_reference[image_url]": "data:image/jpeg;base64,AAAA"})
+    resp = _create(
+        client, {"prompt": "x", "input_reference[image_url]": "data:image/jpeg;base64,AAAA"}
+    )
     assert resp.status_code == 200 and captured["first_frame"] == "data:image/jpeg;base64,AAAA"
-    resp = client.post("/v1/videos", json = {"prompt": "x", "input_reference": {"image_url": "data:image/png;base64,BBBB"}})
+    resp = client.post(
+        "/v1/videos",
+        json = {"prompt": "x", "input_reference": {"image_url": "data:image/png;base64,BBBB"}},
+    )
     assert resp.status_code == 200 and captured["first_frame"] == "data:image/png;base64,BBBB"
 
 
@@ -397,9 +443,14 @@ def test_input_reference_refusals(client, backend):
     resp = _create(client, {"prompt": "x"}, {"input_reference": ("frame.png", png, "image/png")})
     assert resp.status_code == 400, resp.json()
     assert resp.json()["error"]["param"] == "input_reference"
-    resp = client.post("/v1/videos", json = {"prompt": "x", "input_reference": {"image_url": "https://example.com/a.png"}})
+    resp = client.post(
+        "/v1/videos",
+        json = {"prompt": "x", "input_reference": {"image_url": "https://example.com/a.png"}},
+    )
     assert resp.status_code == 400 and "not fetched" in resp.json()["error"]["message"]
-    resp = client.post("/v1/videos", json = {"prompt": "x", "input_reference": {"file_id": "file_123"}})
+    resp = client.post(
+        "/v1/videos", json = {"prompt": "x", "input_reference": {"file_id": "file_123"}}
+    )
     assert resp.status_code == 400 and resp.json()["error"]["param"] == "input_reference"
     resp = _create(client, {"prompt": "x"}, {"input_reference": ("a.txt", b"hello", "text/plain")})
     assert resp.status_code == 400 and "must be an image" in resp.json()["error"]["message"]
@@ -410,13 +461,23 @@ def test_octet_stream_uploads_are_sniffed(client, backend, monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(backend, "begin_generate", lambda **kwargs: captured.update(kwargs))
     jpeg = b"\xff\xd8\xff\xe0fake"
-    resp = _create(client, {"prompt": "x"}, {"input_reference": ("frame.bin", jpeg, "application/octet-stream")})
+    resp = _create(
+        client,
+        {"prompt": "x"},
+        {"input_reference": ("frame.bin", jpeg, "application/octet-stream")},
+    )
     assert resp.status_code == 200, resp.json()
     assert captured["first_frame"].startswith("data:image/jpeg;base64,")
     webp = b"RIFF\x00\x00\x00\x00WEBPVP8 "
-    resp = _create(client, {"prompt": "x"}, {"input_reference": ("frame", webp, "application/octet-stream")})
+    resp = _create(
+        client, {"prompt": "x"}, {"input_reference": ("frame", webp, "application/octet-stream")}
+    )
     assert resp.status_code == 200 and captured["first_frame"].startswith("data:image/webp;base64,")
-    resp = _create(client, {"prompt": "x"}, {"input_reference": ("blob.bin", b"not an image", "application/octet-stream")})
+    resp = _create(
+        client,
+        {"prompt": "x"},
+        {"input_reference": ("blob.bin", b"not an image", "application/octet-stream")},
+    )
     assert resp.status_code == 400 and resp.json()["error"]["param"] == "input_reference"
 
 
@@ -439,7 +500,15 @@ def test_create_hands_the_model_to_auto_switch(client, backend, monkeypatch):
     calls: list = []
 
     async def _record(model, **kwargs):
-        calls.append((model, kwargs["owner"], kwargs["openai_errors"], kwargs["hf_token"], kwargs["before_switch"] is not None))
+        calls.append(
+            (
+                model,
+                kwargs["owner"],
+                kwargs["openai_errors"],
+                kwargs["hf_token"],
+                kwargs["before_switch"] is not None,
+            )
+        )
 
     monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _record)
     resp = client.post(

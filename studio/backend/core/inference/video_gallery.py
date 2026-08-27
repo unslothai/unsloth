@@ -33,7 +33,9 @@ def gallery_dir() -> Path:
 
 
 def save(
-    mp4_bytes: bytes, meta: dict[str, Any], video_id: Optional[str] = None
+    mp4_bytes: bytes,
+    meta: dict[str, Any],
+    video_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Persist encoded MP4 bytes plus their recipe sidecar; return the record."""
     if video_id is None:

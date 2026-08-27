@@ -815,7 +815,11 @@ _jobs_lock = threading.Lock()
 
 
 def _openai_video_error(
-    status: int, message: str, *, code: Optional[str] = None, param: Optional[str] = None
+    status: int,
+    message: str,
+    *,
+    code: Optional[str] = None,
+    param: Optional[str] = None,
 ) -> HTTPException:
     return HTTPException(
         status_code = status,
@@ -916,7 +920,9 @@ def _record_to_job(record: dict, job: Optional[_VideoJob] = None) -> VideoJob:
     completed = (job.completed_at if job is not None else None) or saved_at or created
     return VideoJob(
         id = record["id"],
-        model = public_model_id(str(record.get("model") or (job.model if job is not None else "") or "video")),
+        model = public_model_id(
+            str(record.get("model") or (job.model if job is not None else "") or "video")
+        ),
         status = "completed",
         progress = 100,
         created_at = created,
@@ -1051,7 +1057,9 @@ async def _read_video_create_body(request: Request) -> tuple[dict, Any]:
         raise _openai_video_error(400, "Request body must be JSON or multipart/form-data.")
     if not isinstance(data, dict):
         raise _openai_video_error(400, "Request body must be a JSON object.")
-    return {key: data.get(key) for key in _VIDEO_CREATE_FIELDS if key in data}, data.get("input_reference")
+    return {key: data.get(key) for key in _VIDEO_CREATE_FIELDS if key in data}, data.get(
+        "input_reference"
+    )
 
 
 def _validate_create_fields(fields: dict) -> VideoJobCreateRequest:
@@ -1093,7 +1101,9 @@ async def _reference_to_data_url(reference: Any) -> Optional[str]:
         sniffed = _sniff_image_type(data)
         if not content_type.startswith("image/"):
             if sniffed is None:
-                raise _openai_video_error(400, "input_reference must be an image.", param = "input_reference")
+                raise _openai_video_error(
+                    400, "input_reference must be an image.", param = "input_reference"
+                )
             content_type = sniffed
         encoded = base64.b64encode(data).decode("ascii")
         return f"data:{content_type};base64,{encoded}"
@@ -1239,7 +1249,9 @@ async def openai_list_videos(
     if after:
         index = next((i for i, video in enumerate(videos) if video.id == after), None)
         if index is None:
-            raise _openai_video_error(400, f"No video found with id '{after[:128]}'.", param = "after")
+            raise _openai_video_error(
+                400, f"No video found with id '{after[:128]}'.", param = "after"
+            )
         videos = videos[index + 1 :]
     page = videos[:limit]
     return VideoJobListResponse(

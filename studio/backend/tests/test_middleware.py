@@ -387,14 +387,22 @@ class TestMaxBodyMiddleware:
             yield b"x" * 256
             yield b"y" * 256
 
-        r = c.post("/api/train/upload", content = small(), headers = {"content-type": "application/octet-stream"})
+        r = c.post(
+            "/api/train/upload",
+            content = small(),
+            headers = {"content-type": "application/octet-stream"},
+        )
         assert r.status_code == 200
 
         def large():
             yield b"x" * 1024
             yield b"y" * 1024
 
-        r = c.post("/api/train/upload", content = large(), headers = {"content-type": "application/octet-stream"})
+        r = c.post(
+            "/api/train/upload",
+            content = large(),
+            headers = {"content-type": "application/octet-stream"},
+        )
         assert r.status_code == 413
 
     def test_exact_path_passthrough_does_not_cover_subroutes(self, main_module):
