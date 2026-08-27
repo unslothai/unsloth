@@ -814,7 +814,7 @@ export const fr = {
         embeddingModel: "Modèle d'embedding",
         embeddingModelDescription:
           "Modèle Hugging Face ou chemin local utilisé pour indexer et rechercher vos documents. La valeur par défaut est {defaultModel}.",
-        searchPlaceholder: "Rechercher des modèles d'embedding",
+        searchPlaceholder: "Rechercher n'importe quel modèle sur HF",
         reindexWarning:
           "N'affecte que les documents nouvellement indexés. Téléversez à nouveau les documents existants après avoir changé de modèle.",
         emptyError:
@@ -823,7 +823,24 @@ export const fr = {
         saveError: "Échec de l'enregistrement du modèle d'embedding.",
         saved: "Modèle d'embedding enregistré.",
         saveAnyway: "Enregistrer quand même",
-        resetAction: "Rétablir la valeur par défaut",
+        recommended: "Recommandé",
+        onDevice: "Sur l'appareil",
+        searching: "Recherche sur Hugging Face…",
+        checking: "Vérification…",
+        noResults: "Aucun modèle d'embedding trouvé",
+        download: "Télécharger",
+        unload: "Décharger",
+        unloadFailed: "Impossible de décharger le modèle d'embedding",
+        downloadingStatus: "Téléchargement…",
+        notDownloaded: "Non téléchargé",
+        notDownloadedSized: "Non téléchargé · {size}",
+        loaded: "Chargé",
+        downloading: "Téléchargement de {model}",
+        downloadingDescription:
+          "La progression s'affiche dans le panneau des téléchargements. L'indexation l'utilisera une fois terminé.",
+        downloadFailed: "Impossible de démarrer le téléchargement",
+        downloadConflict: "Reprenez ce téléchargement depuis le Hub",
+        downloadBusy: "Téléchargement déjà en cours",
       },
       storage: {
         sectionTitle: "Stockage",
@@ -1216,6 +1233,7 @@ export const fr = {
         processMemory: "Mémoire du processus",
         notInstalled: "Non installé",
         unknown: "Inconnu",
+        vramWithShared: "{vram} de VRAM + {shared} de mémoire partagée",
       },
     },
     agents: {
@@ -1346,6 +1364,9 @@ export const fr = {
         showAllQuantizations: "Afficher toutes les quantifications",
         showAllQuantizationsDescription:
           "Activé : affiche toutes les quantifications de « On Device », y compris celles qui ne sont pas téléchargées. Désactivé : affiche uniquement les quantifications téléchargées.",
+        showMemoryBar: "Afficher la barre d’utilisation de la VRAM",
+        showMemoryBarDescription:
+          "Affiche sous la ligne de chaque modèle téléchargé son utilisation estimée de la VRAM : poids, cache KV à la longueur de contexte avec laquelle il sera chargé, et toute réserve de brouillon spéculatif.",
       },
       menu: {
         title: "Menu du chat",
@@ -2410,5 +2431,14 @@ export const fr = {
       datasetStreaming: "Jeu de données : streaming (pas de téléchargement complet)",
       modelWeights: "Poids du modèle",
     },
+  },
+  modelMemory: {
+    readout:
+      "Poids {model} + contexte {context} = {total} sur {budget} de VRAM utilisable",
+    readoutWithSpec:
+      "Poids {model} + KV {kv} + brouillon MTP {spec} = {total} sur {budget} de VRAM utilisable",
+    kvRate: "KV réservé, ~{rate}/token",
+    oomLikely: "Avec les réglages actuels, un dépassement de mémoire est probable",
+    tooLarge: "Plus volumineux que la VRAM, sera déchargé sur le CPU. Une quantification plus petite est plus rapide",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

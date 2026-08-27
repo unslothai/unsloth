@@ -127,6 +127,30 @@ def test_page_renders_friendly_busy_message(client):
     assert "Unsloth is currently using another model" in response.text
 
 
+def test_page_renders_reasoning_stream(client):
+    text = client.get(f"/p/demorun?k={_sig('demorun')}").text
+    assert "delta.reasoning_content" in text
+    assert 'choice.finish_reason === "length"' in text
+    assert "Reply cut off at the preview length limit." in text
+    assert "cutoff.hidden = !truncated" in text
+    assert 'cutoff.setAttribute("role", "status")' in text
+    assert "preview stream ended before completion" in text
+
+
+def test_page_keeps_assistant_turn_for_reasoning_only_reply(client):
+    text = client.get(f"/p/demorun?k={_sig('demorun')}").text
+    assert "if (hasContent || hasReasoning)" in text
+    assert "if (hasReasoning) reply.reasoning_content = reasoning" in text
+    assert "if (reasoning.trim())" in text
+
+
+def test_page_recovers_from_empty_reply(client):
+    text = client.get(f"/p/demorun?k={_sig('demorun')}").text
+    assert "if (!hasContent && !hasReasoning)" in text
+    assert "The model returned an empty reply. Please try again." in text
+    assert "Reply cut off before the model returned an answer." in text
+
+
 def test_page_escapes_title(tmp_path, monkeypatch, captured):
     outputs = tmp_path / "outputs"
     # Run dir name carries an HTML-special char; the page must escape it.
@@ -729,7 +753,7 @@ def test_cancelled_json_response_does_not_claim_slot(slot_state):
     import inspect
     import threading
 
-    src = inspect.getsource(inference.openai_chat_completions)
+    src = inspect.getsource(inference.produce_openai_chat_completions)
     assert src.count("_mark_cancelled_json_response_failed(request, cancel_event)") == 3
 
     _reset_keepwarm_counters()

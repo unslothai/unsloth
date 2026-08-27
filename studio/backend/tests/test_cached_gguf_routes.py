@@ -3559,7 +3559,7 @@ def test_hub_cached_row_task_never_hides_a_row_when_classification_fails(monkeyp
 
 
 def test_hub_local_rows_are_tagged_with_their_task():
-    """/api/hub/local feeds the same pickers, and its rows were untagged too."""
+    """/api/hub/local feeds the same pickers, including decoder provenance."""
     import inspect
 
     from hub.schemas.inventory import LocalModelInfo
@@ -3567,8 +3567,10 @@ def test_hub_local_rows_are_tagged_with_their_task():
 
     assert "task" in LocalModelInfo.model_fields
     src = inspect.getsource(local_inventory.list_local_models_response)
-    assert "_local_model_task" in src
-    assert 'model_copy(update = {"task"' in src
+    assert "_local_model_classification" in src
+    compact = "".join(src.split())
+    assert '"task":task' in compact
+    assert '"audio_type":audio_type' in compact
 
 
 def test_pipeline_class_guard_fires_before_any_download():
@@ -5487,19 +5489,25 @@ def test_a_sibling_whose_header_will_not_read_keeps_speech_off_the_folder(tmp_pa
     assert models_route._gguf_folder_task(speech_only, ("someone/csm-GGUF",)) == "text-to-speech"
 
 
-def test_only_a_read_architecture_ever_answers_speech():
-    """The frontend gate is fail-CLOSED on a text-to-speech tag while every backend probe fails
-    open, and that is only safe because the tag can come from nothing but ``general.architecture``.
-    A name hint reaching this verdict would hide the runnable TTS GGUFs (Orpheus, OuteTTS) whose
-    files are named for a family but declare a plain ``llama`` arch."""
+def test_speech_gguf_classification_preserves_decoder_provenance(tmp_path):
+    """CSM and Orpheus both stay out of Chat, while Audio can distinguish them."""
     hints = ("unsloth/csm-1b-GGUF", "csm-1b-Q4_0.gguf", "sesame-csm", "text-to-speech")
     assert models_route._arch_to_task("llama-csm") == models_route._SPEECH_TASK
     for arch in (None, "", "llama", "qwen3", "flux"):
         assert models_route._arch_to_task(arch, name_hints = hints) != models_route._SPEECH_TASK
-    # Orpheus ships as a llama GGUF, so it must stay a chat row for the gate to leave it alone.
+    # Orpheus ships as a llama GGUF. Its family hint makes it speech-only, and the
+    # codec field is what lets Audio route it instead of mistaking it for CSM.
     assert models_route._arch_to_task("llama", name_hints = ("unsloth/orpheus-3b-0.1-ft-GGUF",)) == (
-        "text-generation"
+        models_route._SPEECH_TASK
     )
+    assert _classification._arch_to_audio_type("llama-csm", hints) == "csm"
+    assert (
+        _classification._arch_to_audio_type("llama", ("unsloth/orpheus-3b-0.1-ft-GGUF",)) == "snac"
+    )
+    snapshot = tmp_path / "snapshot"
+    _arch_gguf(snapshot / "orpheus-3b-q4.gguf", "llama")
+    repo = SimpleNamespace(repo_id = "community/orpheus-3b-GGUF", repo_path = snapshot)
+    assert _classification._repo_gguf_audio_type(repo, snapshot) == "snac"
 
 
 def test_a_buildable_denoiser_outranks_an_arch_the_backend_cannot_assemble(tmp_path):

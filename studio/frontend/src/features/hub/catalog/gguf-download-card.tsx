@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,6 +25,7 @@ import { getCachedModelPath, revealCachedModel } from "@/features/chat";
 import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { type GgufFitClass, classifyGgufFit } from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -56,7 +58,7 @@ import {
 } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
-import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
+import { formatBytes } from "../lib/format";
 import {
   ggufFilenamesMatch,
   ggufSelectionOverrideMatchesIntent,
@@ -555,6 +557,7 @@ export function GgufDownloadCard({
   onLoad,
   onEject,
   onChange,
+  showMemoryBar = true,
 }: {
   repoId: string;
   isActive: boolean;
@@ -573,6 +576,13 @@ export function GgufDownloadCard({
   onUseInChat?: () => void;
   onEject?: () => void;
   onChange?: () => void;
+  /** False for diffusion / audio / video GGUFs. They load through a different
+   *  planner onto a single torch device rather than the aggregate inference
+   *  pool, so the llama.cpp estimator has nothing to say about them -- and when
+   *  it returns unsized the bar falls back to the file size and draws a
+   *  weights-only verdict anyway, which is a confident number about the wrong
+   *  runtime. The picker suppresses these rows for the same reason. */
+  showMemoryBar?: boolean;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
@@ -1165,6 +1175,18 @@ export function GgufDownloadCard({
           )}
         </button>
       </DownloadCard>
+      {/* Only a quant actually on disk gets charted: an undownloaded one has no
+          weights to measure, and the fit badge already tiers those. */}
+      {selected?.downloaded && showMemoryBar ? (
+        <ModelMemoryBarFor
+          repoId={repoId}
+          quant={selected.quant}
+          sizeBytes={selected.size_bytes}
+          gpuGb={gpuGb}
+          showReadout={true}
+          className="px-1"
+        />
+      ) : null}
       {refreshError && (
         <button
           type="button"

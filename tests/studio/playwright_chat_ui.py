@@ -1200,7 +1200,7 @@ with sync_playwright() as p:
         """(args) => {
             const [secondPrompt, holdMs] = args;
             window.__unslothRapid = {
-                intercepted: false, submitted: false, queueSeen: false,
+                intercepted: false, preparing: false, submitted: false, queueSeen: false,
                 observed: false, error: null, seen: [], holdUntil: 0,
             };
             const state = window.__unslothRapid;
@@ -1208,7 +1208,11 @@ with sync_playwright() as p:
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
             const sendFollowUp = (deadline) => {
-                if (state.submitted || state.error) return;
+                if (state.preparing || state.submitted || state.error) return;
+                if (deadline === undefined) deadline = Date.now() + 5000;
+                if (state.holdUntil) {
+                    deadline = Math.min(deadline, state.holdUntil - 250);
+                }
                 // Re-query, and retry: this is the chat's first message, so
                 // sending it swaps the welcome composer for the dock composer.
                 // A node captured earlier is detached, and for a short window
@@ -1217,14 +1221,10 @@ with sync_playwright() as p:
                     'textarea[aria-label="Message input"]'
                 );
                 if (!composer || !composer.isConnected || !composer.form) {
-                    if (deadline === undefined) deadline = Date.now() + 5000;
                     // Never retry past the hold. The response is released when
                     // it expires, so a submit after that races a buffered reply
                     // finishing first and would report a queue failure for an
                     // application that behaved correctly.
-                    if (state.holdUntil) {
-                        deadline = Math.min(deadline, state.holdUntil - 250);
-                    }
                     if (Date.now() > deadline) {
                         state.error = "no connected composer for the follow-up";
                         return;
@@ -1239,8 +1239,32 @@ with sync_playwright() as p:
                 ).set;
                 setValue.call(composer, secondPrompt);
                 composer.dispatchEvent(new Event("input", { bubbles: true }));
-                composer.form.requestSubmit();
-                state.submitted = true;
+                // Synthetic input and requestSubmit in the same JS turn can make
+                // the form callback read the previous controlled value. That is
+                // not how a user types, and it leaves the new text visible while
+                // the test incorrectly records a submit. Let React publish the
+                // input, then re-check the composer because the welcome bar can
+                // be replaced by the dock bar during this frame.
+                state.preparing = true;
+                requestAnimationFrame(() => {
+                    state.preparing = false;
+                    const current = document.querySelector(
+                        'textarea[aria-label="Message input"]'
+                    );
+                    if (
+                        !current || !current.isConnected || !current.form ||
+                        current.value !== secondPrompt
+                    ) {
+                        if (Date.now() > deadline) {
+                            state.error = "follow-up composer did not settle";
+                            return;
+                        }
+                        setTimeout(() => sendFollowUp(deadline), 25);
+                        return;
+                    }
+                    current.form.requestSubmit();
+                    state.submitted = true;
+                });
             };
 
             window.fetch = async (...a) => {

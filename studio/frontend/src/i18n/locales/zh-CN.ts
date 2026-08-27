@@ -775,7 +775,7 @@ export const zhCN = {
         embeddingModel: "Embedding 模型",
         embeddingModelDescription:
           "用于为文档建立索引和搜索的 Hugging Face 模型或本地路径。默认值为 {defaultModel}。",
-        searchPlaceholder: "搜索嵌入模型",
+        searchPlaceholder: "搜索 HF 上的任意模型",
         reindexWarning:
           "仅影响新建立索引的文档。更改模型后请重新上传已有文档。",
         emptyError: "请输入 Hugging Face 模型 ID 或本地路径。",
@@ -783,7 +783,23 @@ export const zhCN = {
         saveError: "保存 embedding 模型失败。",
         saved: "Embedding 模型已保存。",
         saveAnyway: "仍然保存",
-        resetAction: "重置为默认值",
+        recommended: "推荐",
+        onDevice: "本机",
+        searching: "正在搜索 Hugging Face…",
+        checking: "检查中…",
+        noResults: "未找到 embedding 模型",
+        download: "下载",
+        unload: "卸载",
+        unloadFailed: "无法卸载 embedding 模型",
+        downloadingStatus: "正在下载…",
+        notDownloaded: "未下载",
+        notDownloadedSized: "未下载 · {size}",
+        loaded: "已加载",
+        downloading: "正在下载 {model}",
+        downloadingDescription: "进度显示在下载面板中。下载完成后即可用于建立索引。",
+        downloadFailed: "无法开始下载",
+        downloadConflict: "请在 Hub 中继续此下载",
+        downloadBusy: "下载已在进行中",
       },
       storage: {
         sectionTitle: "存储",
@@ -1165,6 +1181,7 @@ export const zhCN = {
         processMemory: "进程内存",
         notInstalled: "未安装",
         unknown: "未知",
+        vramWithShared: "{vram} 显存 + {shared} 共享内存",
       },
     },
     agents: {
@@ -1286,6 +1303,9 @@ export const zhCN = {
         showAllQuantizations: "显示所有量化版本",
         showAllQuantizationsDescription:
           "开启：列出“On Device”中的所有量化版本，包括尚未下载的版本。关闭：仅显示已下载的量化版本。",
+        showMemoryBar: "显示显存占用条",
+        showMemoryBarDescription:
+          "在每个已下载模型的行下方显示预计显存占用：权重、按实际加载的上下文长度计算的 KV 缓存，以及推测解码草稿所需的预留。",
       },
       menu: {
         title: "聊天菜单",
@@ -2256,5 +2276,14 @@ export const zhCN = {
       datasetStreaming: "数据集：流式传输（无需完整下载）",
       modelWeights: "模型权重",
     },
+  },
+  modelMemory: {
+    readout:
+      "权重 {model} + 上下文 {context} = {total}，可用显存 {budget}",
+    readoutWithSpec:
+      "权重 {model} + KV {kv} + MTP 草稿 {spec} = {total}，可用显存 {budget}",
+    kvRate: "KV 预先分配，约 {rate}/token",
+    oomLikely: "按当前设置可能显存不足",
+    tooLarge: "超出显存，将卸载到 CPU 运行。更小的量化版本速度更快",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

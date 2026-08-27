@@ -29,6 +29,7 @@ export function DownloadSection({
   onEject,
   onTrain,
   onChange,
+  showMemoryBar = true,
 }: {
   repoId: string;
   isGguf: boolean;
@@ -53,6 +54,9 @@ export function DownloadSection({
   onEject?: () => void;
   onTrain?: () => void;
   onChange?: () => void;
+  /** False for diffusion / audio / video GGUFs, which do not load through
+   *  llama.cpp and so have nothing the KV estimator can say about them. */
+  showMemoryBar?: boolean;
 }) {
   if (isGguf || preferredGgufFile) {
     return (
@@ -72,6 +76,7 @@ export function DownloadSection({
         onUseInChat={onUseInChat}
         onEject={onEject}
         onChange={onChange}
+        showMemoryBar={showMemoryBar}
       />
     );
   }
