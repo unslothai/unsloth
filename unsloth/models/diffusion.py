@@ -355,7 +355,7 @@ class FastDiffusionModel:
             target_modules = DIFFUSION_LORA_TARGETS
 
         # NOTE: use_dora (and any other LoraConfig kwarg outside this allowlist,
-        # e.g. use_rslora) is silently dropped here. Studio does not reach this
+        # e.g. use_rslora) is silently dropped here. Unsloth does not reach this
         # path today, so it's untested/unsupported on diffusion models; add it
         # to the allowlist below if that changes.
         lora_kwargs = dict(

@@ -283,7 +283,7 @@ jobs:
           set -euo pipefail
           # Separate trees, not one tree with a checkout between: install.sh
           # --local overlays the tree it is run from as an editable install, so a
-          # single tree would leave both Studios serving whichever build was
+          # single tree would leave both Unsloth instances serving whichever build was
           # written last. runtime/ab.py refuses to let two arms share a home for
           # exactly this reason.
           git worktree add --detach "$RUNNER_TEMP/side_a" "${{ steps.refs.outputs.merge_base }}"
@@ -388,12 +388,12 @@ jobs:
             probe
           fi
 
-      # Two Studios, two homes, two ports. The shared boot helper is reused
+      # Two Unsloth instances, two homes, two ports. The shared boot helper is reused
       # rather than reimplemented -- it wipes the auth directory so a fresh
       # bootstrap password is minted, which is the part that is easy to get
       # wrong -- but each invocation puts that side's own venv at the front of
       # PATH, because `unsloth` names one binary and there are two installs.
-      - name: Boot both Studios
+      - name: Boot both Unsloth instances
         timeout-minutes: 3
         run: |
           set -euo pipefail
@@ -406,7 +406,7 @@ jobs:
                 --port "$port" --log "logs/studio_${label}.log" --pid-var "STUDIO_${label}_PID"
             bash .github/scripts/wait-for-health.sh --port "$port" --log "logs/studio_${label}.log"
             # READ ONCE, HERE. `<home>/auth/.bootstrap_password` is minted on a boot with no auth
-            # directory and Studio removes it once it has been used, so every later step that
+            # directory and Unsloth removes it once it has been used, so every later step that
             # `cat`s it is reading a file documented to disappear -- and studiobench rotates the
             # account to its own password on top of that. Capturing the value at boot makes the
             # order of the steps below irrelevant instead of load-bearing.
@@ -420,7 +420,7 @@ jobs:
 
       # BOTH ARMS MUST START EMPTY, and this is asserted rather than assumed.
       #
-      # A Studio home carries its chat database. A home reused from an earlier run brings that
+      # An Unsloth home carries its chat database. A home reused from an earlier run brings that
       # run's threads into the shot, and the harness then manufactures a visible difference on
       # the exact pair whose whole claim is that nothing changed -- a real screenshot of the
       # wrong state, under the right label, which is the worst artefact this job could produce.
@@ -428,7 +428,7 @@ jobs:
       # would compare clean while measuring somebody else's leftovers.
       #
       # READ FROM THE DATABASE, NOT THE API, and the first version of this did the latter and
-      # failed the whole job on every run. Studio mints a bootstrap password and sets
+      # failed the whole job on every run. Unsloth mints a bootstrap password and sets
       # `must_change_password`; until that is cleared, login SUCCEEDS and returns a token while
       # every authenticated route answers `403 Password change required`. studiobench clears the
       # gate itself when it authenticates, which is after this step, so a check that calls
@@ -556,7 +556,7 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Stop both Studios
+      - name: Stop both Unsloth instances
         if: always()
         run: |
           kill "${STUDIO_a_PID:-0}" 2> /dev/null || true

@@ -16,12 +16,12 @@
  * `content-visibility: auto` on the message roots does not either (measured at -7%): the argument
  * re-check walks skipped content too. The only lever is the combinator.
  *
- * CHROMIUM ONLY. On a synthetic thread with the same ancestor chain and the built Studio
+ * CHROMIUM ONLY. On a synthetic thread with the same ancestor chain and the built Unsloth
  * stylesheet, at 300,464 elements, one inserted span costs 1.20 / 1.29 / 5.63 / 10.30 ms for
  * plain / child / one descendant rule / both in Chromium, against 4.33 / 4.58 / 4.58 / 4.33 ms in
  * WebKitGTK and 4.65 / 4.72 / 4.45 / 5.10 ms in Firefox. The other two engines are flat, so this
  * is free where it does not help. This test still guards the shape in every engine, because the
- * regression it prevents is a Chromium one and Studio runs in a browser too.
+ * regression it prevents is a Chromium one and Unsloth runs in a browser too.
  *
  * Measured at the 500K rung, corpus 23cd2464, on a 357,843-element thread, as the cost of
  * appending ONE EMPTY span inside a message, in two concurrent arms:

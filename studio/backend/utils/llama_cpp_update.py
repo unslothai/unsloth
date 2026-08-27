@@ -990,7 +990,7 @@ def start_backend_switch(backend: str) -> dict:
             "reason": "environment_override",
             "message": (
                 f"llama.cpp is controlled by the {env_backend} environment override. "
-                "Unset it and restart Studio before switching backends here."
+                "Unset it and restart Unsloth before switching backends here."
             ),
             "job": job,
         }

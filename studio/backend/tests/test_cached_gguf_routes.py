@@ -4252,7 +4252,7 @@ def test_failed_hub_context_follows_the_cache_the_variants_were_read_from(monkey
 
 
 def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_path):
-    """Pointing Studio at another cache has to start a fresh scan. Coalescing on the request
+    """Pointing Unsloth at another cache has to start a fresh scan. Coalescing on the request
     alone made the new request wait on the scan wedged against the old volume."""
     import storage.studio_db as studio_db
     import utils.hf_cache_settings as hf_cache_settings
@@ -5565,7 +5565,7 @@ def test_a_pipeline_index_this_listing_cannot_read_leaves_the_model_untagged(tmp
 def test_a_remote_code_pipeline_class_is_not_read_out_of_its_list_form(tmp_path):
     """A community pipeline whose code ships in its own repo writes
     ``["<module stem>", "<ClassName>"]`` here, which diffusers treats as remote code (it resolves
-    the class with ``getattr`` only ``if isinstance(cls_name, str)``). Studio declines models that
+    the class with ``getattr`` only ``if isinstance(cls_name, str)``). Unsloth declines models that
     need ``trust_remote_code``, so tagging one would advertise a model the load path refuses, after
     the chat model has been evicted."""
     from core.inference.diffusion_families import pipeline_class_from_index
@@ -6672,7 +6672,7 @@ def test_cached_model_rows_flag_a_diffusion_repo_this_backend_cannot_load(monkey
     rows = {row["repo_id"]: row for row in models_route.cached_model_rows()}
     row = rows["someuser/my-sdxl-finetune"]
 
-    # Still listed, since Studio's Images picker consumes these rows; only chat excludes it.
+    # Still listed, since Unsloth's Images picker consumes these rows; only chat excludes it.
     assert row["diffusers"] is True
     # The trust rule leaves task None on purpose, which is why the flag is needed.
     assert row.get("task") is None
