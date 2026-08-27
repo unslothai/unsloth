@@ -6704,10 +6704,25 @@ export function createOpenAIStreamAdapter(
                     stablePartId,
                     idx,
                   );
-                  const existing =
+                  const matched =
                     existingIndex === -1
                       ? undefined
                       : toolCallParts[existingIndex];
+                  // A closed object cannot take more content, so a delta that
+                  // brings a name or arguments to a slot already holding one
+                  // whole object is opening the next parallel call. Splitting
+                  // the accumulated text only catches this once the arguments
+                  // land; a name-only delta would rename the finished call,
+                  // and a late id would claim it and glue onto it.
+                  const slotIsClosed = (() => {
+                    if (!matched?.argsText) return false;
+                    const held = splitTopLevelJsonObjects(matched.argsText);
+                    return held.complete.length > 0 && !held.tail;
+                  })();
+                  const opensNextCall =
+                    slotIsClosed &&
+                    !!(call.function?.name || call.function?.arguments);
+                  const existing = opensNextCall ? undefined : matched;
 
                   if (
                     stablePartId &&
@@ -6802,8 +6817,17 @@ export function createOpenAIStreamAdapter(
                       addedToolCall = true;
                     }
                   } else {
-                    const callId =
+                    let callId =
                       stablePartId || `tool_call_${idx ?? toolCallParts.length}`;
+                    if (
+                      !stablePartId &&
+                      toolCallParts.some((p) => p.toolCallId === callId)
+                    ) {
+                      // The slot's own id is taken: this index already opened a
+                      // call and has closed it. Two cards under one id collect
+                      // each other's results.
+                      callId = mintSplitToolCallId(idx);
+                    }
 
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);

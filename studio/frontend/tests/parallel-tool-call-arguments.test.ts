@@ -430,6 +430,37 @@ test("a late id claims the call still being written, never a closed one", () => 
   );
 });
 
+test("a name-only delta for the next call does not rename the finished one", () => {
+  // The name arrives before its arguments, so the accumulated text is still one
+  // whole object and there is nothing to split on yet.
+  const parts = run([
+    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+    [{ index: 0, function: { name: "beta" } }],
+    [{ index: 0, function: { arguments: '{"b":2}' } }],
+  ]);
+
+  assert.deepEqual(shape(parts), [
+    ["alpha", '{"a":1}'],
+    ["beta", '{"b":2}'],
+  ]);
+  const ids = parts.map((p) => p.toolCallId);
+  assert.equal(new Set(ids).size, ids.length, `ids collide: ${ids.join(",")}`);
+});
+
+test("an id arriving after one closed object opens a call, not a claim", () => {
+  // A late id claims the slot its id-less opening fragment created, but only
+  // while that call is still being written. This one has closed.
+  const parts = run([
+    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+    [{ id: "call_b", index: 0, function: { name: "beta", arguments: '{"b":2}' } }],
+  ]);
+
+  assert.deepEqual(shape(parts), [
+    ["alpha", '{"a":1}'],
+    ["beta", '{"b":2}'],
+  ]);
+});
+
 test("a late id opens its own call when every call in the slot has closed", () => {
   const parts = run([
     [{ index: 0, function: { name: "alpha", arguments: '{"a":1}{"b":2}' } }],

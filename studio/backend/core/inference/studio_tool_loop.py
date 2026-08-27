@@ -405,6 +405,13 @@ def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
                     # Balanced but invalid, so the brace count was a
                     # coincidence and cutting here would invent a call.
                     return unsplit
+                except RecursionError:
+                    # Deeply nested but valid JSON blows the interpreter's stack
+                    # instead of failing to decode, and RecursionError is not a
+                    # ValueError. Uncaught it escapes the loop mid-stream, so
+                    # the segment counts as unsplittable and _normalized_call
+                    # downgrades it to _raw as it always has.
+                    return unsplit
                 complete.append(segment)
                 start = -1
 
@@ -551,6 +558,24 @@ class _Turn:
                     # exists to place the fragments that carry no id.
                     first_id = self.by_index.get(index, {}).get("id")
                     key = index if first_id == call_id else (index, call_id)
+            # A closed object cannot take more content, so a delta that brings a
+            # name or arguments to a slot already holding one whole object is
+            # opening the next parallel call. Forking on the accumulated text
+            # only catches this once the arguments land; a name-only delta would
+            # merge into the finished call's name, and a delta carrying an id
+            # would claim that call and glue onto it (issue #9807).
+            held = self.by_index.get(key)
+            new_function = raw_call.get("function")
+            brings_content = isinstance(new_function, dict) and bool(
+                new_function.get("name") or new_function.get("arguments")
+            )
+            if held is not None and brings_content:
+                closed, unfinished = _split_top_level_json_objects(
+                    held["function"]["arguments"]
+                )
+                if closed and not unfinished:
+                    self.split_seq += 1
+                    key = (index, "_split", self.split_seq)
             self.last_index = index
             self.open_key_by_index[index] = key
             if key not in self.by_index:

@@ -166,3 +166,51 @@ def test_a_name_arriving_in_fragments_is_unaffected():
     turn.merge_structured([_delta(0, "web_search", '"x"}')])
 
     assert _shape(turn) == [("web_search", '{"q":"x"}')]
+
+
+def test_a_name_only_delta_does_not_rename_the_finished_call():
+    # The name arrives before its arguments, so the accumulated text is still
+    # one whole object and there is nothing to fork on yet. Merging it into the
+    # finished call gives "alphabeta", which matches no enabled tool.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured([_delta(0, "beta", "")])
+    turn.merge_structured([_delta(0, None, '{"b":2}')])
+
+    assert _shape(turn) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
+
+
+def test_an_id_after_one_closed_object_opens_a_call_not_a_claim():
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured([_delta(0, "beta", '{"b":2}', call_id = "call_b")])
+
+    assert _shape(turn) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
+    assert [call["id"] for call in turn.calls()] == ["call_0_0", "call_b"]
+
+
+def test_an_id_after_a_closed_fork_opens_a_third_call():
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}{"b":2}')])
+    turn.merge_structured([_delta(0, "gamma", '{"c":3}', call_id = "call_c")])
+
+    assert _shape(turn) == [
+        ("alpha", '{"a":1}'),
+        ("alpha", '{"b":2}'),
+        ("gamma", '{"c":3}'),
+    ]
+    ids = [call["id"] for call in turn.calls()]
+    assert len(set(ids)) == len(ids)
+
+
+def test_nesting_deep_enough_to_exhaust_the_stack_is_unsplittable():
+    # json.loads raises RecursionError, which is a RuntimeError and not a
+    # ValueError. Uncaught it escapes the streaming loop mid-response, so the
+    # segment counts as unsplittable and _normalized_call downgrades it as
+    # it always has.
+    payload = '{"x":' * 20000 + "null" + "}" * 20000
+    assert _split_top_level_json_objects(payload) == ([], payload)
+
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "deep", payload)])
+    assert _shape(turn) == [("deep", payload)]
