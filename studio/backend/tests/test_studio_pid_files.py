@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
+import socket
 import threading
 import time
 import sys
@@ -420,6 +421,21 @@ def test_a_hostname_resolves_the_same_way_the_bind_does(tmp_path):
     recorded = ",".join(sorted(run._bind_addresses("localhost", 8889)))
 
     assert run._addresses_collide(recorded, "localhost", 8889) is True
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows socket semantics")
+def test_windows_reuseaddr_listener_is_not_reported_as_a_free_port():
+    # Python HTTP servers commonly enable SO_REUSEADDR. On Windows, putting the
+    # same option on the probe lets its bind succeed even while that server is
+    # listening; uvicorn then fails later with WinError 10048 instead of using
+    # the existing 8888-8908 fallback.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+
+        assert run._is_port_free("127.0.0.1", port) is False
 
 
 def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
