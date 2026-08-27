@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
-import types
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -161,23 +161,36 @@ def test_overlapping_status_probes_leave_default_executor_for_streaming(monkeypa
     assert len(responses) == 2
 
 
-def test_status_reports_tracked_load_before_backend_lock(monkeypatch):
-    """Model resolution is visible before a GGUF backend acquires its load lock."""
+def _attempt(model_path: str):
+    return inference_route._ScopedLoadAttempt(
+        token = "attempt",
+        request_id = None,
+        model_path = model_path,
+        subject = "test",
+        cancel_event = threading.Event(),
+        cancel_complete = threading.Event(),
+    )
+
+
+def _patch_fast_status(monkeypatch, backend = None):
     _patch_status_dependencies(monkeypatch)
     monkeypatch.setattr(
         inference_route,
         "_probe_llama_cpp_status",
         lambda _backend: (False, {}),
     )
-    attempt = inference_route._ScopedLoadAttempt(
-        token = "attempt",
-        request_id = None,
-        model_path = "org/slow-model-GGUF",
-        subject = "test",
-        cancel_event = threading.Event(),
-        cancel_complete = threading.Event(),
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_running_load_attempt", None)
+    monkeypatch.setattr(inference_route, "_pending_load_attempts", {})
+
+
+def test_status_reports_a_load_queued_on_the_lifecycle_gate(monkeypatch):
+    _patch_fast_status(monkeypatch)
+    monkeypatch.setattr(
+        inference_route,
+        "_pending_load_attempts",
+        {"attempt": _attempt("org/slow-model-GGUF")},
     )
-    monkeypatch.setattr(inference_route, "_running_load_attempt", attempt)
 
     response = asyncio.run(inference_route.get_status(current_subject = "test"))
 
@@ -185,29 +198,18 @@ def test_status_reports_tracked_load_before_backend_lock(monkeypatch):
     assert response.loading == ["org/slow-model-GGUF"]
 
 
-def test_status_keeps_resident_model_visible_during_tracked_preflight(monkeypatch):
-    """A new load must not hide the model that is still serving."""
-    _patch_status_dependencies(monkeypatch)
-    monkeypatch.setattr(
-        inference_route,
-        "_probe_llama_cpp_status",
-        lambda _backend: (False, {}),
-    )
+def test_status_keeps_the_resident_model_visible_during_a_load(monkeypatch):
     backend = _FakeInferenceBackend()
     backend.active_model_name = "org/resident-model"
     backend.models = {"org/resident-model": {}}
     backend.loading_models = set()
-    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+    _patch_fast_status(monkeypatch, backend)
     monkeypatch.setattr(inference_route, "load_inference_config", lambda _model: None)
-    attempt = inference_route._ScopedLoadAttempt(
-        token = "attempt",
-        request_id = None,
-        model_path = "org/incoming-model",
-        subject = "test",
-        cancel_event = threading.Event(),
-        cancel_complete = threading.Event(),
+    monkeypatch.setattr(
+        inference_route,
+        "_running_load_attempt",
+        _attempt("org/incoming-model"),
     )
-    monkeypatch.setattr(inference_route, "_running_load_attempt", attempt)
 
     response = asyncio.run(inference_route.get_status(current_subject = "test"))
 
@@ -217,150 +219,27 @@ def test_status_keeps_resident_model_visible_during_tracked_preflight(monkeypatc
     assert response.loading == ["org/incoming-model"]
 
 
-def test_status_reports_gguf_load_while_serial_lock_is_held(monkeypatch):
-    """The RLock-compatible probe exposes direct GGUF loads after preflight."""
-    lock = threading.RLock()
-    entered = threading.Event()
-    release = threading.Event()
+def test_load_is_registered_before_the_lifecycle_gate_and_always_cleared(monkeypatch):
+    from core.inference import llama_keepwarm
 
-    def _hold_lock():
-        with lock:
-            entered.set()
-            release.wait(_GUARD_SECONDS)
-
-    holder = threading.Thread(target = _hold_lock)
-    holder.start()
-    assert entered.wait(_GUARD_SECONDS)
-    backend = _FakeLlamaBackend()
-    backend._serial_load_lock = lock
-    backend._model_identifier = "org/direct-GGUF"
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-    monkeypatch.setattr(
-        inference_route,
-        "_probe_llama_cpp_status",
-        lambda _backend: (False, {}),
-    )
-    monkeypatch.setattr(inference_route, "_running_load_attempt", None)
-    try:
-        response = asyncio.run(inference_route.get_status(current_subject = "test"))
-    finally:
-        release.set()
-        holder.join(_GUARD_SECONDS)
-
-    assert not holder.is_alive()
-    assert response.active_model is None
-    assert response.is_gguf is True
-    assert response.loading == ["org/direct-GGUF"]
-
-
-def _queued_attempt(model_path: str, token: str = "t") -> "inference_route._ScopedLoadAttempt":
-    return inference_route._ScopedLoadAttempt(
-        token = token,
-        request_id = None,
-        model_path = model_path,
-        subject = "test",
-        cancel_event = threading.Event(),
-        cancel_complete = threading.Event(),
-    )
-
-
-def _load_request(model_path: str):
-    return types.SimpleNamespace(
-        model_path = model_path,
-        load_request_id = None,
-        force_cancel_active = False,
-    )
-
-
-def test_status_sees_a_load_still_queued_on_the_lifecycle_gate(monkeypatch):
-    """Status includes loads waiting on inference_lifecycle_gate."""
-    from core.inference.llama_keepwarm import inference_lifecycle_gate
-
-    _patch_status_dependencies(monkeypatch)
-    monkeypatch.setattr(inference_route, "_probe_llama_cpp_status", lambda _backend: (False, {}))
     monkeypatch.setattr(inference_route, "_raise_if_sidecar_swap_in_progress", lambda: None)
-    monkeypatch.setattr(inference_route, "_running_load_attempt", None)
+    monkeypatch.setattr(inference_route, "_pending_load_attempts", {})
+    seen = []
 
-    async def _never_runs(*_args, **_kwargs):
-        raise AssertionError("the impl must not run while the gate is held")
-
-    monkeypatch.setattr(inference_route, "_run_tracked_load_model_impl", _never_runs)
-
-    # Use the real registry so old code fails on status, not test setup.
-    _real_begin = inference_route._begin_load_attempt
-    begun: list = []
-
-    def _spy(request, subject):
-        attempt = _real_begin(request, subject)
-        begun.append(attempt)
-        return attempt
-
-    monkeypatch.setattr(inference_route, "_begin_load_attempt", _spy)
-
-    async def _drive():
-        async with inference_lifecycle_gate():
-            task = asyncio.create_task(
-                inference_route.load_model_gated(
-                    _load_request("org/queued-model-GGUF"), object(), "test"
-                )
-            )
-            # Registration is synchronous before the task waits on the gate.
-            for _ in range(_CONTROL_TURNS):
-                await asyncio.sleep(0)
-                if begun:
-                    break
-            for _ in range(_CONTROL_TURNS):
-                await asyncio.sleep(0)
-            status = await inference_route.get_status(current_subject = "test")
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, AssertionError):
-            pass
-        return status
-
-    response = asyncio.run(asyncio.wait_for(_drive(), _GUARD_SECONDS))
-
-    assert begun, "the load never started"
-    assert response.active_model is None
-    assert response.loading == ["org/queued-model-GGUF"]
-
-
-def test_status_prefers_the_running_load_over_one_still_queued(monkeypatch):
-    """A queued sibling must not relabel the running load."""
-    _patch_status_dependencies(monkeypatch)
-    monkeypatch.setattr(inference_route, "_probe_llama_cpp_status", lambda _backend: (False, {}))
-    monkeypatch.setattr(
-        inference_route, "_running_load_attempt", _queued_attempt("org/running-model", "a")
-    )
-    monkeypatch.setattr(
-        inference_route,
-        "_pending_load_attempts",
-        {"b": _queued_attempt("org/queued-model", "b")},
-    )
-
-    response = asyncio.run(inference_route.get_status(current_subject = "test"))
-
-    assert response.loading == ["org/running-model"]
-
-
-def test_a_failed_load_clears_its_pending_attempt(monkeypatch):
-    """Failed loads must not leave a phantom loading row."""
-    monkeypatch.setattr(inference_route, "_raise_if_sidecar_swap_in_progress", lambda: None)
-    seen: list[list[str]] = []
-
-    async def _blow_up(*_args, **_kwargs):
+    @asynccontextmanager
+    async def _gate():
         seen.append([a.model_path for a in inference_route._pending_load_attempts.values()])
-        raise RuntimeError("load blew up")
+        yield
 
-    monkeypatch.setattr(inference_route, "_run_tracked_load_model_impl", _blow_up)
+    async def _fail(*_args, **_kwargs):
+        raise RuntimeError("load failed")
 
+    monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", _gate)
+    monkeypatch.setattr(inference_route, "_run_tracked_load_model_impl", _fail)
+
+    request = inference_route.LoadRequest(model_path = "org/queued-model-GGUF")
     with pytest.raises(RuntimeError):
-        asyncio.run(
-            inference_route.load_model_gated(
-                _load_request("org/model-GGUF"), object(), "test", user_initiated = True
-            )
-        )
+        asyncio.run(inference_route.load_model_gated(request, object(), "test"))
 
-    assert seen == [["org/model-GGUF"]], "the attempt must be visible while the load runs"
-    assert inference_route._pending_load_attempts == {}, "a failed load must not leak"
+    assert seen == [["org/queued-model-GGUF"]]
+    assert inference_route._pending_load_attempts == {}

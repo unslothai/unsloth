@@ -72,6 +72,7 @@ import {
   clampLocalReasoningEffort,
   normalizeSpeculativeType,
   resolveInferenceCheckpointId,
+  tryAdoptServerActiveModel,
 } from "../lib/apply-inference-status-to-store";
 import {
   residentRuntimeMatchesConfig,
@@ -201,15 +202,46 @@ const MODEL_LOAD_TOAST_CLASSNAMES = {
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
 
-/** Baseline mount poll when the server reports no in-flight CLI load. */
 const CLI_LOAD_POLL_IDLE_MS = 60_000;
-/** Safety cap so a wedged server-side load cannot keep the poll alive forever. */
 const CLI_LOAD_POLL_MAX_MS = 600_000;
 
-function inferenceStatusShowsLoadInFlight(
-  status: InferenceStatusResponse | null,
-): boolean {
-  return (status?.loading?.length ?? 0) > 0;
+async function waitForServerModel(signal?: AbortSignal): Promise<void> {
+  const started = Date.now();
+  let sawLoad = false;
+
+  while (
+    !signal?.aborted &&
+    !useChatRuntimeStore.getState().params.checkpoint &&
+    !useChatRuntimeStore.getState().modelLoading
+  ) {
+    let status: InferenceStatusResponse | null = null;
+    try {
+      status = await getInferenceStatus();
+    } catch {
+      // A later poll can recover from a transient status failure.
+    }
+    if (
+      signal?.aborted ||
+      useChatRuntimeStore.getState().params.checkpoint ||
+      useChatRuntimeStore.getState().modelLoading
+    ) {
+      return;
+    }
+
+    if (status) {
+      const loading = (status.loading?.length ?? 0) > 0;
+      sawLoad ||= loading;
+      if (!loading && status.active_model) {
+        await tryAdoptServerActiveModel({ status });
+        return;
+      }
+      if (!loading && sawLoad) return;
+    }
+    const elapsed = Date.now() - started;
+    if (!sawLoad && elapsed >= CLI_LOAD_POLL_IDLE_MS) return;
+    if (elapsed >= CLI_LOAD_POLL_MAX_MS) return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
 }
 
 function parseTrailingEpoch(input: string): number | undefined {
@@ -378,131 +410,46 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
  */
 // Prevent older concurrent status reads from overwriting newer results.
 let syncGeneration = 0;
-let activeCliLoadPoll: {
-  signal?: AbortSignal;
-  generation: number;
-} | null = null;
 
 async function syncInferenceStatusToStore(options?: {
-  pollUntilActiveModel?: boolean;
   signal?: AbortSignal;
   includeLoras?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
-  const inheritedPoll =
-    !options?.pollUntilActiveModel && !activeCliLoadPoll?.signal?.aborted
-      ? activeCliLoadPoll
-      : null;
-  const pollUntilActiveModel = Boolean(
-    options?.pollUntilActiveModel || inheritedPoll,
-  );
-  const pollSignal = options?.pollUntilActiveModel
-    ? signal
-    : inheritedPoll?.signal;
-  const aborted = () => Boolean(signal?.aborted || pollSignal?.aborted);
   const includeLoras = options?.includeLoras ?? true;
   const generation = ++syncGeneration;
   const superseded = () => generation !== syncGeneration;
-  if (pollUntilActiveModel) {
-    activeCliLoadPoll = { signal: pollSignal, generation };
-  }
   const { setModels, setLoras, setCheckpoint, setModelsError } =
     useChatRuntimeStore.getState();
   setModelsError(null);
   try {
-    const selectedAtStart =
-      useChatRuntimeStore.getState().params.checkpoint;
-    const shouldPollForCliLoad =
-      pollUntilActiveModel &&
-      !selectedAtStart &&
-      !isExternalModelId(selectedAtStart);
-
-    // Keep the selector usable while a CLI-started load is pending.
-    const [listRes, lorasRes] = await Promise.all([
+    const selectedAtStart = useChatRuntimeStore.getState().params.checkpoint;
+    const [listRes, statusRes, lorasRes] = await Promise.all([
       listModels(),
+      getInferenceStatus(),
       includeLoras ? listLoras() : Promise.resolve(null),
     ]);
 
-    if (aborted() || superseded()) return;
+    if (signal?.aborted || superseded()) return;
 
     setModels(listRes.models.map(toChatModelSummary));
     if (lorasRes) {
       setLoras(lorasRes.loras.map(toLoraSummary));
     }
 
-    const readStatus = async (): Promise<InferenceStatusResponse> => {
-      return await getInferenceStatus();
-    };
-    let statusRes: InferenceStatusResponse | null = shouldPollForCliLoad
-      ? await readStatus().catch(() => null)
-      : await readStatus();
-
-    if (shouldPollForCliLoad) {
-      const started = Date.now();
-      while (
-        !aborted() &&
-        !superseded() &&
-        (!statusRes?.active_model ||
-          inferenceStatusShowsLoadInFlight(statusRes)) &&
-        !useChatRuntimeStore.getState().params.checkpoint &&
-        !useChatRuntimeStore.getState().modelLoading &&
-        Date.now() - started < CLI_LOAD_POLL_MAX_MS
-      ) {
-        const elapsed = Date.now() - started;
-        if (
-          elapsed >= CLI_LOAD_POLL_IDLE_MS &&
-          !inferenceStatusShowsLoadInFlight(statusRes)
-        ) {
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        try {
-          statusRes = await readStatus();
-        } catch {
-          // Keep polling through transient status failures.
-        }
-      }
-    }
-
-    // Re-read after concurrent send-path adoption to hydrate live capabilities.
-    if (
-      shouldPollForCliLoad &&
-      !useChatRuntimeStore.getState().modelLoading &&
-      useChatRuntimeStore.getState().params.checkpoint &&
-      !statusRes?.active_model
-    ) {
-      try {
-        statusRes = await readStatus();
-      } catch {
-        // The send path already hydrated; a later refresh can retry.
-      }
-    }
-
-    if (!statusRes) {
-      statusRes = await readStatus();
-    }
-
-    // Cancellation or a newer read invalidates this result.
-    if (aborted() || superseded()) return;
-
     const selectedCheckpoint =
       useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
-    const statusCheckpoint = resolveInferenceCheckpointId(statusRes);
-    const userSelectedDuringPoll =
-      shouldPollForCliLoad &&
-      Boolean(
-        useChatRuntimeStore.getState().modelLoading ||
-          (selectedCheckpoint && selectedCheckpoint !== statusCheckpoint),
-      );
-    // Reaching the poll cap does not make the outgoing model adoptable.
-    const gaveUpMidLoad =
-      shouldPollForCliLoad && inferenceStatusShowsLoadInFlight(statusRes);
+    const selectionChanged =
+      selectedCheckpoint !== selectedAtStart ||
+      useChatRuntimeStore.getState().modelLoading;
+    // Status is transitional while a load is present. Keep the last settled
+    // residency until a later refresh or the mount observer sees it finish.
+    if ((statusRes.loading?.length ?? 0) > 0) return;
     if (
       statusRes.active_model &&
       !isExternalSelectionActive &&
-      !userSelectedDuringPoll &&
-      !gaveUpMidLoad
+      !selectionChanged
     ) {
       const checkpointId = resolveInferenceCheckpointId(statusRes);
       if (checkpointId) {
@@ -539,7 +486,11 @@ async function syncInferenceStatusToStore(options?: {
           void refreshContextUsage({ threadId: hydrated.activeThreadId });
         }
       }
-    } else if (!statusRes.active_model && !isExternalSelectionActive && !userSelectedDuringPoll) {
+    } else if (
+      !statusRes.active_model &&
+      !isExternalSelectionActive &&
+      !selectionChanged
+    ) {
       // Loading an image or video model evicts the chat one (the GPU arbiter
       // allows a single owner), and nothing else here would say so: the picker
       // keeps the selection, so the header would go on claiming it is loaded
@@ -574,17 +525,13 @@ async function syncInferenceStatusToStore(options?: {
     }
   } catch (error) {
     // Discard failures from cancelled or superseded reads.
-    if (aborted() || superseded()) return;
+    if (signal?.aborted || superseded()) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
     setModelsError(message);
     toast.error("Failed to refresh models", {
       description: message,
     });
-  } finally {
-    if (activeCliLoadPoll?.generation === generation) {
-      activeCliLoadPoll = null;
-    }
   }
 }
 
@@ -696,12 +643,16 @@ export function useChatModelRuntime() {
   );
 
   const refresh = useCallback(
-    (options?: {
-      pollUntilActiveModel?: boolean;
+    async (options?: {
+      waitForServerModel?: boolean;
       signal?: AbortSignal;
       includeLoras?: boolean;
-    }) =>
-      syncInferenceStatusToStore(options),
+    }) => {
+      await syncInferenceStatusToStore(options);
+      if (options?.waitForServerModel) {
+        await waitForServerModel(options.signal);
+      }
+    },
     [],
   );
 

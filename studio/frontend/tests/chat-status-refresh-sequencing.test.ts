@@ -19,16 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const SOURCE = readFileSync(
   fileURLToPath(
-    new URL(
-      "../src/features/chat/hooks/use-chat-model-runtime.ts",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
-);
-const ADAPTER = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    new URL("../src/features/chat/hooks/use-chat-model-runtime.ts", import.meta.url),
   ),
   "utf8",
 );
@@ -41,24 +32,21 @@ const SYNC = SOURCE.slice(
 test("every refresh takes a generation, and the newest one wins", () => {
   assert.match(SOURCE, /let syncGeneration = 0;/);
   assert.match(SYNC, /const generation = \+\+syncGeneration;/);
-  assert.match(
-    SYNC,
-    /const superseded = \(\) => generation !== syncGeneration;/,
-  );
+  assert.match(SYNC, /const superseded = \(\) => generation !== syncGeneration;/);
 });
 
 test("a superseded refresh writes nothing back to the store", () => {
   const guard = SYNC.slice(0, SYNC.indexOf("setModels("));
   assert.match(
     guard,
-    /if \(aborted\(\) \|\| superseded\(\)\) return;/,
+    /if \(signal\?\.aborted \|\| superseded\(\)\) return;/,
     "the check must sit between the await and the first write",
   );
 });
 
 test("a superseded refresh does not report its failure either", () => {
   const catchBlock = SYNC.slice(SYNC.indexOf("} catch (error) {"));
-  assert.match(catchBlock, /if \(aborted\(\) \|\| superseded\(\)\) return;/);
+  assert.match(catchBlock, /if \(signal\?\.aborted \|\| superseded\(\)\) return;/);
   // Otherwise a read nobody would have applied still raises a toast.
   assert.ok(
     catchBlock.indexOf("superseded()") < catchBlock.indexOf("toast.error"),
@@ -74,38 +62,24 @@ test("the eviction branch is behind the same guard", () => {
   assert.ok(guardAt !== -1 && guardAt < evictionAt);
 });
 
-test("a superseding refresh inherits the mount poll", () => {
-  assert.match(SOURCE, /let activeCliLoadPoll:/);
-  assert.match(SYNC, /const inheritedPoll =/);
+test("refresh leaves residency untouched while a load is in flight", () => {
   assert.match(
     SYNC,
-    /activeCliLoadPoll = \{ signal: pollSignal, generation \};/,
-  );
-  assert.match(SYNC, /const shouldPollForCliLoad =\s*pollUntilActiveModel &&/);
-  assert.match(
-    SYNC,
-    /if \(activeCliLoadPoll\?\.generation === generation\) \{\s*activeCliLoadPoll = null;/,
+    /if \(\(statusRes\.loading\?\.length \?\? 0\) > 0\) return;/,
   );
 });
 
-test("the mount poll waits for a replacement beside a resident model", () => {
+test("the mount observer adopts only a settled model", () => {
+  const wait = SOURCE.slice(
+    SOURCE.indexOf("async function waitForServerModel("),
+    SOURCE.indexOf("function parseTrailingEpoch("),
+  );
   assert.match(
-    SYNC,
-    /\(!statusRes\?\.active_model \|\|\s*inferenceStatusShowsLoadInFlight\(statusRes\)\)/,
+    wait,
+    /if \(!loading && status\.active_model\) \{\s*await tryAdoptServerActiveModel\(\{ status \}\);/,
   );
-});
-
-// Mount polling has no executable harness, so pin its cap-expiry guard.
-test("a mount poll that hits its cap mid-load does not pin the outgoing model", () => {
   assert.match(
-    SYNC,
-    /const gaveUpMidLoad =\s*shouldPollForCliLoad && inferenceStatusShowsLoadInFlight\(statusRes\)/,
+    wait,
+    /!useChatRuntimeStore\.getState\(\)\.params\.checkpoint &&\s*!useChatRuntimeStore\.getState\(\)\.modelLoading/,
   );
-  const start = SYNC.indexOf("if (\n      statusRes.active_model &&");
-  assert.ok(start !== -1, "the resident-pinning branch moved");
-  const pinning = SYNC.slice(
-    start,
-    SYNC.indexOf("const checkpointId = resolveInferenceCheckpointId(statusRes)"),
-  );
-  assert.match(pinning, /!gaveUpMidLoad/);
 });

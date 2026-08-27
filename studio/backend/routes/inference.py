@@ -9223,7 +9223,6 @@ _scoped_load_attempts_lock = threading.Lock()
 _scoped_load_attempts: dict[tuple[str, str], _ScopedLoadAttempt] = {}
 _scoped_load_cancel_tombstones: dict[tuple[str, str], tuple[str, float]] = {}
 _running_load_attempt: Optional[_ScopedLoadAttempt] = None
-# Loads registered before they acquire inference_lifecycle_gate.
 _pending_load_attempts: dict[str, _ScopedLoadAttempt] = {}
 _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S = 60.0
 # Bound on waiting for a cancel's teardown to report back. Only the /unload
@@ -9407,7 +9406,6 @@ async def load_model_gated(
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
     attempt = _begin_load_attempt(request, current_subject)
-    # Register before the gate so queued loads appear in /status.
     with _scoped_load_attempts_lock:
         _pending_load_attempts[attempt.token] = attempt
     try:
@@ -11904,42 +11902,15 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         _installed_tag = _freshness.get("installed_tag")
         _latest_tag = _freshness.get("latest_tag")
 
-        # Report preflight without hiding a resident model.
         with _scoped_load_attempts_lock:
             _tracked_loading_id = (
                 _running_load_attempt.model_path if _running_load_attempt is not None else ""
             )
             if not _tracked_loading_id:
-                # Prefer the oldest load waiting on the lifecycle gate.
                 _queued = next(iter(_pending_load_attempts.values()), None)
                 _tracked_loading_id = _queued.model_path if _queued is not None else ""
-        # RLock lacks locked() on supported Python versions; probe non-blockingly.
-        _serial_load_lock = getattr(llama_backend, "_serial_load_lock", None)
-        _lock_acquired = True
-        if _serial_load_lock is not None:
-            _lock_acquired = _serial_load_lock.acquire(blocking = False)
-            if _lock_acquired:
-                _serial_load_lock.release()
-        _load_in_flight = bool(_tracked_loading_id or not _lock_acquired)
-        _loading_id = _tracked_loading_id or getattr(llama_backend, "_model_identifier", "") or ""
-        _reported_loading_id = _loading_id or "(loading)"
+        _loading = [_tracked_loading_id] if _tracked_loading_id else []
         backend = _peek_inference_backend()
-        _active_standard_model = (
-            getattr(backend, "active_model_name", None) if backend is not None else None
-        )
-        if _load_in_flight and not llama_backend.is_loaded and not _active_standard_model:
-            return InferenceStatusResponse(
-                active_model = None,
-                model_identifier = None,
-                # Only the llama lock identifies GGUF this early.
-                is_gguf = not _lock_acquired,
-                loading = [_reported_loading_id],
-                loaded = [],
-                llama_cpp_supports_mtp = _supports_mtp,
-                llama_cpp_prebuilt_stale = _stale,
-                llama_cpp_installed_tag = _installed_tag,
-                llama_cpp_latest_tag = _latest_tag,
-            )
 
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
@@ -11978,7 +11949,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                     llama_backend, _native_grant_backed, _model_id
                 ),
                 gguf_variant = llama_backend.hf_variant,
-                loading = [_reported_loading_id] if _load_in_flight else [],
+                loading = _loading,
                 # Plus anything the Unsloth registry still holds: the GGUF load
                 # only unloaded the ACTIVE one, so a model cached behind it is
                 # still in VRAM and was invisible to every client reading this.
@@ -12009,6 +11980,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         # nothing is loaded, and the chat UI polls this from first paint.
         if backend is None:
             return InferenceStatusResponse(
+                loading = _loading,
                 llama_cpp_supports_mtp = _supports_mtp,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
@@ -12038,8 +12010,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         )
 
         _loading_models = list(getattr(backend, "loading_models", set()))
-        if _load_in_flight and _reported_loading_id not in _loading_models:
-            _loading_models.append(_reported_loading_id)
+        if _tracked_loading_id and _tracked_loading_id not in _loading_models:
+            _loading_models.append(_tracked_loading_id)
 
         return InferenceStatusResponse(
             active_model = backend.active_model_name,

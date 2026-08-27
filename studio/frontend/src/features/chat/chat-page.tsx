@@ -3503,32 +3503,19 @@ export function ChatPage({
   );
 
   const inventoryRefreshStartedRef = useRef(false);
-  const cliLoadPollControllerRef = useRef<AbortController | null>(null);
   const refreshDeferredModelInventories = useCallback(() => {
     inventoryRefreshStartedRef.current = true;
-    // Do not let deferred refreshes supersede the mount poll.
-    if (!cliLoadPollControllerRef.current) {
-      void refresh({ includeLoras: true });
-    }
+    void refresh({ includeLoras: true });
     void localModelInventory.refreshIfOlderThan(INVENTORY_FRESHNESS_WINDOW_MS);
   }, [refresh, localModelInventory.refreshIfOlderThan]);
 
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
-    // Adopt a CLI-loaded model on fresh mounts before auto-loading another.
-    const pollUntilActiveModel = !useChatRuntimeStore.getState().params.checkpoint;
     const controller = new AbortController();
-    if (pollUntilActiveModel) {
-      cliLoadPollControllerRef.current = controller;
-    }
     void refresh({
       includeLoras: true,
       signal: controller.signal,
-      ...(pollUntilActiveModel ? { pollUntilActiveModel: true } : {}),
-    }).finally(() => {
-      if (cliLoadPollControllerRef.current === controller) {
-        cliLoadPollControllerRef.current = null;
-      }
+      waitForServerModel: !useChatRuntimeStore.getState().params.checkpoint,
     });
     const timeoutId = window.setTimeout(() => {
       if (!inventoryRefreshStartedRef.current) {
@@ -3537,9 +3524,6 @@ export function ChatPage({
     }, 1200);
     return () => {
       controller.abort();
-      if (cliLoadPollControllerRef.current === controller) {
-        cliLoadPollControllerRef.current = null;
-      }
       window.clearTimeout(timeoutId);
     };
   }, [refresh, refreshDeferredModelInventories]);
