@@ -11,6 +11,8 @@ import {
 import { Switch } from "@/components/ui/switch";
 import {
   type PlusMenuItemId,
+  refreshModelDisclaimerPreference,
+  saveModelDisclaimerPreference,
   useChatPreferencesStore,
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
@@ -20,6 +22,7 @@ import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
+import { toast } from "@/lib/toast";
 import {
   Bookmark02Icon,
   Download01Icon,
@@ -187,13 +190,14 @@ export function ChatTab() {
   const setShowAllQuantizations = useChatRuntimeStore(
     (state) => state.setShowAllQuantizations,
   );
+  const showMemoryBar = useChatRuntimeStore((state) => state.showMemoryBar);
+  const setShowMemoryBar = useChatRuntimeStore(
+    (state) => state.setShowMemoryBar,
+  );
   const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
   const setOrganizeBy = useSidebarOrganizationStore((s) => s.setOrganizeBy);
   const showModelDisclaimer = useChatPreferencesStore(
     (state) => state.showModelDisclaimer,
-  );
-  const setShowModelDisclaimer = useChatPreferencesStore(
-    (state) => state.setShowModelDisclaimer,
   );
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
@@ -224,6 +228,7 @@ export function ChatTab() {
 
   useEffect(() => {
     void hydratePersistedSettings();
+    refreshModelDisclaimerPreference().catch(() => undefined);
   }, [hydratePersistedSettings]);
 
   return (
@@ -259,6 +264,14 @@ export function ChatTab() {
             checked={showAllQuantizations}
             onCheckedChange={setShowAllQuantizations}
           />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.showMemoryBar")}
+          description={t(
+            "settings.chat.modelSelection.showMemoryBarDescription",
+          )}
+        >
+          <Switch checked={showMemoryBar} onCheckedChange={setShowMemoryBar} />
         </SettingsRow>
       </SettingsSection>
 
@@ -310,7 +323,11 @@ export function ChatTab() {
         >
           <Switch
             checked={showModelDisclaimer}
-            onCheckedChange={setShowModelDisclaimer}
+            onCheckedChange={(checked) => {
+              return saveModelDisclaimerPreference(checked).catch(() => {
+                toast.error("Could not save the model disclaimer setting.");
+              });
+            }}
           />
         </SettingsRow>
         <SettingsRow

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Measures where Studio's startup time goes, on each platform.
+# Measures where Unsloth's startup time goes, on each platform.
 #
 # Nothing recorded a number before: main.py logs "lifespan startup completed in X ms"
 # and studio_test_kit polls /healthz, but both throw the elapsed time away. A first
@@ -132,7 +132,7 @@ jobs:
         id: fe-dist
         uses: ./.github/actions/frontend-dist-restore
 
-      - name: Install Studio
+      - name: Install Unsloth
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

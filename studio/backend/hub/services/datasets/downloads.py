@@ -165,7 +165,7 @@ async def download_dataset_response(
     key = _download_job_key(repo_id)
 
     # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
-    # makes that outlast its 3s budget while every other Studio request waits behind it.
+    # makes that outlast its 3s budget while every other Unsloth request waits behind it.
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,
         getattr(body, "transport_mode", None),

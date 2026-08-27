@@ -10,7 +10,7 @@
 //
 // It reproduces exactly the contract the shipping app publishes and the readiness gate reads --
 // `.aui-thread-root`, `.aui-thread-viewport`, `[data-role]`, `.aui-thread-scroll-to-bottom` with
-// its `invisible` toggle, the composer textarea -- and nothing else. It is not a replica of Studio
+// its `invisible` toggle, the composer textarea -- and nothing else. It is not a replica of Unsloth
 // and must never be mistaken for one: it cannot tell you anything about the app's own timing. What
 // it can do is put the gate in front of each of the situations it has to tell apart.
 

@@ -2583,7 +2583,7 @@ def test_a_remembered_thread_the_store_has_dropped_does_not_take_the_app_down():
     ``ShallowMemoizeSubject``'s constructor -- so the optional chain around it catches
     nothing, and an effect that throws with no error boundary above it blanks the app.
 
-    Studio deletes chats through storage and tombstones rather than ``runtime.threads.delete()``,
+    Unsloth deletes chats through storage and tombstones rather than ``runtime.threads.delete()``,
     so nothing evicts an entry today. The reopen must not be the thing that depends on that.
     """
     out = _run(

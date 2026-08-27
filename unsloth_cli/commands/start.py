@@ -255,8 +255,8 @@ _REASONING_OPTION = typer.Option(
     rich_help_panel = _PANEL_SERVER,
     help = (
         "llama-server reasoning mode for an auto-started coding-agent server. "
-        "Defaults to off so tool calls stay in the structured tool channel; use "
-        "'auto' or 'on' to opt back into model reasoning."
+        "Defaults to auto so the model's chat template decides; use 'on' or 'off' "
+        "to override it."
     ),
 )
 _REASONING_EFFORT_OPTION = typer.Option(
@@ -708,7 +708,7 @@ def _fail(message: str) -> NoReturn:
 
 
 def _reject_as_subagent(agent: str, args: list) -> None:
-    # Reject early, or the flag reaches the agent binary after Studio loaded the model.
+    # Reject early, or the flag reaches the agent binary after Unsloth loaded the model.
     if any(arg == "--as-subagent" or arg.startswith("--as-subagent=") for arg in args):
         _fail(f"--as-subagent is not supported for {agent}.")
 
@@ -1158,8 +1158,8 @@ def _start_studio_server(
     child_env = os.environ.copy()
     # Current llama-server versions read this documented env equivalent of --reasoning.
     # Older managed versions ignore an unknown env variable instead of failing startup on
-    # an unknown passthrough CLI flag. An omitted start option still defaults to off.
-    child_env["LLAMA_ARG_REASONING"] = server.reasoning or "off"
+    # an unknown passthrough CLI flag. An omitted start option follows the model template.
+    child_env["LLAMA_ARG_REASONING"] = server.reasoning or "auto"
     # Always written, like the line above: an inherited value would otherwise pin
     # a level the omitted flag promises to leave alone. 'default' is llama.cpp's
     # own sentinel for "keep the chat template's level".
@@ -1168,7 +1168,7 @@ def _start_studio_server(
     # unknown CLI flag as a llama-server arg; new launchers preserve it across re-exec.
     child_env[_START_API_KEY_MARKER_ENV] = "1"
     # Convey healing/nudging through the env; `unsloth run` reads these when its own
-    # flags are omitted, so this works even if run re-execs into an older Studio venv.
+    # flags are omitted, so this works even if run re-execs into an older Unsloth venv.
     # Only write when the operator set the flag explicitly; otherwise keep whatever they
     # already exported (child_env is a copy of os.environ), falling back to the start
     # defaults (healing on, nudging on) when nothing was inherited.
@@ -3295,7 +3295,7 @@ def _augment_path_with_install_dirs() -> None:
 def _probe_env(**extra: str) -> dict:
     """Environment for probes that RUN a resolved shim.
 
-    _which_with_install_dirs restores PATH before returning, so a shim backed by Studio's
+    _which_with_install_dirs restores PATH before returning, so a shim backed by Unsloth's
     managed Node would not find that node when executed.
     """
     original = os.environ.get("PATH")
@@ -3849,7 +3849,7 @@ def _agents_config_root() -> Path:
 
 @contextlib.contextmanager
 def _temporary_agent_config(prefix: str):
-    # Nothing else prunes Studio's auth tree, so reuse the locked session helper: the next
+    # Nothing else prunes Unsloth's auth tree, so reuse the locked session helper: the next
     # launch reclaims homes left by a killed wrapper, and the lock spares live sessions.
     temp_root = _agents_config_root() / ".tmp"
     with contextlib.ExitStack() as stack:
@@ -3857,7 +3857,7 @@ def _temporary_agent_config(prefix: str):
             temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
             path = stack.enter_context(_short_ephemeral_session(temp_root, prefix))
         except OSError:
-            # Attaching to a remote or running Studio needs no local auth tree, so it may be
+            # Attaching to a remote or running Unsloth needs no local auth tree, so it may be
             # absent or unwritable. Fall back to the system temp dir, as before: no
             # reclamation there, but the OS prunes it.
             path = Path(tempfile.mkdtemp(prefix = prefix))
@@ -4027,7 +4027,7 @@ def _session_config(
     resumed next time. Either way the user's real ~/.<agent> config is left untouched.
     """
     if launch and not persist:
-        # Windows codex keeps #7519's short home (MAX_PATH); everyone else uses Studio's root.
+        # Windows codex keeps #7519's short home (MAX_PATH); everyone else uses Unsloth's root.
         parent = _ephemeral_session_parent(agent)
         prefix = _ephemeral_session_prefix(agent, parent)
         if parent is not None:

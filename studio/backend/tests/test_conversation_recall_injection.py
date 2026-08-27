@@ -631,7 +631,7 @@ def test_sticky_boundary_ignores_an_anchor_the_branch_no_longer_has(monkeypatch)
 def test_sticky_boundary_anchor_skips_the_system_turn(monkeypatch):
     """Counted the way `_branch_boundary` counts: system and developer turns do not.
 
-    Studio prefixes every request with a system message, so counting it would put every
+    Unsloth prefixes every request with a system message, so counting it would put every
     anchor one place late and quietly deepen every boundary by one.
     """
     from core.inference import llama_cpp
@@ -1113,10 +1113,10 @@ def test_conversation_search_returns_what_the_budget_does_hold(archived, monkeyp
 
 
 def test_the_conversation_tool_survives_studios_explicit_allowlist(monkeypatch):
-    """Studio always sends enabled_tools, and it never names this internal tool.
+    """Unsloth always sends enabled_tools, and it never names this internal tool.
 
     While the gate could only REMOVE, the allowlist filter dropped search_conversation
-    first, so neither it nor the compaction nudge ever appeared in a Studio chat.
+    first, so neither it nor the compaction nudge ever appeared in an Unsloth chat.
     """
     import asyncio
     import types
