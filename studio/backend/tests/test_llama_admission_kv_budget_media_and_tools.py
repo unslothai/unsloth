@@ -57,16 +57,14 @@ class TestMediaIsCharged:
             ],
             max_tokens = 128,
         )
-        # Budget well clear of both costs. At 4096 the estimate is clamped to the
-        # budget by `max(1, min(budget, ...))` on BOTH sides, so the two agreed at
-        # the clamp whatever the estimator did and the assertion proved nothing.
+        # Clear of the clamp: at 4096 `max(1, min(budget, ...))` pinned both sides to the
+        # budget, so they agreed whatever the estimator did and this proved nothing.
         legacy_cost = _openai_llama_admission_tokens(legacy, budget = 1_000_000, capacity = 4)
         inline_cost = _openai_llama_admission_tokens(inline, budget = 1_000_000, capacity = 4)
-        # The wire spelling must not change the KV commitment for the same image.
-        # Not to the token: the inline spelling really does send a content-part
-        # wrapper the legacy one does not, and the compact marker standing in for the
-        # bytes is itself a few tokens of JSON. What must not survive is the 30x gap
-        # between pricing an image at its base64 length and pricing it at its text.
+        # The wire spelling must not change the commitment. Not to the token: inline
+        # really does send a content-part wrapper legacy does not, and the marker is
+        # itself a little JSON. What must not survive is the 30x gap between pricing an
+        # image at its base64 length and at its text.
         assert abs(legacy_cost - inline_cost) <= 64, (legacy_cost, inline_cost)
         assert max(legacy_cost, inline_cost) < 2 * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
 
@@ -91,9 +89,8 @@ class TestMediaIsCharged:
         )
         inline = _Payload(messages = inline_messages, max_tokens = 128)
 
-        # A budget no clamp can reach: at 65536 a 1 MiB image priced as prompt text
-        # clamps to the budget on both sides, so `dual == inline` held on the
-        # unfixed estimator too and only the upper bound below did any work.
+        # Clear of the clamp: at 65536 a 1 MiB image priced as prompt text pinned both
+        # sides to the budget, so `dual == inline` held on the unfixed estimator too.
         dual_cost = _openai_llama_admission_tokens(dual, budget = 1_000_000, capacity = 4)
         inline_cost = _openai_llama_admission_tokens(inline, budget = 1_000_000, capacity = 4)
 
@@ -108,13 +105,10 @@ class TestMediaIsCharged:
     def test_every_builder_forwards_exactly_what_admission_charged(self):
         """The reservation is only a bound if it counts the images actually sent.
 
-        Studio echoes one image into both the ``image_url`` part and the legacy
-        top-level field. `_openai_messages_for_gguf_chat` has always dropped the
-        echo, but `_openai_messages_for_passthrough` -- the builder a request with
-        client ``tools`` or a ``response_format`` goes through -- spliced it in
-        unconditionally, so it sent two copies of one image against a reservation
-        for one. Measured against llama-server b10639 with a 2048x2048 image: 4417
-        reserved, 8466 really charged.
+        Studio echoes one image into both spellings. The GGUF builder always dropped the
+        echo; `_openai_messages_for_passthrough` (taken when a client sends ``tools`` or
+        a ``response_format``) spliced it in regardless, sending two copies against a
+        reservation for one: 4417 reserved against 8466 charged on llama-server b10639.
         """
         from models.inference import ChatCompletionRequest
         from routes.inference import (
@@ -192,12 +186,10 @@ class TestMediaIsCharged:
     def test_the_allowance_bounds_a_real_projector(self):
         """The per-image charge is an upper bound, not an estimate.
 
-        Measured against llama-server b10639: a 2048x2048 image costs 4098 KV
-        positions on Qwen3-VL-4B (llama.cpp's 4096-embedding cap for that projector
-        plus two mtmd delimiters) and 258 on Gemma 3 4B, at every resolution and
-        every encoded size. A flat 4096 was below the Qwen figure, and reserving
-        less than a request costs is what lets two of them collide in a cache that
-        holds one.
+        Measured on llama-server b10639: 4098 KV positions for a 2048x2048 image on
+        Qwen3-VL-4B (the 4096-embedding cap plus two mtmd delimiters) and 258 on Gemma 3
+        4B, at every resolution and encoded size. A flat 4096 sat below the Qwen figure,
+        and reserving less than a request costs is what lets two collide in one cache.
         """
         measured_worst_case = {"qwen3-vl-4b": 4098, "gemma-3-4b": 258}
         for model, tokens in measured_worst_case.items():

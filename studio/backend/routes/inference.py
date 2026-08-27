@@ -1624,23 +1624,17 @@ def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
     return extra
 
 
-# KV positions to reserve per image, as an upper bound rather than an estimate.
+# An upper bound per image, not an estimate: under-reserving hands out a slot the cache
+# cannot back, which is the overcommit #9392 exists to stop.
 #
-# 4096 is llama.cpp's default ceiling on Qwen-VL embeddings per image (the projector
-# resizes to its own pixel limits, so transport size never enters into it), but the
-# embeddings are not the whole cost: mtmd wraps them in delimiter tokens. Measured
-# against llama-server b10639, a 2048x2048 image costs 4098 on Qwen3-VL-4B, i.e. the
-# cap plus two, and 258 on Gemma 3 4B (256 embeddings plus the same two). A flat 4096
-# is therefore provably BELOW the real ceiling, and under-reserving is the one
-# direction this accounting must never err in: it hands out a slot the cache cannot
-# back, which is the overcommit #9392 exists to stop.
-#
-# The wrapper allowance is deliberately much larger than the two tokens measured, to
-# cover projectors whose delimiters are longer. It is still a bound, not a guess: a
-# projector whose embeddings alone exceed the cap (tiling or multi-crop families, or a
-# llama-server started by hand with a raised --image-max-tokens; Studio never passes
-# one) is outside what this constant can promise, and wants a projector-aware
-# allowance read off the loaded mmproj rather than a bigger number here.
+# 4096 is llama.cpp's default Qwen-VL embedding cap (the projector resizes to its own
+# pixel limits, so transport size never enters into it), but mtmd wraps the embeddings
+# in delimiters. Measured on llama-server b10639: 4098 for a 2048x2048 image on
+# Qwen3-VL-4B, 258 on Gemma 3 4B. The wrapper allowance is far above the two measured
+# so longer delimiters still fit. A projector whose embeddings alone exceed the cap
+# (tiling or multi-crop, or a hand-started llama-server with a raised
+# --image-max-tokens; Studio never passes one) needs a projector-aware allowance read
+# off the loaded mmproj, not a bigger number here.
 _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP = 4096
 _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS = 128
 _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
@@ -1651,21 +1645,17 @@ _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
 def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict], int]:
     """Remove image bytes before estimating the textual part of a prompt.
 
-    llama.cpp's multimodal processor decodes an image and turns it into
-    model-specific embedding tokens. The base64 transport is neither prompt text nor
-    a stable proxy for those tokens. Keep the small shape of each image part for the
-    JSON estimate, and return its count so the caller can add a bounded media
-    allowance.
+    mtmd turns an image into model-specific embedding tokens, so its base64 transport
+    is neither prompt text nor a proxy for that count. Keep each image part's shape for
+    the JSON estimate and return the count, so the caller can add a bounded allowance.
     """
     estimate_messages = []
     image_parts = 0
     for message in messages:
-        # exclude_none, like every other dump of these models in this file, and like
-        # the generation paths this estimate is trying to predict. Without it the
-        # five unset optional fields on ChatMessage are serialised as `"name": null`
-        # and priced as prompt text: 34 tokens for `{"role": "user", "content":
-        # "hi"}` against 8, which on a long thread is thousands of tokens of KV
-        # reserved for punctuation that is never sent.
+        # exclude_none like every other dump here, including the generation paths this
+        # predicts: the five unset optionals on ChatMessage otherwise serialise as
+        # `"name": null` and get priced as prompt text (34 tokens for a two-key message
+        # against 8), reserving KV for punctuation that is never sent.
         message_dict = (
             message if isinstance(message, dict) else message.model_dump(exclude_none = True)
         )
@@ -1697,15 +1687,13 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
 def _openai_llama_admission_media_tokens(payload, *, message_image_parts: int = 0) -> int:
     """Estimate media KV usage without charging transport bytes as prompt tokens.
 
-    The GGUF generation path injects the legacy top-level image only when the
-    request has no message-level image. Studio sends both spellings for the same
-    image, so counting both would reserve the same image twice. A fixed allowance is
-    deliberately used because the exact mtmd token count depends on the loaded
-    vision projector and image preprocessing, not on base64 length.
+    Both builders inject the legacy top-level image only when the messages carry none
+    (`_messages_carry_an_image`), and Studio sends the same image in both spellings, so
+    charging both would reserve it twice. The allowance is fixed because the real mtmd
+    count follows the loaded projector, not base64 length.
 
-    Audio and video keep their existing top-level accounting until the corresponding
-    model-specific KV estimate is available; this fix is scoped to the image path
-    that regressed vision-chat concurrency.
+    Audio and video keep the old top-level accounting until they have a model-specific
+    estimate; this is scoped to the image path that regressed vision concurrency.
     """
     extra = 0
     extra += max(0, message_image_parts) * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
@@ -27723,12 +27711,10 @@ def _splice_image_into_last_user(messages: list[dict], image_part: dict) -> None
 def _messages_carry_an_image(messages: list[dict]) -> bool:
     """Whether the built message list already has a message-level image part.
 
-    The one place that question is answered, because both builders and the KV
-    admission estimate have to answer it the SAME way. Studio sends the current
-    image twice, as an ``image_url`` part and as the legacy top-level field, so a
-    builder that splices the legacy copy on top of the part sends the image
-    twice, while admission (which counts parts) charges for it once. Two copies
-    of this predicate is how that drift happened.
+    One place, because both builders and the KV estimate must answer it the same way.
+    Studio sends the image as an ``image_url`` part AND the legacy top-level field, so a
+    builder that splices the legacy copy on top sends two images against a reservation
+    for one. Two copies of this predicate is how that drift happened.
     """
     return any(
         isinstance(msg.get("content"), list)
@@ -27754,12 +27740,11 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     support) and spliced into the last user message as an OpenAI ``image_url``
     content part so vision + function-calling requests work transparently.
 
-    Only when the messages carry no image of their own, matching
-    ``_openai_messages_for_gguf_chat``. Studio echoes the current image into both
-    spellings, so splicing unconditionally sent a tools or response_format
-    request two copies of one image while admission reserved one: measured at
-    4417 tokens reserved against 8466 really charged, which overcommits the KV
-    cache on any backend with more slots than that gap allows.
+    Only when the messages carry none of their own, matching
+    ``_openai_messages_for_gguf_chat``. Studio echoes the image into both spellings, so
+    splicing unconditionally sent a tools or response_format request two copies against
+    a reservation for one: 4417 reserved against 8466 charged, which overcommits the KV
+    cache wherever the slot count lets that gap accumulate.
     """
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
