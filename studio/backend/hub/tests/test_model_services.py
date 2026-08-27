@@ -22,6 +22,7 @@ from hub.services import snapshot_progress
 from hub.services.datasets import downloads as dataset_downloads
 from hub.services.models import (
     cache_inventory,
+    catalog_classification,
     common as model_common,
     deletion,
     downloads,
@@ -913,10 +914,10 @@ def test_local_inventory_requests_share_scan(monkeypatch, change_kind):
     response.model_copy = lambda update: SimpleNamespace(models = update["models"])
     sources = local_inventory._local_inventory_sources()
     monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
-    monkeypatch.setitem(
-        sys.modules,
-        "routes.models",
-        SimpleNamespace(_local_model_task = lambda row: task_calls.append(row.id) or "task"),
+    monkeypatch.setattr(
+        catalog_classification,
+        "_local_model_task",
+        lambda row: task_calls.append(row.id) or "task",
     )
 
     async def scan(*_args):
@@ -1813,9 +1814,21 @@ def _diffusion_scan(monkeypatch, tmp_path, repo_id: str, files: list, *, task: s
         "is_snapshot_partial",
         lambda *_args, **_kwargs: False,
     )
-    monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda _repo, gguf: task)
+    selected_snapshots = []
+
+    def row_task(
+        _repo,
+        *,
+        gguf,
+        selected = None,
+    ):
+        selected_snapshots.append(selected)
+        return task
+
+    monkeypatch.setattr(cache_inventory, "_cached_row_task", row_task)
     rows = cache_inventory._scan_cached_models()
     assert len(rows) == 1
+    assert selected_snapshots == [snapshot]
     return rows[0]
 
 
@@ -4139,6 +4152,19 @@ def test_local_inventory_filters_custom_embedder_hf_cache_row(monkeypatch, tmp_p
     assert [row.model_id for row in rows] == ["org/chat-model"]
 
 
+def test_qwen3_asr_gguf_name_hint_is_not_classified_as_chat(monkeypatch, tmp_path):
+    from hub.services.models import catalog_classification
+
+    asr = tmp_path / "Qwen3-ASR-0.6B-Q8_0.gguf"
+    chat = tmp_path / "Qwen3-0.6B-Q8_0.gguf"
+    asr.write_bytes(b"gguf")
+    chat.write_bytes(b"gguf")
+    monkeypatch.setattr(catalog_classification, "_gguf_architecture", lambda _path: "qwen3")
+
+    assert catalog_classification._gguf_path_task(asr) == "automatic-speech-recognition"
+    assert catalog_classification._gguf_path_task(chat) == "text-generation"
+
+
 def test_local_inventory_filters_embedder_configured_by_snapshot_path(monkeypatch, tmp_path):
     from core.rag import config as rag_config
 
@@ -4846,7 +4872,7 @@ def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypa
     """Only a hub that can still append to the partial earns the same-transport reprieve."""
     # The purge asks partial_is_resumable, so patching the hub-version helper it wraps would
     # be a no-op here.
-    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: True)
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name, _root = None: True)
     blobs = _vision_cache_root(monkeypatch, tmp_path)
     companion = frozenset({"shared-mmproj"})
 
@@ -5701,6 +5727,27 @@ def test_a_shared_companion_alone_is_not_evidence_the_quant_is_here(tmp_path):
     assert snapshot_progress._materialized_bytes(snap, lambda path: path.startswith("mmproj")) == 64
 
 
+def test_finder_metadata_left_by_a_deleted_quant_is_not_that_quant(tmp_path):
+    """macOS keeps a file's metadata in a "._" companion carrying the same name, so it matches
+    the quant matcher exactly as its file does. Deleting the quant on a filesystem without
+    native xattrs strands that companion, which both walks then read as the quant still being
+    here -- hydration re-adopts the stale job and blocks a fresh download. A real GGUF a user
+    named that way is still the quant."""
+    snap = tmp_path / "snapshots" / "rev0"
+    snap.mkdir(parents = True)
+    (snap / "._model-Q4_K_M.gguf").write_bytes(b"\x00\x05\x16\x07" + b"m" * 60)
+
+    def matcher(path, *, companions = True):
+        return path.endswith("Q4_K_M.gguf")
+
+    assert snapshot_progress._materialized_bytes(snap, matcher) == 0
+    assert snapshot_progress._variant_main_shard_present(snap, matcher) is False
+
+    (snap / "._named-Q4_K_M.gguf").write_bytes(b"GGUF" + b"q" * 28)
+    assert snapshot_progress._materialized_bytes(snap, matcher) == 32
+    assert snapshot_progress._variant_main_shard_present(snap, matcher) is True
+
+
 def test_a_root_that_will_not_resolve_is_a_scan_error(monkeypatch, tmp_path):
     """A root that stats but will not resolve -- an intermittent network mount, a Windows
     reparse point -- was dropped silently, so the scan answered "measured, no cache" and
@@ -6095,6 +6142,25 @@ def test_local_embedding_model_is_not_chat_capable(tmp_path):
     assert rows["tiny-llama"].capabilities.can_chat is True
     # Training and LoRA support are unchanged: this only gates chat.
     assert rows["all-MiniLM-L6-v2"].capabilities.can_train is True
+
+
+def test_a_snapshot_whose_only_weight_is_finder_metadata_is_not_a_safetensors_row(tmp_path):
+    """Every non-GGUF classification here reads the file list by suffix, and a "._" companion
+    carries the suffix of the file it describes -- so a directory left holding only those was
+    given a ready safetensors row. A real weight named that way still gets one."""
+
+    def _formats(name, weight = None):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "config.json").write_text("{}")
+        if weight is not None:
+            (d / "._model.safetensors").write_bytes(weight)
+        return [r.model_format for r in model_common._classify_local_path(d, "models_dir")]
+
+    # A config with no weight beside it is already "unknown"; metadata must not read as more.
+    assert _formats("config-only") == ["unknown"]
+    assert _formats("metadata-only", b"\x00\x05\x16\x07\x00\x02\x00\x00") == ["unknown"]
+    assert _formats("named", b"weights") == ["safetensors"]
 
 
 def test_cached_encoder_repo_is_not_chat_capable(tmp_path):
@@ -7120,3 +7186,326 @@ def test_a_stale_revisions_filenames_do_not_settle_the_resolved_one(monkeypatch,
     )
 
     assert result["complete_on_disk"] is False, result
+
+
+def test_local_inventory_classifies_off_the_event_loop(monkeypatch):
+    """Classification must not block unrelated event-loop work."""
+    from hub.services.models import local_inventory
+
+    idents: list[int] = []
+    loop_is_free = threading.Event()
+    model = SimpleNamespace(id = "model")
+    model.model_copy = lambda update: SimpleNamespace(id = model.id, task = update["task"])
+    response = SimpleNamespace(models = [model])
+    response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+
+    def classify_row(row):
+        idents.append(threading.get_ident())
+        # Only a responsive event loop can set this event.
+        assert loop_is_free.wait(10), "the event loop was blocked while classification ran"
+        return "task"
+
+    async def scan(*_args):
+        return response
+
+    async def no_folders():
+        return []
+
+    monkeypatch.setattr(catalog_classification, "_local_model_task", classify_row)
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: 0)
+
+    async def run():
+        async def keep_the_loop_moving():
+            while not idents:
+                await asyncio.sleep(0.005)
+            loop_is_free.set()
+
+        listing = asyncio.create_task(local_inventory.list_local_models_response("./models"))
+        await asyncio.wait_for(asyncio.gather(listing, keep_the_loop_moving()), timeout = 15)
+        return threading.get_ident(), listing.result()
+
+    loop_ident, listed = asyncio.run(run())
+    assert [row.task for row in listed.models] == ["task"]
+    assert idents and loop_ident not in idents, "classification ran on the event loop thread"
+
+
+def test_local_inventory_derives_speech_task_from_filesystem_codec(monkeypatch):
+    """A renamed non-GGUF TTS checkpoint has no family hint, so its tokenizer
+    decoder is the only evidence that can place it in the Audio picker."""
+    from hub.services.models import local_inventory
+
+    model = SimpleNamespace(id = "renamed-checkpoint")
+    model.model_copy = lambda update: SimpleNamespace(id = model.id, **update)
+    response = SimpleNamespace(models = [model])
+    response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+
+    async def scan(*_args):
+        return response
+
+    async def no_folders():
+        return []
+
+    monkeypatch.setattr(catalog_classification, "_local_model_task", lambda _row: None)
+    monkeypatch.setattr(catalog_classification, "_local_model_audio_type", lambda _row: "snac")
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: 0)
+
+    listed = asyncio.run(local_inventory.list_local_models_response("./renamed-tts-models"))
+    assert [(row.task, row.audio_type) for row in listed.models] == [("text-to-speech", "snac")]
+
+
+def test_local_inventory_classifies_a_superseded_result_off_the_event_loop(monkeypatch):
+    """The give-up path serves the freshest scan it has, and classifies it the same way."""
+    from hub.services.models import local_inventory
+
+    idents: list[int] = []
+    epoch = [0]
+    model = SimpleNamespace(id = "model")
+    model.model_copy = lambda update: SimpleNamespace(id = model.id, task = update["task"])
+    response = SimpleNamespace(models = [model])
+    response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+
+    async def always_superseded(*_args):
+        epoch[0] += 1  # every walk is invalidated before it returns
+        return response
+
+    async def no_folders():
+        return []
+
+    monkeypatch.setattr(
+        catalog_classification,
+        "_local_model_task",
+        lambda row: idents.append(threading.get_ident()) or "task",
+    )
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", always_superseded)
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+    async def run():
+        listed = await asyncio.wait_for(
+            local_inventory.list_local_models_response("./models"), timeout = 15
+        )
+        return threading.get_ident(), listed
+
+    loop_ident, listed = asyncio.run(run())
+    assert [row.task for row in listed.models] == ["task"]
+    assert idents and loop_ident not in idents, "classification ran on the event loop thread"
+
+
+def test_local_inventory_retries_when_the_cache_changes_during_classification(monkeypatch):
+    """A deletion landing while classification runs must not be answered with the old rows."""
+    from hub.services.models import local_inventory
+
+    epoch = [0]
+    scans: list[int] = []
+
+    def _scan_response(tag: str):
+        row = SimpleNamespace(id = tag)
+        row.model_copy = lambda update, tag = tag: SimpleNamespace(id = tag, task = update["task"])
+        response = SimpleNamespace(models = [row])
+        response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+        return response
+
+    async def scan(*_args):
+        scans.append(epoch[0])
+        return _scan_response(f"scan{len(scans)}")
+
+    def classify_row(row):
+        # The cache is invalidated while the first scan's rows are being classified.
+        if len(scans) == 1:
+            epoch[0] += 1
+        return "task"
+
+    async def no_folders():
+        return []
+
+    monkeypatch.setattr(catalog_classification, "_local_model_task", classify_row)
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+    async def run():
+        return await asyncio.wait_for(
+            local_inventory.list_local_models_response("./models"), timeout = 15
+        )
+
+    listed = asyncio.run(run())
+    assert scans == [0, 1], scans
+    assert [row.id for row in listed.models] == ["scan2"]
+
+
+def _gguf_with_architecture(path: Path, architecture: str) -> None:
+    """A minimal valid GGUF carrying just ``general.architecture``."""
+    import struct
+
+    def string(value: str) -> bytes:
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    path.parent.mkdir(parents = True, exist_ok = True)
+    metadata = string("general.architecture") + struct.pack("<I", 8) + string(architecture)
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
+
+
+def test_cached_gguf_task_describes_the_revision_the_load_id_resolves_to(tmp_path):
+    """A bare repo id loads through ``refs/main``, which is not always the newest payload
+    snapshot: a revision-pinned fetch adds a newer one without moving the ref. Classifying the
+    newest then advertised a task for a revision the load never reads, and the pickers filter
+    On Device rows on exactly that field."""
+    hub_cache = tmp_path / "hub"
+    repo_path = hub_cache / "models--Org--Model-GGUF"
+    older = repo_path / "snapshots" / "aaaaold"
+    newer = repo_path / "snapshots" / "bbbbnew"
+    _gguf_with_architecture(older / "model-Q4_K_M.gguf", "llama")
+    _gguf_with_architecture(newer / "model-Q4_K_M.gguf", "flux")
+    (repo_path / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_path / "refs" / "main").write_text("aaaaold")
+    os.utime(older, (1_000_000, 1_000_000))
+    os.utime(newer, (2_000_000, 2_000_000))
+
+    def revision(snapshot: Path) -> SimpleNamespace:
+        gguf = snapshot / "model-Q4_K_M.gguf"
+        return SimpleNamespace(
+            snapshot_path = snapshot,
+            files = [
+                SimpleNamespace(
+                    file_name = "model-Q4_K_M.gguf",
+                    size_on_disk = 64,
+                    file_path = gguf,
+                    blob_path = gguf,
+                )
+            ],
+            refs = set(),
+            commit_hash = snapshot.name,
+            last_modified = 1.0,
+            size_on_disk = 64,
+        )
+
+    repo_info = SimpleNamespace(
+        repo_id = "Org/Model-GGUF",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [revision(older), revision(newer)],
+        size_on_disk = 128,
+        last_accessed = 2.0,
+        last_modified = 2.0,
+        nb_files = 2,
+    )
+
+    rows = cache_inventory._scan_cached_gguf(
+        cache_scans = [SimpleNamespace(repos = [repo_info])], active_hub_cache = hub_cache
+    )
+    row = next(row for row in rows if row["repo_id"] == "Org/Model-GGUF")
+    # The id resolves through refs/main to the llama revision, so the row must say so.
+    assert row["load_id"] == "Org/Model-GGUF"
+    assert row["task"] == "text-generation"
+
+
+def test_cached_community_orpheus_gguf_is_not_chat_loadable(tmp_path):
+    hub_cache = tmp_path / "hub"
+    repo_path = hub_cache / "models--QuantFactory--orpheus-3b-0.1-ft-GGUF"
+    snapshot = repo_path / "snapshots" / "revision"
+    gguf = snapshot / "orpheus-3b-0.1-ft-Q4_K_M.gguf"
+    _gguf_with_architecture(gguf, "llama")
+    (repo_path / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_path / "refs" / "main").write_text("revision")
+
+    revision = SimpleNamespace(
+        snapshot_path = snapshot,
+        files = [
+            SimpleNamespace(
+                file_name = gguf.name,
+                size_on_disk = 64,
+                file_path = gguf,
+                blob_path = gguf,
+            )
+        ],
+        refs = {"main"},
+        commit_hash = "revision",
+        last_modified = 1.0,
+        size_on_disk = 64,
+    )
+    repo_info = SimpleNamespace(
+        repo_id = "QuantFactory/orpheus-3b-0.1-ft-GGUF",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [revision],
+        size_on_disk = 64,
+        last_accessed = 1.0,
+        last_modified = 1.0,
+        nb_files = 1,
+    )
+
+    rows = cache_inventory._scan_cached_gguf(
+        cache_scans = [SimpleNamespace(repos = [repo_info])], active_hub_cache = hub_cache
+    )
+    row = next(row for row in rows if row["repo_id"] == repo_info.repo_id)
+    assert row["task"] == "text-to-speech"
+    assert row["capabilities"]["can_chat"] is False
+
+
+def test_every_row_key_the_scanner_emits_survives_the_response_schema():
+    """``response_model`` silently DROPS any key the schema does not declare.
+
+    ``_scan_cached_models`` grew a ``diffusers`` flag, which is the only gate keeping an
+    untrusted or unrecognised pipeline out of a chat picker: such a repo carries no task, and
+    its pipeline root has no config for can_chat to read. Undeclared, the flag reached the CLI
+    (which reads the dict in-process) but never the browser, so the two disagreed about the
+    same row.
+
+    The watched set is an explicit list, not every key the scanner emits: the AST harvest
+    over-approximates, picking up internal bookkeeping from nested dict literals that was never
+    meant to leave the process. So a NEW picker-visible flag is not covered the day it lands --
+    add it here when you add it to the scanner.
+    """
+    import ast
+    import pathlib
+
+    from hub.schemas.inventory import CachedGgufRepo, CachedModelRepo
+
+    source = pathlib.Path(cache_inventory.__file__).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+
+    def literal_keys(function_name: str) -> set:
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == function_name
+            ):
+                return {
+                    key.value
+                    for inner in ast.walk(node)
+                    if isinstance(inner, ast.Dict)
+                    for key in inner.keys
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                }
+        return set()
+
+    # Each scanner against ITS OWN schema. A union would let a key emitted on a model row pass
+    # because the GGUF schema happens to declare it, which is not what response_model does.
+    emitted = literal_keys("_cache_inventory_fields") | literal_keys("_scan_cached_models")
+    watched = ("diffusers", "companion", "single_file", "partial", "load_id", "task")
+    for flag in watched:
+        if flag in emitted:
+            assert flag in CachedModelRepo.model_fields, (
+                f"_scan_cached_models emits {flag!r} but CachedModelRepo does not declare it, so "
+                f"FastAPI's response_model strips it before the frontend sees the row."
+            )
+
+    # And prove it end to end rather than by field name alone: a declared-but-mistyped field is
+    # dropped or 500s at serialization time, which a model_fields check cannot see.
+    row = {
+        "repo_id": "Org/Pipeline",
+        "size_on_disk": 4096,
+        "last_modified": 1.0,
+        "diffusers": True,
+    }
+    assert CachedModelRepo(**row).model_dump()["diffusers"] is True
+    assert set(CachedGgufRepo.model_fields), "GGUF schema import is load-bearing above"

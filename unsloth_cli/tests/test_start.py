@@ -723,6 +723,31 @@ def test_opencode_native_auto_probes_old_opencode_only_in_install_dir(monkeypatc
     assert start._opencode_supports_native_auto() is False
 
 
+def test_opencode_command_prefers_installed_v2(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_which_with_install_dirs",
+        lambda name: "/usr/local/bin/opencode2" if name == "opencode2" else None,
+    )
+    assert start._opencode_command() == ("/usr/local/bin/opencode2", True)
+
+
+def test_opencode_command_falls_back_to_v1(monkeypatch):
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
+    assert start._opencode_command() == ("opencode", False)
+
+
+def test_opencode_command_finds_official_v2_install_dir(monkeypatch, tmp_path):
+    install_dir = tmp_path / ".opencode" / "bin"
+    install_dir.mkdir(parents = True)
+    monkeypatch.setattr(start.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("PATH", str(tmp_path / "existing"))
+    monkeypatch.setattr(start.shutil, "which", _path_aware_which({"opencode2": install_dir}))
+
+    assert start._opencode_command() == (str(install_dir / "opencode2"), True)
+
+
 def test_augment_path_preserves_defpath_when_path_unset(monkeypatch, tmp_path):
     # PATH unset: shutil.which() and exec*p* fall back to os.defpath (e.g. /bin:/usr/bin), so the
     # augmentation must keep those default dirs instead of collapsing to just the install dir
@@ -779,9 +804,10 @@ def _parse_toml(text: str) -> dict:
     return tomllib.loads(text)
 
 
-def test_project_declares_direct_click_dependency():
+def test_project_declares_direct_cli_dependencies():
     project = _parse_toml((_REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8"))
     assert "click>=8.0" in project["project"]["dependencies"]
+    assert "huggingface-hub>=0.34.0" in project["project"]["dependencies"]
 
 
 def test_agent_paths_use_cli_studio_home_without_backend_imports(monkeypatch, tmp_path):
@@ -806,6 +832,32 @@ def test_merge_codex_config_fresh():
     assert provider["base_url"] == f"{BASE}/v1"
     assert provider["wire_api"] == "responses"
     assert provider["requires_openai_auth"] is False
+
+
+def test_merge_codex_config_raises_the_stream_idle_timeout():
+    """Codex's 300s default cancels the stream while llama-server is still reading.
+
+    llama-server emits nothing at all during prompt processing, so the whole wait counts
+    as idle. Measured on a 2-core CI host: 16.1 tok/s against Codex's several-thousand
+    token preamble is ~460s of silence before the first token exists, and the default
+    trips at 300s. The reconnect then lands on a different parallel slot whose KV cache
+    shares no prefix, so every retry restarts from zero and the turn never completes --
+    a job hung for its full 600s cap with `Reconnecting... 1/5` and one request logged at
+    exactly 300056ms.
+
+    Asserted as a floor rather than an equality: raising it further is fine, and the
+    number is not the contract. Losing it entirely is the regression.
+    """
+    provider = _parse_toml(start._merge_codex_config("", BASE))["model_providers"]["unsloth_api"]
+    assert "stream_idle_timeout_ms" in provider, (
+        "the Codex provider block no longer sets stream_idle_timeout_ms, so Codex falls "
+        "back to its 300s default and cancels any first turn whose prompt takes longer "
+        "than that to process -- which is an ordinary local CPU host, not a corner case"
+    )
+    assert provider["stream_idle_timeout_ms"] > 300_000, (
+        f"stream_idle_timeout_ms is {provider['stream_idle_timeout_ms']}, at or below "
+        f"Codex's own 300000 default, so setting it changes nothing"
+    )
 
 
 def test_merge_codex_config_replaces_stale_block():
@@ -1179,6 +1231,8 @@ def test_unsupported_agents_reject_as_subagent(agent, flag):
 @pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"])
 def test_launch_preflights_agent_before_connect(agent, monkeypatch):
     events = []
+    if agent == "opencode":
+        monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))
 
     def require(name, hint, launch):
         assert name == agent
@@ -1240,7 +1294,7 @@ def test_noninteractive_missing_agent_stops_before_connect(agent, monkeypatch):
     assert f"`{agent}` not found on PATH" in result.output
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"])
+@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "hermes", "pi"])
 def test_no_launch_skips_agent_resolution(agent, monkeypatch):
     monkeypatch.setattr(
         start,
@@ -1262,6 +1316,30 @@ def test_no_launch_skips_agent_resolution(agent, monkeypatch):
 
     assert result.exit_code == 1
     assert isinstance(result.exception, RuntimeError)
+
+
+def test_opencode_no_launch_resolves_generation_without_installing(monkeypatch):
+    resolved = []
+    monkeypatch.setattr(
+        start,
+        "_which_with_install_dirs",
+        lambda name: resolved.append(name)
+        or ("/home/me/.opencode/bin/opencode2" if name == "opencode2" else None),
+    )
+    monkeypatch.setattr(
+        start,
+        "_install_agent",
+        lambda *args: pytest.fail("--no-launch must not install an agent"),
+    )
+    monkeypatch.setattr(
+        start, "_connect", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError)
+    )
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, RuntimeError)
+    assert resolved == ["opencode2"]
 
 
 def test_missing_pi_subagent_extension_fails_before_install_or_connect(monkeypatch, tmp_path):
@@ -1327,6 +1405,8 @@ def fake_studio(tmp_path, monkeypatch):
     # --no-launch session configs land under tmp instead of the real Unsloth dir.
     monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
     monkeypatch.setattr(start, "_require_agent_for_launch", lambda *args: None)
+    # Most existing assertions cover the stable V1 command; V2 has focused cases below.
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))
     # No `claude` on PATH, so _claude_flags never probes the real binary.
     monkeypatch.setattr(start.shutil, "which", lambda _: None)
     monkeypatch.delenv("UNSLOTH_API_KEY", raising = False)
@@ -1690,6 +1770,141 @@ def test_resolved_launch_command_accepts_extensionless_node_target(monkeypatch, 
         str(target),
         "--flag",
     ]
+
+
+def test_resolved_launch_command_prefers_cmd_sibling_of_extensionless_shim(monkeypatch, tmp_path):
+    # which() can resolve the extensionless POSIX shim ahead of its .cmd sibling;
+    # CreateProcess rejects the former with WinError 193 (#9167).
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake-agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    cmd = tmp_path / "fake-agent.cmd"
+    target = tmp_path / "node_modules" / "fake-agent" / "index.js"
+    target.parent.mkdir(parents = True)
+    target.write_text("#!/usr/bin/env node\n", encoding = "utf-8")
+    cmd.write_bytes(_npm_node_cmd_shim(r"node_modules\fake-agent\index.js").encode())
+    monkeypatch.setattr(start.shutil, "which", lambda name: r"C:\Program Files\nodejs\node.exe")
+
+    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [
+        r"C:\Program Files\nodejs\node.exe",
+        str(target),
+        "--flag",
+    ]
+
+
+def test_resolved_launch_command_keeps_extensionless_shim_without_sibling(monkeypatch, tmp_path):
+    # Nothing to substitute, so the path passes through unchanged.
+    _simulate_windows(monkeypatch)
+    executable = tmp_path / "fake-agent"
+    executable.write_text("#!/bin/sh\n", encoding = "utf-8")
+
+    assert start._resolved_launch_command(str(executable), ["--flag"]) == [
+        str(executable),
+        "--flag",
+    ]
+
+
+def test_prefer_cmd_sibling_leaves_an_unreadable_resolution_alone(monkeypatch, tmp_path):
+    # A directory, an unreadable file, or a delete between resolve and open must
+    # fall through instead of raising out of the launch path.
+    _simulate_windows(monkeypatch)
+    executable = tmp_path / "fake-agent"
+    executable.mkdir()
+    (tmp_path / "fake-agent.cmd").write_text("@ECHO off\n", encoding = "utf-8")
+
+    assert start._resolved_launch_command(str(executable), ["--flag"]) == [
+        str(executable),
+        "--flag",
+    ]
+
+
+def test_prefer_cmd_sibling_is_none_safe_and_posix_noop(monkeypatch, tmp_path):
+    assert start._prefer_windows_cmd_sibling(None) is None
+    # Pin os.name instead of relying on the host: on a Windows runner the rescue
+    # would fire and this would assert the opposite of what it means to check.
+    monkeypatch.setattr(start.os, "name", "posix")
+    shim = tmp_path / "fake-agent"
+    shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    (tmp_path / "fake-agent.cmd").write_text("@ECHO off\n", encoding = "utf-8")
+    assert start._prefer_windows_cmd_sibling(str(shim)) == str(shim)
+
+
+def test_resolved_launch_command_rescues_uppercase_cmd_sibling(monkeypatch, tmp_path):
+    # #9167's pnpm dir holds pi.CMD. A case-sensitive volume needs the .CMD probe;
+    # a case-insensitive one answers the earlier .cmd probe with the same file, so
+    # compare identity rather than spelling or this passes only on Linux.
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake-agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    cmd = tmp_path / "fake-agent.CMD"
+    cmd.write_text("@ECHO off\ncustom-wrapper %*\n", encoding = "utf-8")
+
+    resolved = start._resolved_launch_command(str(posix_shim), ["--flag"])
+    assert resolved[1:] == ["--flag"]
+    assert os.path.samefile(resolved[0], str(cmd))
+
+
+def test_which_with_install_dirs_applies_the_cmd_sibling_preference(monkeypatch, tmp_path):
+    # The version probes spawn this result directly, bypassing
+    # _resolved_launch_command, so the rescue must happen here too.
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake-agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    cmd = tmp_path / "fake-agent.cmd"
+    cmd.write_text("@ECHO off\n", encoding = "utf-8")
+    monkeypatch.setattr(start, "_augment_path_with_install_dirs", lambda: None)
+    monkeypatch.setattr(start.shutil, "which", lambda name: str(posix_shim))
+
+    assert start._which_with_install_dirs("fake-agent") == str(cmd)
+
+
+def test_resolved_launch_command_rescues_dotted_bin_name_shim(monkeypatch, tmp_path):
+    # cmd-shim appends .cmd to the whole bin name, so "foo.bar" pairs with
+    # "foo.bar.cmd" and still needs the sibling preference.
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake.agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    cmd = tmp_path / "fake.agent.cmd"
+    target = tmp_path / "node_modules" / "fake-agent" / "index.js"
+    target.parent.mkdir(parents = True)
+    target.write_text("#!/usr/bin/env node\n", encoding = "utf-8")
+    cmd.write_bytes(_npm_node_cmd_shim(r"node_modules\fake-agent\index.js").encode())
+    monkeypatch.setattr(start.shutil, "which", lambda name: r"C:\Program Files\nodejs\node.exe")
+
+    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [
+        r"C:\Program Files\nodejs\node.exe",
+        str(target),
+        "--flag",
+    ]
+
+
+def test_resolved_launch_command_keeps_extensionless_pe_binary_over_stale_sibling(
+    monkeypatch, tmp_path
+):
+    # CreateProcess runs a PE regardless of its name, so a real executable keeps
+    # priority over a stale .cmd; only shebang files are treated as shims.
+    _simulate_windows(monkeypatch)
+    executable = tmp_path / "fake-agent"
+    executable.write_bytes(b"MZ\x90\x00")
+    stale = tmp_path / "fake-agent.cmd"
+    stale.write_text("@ECHO off\nold-wrapper %*\n", encoding = "utf-8")
+
+    assert start._resolved_launch_command(str(executable), ["--flag"]) == [
+        str(executable),
+        "--flag",
+    ]
+
+
+def test_resolved_launch_command_falls_through_to_non_npm_cmd_sibling(monkeypatch, tmp_path):
+    # A non-npm .cmd sibling is still what cmd.exe would have picked, so it is
+    # returned as-is.
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake-agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    cmd = tmp_path / "fake-agent.cmd"
+    cmd.write_text("@ECHO off\ncustom-wrapper %*\n", encoding = "utf-8")
+
+    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [str(cmd), "--flag"]
 
 
 def test_launch_windows_npm_shim_preserves_shebang_args_and_environment(monkeypatch, tmp_path):
@@ -2647,12 +2862,12 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
     monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
     monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
 
-    # Default start: tools off (passthrough), healing + nudging on.
+    # Default start: tools off (passthrough), model-template reasoning, healing + nudging on.
     start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
     cmd, env = captured["command"], captured["kwargs"]["env"]
     assert "--disable-tools" in cmd and "--enable-tools" not in cmd
     assert "--reasoning" not in cmd
-    assert env["LLAMA_ARG_REASONING"] == "off"
+    assert env["LLAMA_ARG_REASONING"] == "auto"
     assert "--gpu-memory-mode" not in cmd
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
@@ -2673,6 +2888,8 @@ def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch
     assert "--enable-tools" in cmd and "--disable-tools" not in cmd
     assert "--reasoning" not in cmd
     assert env["LLAMA_ARG_REASONING"] == "auto"
+    # Unset: the template's own level, and an inherited pin cannot survive.
+    assert env["LLAMA_ARG_REASONING_EFFORT"] == "default"
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
 
@@ -2806,6 +3023,73 @@ def test_require_studio_warns_on_explicit_reasoning_when_reusing_server(
     assert "unsloth studio stop" in err
 
 
+def test_start_studio_server_forwards_reasoning_effort(monkeypatch):
+    # The level reaches llama-server through its documented env var, so an older
+    # managed build ignores it instead of failing on an unknown flag.
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["kwargs"] = kwargs
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+
+    start._start_studio_server(
+        "http://127.0.0.1:8888",
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        start.ServerOptions(reasoning_effort = "medium"),
+    )
+    env = captured["kwargs"]["env"]
+    assert env["LLAMA_ARG_REASONING"] == "auto"
+    assert env["LLAMA_ARG_REASONING_EFFORT"] == "medium"
+
+
+def test_start_studio_server_overrides_inherited_reasoning_effort(monkeypatch):
+    # A level exported for some earlier llama-server run must not silently pin a
+    # server started without the flag.
+    monkeypatch.setenv("LLAMA_ARG_REASONING_EFFORT", "high")
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["kwargs"] = kwargs
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+
+    start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
+    assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING_EFFORT"] == "default"
+
+
+def test_require_studio_warns_on_explicit_reasoning_effort_when_reusing_server(monkeypatch, capsys):
+    monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
+    base, server = start._require_studio(
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        serve = True,
+        server_options = start.ServerOptions(reasoning = "on", reasoning_effort = "high"),
+    )
+    assert base == BASE and server is None
+    err = capsys.readouterr().err
+    # Both pins are named, so neither looks like it took.
+    assert "--reasoning on" in err and "--reasoning-effort high" in err
+    assert "unsloth studio stop" in err
+
+
 def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
     # `unsloth start claude ... --temperature 0.3 --top-k 40` routes the pins into ServerOptions.
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
@@ -2846,6 +3130,7 @@ def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
     so = captured["server_options"]
     assert so.temperature == 0.3 and so.top_k == 40 and so.top_p is None
     assert so.reasoning == "on"
+    assert so.reasoning_effort is None
 
 
 def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
@@ -3377,7 +3662,7 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert cmd[1] == "run"
     assert "--disable-tools" in cmd and "--no-cloudflare" in cmd
     assert "--reasoning" not in cmd
-    assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING"] == "off"
+    assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING"] == "auto"
     assert cmd[cmd.index("--model") + 1] == "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL"
     assert cmd[cmd.index("--gguf-variant") + 1] == "UD-Q4_K_XL"
     assert cmd[cmd.index("--context-length") + 1] == "8192"
@@ -4435,6 +4720,36 @@ def test_opencode_subagent_inline_merges_inherited_filters_without_binary(monkey
     assert inline["subagent_depth"] == 1
 
 
+def test_opencode_v2_subagent_uses_native_depth_without_debug_probe(monkeypatch, tmp_path):
+    monkeypatch.setenv(
+        "OPENCODE_CONFIG_CONTENT",
+        json.dumps({"enabled_providers": ["anthropic"], "subagent_depth": 2}),
+    )
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("V2 debug config is not a resolved object"),
+    )
+
+    inline = start._opencode_subagent_inline_config(
+        tmp_path / "opencode.json", {}, command = "opencode2", v2 = True
+    )
+
+    assert "subagent_depth" not in inline
+    assert inline["enabled_providers"] == ["anthropic", start._OPENCODE_PROVIDER]
+    assert inline["experimental"] == {"subagent_depth": 2}
+
+
+def test_opencode_v2_subagent_does_not_override_configured_depth(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising = False)
+
+    inline = start._opencode_subagent_inline_config(
+        tmp_path / "opencode.json", {}, command = "opencode2", v2 = True
+    )
+
+    assert "experimental" not in inline
+
+
 def _opencode_inline_config(output: str) -> dict:
     # --no-launch prints OPENCODE_CONFIG_CONTENT as a POSIX `export NAME=<shell-quoted>`
     # line on Unix/WSL and a PowerShell `$env:NAME = "<escaped>"` line on native Windows;
@@ -4523,8 +4838,50 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
 
+def test_connect_opencode_v2_no_launch_uses_private_server(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode2", "--standalone"]
+    assert _opencode_inline_config(result.output)["model"] == (
+        f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+    )
+    assert "enabled_providers" not in _opencode_inline_config(result.output)
+    assert "disabled_providers" not in _opencode_inline_config(result.output)
+    assert f"provider policies must allow '{start._OPENCODE_PROVIDER}'" in result.output
+
+
+def test_connect_opencode_v2_no_launch_uses_resolved_off_path_binary(
+    fake_studio, monkeypatch, tmp_path
+):
+    binary = tmp_path / ".opencode" / "bin" / "opencode2"
+    monkeypatch.setattr(
+        start,
+        "_opencode_command",
+        lambda: (str(binary), True),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == [str(binary), "--standalone"]
+
+
+def test_connect_opencode_v2_models_uses_private_server(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "models"])
+
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode2", "models", "--standalone"]
+
+
 def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
-    monkeypatch.setattr(start, "_opencode_subagent_inline_config", lambda path, permission: {})
+    monkeypatch.setattr(
+        start, "_opencode_subagent_inline_config", lambda path, permission, **kwargs: {}
+    )
     result = CliRunner().invoke(
         start.start_app,
         [
@@ -4590,7 +4947,7 @@ def test_opencode_subagent_installs_binary_before_filter_inspection(fake_studio,
     monkeypatch.setattr(start, "_require_agent_for_launch", require)
     inspected = {}
 
-    def inline(path, permission):
+    def inline(path, permission, **kwargs):
         inspected["binary"] = start._which_with_install_dirs("opencode")
         return {}
 
@@ -4607,7 +4964,9 @@ def test_opencode_subagent_installs_binary_before_filter_inspection(fake_studio,
 def test_opencode_subagent_pins_agent_in_inline_overlay(fake_studio, monkeypatch):
     # A project opencode.json outranks the session file, so the agent must ride in
     # OPENCODE_CONFIG_CONTENT where a repo's own agent.unsloth cannot field-merge over it.
-    monkeypatch.setattr(start, "_opencode_subagent_inline_config", lambda path, permission: {})
+    monkeypatch.setattr(
+        start, "_opencode_subagent_inline_config", lambda path, permission, **kwargs: {}
+    )
     result = CliRunner().invoke(
         start.start_app,
         ["opencode", "--as-subagent", "--no-launch", "--model", MODEL["id"] + ":UD-Q4_K_XL"],
@@ -4621,10 +4980,10 @@ def test_opencode_subagent_pins_agent_in_inline_overlay(fake_studio, monkeypatch
 
 
 def test_connect_opencode_subagent_yolo_no_launch_stays_append_safe(fake_studio, monkeypatch):
-    monkeypatch.setattr(start, "_opencode_supports_native_auto", lambda: True)
+    monkeypatch.setattr(start, "_opencode_supports_native_auto", lambda *_: True)
     captured = {}
 
-    def inline(path, permission):
+    def inline(path, permission, **kwargs):
         captured["permission"] = permission
         return {"permission": permission}
 
@@ -4973,6 +5332,38 @@ def test_yolo_opencode_run_uses_native_auto(fake_studio):
     assert "permission" not in _opencode_inline_config(result.output)
 
 
+def test_yolo_opencode_v2_run_uses_standalone_and_native_auto(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
+
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", "run", "hello"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == [
+        "opencode2",
+        "run",
+        "--standalone",
+        "hello",
+        "--auto",
+    ]
+    assert "permission" not in _opencode_inline_config(result.output)
+
+
+def test_yolo_opencode_v2_mini_uses_permission_fallback(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
+
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--yolo", "--no-launch", "mini"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode2", "mini", "--standalone"]
+    assert _opencode_inline_config(result.output)["permission"]["edit"] == "allow"
+
+
 def test_yolo_opencode_tui_resume_uses_native_auto(fake_studio):
     result = CliRunner().invoke(
         start.start_app,
@@ -4996,7 +5387,7 @@ def test_no_yolo_opencode_run_omits_native_auto(fake_studio):
 
 def test_yolo_opencode_bare_launch_uses_native_auto(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
-    monkeypatch.setattr(start, "_opencode_supports_native_auto", lambda: True)
+    monkeypatch.setattr(start, "_opencode_supports_native_auto", lambda *_: True)
     captured = _capture_launch(monkeypatch, ["opencode", "--yolo"])
     assert captured["command"][1:] == [
         "--model",
@@ -5004,6 +5395,16 @@ def test_yolo_opencode_bare_launch_uses_native_auto(fake_studio, monkeypatch):
         "--auto",
     ]
     assert "permission" not in json.loads(captured["env"]["OPENCODE_CONFIG_CONTENT"])
+
+
+def test_yolo_opencode_v2_bare_launch_omits_root_model(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode2")
+    captured = _capture_launch(monkeypatch, ["opencode", "--yolo"])
+
+    assert captured["command"][0].endswith("opencode2")
+    assert captured["command"][1:] == ["--standalone", "--auto"]
+    assert "--model" not in captured["command"]
 
 
 def test_yolo_opencode_native_auto_clears_prior_config_fallback(fake_studio, tmp_path):
@@ -5790,7 +6191,7 @@ def test_augment_path_leaves_path_alone_when_nothing_to_add(monkeypatch):
 
 
 def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path):
-    # A shim resolved via Studio's managed Node needs that node on PATH when it runs.
+    # A shim resolved via Unsloth's managed Node needs that node on PATH when it runs.
     managed_bin = tmp_path / "node" / "bin"
     managed_bin.mkdir(parents = True)
     monkeypatch.setattr(
@@ -5808,7 +6209,7 @@ def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path)
 
 
 def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypatch, tmp_path):
-    # Attaching to a remote Studio needs no local auth tree, so a read-only one must not stop it.
+    # Attaching to a remote Unsloth needs no local auth tree, so a read-only one must not stop it.
     readonly = tmp_path / "readonly"
     readonly.mkdir(mode = 0o500)
     monkeypatch.setattr(start, "_agents_config_root", lambda: readonly / "agents")
@@ -5820,7 +6221,7 @@ def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypat
 
 
 def test_session_config_reclaims_abandoned_homes_for_non_codex_agents(monkeypatch, tmp_path):
-    # Nothing else prunes Studio's auth tree, so a killed wrapper's home must be reclaimed.
+    # Nothing else prunes Unsloth's auth tree, so a killed wrapper's home must be reclaimed.
     agents_root = tmp_path / "agents"
     temp_root = agents_root / ".tmp"
     temp_root.mkdir(parents = True)

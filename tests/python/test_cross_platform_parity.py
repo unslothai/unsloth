@@ -14,23 +14,34 @@ SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 STACK_PY = REPO_ROOT / "studio" / "install_python_stack.py"
 
 
+def _fallback_range(lines):
+    """The half-open line range of install.sh's "GPU detection failed" fallback.
+
+    The end is the `fi` that closes the branch, which means counting nesting
+    rather than taking the first `fi` that appears. Any `if` inside the branch
+    contributes one, and so does a `case`: it closes with `esac`, so a version
+    that only counted `if`/`fi` would still be off by one from the `fi` of an
+    `if` nested inside a case arm.
+    """
+    start = next(i for i, line in enumerate(lines) if "GPU detection failed" in line)
+    depth = 0
+    for i in range(start, len(lines)):
+        stripped = lines[i].strip()
+        if re.match(r"^(if|case)\b", stripped):
+            depth += 1
+        elif stripped in ("fi", "esac") or stripped.startswith(("fi ", "esac ")):
+            if depth == 0:
+                return range(start, i + 1)
+            depth -= 1
+    raise AssertionError("install.sh's GPU-detection fallback branch is never closed")
+
+
 class TestNoTorchBackendAutoInInstallSh:
     """install.sh primary paths must not use --torch-backend=auto (only the fallback else-branch may)."""
 
     def test_no_torch_backend_auto_outside_fallback(self):
         lines = INSTALL_SH.read_text(encoding = "utf-8").splitlines()
-        # Fallback block: from "GPU detection failed" to the next "fi".
-        fallback_start = None
-        fallback_end = None
-        for i, line in enumerate(lines):
-            if fallback_start is None and "GPU detection failed" in line:
-                fallback_start = i
-            elif fallback_start is not None and fallback_end is None and line.strip() == "fi":
-                fallback_end = i
-                break
-        fallback_range = (
-            range(fallback_start or 0, (fallback_end or 0) + 1) if fallback_start else range(0)
-        )
+        fallback_range = _fallback_range(lines)
 
         matches = [
             (i + 1, line)
@@ -43,6 +54,26 @@ class TestNoTorchBackendAutoInInstallSh:
             f"install.sh contains --torch-backend=auto outside the fallback block at lines: "
             f"{[m[0] for m in matches]}"
         )
+
+    def test_the_fallback_range_reaches_the_end_of_the_branch(self):
+        """A range that stops early makes the assertion above fire on correct code.
+
+        It did. #8670 put a `case` with a nested `if`/`fi` in this branch to pick
+        the desktop install spec, and the previous "first `fi` after the comment"
+        scan then ended the block four lines short of the install call it exists
+        to permit -- reporting the fallback's own line as a primary path.
+        """
+        lines = INSTALL_SH.read_text(encoding = "utf-8").splitlines()
+        block = _fallback_range(lines)
+        body = "\n".join(lines[block.start : block.stop])
+        # Both arms of the branch, so neither an early stop nor a runaway passes.
+        assert "STUDIO_LOCAL_INSTALL" in body, "the fallback block stops before its own first if"
+        assert body.count("--torch-backend=auto") == 2, (
+            "the fallback runs --torch-backend=auto once per arm; the detected block "
+            f"contains {body.count('--torch-backend=auto')}"
+        )
+        # And it must not have swallowed the rest of the file.
+        assert "_installed_package_version" not in body, "the fallback block ran past its `fi`"
 
     def test_fallback_uses_torch_backend_auto(self):
         """The fallback branch should use --torch-backend=auto as recovery."""
@@ -975,7 +1006,7 @@ class TestNoTorchPersistenceParity:
 class TestAmdBnbFloorParity:
     """bitsandbytes <= 0.49.2 NaNs at 4-bit decode shape on every AMD GPU; the ROCm
     4-bit GEMV fix (bnb #1887) first ships on PyPI in 0.50.0. The `amd` extra,
-    install.sh and the Studio stack resolve bitsandbytes independently, so all three
+    install.sh and the Unsloth stack resolve bitsandbytes independently, so all three
     must carry the same floor or an unreachable pre-release wheel silently reinstates
     the broken range."""
 

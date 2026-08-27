@@ -167,9 +167,11 @@ export function buildCachedInventoryRow(
     load_cache_path?: string;
     partial?: boolean;
     partial_transport?: string | null;
+    partial_resumable?: boolean;
     has_variant_state?: boolean;
     pipeline_tag?: string | null;
     task?: string | null;
+    audio_type?: string | null;
     single_file?: boolean;
     companion?: boolean;
     tags?: string[];
@@ -230,9 +232,11 @@ export function buildCachedInventoryRow(
         : null,
     partial: row.partial ?? false,
     partialTransport: row.partial_transport ?? null,
+    partialResumable: row.partial_resumable === true,
     hasVariantState: row.has_variant_state ?? false,
     pipelineTag: row.pipeline_tag ?? null,
     task: row.task ?? null,
+    audioType: row.audio_type ?? null,
     singleFile: row.single_file ?? false,
     companion: row.companion ?? false,
     tags: row.tags,
@@ -311,9 +315,11 @@ export function buildLocalInventoryRows(
         updatedAt: normalizeTimestamp(model.updated_at),
         partial: model.partial ?? false,
         partialTransport: model.partial_transport ?? null,
+        partialResumable: model.partial_resumable === true,
         activeCache: model.active_cache ?? null,
         pipelineTag: model.pipeline_tag ?? null,
         task: model.task ?? null,
+        audioType: model.audio_type ?? null,
         tags: model.tags,
         libraryName: model.library_name ?? null,
         quantMethod: model.quant_method ?? null,

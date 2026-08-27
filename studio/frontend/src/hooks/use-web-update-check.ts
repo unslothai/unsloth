@@ -8,6 +8,27 @@ import { useCallback, useEffect, useState } from "react";
 // Checked once per launch only (no polling), to avoid background load. A
 // re-check happens naturally the next time the user reopens the app.
 const WEB_UPDATE_CHECK_DELAY_MS = 5000;
+
+// End-to-end override, absent in every real browser.
+//
+// The banner layout suite boots a fresh page for each case it measures, and every one of
+// those boots waits out this timer before the card it is there to measure exists at all.
+// At 33 boots that is over two and a half minutes of a five minute step spent waiting for
+// a delay whose entire purpose is to keep a network call off the critical path at launch,
+// which is not a property that suite is testing.
+//
+// Read at mount rather than at module load, so a test can set it from an init script and
+// so a bundle that is never driven by one behaves exactly as before: the global is
+// undefined, and the constant above stands. Deliberately not an env var, which would bake
+// the shortened delay into whatever build read it.
+const E2E_DELAY_GLOBAL = "__unslothE2EWebUpdateDelayMs";
+
+function overriddenDelayMs(): number | null {
+  if (typeof window === "undefined") return null;
+  const raw = (window as unknown as Record<string, unknown>)[E2E_DELAY_GLOBAL];
+  const value = typeof raw === "number" ? raw : Number.NaN;
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
 const DISMISS_PREFIX = "unsloth_web_update_dismissed";
 const CAN_SHOW_KEY = "can_show_web_notification";
 const UPDATE_AVAILABLE_KEY = "update_available";
@@ -136,7 +157,10 @@ export function useWebUpdateCheck({
           }
         })
         .catch(() => {});
-    }, delayMs);
+      // The override wins over the caller's delayMs as well as over the constant: the
+      // only caller that passes one is a unit test asserting the timer's behaviour, and
+      // it does not set the global.
+    }, overriddenDelayMs() ?? delayMs);
 
     return () => {
       canceled = true;

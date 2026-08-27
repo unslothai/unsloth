@@ -36,6 +36,49 @@ _PR_SET_PDEATHSIG = 1
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 _JobObjectExtendedLimitInformation = 9
 
+# The lowest pid this module will ever record or signal.
+#
+# kill(2) gives 0, 1 and negatives a different meaning to every other value, and
+# each of those meanings is catastrophic here:
+#
+#   kill(0, sig)     this process's entire group, i.e. Unsloth and its siblings
+#   killpg(1, sig)   the same call as kill(-1, sig): EVERY process the caller
+#                    has permission to signal, not "process group 1"
+#   kill(-n, sig)    process group n
+#
+# The middle one is not hypothetical. A record naming pid 1 as a child reaches
+# _posix_terminate, getpgid(1) == 1 makes it look like a group leader, and the
+# killpg branch then SIGTERMs every process belonging to the user, waits the
+# grace period, and SIGKILLs them too. Nothing rejected it on the way: the
+# identity check compares recorded start-time against current, and init's start
+# time never changes, so a recorded pid 1 matches forever.
+#
+# Guarded at both ends. Nothing below this is recorded, so the bad record cannot
+# be created, and nothing below this is signalled, so records written by an
+# older build cannot fire.
+_LOWEST_SIGNALABLE_PID = 2
+
+
+def is_signalable_pid(pid: object) -> bool:
+    """Whether `pid` names a process that may be recorded or signalled.
+
+    `bool` is excluded explicitly: it is an `int` subclass, so True would
+    otherwise read as pid 1.
+
+    Public because the floor has to hold at every signalling boundary in Unsloth,
+    not just this module's. It was written out by hand in four places at first,
+    and the site that got missed was missed precisely because "who enforces the
+    floor" was a question you had to answer by reading rather than by grepping
+    for one name.
+    """
+    return isinstance(pid, int) and not isinstance(pid, bool) and pid >= _LOWEST_SIGNALABLE_PID
+
+
+# The internal spelling, kept so this module's own call sites and their tests
+# read the same as before.
+_signalable = is_signalable_pid
+
+
 _lock = threading.Lock()
 _spawner_lock = threading.Lock()
 _spawner: "Optional[_Spawner]" = None
@@ -245,7 +288,7 @@ def _pdeathsig_preexec(owner_pid: Optional[int] = None) -> None:
     # Runs in the forked child before exec (PR_SET_PDEATHSIG does not survive the
     # fork); the getppid check closes the race where the parent died first.
     # owner_pid is the spawner's pid, read pre-fork. A bare `getppid() == 1` also
-    # matches a parent that legitimately IS pid 1, which is how Studio runs as a
+    # matches a parent that legitimately IS pid 1, which is how Unsloth runs as a
     # container entrypoint: it killed every llama-server before exec (#7886). It
     # also misses reparenting to a subreaper, whose pid is not 1.
     try:
@@ -287,6 +330,26 @@ def bind_current_process_to_parent_lifetime() -> None:
     try:
         if not parent.is_alive():
             os._exit(1)
+    except Exception:
+        pass
+
+
+def allow_child_processes() -> None:
+    """Allow the current multiprocessing worker to spawn children (#9094).
+
+    Children inherit the cleared flag, since `Process.__init__` copies `_config`.
+    A grandchild that does not pass `daemon =` itself is therefore non-daemonic,
+    and `_exit_function` joins those unconditionally and without a timeout, so it
+    would hold the worker's exit open forever. Everything a worker reaches today
+    passes `daemon = True`; keep it that way.
+    """
+    try:
+        from multiprocessing import process as multiprocessing_process
+
+        # This config is child-local; the parent's Process handle stays daemonic.
+        config = getattr(multiprocessing_process.current_process(), "_config", None)
+        if isinstance(config, dict):
+            config["daemon"] = False
     except Exception:
         pass
 
@@ -539,7 +602,12 @@ def _group_has_members(pgid: object) -> bool:
     not been waited on is still a member, so a group whose every member is a
     zombie would read as alive and keep its record forever.
     """
-    if not isinstance(pgid, int) or _is_windows() or not hasattr(os, "killpg"):
+    # `killpg(1, 0)` is `kill(-1, 0)`, which always succeeds, so without the floor
+    # this answers True for group 1 unconditionally. That delivers no signal, but
+    # it pins the record as unresolved: a legacy entry pairing a real pid with a
+    # poisoned pgid would then be retried on every launch forever, which is the
+    # opposite of what the reaper's drop-on-poison path is for.
+    if not _signalable(pgid) or _is_windows() or not hasattr(os, "killpg"):
         return False
     try:
         os.killpg(pgid, 0)
@@ -644,7 +712,7 @@ def terminate_descendants(
         return
     live: "list[tuple[int, Optional[str]]]" = []
     for pid, identity in collected:
-        if not _still_the_same(pid, identity):
+        if not _signalable(pid) or not _still_the_same(pid, identity):
             continue
         try:
             os.kill(pid, signal.SIGTERM)
@@ -739,7 +807,7 @@ def _breadcrumb_dir():
 
 
 def _breadcrumb_file():
-    # One file per owner: two Studios can share a home (different ports), and a
+    # One file per owner: two Unsloth instances can share a home (different ports), and a
     # single shared file would let the second erase the first's children.
     directory = _breadcrumb_dir()
     return None if directory is None else directory / f"{os.getpid()}.json"
@@ -918,7 +986,9 @@ def adopt_pid(pid: Optional[int]) -> None:
     """Track a child (e.g. a multiprocessing worker started after the parent job
     was set up) and, on Windows, assign it to the job as belt-and-suspenders.
     Tolerates a None or already-exited pid."""
-    if not pid:
+    # `not pid` already rejected None and 0. pid 1 is init, and recording it is
+    # what turns the sweep into a kill of everything the user owns.
+    if not _signalable(pid):
         return
     # Here as well as in the Linux spawn path: this is the first thing that
     # writes a record, and without the handler a fork child keeps this
@@ -968,6 +1038,8 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
         with _record_lock:
             _tracked_pids.pop(pid, None)
             pgid = _tracked_pgids.pop(pid, None)
+        if not _signalable(pid):
+            continue  # dropped, not kept: see _LOWEST_SIGNALABLE_PID
         current = _pid_identity(pid)
         if not _pid_alive(pid):
             # Same as the startup sweep: a leader that exited first can still
@@ -1027,7 +1099,11 @@ def terminate_pid(pid: "Optional[int]", timeout: float = 5.0) -> None:
     For an owner that has to give up on a child before its own shutdown, and
     cannot leave it for a sweep that will not run while this process lives.
     """
-    if not pid:
+    # The public entry point, so the floor goes here rather than only in the
+    # POSIX helper below: `_windows_terminate_tree` is reached without passing
+    # through it, and a caller should not have to know which platform's path
+    # happens to carry the check.
+    if not _signalable(pid):
         return
     with _record_lock:
         identity = _tracked_pids.get(pid)
@@ -1066,10 +1142,10 @@ def terminate_pid(pid: "Optional[int]", timeout: float = 5.0) -> None:
 
 
 def reap_recorded_children(timeout: float = 5.0) -> "list[int]":
-    """Kill children recorded by a previous Studio that is no longer running.
+    """Kill children recorded by a previous Unsloth that is no longer running.
 
     Runs once at startup, before anything new spawns. Every record in the
-    directory is considered, so a Studio that crashed while a sibling was
+    directory is considered, so an Unsloth that crashed while a sibling was
     running is still cleaned up. A child is only signalled when its recorded
     start-time identity still matches, so a recycled pid is never touched.
     """
@@ -1116,9 +1192,9 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
     # treated like a missing one rather than trusted or crashed on.
     owner_identity = _recorded_identity(record.get("owner_identity"))
     # Identity decides, not the pid: pids recycle, and this process may have
-    # inherited the pid of the Studio that wrote the record.
+    # inherited the pid of the Unsloth that wrote the record.
     # Inconclusive counts as a match: a `ps` that failed for a moment must not
-    # make a live Studio look gone and cost it its running sidecars.
+    # make a live Unsloth look gone and cost it its running sidecars.
     current_owner = _identity_or_none(owner_pid)
     owner_matches = (
         owner_identity is None
@@ -1131,17 +1207,22 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
         isinstance(owner_pid, int)
         and owner_matches
         and _pid_alive(owner_pid)
-        # os.kill(pid, 0) succeeds for a zombie, and a Studio nobody has waited
+        # os.kill(pid, 0) succeeds for a zombie, and an Unsloth nobody has waited
         # on yet is still a dead one whose sidecars are orphans.
         and not _pid_is_zombie(owner_pid)
     ):
-        return killed, True  # that Studio is still running; its children are its own
+        return killed, True  # that Unsloth is still running; its children are its own
 
     unresolved = False
     children = record.get("children")
     for entry in children if isinstance(children, list) else []:
         pid = entry.get("pid") if isinstance(entry, dict) else None
-        if not isinstance(pid, int):
+        if not _signalable(pid):
+            # Records written by a build without the guard can name pid 1, and
+            # signalling that is a kill of everything the user owns. Dropped
+            # rather than deferred: leaving `unresolved` alone lets the record be
+            # unlinked, so a poisoned one is gone after a single startup instead
+            # of being retried on every launch forever.
             continue
         # A zombie is a dead leader nobody has waited on: it holds nothing, and
         # signalling it would burn the whole grace period answering probes.
@@ -1193,7 +1274,7 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
         try:
             import logging
             logging.getLogger(__name__).warning(
-                "Reaped %d orphaned child process(es) left by a previous Studio: %s",
+                "Reaped %d orphaned child process(es) left by a previous Unsloth: %s",
                 len(killed),
                 killed,
             )
@@ -1205,8 +1286,8 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
 def _own_process_group(pid: int) -> Optional[int]:
     """The pid's process group, but only when it leads one (start_new_session).
 
-    A child sharing Studio's group must never be recorded: killing that group
-    would take Studio and every sibling with it.
+    A child sharing Unsloth's group must never be recorded: killing that group
+    would take Unsloth and every sibling with it.
     """
     if _is_windows() or not hasattr(os, "getpgid"):
         return None
@@ -1214,6 +1295,8 @@ def _own_process_group(pid: int) -> Optional[int]:
         pgid = os.getpgid(pid)
     except Exception:
         return None
+    if not _signalable(pgid):
+        return None  # killpg(1) is a broadcast, killpg(0) is our own group
     return pgid if pgid == pid else None
 
 
@@ -1225,8 +1308,8 @@ def _reap_orphaned_group(pgid: object, pid: int, timeout: float) -> bool:
     a process group, so it cannot have been handed to an unrelated group while
     members remain.
     """
-    if not isinstance(pgid, int) or pgid != pid or _is_windows() or not hasattr(os, "killpg"):
-        return False
+    if not _signalable(pgid) or pgid != pid or _is_windows() or not hasattr(os, "killpg"):
+        return False  # killpg(1) is kill(-1); see _LOWEST_SIGNALABLE_PID
     try:
         os.killpg(pgid, 0)  # the group is still there
     except Exception:
@@ -1312,6 +1395,8 @@ def _posix_terminate(pid: int, timeout: float = 5.0) -> None:
     # SIGTERM, give the child up to `timeout` to exit, then SIGKILL. Reaping
     # belongs to the child's owner (or init for orphans). Prefer the group
     # (covers grandchildren) when pid leads its own group.
+    if not _signalable(pid):
+        return  # see _LOWEST_SIGNALABLE_PID
     group_leader = False
     try:
         group_leader = os.getpgid(pid) == pid
@@ -1329,6 +1414,11 @@ def _posix_terminate(pid: int, timeout: float = 5.0) -> None:
 
 
 def _posix_terminate_one(pid: int, group_leader: bool, timeout: float) -> None:
+    # Belt and braces with the caller: this is the last line before the signal,
+    # and killpg(1) would reach every process the user owns. See
+    # _LOWEST_SIGNALABLE_PID.
+    if not _signalable(pid):
+        return
     killer = os.killpg if group_leader else os.kill
     try:
         killer(pid, signal.SIGTERM)
