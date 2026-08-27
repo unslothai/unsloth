@@ -25,6 +25,8 @@ import ast
 import pathlib
 import re
 
+import yaml
+
 
 HEAVY = {"torch", "transformers", "numpy", "unsloth", "unsloth_zoo", "peft", "trl"}
 
@@ -570,35 +572,64 @@ def test_every_ignored_suite_runs_somewhere_else():
     ignored = _ignored_by_the_workflow()
     assert ignored, "no suite is ignored any more, so this guard has nothing to check"
 
-    workflows = sorted(_WORKFLOW.parent.glob("*.yml"))
+    # By STEP, not by file. The redirect job sits in this same workflow - the repo's
+    # rule is that `tests/security` runs here and nowhere else - so a whole-file search
+    # would call the ignoring step its own redirect. A step that names the suite and
+    # does not ignore it is the thing being looked for, wherever it lives.
     elsewhere = {}
-    for path in workflows:
-        if path == _WORKFLOW:
-            continue
-        text = path.read_text(encoding = "utf-8")
-        for name in ignored:
-            if name in text:
-                elsewhere.setdefault(name, []).append(path.name)
+    for path in sorted(_WORKFLOW.parent.glob("*.yml")):
+        document = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+        for job in (document.get("jobs") or {}).values():
+            for step in (job or {}).get("steps") or []:
+                command = str((step or {}).get("run", ""))
+                for name in ignored:
+                    if name in command and f"--ignore=tests/security/{name}" not in command:
+                        elsewhere.setdefault(name, []).append(path.name)
 
     missing = sorted(name for name in ignored if name not in elsewhere)
     assert not missing, (
-        f"ignored by {_WORKFLOW.name} and run by no other workflow: {missing}. "
+        f"ignored by {_WORKFLOW.name} and run by no other step: {missing}. "
         f"An --ignore has to move a suite to a job that can install its "
         f"dependencies, not drop it out of CI."
     )
 
 
+def _redirect_workflow() -> pathlib.Path:
+    """The workflow file whose steps run the ignored suites."""
+    ignored = _ignored_by_the_workflow()
+    for path in sorted(_WORKFLOW.parent.glob("*.yml")):
+        document = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+        for job in (document.get("jobs") or {}).values():
+            for step in (job or {}).get("steps") or []:
+                command = str((step or {}).get("run", ""))
+                if any(
+                    name in command and f"--ignore=tests/security/{name}" not in command
+                    for name in ignored
+                ):
+                    return path
+    raise AssertionError("no workflow step runs the ignored suites")
+
+
 def test_the_redirect_job_is_triggered_by_what_it_protects():
     """A job that only runs after the merge is not a gate.
 
-    The three suites moved off the light runner because they need torch. The workflow
-    they moved to is path-filtered, and a filter that does not name the production code
-    they cover means a PR touching only that code skips the job: the tests run for the
-    first time on the push event, after the regression has merged.
+    The suites moved off the light runner because they need torch. If the workflow they
+    moved to is path-filtered, a filter that does not name the production code they
+    cover means a PR touching only that code skips the job: the tests run for the first
+    time on the push event, after the regression has merged. A workflow with NO filter
+    on `pull_request` answers this outright, and that is where the job lives now.
     """
-    audit = _WORKFLOW.parent / "security-audit.yml"
-    assert audit.exists(), audit
-    text = audit.read_text(encoding = "utf-8")
+    host = _redirect_workflow()
+    document = yaml.safe_load(host.read_text(encoding = "utf-8")) or {}
+    triggers = document.get(True, document.get("on")) or {}
+    on_pull_request = triggers.get("pull_request") if isinstance(triggers, dict) else None
+    if not (isinstance(on_pull_request, dict) and (
+        on_pull_request.get("paths") or on_pull_request.get("paths-ignore")
+    )):
+        # Unfiltered: it runs for every pull request, which is strictly wider than any
+        # list of paths could be.
+        return
+    text = host.read_text(encoding = "utf-8")
 
     # What the ignored suites actually read, taken from the suites rather than listed
     # here, so adding a module to one of them cannot leave this stale.
@@ -638,7 +669,7 @@ def test_the_redirect_job_is_triggered_by_what_it_protects():
     assert protected, "the ignored suites no longer import unsloth.models, so this is vacuous"
     missing = sorted(name for name in protected if f"unsloth/models/{name}" not in text)
     assert not missing, (
-        f"security-audit.yml runs the suites that cover these modules but is not "
+        f"{host.name} runs the suites that cover these modules but is not "
         f"triggered by changes to them: {missing}. A PR touching only that code would "
         f"skip the job and the suites would run only after merge."
     )
