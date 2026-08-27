@@ -28,6 +28,7 @@ import {
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
+import { syncToolActivityPreference } from "./tool-activity-open-state";
 
 const ANIMATION_DURATION = 200;
 
@@ -63,11 +64,31 @@ function ToolGroupRoot({
   ...props
 }: ToolGroupRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
-  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+  // Same treatment as ToolFallbackRoot. Without it the group is the one
+  // disclosure the preference cannot reach: a group the user expanded by hand
+  // stays expanded when the setting is turned on, while every card inside it
+  // closes. ToolGroupImpl hands us `undefined` whenever it is not forcing the
+  // group open, so this uncontrolled state is what is on screen for most of a
+  // group's life.
+  const collapseByDefault = useChatPreferencesStore(
+    (state) => state.collapseToolActivityByDefault,
+  );
+  const [uncontrolledState, setUncontrolledState] = useState(() => ({
+    collapseByDefault,
+    open: defaultOpen && !collapseByDefault,
+  }));
+  const syncedUncontrolledState = syncToolActivityPreference(
+    uncontrolledState,
+    collapseByDefault,
+    defaultOpen,
+  );
+  if (syncedUncontrolledState !== uncontrolledState) {
+    setUncontrolledState(syncedUncontrolledState);
+  }
   const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
 
   const isControlled = controlledOpen !== undefined;
-  const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
+  const isOpen = isControlled ? controlledOpen : syncedUncontrolledState.open;
 
   const handleOpenChange = useCallback(
     (open: boolean) => {
@@ -75,11 +96,11 @@ function ToolGroupRoot({
         lockScroll();
       }
       if (!isControlled) {
-        setUncontrolledOpen(open);
+        setUncontrolledState({ collapseByDefault, open });
       }
       controlledOnOpenChange?.(open);
     },
-    [lockScroll, isControlled, controlledOnOpenChange],
+    [collapseByDefault, lockScroll, isControlled, controlledOnOpenChange],
   );
 
   return (
@@ -270,8 +291,13 @@ const ToolGroupImpl: FC<
   );
   // Keep the group open once a confirmation or live output forced it (so an
   // allow/deny doesn't snap it shut between calls); reverts once the turn ends.
+  // Only latch what could have forced the group open in the first place: a
+  // latch set while collapsed is a force nobody saw, and turning the preference
+  // off mid-turn would then snap every such group open at once.
   const forcedOpenRef = useRef(false);
-  if (hasPendingConfirmation || hasLiveOutput) forcedOpenRef.current = true;
+  if (hasPendingConfirmation || (hasLiveOutput && !collapseByDefault)) {
+    forcedOpenRef.current = true;
+  }
   const forceOpen =
     hasPendingConfirmation ||
     (!collapseByDefault &&
