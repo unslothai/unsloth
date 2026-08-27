@@ -489,3 +489,65 @@ def test_the_preflight_and_the_repair_agree(monkeypatch, label, host, expected):
         assert installs, f"{label}: preflight forced a pass the repair declined"
     else:
         assert not installs, f"{label}: the repair acts but the preflight kept the fast path"
+
+
+# Right wheel family, wrong architecture
+
+
+def _rocm_torch(monkeypatch, *, family, owns_sdk = None, **kw):
+    """A host whose torch IS a ROCm build.
+
+    ``family`` is the AMD per-arch family it reads back as; None means unknowable.
+    ``owns_sdk`` is whether torch requires AMD's rocm[libraries] at all, which separates a
+    generic pytorch.org wheel (False, so no family to read) from a per-arch install whose
+    family will not read back (True with family None).
+    """
+    _host(monkeypatch, torch = ("2.11.0+rocm7.13.0", "7.13"), **kw)
+    _owns = family is not None if owns_sdk is None else owns_sdk
+    monkeypatch.setattr(stack, "_torch_requires_rocm_sdk", lambda: _owns)
+    monkeypatch.setattr(stack, "_installed_rocm_wheel_family", lambda: family)
+
+
+def test_a_generic_wheel_without_kernels_for_this_gpu_forces_the_pass(monkeypatch):
+    """The reported host on an update. Torch is a ROCm build, which used to end the probe
+    for every one of them, so the reroute this file's own repair performs was reachable on
+    a fresh install and never from `studio update`."""
+    _rocm_torch(monkeypatch, family = None, gfx = ("gfx1103",))
+    assert _needs_pass() is True
+
+
+def test_a_per_arch_wheel_built_for_another_gpu_forces_the_pass(monkeypatch):
+    """A per-arch install outlives the card it was made for: the gfx110X-all wheels carry
+    no gfx1200 kernels, and no update would ever notice."""
+    _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1200",))
+    assert _needs_pass() is True
+
+
+def test_that_repair_is_reachable_with_no_readable_rocm_version(monkeypatch):
+    """Both per-arch repairs are version-independent, and a bundled-runtime host has no
+    system ROCm to read a version from -- the very host they exist for."""
+    _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1200",), rocm_ver = None)
+    assert _needs_pass() is True
+
+
+@pytest.mark.parametrize(
+    "family, gfx",
+    [
+        ("gfx1152", ("gfx1152",)),      # already on its own leaf
+        ("gfx110x-all", ("gfx1103",)),  # already on the leaf this GPU needs
+        (None, ("gfx1100",)),           # generic wheels do carry kernels for it
+    ],
+)
+def test_a_healthy_rocm_install_still_keeps_the_fast_path(monkeypatch, family, gfx):
+    """The cost of a wrong True is only a dependency pass, but an update that runs one every
+    time is the reason this probe exists."""
+    _rocm_torch(monkeypatch, family = family, gfx = gfx)
+    assert _needs_pass() is False
+
+
+def test_an_unknowable_family_keeps_the_fast_path(monkeypatch):
+    """_installed_rocm_wheel_family answers None for two runtimes with no `rocm` to
+    arbitrate. _ensure_rocm_torch cannot skip on a family it never read, so forcing the pass
+    would reinstall the multi-GB stack on every single update rather than once."""
+    _rocm_torch(monkeypatch, family = None, owns_sdk = True, gfx = ("gfx1152",))
+    assert _needs_pass() is False

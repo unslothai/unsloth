@@ -893,14 +893,34 @@ def test_a_rocr_filtered_probe_is_not_filtered_a_second_time():
         assert stack_mod._runtime_gfx_target(None)[0] == "gfx1103"
 
 
-def test_a_uuid_rocr_mask_leaves_the_list_alone():
-    """ROCR_VISIBLE_DEVICES also takes GPU UUIDs, which name no position in a probe's
-    output. Nothing here can map them, and guessing is worse than today's behaviour."""
+def test_a_uuid_rocr_mask_on_one_architecture_still_routes():
+    """ROCR_VISIBLE_DEVICES also takes GPU UUIDs, and may mix them with indices. A UUID
+    names no position in a probe reporting arches, but on a host of one architecture it
+    cannot change which arch is selected, so the reroute proceeds."""
+    calls = _run_install(
+        gfx_devices = ("gfx1103", "gfx1103"),
+        env = {"ROCR_VISIBLE_DEVICES": "GPU-8d1f2e3a4b5c6d7e"},
+    )
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+def test_an_unmappable_uuid_declines_the_reroute_on_a_mixed_host():
+    """On a mixed-architecture host the UUID decides everything and can be read here by
+    nothing. The reroute installs wheels for ONE arch, so picking the first entry installs
+    them for the GPU the mask may well have hidden, leaving the selected card with no
+    kernels at all -- worse than the generic wheel it replaced."""
     calls = _run_install(
         gfx_devices = ("gfx1103", "gfx1200"),
         env = {"ROCR_VISIBLE_DEVICES": "GPU-8d1f2e3a4b5c6d7e"},
     )
-    assert f"{_AMD}/gfx110X-all/" in calls, calls
+    assert _AMD not in calls, calls
+    assert "names a GPU by UUID" in _run_install.printed, _run_install.printed
+    # UNSLOTH_ROCM_GFX_ARCH is the documented way through, and the message says so.
+    assert f"{_AMD}/gfx110X-all/" in _run_install(
+        gfx_devices = ("gfx1103", "gfx1200"),
+        env = {"ROCR_VISIBLE_DEVICES": "GPU-8d1f2e3a4b5c6d7e",
+               "UNSLOTH_ROCM_GFX_ARCH": "gfx1103"},
+    )
 
 
 def test_a_stale_per_arch_family_is_repaired_even_when_the_rocm_version_is_unreadable():

@@ -1900,7 +1900,19 @@ def _runtime_gfx_target(
     # that faults on its first operation.
     rocr_applied = _LAST_AMD_GFX_PROBE == "rocminfo" and "ROCR_VISIBLE_DEVICES" in os.environ
     if not rocr_applied:
-        gfx_devices = _rocr_visible_subset(gfx_devices)
+        gfx_devices, _rocr_unresolved = _rocr_visible_subset(gfx_devices)
+        # A UUID names a device this cannot place, so on a host of one arch it changes
+        # nothing and on a mixed one it decides everything. Declining beats picking the
+        # first entry: the reroutes below install wheels for ONE arch, and installing them
+        # for the GPU the mask hid leaves the selected card with no kernels at all.
+        if _rocr_unresolved and len(set(gfx_devices)) > 1:
+            _safe_print(
+                f"   ROCR_VISIBLE_DEVICES names a GPU by UUID and this host has more than\n"
+                f"   one architecture ({', '.join(dict.fromkeys(gfx_devices))}); which one it\n"
+                f"   selects cannot be read here, so the AMD per-gfx index is left alone.\n"
+                f"   Set UNSLOTH_ROCM_GFX_ARCH to the arch you want wheels for.\n"
+            )
+            return None, [], None
     runtime_gfx = (
         gfx_devices[_pick_visible_index(len(gfx_devices), masks = _HIP_LAYER_MASKS)]
         if gfx_devices
@@ -2139,31 +2151,36 @@ _VISIBLE_DEVICE_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VI
 _HIP_LAYER_MASKS = ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
 
 
-def _rocr_visible_subset(gfx_devices: "list[str]") -> "list[str]":
+def _rocr_visible_subset(gfx_devices: "list[str]") -> "tuple[list[str], bool]":
     """Apply the ROCr layer to a device list no probe filtered.
+
+    Returns the surviving devices and whether any token could NOT be resolved to one.
 
     ROCR_VISIBLE_DEVICES is processed below HIP, so it decides which devices exist at all
     before any HIP index is resolved. amd-smi reads the driver and KFD sysfs is read
     straight from the kernel, so neither is filtered by it and both hand back the whole
     machine; a HIP index resolved against that list names a GPU the runtime does not
-    expose. Returns the list unchanged when nothing can be applied -- unset, or a UUID
-    form this cannot map to positions, where guessing would be worse than today's
-    behaviour. An empty or "-1" mask is not handled here: _visible_masks_select_no_gpu
-    has already refused the whole host by then.
+    expose. The mask takes indices or UUIDs and may MIX them ("0,GPU-DEADBEEFDEADBEEF"),
+    and a probe reporting arches names no UUID, so a UUID token resolves to no position
+    here: those are reported unresolved rather than guessed at, and the caller decides
+    whether the remaining devices still make the target unambiguous. An empty or "-1" mask
+    is not handled here: _visible_masks_select_no_gpu has already refused the whole host.
     """
     _raw = (os.environ.get("ROCR_VISIBLE_DEVICES") or "").strip()
     if not _raw or not gfx_devices:
-        return gfx_devices
+        return gfx_devices, False
     _kept: "list[str]" = []
+    _unresolved = False
     for _tok in _raw.split(","):
         _tok = _tok.strip()
         try:
             _idx = int(_tok)
         except ValueError:
-            return gfx_devices  # a UUID list: unmappable to positions, so apply nothing
+            _unresolved = True  # a UUID: this names a device, but not a position
+            continue
         if 0 <= _idx < len(gfx_devices):
             _kept.append(gfx_devices[_idx])
-    return _kept or gfx_devices
+    return (_kept or gfx_devices), _unresolved
 
 
 def _visible_masks_select_no_gpu() -> bool:
@@ -3159,7 +3176,13 @@ def _amd_torch_needs_dependency_pass() -> bool:
             and bool((os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip() or not _rocm_visible)
             and _amd_arch_index_url(_inferred_gfx) is not None
         )
-        if not _inferred_arm:
+        # Both per-arch repairs are version-independent, and the host with no readable
+        # version is the one they exist for: a bundled-runtime install has no system ROCm
+        # to read. Requiring a version here refuses them at the door.
+        _family_repair_arm = _rocm_torch_family_needs_repair(
+            _runtime_gfx_target(_inferred_gfx)[0]
+        )
+        if not _inferred_arm and not _family_repair_arm:
             # Other repair arms need a readable version with a published wheel family.
             _ver = _detect_rocm_version()
             if _ver is None or _generic_pytorch_rocm_tag(_ver) is None:
@@ -3170,7 +3193,41 @@ def _amd_torch_needs_dependency_pass() -> bool:
     if not (_ran and _importable) or not _version:
         return False
     # The +rocm tag covers builds that omit torch.version.hip.
-    return not (_hip or "rocm" in _version.lower())
+    if not (_hip or "rocm" in _version.lower()):
+        return True
+    # Torch IS a ROCm build, which used to end it: the fast path was kept for every one of
+    # them. The per-arch repairs act on exactly those hosts, so keeping the fast path here
+    # makes them unreachable from `studio update` -- a card swapped under wheels built for
+    # the old one, or the reported gfx1103 on a generic wheel with no kernels for it, would
+    # be repaired on a fresh install and never on an update. Forcing the pass costs a
+    # dependency pass, not a reinstall: _ensure_rocm_torch still decides, and it keeps a
+    # family that already matches. So ask only what it asks, and only where it would act.
+    return _rocm_torch_family_needs_repair(_runtime_gfx_target(_infer_linux_amd_gfx_arch())[0])
+
+
+def _rocm_torch_family_needs_repair(runtime_gfx: "str | None") -> bool:
+    """Whether the installed ROCm torch carries no kernels for ``runtime_gfx``.
+
+    Reads the same two signals _ensure_rocm_torch's own arms read, in the same order, so
+    the preflight cannot promise a repair the repair itself declines. An AMD per-arch
+    install names its family, and a family that is not the one this target needs is stale.
+    A generic pytorch.org build names none (and _torch_requires_rocm_sdk rejects a stale
+    `rocm` orphan left beside one), so it is judged only by whether the generic wheels
+    carry kernels for the target at all. An unknowable family answers False: the callers
+    must leave an install alone rather than guess, exactly as _installed_rocm_wheel_family
+    documents.
+    """
+    _owns_sdk = _torch_requires_rocm_sdk()
+    _family = _installed_rocm_wheel_family() if _owns_sdk else None
+    if _family is not None:
+        return _family != (_GFX_TO_AMD_INDEX_ARCH.get(runtime_gfx or "") or "").lower()
+    if _owns_sdk:
+        # A per-arch install whose family will not read back. _ensure_rocm_torch cannot skip
+        # on a family it never read, so it would reinstall the multi-GB stack -- on EVERY
+        # update, once the fast path stops hiding it. Leave it alone, as
+        # _installed_rocm_wheel_family tells its callers to.
+        return False
+    return _generic_rocm_wheel_lacks_kernels(runtime_gfx)
 
 
 def _ensure_rocm_torch() -> None:
