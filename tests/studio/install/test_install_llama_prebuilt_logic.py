@@ -4283,6 +4283,98 @@ def test_existing_install_matches_choice_fails_when_install_tree_incomplete_maco
     )
 
 
+def test_existing_macos_install_that_cannot_load_is_not_reused(tmp_path: Path, monkeypatch):
+    """A bundle that dyld refuses must not be accepted just because its
+    fingerprint matches.
+
+    This is the path that reaches the users who matter: a bundle that cannot
+    load is usually ALREADY installed by the time the installer learns to reject
+    it, and the reuse check ran the Linux preflight only. Re-running the
+    installer then saw a matching fingerprint, kept the broken tree and failed at
+    first launch again.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_macos_install_shape(install_dir)
+
+    host = HostInfo(
+        system = "Darwin",
+        machine = "arm64",
+        is_windows = False,
+        is_linux = False,
+        is_macos = True,
+        is_x86_64 = False,
+        is_arm64 = True,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        macos_version = (15, 5),
+    )
+    choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "release-1",
+        name = "llama-b9001-bin-macos-arm64.tar.gz",
+        url = "https://example.com/llama-b9001-bin-macos-arm64.tar.gz",
+        source_label = "upstream",
+        install_kind = "macos-arm64",
+        expected_sha256 = "a" * 64,
+    )
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            source_archive_logical_name("b9001"): ApprovedArtifactHash(
+                asset_name = source_archive_logical_name("b9001"),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
+            ),
+            choice.name: ApprovedArtifactHash(
+                asset_name = choice.name,
+                sha256 = choice.expected_sha256,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-prebuilt",
+            ),
+        },
+    )
+    write_prebuilt_metadata(
+        install_dir,
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        choice = choice,
+        approved_checksums = checksums,
+        prebuilt_fallback_used = False,
+    )
+
+    def matches() -> bool:
+        return existing_install_matches_choice(
+            install_dir,
+            host,
+            llama_tag = "b9001",
+            release_tag = "release-1",
+            choice = choice,
+            approved_checksums = checksums,
+        )
+
+    # Loads cleanly -> reuse is correct.
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "macos_dyld_load_issues", lambda *a, **k: [])
+    assert matches() is True
+
+    # dyld refuses it -> the cached tree must be rejected so it gets reinstalled.
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "macos_dyld_load_issues",
+        lambda *a, **k: ["llama-server: Library not loaded: /usr/lib/librdma.dylib"],
+    )
+    assert matches() is False
+
+
 def test_paired_runtime_dll_patterns_excludes_executables() -> None:
     """The paired runtime archive must contribute only CUDA DLLs (no *.exe/*.dll) so it can't overwrite binaries."""
     paired_runtime_dll_patterns = INSTALL_LLAMA_PREBUILT.paired_runtime_dll_patterns

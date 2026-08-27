@@ -99,8 +99,12 @@ class _RefitSpy:
 # asked slot count but does fit at a reduced one, so the re-fit has something to do.
 # Named because whether it still sits in that band depends on _FIT_MIN_CTX, and
 # test_the_fixture_still_reaches_the_refit_at_this_fit_floor reports it by name when
-# a floor change moves it out.
-_FIXTURE_WEIGHTS_MIB = 10_200
+# a floor change moves it out. This weight was picked by sweeping the band at
+# _FIT_MIN_CTX 4096, 8192 and 16384 and taking a value reducible at all three, so
+# the next floor change is less likely to move it out again: at 10_200 only 4096
+# reduced, and the 4096 -> 8192 raise left the load fitting whole at the floor
+# with --fit on, which is the planner's other answer and not this file's subject.
+_FIXTURE_WEIGHTS_MIB = 8_800
 _FIXTURE_SLOTS = 4
 
 
