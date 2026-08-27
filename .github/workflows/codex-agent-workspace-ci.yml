@@ -51,6 +51,7 @@ on:
       - 'studio/backend/tests/test_research_progress_events.py'
       - 'studio/backend/tests/test_research_project_context.py'
       - 'studio/backend/tests/test_research_runs_storage.py'
+      - 'tests/studio/test_codex_agent_workspace_ci_matrix.py'
       - 'studio/frontend/src/components/assistant-ui/sandbox-files.ts'
       - 'studio/frontend/src/components/assistant-ui/thread.tsx'
       - 'studio/frontend/src/components/app-sidebar.tsx'
@@ -113,6 +114,7 @@ on:
       - 'studio/backend/tests/test_research_progress_events.py'
       - 'studio/backend/tests/test_research_project_context.py'
       - 'studio/backend/tests/test_research_runs_storage.py'
+      - 'tests/studio/test_codex_agent_workspace_ci_matrix.py'
       - 'studio/frontend/src/components/assistant-ui/sandbox-files.ts'
       - 'studio/frontend/src/components/assistant-ui/thread.tsx'
       - 'studio/frontend/src/components/app-sidebar.tsx'
@@ -192,6 +194,11 @@ jobs:
       - name: Install inference route dependencies
         shell: bash
         run: python -m pip install 'transformers>=4.51,<5.5' 'peft>=0.18,<0.19'
+
+      - name: Guard the complete agent workspace matrix
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python -m pytest -q tests/studio/test_codex_agent_workspace_ci_matrix.py
 
       - name: Install Linux project sandbox
         if: runner.os == 'Linux'

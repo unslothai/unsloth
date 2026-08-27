@@ -8,9 +8,11 @@ Feature source commit: `3af2f62e6d72564b2fa0840ca491a48817f12c3d`
 
 Latest source hardening commit: `59995084d`
 
-Upstream merge commit: `1b4d48ffadc2e7e6c624e98cdacac212b38a04c3`
+Full CI matrix hardening commit: `b1e6809d14d7a87d2213093f7a4676022744acfa`
 
-Fetched `upstream/main`: `60d2a636ba0332e3faac78cdcc091f815ca72c6f`
+Current upstream integration commit: `4720558aa`
+
+Fetched `upstream/main`: `93402937c321867ab7174017762534d1d8c692e1`
 
 The feature branch contains that upstream tip through a normal merge and is reviewable ordinary source. Publication state and remote CI must be verified on PR #9673 after each push. Nothing in this document claims that a packaged build, physical platform, live provider, or release candidate has passed.
 
@@ -27,7 +29,7 @@ Status meanings:
 | Gate | Result | Evidence or remaining gate |
 | --- | --- | --- |
 | G0: reviewable feature diff | PASS on feature branch | Python, TypeScript, React, Rust, tests, workflow, and documentation are committed as ordinary source. Verify the live PR head and changed-file count after publication. |
-| G1: current with upstream main | PASS at snapshot | Merge commit `1b4d48ffa` contains fetched `upstream/main` at `60d2a636b`. Refresh immediately before publication. |
+| G1: current with upstream main | PASS at snapshot | Merge commit `4720558aa` contains fetched `upstream/main` at `93402937c`. Refresh immediately before publication. |
 | G2: ordinary source changes | PASS | Recovery payload files and the unsafe restore workflow are removed. The replacement is directly reviewable source. |
 | G3: backend, frontend, and Tauri wiring | PASS locally | Native folder selection, signed grants, persistence, project context, agent workflow routes, and the Agent Workspace panel are connected. |
 | G4: feature-specific automation | PASS for the merged feature suites | Exact local counts are recorded below. Full repository, remote CI, packaged app, and live runtime results are not implied. |
@@ -72,7 +74,7 @@ Status meanings:
 | DISC-09 to DISC-12 | PASS | File, byte, and token limits are enforced and disclosed. Cancellation, refresh, rename, and deletion remove stale map entries. |
 | DISC-13 and DISC-14 | PASS | Non-Git folders produce a bounded map. Nested repositories and submodule-like boundaries are explicitly excluded from the selected repository map. |
 | DISC-15 | PASS | Metadata discovery and relevance selection avoid inserting the entire repository into each prompt. |
-| DISC-16 | PASS for local fixture | The 100,000-path fixture completed in 1.144 seconds and stopped at 20,000 scanned paths and 20,000 included bytes with `path-limit` disclosure. Packaged platform responsiveness remains part of G5. |
+| DISC-16 | PASS for local fixture | The 100,000-path fixture completed in 0.693 seconds and stopped at 20,000 scanned paths and 20,000 included bytes with `path-limit` disclosure. Packaged platform responsiveness remains part of G5. |
 
 ## 5. Verification policy
 
@@ -156,25 +158,23 @@ Process-local writer slots coordinate Studio operations. They do not serialize a
 
 ## Focused validation evidence
 
-The following local results were recorded after merging the fetched upstream tip. Overlapping focused reruns are identified and must not be added to the consolidated counts:
+The following local results were recorded after merging the fetched upstream tip. Overlapping suites are identified and must not be added into one synthetic total:
 
-- Post-merge backend workspace suite before the final Deep Research handoff: 493 passed, 5 host-specific skips. The skips are four Windows-only handle and process-tree checks plus one Linux-only AF_UNIX check on the local macOS host.
-- Final Deep Research, project-context, storage, and hardening gates: 415 adjacent backend tests passed before the last transactional tightening, followed by 162 affected tests passed on the final source. Durable context now requires the named internal workflow plus matching run, owner, project, and snapshot identity.
-- The cancellation and macOS confinement cases that failed only inside the restricted host sandbox were rerun outside that boundary on the final source: 2 passed.
-- The combined pre-agent schema, API usage, managed-root identity, agent-state, cascade, and foreign-key migration gate: 32 passed.
-- Project persistence regression pair after updating legacy mocks: 65 passed. This overlaps the consolidated backend suite.
-- Provider, research, and tool-loop compatibility suite: 1,042 passed after installing the locally missing Pillow test dependency.
-- Full frontend Node test suite on the final source: 5,288 passed, 0 failed.
+- Consolidated agent-workspace backend suite: 679 passed, 5 host-specific skips. The skips are four Windows-only checks plus one Linux-only AF_UNIX check on the local macOS host.
+- Provider, research, and tool-loop compatibility suite: 1,042 passed.
+- Latest upstream GPU integration lane: 224 passed, 4 platform skips, and 6 subtests. The merge also fixes an order-dependent test fixture that previously unloaded imported NumPy and Torch modules through a broad `sys.modules` restoration.
+- Security-focused workspace lane: 180 passed, 5 platform skips. A broader repository security run recorded 402 passed and 26 skipped; 5 Linux AppImage inspection checks were environment-blocked on macOS because no `readelf` implementation was installed.
+- Full frontend Node test suite: 5,544 passed, 0 failed.
 - Frontend production build: passed. Vite reported existing chunk-size and mixed dynamic-import warnings.
-- Frontend TypeScript typecheck: passed.
-- Targeted ESLint: passed.
-- Targeted Biome: exited 0 with 124 warning-level diagnostics. This is not described as warning-free.
+- Frontend TypeScript typecheck and targeted ESLint: passed.
+- Targeted Biome: exited 0 with 131 warning-level diagnostics. This is not described as warning-free.
 - Full Tauri Rust test suite: 413 passed, 0 failed, with one unrelated dead-code warning.
 - Changed Rust files passed `rustfmt --check` with child modules skipped deliberately.
 - Changed Python files passed Ruff.
-- The direct-source workflow parsed with two jobs.
+- Workflow guard suite: 385 passed. A dedicated matrix contract prevents regression to targeted frontend, Rust, or incomplete research lanes. The workflow now runs the full frontend and Tauri suites, includes durable Deep Research storage and progress coverage, and bounds Linux apt operations with retries and step timeouts.
+- The direct-source workflow parsed with two jobs, and trigger lint scanned 44 workflows without finding an unsafe trigger or cache-key collision.
 - `git diff --check` passed.
-- Repository discovery fixture: 100,000 paths in 1.144 seconds with the configured bounds enforced and disclosed.
+- Repository discovery fixture: 100,000 paths in 0.693 seconds with the configured bounds enforced and disclosed.
 
 These are source and local integration results. They do not imply remote CI, packaged desktop, physical platform, or live runtime certification.
 
