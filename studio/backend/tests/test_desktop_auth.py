@@ -1164,9 +1164,10 @@ def test_update_password_discards_the_rotation_if_desktop_revocation_raises(monk
     salt_after, hash_after, _jwt_after, _mc2 = storage.get_user_and_secret(
         storage.DEFAULT_ADMIN_USERNAME
     )
-    assert (salt_after, hash_after) == (salt_before, hash_before), (
-        "the password was committed even though the transaction could not finish"
-    )
+    assert (salt_after, hash_after) == (
+        salt_before,
+        hash_before,
+    ), "the password was committed even though the transaction could not finish"
     from auth import hashing
 
     assert hashing.verify_password("should-not-land", salt_after, hash_after) is False
@@ -1188,13 +1189,19 @@ def test_update_password_still_applies_when_desktop_secret_is_preserved(monkeypa
     called = []
     real = storage.clear_desktop_secret
     monkeypatch.setattr(
-        storage, "clear_desktop_secret",
+        storage,
+        "clear_desktop_secret",
         lambda conn = None: called.append(conn) or real(conn),
     )
     _salt, pwd_hash, _jwt, _mc = storage.get_user_and_secret(storage.DEFAULT_ADMIN_USERNAME)
-    assert storage.update_password(
-        storage.DEFAULT_ADMIN_USERNAME, "desktop-chosen-password",
-        expect_password_hash = pwd_hash, preserve_desktop_secret = True,
-    ) is not None
+    assert (
+        storage.update_password(
+            storage.DEFAULT_ADMIN_USERNAME,
+            "desktop-chosen-password",
+            expect_password_hash = pwd_hash,
+            preserve_desktop_secret = True,
+        )
+        is not None
+    )
     assert called == [], "clear_desktop_secret ran despite preserve_desktop_secret"
     assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME

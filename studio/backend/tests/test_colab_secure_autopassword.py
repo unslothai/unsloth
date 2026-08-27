@@ -608,7 +608,8 @@ def test_upgrade_rerun_hands_back_the_cached_credential_before_purging(monkeypat
 
     shown: list = []
     monkeypatch.setattr(
-        colab, "_display_admin_credentials",
+        colab,
+        "_display_admin_credentials",
         lambda u, p, **kw: shown.append((u, p, kw)) or True,
     )
     monkeypatch.setattr(colab, "_display_channel_active", lambda: True)
@@ -638,7 +639,8 @@ def test_upgrade_rerun_purges_a_cached_credential_that_no_longer_works(monkeypat
 
     shown: list = []
     monkeypatch.setattr(
-        colab, "_display_admin_credentials",
+        colab,
+        "_display_admin_credentials",
         lambda u, p, **kw: shown.append((u, p, kw)) or True,
     )
     monkeypatch.setattr(colab, "_display_channel_active", lambda: True)
