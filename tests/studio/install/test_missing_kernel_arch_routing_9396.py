@@ -858,3 +858,64 @@ def test_keeping_the_matching_wheels_also_clears_a_confirmed_spoof():
     assert f"{_AMD}/gfx1152/" not in calls, calls
     assert "torch already runs on the gfx1152 wheels" in _run_install.printed
     assert _run_install.hsa_override_after is None, _run_install.hsa_override_after
+
+
+# ── the two mask layers, and the install they outlive ────────────────────────
+
+
+def test_the_rocr_layer_is_applied_before_the_hip_index_on_an_unfiltered_list():
+    """ROCr is processed first and HIP then indexes the SURVIVORS, so HIP's index is
+    relative to what ROCr left. amd-smi reads the driver and KFD sysfs the kernel, so
+    neither is filtered by ROCr: resolving HIP against those unfiltered lists names a GPU
+    the runtime does not expose, and installs per-arch wheels that fault on first use."""
+    calls = _run_install(
+        gfx_devices = ("gfx1200", "gfx1103"),
+        env = {"ROCR_VISIBLE_DEVICES": "1", "HIP_VISIBLE_DEVICES": "0"},
+    )
+    # ROCr leaves [gfx1103]; HIP index 0 is therefore the gfx1103, not the gfx1200.
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+def test_a_rocr_filtered_probe_is_not_filtered_a_second_time():
+    """rocminfo is the one probe ROCr renumbers, and it is renumbered whenever the mask is
+    set -- not only when it happens to be the first mask set. Applying the mask again to a
+    list it already shaped would index the survivors by a position in the original."""
+    with (
+        patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1103"]),
+        patch.object(stack_mod, "_kfd_gfx_targets", return_value = [], create = True),
+        patch.object(stack_mod, "_LAST_AMD_GFX_PROBE", "rocminfo"),
+        patch.dict(
+            os.environ,
+            {"ROCR_VISIBLE_DEVICES": "1", "HIP_VISIBLE_DEVICES": "0"},
+            clear = False,
+        ),
+    ):
+        assert stack_mod._runtime_gfx_target(None)[0] == "gfx1103"
+
+
+def test_a_uuid_rocr_mask_leaves_the_list_alone():
+    """ROCR_VISIBLE_DEVICES also takes GPU UUIDs, which name no position in a probe's
+    output. Nothing here can map them, and guessing is worse than today's behaviour."""
+    calls = _run_install(
+        gfx_devices = ("gfx1103", "gfx1200"),
+        env = {"ROCR_VISIBLE_DEVICES": "GPU-8d1f2e3a4b5c6d7e"},
+    )
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+def test_a_stale_per_arch_family_is_repaired_even_when_the_rocm_version_is_unreadable():
+    """A per-arch install outlives the GPU it was made for: swap a gfx1200 card into a box
+    running gfx110X-all wheels and the generic index would serve it, so the unreadable-version
+    exit stands -- and the stale-family repair, the only thing that would notice, never runs.
+    Those wheels carry no gfx1200 kernels, so every later update preserves a torch that faults."""
+    calls = _run_install(
+        gfx_devices = ("gfx1200",), inferred = None, rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH, installed_family = "gfx110x-all",
+    )
+    assert f"{_AMD}/gfx120X-all/" in calls, calls
+    # A family that already matches still takes the exit, so an up-to-date host is untouched.
+    _run_install(
+        gfx_devices = ("gfx1200",), inferred = None, rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH, installed_family = "gfx120x-all",
+    )
+    assert "skipping torch reinstall" in _run_install.printed, _run_install.printed

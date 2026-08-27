@@ -790,7 +790,9 @@ def _visible_devices_pinned() -> bool:
     return False
 
 
-def _pick_visible_index(num_tokens: int, warn: bool = True) -> int:
+def _pick_visible_index(
+    num_tokens: int, warn: bool = True, masks: "tuple[str, ...] | None" = None
+) -> int:
     """Resolve HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES
     to an index into a list of length num_tokens. Returns 0 (first GPU) for
     unset, empty, '-1', UUID-style, or out-of-range values.
@@ -799,8 +801,11 @@ def _pick_visible_index(num_tokens: int, warn: bool = True) -> int:
     `_pick_rocm_gfx_target` in install_llama_prebuilt.py. Falling through to the
     next var on "" / "-1" would contradict the runtime: an empty HIP mask
     shadows CUDA_VISIBLE_DEVICES rather than deferring to it, and selects no GPU
-    at all."""
-    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+    at all.
+
+    ``masks`` narrows which layers are consulted. Callers that have already applied
+    the ROCr layer themselves pass _HIP_LAYER_MASKS so it is not applied twice."""
+    for _env in masks if masks is not None else _VISIBLE_DEVICE_MASKS:
         _val = os.environ.get(_env)
         if _val is None:
             continue
@@ -1881,14 +1886,21 @@ def _runtime_gfx_target(
         # outranks the product name) has nothing left to protect. Honour what the user
         # named, as _runtime_target_is_gfx906 and _detect_windows_gfx_arch already do.
         gfx_devices = [inferred_linux_gfx]
-    # Only rocminfo is renumbered by a visible-device mask, and only by
-    # ROCR_VISIBLE_DEVICES, so a list it already filtered must not be indexed a second
-    # time (_detect_amd_gfx_codes records which probe answered, for exactly this).
-    rocr_applied = (
-        _LAST_AMD_GFX_PROBE == "rocminfo" and _first_set_visible_mask() == "ROCR_VISIBLE_DEVICES"
-    )
+    # The two mask layers COMPOSE: ROCr filters first and HIP then indexes the survivors,
+    # so HIP's index is relative to what ROCr left (AMD's GPU isolation guide: "the ROCR
+    # env var is processed first, which then reduces the number of GPUs that HIP can select
+    # from"). Only rocminfo is renumbered by ROCr, and it is renumbered whenever
+    # ROCR_VISIBLE_DEVICES is set, not only when it is the first mask set
+    # (_detect_amd_gfx_codes records which probe answered, for exactly this). amd-smi reads
+    # the driver and KFD sysfs is filtered by nothing, so for those the ROCr layer has to be
+    # applied here before the HIP index is resolved against the result -- indexing the
+    # unfiltered list picks a GPU the runtime never exposes, and installs a per-arch wheel
+    # that faults on its first operation.
+    rocr_applied = _LAST_AMD_GFX_PROBE == "rocminfo" and "ROCR_VISIBLE_DEVICES" in os.environ
+    if not rocr_applied:
+        gfx_devices = _rocr_visible_subset(gfx_devices)
     runtime_gfx = (
-        gfx_devices[0 if rocr_applied else _pick_visible_index(len(gfx_devices))]
+        gfx_devices[_pick_visible_index(len(gfx_devices), masks = _HIP_LAYER_MASKS)]
         if gfx_devices
         else None
     )
@@ -2118,6 +2130,38 @@ def _clear_confirmed_hsa_spoof(physical_gfx: str) -> None:
 
 # First-set-wins order, as _pick_visible_index documents below.
 _VISIBLE_DEVICE_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+
+# The HIP layer alone. CUDA_VISIBLE_DEVICES is HIP's alias on AMD, so both name the same
+# layer and stay first-set-wins between themselves; ROCR_VISIBLE_DEVICES is the layer
+# BENEATH and is applied separately by _rocr_visible_subset.
+_HIP_LAYER_MASKS = ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+
+
+def _rocr_visible_subset(gfx_devices: "list[str]") -> "list[str]":
+    """Apply the ROCr layer to a device list no probe filtered.
+
+    ROCR_VISIBLE_DEVICES is processed below HIP, so it decides which devices exist at all
+    before any HIP index is resolved. amd-smi reads the driver and KFD sysfs is read
+    straight from the kernel, so neither is filtered by it and both hand back the whole
+    machine; a HIP index resolved against that list names a GPU the runtime does not
+    expose. Returns the list unchanged when nothing can be applied -- unset, or a UUID
+    form this cannot map to positions, where guessing would be worse than today's
+    behaviour. An empty or "-1" mask is not handled here: _visible_masks_select_no_gpu
+    has already refused the whole host by then.
+    """
+    _raw = (os.environ.get("ROCR_VISIBLE_DEVICES") or "").strip()
+    if not _raw or not gfx_devices:
+        return gfx_devices
+    _kept: "list[str]" = []
+    for _tok in _raw.split(","):
+        _tok = _tok.strip()
+        try:
+            _idx = int(_tok)
+        except ValueError:
+            return gfx_devices  # a UUID list: unmappable to positions, so apply nothing
+        if 0 <= _idx < len(gfx_devices):
+            _kept.append(gfx_devices[_idx])
+    return _kept or gfx_devices
 
 
 def _visible_masks_select_no_gpu() -> bool:
@@ -3261,10 +3305,23 @@ def _ensure_rocm_torch() -> None:
         # route has no version floor by design, so returning here on an arch the generic wheel
         # cannot serve refuses the repair at the door. Resolving the target twice is confined
         # to this branch, which only a host with no readable ROCm version reaches at all.
+        _unknown_ver_gfx = _runtime_gfx_target(None)[0]
+        # A per-arch install can also outlive the GPU it was made for on a host like this:
+        # swap a gfx1200 card into a box running gfx110X-all wheels and the generic index
+        # would serve it, so the clause above lets the exit stand -- and the stale-family
+        # repair below, which is the only thing that would notice, never runs. The wheels
+        # carry no gfx1200 kernels, so every later update preserves a torch that faults.
+        # Only an AMD per-arch install is inspected: _installed_rocm_wheel_family() answers
+        # None for a generic or unknowable one, which nothing here should second-guess.
+        _installed_family = _installed_rocm_wheel_family()
+        _stale_arch_family = _installed_family is not None and _installed_family != (
+            _GFX_TO_AMD_INDEX_ARCH.get(_unknown_ver_gfx or "") or ""
+        ).lower()
         if (
             _rocm_pin is None
             and not _inferred_linux_gfx
-            and not _generic_rocm_wheel_lacks_kernels(_runtime_gfx_target(None)[0])
+            and not _generic_rocm_wheel_lacks_kernels(_unknown_ver_gfx)
+            and not _stale_arch_family
         ):
             _safe_print("   ROCm detected but version unreadable -- skipping torch reinstall")
             return
