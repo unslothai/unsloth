@@ -383,9 +383,7 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
     # clears it from its own onStarted callback, so clearing it up front loses
     # the text whenever the queue does not start -- a null target, an
     # invalidated start -- and after the composer is replaced it is gone.
-    assert code.index("clearStoredDraft();") > code.index(
-        "if (forceQueue && !disableQueue) {"
-    ), (
+    assert code.index("clearStoredDraft();") > code.index("if (forceQueue && !disableQueue) {"), (
         "the stored draft is cleared before the queue and refusal paths, so a "
         "prompt that is neither queued nor sent cannot be recovered"
     )
