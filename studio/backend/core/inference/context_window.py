@@ -395,6 +395,35 @@ def _reply_floor(context_length: int) -> int:
 # receipt is worth the edit. Below this the placeholder is a wash against what it removes,
 # and the model loses sight of its own last action for nothing.
 _ARG_COMPACTION_FLOOR_CHARS = 1024
+# Once the arguments AS A WHOLE are worth reclaiming, the bar each string has to clear
+# drops to this. Not zero: a receipt is about 100 characters, so eliding anything shorter
+# grows the call it is meant to shrink.
+_ARG_COMPACTION_AGGREGATE_LEAF_FLOOR = 256
+# When the total of every string reaches this, the call is worth compacting even though no
+# single string does. Matches the per-leaf floor: the same amount of window either way.
+_ARG_COMPACTION_TOTAL_FLOOR_CHARS = 1024
+
+
+def _largest_leaf(value: Any) -> int:
+    """Longest string anywhere in the parsed arguments, at any depth."""
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, dict):
+        return max((_largest_leaf(item) for item in value.values()), default = 0)
+    if isinstance(value, list):
+        return max((_largest_leaf(item) for item in value), default = 0)
+    return 0
+
+
+def _total_leaves(value: Any) -> int:
+    """Every string in the parsed arguments added together, at any depth."""
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, dict):
+        return sum(_total_leaves(item) for item in value.values())
+    if isinstance(value, list):
+        return sum(_total_leaves(item) for item in value)
+    return 0
 
 
 def _compacted_arguments(
@@ -420,7 +449,7 @@ def _compacted_arguments(
     # refused paths moved to the new one -- the same receipt the model misread as tool
     # output, still being emitted by the most common caller.
     phrase = phrase or _completed_phrase_for(name, reply)
-    if not isinstance(arguments, str) or len(arguments) < _ARG_COMPACTION_FLOOR_CHARS:
+    if not isinstance(arguments, str) or len(arguments) < _ARG_COMPACTION_TOTAL_FLOOR_CHARS:
         return None
     try:
         parsed = json.loads(arguments)
@@ -442,6 +471,18 @@ def _compacted_arguments(
     path = parsed.get("path") or parsed.get("file_path") or parsed.get("filePath")
     elided = 0
 
+    # Per-leaf or aggregate, whichever lets this call be reclaimed. A batched refactor of
+    # fifty 800-character edits is forty thousand characters of window with no single
+    # string over the floor, so a per-leaf test compacted NOTHING and the call sat in the
+    # prompt permanently -- the pre-execution gate then had nothing to reclaim and refused
+    # a turn it could have served. The floor exists so a receipt is not bigger than what
+    # it replaces, and the final size check below still enforces that.
+    _leaf_floor = (
+        _ARG_COMPACTION_FLOOR_CHARS
+        if _largest_leaf(parsed) >= _ARG_COMPACTION_FLOOR_CHARS
+        else _ARG_COMPACTION_AGGREGATE_LEAF_FLOOR
+    )
+
     def _shrink(value: Any, key: str = "") -> Any:
         """Elide every large string, at whatever depth it sits.
 
@@ -452,10 +493,15 @@ def _compacted_arguments(
         only the tests noticed they had stopped meeting.
         """
         nonlocal elided
-        if isinstance(value, str) and len(value) >= _ARG_COMPACTION_FLOOR_CHARS:
+        if isinstance(value, str) and len(value) >= _leaf_floor:
             elided += len(value)
             where = f" to {path}" if path and key != "path" else ""
-            return f"<{len(value)} chars {phrase.format(where = where)}>"
+            # `old_string` names text the edit REMOVED. The completed phrase says the
+            # content is already written and the file on disk holds it, which of the two
+            # halves of a replacement is true only of `new_string`; said of the old text
+            # it points the model at content the edit has just taken out.
+            leaf_phrase = _COMPLETED_NEUTRAL_PHRASE if key == "old_string" else phrase
+            return f"<{len(value)} chars {leaf_phrase.format(where = where)}>"
         if isinstance(value, dict):
             return {inner: _shrink(item, inner) for inner, item in value.items()}
         if isinstance(value, list):

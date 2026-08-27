@@ -26302,6 +26302,48 @@ class LlamaCppBackend:
         from core.inference.chat_template_helpers import sweep_cache as _sweep_cache
 
         _markup_cache = _sweep_cache()
+
+        def _loop_continuation_fits(candidate, tools, reasoning_kw) -> bool:
+            """Whether the retry's own prompt still fits once the partial is in it.
+
+            The final pass has the same guard. This path did not, and it is the one a
+            request with tools enabled actually takes: a `length` stop that came from
+            exhausting the window makes the retry prompt window-sized, and with a single
+            user turn there is no older history to evict, so llama-server rejects it or
+            leaves room for a stub. A count that cannot be taken is not a refusal.
+            """
+            if not self._effective_context_length:
+                return True
+            try:
+                _tokens = self.count_chat_tokens(
+                    neutralize_control_markup_in_messages(
+                        candidate, _markup_cache, self.markup_profile
+                    ),
+                    None,
+                    tools,
+                    strict = True,
+                    chat_template_kwargs = reasoning_kw,
+                )
+            except Exception:
+                logger.debug("in-loop continuation: prompt count failed", exc_info = True)
+                return True
+            return _tokens + _reply_floor(self._effective_context_length) <= (
+                self._effective_context_length
+            )
+
+        def _loop_budget_left(spent_this_attempt: int) -> "Optional[int]":
+            """What remains of a cap the CALLER set, or None when they set none.
+
+            The in-loop payload rebuilds `max_tokens` from the caller's value on every
+            iteration, so without this a request capped at 100 tokens ran two more
+            100-token generations after its own cap stopped the first.
+            """
+            if max_tokens is None:
+                return None
+            window = self._effective_context_length or 0
+            if window and max_tokens >= window:
+                return None
+            return max(0, max_tokens - _accumulated_completion_tokens - spent_this_attempt)
         # A forced function applies until the model produces it; execution or denial resolves it.
         _forced_choice_resolved = _auto_satisfies_forced_choice
         # A continuation re-enters this loop, so without a credit it is charged to the
@@ -26311,6 +26353,9 @@ class LlamaCppBackend:
         # action that was asked for -- the turn fails having spent no tool iteration at
         # all. Granted as they happen rather than reserved up front, so a request that
         # never stalls keeps exactly the bound it has always had.
+        # Set by a continuation to hand the NEXT iteration what is left of the caller's
+        # output cap, then cleared as it is spent.
+        _continuation_max_tokens: Optional[int] = None
         _continuation_credits = 0
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
         iteration = -1
@@ -26525,6 +26570,13 @@ class LlamaCppBackend:
                 if max_tokens is not None
                 else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
             )
+            # A continuation is the SAME reply carried across two requests, so it spends
+            # the caller's output budget once, not once per attempt. Rebuilt from the
+            # caller's value above, this payload would hand a 100-token request another
+            # full 100 tokens on every retry.
+            if _continuation_max_tokens is not None:
+                payload["max_tokens"] = _continuation_max_tokens
+                _continuation_max_tokens = None
             if stop:
                 payload["stop"] = stop
             if seed is not None:
@@ -27362,8 +27414,12 @@ class LlamaCppBackend:
                                     _length_continuations,
                                     _MAX_LENGTH_CONTINUATIONS,
                                 )
+                                # Candidate first, as the final pass does: a retry that
+                                # cannot be served, or one the caller's own cap leaves no
+                                # room for, must not spend the conversation or the usage.
+                                _cand_c = list(conversation)
                                 append_assistant_turn(
-                                    conversation,
+                                    _cand_c,
                                     # Unstripped: `strip()` would make the replayed prefix
                                     # differ from the text already streamed, and the next
                                     # delta is concatenated onto the STREAMED one. Inside a
@@ -27372,22 +27428,45 @@ class LlamaCppBackend:
                                     {"role": "assistant", "content": content_accum},
                                     continue_final_message = True,
                                 )
-                                continue_final_message = True
                                 _fu_c = (
                                     _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
                                 )
-                                _accumulated_completion_tokens += _fu_c.get("completion_tokens", 0)
-                                _it_c = _iter_timings or {}
-                                _accumulated_predicted_ms += _it_c.get("predicted_ms", 0)
-                                _accumulated_predicted_n += _it_c.get("predicted_n", 0)
-                                if _continuation_credits < _MAX_CONTINUATION_CREDITS:
-                                    _continuation_credits += 1
-                                yield {"type": "status", "text": ""}
-                                yield {
-                                    "type": "status",
-                                    "text": _CONTINUE_TRUNCATED_ANSWER_STATUS,
-                                }
-                                continue
+                                # A `length` stop means the attempt produced its whole
+                                # allowance, which is what to charge when the server
+                                # reported no usage.
+                                _spent_c = _fu_c.get("completion_tokens", 0) or int(
+                                    payload.get("max_tokens") or 0
+                                )
+                                _cap_left_c = _loop_budget_left(_spent_c)
+                                if _cap_left_c == 0 or not _loop_continuation_fits(
+                                    _cand_c, safe_tools, _reasoning_kw
+                                ):
+                                    logger.info(
+                                        "Not continuing the answer: %s",
+                                        "the caller's output cap is spent"
+                                        if _cap_left_c == 0
+                                        else "the retry prompt would not be served",
+                                    )
+                                    _length_continuations -= 1
+                                else:
+                                    conversation[:] = _cand_c
+                                    continue_final_message = True
+                                    if _cap_left_c is not None:
+                                        _continuation_max_tokens = _cap_left_c
+                                    _accumulated_completion_tokens += _fu_c.get(
+                                        "completion_tokens", 0
+                                    )
+                                    _it_c = _iter_timings or {}
+                                    _accumulated_predicted_ms += _it_c.get("predicted_ms", 0)
+                                    _accumulated_predicted_n += _it_c.get("predicted_n", 0)
+                                    if _continuation_credits < _MAX_CONTINUATION_CREDITS:
+                                        _continuation_credits += 1
+                                    yield {"type": "status", "text": ""}
+                                    yield {
+                                        "type": "status",
+                                        "text": _CONTINUE_TRUNCATED_ANSWER_STATUS,
+                                    }
+                                    continue
 
                         # ── Continue a turn that ended inside its own thought ──
                         # Ahead of the re-prompt below because that one is gated on a SHORT
@@ -28933,6 +29012,13 @@ class LlamaCppBackend:
                                             _metadata_finish_reason,
                                             promote_reasoning_only,
                                         )
+                                        # The block is closed now, so the flag must say
+                                        # so. Left set, the thinking-off retry below
+                                        # closes it a SECOND time on its first content
+                                        # token: `<think>...</think></think>answer`, and
+                                        # the route parses only the leading pair, so the
+                                        # stray tag is shown to the user as answer text.
+                                        in_thinking = False
                                         _prov_entry = None
                                         yield {"type": "content", "text": cumulative}
                                 _stream_done = True

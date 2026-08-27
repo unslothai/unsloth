@@ -115,11 +115,50 @@ def test_protect_last_holds_the_freshest_exchange_clear():
 
 
 def test_small_arguments_are_not_worth_a_receipt():
-    messages = _thread("x" * (_ARG_COMPACTION_FLOOR_CHARS - 1))
+    """Retargeted: the floor is on the arguments as a WHOLE, not on each string.
+
+    This passed a single 1023-character body, one below the per-leaf floor, and asserted
+    nothing was compacted. That per-leaf rule was the defect: a batched refactor of fifty
+    800-character edits is forty thousand characters of window with no single string over
+    the floor, so nothing was reclaimed and the call sat in the prompt permanently. What
+    the floor is really for -- not spending a ~100-character receipt to save less -- is a
+    statement about the total, which is what this now pins.
+    """
+    messages = _thread("x" * 200)
 
     _, compacted = compact_completed_tool_arguments(messages)
 
     assert compacted == 0
+
+
+def test_a_batch_of_small_edits_is_compacted_on_its_total():
+    """No single string clears the per-leaf floor; together they are most of the window."""
+    edits = [
+        {"old_string": f"def old_{i}():\n" + "    pass\n" * 60, "new_string": f"def new_{i}():\n" + "    return 1\n" * 60}
+        for i in range(20)
+    ]
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_call("c1", "edit_file", path = "a.py", edits = edits)],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": "edit_file", "content": "Applied 20 edits"},
+    ]
+    def _args(msgs):
+        return msgs[0]["tool_calls"][0]["function"]["arguments"]
+
+    before = len(_args(messages))
+    assert all(
+        len(value) < _ARG_COMPACTION_FLOOR_CHARS
+        for edit in edits
+        for value in edit.values()
+    ), "fixture must keep every leaf under the per-leaf floor"
+
+    fitted, compacted = compact_completed_tool_arguments(messages)
+
+    assert compacted == 1
+    assert len(_args(fitted)) < before // 2
 
 
 def test_a_thread_with_no_tool_calls_is_returned_untouched():

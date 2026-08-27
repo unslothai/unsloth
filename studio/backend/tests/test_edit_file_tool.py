@@ -790,3 +790,51 @@ class TestBatchSize:
 
         assert not result.startswith("Error:")
         assert "line000=1" in target.read_text(encoding = "utf-8")
+
+    def test_a_lone_replace_all_never_enumerates_its_matches(self, workdir):
+        """A single entry has nothing to overlap with, so it needs no spans.
+
+        Enumerating cost roughly 16 million tuples plus a sort on a 16 MiB file of a
+        one-character pattern. Bounding it instead would have broken the large
+        replace_all cases this tool is expected to do, so the enumeration itself goes.
+        """
+        from core.inference.tools import _MAX_MATCH_SPANS
+
+        target = workdir / "a.txt"
+        target.write_text("a" * (_MAX_MATCH_SPANS + 5), encoding = "utf-8")
+
+        result = _edit(path = "a.txt", old_string = "a", new_string = "b", replace_all = True)
+
+        assert not result.startswith("Error:")
+        assert target.read_text(encoding = "utf-8") == "b" * (_MAX_MATCH_SPANS + 5)
+
+    def test_a_batched_entry_is_bounded_because_it_still_needs_spans(self, workdir):
+        """Overlap detection across entries is what the spans are for, so a batch cannot
+        take the lone-entry shortcut and is bounded instead."""
+        from core.inference.tools import _MAX_MATCH_SPANS
+
+        target = workdir / "a.txt"
+        original = "a" * (_MAX_MATCH_SPANS + 5) + "\nZZZ\n"
+        target.write_text(original, encoding = "utf-8")
+
+        result = _edit(
+            path = "a.txt",
+            edits = [
+                {"old_string": "a", "new_string": "b", "replace_all": True},
+                {"old_string": "ZZZ", "new_string": "YYY"},
+            ],
+        )
+
+        assert result.startswith("Error:")
+        assert "over the limit" in result
+        assert "nothing was written" in result
+        assert target.read_text(encoding = "utf-8") == original
+
+    def test_a_replace_all_within_the_bound_still_works(self, workdir):
+        target = workdir / "a.txt"
+        target.write_text("a b a b a", encoding = "utf-8")
+
+        result = _edit(path = "a.txt", old_string = "a", new_string = "c", replace_all = True)
+
+        assert not result.startswith("Error:")
+        assert target.read_text(encoding = "utf-8") == "c b c b c"

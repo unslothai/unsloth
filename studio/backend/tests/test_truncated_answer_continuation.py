@@ -573,3 +573,72 @@ def test_a_refused_continuation_does_not_double_count_its_usage(monkeypatch):
 
     assert len(payloads) == 1
     assert usage["completion_tokens"] == 700, "the refused attempt was counted twice"
+
+
+def test_the_in_loop_continuation_respects_the_caller_cap(monkeypatch):
+    """With tools enabled a plain length stop takes the IN-LOOP path, not the final one.
+
+    The in-loop payload rebuilds max_tokens from the caller's value on every iteration,
+    so the guard added to the final pass did not reach here: a request capped at 100
+    tokens still ran two more 100-token generations.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": " never sent"}), _done()]),
+        payloads,
+    )
+
+    _run(backend, max_tokens = 100)
+
+    assert len(payloads) == 1, "the caller's output cap was overrun in the loop"
+
+
+def test_the_in_loop_continuation_spends_the_remainder(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _usage(400), _finish("length"), _done()],
+            [_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _usage(20), _done()],
+        ],
+        payloads,
+    )
+
+    _run(backend, max_tokens = 1000)
+
+    assert len(payloads) == 2
+    assert payloads[1]["max_tokens"] == 600, "the retry got a fresh cap, not the remainder"
+
+
+def test_an_in_loop_continuation_that_would_be_rejected_is_not_sent(monkeypatch):
+    """Same guard the final pass has. With one user turn there is no history to evict."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": " never sent"}), _done()]),
+        payloads,
+    )
+    monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 4096)
+
+    events = _run(backend)
+
+    assert len(payloads) == 1
+    assert "<!DOCTYPE html>" in "".join(_texts(events, "content")), "the partial was lost"
+
+
+def test_an_in_loop_continuation_with_room_is_still_sent(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
+        payloads,
+    )
+    monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 3800)
+
+    events = _run(backend)
+
+    assert len(payloads) == 2
+    assert "</html>" in "".join(_texts(events, "content"))

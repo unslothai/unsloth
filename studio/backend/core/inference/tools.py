@@ -9381,6 +9381,11 @@ def _edit_file_create(
 # the worst case stays bounded.
 _MAX_EDITS_PER_CALL = 100
 
+# And a bound on the matches ONE replace_all may expand into. The entry limit above caps
+# how many patterns are searched, not how many places any of them hits, so a single
+# pathological entry can still swamp the worker on its own.
+_MAX_MATCH_SPANS = 10_000
+
 
 def _edit_file_parse_edits(raw) -> "tuple[list[tuple[str, str, bool]], str]":
     """Validate the `edits` array into `(old, new, replace_all)` triples.
@@ -9473,6 +9478,29 @@ def _edit_file_apply_all(
                     f"Error: edit {index}'s 'old_string' matches {count} places in {name}. "
                     "Include surrounding lines to make it unique, or set replace_all on that "
                     f"entry to change all {count}."
+                ),
+            )
+        # One entry needs no spans at all. There is nothing to overlap with, so the whole
+        # reason to enumerate matches disappears and `str.replace` does the work in linear
+        # space. Enumerating cost about 16 million tuples plus a sort on a 16 MiB file of a
+        # one-character pattern -- over a gigabyte for an edit the single-edit spelling had
+        # always done cheaply. The batch limit does not help here: one entry is enough.
+        if replace_all and len(edits) == 1:
+            after = before.replace(old, new)
+            first = before.find(old)
+            return after, count, old, new, first, ""
+        if replace_all and count > _MAX_MATCH_SPANS:
+            return (
+                "",
+                0,
+                "",
+                "",
+                0,
+                (
+                    f"Error: edit {index}'s 'old_string' matches {count} places in {name}, "
+                    f"over the limit of {_MAX_MATCH_SPANS} for one entry in a batch; "
+                    "nothing was written. Send it as a call of its own, or use a longer "
+                    "'old_string'."
                 ),
             )
         start = before.find(old)
