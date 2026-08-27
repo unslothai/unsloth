@@ -3113,3 +3113,70 @@ class TestUvFindLinksSurvivesTheOptOut:
         env = ips._install_env_for_cmd(list(self.PINNED))
         assert env is not None
         assert "UV_FIND_LINKS" not in env
+
+
+class TestReportingAControlIsNotPermissionToOverrideIt:
+    """The notice's list and the default path's scrub list are separate on purpose.
+
+    `_PM_POLICY_ENV_VARS` grew as the notice learned to report more controls. It is
+    also what the default pinned branch used to remove, so widening it silently
+    widened the default bypass to UV_ONLY_BINARY, UV_ONLY_BINARY_PACKAGE and
+    PIP_UPLOADED_PRIOR_TO, none of which this installer touched before. The whole
+    change rests on the default path being indistinguishable from before.
+    """
+
+    # Exactly what the installer removed before this change. Do not add to this
+    # without deciding, separately and deliberately, to override one more control.
+    BASELINE = {
+        "UV_NO_BUILD",
+        "UV_NO_BUILD_PACKAGE",
+        "UV_NO_BINARY",
+        "UV_NO_BINARY_PACKAGE",
+        "UV_REQUIRE_HASHES",
+        "UV_EXCLUDE_NEWER",
+        "PIP_ONLY_BINARY",
+        "PIP_NO_BINARY",
+        "PIP_REQUIRE_HASHES",
+    }
+
+    def test_the_default_scrub_set_has_not_grown(self):
+        assert set(ips._PM_POLICY_SCRUB_ENV_VARS) == self.BASELINE
+
+    def test_the_notice_reports_more_than_the_default_path_overrides(self):
+        reported = set(ips._PM_POLICY_ENV_VARS)
+        assert self.BASELINE < reported, "the notice should report at least the scrubbed set"
+        assert {"UV_ONLY_BINARY", "PIP_UPLOADED_PRIOR_TO"} <= reported
+
+    @pytest.mark.parametrize(
+        "name", ["UV_ONLY_BINARY", "UV_ONLY_BINARY_PACKAGE", "PIP_UPLOADED_PRIOR_TO"]
+    )
+    def test_a_reported_only_control_survives_the_default_path(self, name, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+        monkeypatch.setenv(name, ":all:" if "BINARY" in name else "2026-01-01")
+        cmd = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+        env = ips._install_env_for_cmd(cmd)
+        assert env is not None
+        assert name in env, (
+            f"{name} is reported by the notice but was never overridden before this "
+            f"change; the default path must still leave it alone"
+        )
+
+    def test_the_scrubbed_controls_are_still_scrubbed_by_default(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_RESPECT_PM_POLICY", raising = False)
+        for name in self.BASELINE:
+            monkeypatch.setenv(name, "1")
+        cmd = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+        env = ips._install_env_for_cmd(cmd)
+        assert env is not None
+        for name in self.BASELINE:
+            assert name not in env, name
+
+    def test_the_opt_out_still_keeps_everything(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        for name in set(ips._PM_POLICY_ENV_VARS) | self.BASELINE:
+            monkeypatch.setenv(name, "1")
+        cmd = ["uv", "pip", "install", "--index-url", "https://pinned", "torch"]
+        env = ips._install_env_for_cmd(cmd)
+        assert env is not None
+        for name in self.BASELINE:
+            assert env.get(name) == "1", name

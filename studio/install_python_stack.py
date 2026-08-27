@@ -4690,9 +4690,31 @@ _PM_POLICY_ENV_VARS = (
     "PIP_NO_BINARY",
     "PIP_REQUIRE_HASHES",
     "PIP_UPLOADED_PRIOR_TO",
-    # Reported as well as scrubbed: the pinned branch removes it by default, and
-    # `pip config list` shows it as `:env:.no-index`, which this scan skips.
+    # Reported as well as scrubbed: the pinned branch removes it by default through
+    # _UV_INDEX_ENV_VARS, and `pip config list` shows it as `:env:.no-index`, which
+    # this scan skips.
     "PIP_NO_INDEX",
+)
+
+
+# What the DEFAULT pinned branch removes, which is not the same list. The tuple above
+# grew as the notice learned to report more controls, and reporting a control is not a
+# reason to start overriding it: sharing one tuple silently widened the default bypass
+# to UV_ONLY_BINARY, UV_ONLY_BINARY_PACKAGE and PIP_UPLOADED_PRIOR_TO, none of which
+# this installer touched before. The whole change rests on the default path being
+# indistinguishable from before, so this stays exactly as it was and the notice reports
+# the wider set without acting on it. PIP_NO_INDEX is absent because the pinned branch
+# already drops it as an index variable.
+_PM_POLICY_SCRUB_ENV_VARS = (
+    "UV_NO_BUILD",
+    "UV_NO_BUILD_PACKAGE",
+    "UV_NO_BINARY",
+    "UV_NO_BINARY_PACKAGE",
+    "UV_REQUIRE_HASHES",
+    "UV_EXCLUDE_NEWER",
+    "PIP_ONLY_BINARY",
+    "PIP_NO_BINARY",
+    "PIP_REQUIRE_HASHES",
 )
 
 
@@ -5381,7 +5403,7 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     if _respect_pm_policy():
         return env
     env["UV_NO_CONFIG"] = "1"
-    for name in _PM_POLICY_ENV_VARS:
+    for name in _PM_POLICY_SCRUB_ENV_VARS:
         env.pop(name, None)
     env["PIP_CONFIG_FILE"] = os.devnull
     return env
