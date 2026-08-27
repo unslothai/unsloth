@@ -591,8 +591,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     # (loader.py already treats that as []). Generate used to TypeError here.
     architectures = getattr(self.config, "architectures", None) or []
     is_vlm = any(
-        x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-        for x in architectures
+        x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in architectures
     )
     is_vlm = is_vlm or hasattr(self.config, "vision_config")
     arch = architectures[0] if architectures else type(self).__name__
