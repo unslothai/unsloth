@@ -118,6 +118,23 @@ class TestWaitForHealthResilience:
         assert time.monotonic() - started < 1.0
         assert not any("health check timed out" in ln for ln in b._stdout_lines)
 
+    def test_cancel_leaves_a_marker_the_classifier_reads_as_a_cancel(self, monkeypatch):
+        """The cancel kills the child on purpose, so poll() reports no exit code and the
+        startup log holds nothing diagnostic. Without a marker the load is classified as
+        an unknown start failure and the user is told to check their GGUF."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+        b._cancel_event = threading.Event()
+        b._cancel_event.set()
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+
+        detail = LlamaCppBackend._classify_llama_start_failure(
+            "\n".join(b._stdout_lines), "/models/model.gguf", "owner/model", returncode = None,
+        )
+        assert "cancelled" in detail
+        assert "GGUF file is valid" not in detail
+
     def test_read_error_loops_to_subprocess_poll(self, monkeypatch):
         """WinError 10054 (httpx.ReadError) must be swallowed; the next iteration sees the dead subprocess and returns False with a structured exit-code log."""
         b = _make_backend()

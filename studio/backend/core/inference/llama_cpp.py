@@ -14952,6 +14952,15 @@ class LlamaCppBackend:
                 "expected; otherwise check the llama-server log for the cause."
             )
 
+        # A cancel kills the child on purpose, so there is no exit code and no
+        # diagnostic output. Say so rather than blaming the GGUF below.
+        if "llama-server startup cancelled" in lowered:
+            return (
+                "llama-server was stopped before it became healthy because the "
+                "load was cancelled. If you cancelled or unloaded the model this "
+                "is expected."
+            )
+
         # A live server that never answered 200 on /health is not a bad GGUF:
         # the load is too large for VRAM/context, or a local proxy/VPN grabbed
         # the loopback probe (#5740).
@@ -25725,6 +25734,9 @@ class LlamaCppBackend:
         while time.monotonic() < deadline:
             # unload_model() blocks on self._lock, which the load holds across this wait.
             if cancelled is not None and cancelled():
+                # Marker for _classify_llama_start_failure: the child is still alive, so
+                # poll() reports no exit code and nothing else says this was deliberate.
+                self._stdout_lines.append("llama-server startup cancelled")
                 logger.info("llama-server startup cancelled before it became healthy")
                 return False
             # Cleared before probing so output during the request stays latched for
