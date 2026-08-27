@@ -2672,7 +2672,8 @@ class TestInstallShStructure:
         fn = _extract_sh_function_body(source, "get_torch_index_url")
         probe_fn = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
         family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
-        assert fn and probe_fn and family_fn
+        sole_fn = _extract_sh_function_body(source, "_amd_sole_index_arch")
+        assert fn and probe_fn and family_fn and sole_fn
         with tempfile.TemporaryDirectory() as d:
             # uname -> Linux/x86_64 so the AMD branch runs on any dev host; the
             # rocminfo/amd-smi shims enumerate nothing (KFD-only host).
@@ -2696,6 +2697,10 @@ class TestInstallShStructure:
                     + probe_fn
                     + "\n"
                     + family_fn
+                    + "\n"
+                    + sole_fn
+                + "\n"
+                + sole_fn
                     + "\n"
                     + fn
                     + "\n"
@@ -2757,6 +2762,7 @@ class TestInstallShStructure:
         fn = _extract_sh_function_body(source, "get_torch_index_url")
         probe_fn = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
         family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
+        sole_fn = _extract_sh_function_body(source, "_amd_sole_index_arch")
         # The version helpers must be extracted too: without them get_torch_index_url
         # calls a missing command, the guarded assignment swallows the 127, and the
         # no-version endpoint is reached for the wrong reason. Verified by mutation
@@ -2773,7 +2779,7 @@ class TestInstallShStructure:
                 "_detect_rocm_version_tag",
             )
         ]
-        assert fn and probe_fn and family_fn
+        assert fn and probe_fn and family_fn and sole_fn
         assert all(version_fns), "ROCm version helpers not found in install.sh"
         with tempfile.TemporaryDirectory() as d:
             # Neutralise the host's real ROCm: the version chain reads
@@ -2807,6 +2813,8 @@ class TestInstallShStructure:
                 + probe_fn
                 + "\n"
                 + family_fn
+                + "\n"
+                + sole_fn
                 + "\n"
                 + "\n".join(version_fns)
                 + "\n"
@@ -2892,7 +2900,8 @@ class TestInstallShStructure:
         )
         assert block, "could not extract the runtime-less reroute block"
         family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
-        assert family_fn
+        sole_fn = _extract_sh_function_body(source, "_amd_sole_index_arch")
+        assert family_fn and sole_fn
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "uname"), "w", encoding = "utf-8", newline = "\n") as f:
                 f.write('#!/bin/sh\ncase "${1:-}" in -m) echo x86_64 ;; *) echo Linux ;; esac\n')
@@ -2905,7 +2914,7 @@ class TestInstallShStructure:
                     f"_has_amd_rocm_gpu() {{ {gpu_stub}; }}\n"
                     f"_probe_amd_gfx_arch() {{ {probe_stub}; }}\n"
                     "_infer_linux_amd_gfx_arch() { echo gfx1100; }\n"
-                    "_strip_index_url_credentials() { printf '%s\\n' \"$1\"; }\n" + family_fn + "\n"
+                    "_strip_index_url_credentials() { printf '%s\\n' \"$1\"; }\n" + family_fn + "\n" + sole_fn + "\n"
                     "_torch_index_pinned=false\nSKIP_TORCH=false\n_ARCH=x86_64\n"
                     "TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu\n"
                     + block.group(0)
@@ -2970,7 +2979,8 @@ class TestInstallShStructure:
         )
         assert block, "could not extract the runtime-less reroute block"
         family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
-        assert family_fn
+        sole_fn = _extract_sh_function_body(source, "_amd_sole_index_arch")
+        assert family_fn and sole_fn
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "uname"), "w", encoding = "utf-8", newline = "\n") as f:
                 f.write('#!/bin/sh\ncase "${1:-}" in -m) echo x86_64 ;; *) echo Linux ;; esac\n')
@@ -2988,7 +2998,7 @@ class TestInstallShStructure:
                     f"_probe_amd_gfx_arch() {{ {probe_stub}; }}\n"
                     # lspci names the discrete card; the probe named the APU.
                     "_infer_linux_amd_gfx_arch() { echo gfx1100; }\n"
-                    "_strip_index_url_credentials() { printf '%s\\n' \"$1\"; }\n" + family_fn + "\n"
+                    "_strip_index_url_credentials() { printf '%s\\n' \"$1\"; }\n" + family_fn + "\n" + sole_fn + "\n"
                     "_torch_index_pinned=false\nSKIP_TORCH=false\n_ARCH=x86_64\n"
                     f"_amd_no_rocm_version_reroute={no_version_state}\n"
                     f'_amd_probed_gfx_first="{probed_first}"\n'

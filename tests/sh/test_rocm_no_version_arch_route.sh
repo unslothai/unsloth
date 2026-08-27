@@ -51,6 +51,8 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
     sed -n '/^_infer_linux_unsupported_amd_gfx_arch()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_amd_arch_index_family_for_gfx()/,/^}/p' "$INSTALL_SH"
+    echo
+    sed -n '/^_amd_sole_index_arch()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
     echo ""
@@ -188,6 +190,27 @@ MOCK
     chmod +x "$_MOCK_DIR/rpm"
 }
 
+# Two AMD GPUs with DIFFERENT arches, the shape Codex raised: an APU beside a discrete
+# card. amd-smi lists both, so the probe returns two tokens and the installer has to
+# decide which one the wheels are for. $1 = first agent, $2 = second.
+reset_host_mixed() {
+    rm -rf "$_MOCK_DIR" "$_FAKE_ROCM_DIR/.info" "$_FAKE_ROCM_DIR/bin"
+    _MOCK_DIR=$(mktemp -d)
+    cat > "$_MOCK_DIR/amd-smi" <<MOCK
+#!/bin/sh
+case "\$1" in
+    list) printf 'GPU: 0\n  BDF: 0000:03:00.0\n  NAME: $1\nGPU: 1\n  BDF: 0000:64:00.0\n  NAME: $2\n' ;;
+    static) printf 'ASIC:\n    TARGET_GRAPHICS_VERSION: $1\nASIC:\n    TARGET_GRAPHICS_VERSION: $2\n' ;;
+    *) echo "AMDSMI Tool: 25.0.1 | AMDSMI Library version: 25.0.1.0" ;;
+esac
+MOCK
+    chmod +x "$_MOCK_DIR/amd-smi"
+}
+
+run_sole_arch() {
+    PATH="$_MOCK_DIR:$_TOOLS_DIR" bash -c         ". '$_FUNC_FILE'; _amd_sole_index_arch \"\$1\" || echo REJECTED" _ "$1" 2>/dev/null
+}
+
 run_index() {
     PATH="$_MOCK_DIR:$_TOOLS_DIR" bash -c \
         "unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_TORCH_INDEX_URL UNSLOTH_TORCH_INDEX_FAMILY ROCM_PATH
@@ -281,6 +304,58 @@ assert_lacks "an existing ROCm tree is not called missing" "Install the ROCm/HIP
 _gate=$(grep -c '_amd_no_rocm_version_reroute' "$INSTALL_SH")
 assert_eq "install.sh wires the no-version reroute state" "yes" \
     "$([ "$_gate" -ge 4 ] && echo yes || echo "no ($_gate refs)")"
+
+# ── 9. A mixed-arch host must not route on whichever agent came first ───────
+# rocminfo/amd-smi enumerate in kernel order, so an APU can be listed ahead of the
+# discrete card the user actually wants wheels for. Taking the first token would put
+# gfx1151 wheels on a 9070 XT. No agreement, no reroute.
+assert_eq "duplicate agents are one device and still route"     "gfx1201" "$(run_sole_arch 'gfx1201
+gfx1201')"
+# Both map to gfx120X-all, so the index is the same either way and only the exported
+# UNSLOTH_ROCM_GFX_ARCH differs. sort -u makes which one deterministic.
+assert_eq "two arches in the same index family pick one"     "gfx1200" "$(run_sole_arch 'gfx1201
+gfx1200')"
+assert_eq "an APU beside a discrete card is rejected"     "REJECTED" "$(run_sole_arch 'gfx1151
+gfx1201')"
+assert_eq "an unmappable agent rejects the whole host"     "REJECTED" "$(run_sole_arch 'gfx1201
+gfx906')"
+assert_eq "an empty probe is rejected" "REJECTED" "$(run_sole_arch '')"
+
+reset_host_mixed gfx1151 gfx1201
+assert_eq "mixed-arch host with no version keeps the cpu index"     "$_BASE/cpu" "$(run_index)"
+_w=$(run_warnings)
+assert_lacks "mixed-arch host does not claim a per-arch route"     "routing to AMD per-arch wheels" "$_w"
+
+# ── 10. The version probe runs once per install, not once per caller ────────
+# get_torch_index_url runs in a command substitution, so the reroute below it has to
+# ask the same question. On a wedged rpm database that is two 10s timeouts. The memo
+# is opt-in: unset means no cache, which is what the harnesses above rely on.
+reset_host gfx1201
+mkdir -p "$_FAKE_ROCM_DIR/bin"
+_COUNT_FILE="$_MOCK_DIR/hipconfig-calls"
+cat > "$_FAKE_ROCM_DIR/bin/hipconfig" <<MOCK
+#!/bin/sh
+echo x >> "$_COUNT_FILE"
+echo "6.4.43483-0"
+MOCK
+chmod +x "$_FAKE_ROCM_DIR/bin/hipconfig"
+_memo_out=$(PATH="$_MOCK_DIR:$_TOOLS_DIR" bash -c     "unset ROCM_PATH
+     _ROCM_TAG_MEMO='$_MOCK_DIR/memo'
+     . '$_FUNC_FILE'
+     _detect_rocm_version_tag
+     _detect_rocm_version_tag" 2>/dev/null | tr '
+' ' ')
+assert_eq "both calls report the same tag" "rocm6.4 rocm6.4 " "$_memo_out"
+assert_eq "the second call did not re-probe" "1"     "$(wc -l < "$_COUNT_FILE" | tr -d ' ')"
+
+rm -f "$_MOCK_DIR/memo" "$_COUNT_FILE"
+_nomemo_out=$(PATH="$_MOCK_DIR:$_TOOLS_DIR" bash -c     "unset ROCM_PATH _ROCM_TAG_MEMO
+     . '$_FUNC_FILE'
+     _detect_rocm_version_tag
+     _detect_rocm_version_tag" 2>/dev/null | tr '
+' ' ')
+assert_eq "no memo path means no caching" "rocm6.4 rocm6.4 " "$_nomemo_out"
+assert_eq "and both calls really probed" "2"     "$(wc -l < "$_COUNT_FILE" | tr -d ' ')"
 
 echo ""
 echo "  passed: $PASS, failed: $FAIL"

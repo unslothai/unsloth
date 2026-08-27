@@ -819,6 +819,7 @@ _cleanup_install_temporaries() {
     [ -n "${_UIP_WORK:-}" ] && rm -rf "$_UIP_WORK" 2>/dev/null || true
     [ -n "${_UIP_STAGE:-}" ] && rm -f "$_UIP_STAGE" 2>/dev/null || true
     [ -n "${_UIP_STAGE2:-}" ] && rm -f "$_UIP_STAGE2" 2>/dev/null || true
+    [ -n "${_ROCM_TAG_MEMO:-}" ] && rm -f "$_ROCM_TAG_MEMO" 2>/dev/null || true
 }
 
 _on_install_exit() {
@@ -3311,6 +3312,31 @@ _amd_gpu_present_via_pci() {
 }
 
 # Map a gfx arch to the AMD pip index family (mirrors install.ps1 $archFamilyMap).
+# Reduce a multi-line gfx probe to the one arch worth routing on, or fail.
+# rocminfo names each agent twice, so a single-GPU host reads "gfx1201\ngfx1201" -- one
+# device, and it must still route. An APU beside a discrete card reads two DIFFERENT
+# arches, and routing on whichever the kernel enumerated first would put gfx1151 wheels on
+# a 9070 XT. So every agent has to land in the same index family; anything else fails and
+# the caller keeps CPU wheels, which are useless on such a host but are not wrong.
+# UNSLOTH_ROCM_GFX_ARCH still lets the user name the card they meant.
+_amd_sole_index_arch() {
+    _sia_arches=$(printf '%s\n' "$1" | sed 's/:.*$//' \
+        | tr '[:upper:]' '[:lower:]' | awk 'NF' | sort -u)
+    [ -n "$_sia_arches" ] || return 1
+    _sia_pick=""
+    _sia_family=""
+    for _sia_a in $_sia_arches; do
+        _sia_f=$(_amd_arch_index_family_for_gfx "$_sia_a") || return 1
+        if [ -z "$_sia_pick" ]; then
+            _sia_pick="$_sia_a"
+            _sia_family="$_sia_f"
+        elif [ "$_sia_f" != "$_sia_family" ]; then
+            return 1
+        fi
+    done
+    printf '%s\n' "$_sia_pick"
+}
+
 _amd_arch_index_family_for_gfx() {
     case "$1" in
         gfx1201|gfx1200) echo gfx120X-all ;;
@@ -3770,7 +3796,21 @@ _highest_rocm_tag() {
 # compatible +/- 2 releases, the normalisation below can only emit a leaf PyTorch
 # publishes, the one source that can report a tree that is not installed is
 # filtered above, and any disagreement is named on stderr for the install log.
+# get_torch_index_url runs inside a command substitution, so the version it read cannot
+# reach the runtime-less reroute below, and the reroute has to ask the same question. Both
+# calls land in one install run against a filesystem nothing is changing between them, so a
+# file-backed answer is the same answer -- and a wedged rpm database pays _rocm_tag_from_rpm's
+# 10s timeout once rather than twice. Written only on compute, so "no file" and "computed
+# empty" stay distinguishable. $$ is the parent shell in POSIX sh, stable inside subshells.
+_ROCM_TAG_MEMO="${TMPDIR:-/tmp}/unsloth-rocm-tag.$$"
+
 _detect_rocm_version_tag() {
+    # Opt-in: a caller that never set the path (a test harness sourcing this function on its
+    # own) gets the uncached behaviour rather than a surprise cache it has to know about.
+    if [ -n "${_ROCM_TAG_MEMO:-}" ] && [ -f "$_ROCM_TAG_MEMO" ]; then
+        cat "$_ROCM_TAG_MEMO"
+        return
+    fi
     _rt_readings=$({
         _rocm_tag_from_amd_smi
         _rocm_tag_from_version_file
@@ -3788,6 +3828,9 @@ _detect_rocm_version_tag() {
             ""|"$_rt_best ") : ;;  # one reading, or every source agreeing
             *) echo "[WARN] ROCm version sources disagree (${_rt_seen% }) -- using the highest, $_rt_best." >&2 ;;
         esac
+    fi
+    if [ -n "${_ROCM_TAG_MEMO:-}" ]; then
+        printf '%s\n' "$_rt_best" > "$_ROCM_TAG_MEMO" 2>/dev/null || true
     fi
     printf '%s\n' "$_rt_best"
 }
@@ -3943,12 +3986,11 @@ get_torch_index_url() {
         # nothing covered. The runtime-less reroute below installs the wheels; a
         # CPU-only warning here would be false for that path, so defer like the
         # inferable-arch branch does.
-        # First token only: rocminfo names each agent twice, so a single-GPU host
-        # already reads "gfx1201\ngfx1201" and the whole string matches no case arm.
-        _amd_gfx_first=$(printf '%s\n' "$_amd_gfx_probe" | sed 's/:.*$//' \
-            | tr '[:upper:]' '[:lower:]' | awk 'NF{print; exit}')
-        if [ -n "$_amd_gfx_first" ] && \
-           _amd_arch_index_family_for_gfx "$_amd_gfx_first" >/dev/null 2>&1; then
+        # Every probed agent has to agree on an index family, not just the first one:
+        # rocminfo names each agent twice, so "gfx1201\ngfx1201" is one device and routes,
+        # while an APU beside a discrete card is two and must not.
+        _amd_gfx_first=$(_amd_sole_index_arch "$_amd_gfx_probe") || _amd_gfx_first=""
+        if [ -n "$_amd_gfx_first" ]; then
             if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
                 echo "[WARN] AMD GPU detected with no readable ROCm version, but UNSLOTH_ROCM_GFX_ARCH=$_amd_gfx_first is set -- routing to AMD per-arch wheels." >&2
             else
@@ -4553,15 +4595,15 @@ case "$TORCH_INDEX_URL" in
         if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
            [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && \
            ! _has_usable_nvidia_gpu && _has_amd_rocm_gpu; then
-            # Same first-token reduction get_torch_index_url makes, so the state means
-            # "that function deferred on THIS arch" and the reroute below can route on it.
-            _amd_probed_gfx_first=$(_probe_amd_gfx_arch | sed 's/:.*$//' \
-                | tr '[:upper:]' '[:lower:]' | awk 'NF{print; exit}')
-            # Mapping checked here, not just downstream: an unmappable probe never made
-            # get_torch_index_url defer, so it must not claim this state either.
-            # _detect_rocm_version_tag last -- it is the only expensive test.
+            # Same reduction get_torch_index_url makes, mapping check included, so the
+            # state means "that function deferred on THIS arch" and the reroute below can
+            # route on it. A probe the helper rejects -- unmappable, or a mixed host whose
+            # agents want different families -- never made get_torch_index_url defer, so it
+            # must not claim this state either.
+            # _detect_rocm_version_tag last: it is the only expensive test.
+            _amd_probed_gfx_first=$(_amd_sole_index_arch "$(_probe_amd_gfx_arch)") \
+                || _amd_probed_gfx_first=""
             if [ -n "${_amd_probed_gfx_first:-}" ] && \
-               _amd_arch_index_family_for_gfx "$_amd_probed_gfx_first" >/dev/null 2>&1 && \
                [ -z "$(_detect_rocm_version_tag 2>/dev/null)" ]; then
                 _amd_no_rocm_version_reroute=true
             fi
