@@ -55,7 +55,11 @@ def _run_install(
 
     probes = []
 
-    def _fake_detect(dedup = True, ignore_hsa_override = False, ignore_visible_masks = False):
+    def _fake_detect(
+        dedup = True,
+        ignore_hsa_override = False,
+        ignore_visible_masks = False,
+    ):
         probes.append(dedup)
         codes = list(gfx_devices)
         return list(dict.fromkeys(codes)) if dedup else codes
@@ -212,17 +216,13 @@ def test_an_explicit_index_pin_wins():
 
 def test_the_gfx906_arch_override_wins():
     """A pinned MI50 runtime target must not be rerouted by a gfx1103 sitting in the same box."""
-    calls = _run_install(
-        gfx_devices = ("gfx1103", "gfx906"), env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx906"}
-    )
+    calls = _run_install(gfx_devices = ("gfx1103", "gfx906"), env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx906"})
     assert _AMD not in calls, calls
 
 
 def test_a_mixed_host_whose_runtime_target_is_supported_keeps_the_generic_index():
     """gfx1103 present, but the visible-device mask selects the dGPU: rerouting would pull the
     wrong wheel for the card that will actually run."""
-    calls = _run_install(
-        gfx_devices = ("gfx1100", "gfx1103"), env = {"HIP_VISIBLE_DEVICES": "0"}
-    )
+    calls = _run_install(gfx_devices = ("gfx1100", "gfx1103"), env = {"HIP_VISIBLE_DEVICES": "0"})
     assert _GENERIC in calls, calls
     assert _AMD not in calls, calls

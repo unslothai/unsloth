@@ -1735,9 +1735,20 @@ _HSA_SPOOFABLE_PHYSICAL_GFX: frozenset[str] = frozenset({"gfx1151", "gfx1150", "
 # Recheck this list when the generic torch pin changes.
 _GENERIC_ROCM_WHEEL_GFX: frozenset[str] = frozenset(
     {
-        "gfx900", "gfx906", "gfx908", "gfx90a", "gfx942", "gfx950",
-        "gfx1030", "gfx1100", "gfx1101", "gfx1102",
-        "gfx1150", "gfx1151", "gfx1200", "gfx1201",
+        "gfx900",
+        "gfx906",
+        "gfx908",
+        "gfx90a",
+        "gfx942",
+        "gfx950",
+        "gfx1030",
+        "gfx1100",
+        "gfx1101",
+        "gfx1102",
+        "gfx1150",
+        "gfx1151",
+        "gfx1200",
+        "gfx1201",
     }
 )
 
@@ -1749,15 +1760,16 @@ def _generic_rocm_wheel_lacks_kernels(gfx: "str | None") -> bool:
     return gfx not in _GENERIC_ROCM_WHEEL_GFX and gfx in _GFX_TO_AMD_INDEX_ARCH
 
 
-def _runtime_gfx_target(inferred_linux_gfx: "str | None") -> "tuple[str | None, list[str], str | None]":
+def _runtime_gfx_target(
+    inferred_linux_gfx: "str | None",
+) -> "tuple[str | None, list[str], str | None]":
     """Return the selected gfx target, detected arches, and corrected physical arch."""
     gfx_devices = _detect_amd_gfx_codes(dedup = False)
     physical_gfx = _hsa_spoofed_physical_gfx(inferred_linux_gfx, gfx_devices)
     if physical_gfx is not None:
         gfx_devices = [physical_gfx]
     rocr_applied = (
-        _LAST_AMD_GFX_PROBE == "rocminfo"
-        and _first_set_visible_mask() == "ROCR_VISIBLE_DEVICES"
+        _LAST_AMD_GFX_PROBE == "rocminfo" and _first_set_visible_mask() == "ROCR_VISIBLE_DEVICES"
     )
     runtime_gfx = (
         gfx_devices[0 if rocr_applied else _pick_visible_index(len(gfx_devices))]
