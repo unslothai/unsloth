@@ -344,6 +344,64 @@ def test_local_gguf_task_skips_online_only_contents(tmp_path, monkeypatch):
     assert models_route._local_model_task(model) is None
 
 
+def test_local_classification_never_opens_an_online_only_gguf(tmp_path, monkeypatch):
+    """The whole probe, not just the task half.
+
+    ``_local_model_classification`` falls through to the audio-type probe whenever the task
+    comes back None, which for a placeholder is every time, and that probe reads an
+    architecture of its own. Asserting on ``_local_model_task`` alone leaves the listing
+    hydrating exactly the files it stopped classifying, a folder row once per sibling."""
+    from hub.services.models import catalog_classification as classification
+    from utils.models import gguf_metadata
+
+    single = _touch(tmp_path / "single" / "generic-Q4_K_M.gguf")
+    folder = tmp_path / "generic-GGUF"
+    for quant in ("Q4_K_M", "Q8_0"):
+        _touch(folder / f"generic-{quant}.gguf")
+
+    opened: list[str] = []
+    monkeypatch.setattr(
+        classification, "file_contents_available_locally", lambda *_args, **_kwargs: False
+    )
+    monkeypatch.setattr(
+        gguf_metadata,
+        "read_gguf_architecture",
+        lambda path: opened.append(path) or "llama",
+    )
+
+    for path in (single, folder):
+        model = _local(path, model_format = "gguf", display_name = "generic", id = str(path))
+        assert classification._local_model_classification(model) == (None, None)
+    assert opened == []
+
+
+def test_an_unhydrated_denoiser_keeps_the_picker_that_would_hydrate_it(tmp_path, monkeypatch):
+    """Images and Video filter On Device rows on an exact task, so an unclassified denoiser
+    is not reachable from the one page whose pick would pull it down, and lists in Chat
+    instead. The filename carries the family, and it is read without opening the file."""
+    from hub.services.models import catalog_classification as classification
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("placeholder contents were read to classify it")
+
+    monkeypatch.setattr(
+        classification, "file_contents_available_locally", lambda *_args, **_kwargs: False
+    )
+    monkeypatch.setattr(classification, "_gguf_architecture", forbidden)
+
+    for name, expected in (
+        ("flux1-dev-Q4_K_M.gguf", "text-to-image"),
+        ("z-image-turbo-Q4_K_M.gguf", "text-to-image"),
+        ("ltx-video-2b-Q4_K_M.gguf", "text-to-video"),
+        # No family in the name: unknown, which keeps the row in Chat where a GGUF with
+        # nothing but a name belongs, rather than guessing it into a media page.
+        ("qwen3-4b-instruct-Q4_K_M.gguf", None),
+    ):
+        gguf = _touch(tmp_path / name)
+        model = _local(gguf, model_format = "gguf", display_name = name, id = name)
+        assert models_route._local_model_task(model) == expected, name
+
+
 def test_local_task_tags_family_named_pipeline_dir(tmp_path):
     # A local diffusers pipeline whose id resolves to a supported image family loads fine, so tag it and the Images picker keeps it.
     d = tmp_path / "flux-pipeline"
