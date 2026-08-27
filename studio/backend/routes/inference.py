@@ -16976,7 +16976,43 @@ def _resident_media_status(task: str) -> Optional[dict]:
     return status if status and status.get("loaded") else None
 
 
-def _media_model_objects(catalog: list, created: int) -> list[dict]:
+_MEDIA_PICK_CACHE: dict = {"at": None, "picks": {}}
+
+
+def _validated_media_picks(catalog_at: float) -> dict:
+    """The (id, pick) rows per task, rebuilt only when the shared catalog scan is replaced.
+
+    Each media index keeps its own short TTL and its own ``collect_local_models`` walk, so
+    resolving them per request made an otherwise-cached /v1/models pay two extra full
+    scans. The Settings usage examples poll this endpoint, so that cost repeats.
+    """
+    if _MEDIA_PICK_CACHE["at"] == catalog_at:
+        return _MEDIA_PICK_CACHE["picks"]
+    from core.inference.media_locality import is_edit_only
+    from core.inference.media_model_index import (
+        available_media_model_ids,
+        resolve_local_media_model,
+    )
+
+    picks: dict = {}
+    for task in _MEDIA_MODEL_TASKS:
+        rows = []
+        for model_id in available_media_model_ids(task):
+            pick = resolve_local_media_model(model_id, task = task)
+            if pick is None:
+                continue
+            # The local catalog tags an instruction-editing checkpoint text-to-image, but it
+            # ships no txt2img workflow: the switch refuses it with a 400 and a resident one
+            # is refused by /v1/images/generations too.
+            if task == "text-to-image" and is_edit_only(pick):
+                continue
+            rows.append((model_id, pick))
+        picks[task] = rows
+    _MEDIA_PICK_CACHE.update(at = catalog_at, picks = picks)
+    return picks
+
+
+def _media_model_objects(catalog: list, created: int, catalog_at: float) -> list[dict]:
     """Downloaded image/video models, as the generation resolver actually sees them.
 
     Built from the media index rather than the raw catalog, because that index is what
@@ -16987,13 +17023,9 @@ def _media_model_objects(catalog: list, created: int) -> list[dict]:
     Residency goes through ``resident_is_pick`` for the same reason. A standalone GGUF
     loads with its parent directory as the model path and an HF cache repo with its
     snapshot directory, so comparing the public id or the catalog's own path reports the
-    resident model as unloaded.
+    resident model as unloaded. Residency is read per request; only the scan is cached.
     """
-    from core.inference.media_model_index import (
-        available_media_model_ids,
-        resident_is_pick,
-        resolve_local_media_model,
-    )
+    from core.inference.media_model_index import resident_is_pick
     from hub.utils.gguf import extract_quant_token
 
     display_by_id: dict[str, str] = {}
@@ -17003,13 +17035,11 @@ def _media_model_objects(catalog: list, created: int) -> list[dict]:
         if cid and display:
             display_by_id.setdefault(cid, display)
 
+    picks_by_task = _validated_media_picks(catalog_at)
     objects: list[dict] = []
     for task in _MEDIA_MODEL_TASKS:
         status = _resident_media_status(task)
-        for model_id in available_media_model_ids(task):
-            pick = resolve_local_media_model(model_id, task = task)
-            if pick is None:
-                continue
+        for model_id, pick in picks_by_task.get(task, ()):
             loaded = bool(status) and resident_is_pick(status, model_id, pick)
             obj = {
                 "id": model_id,
@@ -17032,33 +17062,41 @@ def _media_model_objects(catalog: list, created: int) -> list[dict]:
 
 
 def _stt_model_objects(created: int) -> list[dict]:
-    try:
-        from core.inference import stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
+    """Downloaded speech-to-text models this endpoint's own route can actually serve.
 
-        loaded = {
-            sidecar.loaded_model
-            for sidecar in (
-                stt_sidecar.get_stt_sidecar(),
-                stt_ggml_sidecar.get_ggml_stt_sidecar(),
-                stt_mtmd_sidecar.get_mtmd_stt_sidecar(),
+    /v1/audio/transcriptions resolves an id to an engine by itself: only the mtmd ids are
+    forced, and everything else lands on Transformers. So a curated Whisper id cached only
+    for whisper.cpp is not servable here (the route loads the absent Transformers snapshot
+    and 409s), and neither engine can serve anything while its runtime is missing (501).
+    Both engines are therefore gated on their own availability, and residency is read only
+    from the engines this route can select.
+    """
+    try:
+        from core.inference import stt_mtmd_sidecar, stt_sidecar
+
+        whisper_ready = stt_sidecar.is_available()
+        mtmd_ready = stt_mtmd_sidecar.is_available()
+        loaded = set()
+        if whisper_ready:
+            loaded.add(stt_sidecar.get_stt_sidecar().loaded_model)
+        if mtmd_ready:
+            loaded.add(stt_mtmd_sidecar.get_mtmd_stt_sidecar().loaded_model)
+        loaded -= {None}
+
+        ids: list[str] = []
+        if whisper_ready:
+            ids.extend(
+                model_id
+                for model_id in stt_sidecar.STT_MODELS
+                if stt_sidecar.is_model_downloaded(model_id)
             )
-        } - {None}
-        ids = [
-            model_id
-            for model_id in stt_sidecar.STT_MODELS
-            if stt_sidecar.is_model_downloaded(model_id)
-            or stt_ggml_sidecar._cached_model_path(model_id) is not None
-        ]
-        # Qwen3-ASR runs on no other engine, so without llama-server (or PyAV to decode
-        # the clip) /v1/audio/transcriptions 501s on every one of these. The STT status
-        # route publishes `available` beside the list; here there is no such field, so
-        # an unservable model must simply not be listed.
-        if stt_mtmd_sidecar.is_available():
+        if mtmd_ready:
             ids.extend(
                 model_id
                 for model_id in stt_mtmd_sidecar.MTMD_STT_MODELS
                 if stt_mtmd_sidecar.is_model_downloaded(model_id)
             )
+        # A custom Whisper repo the route can still reload by name while it is resident.
         ids.extend(sorted(model_id for model_id in loaded if model_id not in ids))
     except Exception as exc:  # noqa: BLE001
         logger.debug("stt models unavailable for /v1/models: %s", exc)
@@ -17168,7 +17206,10 @@ async def _openai_catalog_objects() -> list[dict]:
         by_id[cid] = obj
 
     media = await asyncio.to_thread(
-        lambda: _media_model_objects(catalog, _created) + _stt_model_objects(_created)
+        lambda: (
+            _media_model_objects(catalog, _created, _CATALOG_CACHE["at"])
+            + _stt_model_objects(_created)
+        )
     )
     for obj in media:
         by_id.setdefault(obj["id"], obj)

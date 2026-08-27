@@ -61,6 +61,7 @@ class _FakeUnsloth:
 
 def _media_index(monkeypatch, picks_by_task):
     """Stand in for the media index the generation routes resolve against."""
+    inf._MEDIA_PICK_CACHE.update(at = None, picks = {})
     monkeypatch.setattr(
         mmi,
         "available_media_model_ids",
@@ -216,6 +217,55 @@ def test_a_standalone_gguf_resident_is_matched_by_its_load_directory(monkeypatch
     assert "/srv/" not in json.dumps(data)
 
 
+def test_edit_only_checkpoints_are_not_offered_for_text_to_image(monkeypatch):
+    """The catalog tags an instruction-editing checkpoint text-to-image, but it ships no
+    txt2img workflow: the switch refuses it with a 400 and a resident one is refused by
+    /v1/images/generations too."""
+    from core.inference import media_locality
+
+    edit = MediaModelPick("org/qwen-image-edit", "/hf/edit")
+    plain = MediaModelPick("org/plain-image", "/hf/plain")
+    monkeypatch.setattr(
+        media_locality, "is_edit_only", lambda pick: pick.model_id == "org/qwen-image-edit"
+    )
+    _catalog(monkeypatch, [], picks = {"text-to-image": [edit, plain]})
+    ids = [m["id"] for m in asyncio.run(inf._openai_catalog_objects())]
+    assert ids == ["org/plain-image"]
+
+
+def test_the_media_scan_is_reused_across_requests_in_one_catalog_window(monkeypatch):
+    """Each media index runs its own collect_local_models walk on a short TTL, so
+    resolving them per request made a cached /v1/models pay two extra full scans."""
+    calls = []
+
+    def _ids(task):
+        calls.append(task)
+        return []
+
+    monkeypatch.setattr(mmi, "available_media_model_ids", _ids)
+    monkeypatch.setattr(mmi, "resolve_local_media_model", lambda name, *, task: None)
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama())
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+    monkeypatch.setattr(inf, "_resident_media_status", lambda task: None)
+    monkeypatch.setattr(inf, "_stt_model_objects", lambda created: [])
+    inf._MEDIA_PICK_CACHE.update(at = None, picks = {})
+
+    async def _cat():
+        return []
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _cat)
+    monkeypatch.setattr(inf, "_CATALOG_CACHE", {"at": 1234.0, "models": []})
+
+    for _ in range(3):
+        asyncio.run(inf._openai_catalog_objects())
+    assert calls == list(inf._MEDIA_MODEL_TASKS), calls
+
+    # A replaced catalog scan rebuilds it.
+    inf._CATALOG_CACHE["at"] = 5678.0
+    asyncio.run(inf._openai_catalog_objects())
+    assert calls == list(inf._MEDIA_MODEL_TASKS) * 2, calls
+
+
 def test_only_ids_the_media_resolver_accepts_are_listed(monkeypatch):
     """The index already drops partial pulls, unopenable paths and ambiguous builds.
 
@@ -236,58 +286,93 @@ def test_only_ids_the_media_resolver_accepts_are_listed(monkeypatch):
     assert "half-pulled" not in json.dumps(data)
 
 
+def _stt(
+    monkeypatch,
+    *,
+    whisper = True,
+    mtmd = True,
+    downloaded = ("small",),
+    mtmd_downloaded = (),
+    whisper_loaded = None,
+    mtmd_loaded = None,
+):
+    from core.inference import stt_mtmd_sidecar, stt_sidecar
+
+    monkeypatch.setattr(stt_sidecar, "is_available", lambda: whisper)
+    monkeypatch.setattr(stt_mtmd_sidecar, "is_available", lambda: mtmd)
+    monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda m: m in downloaded)
+    monkeypatch.setattr(stt_mtmd_sidecar, "is_model_downloaded", lambda m: m in mtmd_downloaded)
+    monkeypatch.setattr(
+        stt_sidecar, "get_stt_sidecar", lambda: SimpleNamespace(loaded_model = whisper_loaded)
+    )
+    monkeypatch.setattr(
+        stt_mtmd_sidecar, "get_mtmd_stt_sidecar", lambda: SimpleNamespace(loaded_model = mtmd_loaded)
+    )
+
+
 def test_stt_models_list_downloaded_and_loaded(monkeypatch):
-    from core.inference import stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
-
-    monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda m: m == "small")
-    monkeypatch.setattr(
-        stt_ggml_sidecar, "_cached_model_path", lambda m: "/x" if m == "large-v3-turbo" else None
+    _stt(
+        monkeypatch,
+        downloaded = ("small",),
+        mtmd_downloaded = ("qwen3-asr-0.6b",),
+        whisper_loaded = "org/whisper-custom",
     )
-    monkeypatch.setattr(stt_mtmd_sidecar, "is_model_downloaded", lambda m: m == "qwen3-asr-0.6b")
-    monkeypatch.setattr(stt_mtmd_sidecar, "is_available", lambda: True)
-    monkeypatch.setattr(
-        stt_sidecar, "get_stt_sidecar", lambda: SimpleNamespace(loaded_model = "org/whisper-custom")
-    )
-    monkeypatch.setattr(
-        stt_ggml_sidecar,
-        "get_ggml_stt_sidecar",
-        lambda: SimpleNamespace(loaded_model = "large-v3-turbo"),
-    )
-    monkeypatch.setattr(
-        stt_mtmd_sidecar, "get_mtmd_stt_sidecar", lambda: SimpleNamespace(loaded_model = None)
-    )
-
     objects = inf._stt_model_objects(7)
     assert [(o["id"], o["loaded"]) for o in objects] == [
         ("small", False),
-        ("large-v3-turbo", True),
         ("qwen3-asr-0.6b", False),
         ("org/whisper-custom", True),
     ]
     assert all(o["task"] == "automatic-speech-recognition" and o["created"] == 7 for o in objects)
 
 
+def test_a_whisper_id_cached_only_for_whisper_cpp_is_not_advertised(monkeypatch):
+    """/v1/audio/transcriptions never selects the GGML engine on its own.
+
+    _stt_engine_for_model forces only the mtmd ids, so a curated Whisper id resolves to
+    Transformers; advertising one that exists only in the whisper.cpp cache sends the
+    caller at an absent Transformers snapshot, which answers 409.
+    """
+    from core.inference import stt_ggml_sidecar
+
+    _stt(monkeypatch, downloaded = ())
+    # Resident on the GGML sidecar, and cached there, yet still not OpenAI-servable.
+    monkeypatch.setattr(
+        stt_ggml_sidecar, "_cached_model_path", lambda m: "/x" if m == "large-v3-turbo" else None
+    )
+    monkeypatch.setattr(
+        stt_ggml_sidecar,
+        "get_ggml_stt_sidecar",
+        lambda: SimpleNamespace(loaded_model = "large-v3-turbo"),
+    )
+    assert inf._stt_model_objects(3) == []
+
+
+def test_whisper_rows_need_the_transformers_runtime(monkeypatch):
+    """WhisperSttSidecar.load() calls ensure_stt_available(), which the route maps to 501."""
+    _stt(monkeypatch, whisper = False, downloaded = ("small", "tiny"))
+    assert inf._stt_model_objects(3) == []
+    _stt(monkeypatch, whisper = True, downloaded = ("small", "tiny"))
+    assert [o["id"] for o in inf._stt_model_objects(3)] == ["tiny", "small"]
+
+
 def test_mtmd_models_are_hidden_when_their_runtime_is_missing(monkeypatch):
     """Qwen3-ASR runs on no other engine, so without llama-server every
-    /v1/audio/transcriptions call for one returns 501. Curated Whisper ids, which do have
-    a fallback engine, must still be listed."""
-    from core.inference import stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
+    /v1/audio/transcriptions call for one returns 501."""
+    _stt(
+        monkeypatch,
+        mtmd = False,
+        downloaded = ("small",),
+        mtmd_downloaded = ("qwen3-asr-0.6b", "qwen3-asr-1.7b"),
+    )
+    assert [o["id"] for o in inf._stt_model_objects(3)] == ["small"]
 
-    monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda m: m == "small")
-    monkeypatch.setattr(stt_ggml_sidecar, "_cached_model_path", lambda m: None)
-    monkeypatch.setattr(stt_mtmd_sidecar, "is_model_downloaded", lambda m: True)
-    monkeypatch.setattr(stt_mtmd_sidecar, "is_available", lambda: False)
-    for module, getter in (
-        (stt_sidecar, "get_stt_sidecar"),
-        (stt_ggml_sidecar, "get_ggml_stt_sidecar"),
-        (stt_mtmd_sidecar, "get_mtmd_stt_sidecar"),
-    ):
-        monkeypatch.setattr(module, getter, lambda: SimpleNamespace(loaded_model = None))
-
-    ids = [o["id"] for o in inf._stt_model_objects(3)]
-    assert ids == ["small"]
-
-    monkeypatch.setattr(stt_mtmd_sidecar, "is_available", lambda: True)
+    _stt(
+        monkeypatch,
+        mtmd = True,
+        downloaded = ("small",),
+        mtmd_downloaded = ("qwen3-asr-0.6b", "qwen3-asr-1.7b"),
+    )
     assert [o["id"] for o in inf._stt_model_objects(3)] == [
         "small",
         "qwen3-asr-0.6b",
