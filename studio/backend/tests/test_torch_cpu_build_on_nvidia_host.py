@@ -227,9 +227,7 @@ def test_an_untagged_wheel_is_only_a_cpu_build_when_it_names_no_runtime(monkeypa
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
 
-@pytest.mark.parametrize(
-    "var", ["CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"]
-)
+@pytest.mark.parametrize("var", ["CUDA_VISIBLE_DEVICES"])
 @pytest.mark.parametrize("mask", ["", " ", "-1"])
 def test_a_deliberately_emptied_mask_is_not_a_broken_install(monkeypatch, var, mask):
     # Hiding the GPUs produces exactly the shape this whole feature keys on -- torch
@@ -484,3 +482,179 @@ def test_path_resolution_is_a_no_op_off_windows_and_when_path_has_it(monkeypatch
     monkeypatch.setattr(nvidia.platform, "system", lambda: "Windows")
     monkeypatch.setattr(nvidia.shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
     assert nvidia._nvidia_smi_executable() == "/usr/bin/nvidia-smi"
+
+
+# ========== Round three ==========
+
+
+@pytest.mark.parametrize("mask", ["", " ", "-1"])
+@pytest.mark.parametrize("var", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"])
+def test_a_hip_mask_only_counts_where_it_can_hide_something(monkeypatch, var, mask):
+    """A mask that cannot take effect must not silence the mismatch.
+
+    Windows HIP has no ROCr layer, and this module's own visibility resolver already
+    ignores ROCR_VISIBLE_DEVICES there. A stray empty one on a Windows NVIDIA host
+    would otherwise restore exactly the "no GPU" verdict this feature exists to
+    correct. The HIP variables likewise address AMD devices, so on an NVIDIA-only
+    inventory they mask nothing.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+    _smi(monkeypatch, _TWO_A4000_ROWS)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setenv(var, mask)
+
+    assert hw.classify_torch_build() == "torch_cuda_unavailable"
+
+    # Put an AMD card in the inventory and the same variable becomes meaningful.
+    monkeypatch.setattr(
+        hw,
+        "get_physical_gpu_inventory",
+        lambda: {"available": True, "devices": [{"vendor": "amd"}], "sources": ["x"]},
+    )
+    assert hw.classify_torch_build() is None
+
+
+def test_rocr_is_ignored_on_windows_even_on_an_amd_host(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
+    monkeypatch.setattr(hw.sys, "platform", "win32")
+    monkeypatch.setattr(
+        hw,
+        "get_physical_gpu_inventory",
+        lambda: {"available": True, "devices": [{"vendor": "amd"}], "sources": ["x"]},
+    )
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "")
+    assert hw.classify_torch_build() == "torch_cuda_unavailable"
+
+    # HIP does work on Windows, so that one still counts.
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES")
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "")
+    assert hw.classify_torch_build() is None
+
+
+def test_an_inventory_that_answers_nothing_keeps_every_mask(monkeypatch):
+    # Unknown stays conservative: it must not start ignoring masks that may be real.
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
+    monkeypatch.setattr(hw.sys, "platform", "linux")
+    monkeypatch.setattr(
+        hw, "get_physical_gpu_inventory", lambda: {"available": False, "devices": []}
+    )
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "")
+    assert hw.classify_torch_build() is None
+
+
+def test_a_deliberate_cpu_install_is_not_reported_as_broken(monkeypatch, tmp_path):
+    """Pinning /cpu on a machine that has a GPU is a supported thing to do.
+
+    No mask is empty in that case, so the classifier called the wheel the user asked
+    for broken, and the UI offered a repair whose only effect would be to replace it.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
+
+    # Nothing recorded and nothing pinned: unknown is not a choice.
+    assert hw.classify_torch_build() == "torch_cpu_build"
+
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cpu")
+    assert hw.classify_torch_build() is None
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
+
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/cpu/")
+    assert hw.classify_torch_build() is None
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL")
+
+    # A GPU pin is not this, and neither is a GPU flavor in the manifest.
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu124")
+    assert hw.classify_torch_build() == "torch_cpu_build"
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
+
+    manifest = tmp_path / "unsloth_install_manifest.json"
+    manifest.write_text('{"schema": 1, "expected_torch_tag": "cpu"}', encoding = "utf-8")
+    assert hw.classify_torch_build() is None
+
+    manifest.write_text('{"schema": 1, "expected_torch_tag": "cu124"}', encoding = "utf-8")
+    assert hw.classify_torch_build() == "torch_cpu_build"
+
+    # A manifest with no flavor key, and a corrupt one, both mean unknown.
+    manifest.write_text('{"schema": 1}', encoding = "utf-8")
+    assert hw.classify_torch_build() == "torch_cpu_build"
+    manifest.write_text("{not json", encoding = "utf-8")
+    assert hw.classify_torch_build() == "torch_cpu_build"
+
+
+def test_a_dead_accelerator_wheel_is_unaffected_by_a_cpu_record(monkeypatch, tmp_path):
+    # The suppression is about a CPU wheel that was ASKED for. A cu124 wheel whose
+    # runtime will not start is a real problem whatever the manifest says.
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
+    monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cpu")
+    assert hw.classify_torch_build() is None  # the pin is honoured first
+
+    # ... but with no CPU choice recorded at all it stays a real fault.
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
+    assert hw.classify_torch_build() == "torch_cuda_unavailable"
+
+
+def test_linux_amd_cards_are_inventoried_from_sysfs(monkeypatch, tmp_path):
+    """The AMD/Linux shape of #8473: nvidia-smi contributes nothing.
+
+    sysfs rather than amd-smi, because amd-smi is separate ROCm userspace and this is
+    the host whose ROCm install is in question. vendor 0x1002 and a byte-valued
+    mem_info_vram_total are both documented amdgpu interfaces.
+    """
+    drm = tmp_path / "drm"
+    for name, vendor, vram in (
+        ("card0", "0x1002\n", str(16 * 1024**3)),
+        ("card1", "0x1002\n", "0"),  # an APU with no dedicated VRAM
+        ("card2", "0x10de\n", str(1024**3)),  # NVIDIA: not this probe's business
+        ("card3", "0x1002\n", "not a number"),
+    ):
+        device = drm / name / "device"
+        device.mkdir(parents = True)
+        (device / "vendor").write_text(vendor, encoding = "utf-8")
+        (device / "mem_info_vram_total").write_text(vram, encoding = "utf-8")
+    # A connector entry pointing at the same card, which must not be double-counted.
+    (drm / "card0-DP-1").mkdir()
+    # And a card whose device directory is unreadable.
+    (drm / "card9").mkdir()
+
+    real_listdir = hw.os.listdir
+    monkeypatch.setattr(
+        hw.os,
+        "listdir",
+        lambda p: real_listdir(str(drm)) if p == "/sys/class/drm" else real_listdir(p),
+    )
+    real_join = hw.os.path.join
+    monkeypatch.setattr(
+        hw.os.path,
+        "join",
+        lambda *parts: (
+            real_join(str(drm), *parts[1:]) if parts[0] == "/sys/class/drm" else real_join(*parts)
+        ),
+    )
+
+    records = hw._linux_amd_sysfs_records()
+    assert [r["index"] for r in records] == [0, 1, 2]
+    assert all(r["vendor"] == "amd" for r in records)
+    assert all(r["source"] == "sysfs-drm" for r in records)
+    assert records[0]["memory_total_gb"] == 16.0
+    # 0 and an unparseable value are both unknown, never a zero-capacity claim.
+    assert records[1]["memory_total_gb"] is None
+    assert records[2]["memory_total_gb"] is None
+
+
+def test_the_sysfs_probe_is_silent_where_there_is_no_sysfs(monkeypatch):
+    monkeypatch.setattr(hw.os, "listdir", lambda _p: (_ for _ in ()).throw(OSError("no such path")))
+    assert hw._linux_amd_sysfs_records() == []

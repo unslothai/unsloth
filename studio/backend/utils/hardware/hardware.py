@@ -19,6 +19,7 @@ Usage:
 import copy
 import gc
 import glob
+import json
 import os
 import platform
 import re
@@ -402,7 +403,76 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
                 )
             sources.append("directx-registry")
 
+    # Linux AMD. The failure shape #8473 actually reported: a ROCm wheel replaced by a
+    # CPU one, or a runtime that will not initialise, on a host where nvidia-smi
+    # contributes nothing. sysfs rather than amd-smi as the source of truth, because
+    # amd-smi is a separate ROCm userspace package and the host this inventory exists
+    # for is precisely the one whose ROCm install is in question; the amdgpu kernel
+    # driver publishes these files whenever a card is bound, with no subprocess at all.
+    if platform.system() == "Linux":
+        try:
+            amd_devices = _linux_amd_sysfs_records()
+        except Exception as e:
+            logger.debug("Linux AMD sysfs inventory probe failed: %s", e)
+            amd_devices = []
+        if amd_devices:
+            devices.extend(amd_devices)
+            sources.append("sysfs-drm")
+
     return {"available": bool(devices), "devices": devices, "sources": sources}
+
+
+def _linux_amd_sysfs_records() -> list[Dict[str, Any]]:
+    """Every AMD card the amdgpu driver has bound, from /sys/class/drm.
+
+    ``vendor`` is 0x1002 for AMD/ATI and ``mem_info_vram_total`` is a byte count, both
+    documented kernel interfaces. Only ``cardN`` is walked: the connector entries
+    (``card0-DP-1``) and render nodes point at the same device and would double-count.
+
+    No name is reported. The kernel publishes no marketing string here, and inventing
+    one, or borrowing an amd-smi row whose ordering is not guaranteed to match this
+    walk, would attach the wrong name to a card. A card with no name still tells the
+    user their GPU exists, which is the whole point.
+
+    Never raises: an unreadable or malformed file skips that card.
+    """
+    root = "/sys/class/drm"
+    try:
+        entries = sorted(os.listdir(root))
+    except OSError:
+        return []
+    records: list[Dict[str, Any]] = []
+    for entry in entries:
+        if not re.fullmatch(r"card\d+", entry):
+            continue
+        device = os.path.join(root, entry, "device")
+        try:
+            with open(os.path.join(device, "vendor"), encoding = "utf-8") as fh:
+                vendor = fh.read().strip().lower()
+        except OSError:
+            continue
+        if vendor != "0x1002":
+            continue
+        total_gb = None
+        try:
+            with open(os.path.join(device, "mem_info_vram_total"), encoding = "utf-8") as fh:
+                total_bytes = int(fh.read().strip())
+            # None, not 0: a capacity that did not parse is unknown, not empty. An
+            # APU reporting 0 lands here too, which is the honest answer for a card
+            # with no dedicated VRAM of its own.
+            total_gb = round(total_bytes / 1024**3, 2) if total_bytes > 0 else None
+        except (OSError, ValueError):
+            pass
+        records.append(
+            {
+                "vendor": "amd",
+                "index": len(records),
+                "name": None,
+                "memory_total_gb": total_gb,
+                "source": "sysfs-drm",
+            }
+        )
+    return records
 
 
 def get_physical_gpu_inventory() -> Dict[str, Any]:
@@ -439,6 +509,59 @@ def _torch_version_label() -> Optional[str]:
         return None
 
 
+def _relevant_visibility_masks() -> tuple[str, ...]:
+    """The visibility variables that can actually hide a GPU on THIS host.
+
+    A mask that cannot take effect must not silence the mismatch. ROCR_VISIBLE_DEVICES
+    is the concrete case: Windows HIP has no ROCr layer, and this module's own
+    visibility resolver already ignores the variable there, so a stray empty one would
+    otherwise restore the "no GPU" verdict on a Windows NVIDIA host with a CPU wheel.
+
+    The HIP-layer variables are likewise only consulted when an AMD card is actually
+    present, so a leftover HIP_VISIBLE_DEVICES on an NVIDIA-only box cannot mask
+    anything it does not address. An inventory that found nothing, or could not answer,
+    keeps every variable: unknown must stay conservative rather than start ignoring
+    masks that may well be real.
+    """
+    masks = ["CUDA_VISIBLE_DEVICES"]
+    hip_masks = ["HIP_VISIBLE_DEVICES"]
+    if sys.platform != "win32":
+        hip_masks.append("ROCR_VISIBLE_DEVICES")
+    try:
+        devices = get_physical_gpu_inventory().get("devices") or []
+    except Exception:
+        devices = []
+    if not devices or any(d.get("vendor") == "amd" for d in devices):
+        masks.extend(hip_masks)
+    return tuple(masks)
+
+
+def _expected_cpu_flavor_was_chosen() -> bool:
+    """Whether THIS install deliberately selected a CPU wheel.
+
+    Two sources, both meaning "the user named cpu": an explicit index pin set for the
+    running process, and the flavor the last completed install recorded in the venv's
+    manifest, which install_python_stack.py writes from the same expectation the
+    Windows flavor invariant enforces.
+
+    Only "cpu" is acted on. An unknown or absent record means nothing was recorded and
+    must not be read as a choice, which is the rule install_manifest.recorded_torch_flavor
+    documents. Read straight off disk rather than by importing that module, which lives
+    outside the backend package. Never raises.
+    """
+    for var in ("UNSLOTH_TORCH_INDEX_FAMILY", "UNSLOTH_TORCH_INDEX_URL"):
+        value = (os.environ.get(var) or "").strip().lower().rstrip("/")
+        if value and value.rsplit("/", 1)[-1] == "cpu":
+            return True
+    try:
+        path = os.path.join(sys.prefix, "unsloth_install_manifest.json")
+        with open(path, encoding = "utf-8") as fh:
+            recorded = json.load(fh).get("expected_torch_tag")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(recorded, str) and recorded.strip().lower() == "cpu"
+
+
 def classify_torch_build() -> Optional[str]:
     """Why this PyTorch exposes no accelerator, when the build itself is the reason.
 
@@ -463,10 +586,14 @@ def classify_torch_build() -> Optional[str]:
     # broken install -- but nothing is broken and nothing needs repairing, so it must
     # not be reported as a mismatch. Same rule the installers apply before touching a
     # wheel. A mask naming devices is not this: that host expects those to work.
-    for var in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+    for var in _relevant_visibility_masks():
         value = os.environ.get(var)
         if value is not None and value.strip() in ("", "-1"):
             return None
+    if _expected_cpu_flavor_was_chosen():
+        # A CPU wheel is what this install ASKED for. Reporting it as a mismatch would
+        # offer a repair whose only effect is to undo the user's own choice.
+        return None
     if not _has_torch():
         return None
     try:
