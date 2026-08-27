@@ -1899,17 +1899,35 @@ def _runtime_gfx_target(
     # unfiltered list picks a GPU the runtime never exposes, and installs a per-arch wheel
     # that faults on its first operation.
     rocr_applied = _LAST_AMD_GFX_PROBE == "rocminfo" and "ROCR_VISIBLE_DEVICES" in os.environ
+    _unlike_adapters = len(set(gfx_devices)) > 1
     if not rocr_applied:
+        # amd-smi enumerates in DISCOVERY order over its KFD view, while the masks index
+        # HIP/ROCr order, which the library derives from the KFD node id. The two disagree on
+        # real hardware (MI350X SPX/NPS1), which is why setup.sh translates through
+        # `amd-smi list -e`'s HIP_ID map before applying a mask and keeps discovery order --
+        # explicitly refusing to apply one -- when that map is unavailable or not 1:1. No such
+        # map is read here, so on unlike adapters an untranslated ordinal names another card's
+        # arch. rocminfo and KFD sysfs are both already in the order the masks use.
+        # Only when a mask actually indexes it: with none set, nothing is translated and
+        # discovery order is just enumeration order, which every other host shape uses too.
+        _discovery_ordered = _LAST_AMD_GFX_PROBE == "amd-smi" and any(
+            _m in os.environ for _m in _VISIBLE_DEVICE_MASKS
+        )
         gfx_devices, _rocr_unresolved = _rocr_visible_subset(gfx_devices)
-        # A UUID names a device this cannot place, so on a host of one arch it changes
-        # nothing and on a mixed one it decides everything. Declining beats picking the
-        # first entry: the reroutes below install wheels for ONE arch, and installing them
-        # for the GPU the mask hid leaves the selected card with no kernels at all.
-        if _rocr_unresolved and len(set(gfx_devices)) > 1:
+        # A UUID names a device this cannot place. Judged against the list BEFORE the mask
+        # was applied: dropping the tokens that did resolve can leave one arch standing and
+        # hide the very ambiguity the UUID created, and "0,GPU-..." is a form AMD documents.
+        if (_rocr_unresolved or _discovery_ordered) and _unlike_adapters:
+            _why = (
+                "ROCR_VISIBLE_DEVICES names a GPU by UUID"
+                if _rocr_unresolved
+                else "amd-smi reports GPUs in discovery order, which is not the order the\n"
+                "   visible-device masks index,"
+            )
             _safe_print(
-                f"   ROCR_VISIBLE_DEVICES names a GPU by UUID and this host has more than\n"
-                f"   one architecture ({', '.join(dict.fromkeys(gfx_devices))}); which one it\n"
-                f"   selects cannot be read here, so the AMD per-gfx index is left alone.\n"
+                f"   {_why} and this host has more than one\n"
+                f"   architecture ({', '.join(dict.fromkeys(gfx_devices))}); which one is\n"
+                f"   selected cannot be read here, so the AMD per-gfx index is left alone.\n"
                 f"   Set UNSLOTH_ROCM_GFX_ARCH to the arch you want wheels for.\n"
             )
             return None, [], None
@@ -3220,7 +3238,18 @@ def _rocm_torch_family_needs_repair(runtime_gfx: "str | None") -> bool:
     _owns_sdk = _torch_requires_rocm_sdk()
     _family = _installed_rocm_wheel_family() if _owns_sdk else None
     if _family is not None:
-        return _family != (_GFX_TO_AMD_INDEX_ARCH.get(runtime_gfx or "") or "").lower()
+        _leaf = (_GFX_TO_AMD_INDEX_ARCH.get(runtime_gfx or "") or "").lower()
+        if _family != _leaf:
+            return True
+        # The family is the right SHAPE, not necessarily a working build. _already_on_leaf
+        # keeps a matching family only above the 2.11 floor, because below it these leaves
+        # carry the _grouped_mm bug; answering False here on a 2.10 build would keep the
+        # fast path and leave that build in place on every update, which is the same
+        # unreachability the arms above are here to close.
+        _ran, _importable, _ver, _hip, _cuda = _probe_torch_runtime()
+        return _leaf in _ROCM_GFX_TORCH211_LEAVES and _torch_below_211(
+            (_ver or "").lower() if (_ran and _importable) else ""
+        )
     if _owns_sdk:
         # A per-arch install whose family will not read back. _ensure_rocm_torch cannot skip
         # on a family it never read, so it would reinstall the multi-GB stack -- on EVERY

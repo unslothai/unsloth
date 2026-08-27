@@ -59,6 +59,7 @@ def _run_install(
     installed_family = None,
     rocm_gpu_visible = True,
     torch_owns_rocm = True,
+    probe_source = "kfd",
 ):
     """Drive _ensure_rocm_torch() over a host with ``gfx_devices`` and return the pip calls."""
     probe = MagicMock()
@@ -74,6 +75,11 @@ def _run_install(
     ):
         probes.append(dedup)
         codes = list(gfx_devices)
+        # The real probe records which tool answered, and callers read it to decide whether
+        # the list is ROCr-filtered and whether it is in HIP order. This one hands back the
+        # whole machine in device order, which is KFD sysfs; leaving the global at whatever
+        # the previous test set makes those decisions depend on test order.
+        stack_mod._LAST_AMD_GFX_PROBE = probe_source if codes else None
         return list(dict.fromkeys(codes)) if dedup else codes
 
     _env = dict(env or {})
@@ -945,3 +951,49 @@ def test_a_stale_per_arch_family_is_repaired_even_when_the_rocm_version_is_unrea
         installed_family = "gfx120x-all",
     )
     assert "skipping torch reinstall" in _run_install.printed, _run_install.printed
+
+
+# ── two orders, and the mask that cannot be applied to either ────────────────
+
+
+def _target(gfx_devices, probe_source, env):
+    """Resolve the runtime target with ``probe_source`` named as the probe that answered."""
+    with (
+        patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = list(gfx_devices)),
+        patch.object(stack_mod, "_kfd_gfx_targets", return_value = [], create = True),
+        patch.object(stack_mod, "_LAST_AMD_GFX_PROBE", probe_source),
+        patch.dict(os.environ, env, clear = False),
+    ):
+        for _stale in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            if _stale not in env:
+                os.environ.pop(_stale, None)
+        return stack_mod._runtime_gfx_target(None)[0]
+
+
+def test_a_mask_mixing_an_index_and_a_uuid_keeps_the_host_ambiguous():
+    """AMD documents "0,GPU-DEADBEEFDEADBEEF" as a valid mask. Judging ambiguity on the list
+    left AFTER the resolvable tokens were applied can leave one arch standing and hide the
+    very ambiguity the UUID created, so the question has to be asked of the original."""
+    assert _target(
+        ["gfx1103", "gfx1200"], "amd-smi",
+        {"ROCR_VISIBLE_DEVICES": "0,GPU-8d1f2e3a4b5c6d7e", "HIP_VISIBLE_DEVICES": "1"},
+    ) is None
+    # One arch cannot be made ambiguous by any mask over it.
+    assert _target(
+        ["gfx1103", "gfx1103"], "kfd",
+        {"ROCR_VISIBLE_DEVICES": "0,GPU-8d1f2e3a4b5c6d7e"},
+    ) == "gfx1103"
+
+
+def test_amd_smi_discovery_order_is_not_indexed_as_hip_order():
+    """amd-smi enumerates in discovery order over its KFD view while the masks index HIP
+    order, which the library derives from the KFD node id. setup.sh translates through
+    `amd-smi list -e`'s HIP_ID map and keeps discovery order -- refusing to apply a mask --
+    when that map is missing or not 1:1. No map is read here, so on unlike adapters an
+    untranslated ordinal names another card's arch."""
+    assert _target(["gfx1103", "gfx1200"], "amd-smi", {"HIP_VISIBLE_DEVICES": "1"}) is None
+    # rocminfo and KFD sysfs are already in the order the masks use.
+    assert _target(["gfx1103", "gfx1200"], "kfd", {"HIP_VISIBLE_DEVICES": "1"}) == "gfx1200"
+    # Nothing to mistranslate: one arch, or no mask indexing the list at all.
+    assert _target(["gfx1200", "gfx1200"], "amd-smi", {"HIP_VISIBLE_DEVICES": "1"}) == "gfx1200"
+    assert _target(["gfx1103", "gfx1200"], "amd-smi", {}) == "gfx1200"

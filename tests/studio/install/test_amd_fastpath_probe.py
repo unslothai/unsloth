@@ -551,3 +551,24 @@ def test_an_unknowable_family_keeps_the_fast_path(monkeypatch):
     would reinstall the multi-GB stack on every single update rather than once."""
     _rocm_torch(monkeypatch, family = None, owns_sdk = True, gfx = ("gfx1152",))
     assert _needs_pass() is False
+
+
+def test_a_matching_family_below_its_torch_floor_forces_the_pass(monkeypatch):
+    """The family is the right SHAPE, not a working build: below 2.11 these leaves carry the
+    _grouped_mm bug, and _already_on_leaf keeps a matching family only above that floor.
+    Keeping the fast path here leaves the broken build in place on every update."""
+    _rocm_torch(monkeypatch, family = "gfx1152", gfx = ("gfx1152",))
+    monkeypatch.setattr(
+        stack, "_probe_torch_runtime", lambda: (True, True, "2.10.0+rocm7.13.0", "7.13", "")
+    )
+    assert _needs_pass() is True
+
+
+def test_a_leaf_with_no_torch_floor_keeps_the_fast_path_below_211(monkeypatch):
+    """Only the leaves in _ROCM_GFX_TORCH211_LEAVES have that bug; the rest ship <2.11 builds
+    and are correct as they are, so the floor must not be applied to them."""
+    _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1103",))
+    monkeypatch.setattr(
+        stack, "_probe_torch_runtime", lambda: (True, True, "2.10.0+rocm7.13.0", "7.13", "")
+    )
+    assert _needs_pass() is False
