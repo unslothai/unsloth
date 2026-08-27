@@ -870,6 +870,111 @@ class EstimateMemoryResponse(BaseModel):
     )
 
 
+class MemoryEstimate(BaseModel):
+    """The canonical answer to "what would this load occupy".
+
+    Studio grew two routes that answer this -- ``POST /inference/estimate-memory``
+    for the Load Model panel and ``GET /models/kv-cache-estimate`` for the Hub
+    memory bar. They share the ``_gguf_memory_breakdown`` planner, so their
+    arithmetic already agrees; this is the shared CONTRACT, so their vocabulary
+    agrees too. Both legacy routes are projections of this model and keep their
+    own shapes exactly.
+
+    The one thing this model deliberately does not have is a field called
+    ``weights_bytes``. That name means different things on the two legacy routes
+    -- every resident file on one, the quant file alone on the other -- and it is
+    the same type on both, so nothing catches a caller reading the wrong one.
+    It is replaced here by two fields that each say which they are, and it is
+    absent rather than redefined so that no future reader can pick it up and
+    guess. See ``core/inference/memory_contract.py`` for the projections.
+    """
+
+    available: bool = Field(..., description = "Whether a breakdown could be produced at all.")
+    reason: Optional[str] = Field(
+        None,
+        description = "Cause when available is false: 'not_gguf', 'not_downloaded', "
+        "'unsupported_source' or 'unsizable'.",
+    )
+
+    # --- the two meanings that used to collide under `weights_bytes` ---
+    quant_file_bytes: int = Field(
+        0,
+        description = "The selected GGUF quant file ALONE, as it sits on disk. This is "
+        "the figure a download size or a weights segment should be drawn from, because "
+        "it is the number the user already saw beside the model.",
+    )
+    resident_files_bytes: int = Field(
+        0,
+        description = "Every file this launch makes resident: the quant file PLUS "
+        "whichever projector and drafter it opens. Always >= quant_file_bytes. This is "
+        "the figure an itemized footprint should be drawn from.",
+    )
+
+    kv_bytes: int = Field(0, description = "KV cache at the requested context and slots")
+    compute_bytes: int = Field(0, description = "Compute / graph buffers, flat plus context-linear")
+    drafter_runtime_bytes: int = Field(
+        0, description = "A separate drafter's own KV cache and rollback state"
+    )
+    drafter_runtime_gpu_bytes: int = Field(
+        0, description = "The share of drafter_runtime_bytes that lands on the GPU"
+    )
+    projector_runtime_bytes: int = Field(
+        0, description = "The vision encoder's buffers, on top of the projector file"
+    )
+    drafter_kv_unsized: bool = Field(
+        False, description = "A charged drafter's cache could not be sized, so totals are a floor"
+    )
+    adapters_unsized: bool = Field(
+        False, description = "A pass-through adapter could not be stat'd, so totals are a floor"
+    )
+
+    total_bytes: int = Field(0, description = "Weights + KV + compute, wherever they land")
+    gpu_bytes: Optional[int] = Field(
+        None,
+        description = "The share of total_bytes that lands on the GPU. Optional because "
+        "None and 0 are DIFFERENT answers here: None is 'the planner did not run', while "
+        "0 is 'this launch puts nothing on the card', which inherited placement such as "
+        "LLAMA_ARG_DEVICE=none really does produce. Collapsing the two sends a caller "
+        "back to summing segments and drawing VRAM pressure for a load that touches no "
+        "card at all.",
+    )
+    gpu_floor_bytes: Optional[int] = Field(
+        None,
+        description = "What still lands on the GPU at the SHORTEST context: drafter "
+        "weights, flat compute buffers, recurrent rollback state. None of it shrinks "
+        "when the context does, so it separates an overage a shorter context fixes from "
+        "one it cannot. None when it was not computed.",
+    )
+
+    kv_estimable: bool = Field(True, description = "False when the header could not size the cache")
+    kv_on_gpu: bool = Field(True, description = "Whether the target cache sits on the GPU")
+    n_ctx: int = Field(0, description = "Context length the estimate actually priced")
+    native_context: Optional[int] = Field(
+        None, description = "The model's own trained context length, when readable"
+    )
+    cache_type_kv: Optional[str] = Field(None, description = "KV cache dtype the estimate priced")
+    n_parallel: int = Field(1, description = "Slots the estimate priced, after the launch clamps")
+    layer_count: Optional[int] = Field(None, description = "GGUF block_count, when readable")
+    gpu_layers: Optional[int] = Field(None, description = "Layers placed on the GPU, when known")
+    moe_offload_unmodelled: bool = Field(
+        False, description = "--n-cpu-moe is set, so the GPU figure reads high"
+    )
+    context_is_pinned: bool = Field(
+        True,
+        description = "False only when the loader is free to shrink the context. A caller "
+        "that softens its verdict for an auto-fitted row has to stop softening here.",
+    )
+    inherited_device_pin: bool = Field(
+        False,
+        description = "An inherited LLAMA_ARG_DEVICE confines the launch to the cards it "
+        "names, so a budget aggregated over the visible inventory describes a pool the "
+        "launch will not open.",
+    )
+    spec_unpriced: bool = Field(
+        False, description = "A speculative term was charged that could not be sized"
+    )
+
+
 class InstallLatestTransformersRequest(BaseModel):
     """Consented request to install the latest transformers release into a sidecar."""
 
