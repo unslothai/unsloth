@@ -48,7 +48,11 @@ from core.inference.studio_tool_loop import (
         ('{"p":"C:\\\\Users\\\\me"}{"b":2}', ['{"p":"C:\\\\Users\\\\me"}', '{"b":2}'], ""),
         ('{"a":{"b":{"c":1}}}', ['{"a":{"b":{"c":1}}}'], ""),
         ('{"a":[{"b":1},{"c":2}]}', ['{"a":[{"b":1},{"c":2}]}'], ""),
-        ('{"q":"caf\u00e9 \u65e5\u672c\u8a9e \U0001f680"}', ['{"q":"caf\u00e9 \u65e5\u672c\u8a9e \U0001f680"}'], ""),
+        (
+            '{"q":"caf\u00e9 \u65e5\u672c\u8a9e \U0001f680"}',
+            ['{"q":"caf\u00e9 \u65e5\u672c\u8a9e \U0001f680"}'],
+            "",
+        ),
         # Not a run of objects: left alone rather than cut somewhere meaningless.
         ('[{"a":1}]', [], '[{"a":1}]'),
         ('"hello"', [], '"hello"'),
@@ -67,7 +71,12 @@ def test_split_top_level_json_objects(text, complete, tail):
 # ----------------------------------------------------------------- accumulator
 
 
-def _delta(index, name = None, arguments = "", call_id = None):
+def _delta(
+    index,
+    name = None,
+    arguments = "",
+    call_id = None,
+):
     function: dict = {"arguments": arguments}
     if name is not None:
         function["name"] = name
@@ -118,11 +127,7 @@ def test_a_call_at_another_index_survives_a_fork():
     turn.merge_structured([_delta(1, "beta", '{"b":2}')])
     turn.merge_structured([_delta(0, "gamma", '{"c":3}')])
 
-    assert _shape(turn) == [
-        ("alpha", '{"a":1}'),
-        ("beta", '{"b":2}'),
-        ("gamma", '{"c":3}'),
-    ]
+    assert _shape(turn) == [("alpha", '{"a":1}'), ("beta", '{"b":2}'), ("gamma", '{"c":3}')]
 
 
 def test_an_ordinary_fragmented_call_is_still_one_call():

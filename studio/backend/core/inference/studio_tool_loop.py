@@ -605,17 +605,10 @@ class _Turn:
                         )
 
     def _fork_glued_arguments(
-        self,
-        index: int,
-        key: Any,
-        current: dict[str, Any],
-        name_before: str,
-        incoming_name: str,
+        self, index: int, key: Any, current: dict[str, Any], name_before: str, incoming_name: str
     ) -> None:
         """Give every call after the first in one slot a call of its own."""
-        complete, tail = _split_top_level_json_objects(
-            current["function"]["arguments"]
-        )
+        complete, tail = _split_top_level_json_objects(current["function"]["arguments"])
         segments = complete + ([tail] if tail else [])
         if len(segments) < 2:
             return
