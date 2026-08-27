@@ -138,7 +138,10 @@ import {
   ResearchActivitySheet,
 } from "./components/research-activity-panel";
 import { ChatModelNotice } from "./components/chat-model-notice";
-import { chatModelSwitchMeta } from "./components/chat-model-notice-switch";
+import {
+  chatModelSwitchMeta,
+  type ChatModelSwitchTarget,
+} from "./components/chat-model-notice-switch";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -206,13 +209,12 @@ import {
   CHAT_TOOLS_ENABLED_KEY,
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   PENDING_CHAT_ATTACHMENT_KEY,
-  hasGgufSource,
-  isDownloadableHubRepo,
   loadOptionalBool,
   readPendingAttachmentTargetClaim,
   threadScopedOverride,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import { wantsDownloadManagerStaging } from "./utils/model-download-staging";
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
@@ -1139,6 +1141,7 @@ function createThreadNonce(): string {
 // Chat export formats, mirroring the sidebar chat menu.
 type ProjectChatExportFormat =
   | "raw-jsonl"
+  | "messages-jsonl"
   | "csv"
   | "sharegpt-jsonl"
   | typeof CONVERSATION_MARKDOWN_FORMAT;
@@ -1146,7 +1149,8 @@ const PROJECT_CHAT_EXPORT_OPTIONS: Array<{
   label: string;
   format: ProjectChatExportFormat;
 }> = [
-  { label: "Raw JSONL", format: "raw-jsonl" },
+  { label: "Training JSONL", format: "raw-jsonl" },
+  { label: "Message JSONL", format: "messages-jsonl" },
   { label: "CSV", format: "csv" },
   { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
   {
@@ -1161,6 +1165,8 @@ async function exportProjectConversation(
 ): Promise<void> {
   const exports = await import("./prompt-storage/prompt-storage-dialog");
   if (format === "raw-jsonl") return exports.exportConversationRawJsonl(threadId);
+  if (format === "messages-jsonl")
+    return exports.exportConversationMessagesJsonl(threadId);
   if (format === "csv") return exports.exportConversationCsv(threadId);
   if (format === CONVERSATION_MARKDOWN_FORMAT)
     return exports.exportConversationMarkdown(threadId);
@@ -2492,7 +2498,7 @@ export function ChatPage({
     const storedWebFetchToolsEnabled =
       threadScopedOverride("webFetchToolsEnabled") ??
       loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
-    // Studio runs Search and Code itself for any provider that advertises the
+    // Unsloth runs Search and Code itself for any provider that advertises the
     // capability, so a self-hosted connection has no hosted builtin to key off.
     // Keying the pill state on the hosted flags alone discarded the user's saved
     // preference on every reload and sent enable_tools: false, even though the
@@ -2503,7 +2509,7 @@ export function ChatPage({
         selection.modelId,
       ) === true;
     const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
-    // Read out of the placement rule, not off the Studio-tools flag: a model on
+    // Read out of the placement rule, not off the Unsloth-tools flag: a model on
     // a sandbox-owning provider that cannot use it runs nothing either way, and
     // offering the pill there restored a preference that sent no tools at all.
     const canRunCode = codeToolCanRun({
@@ -2734,14 +2740,8 @@ export function ChatPage({
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
       const store = useChatRuntimeStore.getState();
-      const wantManagerDownload =
-        isDownloadableHubRepo(selection) && !selection.isDownloaded;
+      const wantManagerStaging = wantsDownloadManagerStaging(selection);
       if (store.modelLoading) {
-        const wantBackgroundDownload =
-          wantManagerDownload ||
-          (selection.source === "hub" &&
-            hasGgufSource(selection) &&
-            !selection.isDownloaded);
         const isLoadingThisPick =
           !!loadingModel &&
           normalizeModelRef(loadingModel.id) ===
@@ -2751,7 +2751,7 @@ export function ChatPage({
           toast.info("This model is already loading", {
             description: "It's downloading as part of the load in progress.",
           });
-        } else if (wantBackgroundDownload) {
+        } else if (wantManagerStaging) {
           const outcome = await downloadManager.requestStart({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
@@ -2782,12 +2782,7 @@ export function ChatPage({
         }
         return;
       }
-      const wantManagerStage =
-        wantManagerDownload ||
-        (selection.source === "hub" &&
-          hasGgufSource(selection) &&
-          !selection.isDownloaded);
-      if (wantManagerStage) {
+      if (wantManagerStaging) {
         setPendingHubAutoLoad((current) =>
           current &&
           current.selection.id === selection.id &&
@@ -3025,7 +3020,8 @@ export function ChatPage({
   const handleCheckpointChange = useCallback(
     (
       value: string,
-      meta?: ModelSelectorChangeMeta,
+      // Partial: the switch-back carries only what the resolver cannot recover.
+      meta?: Partial<ModelSelectorChangeMeta>,
     ) => {
       const store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
@@ -3660,10 +3656,10 @@ export function ChatPage({
   // `/api/models/list` nor the external ids, so without it the switch loads on
   // different arguments than the menu would.
   const handleSwitchBackToChatModel = useCallback(
-    (modelId: string) => {
+    (target: ChatModelSwitchTarget) => {
       handleCheckpointChange(
-        modelId,
-        chatModelSwitchMeta(modelId, loraModels),
+        target.modelId,
+        chatModelSwitchMeta(target, loraModels),
       );
     },
     [handleCheckpointChange, loraModels],
@@ -3864,7 +3860,7 @@ export function ChatPage({
           <body> costs 0.10 ms either way, so the cost is the thread being under
           the subject and nothing else. Chromium only: WebKitGTK and Firefox are
           flat across all four selector forms, so this neither helps nor hurts
-          the engine Studio uses on Linux.
+          the engine Unsloth uses on Linux.
 
           ChatModelNotice renders a direct child of this element (see below), so
           the child combinator matches exactly what the descendant form matched.
@@ -4130,6 +4126,7 @@ export function ChatPage({
           <ChatModelNotice
             threadId={view.threadId ?? newChatThreadId ?? undefined}
             checkpoint={inferenceParams.checkpoint}
+            activeGgufVariant={activeGgufVariant}
             selectableModelIds={selectableModelIds}
             onSwitch={handleSwitchBackToChatModel}
           />

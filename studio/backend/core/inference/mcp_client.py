@@ -8,7 +8,9 @@ import atexit
 import concurrent.futures
 import hashlib
 import json
+import mimetypes
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -17,6 +19,7 @@ import time
 import uuid
 from functools import wraps
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 from weakref import WeakKeyDictionary
 
 from loggers import get_logger
@@ -1005,29 +1008,132 @@ MCP_IMAGES_SENTINEL = "__MCP_IMAGES__:"
 MAX_IMAGE_PAYLOAD_CHARS = 12_000_000
 
 
+def _block_text(block: Any) -> Optional[str]:
+    text = getattr(block, "text", None)
+    if text:
+        return str(text)
+    resource = getattr(block, "resource", None)
+    if resource is not None:
+        text = getattr(resource, "text", None)
+        return str(text) if text else None
+    return None
+
+
+def _block_link(block: Any) -> Optional[str]:
+    # keep host-generated link text from suppressing structured_content
+    uri = getattr(block, "uri", None)
+    if uri and getattr(block, "type", None) == "resource_link":
+        name = getattr(block, "name", None)
+        return f"[resource: {name} <{uri}>]" if name else f"[resource: <{uri}>]"
+    return None
+
+
+# fastmcp File(data=..., format=...) labels payloads as application/<format>
+_IMAGE_SUBTYPES = {
+    "apng": "image/apng",
+    "png": "image/png",
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "bmp": "image/bmp",
+    "avif": "image/avif",
+    "tif": "image/tiff",
+    "tiff": "image/tiff",
+    "ico": "image/vnd.microsoft.icon",
+    "svg": "image/svg+xml",
+    "svg+xml": "image/svg+xml",
+}
+
+
+# What tool-fallback.tsx may interpolate into data:<type>;base64,... : an RFC 9110
+# 8.3.1 token subtype, minus "*", which names a range and never a payload.
+_MEDIA_TYPE = re.compile(r"^image/[a-z0-9][a-z0-9!#$%&'^_`|~.+-]*$")
+
+
+def _uri_mime(uri: Any) -> Optional[str]:
+    """Guess a media type from the part of a URI that names the resource.
+
+    mimetypes only stopped reading the query and fragment in 3.11.9 / 3.12.3 / 3.13
+    (CPython gh-117217), and on older supported interpreters 'gen.png?download=1'
+    guessed nothing while 'download?name=gen.png' guessed image/png. Dropping both
+    keeps every interpreter in agreement. The scheme stays so a data: URI still
+    resolves; a bare host goes, since a host name is not a file name."""
+    split = urlsplit(str(uri))
+    cleaned = urlunsplit((split.scheme, split.netloc if split.path else "", split.path, "", ""))
+    return mimetypes.guess_type(cleaned, strict = False)[0]
+
+
+def _image_mime(mime: Any) -> Optional[str]:
+    if not isinstance(mime, str):
+        return None
+    # media type names are case-insensitive; data urls need only the essence
+    essence = mime.partition(";")[0].strip().lower()
+    if essence.startswith("image/"):
+        resolved = essence
+    else:
+        subtype = essence[len("application/") :] if essence.startswith("application/") else ""
+        resolved = _IMAGE_SUBTYPES.get(subtype) or _uri_mime(f"file:///image.{subtype}")
+    # one gate for every branch. Lowercased again because a registry answer carries the
+    # host's spelling: Windows returns image/JXL for .jxl, Linux and macOS image/jxl.
+    resolved = resolved.lower() if resolved else ""
+    return resolved if _MEDIA_TYPE.match(resolved) else None
+
+
+def _resource_mime(obj: Any) -> Any:
+    # mcp 2.x renames mimeType to mime_type, keeping camelCase only as an alias
+    mime = getattr(obj, "mimeType", None)
+    return mime if mime is not None else getattr(obj, "mime_type", None)
+
+
+def _block_image(block: Any) -> Optional[tuple[str, str]]:
+    # embedded resources keep binary data on resource.blob
+    data = getattr(block, "data", None)
+    mime = _resource_mime(block)
+    if not data:
+        resource = getattr(block, "resource", None)
+        if resource is None:
+            return None
+        data = getattr(resource, "blob", None)
+        mime = _resource_mime(resource)
+        if not mime:
+            uri = getattr(resource, "uri", None)
+            mime = _uri_mime(uri) if uri else None
+    mime = _image_mime(mime)
+    if data and mime:
+        return str(data), mime
+    return None
+
+
 def _flatten_result(result: Any) -> str:
     parts = []
     images = []
     omitted = 0
+    has_text = False
     budget = MAX_IMAGE_PAYLOAD_CHARS
     for block in getattr(result, "content", None) or []:
-        text = getattr(block, "text", None)
+        text = _block_text(block)
         if text:
-            parts.append(str(text))
+            parts.append(text)
+            has_text = True
             continue
-        data = getattr(block, "data", None)
-        mime = getattr(block, "mimeType", None)
-        if data and isinstance(mime, str) and mime.startswith("image/"):
-            data = str(data)
+        link = _block_link(block)
+        if link:
+            parts.append(link)
+            continue
+        image = _block_image(block)
+        if image is not None:
+            data, mime = image
             if len(data) > budget:
                 omitted += 1
                 continue
             budget -= len(data)
             images.append({"data": data, "mimeType": mime})
     body = "\n".join(parts)
-    if not body:
+    if not has_text:
         structured = getattr(result, "structured_content", None)
-        body = str(structured) if structured is not None else ""
+        if structured is not None:
+            body = f"{structured}\n{body}" if body else str(structured)
     if images or omitted:
         notes = []
         if images:

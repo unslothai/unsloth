@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Budget for the JavaScript Studio must download, parse and execute before the
+ * Budget for the JavaScript Unsloth must download, parse and execute before the
  * first screen exists.
  *
  * Two PRs (#8623, #8624) moved 1.5 MB of decoded resources off this path by hand,

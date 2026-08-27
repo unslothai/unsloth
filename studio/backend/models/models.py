@@ -251,6 +251,10 @@ class LocalModelInfo(BaseModel):
         "('text-to-image' for diffusion, 'text-generation' otherwise). Lets the "
         "Images picker show only diffusion GGUFs.",
     )
+    audio_type: Optional[str] = Field(
+        None,
+        description = "Detected output-audio codec used to decide whether Audio can run the row",
+    )
 
 
 class LocalModelListResponse(BaseModel):

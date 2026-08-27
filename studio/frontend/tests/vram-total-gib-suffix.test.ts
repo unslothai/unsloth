@@ -101,3 +101,26 @@ test("helper-formatted totals pick the GiB helper, not the disk one", () => {
     }
   }
 });
+
+// The memory bar names its own unit rather than going through formatGiB, and it
+// divides by 1024**3 throughout, including the gpuGb it measures against. Listed
+// separately because the check is on its formatter, not on a call site.
+const BINARY_FORMATTERS: [string, string][] = [
+  ["lib/model-memory.ts", "formatMemoryGb"],
+];
+
+test("the memory bar's own formatter names a binary unit", () => {
+  for (const [relative, fn] of BINARY_FORMATTERS) {
+    const source = readFileSync(new URL(relative, SRC), "utf8");
+    const helper = source.match(
+      new RegExp(`export function ${fn}[\\s\\S]*?\\n}`),
+    );
+    assert.ok(helper, `${relative}: no ${fn}`);
+    assert.doesNotMatch(
+      helper[0],
+      /(?<!Gi)B["'`]/,
+      `${relative}: ${fn} labels a binary value with a decimal unit`,
+    );
+    assert.match(helper[0], /GiB/, `${relative}: ${fn} does not suffix GiB`);
+  }
+});

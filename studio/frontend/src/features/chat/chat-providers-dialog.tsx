@@ -286,7 +286,7 @@ export function ChatProvidersSettings({
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
   const showPerModelReasoningPin =
     showReasoningToggle && supportsPerModelReasoningPin(providerType);
-  // Studio runs Search, Code, MCP and RAG on this machine for any provider that
+  // Unsloth runs Search, Code, MCP and RAG on this machine for any provider that
   // advertises the capability, with no extra opt-in. Say so where the
   // connection is created: the tool results also travel back to the provider as
   // the next turn's input, which is not obvious from "connect a model".
@@ -1690,7 +1690,7 @@ export function ChatProvidersSettings({
               {runsStudioToolsLocally ? (
                 <div className="px-4 py-3">
                   <p className="text-xs text-muted-foreground">
-                    Models on this connection can use Studio&apos;s Search, Code,
+                    Models on this connection can use Unsloth&apos;s Search, Code,
                     MCP and Docs tools. Those run on this machine, and their
                     results are sent back to the provider as part of the next
                     message. Code and terminal calls still ask before anything

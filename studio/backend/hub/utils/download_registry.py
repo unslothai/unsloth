@@ -556,7 +556,7 @@ def _purge_incomplete_blobs(
     cost of that mistake is another client's whole download.
 
     ``owned_hashes``, or ``owns_all_blobs`` for a job that owns its whole repo dir (one with no
-    variant, which claim() will not let a sibling share), are blobs whose only Studio-side
+    variant, which claim() will not let a sibling share), are blobs whose only Unsloth-side
     writer has just been reaped. Those do not wait out the full grace -- the corpse would
     outlive the retry that follows a cancel, which is the frozen bar this whole change is
     about -- but they are not simply trusted either: registry ownership proves OUR writer is

@@ -225,7 +225,7 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     _MANAGED_LLAMA_CPP_PATH = _STUDIO_ROOT_RESOLVED / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
-    # A CLI/desktop launcher may already have exported Studio's own install path.
+    # A CLI/desktop launcher may already have exported Unsloth's own install path.
     # Classify by the canonical value so that inherited default remains editable.
     from utils.llama_cpp_path_settings import mark_managed_llama_cpp_path
 
@@ -309,6 +309,7 @@ from routes import (
     openai_codex_auth_router,
     rag_router,
     research_runs_router,
+    chat_generation_runs_router,
     training_history_router,
     training_router,
     video_router,
@@ -669,6 +670,17 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
+    try:
+        from storage.chat_generation_runs_db import reconcile_orphaned_runs
+        reconciled_chat_runs = reconcile_orphaned_runs()
+        if reconciled_chat_runs:
+            _lifespan_log.warning(
+                "Marked %s interrupted chat generation run(s) failed after restart.",
+                reconciled_chat_runs,
+            )
+    except Exception as exc:
+        _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
+
     reap_hub_orphan_workers()
     try:
         from hub.utils.download_manifest import migrate_ordinary_v2_manifests_for_downgrade
@@ -702,6 +714,10 @@ async def lifespan(app: FastAPI):
 
     app.state.research_supervisor = ResearchSupervisor(app)
     app.state.research_supervisor.start()
+
+    from core.inference.chat_generation_runs import ChatGenerationSupervisor
+
+    app.state.chat_generation_supervisor = ChatGenerationSupervisor(app)
 
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
     from core.inference.llama_keepwarm import idle_unload_loop, sweep_slot_save_dir
@@ -746,7 +762,24 @@ async def lifespan(app: FastAPI):
         "lifespan startup completed in %.1fms",
         (_time.perf_counter() - _lifespan_started) * 1000,
     )
+    # Persist only terminal scalar usage from authenticated third-party API
+    # requests. The monitor itself stays storage-agnostic until the production
+    # lifespan is ready, which keeps imports and unit tests deterministic.
+    from core.inference.api_monitor import api_monitor as _api_monitor
+    from storage.api_usage_db import (
+        acquire_api_usage_writer as _acquire_api_usage_writer,
+        enqueue_api_usage as _enqueue_api_usage,
+        release_api_usage_writer as _release_api_usage_writer,
+    )
+
+    _api_usage_writer_lease = _acquire_api_usage_writer()
+    _api_usage_callback_lease = _api_monitor.acquire_terminal_callback(_enqueue_api_usage)
     yield
+
+    # Remove only this lifespan's callback. A concurrently live sibling keeps
+    # both the monitor sink and the shared serialized writer. The final owner
+    # drains accepted receipts off the event loop before stopping the worker.
+    _api_monitor.release_terminal_callback(_api_usage_callback_lease)
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
@@ -757,6 +790,8 @@ async def lifespan(app: FastAPI):
     _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
     if _invalidate_detection is not None:
         _invalidate_detection()
+
+    await asyncio.to_thread(_release_api_usage_writer, _api_usage_writer_lease)
 
     from core.inference.openai_codex_auth import shutdown_flows
 
@@ -778,6 +813,10 @@ async def lifespan(app: FastAPI):
     _research_supervisor = getattr(app.state, "research_supervisor", None)
     if _research_supervisor is not None:
         await _research_supervisor.stop()
+
+    _chat_generation_supervisor = getattr(app.state, "chat_generation_supervisor", None)
+    if _chat_generation_supervisor is not None:
+        await _chat_generation_supervisor.stop()
 
     from core.inference.llama_http import aclose as _close_llama_http
 
@@ -976,7 +1015,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 # Swagger UI and ReDoc, on FastAPI's own paths but served entirely from this origin.
 # FastAPI's built-in pages load ~2.3 MB of JavaScript from cdn.jsdelivr.net and start it with
 # an inline script. localStorage is origin-scoped, not path-scoped, so anything running on
-# /docs can read the Studio tokens session.ts keeps there and call the API as that user. The
+# /docs can read the Unsloth tokens session.ts keeps there and call the API as that user. The
 # bundles are vendored under assets/docs_ui (pinned + digest-checked by
 # tests/test_docs_ui_assets.py) and the inline init runs off the same per-response nonce the
 # bootstrap script uses, so script-src stays 'self' and works offline as a bonus.
@@ -1363,11 +1402,16 @@ app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
 app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
+app.include_router(
+    chat_generation_runs_router,
+    prefix = "/api/inference/chat-runs",
+    tags = ["inference"],
+)
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
 # Unsloth-only inference endpoints (cancel, etc.) are not on the /v1 OpenAI-compat prefix.
 app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
 
-# Studio-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
+# Unsloth-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
 app.include_router(video_router, prefix = "/api/inference", tags = ["inference"])
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
@@ -1706,7 +1750,7 @@ async def health_check(request: Request):
         "desktop_manageability_version": 2,
         "supports_desktop_auth": True,
         "supports_desktop_backend_ownership": True,
-        # Opaque per-install id; launchers reject sibling Studios on the same port.
+        # Opaque per-install id; launchers reject sibling Unsloth instances on the same port.
         "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
