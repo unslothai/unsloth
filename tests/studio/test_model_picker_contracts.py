@@ -3573,6 +3573,16 @@ def test_cached_rows_classify_chat_capability_too():
     assert "_local_transformers_can_chat(classify_snapshot)" in fields
 
 
+def test_cached_codec_evidence_enriches_an_existing_hub_result():
+    """Search results outrank cached metadata, but they must not erase a decoder
+    discovered from the local tokenizer files for the same repo."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    evidence = src.split("const hubEvidenceById = useMemo", 1)[1]
+    evidence = evidence.split("const capsById = useMemo", 1)[0]
+    assert evidence.count("const existing = map.get(c.repo_id);") == 2
+    assert evidence.count("audioType: existing.audioType ?? c.audio_type") == 2
+
+
 def test_every_load_target_comparison_uses_the_same_case_rules():
     """Source dedupe, remembered matching, and tried-candidate keys all compare
     load targets, so they must agree on POSIX case."""

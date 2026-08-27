@@ -3362,7 +3362,14 @@ export function HubModelPicker({
     // here the same row picked from the unscoped Chat picker was judged on its id alone
     // and refused routing to the page that does list it.
     for (const c of cachedModels) {
-      if (map.has(c.repo_id)) continue;
+      const existing = map.get(c.repo_id);
+      if (existing) {
+        map.set(c.repo_id, {
+          ...existing,
+          audioType: existing.audioType ?? c.audio_type,
+        });
+        continue;
+      }
       map.set(c.repo_id, {
         baseModel: null,
         tags: c.tags,
@@ -3371,7 +3378,14 @@ export function HubModelPicker({
       });
     }
     for (const c of cachedGguf) {
-      if (map.has(c.repo_id)) continue;
+      const existing = map.get(c.repo_id);
+      if (existing) {
+        map.set(c.repo_id, {
+          ...existing,
+          audioType: existing.audioType ?? c.audio_type,
+        });
+        continue;
+      }
       map.set(c.repo_id, { audioType: c.audio_type });
     }
     return map;

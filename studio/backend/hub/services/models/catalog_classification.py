@@ -392,6 +392,20 @@ def _local_model_audio_type(model) -> Optional[str]:
         return None
 
 
+def _local_model_classification(model) -> tuple[Optional[str], Optional[str]]:
+    """Return picker task and decoder provenance from one local-row probe."""
+    task = _local_model_task(model)
+    audio_type = (
+        _local_model_audio_type(model) if task is None or task == _SPEECH_TASK else None
+    )
+    if task is None and audio_type is not None:
+        from utils.audio_tokens import is_tts_audio_type
+
+        if is_tts_audio_type(audio_type):
+            task = _SPEECH_TASK
+    return task, audio_type
+
+
 def _local_is_diffusers(model) -> bool:
     try:
         path = Path(model.path)

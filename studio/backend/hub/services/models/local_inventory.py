@@ -956,14 +956,12 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
 
             models = []
             for model in response.models:
-                task = catalog_classification._local_model_task(model)
+                task, audio_type = catalog_classification._local_model_classification(model)
                 models.append(
                     model.model_copy(
                         update = {
                             "task": task,
-                            "audio_type": catalog_classification._local_model_audio_type(model)
-                            if task == "text-to-speech"
-                            else None,
+                            "audio_type": audio_type,
                         }
                     )
                 )

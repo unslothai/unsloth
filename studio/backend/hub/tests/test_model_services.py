@@ -7232,6 +7232,35 @@ def test_local_inventory_classifies_off_the_event_loop(monkeypatch):
     assert idents and loop_ident not in idents, "classification ran on the event loop thread"
 
 
+def test_local_inventory_derives_speech_task_from_filesystem_codec(monkeypatch):
+    """A renamed non-GGUF TTS checkpoint has no family hint, so its tokenizer
+    decoder is the only evidence that can place it in the Audio picker."""
+    from hub.services.models import local_inventory
+
+    model = SimpleNamespace(id = "renamed-checkpoint")
+    model.model_copy = lambda update: SimpleNamespace(id = model.id, **update)
+    response = SimpleNamespace(models = [model])
+    response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+
+    async def scan(*_args):
+        return response
+
+    async def no_folders():
+        return []
+
+    monkeypatch.setattr(catalog_classification, "_local_model_task", lambda _row: None)
+    monkeypatch.setattr(catalog_classification, "_local_model_audio_type", lambda _row: "snac")
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: 0)
+
+    listed = asyncio.run(local_inventory.list_local_models_response("./renamed-tts-models"))
+    assert [(row.task, row.audio_type) for row in listed.models] == [
+        ("text-to-speech", "snac")
+    ]
+
+
 def test_local_inventory_classifies_a_superseded_result_off_the_event_loop(monkeypatch):
     """The give-up path serves the freshest scan it has, and classifies it the same way."""
     from hub.services.models import local_inventory
