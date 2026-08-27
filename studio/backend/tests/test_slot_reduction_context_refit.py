@@ -430,9 +430,9 @@ class TestAGgufWithNoNativeContext:
             metadata = NO_NATIVE_CTX,
         )
         assert (got["fit"], got["ctx"]) == ("off", llama_cpp._FIT_MIN_CTX)
-        assert 1 <= got["slots"] < asked, (
-            f"the reduction did not fire: asked for {asked}, kept {got['slots']}"
-        )
+        assert (
+            1 <= got["slots"] < asked
+        ), f"the reduction did not fire: asked for {asked}, kept {got['slots']}"
 
     def test_no_planner_exception_is_swallowed(self, tmp_path, monkeypatch):
         """The broad placement handler must not hide a planner failure."""
