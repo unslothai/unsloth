@@ -3046,6 +3046,99 @@ def _warn_still_cpu(expected: str) -> bool:
     return False
 
 
+def _uninstall_distribution(name: str) -> bool:
+    """Remove one distribution from the venv this script targets. True iff it is gone.
+
+    Same shape as the flash-attn removal below: --python sys.executable so a uv that
+    also needs --system cannot remove from the system Python instead, and a pip
+    fallback for the same interpreter. Output is swallowed; the caller reports.
+    """
+    if USE_UV and shutil.which("uv"):
+        cmd = ["uv", "pip", "uninstall"]
+        if UV_NEEDS_SYSTEM:
+            cmd.append("--system")
+        cmd.extend(["--python", sys.executable, name])
+    else:
+        cmd = [sys.executable, "-m", "pip", "uninstall", "-y", name]
+    removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
+    return removed.returncode == 0
+
+
+def _resident_xformers_build_torch() -> "str | None":
+    """The torch build the installed xFormers extension was compiled against.
+
+    Read from ``xformers/cpp_lib.json``, the same file install.ps1's resident probe
+    reads. None when xFormers is absent or carries no build metadata. Never raises, and
+    never imports xformers -- a mismatched _C.pyd logs its own warning on import, which
+    would land in the middle of the installer's output.
+    """
+    try:
+        spec = importlib.util.find_spec("xformers")
+    except Exception:
+        return None
+    locations = list(getattr(spec, "submodule_search_locations", None) or []) if spec else []
+    if not locations:
+        return None
+    try:
+        with open(os.path.join(locations[0], "cpp_lib.json"), encoding = "utf-8") as fh:
+            recorded = json.load(fh).get("version", {}).get("torch")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return recorded.strip() if isinstance(recorded, str) and recorded.strip() else None
+
+
+def _resync_torch_coupled_packages(release_before: str) -> None:
+    """Re-settle the packages whose compiled extensions are tied to the torch release.
+
+    Only after a repair that actually MOVED the release: the common case restores the
+    same wheel the venv already had, and reinstalling around it would add minutes to
+    every update for nothing.
+
+    torchao's cpp extensions are torch-release-specific, and step 4 above chose its pin
+    from the torch this repair has just replaced -- typically 0.17.0 selected for a
+    2.11 that the <2.11.0 repair spec then took down to 2.10, whose matched build is
+    0.16.0. Leaving the wrong one installed silently drops to the slow fallback.
+
+    xFormers is stricter still: its _C.pyd is linked against ONE exact (torch, CUDA)
+    pair, and beside any other pair torch.ops.load_library raises, which
+    xformers/_cpp_lib.py downgrades to a log line -- so the import "succeeds" with
+    memory-efficient attention, SwiGLU and the sparse ops silently gone. This script
+    never installs xFormers (install.ps1 does, and its wheel selection is not
+    reconstructible here), so the only correct action is to remove a resident one that
+    no longer matches. That is what the backend's own resolver already concludes:
+    installing nothing leaves the caller on torch SDPA, which is strictly better than
+    an extension that cannot load.
+
+    Never fatal. Both are secondary to the flavor invariant this function exists for,
+    and neither is worth failing an update that has just fixed the actual defect.
+    """
+    _release_after = str(_probe_installed_torch_version() or "").split("+", 1)[0]
+    if not _release_after or _release_after == release_before:
+        return
+    try:
+        _spec = _select_torchao_spec(_probe_installed_torch_version())
+        if not _exact_distribution_spec_is_installed(_spec):
+            _note(f"torch {_release_after} after repair -- reinstalling {_spec}")
+            pip_install_try(
+                "Re-matching torchao to the repaired torch",
+                "--force-reinstall",
+                "--no-cache-dir",
+                _spec,
+            )
+    except Exception as e:
+        _safe_print(f"   [WARN] could not re-match torchao after the repair: {e}")
+    try:
+        _built_for = _resident_xformers_build_torch()
+        if _built_for and _built_for != _probe_installed_torch_version():
+            _note(
+                f"xFormers was built for torch {_built_for}, which is no longer "
+                f"installed -- removing it so attention falls back to torch SDPA"
+            )
+            _uninstall_distribution("xformers")
+    except Exception as e:
+        _safe_print(f"   [WARN] could not re-check xFormers after the repair: {e}")
+
+
 def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     """Enforce that the venv still holds the torch flavor the install selected.
 
@@ -3165,6 +3258,13 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
         return True
 
     installed = _torch_flavor_tag(installed_version)
+    # _torch_flavor_tag reads EVERY untagged version as "cpu", which is right for PyPI
+    # but wrong for a private index that serves an untagged CUDA or ROCm build: under a
+    # /cpu pin that wheel would compare equal to the expectation, skip the repair, and
+    # be recorded as cpu. The runtime probe already carries the markers _ensure_cpu_torch
+    # uses to tell them apart, so consult them before accepting a CPU match.
+    if expected == "cpu" and installed == "cpu" and (_hip or _cuda):
+        installed = "rocm" if _hip else "cuda"
     if installed == expected:
         return True
 
@@ -3215,6 +3315,7 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     _trio = [_torch_pkg, _vision_pkg, _audio_pkg]
     if _is_windows_arm64():
         _trio = [_torch_pkg, _vision_pkg]
+    _release_before = str(installed_version).split("+", 1)[0]
     # --force-reinstall, not install.ps1's uv-only --reinstall-package trio: pip_install
     # falls back to pip when uv fails, and _build_pip_cmd would hand pip a flag it has no
     # word for. Same effect on the packages named here, which is all that is passed.
@@ -3231,17 +3332,25 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     )
 
     # pip_install invalidated the memoized classification, so this re-probes for real.
-    if expected == "cpu":
-        # _torch_build_is_gpu answers the opposite question here and would call every
-        # failed CPU repair a success, so compare the family directly. An unreadable
-        # venv still passes: ambiguity must not fail an update by itself.
-        _now = _installed_flavor_tag_now()
-        if _now in ("", "cpu"):
-            return True
-        return _warn_wrong_flavor(expected, _now)
-    if _torch_build_is_gpu():
+    # The family, not just "is this a GPU build", for the same reason the ROCm arm above
+    # checks it: a misconfigured mirror can answer a /cu128 request with a cached cu124,
+    # rocm or xpu wheel, and _torch_build_is_gpu is deliberately family-blind, so the
+    # update would exit 0 and record the requested tag over a build that never arrived.
+    _now = _installed_flavor_tag_now()
+    if _now == expected:
+        _resync_torch_coupled_packages(_release_before)
         return True
-    return _warn_still_cpu(expected)
+    if not _now:
+        # Unreadable. Ambiguity must not fail an update by itself, so fall back to the
+        # weaker verdict, which for a CPU expectation is simply "accept".
+        if expected == "cpu":
+            return True
+        return True if _torch_build_is_gpu() else _warn_still_cpu(expected)
+    if expected != "cpu" and not _torch_build_is_gpu():
+        # Still CPU-only under a GPU expectation: the original failure, and it has its
+        # own warning naming the installer to re-run.
+        return _warn_still_cpu(expected)
+    return _warn_wrong_flavor(expected, _now)
 
 
 def _amd_torch_needs_dependency_pass() -> bool:

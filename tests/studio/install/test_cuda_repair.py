@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -752,6 +753,8 @@ def _run_flavor_invariant(
     index_family = None,
     index_url = None,
     win_arm64 = False,
+    probe_cuda = None,
+    probe_hip = None,
 ):
     """Invoke _ensure_expected_torch_flavor against a fully mocked venv.
 
@@ -787,6 +790,10 @@ def _run_flavor_invariant(
                 raise subprocess.TimeoutExpired(cmd, 90)
             result.returncode = torch_rc
             out = _flavor_probe_stdout(state["version"])
+            if probe_cuda is not None or probe_hip is not None:
+                # An untagged wheel from a private index that DOES carry a runtime, which
+                # the tag alone cannot express. Overridden rather than derived.
+                out = _MARK + (f"{state['version']}|{probe_hip or ''}|{probe_cuda or ''}\n")
         else:
             result.returncode = 0
             if len(cmd) > 1 and str(cmd[1]) == "--query-gpu=compute_cap":
@@ -911,9 +918,17 @@ class TestExpectedTorchFlavorFailsTheUpdate:
         ok, _mock_pip = _run_flavor_invariant(installed = "2.11.0", repaired = "2.11.0+cu124")
         assert ok is True
 
-    def test_a_rocm_build_left_behind_is_not_called_cpu_only(self):
+    def test_a_rocm_build_left_behind_is_not_called_cpu_only(self, capsys):
+        # A cu124 repair that comes back holding a ROCm wheel is a failure, because the
+        # requested family never arrived: a misconfigured mirror answering a /cu124
+        # request from a cached build is the case. But it is a DIFFERENT failure from a
+        # CPU-only venv, and it must not borrow that wording, which would send the
+        # reader after a problem this host does not have.
         ok, _mock_pip = _run_flavor_invariant(repaired = "2.9.1+rocm6.4")
-        assert ok is True
+        assert ok is False
+        out = capsys.readouterr().out
+        assert "rocm build but cu124 was expected" in out
+        assert "CPU-only" not in out
 
 
 class TestExpectedTorchFlavorSkips:
@@ -1350,6 +1365,85 @@ class TestWindowsOnArmKeepsTheNoTorchaudioException:
         assert any(a.startswith("torchaudio") for a in args)
 
 
+class TestTheRequestedFamilyIsVerifiedAfterEveryRepair:
+    """A GPU build is not the same answer as THE GPU build that was asked for.
+
+    A misconfigured mirror can answer a /cu128 request with a cached cu124, rocm or xpu
+    wheel. _torch_build_is_gpu is deliberately family-blind, so the update exited 0 and
+    the manifest recorded the requested tag over a build that never arrived.
+    """
+
+    @pytest.mark.parametrize("landed", ["2.6.0+cu124", "2.11.0+rocm7.2", "2.9.1+xpu"])
+    def test_a_wheel_from_the_wrong_family_fails(self, landed):
+        ok, _mock_pip = _run_flavor_invariant(
+            expected_env = "cu128",
+            repaired = landed,
+        )
+        assert ok is False
+
+    def test_the_requested_family_passes(self):
+        ok, _mock_pip = _run_flavor_invariant(
+            expected_env = "cu128",
+            repaired = "2.6.0+cu128",
+        )
+        assert ok is True
+
+    def test_an_xpu_repair_is_held_to_the_same_rule(self):
+        ok, _mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu",
+            expected_env = "xpu",
+            repaired = "2.6.0+cu124",
+        )
+        assert ok is False
+
+    def test_an_unreadable_venv_still_passes(self):
+        # The wedged-driver host. Ambiguity must not fail an update by itself.
+        ok, _mock_pip = _run_flavor_invariant(
+            expected_env = "cu128",
+            repaired = "2.6.0+cu128",
+            probe_timeout = True,
+            disk_label = "",
+        )
+        assert ok is True
+
+    def test_a_still_cpu_venv_keeps_its_own_warning(self, capsys):
+        ok, _mock_pip = _run_flavor_invariant(expected_env = "cu124", repaired = None)
+        assert ok is False
+        assert "CPU-only" in capsys.readouterr().out
+
+
+class TestAnUntaggedGpuWheelIsNotACpuMatch:
+    """_torch_flavor_tag reads every untagged version as "cpu".
+
+    Right for PyPI, wrong for a private index serving an untagged CUDA or ROCm build:
+    under a /cpu pin that wheel compared equal to the expectation, skipped the repair,
+    and was recorded as cpu. The runtime probe already carries the markers that tell
+    them apart.
+    """
+
+    def test_an_untagged_cuda_wheel_under_a_cpu_pin_is_repaired(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.6.0",
+            repaired = "2.11.0+cpu",
+            expected_env = "cpu",
+            backend = "cpu",
+            index_url = "https://download.pytorch.org/whl/cpu",
+            probe_cuda = "12.4",
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+
+    def test_a_genuinely_untagged_cpu_wheel_is_still_a_match(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.6.0",
+            expected_env = "cpu",
+            backend = "cpu",
+            index_url = "https://download.pytorch.org/whl/cpu",
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+
 class TestAnExplicitPinOutranksTheManifest:
     """Direct `python install_python_stack.py` on Windows, which the invariant supports.
 
@@ -1520,3 +1614,146 @@ class TestSetupPs1CudaOnDiskFallback:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+class TestThePackagesTiedToTheTorchReleaseAreResettled:
+    """A repair that MOVES the torch release invalidates two compiled extensions.
+
+    torchao's cpp extensions are torch-release-specific, and step 4 chose its pin from
+    the torch this repair then replaced: 0.17.0 selected for a 2.11 that the <2.11.0
+    repair spec takes down to 2.10, whose matched build is 0.16.0. Leaving the wrong one
+    installed silently drops to the slow fallback.
+
+    xFormers is stricter: its _C.pyd is linked against one exact (torch, CUDA) pair, and
+    beside any other pair torch.ops.load_library raises, which xformers/_cpp_lib.py
+    downgrades to a log line, so the import "succeeds" with memory-efficient attention,
+    SwiGLU and the sparse ops silently gone. This script never installs xFormers, so
+    removal is the only correct action, and it is what the backend's own resolver
+    already concludes: torch SDPA beats an extension that cannot load.
+    """
+
+    def _resync(
+        self,
+        before,
+        after,
+        *,
+        resident_xformers = None,
+        installed_spec = False,
+    ):
+        calls = {"torchao": [], "removed": []}
+
+        with (
+            patch.object(stack_mod, "_probe_installed_torch_version", return_value = after),
+            patch.object(
+                stack_mod,
+                "_exact_distribution_spec_is_installed",
+                return_value = installed_spec,
+            ),
+            patch.object(
+                stack_mod,
+                "_resident_xformers_build_torch",
+                return_value = resident_xformers,
+            ),
+            patch.object(
+                stack_mod,
+                "pip_install_try",
+                side_effect = lambda *a, **k: calls["torchao"].append([str(x) for x in a]),
+            ),
+            patch.object(
+                stack_mod,
+                "_uninstall_distribution",
+                side_effect = lambda name: calls["removed"].append(name) or True,
+            ),
+            patch.object(stack_mod, "_note", lambda *a, **k: None),
+        ):
+            stack_mod._resync_torch_coupled_packages(before)
+        return calls
+
+    def test_a_release_that_moved_re_pins_torchao(self):
+        calls = self._resync("2.11.0", "2.10.0+cu124")
+        assert calls["torchao"], "torchao must be re-selected for the new release"
+        assert any("torchao==0.16.0" in " ".join(c) for c in calls["torchao"])
+
+    def test_a_release_that_did_not_move_does_nothing(self):
+        # The common case restores the wheel the venv already had. Reinstalling around
+        # it would add minutes to every update for nothing.
+        calls = self._resync("2.10.0", "2.10.0+cu124", resident_xformers = "2.11.0+cu128")
+        assert calls == {"torchao": [], "removed": []}
+
+    def test_a_torchao_already_matching_is_left_alone(self):
+        calls = self._resync("2.11.0", "2.10.0+cu124", installed_spec = True)
+        assert calls["torchao"] == []
+
+    def test_a_mismatched_xformers_is_removed(self):
+        calls = self._resync("2.11.0", "2.10.0+cu124", resident_xformers = "2.11.0+cu128")
+        assert calls["removed"] == ["xformers"]
+
+    def test_an_xformers_built_for_the_resident_torch_is_kept(self):
+        calls = self._resync("2.11.0", "2.10.0+cu124", resident_xformers = "2.10.0+cu124")
+        assert calls["removed"] == []
+
+    def test_an_absent_xformers_is_not_touched(self):
+        calls = self._resync("2.11.0", "2.10.0+cu124", resident_xformers = None)
+        assert calls["removed"] == []
+
+    def test_an_unreadable_torch_after_the_repair_does_nothing(self):
+        calls = self._resync("2.11.0", None, resident_xformers = "2.11.0+cu128")
+        assert calls == {"torchao": [], "removed": []}
+
+    def test_neither_half_can_fail_the_update(self, capsys):
+        # Both are secondary to the flavor invariant, which has just fixed the real
+        # defect. Neither is worth failing the update it belongs to.
+        with (
+            patch.object(stack_mod, "_probe_installed_torch_version", return_value = "2.10.0+cu124"),
+            patch.object(
+                stack_mod,
+                "_select_torchao_spec",
+                side_effect = RuntimeError("index down"),
+            ),
+            patch.object(
+                stack_mod,
+                "_resident_xformers_build_torch",
+                side_effect = RuntimeError("unreadable"),
+            ),
+        ):
+            assert stack_mod._resync_torch_coupled_packages("2.11.0") is None
+        out = capsys.readouterr().out
+        assert "could not re-match torchao" in out
+        assert "could not re-check xFormers" in out
+
+
+class TestTheResidentXformersBuildIsReadFromDisk:
+    def test_the_recorded_torch_is_returned(self, tmp_path):
+        pkg = tmp_path / "xformers"
+        pkg.mkdir()
+        (pkg / "cpp_lib.json").write_text(
+            '{"version": {"torch": "2.10.0+cu128"}}', encoding = "utf-8"
+        )
+        with patch.object(
+            stack_mod.importlib.util,
+            "find_spec",
+            return_value = SimpleNamespace(submodule_search_locations = [str(pkg)]),
+        ):
+            assert stack_mod._resident_xformers_build_torch() == "2.10.0+cu128"
+
+    @pytest.mark.parametrize(
+        "body", ['{"version": {}}', "{not json", '{"version": {"torch": "   "}}']
+    )
+    def test_an_unusable_record_reads_as_unknown(self, tmp_path, body):
+        pkg = tmp_path / "xformers"
+        pkg.mkdir()
+        (pkg / "cpp_lib.json").write_text(body, encoding = "utf-8")
+        with patch.object(
+            stack_mod.importlib.util,
+            "find_spec",
+            return_value = SimpleNamespace(submodule_search_locations = [str(pkg)]),
+        ):
+            assert stack_mod._resident_xformers_build_torch() is None
+
+    def test_an_absent_xformers_reads_as_unknown(self):
+        with patch.object(stack_mod.importlib.util, "find_spec", return_value = None):
+            assert stack_mod._resident_xformers_build_torch() is None
+
+    def test_a_find_spec_that_raises_reads_as_unknown(self):
+        with patch.object(stack_mod.importlib.util, "find_spec", side_effect = ValueError("boom")):
+            assert stack_mod._resident_xformers_build_torch() is None
