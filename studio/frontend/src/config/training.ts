@@ -66,10 +66,23 @@ export function toggleCptTargetModule(
   targetModules: readonly string[],
   module: string,
 ): string[] {
+  if (
+    CPT_EMBEDDING_MODULES.some((embeddingModule) => embeddingModule === module)
+  ) {
+    return targetModules.includes(module)
+      ? targetModules.filter((candidate) => candidate !== module)
+      : [...targetModules, module];
+  }
+
   if (module === "all-linear") {
+    const embeddingModules = targetModules.filter((candidate) =>
+      CPT_EMBEDDING_MODULES.some(
+        (embeddingModule) => embeddingModule === candidate,
+      ),
+    );
     return isCptAllLinearTargetModules(targetModules)
-      ? [...CPT_TARGET_MODULES]
-      : ["all-linear", ...CPT_EMBEDDING_MODULES];
+      ? [...TARGET_MODULES, ...embeddingModules]
+      : ["all-linear", ...embeddingModules];
   }
 
   const namedTargetModules = targetModules.filter(

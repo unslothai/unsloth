@@ -12,7 +12,7 @@ import {
 registerStoreStubResolver();
 installLocalStorageFake();
 
-const { setAuthFetchHandler } = await import("@/features/auth");
+const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 const { useTrainingConfigStore } = await import(
   "../src/features/training/stores/training-config-store.ts"
 );

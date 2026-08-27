@@ -80,3 +80,24 @@ test("CPT target controls switch all-linear without mixed state", () => {
     ["embed_tokens", "lm_head", "q_proj"],
   );
 });
+
+test("CPT embedding controls do not change the LoRA target mode", () => {
+  assert.deepEqual(
+    toggleCptTargetModule(
+      ["all-linear", "embed_tokens", "lm_head"],
+      "embed_tokens",
+    ),
+    ["all-linear", "lm_head"],
+  );
+  assert.deepEqual(
+    toggleCptTargetModule(["all-linear", "lm_head"], "embed_tokens"),
+    ["all-linear", "lm_head", "embed_tokens"],
+  );
+  assert.deepEqual(toggleCptTargetModule(["q_proj"], "all-linear"), [
+    "all-linear",
+  ]);
+  assert.deepEqual(
+    toggleCptTargetModule(["all-linear", "lm_head"], "all-linear"),
+    [...DEFAULT_HYPERPARAMS.targetModules, "lm_head"],
+  );
+});
