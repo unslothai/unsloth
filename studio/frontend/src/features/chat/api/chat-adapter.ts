@@ -160,6 +160,7 @@ import type {
   CpuFallbackReason,
   MmprojFallbackReason,
   GgufVariantDetail,
+  InferenceStatusResponse,
   OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
@@ -228,7 +229,6 @@ import {
   GenerationLengthError,
   fetchGgufStagedMetadata,
   getInferenceStatus,
-  getLoadProgress,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -2787,81 +2787,51 @@ async function ensureDefaultModelDownloaded(
 
 // Kept below MAX_AUTO_LOAD_ATTEMPTS: tests/studio/test_chat_autoload_failure_gate.py
 // slices the harness from there, so a helper above it is a ReferenceError under test.
-async function serverLoadEvidence(): Promise<boolean | null> {
-  try {
-    const progress = await getLoadProgress();
-    if (progress.phase != null) return true;
-  } catch {
-    // A failed probe does not prove the server is idle.
-  }
-  try {
-    const status = await getInferenceStatus();
-    return status.loading.length > 0;
-  } catch {
-    return null;
-  }
-}
-
-// Slow downloads and llama-server warm-up need a long cap; confirmed idle exits early.
+// Slow downloads and llama-server warm-up need a long cap.
 const CLI_LOAD_ADOPT_MAX_MS = 600_000;
 
-/**
- * How the wait ended. Only "server-idle" clears automatic loading: a load still
- * in flight owns the backend's load lock, so an auto-load issued beside it
- * queues behind that load and then replaces the model it was loading.
- */
-type CliLoadAdoption = "adopted" | "server-idle" | "still-loading";
+type CliLoadAdoption = "adopted" | "server-idle" | "still-loading" | "status-unavailable";
 
-/**
- * With the empty-model load lease held, adopt or await a server-started load
- * before automatic loading.
- */
+/** Wait out a server-started load and adopt it before automatic loading. */
 async function adoptInFlightServerLoad(
   abortSignal?: AbortSignal,
 ): Promise<CliLoadAdoption> {
   const checkpointSelected = () =>
     Boolean(useChatRuntimeStore.getState().params.checkpoint);
-  const adopted = async () =>
-    checkpointSelected() ||
-    (await tryAdoptServerActiveModel({ allowWhileModelLoading: true }));
-  const settle = async (): Promise<CliLoadAdoption> =>
-    (await adopted()) ? "adopted" : "server-idle";
-
-  abortSignal?.throwIfAborted();
-  if (await adopted()) return "adopted";
-
-  let evidence = await serverLoadEvidence();
-  abortSignal?.throwIfAborted();
-  if (evidence === null) {
-    // "A failed probe does not prove the server is idle", so re-read once rather
-    // than let a single failed status call license auto-loading over a CLI load.
-    // Still no wait when it stays unknown: the server is unreachable either way.
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    abortSignal?.throwIfAborted();
-    evidence = await serverLoadEvidence();
-    abortSignal?.throwIfAborted();
-  }
-  if (evidence !== true) {
-    return settle();
-  }
-
-  toast.info("Waiting for model to finish loading…");
   const deadline = Date.now() + CLI_LOAD_ADOPT_MAX_MS;
-  while (Date.now() < deadline) {
+  let failures = 0;
+  let announced = false;
+
+  for (;;) {
     abortSignal?.throwIfAborted();
     if (checkpointSelected()) return "adopted";
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    abortSignal?.throwIfAborted();
-    if (await adopted()) return "adopted";
-    evidence = await serverLoadEvidence();
-    if (evidence === false) {
-      return settle();
+
+    let status: InferenceStatusResponse | null = null;
+    try {
+      status = await getInferenceStatus();
+      failures = 0;
+    } catch {
+      // A failed read is not evidence the server is idle.
+      if (++failures >= 2) return "status-unavailable";
     }
+
+    abortSignal?.throwIfAborted();
+    if (checkpointSelected()) return "adopted";
+    if (status && (status.loading?.length ?? 0) === 0) {
+      return (await tryAdoptServerActiveModel({
+        allowWhileModelLoading: true,
+        status,
+      }))
+        ? "adopted"
+        : "server-idle";
+    }
+    if (status && !announced) {
+      toast.info("Waiting for model to finish loading…");
+      announced = true;
+    }
+    if (Date.now() >= deadline) return "still-loading";
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  // The cap bounds the wait; it is not evidence the server went idle. Auto-loading
-  // from here queues a second load behind the one still running and replaces it,
-  // which is the failure this path exists to stop.
-  return (await adopted()) ? "adopted" : "still-loading";
 }
 
 async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
@@ -2877,10 +2847,20 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     if (adoption === "adopted") {
       return { loaded: true, blockedByTrustRemoteCode: false };
     }
-    if (adoption === "still-loading") {
-      toast.error("The model is still loading", {
-        description: "Send again once it finishes, or pick a model in the top bar.",
-      });
+    if (adoption !== "server-idle") {
+      // Neither adopted nor confirmed idle. Loading anything now would queue
+      // behind the backend's own load and replace it, so say so instead.
+      toast.error(
+        adoption === "still-loading"
+          ? "A model is still loading"
+          : "Could not reach the model server",
+        {
+          description:
+            adoption === "still-loading"
+              ? "Send again once it finishes, or pick a model in the top bar."
+              : "Check that the server is running, then send again.",
+        },
+      );
       return {
         loaded: false,
         blockedByTrustRemoteCode: false,

@@ -164,22 +164,20 @@ const GPU_LAYERS_AUTO = -1;
 // though these scenarios call autoLoadSmallestModel directly.
 let STATUS_CALLS = 0;
 async function getInferenceStatus() {
-  // serverLoadEvidence is the only caller here, so the counter tracks its probes:
-  // a scenario can fail the first N the way a transient 5xx or a dropped socket does.
-  if (STATUS_CALLS++ < (SCENARIO.statusFailures ?? 0)) {
+  // Fail the first N reads like a transient 5xx, and let a CLI load finish during
+  // the wait when the scenario asks for it.
+  const call = STATUS_CALLS++;
+  if (call < (SCENARIO.statusFailures ?? 0)) {
     throw new Error("status unavailable");
   }
-  return { active_model: null, loading: SCENARIO.serverLoading ?? [] };
-}
-// serverLoadEvidence reads phase to decide whether a CLI load is in flight. The
-// default is the idle answer the route gives with no llama-server running, so
-// these scenarios reach the auto-load path instead of waiting on a phantom load.
-async function getLoadProgress() {
+  const loading = SCENARIO.serverLoading ?? [];
+  const clearsAfter = SCENARIO.serverLoadingClearsAfter ?? null;
+  const settled = clearsAfter !== null && call >= clearsAfter;
+  const finished = settled ? (loading[0] ?? null) : null;
   return {
-    phase: SCENARIO.loadPhase ?? null,
-    bytes_loaded: 0,
-    bytes_total: 0,
-    fraction: 0,
+    active_model: finished,
+    model_identifier: finished,
+    loading: settled ? [] : loading,
   };
 }
 function isExternalModelId(value: unknown) {
@@ -350,7 +348,14 @@ function mmprojFallbackMessage(reason: string) {
   return `mmproj fallback: ${reason}`;
 }
 
-async function tryAdoptServerActiveModel() { return false; }
+async function tryAdoptServerActiveModel(options: any) {
+  // The real one hydrates the store from this status; here the event is the proof
+  // that Send adopted the CLI's model instead of loading one of its own.
+  const id = options?.status?.active_model;
+  if (!id) return false;
+  EVENTS.push({ kind: "adoptServerModel", id });
+  return true;
+}
 function resolveSpeculativeSettingsForLoad() {
   return { speculativeType: null, specDraftNMax: 0 };
 }
@@ -597,11 +602,12 @@ SCENARIO_HELPERS = """
       platformFetched: true,
       variants: {},
       lastLoaded: null,
-      // /api/inference/load-progress phase and /status loading[], the two probes
-      // serverLoadEvidence reads. Both idle unless a scenario says otherwise.
-      loadPhase: null,
+      // /status loading[], the backend's account of what it is loading; how many
+      // leading reads fail; and after how many reads the load settles and its
+      // model goes active. All idle unless a scenario says otherwise.
       serverLoading: [],
       statusFailures: 0,
+      serverLoadingClearsAfter: null,
       validate: VALIDATE_OK,
       load: LOADED,
       download: () => "complete",
@@ -1580,9 +1586,8 @@ def test_an_unclassified_local_row_is_never_auto_loaded(fmt):
     assert _loaded_paths(out) == [DEFAULT_MODEL]
 
 
-# Only adoptInFlightServerLoad reads the clock in the sliced region (its deadline
-# and the loop guard), so moving it forward once past the cap lands on the
-# timed-out exit without touching anything else in the cascade.
+# adoptInFlightServerLoad is the only clock reader in the sliced region, so moving
+# time past the cap once lands on the timed-out exit and nothing else.
 _EXPIRE_CLI_LOAD_WAIT = """
 const realNow = Date.now.bind(Date);
 let nowCalls = 0;
@@ -1590,12 +1595,31 @@ Date.now = () => realNow() + (nowCalls++ === 0 ? 0 : 600_001);
 """
 
 
-def test_a_load_still_in_flight_at_the_cap_does_not_auto_load_over_it():
-    """The wait is capped, but the cap is not evidence the server went idle. Auto-loading
-    there queues a second load behind the one still running and replaces the model the
-    CLI was asked for, which is the failure this path exists to stop."""
+def test_send_retries_status_then_waits_for_and_adopts_the_cli_model():
+    """A message sent during `studio run -m` survives one dropped status read,
+    waits for that load, and adopts it instead of auto-loading another model."""
     out = _run(
-        "scenario({ loadPhase: 'mmap', serverLoading: ['org/slow-model-GGUF'],"
+        "scenario({ statusFailures: 1, serverLoading: ['org/slow-model-GGUF'],"
+        " serverLoadingClearsAfter: 2,"
+        " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"
+    )
+
+    adopted = [e["id"] for e in out["events"] if e["kind"] == "adoptServerModel"]
+    assert adopted == ["org/slow-model-GGUF"]
+    assert _loaded_paths(out) == []
+    assert _downloads_started(out) == []
+    assert out["result"]["loaded"] is True
+    # Announced once, not once per poll.
+    assert [t["msg"] for t in _toasts(out, "toast.info")] == [
+        "Waiting for model to finish loading…"
+    ]
+
+
+def test_a_load_still_in_flight_at_the_cap_refuses_instead_of_auto_loading():
+    """The cap bounds the wait; it is not evidence the load finished. Auto-loading here
+    queues behind the running load and replaces the model the CLI was asked for."""
+    out = _run(
+        "scenario({ serverLoading: ['org/slow-model-GGUF'],"
         " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
         prelude = _EXPIRE_CLI_LOAD_WAIT,
     )
@@ -1604,47 +1628,27 @@ def test_a_load_still_in_flight_at_the_cap_does_not_auto_load_over_it():
     assert _downloads_started(out) == []
     assert out["result"]["loaded"] is False
     assert out["result"]["loadFailureReported"] is True
-    assert [t["msg"] for t in _toasts(out, "toast.error")] == ["The model is still loading"]
-    # The wait announced itself, so the refusal is the end of a visible wait.
-    assert [t["msg"] for t in _toasts(out, "toast.info")] == [
-        "Waiting for model to finish loading\u2026"
-    ]
+    assert [t["msg"] for t in _toasts(out, "toast.error")] == ["A model is still loading"]
 
 
-def test_a_server_that_went_idle_during_the_wait_still_auto_loads():
-    """The other side of the same branch: once the probes report idle the cascade must
-    run, or a cleared load would leave Send with nothing."""
-    out = _run(
-        "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
-        prelude = _EXPIRE_CLI_LOAD_WAIT,
-    )
+def test_an_idle_server_still_auto_loads():
+    """Nothing loading means the cascade must run, or Send is left with no model."""
+    out = _run("scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })")
 
     assert _loaded_paths(out) == [GEMMA_REPO]
     assert out["result"]["loaded"] is True
+    assert _toasts(out, "toast.info") == []
 
 
-def test_a_transient_status_failure_does_not_license_auto_load_over_a_cli_load():
-    """serverLoadEvidence returns null, not false, when a probe fails: "a failed probe does
-    not prove the server is idle". Treating that as idle let one dropped status read start
-    an auto-load that queues behind the CLI request and replaces it."""
-    out = _run(
-        "scenario({ statusFailures: 1, serverLoading: ['org/slow-model-GGUF'],"
-        " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
-        prelude = _EXPIRE_CLI_LOAD_WAIT,
-    )
-
-    assert _loaded_paths(out) == []
-    assert _downloads_started(out) == []
-    assert out["result"]["loadFailureReported"] is True
-
-
-def test_a_status_endpoint_that_stays_down_still_falls_through_to_auto_load():
-    """The re-read is one retry, not a new wait: with the server unreachable there is no
-    evidence to preserve, and blocking Send on it would strand a genuinely idle backend."""
+def test_a_status_endpoint_that_never_answers_refuses_rather_than_guessing():
+    """No read ever succeeded, so there is no load to wait for and no evidence the
+    server is idle. Auto-loading would POST to the server that just refused to answer."""
     out = _run(
         "scenario({ statusFailures: 99, ggufRepos: [GEMMA],"
         " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"
     )
 
-    assert _loaded_paths(out) == [GEMMA_REPO]
-    assert out["result"]["loaded"] is True
+    assert _loaded_paths(out) == []
+    assert out["result"]["loaded"] is False
+    assert out["result"]["loadFailureReported"] is True
+    assert [t["msg"] for t in _toasts(out, "toast.error")] == ["Could not reach the model server"]

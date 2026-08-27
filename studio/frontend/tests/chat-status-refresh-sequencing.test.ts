@@ -95,21 +95,6 @@ test("the mount poll waits for a replacement beside a resident model", () => {
   );
 });
 
-test("known server load evidence survives an unavailable status probe", () => {
-  const evidence = ADAPTER.slice(
-    ADAPTER.indexOf("async function serverLoadEvidence("),
-    ADAPTER.indexOf("// Slow downloads and llama-server warm-up"),
-  );
-  const adoption = ADAPTER.slice(
-    ADAPTER.indexOf("async function adoptInFlightServerLoad("),
-    ADAPTER.indexOf("async function autoLoadSmallestModel("),
-  );
-  assert.match(evidence, /Promise<boolean \| null>/);
-  assert.match(evidence, /catch \{\s*return null;/);
-  assert.match(adoption, /if \(evidence !== true\)/);
-  assert.match(adoption, /if \(evidence === false\)/);
-});
-
 // No executable harness slices syncInferenceStatusToStore the way
 // test_chat_autoload_failure_gate.py slices autoLoadSmallestModel, so this pins the
 // wiring structurally: gaveUpMidLoad has to come from the loading evidence, and the

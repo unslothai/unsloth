@@ -691,6 +691,8 @@ export function applyActiveModelStatusToStore(
 export async function tryAdoptServerActiveModel(options?: {
   /** Ignore modelLoading because the caller owns that lease. */
   allowWhileModelLoading?: boolean;
+  /** A status the caller already read, so the send path does not fetch twice. */
+  status?: InferenceStatusResponse;
 }): Promise<boolean> {
   const store = useChatRuntimeStore.getState();
   if (store.params.checkpoint) {
@@ -701,11 +703,15 @@ export async function tryAdoptServerActiveModel(options?: {
   }
 
   let status: InferenceStatusResponse;
-  try {
-    status = await getInferenceStatus();
-  } catch {
-    // Status endpoint unavailable: fall back to the normal auto-load path.
-    return false;
+  if (options?.status) {
+    status = options.status;
+  } else {
+    try {
+      status = await getInferenceStatus();
+    } catch {
+      // Status endpoint unavailable: fall back to the normal auto-load path.
+      return false;
+    }
   }
   if (!status.active_model || (status.loading?.length ?? 0) > 0) {
     return false;
