@@ -1624,23 +1624,70 @@ def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
     return extra
 
 
-def _openai_llama_admission_media_tokens(payload) -> int:
-    """Media the request carries in Unsloth's legacy top-level fields, in tokens.
+_OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = 4096
 
-    Unsloth's own composer sends every attachment as ``image_base64`` /
-    ``audio_base64`` / ``video_base64``, never as ``messages`` content parts, and the
-    generation path splices them into the prompt AFTER this estimate is taken
-    (``_openai_messages_for_gguf_chat``, ``_inject_audio_part``,
-    ``_inject_video_part``). Charging only ``messages`` therefore priced an image at
-    zero while llama.cpp's mtmd embeddings occupy real KV positions, so two
-    media-heavy chats with a line of text each were admitted against a cache that
-    holds one.
 
-    Sized as the same media inlined as a data URL is already sized, so the two
-    spellings of one request cost the same rather than 30x apart.
+def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict], int]:
+    """Remove image bytes before estimating the textual part of a prompt.
+
+    llama.cpp's multimodal processor decodes an image and turns it into
+    model-specific embedding tokens. The base64 transport is neither prompt text nor
+    a stable proxy for those tokens. Keep the small shape of each image part for the
+    JSON estimate, and return its count so the caller can add a bounded media
+    allowance.
+    """
+    estimate_messages = []
+    image_parts = 0
+    for message in messages:
+        message_dict = message if isinstance(message, dict) else message.model_dump()
+        if not isinstance(message_dict, dict):
+            estimate_messages.append(message_dict)
+            continue
+
+        estimate_message = dict(message_dict)
+        content = message_dict.get("content")
+        if isinstance(content, list):
+            estimate_content = []
+            for part in content:
+                if not isinstance(part, dict) or part.get("type") != "image_url":
+                    estimate_content.append(part)
+                    continue
+
+                image_parts += 1
+                image_url = part.get("image_url")
+                compact_image_url = {"url": "[image]"}
+                if isinstance(image_url, dict) and image_url.get("detail") is not None:
+                    compact_image_url["detail"] = image_url["detail"]
+                estimate_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": compact_image_url,
+                    }
+                )
+            estimate_message["content"] = estimate_content
+        estimate_messages.append(estimate_message)
+    return estimate_messages, image_parts
+
+
+def _openai_llama_admission_media_tokens(payload, *, message_image_parts: int = 0) -> int:
+    """Estimate media KV usage without charging transport bytes as prompt tokens.
+
+    The GGUF generation path injects the legacy top-level image only when the
+    request has no message-level image. Studio sends both spellings for the same
+    image, so counting both would reserve the same image twice. A fixed allowance is
+    deliberately used because the exact mtmd token count depends on the loaded
+    vision projector and image preprocessing, not on base64 length.
+
+    Audio and video keep their existing top-level accounting until the corresponding
+    model-specific KV estimate is available; this fix is scoped to the image path
+    that regressed vision-chat concurrency.
     """
     extra = 0
-    for attribute in ("image_base64", "audio_base64", "video_base64"):
+    extra += max(0, message_image_parts) * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+    image = getattr(payload, "image_base64", None)
+    if message_image_parts == 0 and isinstance(image, str) and image:
+        extra += _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+    for attribute in ("audio_base64", "video_base64"):
         value = getattr(payload, attribute, None)
         if isinstance(value, str) and value:
             extra += max(1, len(value) // 4)
@@ -1669,11 +1716,17 @@ def _openai_llama_admission_tokens(
     messages = getattr(payload, "messages", None)
     if isinstance(messages, list) and messages:
         try:
+            estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
+                messages
+            )
             prompt_tokens = estimate_messages_tokens_dense(
-                [m if isinstance(m, dict) else m.model_dump() for m in messages]
+                estimate_messages
             )
             prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
-            prompt_tokens += _openai_llama_admission_media_tokens(payload)
+            prompt_tokens += _openai_llama_admission_media_tokens(
+                payload,
+                message_image_parts = message_image_parts,
+            )
         except Exception:
             prompt_tokens = None
     else:

@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Two holes in the KV reservation the estimator has to charge for.
+"""Media and tool-loop cases that the KV reservation has to charge for.
 
-Media: Unsloth's composer sends attachments in the legacy top-level ``image_base64`` /
-``audio_base64`` / ``video_base64`` fields, and the generation path splices them into
-the prompt AFTER admission is decided. Charging only ``messages`` priced an image at
-zero while llama.cpp's mtmd embeddings take real KV positions.
+Media: Unsloth's composer sends the current image in both a message-level
+``image_url`` part and the legacy top-level ``image_base64`` field. The generation
+path splices legacy media into the prompt AFTER admission is decided. Admission must
+charge the resulting image once, without treating base64 bytes as prompt text.
 
 Tool loop: the server-side loop opens on ``enable_tools`` / ``mcp_enabled`` / the CLI
 policy / a checkpoint repair, none of which require a client ``tools`` array, so a
@@ -56,9 +56,78 @@ class TestMediaIsCharged:
         )
         legacy_cost = _openai_llama_admission_tokens(legacy, budget = 4096, capacity = 4)
         inline_cost = _openai_llama_admission_tokens(inline, budget = 4096, capacity = 4)
-        # Before the fix this was 139 against 4096: the same request, one spelling
-        # charged the whole cache and the other charged its 13 characters of text.
+        # The wire spelling must not change the KV commitment for the same image.
         assert legacy_cost == inline_cost
+
+    def test_studio_image_echo_is_charged_once_and_is_bounded(self):
+        image = _image_b64(1024)
+        inline_messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{image}"},
+                    },
+                ],
+            }
+        ]
+        dual = _Payload(
+            messages = inline_messages,
+            image_base64 = image,
+            max_tokens = 128,
+        )
+        inline = _Payload(messages = inline_messages, max_tokens = 128)
+
+        dual_cost = _openai_llama_admission_tokens(dual, budget = 65536, capacity = 4)
+        inline_cost = _openai_llama_admission_tokens(inline, budget = 65536, capacity = 4)
+
+        assert dual_cost == inline_cost
+        assert 4096 <= dual_cost < 10_000, "image bytes must be bounded but still charged"
+
+    def test_two_large_studio_image_chats_can_be_admitted_together(self):
+        """A large base64 transport must not turn each vision request into a full-cache lease."""
+        import asyncio
+
+        from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
+
+        async def scenario():
+            queue = LlamaAdmissionQueue("media")
+            config = LlamaAdmissionConfig()
+            image = _image_b64(1024)
+            leases = []
+            for _ in range(2):
+                payload = _Payload(
+                    messages = [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "describe"},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:image/png;base64,{image}"},
+                                },
+                            ],
+                        }
+                    ],
+                    image_base64 = image,
+                    max_tokens = 128,
+                )
+                reservation = queue.reserve(
+                    capacity = 4,
+                    config = config,
+                    budget = 12_000,
+                    tokens = _openai_llama_admission_tokens(payload, budget = 12_000, capacity = 4),
+                )
+                leases.append(reservation.lease_nowait())
+            admitted = [lease is not None for lease in leases]
+            for lease in leases:
+                if lease is not None:
+                    lease.release()
+            return admitted
+
+        assert asyncio.run(scenario()) == [True, True]
 
     def test_two_image_chats_are_not_both_admitted(self):
         """The live failure, with images instead of text."""
@@ -88,8 +157,8 @@ class TestMediaIsCharged:
 
         first, second = asyncio.run(scenario())
         assert first is not None, "the first image chat owns the cache"
-        # A 4 KiB image is ~5.4k base64 characters, about 1365 tokens on top of a
-        # 2048 cache that already holds one such request: the second must queue.
+        # The conservative per-image allowance alone is larger than this tiny cache,
+        # so the second request must still queue rather than overcommit it.
         assert second is None
 
     def test_audio_and_video_are_charged_too(self):
