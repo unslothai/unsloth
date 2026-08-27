@@ -285,7 +285,8 @@ def _guarded_roots(node, loaders):
         call = statement.value
         function = call.func
         attribute = (
-            function.attr if isinstance(function, ast.Attribute)
+            function.attr
+            if isinstance(function, ast.Attribute)
             else (function.id if isinstance(function, ast.Name) else "")
         )
         if attribute != "importorskip" and attribute not in loaders:
@@ -399,8 +400,7 @@ def test_an_assignment_alias_of_a_loader_is_still_recognised(tmp_path):
     spellings = {
         "attribute assignment": 'import importlib\nload = importlib.import_module\ntorch = load("torch")\n',
         "importorskip by assignment": 'import pytest\nneed = pytest.importorskip\ntorch = need("torch")\n',
-        "chained through an import alias":
-            'from importlib import import_module as first\nsecond = first\ntorch = second("torch")\n',
+        "chained through an import alias": 'from importlib import import_module as first\nsecond = first\ntorch = second("torch")\n',
     }
     for description, source in spellings.items():
         sample = tmp_path / "sample.py"
@@ -417,8 +417,10 @@ def test_a_body_that_skips_first_does_not_redirect_the_file(tmp_path):
     cases = {
         'import pytest\n\n\ndef t():\n    pytest.importorskip("torch")\n    import torch\n': set(),
         'from pytest import importorskip as need\n\n\ndef t():\n    need("torch")\n    import torch\n': set(),
-        'import pytest\n\n\ndef t():\n    if 0:\n        pytest.importorskip("torch")\n    import torch\n': {"torch"},
-        'def t():\n    import torch\n': {"torch"},
+        'import pytest\n\n\ndef t():\n    if 0:\n        pytest.importorskip("torch")\n    import torch\n': {
+            "torch"
+        },
+        "def t():\n    import torch\n": {"torch"},
     }
     for source, expected in cases.items():
         sample = tmp_path / "sample.py"

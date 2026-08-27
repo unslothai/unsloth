@@ -287,8 +287,8 @@ def test_a_fetched_mapper_that_uses_update_still_installs_its_entries(monkeypatc
     namespace = _load_resolver(installed)
 
     both = installed + (
-        f'\nFLOAT_TO_FP8_ROW_MAPPER.update({{{_ROW_ONLY.lower()!r}: {_NEW_ROW!r}}})\n'
-        f'FLOAT_TO_FP8_ROW_MAPPER[{_NEW_OFFICIAL.lower()!r}] = {_NEW_ROW!r}\n'
+        f"\nFLOAT_TO_FP8_ROW_MAPPER.update({{{_ROW_ONLY.lower()!r}: {_NEW_ROW!r}}})\n"
+        f"FLOAT_TO_FP8_ROW_MAPPER[{_NEW_OFFICIAL.lower()!r}] = {_NEW_ROW!r}\n"
     )
     _install_fake_requests(monkeypatch, both)
 
@@ -305,8 +305,7 @@ def test_update_on_a_name_the_probe_does_not_export_is_ignored(monkeypatch):
 
     _install_fake_requests(
         monkeypatch,
-        installed + f'\nSOMETHING_ELSE.update({{{_ROW_ONLY.lower()!r}: {_NEW_ROW!r}}})\n',
+        installed + f"\nSOMETHING_ELSE.update({{{_ROW_ONLY.lower()!r}: {_NEW_ROW!r}}})\n",
     )
     fetched = namespace["_get_new_mapper"]()
     assert _ROW_ONLY.lower() not in fetched[4]
-
