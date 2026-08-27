@@ -29,7 +29,19 @@ from .mapper import (
     MAP_TO_UNSLOTH_16bit,
     FLOAT_TO_FP8_BLOCK_MAPPER,
     FLOAT_TO_FP8_ROW_MAPPER,
+    build_mappers,
+    _add_with_lower,
+    _add_lower_only,
 )
+
+# The alias helpers a fetched mapper.py may call, resolved to the INSTALLED
+# implementations. `_get_new_mapper` reads such calls as data: it takes the table and
+# the two literal strings out of the AST and applies them with these, so the fetched
+# text never supplies behaviour.
+_MAPPER_HELPERS = {
+    "_add_with_lower": _add_with_lower,
+    "_add_lower_only": _add_lower_only,
+}
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from transformers import __version__ as transformers_version
@@ -501,40 +513,369 @@ def __get_model_name(
 def _get_new_mapper():
     try:
         import requests
+        import time
 
         new_mapper = (
             "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
         )
-        with requests.get(new_mapper, timeout = 3) as new_mapper:
-            new_mapper = new_mapper.text
-        new_mapper = new_mapper[new_mapper.find("__INT_TO_FLOAT_MAPPER") :]
-        new_mapper = (
-            new_mapper.replace("INT_TO_FLOAT_MAPPER", "NEW_INT_TO_FLOAT_MAPPER")
-            .replace("FLOAT_TO_INT_MAPPER", "NEW_FLOAT_TO_INT_MAPPER")
-            .replace("MAP_TO_UNSLOTH_16bit", "NEW_MAP_TO_UNSLOTH_16bit")
-        )
+        # Streamed, and stopped at the cap while reading. `requests.get` buffers and
+        # decodes the whole body before returning, so checking `len()` afterwards
+        # cannot prevent the exhaustion it is there to prevent: an endpoint - or
+        # anything that can answer for it - serving an endless body would be read to
+        # the end first. The read also has a total deadline, because `timeout` is
+        # per-read: a peer trickling bytes forever resets it on every chunk.
+        # The cap is a literal rather than a module constant on purpose: the probe is
+        # lifted out and run in an isolated namespace by its own tests, so a name
+        # resolved from module globals would raise inside the bare except and turn
+        # every one of those tests into a silent "the probe found nothing". The real
+        # mapper.py is around 50KB, so 10MB leaves a lot of room to grow.
+        # The parse below allocates far more than the text it reads: ten megabytes of
+        # short statements is roughly two million AST nodes, which is a memory blow-up
+        # well inside the old cap. The real file is a few tens of kilobytes.
+        byte_cap = 1_000_000
+        deadline = time.monotonic() + 10
+        chunks, total = [], 0
+        # Redirects are followed by hand. `requests` otherwise follows them inside
+        # `get`, and drains each intermediate body so the connection can be reused,
+        # which happens before `stream = True` hands anything to the loop below - so a
+        # 3xx with an enormous or endlessly trickled body would slip past both limits.
+        # Following them here keeps every hop under the same cap and deadline.
+        url = new_mapper
+        for _ in range(5):
+            response = requests.get(url, timeout = 3, stream = True, allow_redirects = False)
+            with response:
+                location = (
+                    response.headers.get("location")
+                    if (300 <= response.status_code < 400)
+                    else None
+                )
+                if location is not None:
+                    # A redirect body is not read at all: closing releases the
+                    # connection without draining it, so an oversized or endlessly
+                    # trickled 3xx costs nothing. Only the deadline applies here.
+                    if time.monotonic() > deadline:
+                        return {}, {}, {}, {}, {}
+                else:
+                    # `iter_content` yields only once a whole chunk has arrived, and
+                    # the 3s timeout is per SOCKET READ, not per chunk: an endpoint
+                    # trickling one byte every two seconds keeps resetting it while the
+                    # underlying read blocks for the full 65_536 bytes, so the deadline
+                    # below was never reached and an ordinary load of an unmapped model
+                    # could hang for hours. `read1` returns what one read produced,
+                    # which puts a check between every socket read instead.
+                    raw = response.raw
+                    # `requests` turns decompression on inside `iter_content`, not in a
+                    # bare `raw` read, so reading the raw stream of a
+                    # `Content-Encoding: gzip` response handed compressed bytes to
+                    # `ast.parse` and the probe fell into its empty-table answer for
+                    # every compressed response. The cap counts DECODED bytes, which is
+                    # the quantity the parse actually pays for.
+                    try:
+                        raw.decode_content = True
+                    except AttributeError:
+                        pass
+                    read_once = getattr(raw, "read1", None)
+                    while True:
+                        if time.monotonic() > deadline:
+                            return {}, {}, {}, {}, {}
+                        if read_once is not None:
+                            chunk = read_once(65_536)
+                        else:
+                            # Older urllib3 has no `read1`. A one byte read still
+                            # returns as soon as one byte is there, so the deadline is
+                            # checked just as often; only the throughput differs, and
+                            # this path is a fallback for a file of a few tens of KB.
+                            chunk = raw.read(1)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        if total > byte_cap:
+                            return {}, {}, {}, {}, {}
+                    encoding = response.encoding or "utf-8"
+            if location is None:
+                break
+            url = requests.compat.urljoin(url, location)
+        else:
+            # Too many hops. Same answer as every other failure here.
+            return {}, {}, {}, {}, {}
+        new_mapper = b"".join(chunks).decode(encoding, errors = "replace")
+        # Never exec the response. This is a plain HTTPS GET, so the body is whatever
+        # the endpoint served, and exec'ing it would make any compromise of that path
+        # - or of anything that can answer for it - arbitrary code execution inside
+        # every `from_pretrained` that hits an unmapped model name. Only one thing in
+        # that file is data: `__INT_TO_FLOAT_MAPPER`. Parse that single dict literal
+        # out with ast.literal_eval (which evaluates literals only, never calls), then
+        # derive the five tables with the INSTALLED builder.
+        #
+        # This is only a probe for "would a newer Unsloth support this name?", so it
+        # must not change what the installed version resolves - hence the tables are
+        # returned to the caller rather than written into this module's globals.
+        import ast
 
-        # Exec into a throwaway namespace, never globals(). The slice also carries
-        # FLOAT_TO_FP8_BLOCK_MAPPER / FLOAT_TO_FP8_ROW_MAPPER, the _add_* helpers
-        # and the builder's loop variables, so exec'ing into globals() would swap
-        # the FP8 tables this module imported from the installed mapper for the
-        # ones on GitHub main. This is only a probe for "would a newer Unsloth
-        # support this name?", so it must not change what the installed version
-        # resolves; the fetched FP8 tables are returned for the probe to use
-        # instead of being written over the installed ones.
-        namespace = {}
-        exec(new_mapper, namespace)
-        return (
-            namespace["NEW_INT_TO_FLOAT_MAPPER"],
-            namespace["NEW_FLOAT_TO_INT_MAPPER"],
-            namespace["NEW_MAP_TO_UNSLOTH_16bit"],
-            # .get, not []: these two come from the fetched file under its own names (unlike
-            # the NEW_ names above, renamed here), so an older or renamed mapper.py would
-            # KeyError into the bare except and take the 4bit half of the probe down too.
-            # {} is safe: the probe runs only after the installed tables already missed.
-            namespace.get("FLOAT_TO_FP8_BLOCK_MAPPER", {}),
-            namespace.get("FLOAT_TO_FP8_ROW_MAPPER", {}),
-        )
+        # literal_eval evaluates literals only, so the body can no longer execute. It
+        # is not a guarantee against resource exhaustion though: ast.parse builds the
+        # whole tree before any literal-only check runs, and CPython dropped the safety
+        # wording from the docs for that reason (python/cpython#95588). The bare except
+        # below already turns the resulting RecursionError into "the probe found
+        # nothing". The byte cap is enforced above, while the body is being read,
+        # rather than here where the whole thing would already be in memory. The real
+        # file is around 50KB.
+        tree = ast.parse(new_mapper)
+        source_table = None
+        for node in tree.body:
+            # `AnnAssign` too: this function exists to understand NEWER mapper.py
+            # revisions, and a plain type annotation upstream
+            # (`__INT_TO_FLOAT_MAPPER: dict = {...}`) would otherwise turn the probe
+            # off for every newly mapped model without anything looking broken.
+            if isinstance(node, ast.AnnAssign):
+                targets = [node.target.id] if isinstance(node.target, ast.Name) else []
+                value = node.value
+            elif isinstance(node, ast.Assign):
+                targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                value = node.value
+            else:
+                continue
+            if value is None:
+                continue
+            if "__INT_TO_FLOAT_MAPPER" in targets:
+                # The LAST assignment is the one the module is left with:
+                # `__INT_TO_FLOAT_MAPPER = {}` followed by a real one would otherwise
+                # have made the probe read the empty first value and return nothing.
+                # Reading on rather than breaking, so the final binding wins.
+                source_table = ast.literal_eval(value)
+        pass
+        if not source_table:
+            return {}, {}, {}, {}, {}
+
+        # A newer mapper.py may carry entry shapes this builder does not know; the
+        # caller already treats an empty result as "the probe found nothing".
+        tables = build_mappers(source_table)
+
+        # The fp8 tables can also gain entries as plain subscript assignments rather
+        # than through the source table, e.g.
+        # `FLOAT_TO_FP8_ROW_MAPPER["org/model-fp8"] = "unsloth/model-fp8-row"`. The exec
+        # this replaced picked those up, and a row-scaled entry in particular cannot be
+        # expressed through the source table without also creating a block entry, so
+        # dropping them would quietly take the row half of the probe down. They are data
+        # like everything else here: literal subscript, literal value, nothing named or
+        # called is ever evaluated.
+        by_name = {
+            "INT_TO_FLOAT_MAPPER": tables[0],
+            "FLOAT_TO_INT_MAPPER": tables[1],
+            "MAP_TO_UNSLOTH_16bit": tables[2],
+            "FLOAT_TO_FP8_BLOCK_MAPPER": tables[3],
+            "FLOAT_TO_FP8_ROW_MAPPER": tables[4],
+        }
+
+        # Statements that really RUN when the module is imported, not every node in
+        # the file. `ast.walk` also reaches inside function and class bodies and into
+        # branches that never execute, so `if False: _add_with_lower(..., "vendor/X")`
+        # in a fetched mapper would fabricate a mapping the newer file never installs
+        # and make `get_model_name` raise the upgrade-only NotImplementedError for it.
+        #
+        # A local function, not a module one: this whole body is lifted out and run in
+        # an isolated namespace by its own tests, so anything it reaches for by name
+        # has to be defined inside it.
+        def _constant_truth(test):
+            """True/False for a statically decidable condition, else None.
+
+            `if not True:` is a UnaryOp, not a Constant, so it fell through to the
+            generic traversal and its body was read as executed - which fabricates a
+            mapping the fetched file never installs. Only a written-out constant, or
+            `not` applied to one; anything else stays undecided and keeps its body.
+            """
+            if isinstance(test, ast.Constant):
+                return bool(test.value)
+            if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+                inner = _constant_truth(test.operand)
+                return None if inner is None else not inner
+            return None
+
+        def _iterates_nothing(iterable):
+            if isinstance(iterable, (ast.Tuple, ast.List, ast.Set)):
+                return not iterable.elts
+            if isinstance(iterable, ast.Dict):
+                return not iterable.keys
+            if isinstance(iterable, ast.Constant):
+                # An empty literal string, bytes or range-free constant iterates
+                # nothing; a nonempty one does iterate and keeps its body.
+                return isinstance(iterable.value, (str, bytes)) and not iterable.value
+            return False
+
+        def _class_bound(body):
+            # Names a class body binds with a plain assignment. `class C:
+            # FLOAT_TO_FP8_ROW_MAPPER = {}` makes every later mutation in that suite a
+            # class attribute, not the module table, so applying it to the exported
+            # one fabricated support the import never installs.
+            bound = set()
+            for statement in body:
+                targets = []
+                if isinstance(statement, ast.Assign):
+                    targets = statement.targets
+                elif isinstance(statement, ast.AnnAssign):
+                    targets = [statement.target]
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        bound.add(target.id)
+            return bound
+
+        def _executed_nodes(body, shadowed = frozenset()):
+            for statement in body:
+                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    # A `def` binds a name; it does not run.
+                    continue
+                if isinstance(statement, ast.Break):
+                    # Nothing after an unconditional `break` in this suite runs, so a
+                    # mapping written below one is never installed.
+                    return
+                if isinstance(statement, ast.ClassDef):
+                    # A class body, unlike a function body, RUNS at import: the
+                    # statements in it execute when the class is created, so
+                    # `class Additions: FLOAT_TO_FP8_ROW_MAPPER["x"] = "y"` really does
+                    # install that entry. Grouping it with the deferred bodies dropped
+                    # it. Anything deferred inside the class is still skipped, because
+                    # this recurses with the same exclusions.
+                    yield from _executed_nodes(
+                        statement.body, shadowed | _class_bound(statement.body)
+                    )
+                    continue
+                if isinstance(statement, ast.If) and _constant_truth(statement.test) is not None:
+                    # Only a literal test is decided here. Anything else conditional is
+                    # INCLUDED: a real mapper's entries are unconditional, so being
+                    # generous costs at most reading a conditional entry as present.
+                    branch = statement.body if _constant_truth(statement.test) else statement.orelse
+                    yield from _executed_nodes(branch, shadowed)
+                    continue
+                if isinstance(statement, ast.While) and _constant_truth(statement.test) is not None:
+                    # `while False:` never runs its body, exactly as `if False:` does
+                    # not, and its `else` runs instead. A truthy literal test keeps the
+                    # body and skips the `else`, which never runs without a `break`.
+                    if _constant_truth(statement.test):
+                        yield from _executed_nodes(statement.body, shadowed)
+                    else:
+                        yield from _executed_nodes(statement.orelse, shadowed)
+                    continue
+                if isinstance(statement, ast.For) and _iterates_nothing(statement.iter):
+                    # `for _ in ():` and `for _ in "":` iterate nothing, so the body
+                    # never runs and the `else` does. Only a written-out empty
+                    # container or empty string is decided here; any other iterable
+                    # keeps the body, since a real mapper's entries are unconditional
+                    # and being generous costs at most an extra read.
+                    yield from _executed_nodes(statement.orelse, shadowed)
+                    continue
+                for field in ("body", "orelse", "finalbody"):
+                    children = getattr(statement, field, None)
+                    if isinstance(children, list):
+                        yield from _executed_nodes(children, shadowed)
+                for handler in getattr(statement, "handlers", []) or []:
+                    yield from _executed_nodes(handler.body, shadowed)
+                # Only the parts of the statement that are not a suite: the suites
+                # were walked above with the exclusions applied, and `ast.walk` here
+                # descended into them again - including into a `def` nested under a
+                # condition this cannot decide, whose body never runs at import and
+                # would have fabricated entries the module does not install.
+                pending = [
+                    child
+                    for child in ast.iter_child_nodes(statement)
+                    if not isinstance(child, (ast.stmt, ast.excepthandler))
+                ]
+                yield statement, shadowed
+                while pending:
+                    current = pending.pop()
+                    yield current, shadowed
+                    for child in ast.iter_child_nodes(current):
+                        if isinstance(
+                            child,
+                            (
+                                ast.FunctionDef,
+                                ast.AsyncFunctionDef,
+                                ast.ClassDef,
+                                ast.Lambda,
+                            ),
+                        ):
+                            continue
+                        if isinstance(child, (ast.stmt, ast.excepthandler)):
+                            continue
+                        pending.append(child)
+
+        for node, shadowed in _executed_nodes(tree.body):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                # `FLOAT_TO_FP8_ROW_MAPPER["org/x"]: str = "unsloth/x-row"` runs the
+                # assignment exactly as the unannotated form does - the annotation on a
+                # subscript target is evaluated and discarded - so a newer mapper that
+                # annotates a row entry would otherwise drop out of the probe. The
+                # source table is already read in both spellings; this is the same
+                # allowance for the direct mutations. An annotation with no value
+                # (`X["k"]: str`) binds nothing and is skipped.
+                if isinstance(node, ast.AnnAssign):
+                    if node.value is None:
+                        continue
+                    targets = [node.target]
+                else:
+                    targets = node.targets
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        # `FLOAT_TO_INT_MAPPER = {...}` REPLACES the exported table, so
+                        # a fetched mapper that clears or rebuilds one leaves the module
+                        # with that value and the probe has to follow it. Only a literal,
+                        # and only a table this reads; anything else is left alone.
+                        table = by_name.get(target.id)
+                        if table is None or target.id in shadowed:
+                            continue
+                        try:
+                            replacement = ast.literal_eval(node.value)
+                        except ValueError:
+                            continue
+                        if isinstance(replacement, dict):
+                            table.clear()
+                            table.update(replacement)
+                        continue
+                    if not isinstance(target, ast.Subscript):
+                        continue
+                    if not isinstance(target.value, ast.Name):
+                        continue
+                    if target.value.id in shadowed:
+                        # A class body that bound the same name shadows the module
+                        # table for the rest of that suite.
+                        continue
+                    table = by_name.get(target.value.id)
+                    if table is None:
+                        continue
+                    try:
+                        table[ast.literal_eval(target.slice)] = ast.literal_eval(node.value)
+                    except ValueError:
+                        # Not a literal, so not data we can read. Skip it rather than
+                        # failing the whole probe.
+                        continue
+                pass
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                # `_add_with_lower(MAP_TO_UNSLOTH_16bit, "vendor/X", "unsloth/X")` is the
+                # established way mapper.py records an alias that is not derivable from
+                # the source table, and there are two in the shipped file today. Running
+                # the INSTALLED builder alone would silently miss any new one, so an
+                # older install would stop offering the upgrade notice for exactly the
+                # models main had just added. Apply them with the installed helper, from
+                # literal arguments only, so the fetched text still supplies nothing but
+                # data.
+                helper = _MAPPER_HELPERS.get(node.func.id)
+                if helper is None or len(node.args) != 3:
+                    continue
+                destination, key, value = node.args
+                if not isinstance(destination, ast.Name):
+                    continue
+                if destination.id in shadowed:
+                    continue
+                table = by_name.get(destination.id)
+                if table is None:
+                    continue
+                try:
+                    helper(table, ast.literal_eval(key), ast.literal_eval(value))
+                except ValueError:
+                    continue
+            pass
+        pass
+        return tables
     except:
         return {}, {}, {}, {}, {}
 

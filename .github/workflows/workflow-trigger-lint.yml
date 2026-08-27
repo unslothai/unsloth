@@ -164,5 +164,9 @@ jobs:
             tests/studio/test_windows_small_checks_stay_on_their_image.py \
             tests/studio/test_windows_ui_lanes_are_isolated.py \
             tests/studio/test_workflow_guards_run_unfiltered.py \
-            tests/security
+            tests/security \
+            --ignore=tests/security/test_custom_dtype_no_eval.py \
+            --ignore=tests/security/test_custom_dtype_wire_format.py \
+            --ignore=tests/security/test_mapper_probe_no_exec.py \
+            --ignore=tests/security/test_inherited_custom_dtype_is_neutralized.py
 

@@ -1,0 +1,145 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""An inherited `UNSLOTH_FORCE_CUSTOM_DTYPE` must be harmless to EVERY reader.
+
+`models/vision.py` drops the two code fields of a value this process did not set. That
+is not enough on its own: `unsloth_zoo` ships on its own schedule and reads the same
+variable in `fix_rotary_embedding_dtype`, and the release this package's floor resolves
+to - `unsloth_zoo==2026.8.15`, uploaded 2026-08-25 - still calls `eval` on the dtype
+field. A version floor cannot fix an installation that is already resolved, so the
+value itself is rewritten at import instead.
+
+The old reader is reproduced here as the one line that matters, `eval(field)`, rather
+than vendored: the point is that after neutralization there is nothing left for any
+`eval` to do. CPU-only and network-free.
+
+The module is imported inside each test rather than at module scope: `tests/security` runs on a
+four-package light runner, and `test_security_suite_stays_import_light.py` fails the
+build for any file here that pulls a runtime dependency in during collection.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+import pytest
+
+_ENV_KEY = "UNSLOTH_FORCE_CUSTOM_DTYPE"
+_HOSTILE = 'all;__import__("os").system("touch {marker}");None;;'
+
+
+def _import_with(value, marker = None):
+    """Imports the module in a fresh process with `value` inherited, returns the env."""
+    environment = dict(os.environ)
+    environment[_ENV_KEY] = value.format(marker = marker) if marker else value
+    program = (
+        "import unsloth.models._custom_dtype as module, os;"
+        f"print(repr(os.environ.get({_ENV_KEY!r})))"
+    )
+    finished = subprocess.run(
+        [sys.executable, "-c", program],
+        env = environment,
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    assert finished.returncode == 0, finished.stderr[-2000:]
+    return finished.stdout.strip().splitlines()[-1]
+
+
+def test_a_hostile_dtype_field_cannot_reach_an_eval(tmp_path):
+    """The field the older zoo reader evaluates is a dtype NAME afterwards, or None."""
+    from unsloth.models._custom_dtype import DTYPE_ALIASES
+
+    marker = tmp_path / "pwned"
+    seen = _import_with(_HOSTILE, marker = marker)
+    assert not marker.exists(), "importing the module ran the inherited code"
+
+    value = seen.strip("'\"")
+    field = value.split(";", 4)[1]
+    assert field.strip() in DTYPE_ALIASES, field
+    # What the unhardened `unsloth_zoo==2026.8.15` does with that field, verbatim.
+    assert eval(field) is None  # noqa: S307 - the point of the test
+    assert not marker.exists()
+
+
+def test_the_code_fields_of_an_inherited_value_are_emptied(monkeypatch):
+    from unsloth.models._custom_dtype import neutralize_inherited_custom_dtype
+
+    monkeypatch.setenv(_ENV_KEY, "all;torch.float16;torch.float16;custom;import os")
+    sanitized = neutralize_inherited_custom_dtype()
+    checker, dtype, bnb, custom, execute = sanitized.split(";", 4)
+    assert (custom, execute) == ("", "")
+    # The dtype fields of a well formed value still apply: that is what they already
+    # did, and the five fields stay because both packages assert on the count.
+    assert (checker, dtype, bnb) == ("all", "torch.float16", "torch.float16")
+    assert sanitized.count(";") == 4
+
+
+def test_an_unknown_dtype_name_becomes_none(monkeypatch):
+    from unsloth.models._custom_dtype import neutralize_inherited_custom_dtype
+
+    monkeypatch.setenv(_ENV_KEY, "all;os.system('x');None;;")
+    sanitized = neutralize_inherited_custom_dtype()
+    assert sanitized.split(";", 4)[1] == "None"
+
+
+def test_a_malformed_inherited_value_is_removed(monkeypatch):
+    """Both readers assert on the separator count, so it can only crash a run."""
+    from unsloth.models._custom_dtype import neutralize_inherited_custom_dtype
+
+    monkeypatch.setenv(_ENV_KEY, "not-even-close")
+    assert neutralize_inherited_custom_dtype() == ""
+    assert _ENV_KEY not in os.environ
+
+
+def test_a_value_this_process_registered_is_untouched(monkeypatch):
+    from unsloth.models._custom_dtype import (
+        neutralize_inherited_custom_dtype,
+        register_custom_dtype,
+        trusted_custom_dtype,
+    )
+
+    monkeypatch.delenv(_ENV_KEY, raising = False)
+    ours = "all;torch.float16;torch.float16;pass  # only this test;pass  # only this test"
+    register_custom_dtype(ours)
+    assert neutralize_inherited_custom_dtype() == ours
+    assert trusted_custom_dtype() == (ours, True)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "all;torch.bfloat16;None;;",
+        "float16;torch.float16;torch.float16;;",
+    ],
+)
+def test_neutralizing_is_idempotent(value, monkeypatch):
+    from unsloth.models._custom_dtype import neutralize_inherited_custom_dtype
+
+    monkeypatch.setenv(_ENV_KEY, value)
+    once = neutralize_inherited_custom_dtype()
+    monkeypatch.setenv(_ENV_KEY, once)
+    assert neutralize_inherited_custom_dtype() == once
+
+
+def test_the_module_neutralizes_on_import():
+    """A caller that never touches the function is still protected."""
+
+    import ast
+    import pathlib
+
+    import unsloth.models._custom_dtype as module
+
+    source = pathlib.Path(module.__file__).read_text(encoding = "utf-8")
+    called = [
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and getattr(node.value.func, "id", "") == "neutralize_inherited_custom_dtype"
+    ]
+    assert called, "the module no longer neutralizes an inherited value on import"

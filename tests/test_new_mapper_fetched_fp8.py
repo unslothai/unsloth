@@ -42,6 +42,12 @@ _ANCHOR = '    "unsloth/Kimi-K2-Instruct-BF16" : ('
 _ROW_ONLY = "zeta-org/Zeta-9B-Row-Only-FP8"
 
 
+def _loader_utils_globals():
+    """The real loader_utils module globals, for anything the stand-in needs verbatim."""
+    import unsloth.models.loader_utils as loader_utils
+    return vars(loader_utils)
+
+
 def _mapper_source():
     with open(os.path.join(_MODELS, "mapper.py"), encoding = "utf-8") as f:
         return f.read()
@@ -70,9 +76,54 @@ def _without_fp8_tables(source):
     )
 
 
+class _FakeRaw:
+    """`read1` over a fixed list of chunks, returning b"" at the end."""
+
+    def __init__(self, chunks):
+        self._chunks = iter(chunks)
+
+    def read1(self, amount = -1):
+        return next(self._chunks, b"")
+
+
 class _FakeResponse:
-    def __init__(self, text):
-        self.text = text
+    """The streaming half of `requests.Response`, which is all the probe uses.
+
+    `_get_new_mapper` reads the body in chunks and stops at its byte cap while
+    reading, because `requests.get` would otherwise buffer and decode the whole
+    response before any length check could run. It also follows redirects by hand,
+    since `requests` drains each intermediate body inside `get`, so the fake has to
+    carry a status and headers as well as `iter_content`.
+    """
+
+    def __init__(
+        self,
+        text,
+        chunks = None,
+        status_code = 200,
+        headers = None,
+    ):
+        self.encoding = "utf-8"
+        self.status_code = status_code
+        self.headers = headers or {}
+        self._chunks = chunks if chunks is not None else [text.encode("utf-8")]
+        self._raw = None
+
+    def iter_content(self, chunk_size = 1):
+        yield from self._chunks
+
+    @property
+    def raw(self):
+        """The urllib3 response the probe reads through.
+
+        It calls `read1`, which returns whatever ONE socket read produced, so that a
+        deadline check sits between every read rather than only between whole chunks.
+        `iter_content` is kept because it is what `requests` exposes and the fake would
+        otherwise drift from the real object.
+        """
+        if self._raw is None:
+            self._raw = _FakeRaw(self._chunks)
+        return self._raw
 
     def __enter__(self):
         return self
@@ -81,9 +132,16 @@ class _FakeResponse:
         return False
 
 
-def _install_fake_requests(monkeypatch, text):
+def _install_fake_requests(
+    monkeypatch,
+    text,
+    chunks = None,
+):
     module = types.ModuleType("requests")
-    module.get = lambda url, timeout = None: _FakeResponse(text)
+    module.compat = types.SimpleNamespace(urljoin = lambda base, url: url)
+    module.get = lambda url, timeout = None, stream = False, allow_redirects = True: (
+        _FakeResponse(text, chunks)
+    )
     monkeypatch.setitem(sys.modules, "requests", module)
 
 
@@ -99,6 +157,11 @@ def _load_resolver(installed_source):
     """Stand-in for loader_utils' module globals, built from `installed_source`."""
     from unsloth_zoo.utils import Version
 
+    # loader_utils imports this from .mapper; _get_new_mapper derives the fetched tables
+    # with it, so the stand-in globals need it or the probe NameErrors into its own bare
+    # except and returns empty tables.
+    from unsloth.models.mapper import build_mappers
+
     mapper_ns = {}
     exec(compile(installed_source, "mapper.py", "exec"), mapper_ns)
 
@@ -108,6 +171,10 @@ def _load_resolver(installed_source):
         "MAP_TO_UNSLOTH_16bit": mapper_ns["MAP_TO_UNSLOTH_16bit"],
         "FLOAT_TO_FP8_BLOCK_MAPPER": mapper_ns["FLOAT_TO_FP8_BLOCK_MAPPER"],
         "FLOAT_TO_FP8_ROW_MAPPER": mapper_ns["FLOAT_TO_FP8_ROW_MAPPER"],
+        "build_mappers": build_mappers,
+        # Imported from loader_utils rather than rebuilt, so a new helper added there
+        # cannot silently drop out of this stand-in and make the probe look broken.
+        "_MAPPER_HELPERS": _loader_utils_globals()["_MAPPER_HELPERS"],
         "SUPPORTS_FOURBIT": True,
         "transformers_version": Version("4.57.6"),
         "Version": Version,
