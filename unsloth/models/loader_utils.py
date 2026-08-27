@@ -720,14 +720,20 @@ def _get_new_mapper():
             return bound
 
         def _executed_nodes(body, shadowed = frozenset()):
+            # Returns True when the suite ENDED in a jump, so a caller that recursed
+            # into a decided branch knows nothing below it runs either:
+            # `if True: return` inside `build_mappers` leaves the additions written
+            # under it unreachable, and yielding from the branch alone lost that.
             for statement in body:
                 if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     # A `def` binds a name; it does not run.
                     continue
-                if isinstance(statement, (ast.Break, ast.Continue)):
-                    # Nothing after an unconditional `break` or `continue` in this
-                    # suite runs, so a mapping written below one is never installed.
-                    return
+                if isinstance(statement, (ast.Break, ast.Continue, ast.Return)):
+                    # Nothing after an unconditional `break`, `continue` or `return` in
+                    # this suite runs, so a mapping written below one is never
+                    # installed. `return` matters inside `build_mappers`, whose body is
+                    # read with this same walk.
+                    return True
                 if isinstance(statement, ast.ClassDef):
                     # A class body, unlike a function body, RUNS at import: the
                     # statements in it execute when the class is created, so
@@ -744,16 +750,21 @@ def _get_new_mapper():
                     # INCLUDED: a real mapper's entries are unconditional, so being
                     # generous costs at most reading a conditional entry as present.
                     branch = statement.body if _constant_truth(statement.test) else statement.orelse
-                    yield from _executed_nodes(branch, shadowed)
+                    if (yield from _executed_nodes(branch, shadowed)):
+                        return True
                     continue
                 if isinstance(statement, ast.While) and _constant_truth(statement.test) is not None:
                     # `while False:` never runs its body, exactly as `if False:` does
                     # not, and its `else` runs instead. A truthy literal test keeps the
                     # body and skips the `else`, which never runs without a `break`.
                     if _constant_truth(statement.test):
+                        # A `while True:` body that jumps out ends this suite too, but
+                        # only through `return`: a `break` leaves the loop, not the
+                        # suite around it, and the walk cannot tell them apart here.
                         yield from _executed_nodes(statement.body, shadowed)
                     else:
-                        yield from _executed_nodes(statement.orelse, shadowed)
+                        if (yield from _executed_nodes(statement.orelse, shadowed)):
+                            return True
                     continue
                 if isinstance(statement, ast.For) and _iterates_nothing(statement.iter):
                     # `for _ in ():` and `for _ in "":` iterate nothing, so the body
@@ -761,7 +772,8 @@ def _get_new_mapper():
                     # container or empty string is decided here; any other iterable
                     # keeps the body, since a real mapper's entries are unconditional
                     # and being generous costs at most an extra read.
-                    yield from _executed_nodes(statement.orelse, shadowed)
+                    if (yield from _executed_nodes(statement.orelse, shadowed)):
+                        return True
                     continue
                 for field in ("body", "orelse", "finalbody"):
                     children = getattr(statement, field, None)
@@ -847,16 +859,52 @@ def _get_new_mapper():
         # The statement it runs in is recorded too: the tables the fetched module
         # exports are the ones the builder saw WHEN IT RAN, so a source table rebound
         # afterwards must not be the one this reads.
+        # The names the module exports, which is what the probe answers with.
+        exported_names = (
+            "INT_TO_FLOAT_MAPPER", "FLOAT_TO_INT_MAPPER", "MAP_TO_UNSLOTH_16bit",
+            "FLOAT_TO_FP8_BLOCK_MAPPER", "FLOAT_TO_FP8_ROW_MAPPER",
+        )
+
+        def _binds_the_exports(statement):
+            """Whether this statement assigns one of the exported tables."""
+            if isinstance(statement, ast.AnnAssign):
+                targets = [statement.target]
+            elif isinstance(statement, ast.Assign):
+                targets = statement.targets
+            else:
+                return False
+            bound = set()
+            for target in targets:
+                if isinstance(target, (ast.Tuple, ast.List)):
+                    bound |= {
+                        element.id for element in target.elts
+                        if isinstance(element, ast.Name)
+                    }
+                elif isinstance(target, ast.Name):
+                    bound.add(target.id)
+            return bool(bound.intersection(exported_names))
+
         builder_call = None
         builder_index = None
+        first_call = None
         for index, statement in enumerate(tree.body):
-            for node, _shadowed in _executed_nodes([statement]):
-                if _calls_the_builder(node):
-                    builder_call = node
-                    builder_index = index
-                    break
-            if builder_call is not None:
+            calls = [
+                node for node, _shadowed in _executed_nodes([statement])
+                if _calls_the_builder(node)
+            ]
+            if not calls:
+                continue
+            if first_call is None:
+                first_call = (calls[0], index)
+            # The call whose result BINDS the exports, not merely the first one that
+            # runs: a fetched mapper may call the builder over a dummy table to check
+            # something before the call that really populates the five, and reading the
+            # first one derived every mapping from that dummy.
+            if _binds_the_exports(statement):
+                builder_call, builder_index = calls[0], index
                 break
+        if builder_call is None and first_call is not None:
+            builder_call, builder_index = first_call
         builder_called = builder_call is not None
         if builder_called:
             for statement in tree.body:
@@ -1093,6 +1141,32 @@ def _get_new_mapper():
                         # failing the whole probe.
                         continue
                 pass
+            elif isinstance(node, ast.Delete):
+                # `del FLOAT_TO_INT_MAPPER["vendor/base"]` takes the alias away, the
+                # same way the source-table replay above reads a deletion. Applying
+                # only the additions left the probe reporting a mapping the newer file
+                # had removed, which raises the upgrade-only NotImplementedError for a
+                # name upgrading would not support either.
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        table = by_name.get(target.id)
+                        if table is not None and target.id not in shadowed:
+                            # `del INT_TO_FLOAT_MAPPER` unbinds the whole table.
+                            table.clear()
+                        continue
+                    if not isinstance(target, ast.Subscript):
+                        continue
+                    if not isinstance(target.value, ast.Name):
+                        continue
+                    if target.value.id in shadowed:
+                        continue
+                    table = by_name.get(target.value.id)
+                    if table is None:
+                        continue
+                    try:
+                        table.pop(ast.literal_eval(target.slice), None)
+                    except ValueError:
+                        continue
             elif (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)

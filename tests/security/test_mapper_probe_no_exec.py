@@ -656,3 +656,63 @@ def test_deleting_the_whole_source_table_leaves_nothing_to_read(monkeypatch):
     removed = "".join(lines[:insert] + ["del __INT_TO_FLOAT_MAPPER\n"] + lines[insert:])
     with _serving(removed, monkeypatch):
         assert loader_utils._get_new_mapper() == ({}, {}, {}, {}, {})
+
+
+def test_an_exported_entry_deleted_by_the_fetched_mapper_is_gone(monkeypatch):
+    """`del FLOAT_TO_INT_MAPPER["vendor/base"]` removes the alias on import."""
+    with _serving(REAL_MAPPER, monkeypatch):
+        expected = loader_utils._get_new_mapper()
+    victim = next(iter(expected[1]))
+    removed = REAL_MAPPER + f"\ndel FLOAT_TO_INT_MAPPER[{victim!r}]\n"
+    with _serving(removed, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    assert victim in expected[1], "the fixture picked a name the probe never reported"
+    assert victim not in tables[1], "a deleted exported entry was still reported"
+
+
+def test_an_addition_below_a_return_in_the_builder_is_not_read(monkeypatch):
+    """Nothing after an unconditional `return` in that suite runs."""
+    lines = REAL_MAPPER.splitlines(True)
+    insert = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers(")) + 1
+    dead = "".join(
+        lines[:insert]
+        + [
+            "    if True:\n        return ({}, {}, {}, {}, {})\n",
+            '    _add_with_lower(MAP_TO_UNSLOTH_16bit, "vendor/dead", "unsloth/dead")\n',
+        ]
+        + lines[insert:]
+    )
+    with _serving(dead, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    for table in tables:
+        assert not any("vendor/dead" in str(key) for key in table)
+
+
+def test_the_builder_call_that_binds_the_exports_is_the_one_read(monkeypatch):
+    """A validation call over a dummy table before the real one is not the source."""
+    lines = REAL_MAPPER.splitlines(True)
+    insert = next(
+        i for i, line in enumerate(lines)
+        if line.rstrip().endswith("= build_mappers(__INT_TO_FLOAT_MAPPER)")
+    )
+    # Walk back to the start of that assignment statement.
+    while insert > 0 and not lines[insert - 1].rstrip().endswith((")", ":", "}", "]")):
+        insert -= 1
+    dummied = "".join(
+        lines[:insert]
+        + [
+            'DUMMY_SOURCE = {"vendor/dummy-bnb-4bit": ("vendor/dummy",)}\n',
+            "_checked = build_mappers(DUMMY_SOURCE)\n",
+        ]
+        + lines[insert:]
+    )
+    with _serving(REAL_MAPPER, monkeypatch):
+        expected = loader_utils._get_new_mapper()
+    with _serving(dummied, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    assert any(expected)
+    for table in tables:
+        assert not any("vendor/dummy" in str(key) for key in table), (
+            "the dummy call was read as the one that populates the exports"
+        )
+    assert tables == expected
