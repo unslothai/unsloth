@@ -86,6 +86,19 @@ test("residency remains a cache mutation safety input", () => {
   assert.match(hubPage, /adoptResidentModelStatus\(/);
   assert.match(
     hubPage,
+    /Promise\.all\(\[getInferenceStatus\(\), readIdleUnloadArmed\(\)\]\)\s*\.then\(\(\[status, idleUnloadArmed\]\) => \{/,
+  );
+  assert.match(
+    hubPage,
+    /adoptResidentModelStatus\([\s\S]*?modelLoading: store\.modelLoading,\s*idleUnloadArmed,/,
+  );
+  assert.match(hubPage, /\.catch\(\(\) => idleUnloadArmed\.current\)/);
+  assert.match(
+    hubPage,
+    /applyStatus: \(previous\) => \{\s*applyActiveModelStatusToStore\(status, \{/,
+  );
+  assert.match(
+    hubPage,
     /subscribeResidentStatusRefresh\(\s*refreshResidentModelStatus/,
   );
   assert.ok((hubPage.match(/residentModelIdMatches\(/g) ?? []).length >= 2);
