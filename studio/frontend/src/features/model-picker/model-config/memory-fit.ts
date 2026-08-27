@@ -121,11 +121,10 @@ export interface MemoryFitResult {
  * Every verdict the row shows, plus the one note it prints.
  *
  * `_host_offload_shortfall_message` refuses a load whose offloaded weights exceed
- * psutil's AVAILABLE memory less a reserve, not the machine's physical total, so a
- * 70 GB host share read as fitting a 128 GB box with 32 GB free. The free-memory
- * verdicts here WARN rather than refuse for one reason: the bytes a pending load
- * reclaims are mostly the resident model's own, which Studio unloads first, and
- * those cannot be attributed from here.
+ * psutil's AVAILABLE memory less a reserve, not the physical total, so a 70 GB host
+ * share read as fitting a 128 GB box with 32 GB free. The free-memory verdicts here
+ * WARN instead: the bytes a pending load reclaims are mostly the resident model's
+ * own, which Studio unloads first, and cannot be attributed from here.
  */
 export function resolveMemoryFit(
   estimate: MemoryFitEstimate,
@@ -133,20 +132,18 @@ export function resolveMemoryFit(
 ): MemoryFitResult {
   const { singleMemoryPool } = capacity;
   const rawGpuFit = classifyMemoryFit(estimate.gpuBytes, capacity.gpuCapacityGb);
-  // One pool means the WHOLE load draws on that memory, so the pressure question is
-  // asked of the total there rather than of a GPU share that is not a separate
-  // reservation. Same rule the host side already used; asking it of gpuBytes alone
-  // let a partly CPU-offloaded load on a Vulkan iGPU look comfortable against free
-  // memory that has to hold all of it.
+  // One pool means the WHOLE load draws on that memory, so the pressure question goes
+  // to the total rather than to a GPU share that is not a separate reservation. Asking
+  // it of gpuBytes alone let a partly CPU-offloaded load on a Vulkan iGPU look
+  // comfortable against free memory that has to hold all of it.
   const freeGpuFit = classifyMemoryFit(
     singleMemoryPool ? estimate.totalBytes : estimate.gpuBytes,
     capacity.freeGpuCapacityGb,
   );
   const gpuPressured = freeGpuFit === "exceeds" || freeGpuFit === "tight";
-  // Guarded rather than subtracted blind: a non-finite figure off the wire makes the
-  // difference NaN, which `Math.max(0, ...)` propagates rather than clamps. 0 is the
-  // same verdict from classifyMemoryFit ("unknown") and is a number a caller can
-  // print, which NaN is not.
+  // Guarded, not subtracted blind: a non-finite figure makes the difference NaN, which
+  // `Math.max(0, ...)` propagates rather than clamps. 0 classifies the same ("unknown")
+  // and is printable, which NaN is not.
   const hostShareBytes =
     Number.isFinite(estimate.totalBytes) && Number.isFinite(estimate.gpuBytes)
       ? Math.max(0, estimate.totalBytes - estimate.gpuBytes)
@@ -158,11 +155,9 @@ export function resolveMemoryFit(
   );
   const hostPressured = usableHostFit === "exceeds" || usableHostFit === "tight";
   const gpuFit = rawGpuFit === "fits" && gpuPressured ? "tight" : rawGpuFit;
-  // The host share has to fit in host RAM on its own. Unused VRAM cannot hold bytes
-  // that placement has pinned outside the GPU, so weighing only the combined ceiling
-  // called a 70 GB CPU placement a fit on a 24 GB card plus 64 GB of RAM. Skipped
-  // where the two are one pool, which is the case the combined figure already
-  // describes exactly.
+  // The host share must fit host RAM on its own: unused VRAM cannot hold bytes pinned
+  // outside the GPU, so the combined ceiling alone called a 70 GB CPU placement a fit
+  // on a 24 GB card plus 64 GB of RAM. Skipped where the two are one pool.
   const hostShareFit: MemoryFitVerdict = singleMemoryPool
     ? "unknown"
     : classifyMemoryFit(hostShareBytes, capacity.systemRamCapacityGb);
@@ -170,11 +165,10 @@ export function resolveMemoryFit(
     classifyMemoryFit(estimate.totalBytes, capacity.totalCapacityGb),
     hostShareFit,
   );
-  // Lower bound, not an estimate. Two ways to get there, and both UNDER-count by a
-  // term that grows with context: no attention dims, so the target cache is missing,
-  // or a drafter that is a repository rather than a file on this disk, so its cache
-  // is missing while its weights are counted. The advisory below still tells them
-  // apart, because the two are not fixed the same way.
+  // Lower bound, not an estimate. Both routes here UNDER-count by a term that grows
+  // with context: no attention dims, so the target cache is missing, or a drafter that
+  // is a repository rather than a file on disk, so its cache is missing while its
+  // weights are counted. The advisory still tells them apart -- different fixes.
   const bounded =
     !estimate.kvEstimable || estimate.drafterKvUnsized || estimate.adaptersUnsized;
   return {
@@ -215,17 +209,15 @@ interface AdvisoryVerdicts {
  * At most one note, most actionable first.
  *
  * An unsizable cache outranks any verdict drawn from the figures, since it says they
- * are incomplete. It branches on `kvEstimable` rather than on `bounded`: both make
- * the figures a floor, but only this one is about the header, and the drafter case
- * below names its own cause.
+ * are incomplete. Branches on `kvEstimable`, not `bounded`: both make the figures a
+ * floor, but only this one is about the header.
  *
- * The pool split below used to gate the whole tail, which made the shared-pool
- * pressure copy dead code -- it sat inside the `singleMemoryPool === false` arm and
- * re-tested `singleMemoryPool`, so the string could never be chosen -- and left a
- * single-pool host with exactly one reachable note, "exceeds". An Apple machine or a
- * Vulkan iGPU therefore never warned that a load fitting the machine did not fit
- * what was free. The pool question now decides the WORDING and which figures are
- * compared, not whether the pressure branch exists at all.
+ * The pool split used to gate the whole tail, which made the shared-pool pressure copy
+ * dead code -- it sat inside the `singleMemoryPool === false` arm and re-tested
+ * `singleMemoryPool` -- leaving a single-pool host one reachable note, "exceeds". An
+ * Apple machine or a Vulkan iGPU never warned that a load fitting the machine did not
+ * fit what was free. The pool question now decides the WORDING and which figures are
+ * compared, not whether the branch exists.
  */
 export function resolveMemoryAdvisory(
   estimate: MemoryFitEstimate,
@@ -302,6 +294,38 @@ export function resolveMemoryAdvisory(
     };
   }
   return null;
+}
+
+/** What `resolveKvNote` joins its items with, and what `glueNoteItems` splits on. */
+export const NOTE_SEPARATOR = " · ";
+
+/**
+ * A separated caption, breakable only between its items.
+ *
+ * A caption like "f16 · 262,144 tokens · 4 slots" does not fit the panel once the
+ * window is narrow enough to shrink it, and left to itself the browser breaks at the
+ * last space that fits -- which put "slots" alone on a line under "... tokens · 4".
+ * Gluing each item together with U+00A0 leaves exactly one break opportunity per
+ * bullet, and gluing the bullet to the item that FOLLOWS it means the break lands
+ * before the bullet rather than orphaning it at the end of the previous line.
+ *
+ * A note with NO separator is returned untouched. It has no items to keep apart, so
+ * gluing it would buy nothing and cost every break opportunity it had: the Weights and
+ * Draft cache notes are ordinary prose ("256 of 257 layers on GPU"), and glued they
+ * became a single unbreakable run that overflows the caption column rather than
+ * wrapping inside it, which is worse than the orphan this function exists to prevent.
+ */
+export function glueNoteItems(note: string): string {
+  const items = note.split(NOTE_SEPARATOR);
+  if (items.length < 2) {
+    return note;
+  }
+  return items
+    .map((item, index) => {
+      const glued = item.replace(/ /g, "\u00a0");
+      return index === 0 ? glued : `\u00b7\u00a0${glued}`;
+    })
+    .join(" ");
 }
 
 /** The KV line's caption: dtype, what was priced, and where it lives. */
