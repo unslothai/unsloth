@@ -920,9 +920,20 @@ class TestExpectedTorchFlavorSkips:
         assert ok is True
         mock_pip.assert_not_called()
 
-    @pytest.mark.parametrize("backend", ["cpu", "rocm", "xpu", "auto"])
-    def test_a_deliberate_backend_is_a_no_op(self, backend):
+    @pytest.mark.parametrize("backend", ["cpu", "auto"])
+    def test_a_non_gpu_backend_is_a_no_op(self, backend):
+        """Decided without resolving the expectation: cpu and unrecognised values are
+        deliberate whatever the handover said, and this exit costs no GPU probe."""
         ok, mock_pip = _run_flavor_invariant(backend = backend)
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    @pytest.mark.parametrize("backend", ["rocm", "xpu"])
+    def test_a_gpu_backend_that_disagrees_with_the_handover_is_a_no_op(self, backend):
+        """An explicit ROCm/XPU pin against a cu124 handover. The pin is the newer and
+        more specific instruction; the handover only describes what the install arm
+        above it happened to do, so the pin wins and this pass stays out of it."""
+        ok, mock_pip = _run_flavor_invariant(backend = backend, expected_env = "cu124")
         assert ok is True
         mock_pip.assert_not_called()
 
@@ -1183,6 +1194,50 @@ class TestExpectedXpuFlavorIsEnforced:
         mock_pip.rocm_repair.assert_called_once()
         mock_pip.assert_not_called()
         assert ok is False
+
+
+class TestExplicitlyPinnedGpuFlavorsAreStillEnforced:
+    """An explicit GPU pin sets _TORCH_BACKEND at import, and an XPU pin additionally
+    reads as an "unknown family" to the shared helper, whose known set predates XPU.
+    Between them those two gates skipped the invariant on exactly the hosts that asked
+    for that GPU family on purpose -- so a later dependency install could put PyPI's CPU
+    wheel there and the update would still report success."""
+
+    def test_a_pinned_xpu_backend_is_enforced_when_it_agrees(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu", repaired = "2.9.1+xpu",
+            backend = "xpu", expected_env = "xpu",
+        )
+        assert ok is True
+        mock_pip.assert_called_once()
+
+    def test_a_pinned_rocm_backend_is_enforced_when_it_agrees(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu", repaired = "2.11.0+rocm7.2",
+            backend = "rocm", expected_env = "rocm",
+        )
+        assert ok is True
+        mock_pip.rocm_repair.assert_called_once()
+
+    def test_an_xpu_index_pin_repairs_from_that_pin(self):
+        """The pin's leaf IS the expected family, so it is not an unknown pin at all --
+        and it is the right index to repair from."""
+        pin = "https://mirror.corp.example/whl/xpu"
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu", repaired = "2.9.1+xpu",
+            backend = "xpu", expected_env = "xpu", index_url = pin,
+        )
+        assert ok is True
+        assert pin in mock_pip.call_args[0]
+
+    def test_an_unknown_pin_is_still_left_alone(self):
+        """Regression guard: narrowing the veto must not reopen the case it closed."""
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu", expected_env = None, recorded = "cu124",
+            index_url = "https://mirror.corp.example/simple",
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
 
 
 class TestSetupPs1CudaOnDiskFallback:

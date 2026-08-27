@@ -3027,7 +3027,24 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     """
     if NO_TORCH:
         return True
-    if _TORCH_BACKEND not in ("", "cuda"):
+    # "cpu" and anything unrecognised are deliberate and decidable without probing, so
+    # they exit before the expectation is resolved. "rocm" / "xpu" fall THROUGH: an
+    # explicit GPU pin sets _TORCH_BACKEND at import (see its assignment below the
+    # helpers), and rejecting it here would skip the invariant on exactly the hosts that
+    # asked for that GPU family on purpose. They are re-tested against the expectation
+    # once it is known, just below.
+    if _TORCH_BACKEND not in ("", "cuda", "rocm", "xpu"):
+        return True
+    if expected is None:
+        expected = _expected_torch_flavor_tag()
+    # _is_cuda_family_leaf rejects "" / "cpu" and an unknown mirror leaf in one test, so
+    # every unenforceable expectation lands here; "xpu" and "rocm" are the additions.
+    if not (_is_cuda_family_leaf(expected) or expected in ("xpu", "rocm")):
+        return True
+    # A GPU backend that DISAGREES with what setup.ps1 published is a deliberate choice
+    # this pass must not overrule: the pin is the newer, more specific instruction, and
+    # the handover can only describe what the install arm above it happened to do.
+    if _TORCH_BACKEND in ("rocm", "xpu") and _TORCH_BACKEND != expected:
         return True
     # An explicit pin whose leaf names no flavor was applied VERBATIM at install time,
     # so this function has no standing to second-guess it -- and it must not, because
@@ -3036,13 +3053,15 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     # reinstalls from the public pytorch index, which overrides an administrator's
     # deliberate package source and fails outright on a network-restricted host.
     # _ensure_cuda_torch declines on the same test, for the same reason.
-    if _explicit_unknown_family_torch_index_url() is not None:
-        return True
-    if expected is None:
-        expected = _expected_torch_flavor_tag()
-    # _is_cuda_family_leaf rejects "" / "cpu" / "rocm" and an unknown mirror leaf in one
-    # test, so every no-op expectation above lands here; "xpu" is the one addition.
-    if not (_is_cuda_family_leaf(expected) or expected in ("xpu", "rocm")):
+    #
+    # Compared against the expectation rather than taken as a flat veto, because that
+    # helper's "known" set is rocm*/gfx*/cpu/cuXXX -- it predates XPU and does NOT count
+    # "xpu" as a family, so a bare veto would read an explicit XPU pin as unknown and
+    # skip the very host the pin was set for. Widening the helper instead would change
+    # what _ensure_cuda_torch and _ensure_rocm_torch do and drift from install.sh /
+    # setup.ps1 / install.ps1, which it is documented to match.
+    _unknown_pin = _explicit_unknown_family_torch_index_url()
+    if _unknown_pin is not None and _torch_index_leaf(_unknown_pin) != expected:
         return True
     # Only meaningful for CUDA. An Arc host hides its GPU with a different variable, and
     # reading this one there would make an unrelated NVIDIA mask cancel an XPU repair.
