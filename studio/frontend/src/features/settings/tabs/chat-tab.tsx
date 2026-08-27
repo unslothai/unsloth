@@ -231,6 +231,12 @@ export function ChatTab() {
   const setCollapseThinkingByDefault = useChatPreferencesStore(
     (state) => state.setCollapseThinkingByDefault,
   );
+  const collapseToolActivityByDefault = useChatPreferencesStore(
+    (state) => state.collapseToolActivityByDefault,
+  );
+  const setCollapseToolActivityByDefault = useChatPreferencesStore(
+    (state) => state.setCollapseToolActivityByDefault,
+  );
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
   );
@@ -335,6 +341,17 @@ export function ChatTab() {
           <Switch
             checked={collapseThinkingByDefault}
             onCheckedChange={setCollapseThinkingByDefault}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.tools.collapseByDefault")}
+          description={t(
+            "settings.chat.tools.collapseByDefaultDescription",
+          )}
+        >
+          <Switch
+            checked={collapseToolActivityByDefault}
+            onCheckedChange={setCollapseToolActivityByDefault}
           />
         </SettingsRow>
         <SettingsRow

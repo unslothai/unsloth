@@ -226,17 +226,19 @@ import type { CachedGgufRepo, CachedModelRepo } from "./chat-api";
 import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
+  createContinuationMerger,
   type IncompleteReason,
-  joinContinuation,
   readIncompleteInfo,
   readContinuationRequest,
   rejectsAssistantPrefill,
   resumesExactly,
 } from "../utils/continuation";
 import {
+  claimLiveGenerationRun,
   generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationIsSettled,
+  releaseLiveGenerationRun,
 } from "../utils/chat-generation-recovery";
 import {
   generateAudio,
@@ -5191,18 +5193,20 @@ export function createOpenAIStreamAdapter(
       // is for providers that may ignore the prefill and repeat or restart.
       const repairContinuation =
         isExternalRequest && !resumesExactly(externalProvider?.providerType);
-      const mergeContinuation = (text: string): string =>
-        continuationPartial && repairContinuation
-          ? joinContinuation(
-              continuationPartial,
-              text.slice(continuationPartial.length),
-            )
-          : text;
+      // Streamed publishes get the cumulative text unchanged; the repairs run once, on
+      // the finished turn. Both of them re-decide as the continuation grows, so running
+      // them per arrival published a SHORTER text than the arrival before it, and the
+      // restart branch published only the continuation, dropping the whole partial the
+      // reader was already looking at.
+      const mergeContinuation = createContinuationMerger(
+        continuationPartial,
+        repairContinuation,
+      );
       // The parse of everything already streamed, extended by each delta.
-      // `mergeContinuation` can rewrite the prefix it is handed, and a rewritten
-      // prefix is exactly what an extend-only parse cannot follow, so that one
-      // path keeps reparsing the whole reply as before. It is a continuation of
-      // an external provider that may repeat itself, not the streaming case.
+      // The final merge can rewrite the prefix it is handed, and a rewritten prefix is
+      // exactly what an extend-only parse cannot follow, so that one path keeps
+      // reparsing the whole reply as before. It is a continuation of an external
+      // provider that may repeat itself, not the streaming case.
       const segmentedText = createSegmentedAssistantText({
         trustAppends: !(continuationPartial && repairContinuation),
       });
@@ -6106,6 +6110,12 @@ export function createOpenAIStreamAdapter(
                   generationDecision = "legacy";
                 } else {
                   generationDecision = "durable";
+                  // Before admission, not after. The run id is ours (`cancelId` is passed as
+                  // `runId`), and the run becomes visible through /active as soon as the POST
+                  // lands, so a visibility, pageshow, online or history-load trigger during
+                  // this await could otherwise start a recovery that the later claim would
+                  // not stop: the scheduler only tests ownership at startup.
+                  claimLiveGenerationRun(cancelId);
                   try {
                     generationRun = await createChatGenerationRunUntilAbort(
                       {
@@ -6129,6 +6139,9 @@ export function createOpenAIStreamAdapter(
                     if (generationDecision === "durable") return;
                   } else {
                     generationRunId = generationRun.id;
+                    // Normally the same id we claimed above; claimed again in case the server
+                    // ever echoes a different one. Both are released in the finally below.
+                    claimLiveGenerationRun(generationRunId);
                     generationStatus = generationRun.status;
                     if (generationStopRequested) {
                       void cancelChatGenerationRun(generationRun.id).catch(
@@ -7344,7 +7357,7 @@ export function createOpenAIStreamAdapter(
         ) {
           // Rendered parts, not the raw stream: `cumulativeText` carries <think>.
           const answerText = answerTextFromParts(
-            buildAssistantContent(mergeContinuation(cumulativeText)),
+            buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
           );
           const subjects = missingListSubjects(answerText, toolCallParts);
           if (subjects.length > 0) {
@@ -7422,7 +7435,7 @@ export function createOpenAIStreamAdapter(
         reasoningDurationTracker.finishGroup();
         yield {
           content: [
-            ...buildAssistantContent(mergeContinuation(cumulativeText)),
+            ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
             ...sourceParts,
             ...documentCitationParts,
           ],
@@ -7555,7 +7568,7 @@ export function createOpenAIStreamAdapter(
         }
         if (!abortSignal.aborted) {
           closeReasoningContent();
-          const partialText = mergeContinuation(cumulativeText);
+          const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
           if (partialContent.length > 0) {
             const partialTiming = buildTiming(
@@ -7592,6 +7605,10 @@ export function createOpenAIStreamAdapter(
         }
         throw err;
       } finally {
+        // Unconditional, and both ids: the pre-admission claim uses `cancelId`, and a run
+        // left claimed after its stream died is one this tab would never recover.
+        releaseLiveGenerationRun(cancelId);
+        if (generationRunId) releaseLiveGenerationRun(generationRunId);
         runSignal.removeEventListener("abort", onAbortCancel);
         abortSignal.removeEventListener("abort", forwardAbort);
         // Resolve once: the clears below drop the owner the lookup keys on.

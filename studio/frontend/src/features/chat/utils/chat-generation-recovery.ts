@@ -205,6 +205,70 @@ export function recoveredGenerationFinalMetadata(options: {
   return next;
 }
 
+/**
+ * The reply as one string, with reasoning back inside `<think>` tags.
+ *
+ * The recovery follows a run by replaying its chunk events, so it keeps the
+ * reply as the text those chunks carried rather than as parts. This is the
+ * inverse of `parseAssistantContent`, and it is what lets a body that arrived
+ * as parts be compared against one that arrived as deltas.
+ */
+export function generationRawContent(content: unknown): {
+  raw: string;
+  reasoningOpen: boolean;
+} {
+  if (typeof content === "string") {
+    return { raw: content, reasoningOpen: false };
+  }
+  if (!Array.isArray(content)) return { raw: "", reasoningOpen: false };
+  let raw = "";
+  let reasoningOpen = false;
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const record = part as { type?: string; text?: unknown };
+    const text = typeof record.text === "string" ? record.text : "";
+    if (record.type === "reasoning") {
+      if (reasoningOpen) raw += text;
+      else raw += `<think>${text}`;
+      reasoningOpen = true;
+    } else if (record.type === "text") {
+      if (reasoningOpen) raw += "</think>";
+      raw += text;
+      reasoningOpen = false;
+    }
+  }
+  return { raw, reasoningOpen };
+}
+
+/**
+ * Which body a recovery publish should put in front of the reader.
+ *
+ * A recovery replays the run's events from the cursor the last save recorded,
+ * one publish per event, each publish paying a write to storage before the
+ * next event is read. When the run being replayed is the one this tab is also
+ * streaming, that walk is orders of magnitude behind the live stream, so its
+ * body is a PREFIX of what the reader is already looking at. Importing it
+ * rewinds the reply to its opening lines until the adapter's next yield
+ * restores it, which is the reasoning pane collapsing and recovering about
+ * twice a second.
+ *
+ * Prefix, not length: a body that genuinely disagrees with the view is the
+ * server's and still wins, because storage is authoritative for everything a
+ * recovery exists to repair. Only a body that carries nothing the view is not
+ * already showing is refused.
+ */
+export function recoveredContentToImport<TContent>(
+  viewContent: TContent,
+  recoveredContent: TContent,
+): TContent {
+  const view = generationRawContent(viewContent).raw;
+  const recovered = generationRawContent(recoveredContent).raw;
+  if (recovered.length < view.length && view.startsWith(recovered)) {
+    return viewContent;
+  }
+  return recoveredContent;
+}
+
 export function generationNeedsRecovery(
   metadata: Record<string, unknown>,
 ): boolean {
@@ -325,4 +389,45 @@ export function subscribeGenerationRecoveryTriggers(
     windowTarget.removeEventListener("pageshow", recover);
     documentTarget.removeEventListener("visibilitychange", onVisible);
   };
+}
+
+/**
+ * Runs this tab is streaming itself, so a recovery never follows one of them.
+ *
+ * A durable run otherwise gets TWO readers in the tab that started it. The adapter streams
+ * it, and `scheduleGenerationRecovery` also replays it from storage, because its only gate
+ * is `generationNeedsRecovery(metadata)` and `history.load()` force-writes
+ * `generationSettled: false` onto any message matching an active run. Nothing asks whether
+ * this tab is already the producer.
+ *
+ * That second reader is expensive, not merely redundant. It publishes on EVERY chunk event,
+ * and each publish re-parses the whole reply and awaits a PUT of the entire message, so a
+ * reply of N chunks costs N round trips and N full parses whose payload grows with the
+ * reply: quadratic in the length of the answer, on the main thread, against the same backend
+ * the model is saturating.
+ *
+ * Module state, deliberately. A reload is exactly the case where this tab has STOPPED being
+ * the producer and a recovery should run, and a reload clears this by construction. Nothing
+ * needs to expire it.
+ */
+const liveGenerationRuns = new Set<string>();
+
+/** Claim a run as streamed by this tab. Pair with `releaseLiveGenerationRun` in a finally. */
+export function claimLiveGenerationRun(runId: string): void {
+  liveGenerationRuns.add(runId);
+}
+
+/**
+ * Release a run this tab was streaming.
+ *
+ * Must be unconditional, in a finally: a run left claimed after its stream died is a run this
+ * tab will never recover, which is the failure this registry could introduce if it leaked.
+ */
+export function releaseLiveGenerationRun(runId: string): void {
+  liveGenerationRuns.delete(runId);
+}
+
+/** Whether this tab is the one streaming `runId`. */
+export function isLiveGenerationRun(runId: string): boolean {
+  return liveGenerationRuns.has(runId);
 }

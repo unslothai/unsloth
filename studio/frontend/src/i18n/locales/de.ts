@@ -1419,6 +1419,11 @@ export const de = {
         collapseByDefaultDescription:
           "Das Denken bleibt eingeklappt, während das Modell denkt, statt automatisch aufzuklappen. Zum Lesen einen Block ausklappen.",
       },
+      tools: {
+        collapseByDefault: "Tool-Aktivität standardmäßig einklappen",
+        collapseByDefaultDescription:
+          "Tool-Eingaben und -Ausgaben bleiben während der Ausführung eingeklappt. Zum Prüfen eine Tool-Zeile ausklappen.",
+      },
       webSearch: {
         title: "Websuche",
         images: "Bilder aus der Websuche anzeigen",
