@@ -111,6 +111,37 @@ function isScope(node: ts.Node): boolean {
   );
 }
 
+/** Scopes a `var` binds to: a function body or the module itself. */
+function isVarScope(node: ts.Node): boolean {
+  return (
+    ts.isSourceFile(node) ||
+    ts.isModuleBlock(node) ||
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node)
+  );
+}
+
+/** Every `var` name declared under this scope, excluding nested function scopes. */
+function collectHoistedVars(scope: ts.Node, out: Set<string>): void {
+  const visit = (node: ts.Node): void => {
+    // A nested function owns its own vars; they do not reach this scope.
+    if (node !== scope && isVarScope(node)) return;
+    if (
+      ts.isVariableDeclarationList(node) &&
+      !(node.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const))
+    ) {
+      for (const d of node.declarations) collectBindingNames(d.name, out);
+    }
+    node.forEachChild(visit);
+  };
+  scope.forEachChild(visit);
+}
+
 const declaredCache = new WeakMap<ts.Node, Set<string>>();
 
 /** Names bound by this scope itself, not by anything nested inside it. */
@@ -129,6 +160,13 @@ function declaredIn(scope: ts.Node): Set<string> {
       }
     }
   };
+  // `var` binds to the enclosing function or module, not to the block it is
+  // written in, so a function scope has to collect the ones nested inside it.
+  // Recording them only on the inner block left a later read in the function
+  // body resolving to the import instead of the local, which reported a file
+  // that never touches the barrel at that point. `let` and `const` keep block
+  // scoping and are gathered by addStatements above, per block.
+  if (isVarScope(scope)) collectHoistedVars(scope, out);
   if (ts.isSourceFile(scope) || ts.isBlock(scope) || ts.isModuleBlock(scope)) {
     addStatements(scope.statements);
   } else if (ts.isCaseBlock(scope)) {
@@ -197,9 +235,23 @@ function inRuntimeHeritage(node: ts.Node): boolean {
   if (!clause || !ts.isHeritageClause(clause)) return false;
   if (clause.token !== ts.SyntaxKind.ExtendsKeyword) return false;
   const declaration = clause.parent;
-  return Boolean(
-    declaration && (ts.isClassDeclaration(declaration) || ts.isClassExpression(declaration)),
-  );
+  if (!declaration) return false;
+  if (!ts.isClassDeclaration(declaration) && !ts.isClassExpression(declaration)) return false;
+  // `declare class C extends K {}` emits no JavaScript at all, so its base is
+  // never evaluated and the name is never read. Without this the ambient
+  // declaration is reported as an eager read and the guard rejects a file that
+  // cannot crash.
+  return !isAmbient(declaration);
+}
+
+/** True when this declaration is ambient, so it emits nothing to run. */
+function isAmbient(node: ts.Node): boolean {
+  for (let current: ts.Node | undefined = node; current; current = current.parent) {
+    if (ts.isSourceFile(current)) return current.isDeclarationFile;
+    const modifiers = ts.canHaveModifiers(current) ? ts.getModifiers(current) : undefined;
+    if (modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword)) return true;
+  }
+  return false;
 }
 
 /** True when this identifier sits anywhere inside erased type syntax. */
@@ -227,7 +279,14 @@ function isImmediatelyInvoked(node: ts.Node): boolean {
     parent = parent.parent;
   }
   if (!parent) return false;
-  if (ts.isCallExpression(parent) && parent.expression === current) return true;
+  // `new (function () { ... })()` runs the body synchronously during
+  // construction, so it is as eager as a plain call.
+  if (
+    (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+    parent.expression === current
+  ) {
+    return true;
+  }
   // `.call(...)` and `.apply(...)` invoke on the spot too, but they put a
   // property access between the function expression and the call, so the check
   // above reads the body as deferred and the walk never looks inside it.
@@ -363,8 +422,13 @@ function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
       // and `{ [KEY]() {} }` both read KEY as the class or object is created.
       // Applies to every named member, not just fields, so a computed method
       // name cannot hide an eager read behind its own deferred body.
+      // A decorator is applied where it is written, so `@decorate(K) method() {}`
+      // reads K as the class is defined even though the method body waits. Same
+      // reasoning as the computed name, and the same restoration of the outer
+      // state, or the deferral the member sets would hide the read.
       const eagerName =
-        child === (node as ts.NamedDeclaration).name && ts.isComputedPropertyName(child);
+        (child === (node as ts.NamedDeclaration).name && ts.isComputedPropertyName(child)) ||
+        ts.isDecorator(child);
       visit(child, eagerName ? deferred : next);
     });
   };
@@ -600,6 +664,20 @@ test("the scan catches every shape the regex version missed", () => {
       `import { K } from "${BARREL}";\nclass C { [K] = 1; }\n`,
     ],
     [
+      // Constructing a function expression runs its body on the spot.
+      "function expression invoked with new",
+      `import { K } from "${BARREL}";\nnew (function () { consume(K); })();\n`,
+    ],
+    [
+      // The decorator is applied as the class is defined, before any call.
+      "decorator argument on a deferred method",
+      `import { K } from "${BARREL}";\nclass C { @decorate(K) method() {} }\n`,
+    ],
+    [
+      "a real base class is evaluated when the class is defined",
+      `import { K } from "${BARREL}";\nclass C extends K {}\n`,
+    ],
+    [
       "module-scope read in a file that also shadows the name in a function",
       `import { K } from "${BARREL}";\nfunction f(K) { return K; }\nconst a = [K];\n`,
     ],
@@ -684,6 +762,17 @@ test("deferred reads and non-references are left alone", () => {
     [
       "parameter of the same name, read in its own function",
       `import { K } from "${BARREL}";\nfunction f(K) { return K; }\n`,
+    ],
+    [
+      // `var` binds to the function, not the `if` block it sits in, so the read
+      // below it is the local one.
+      "var hoisted out of a nested block to its function scope",
+      `import { K } from "${BARREL}";\n(function () { if (c) { var K = 1; } consume(K); })();\n`,
+    ],
+    [
+      // An ambient declaration emits no JavaScript, so its base is never read.
+      "ambient class heritage",
+      `import { K } from "${BARREL}";\ndeclare class C extends K {}\n`,
     ],
     [
       "catch binding of the same name",
