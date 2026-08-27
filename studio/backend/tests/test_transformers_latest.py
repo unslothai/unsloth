@@ -1477,10 +1477,36 @@ def test_mlx_still_offers_the_upgrade_for_a_bitsandbytes_repo(monkeypatch):
     monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: {"model_type": "muse_glimmer"})
     assert tl.check_upgrade_for_model("mlx-community/Muse-Glimmer-30B-4bit") is None
 
-    # The bnb build of it goes through transformers, so the offer is actionable.
+    # A third-party bnb build of it goes through transformers, so the offer is real.
     monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: _bnb("muse_glimmer"))
     offered = tl.check_upgrade_for_model("someorg/Muse-Glimmer-30B-bnb-4bit")
     assert offered is not None and offered["model_type"] == "muse_glimmer"
+
+
+def test_mlx_skips_the_unsloth_bnb_repo_it_swaps_for_a_base(monkeypatch):
+    """An ``unsloth/*-bnb-4bit`` id is remapped to its full-precision base before
+    the loader looks at the weights, so MLX quantizes it and transformers is never
+    asked to build it. Those keep the skip -- they are most of the bnb rows Studio
+    suggests on a Mac, and offering an install for them is the annoyance this
+    short-circuit exists to remove."""
+    monkeypatch.setattr(tl, "_disabled", lambda: False)
+    monkeypatch.setattr(tl, "_env_offline", lambda: False)
+    monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
+    monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: _bnb("muse_glimmer"))
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda _t: {"pypi_version": "5.15.0", "supported_in_pypi": True, "supported_in_main": True},
+    )
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("mlx"))
+
+    for remapped in ("unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit",
+                     "unsloth/Muse-Glimmer-30B-bnb-4bit"):
+        assert tl.check_upgrade_for_model(remapped) is None
+
+    # Same suffix, different owner: not remapped, so it still goes to transformers.
+    assert tl.check_upgrade_for_model("someorg/Muse-Glimmer-30B-bnb-4bit") is not None
 
 
 def test_upgrade_offer_survives_a_broken_hardware_import(monkeypatch):
