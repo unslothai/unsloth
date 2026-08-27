@@ -72,33 +72,115 @@ function barrelValueNames(source: ts.SourceFile): Set<string> {
   return names;
 }
 
-/**
- * Names the module re-declares itself, which therefore do not refer to the
- * import wherever they appear.
- *
- * Whole-file rather than per-scope on purpose: shadowing an imported name is
- * already unusual, and the cost of the two errors is not symmetric. Skipping a
- * shadowed name loses coverage in one file; flagging one rejects code that never
- * touches the import and makes the guard something people delete.
- */
-function shadowedNames(source: ts.SourceFile, names: Set<string>): Set<string> {
-  const shadowed = new Set<string>();
-  const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node)) return;
-    const declared =
-      (ts.isVariableDeclaration(node) ||
-        ts.isFunctionDeclaration(node) ||
-        ts.isClassDeclaration(node) ||
-        ts.isParameter(node) ||
-        ts.isBindingElement(node)) &&
-      node.name;
-    if (declared && ts.isIdentifier(declared) && names.has(declared.text)) {
-      shadowed.add(declared.text);
+function collectBindingNames(name: ts.BindingName, out: Set<string>): void {
+  if (ts.isIdentifier(name)) {
+    out.add(name.text);
+    return;
+  }
+  for (const element of name.elements) {
+    if (ts.isBindingElement(element)) collectBindingNames(element.name, out);
+  }
+}
+
+/** Nodes that introduce a binding scope. */
+function isScope(node: ts.Node): boolean {
+  return (
+    ts.isSourceFile(node) ||
+    ts.isBlock(node) ||
+    ts.isModuleBlock(node) ||
+    ts.isCaseBlock(node) ||
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) ||
+    ts.isForStatement(node) ||
+    ts.isForInStatement(node) ||
+    ts.isForOfStatement(node) ||
+    ts.isCatchClause(node) ||
+    ts.isClassDeclaration(node) ||
+    ts.isClassExpression(node)
+  );
+}
+
+const declaredCache = new WeakMap<ts.Node, Set<string>>();
+
+/** Names bound by this scope itself, not by anything nested inside it. */
+function declaredIn(scope: ts.Node): Set<string> {
+  const cached = declaredCache.get(scope);
+  if (cached) return cached;
+  const out = new Set<string>();
+  const addStatements = (statements: readonly ts.Statement[]): void => {
+    for (const statement of statements) {
+      if (ts.isVariableStatement(statement)) {
+        for (const d of statement.declarationList.declarations) collectBindingNames(d.name, out);
+      } else if (ts.isFunctionDeclaration(statement) && statement.name) {
+        out.add(statement.name.text);
+      } else if (ts.isClassDeclaration(statement) && statement.name) {
+        out.add(statement.name.text);
+      }
     }
-    node.forEachChild(visit);
   };
-  source.forEachChild(visit);
-  return shadowed;
+  if (ts.isSourceFile(scope) || ts.isBlock(scope) || ts.isModuleBlock(scope)) {
+    addStatements(scope.statements);
+  } else if (ts.isCaseBlock(scope)) {
+    for (const clause of scope.clauses) addStatements(clause.statements);
+  } else if (ts.isCatchClause(scope)) {
+    if (scope.variableDeclaration) collectBindingNames(scope.variableDeclaration.name, out);
+  } else if (
+    ts.isForStatement(scope) ||
+    ts.isForInStatement(scope) ||
+    ts.isForOfStatement(scope)
+  ) {
+    const initializer = scope.initializer;
+    if (initializer && ts.isVariableDeclarationList(initializer)) {
+      for (const d of initializer.declarations) collectBindingNames(d.name, out);
+    }
+  } else if (ts.isClassDeclaration(scope) || ts.isClassExpression(scope)) {
+    if (scope.name) out.add(scope.name.text);
+  }
+  const parameters = (scope as ts.SignatureDeclarationBase).parameters;
+  if (parameters) for (const p of parameters) collectBindingNames(p.name, out);
+  if ((ts.isFunctionExpression(scope) || ts.isFunctionDeclaration(scope)) && scope.name) {
+    out.add(scope.name.text);
+  }
+  declaredCache.set(scope, out);
+  return out;
+}
+
+/**
+ * True when an enclosing scope re-declares this name, so it is not the import.
+ *
+ * Resolved per occurrence rather than per file. Suppressing the name everywhere
+ * once it is shadowed anywhere was simpler but cut both ways: a genuine
+ * top-level read stopped being reported as soon as any function took a parameter
+ * of the same name, and this tree has 4969 functions.
+ */
+function isShadowed(identifier: ts.Identifier): boolean {
+  for (let node: ts.Node | undefined = identifier.parent; node; node = node.parent) {
+    if (!isScope(node)) continue;
+    // Module scope is where the import itself binds the name.
+    if (ts.isSourceFile(node)) return false;
+    if (declaredIn(node).has(identifier.text)) return true;
+  }
+  return false;
+}
+
+/** True when this identifier sits anywhere inside erased type syntax. */
+function insideTypeSyntax(node: ts.Node): boolean {
+  for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+    if (
+      ts.isTypeNode(current) ||
+      ts.isTypeAliasDeclaration(current) ||
+      ts.isInterfaceDeclaration(current) ||
+      ts.isTypeParameterDeclaration(current)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** True when this function is called on the spot, so its body runs eagerly. */
@@ -147,14 +229,14 @@ function isNonReference(node: ts.Identifier): boolean {
   if (ts.isPropertyAccessExpression(parent) && parent.name === node) return true;
   if (ts.isPropertyAssignment(parent) && parent.name === node) return true;
   if (ts.isBindingElement(parent) && parent.propertyName === node) return true;
-  // Type positions are erased before the code runs.
-  if (ts.isTypeReferenceNode(parent) || ts.isTypeQueryNode(parent)) return true;
+  // Type positions are erased before the code runs. Checked against every
+  // ancestor, not just the parent: in `type T = chat.Entry` the `chat` node's
+  // parent is a QualifiedName, and in `Foo<typeof K>` it is a type argument.
+  if (insideTypeSyntax(node)) return true;
   return false;
 }
 
-function eagerReads(source: ts.SourceFile, allNames: Set<string>): string[] {
-  const shadowed = shadowedNames(source, allNames);
-  const names = new Set([...allNames].filter((n) => !shadowed.has(n)));
+function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
   if (names.size === 0) return [];
 
   const found: string[] = [];
@@ -167,7 +249,8 @@ function eagerReads(source: ts.SourceFile, allNames: Set<string>): string[] {
       !deferred &&
       ts.isIdentifier(node) &&
       names.has(node.text) &&
-      !isNonReference(node)
+      !isNonReference(node) &&
+      !isShadowed(node)
     ) {
       const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
       found.push(`${node.text} (line ${line + 1})`);
@@ -325,6 +408,14 @@ test("the scan catches every shape the regex version missed", () => {
       "computed instance field name",
       `import { K } from "${BARREL}";\nclass C { [K] = 1; }\n`,
     ],
+    [
+      "module-scope read in a file that also shadows the name in a function",
+      `import { K } from "${BARREL}";\nfunction f(K) { return K; }\nconst a = [K];\n`,
+    ],
+    [
+      "module-scope read in a file that also shadows the name in a block",
+      `import { K } from "${BARREL}";\n{ const K = 1; use(K); }\nconst a = [K];\n`,
+    ],
   ];
   for (const [label, code] of cases) {
     assert.equal(analyse("t.ts", code).length, 1, `${label} should be flagged`);
@@ -365,6 +456,30 @@ test("deferred reads and non-references are left alone", () => {
     [
       "deferred instance field initializer",
       `import { K } from "${BARREL}";\nclass C { k = K; }\n`,
+    ],
+    [
+      "parameter of the same name, read in its own function",
+      `import { K } from "${BARREL}";\nfunction f(K) { return K; }\n`,
+    ],
+    [
+      "catch binding of the same name",
+      `import { K } from "${BARREL}";\ntry { go(); } catch (K) { report(K); }\n`,
+    ],
+    [
+      "loop binding of the same name",
+      `import { K } from "${BARREL}";\nfor (const K of list) { use(K); }\n`,
+    ],
+    [
+      "qualified type reference through a namespace import",
+      `import * as chat from "${BARREL}";\ntype T = chat.PromptQueueUIEntry;\n`,
+    ],
+    [
+      "typeof query nested in a type argument",
+      `import { K } from "${BARREL}";\nlet a: Readonly<typeof K>;\n`,
+    ],
+    [
+      "interface member typed through the namespace",
+      `import * as chat from "${BARREL}";\ninterface I { e: chat.Entry }\n`,
     ],
   ];
   for (const [label, code] of cases) {
