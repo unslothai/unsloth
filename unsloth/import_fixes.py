@@ -692,6 +692,169 @@ def fix_transformers5_bare_annotation_configs():
         logger.info(f"Unsloth: Failed patching PretrainedConfig ({e})")
 
 
+_SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"
+
+
+def _unmask_rows_attending_to_nothing(mask):
+    """Give a query row that attends to no key uniform attention instead.
+
+    Separated from the wrapper so it can be tested directly on every dtype the
+    mask can arrive as, rather than only through a live transformers.
+
+    `None` means transformers chose `is_causal` over a materialised mask. A
+    FLOATING mask is the eager path, which converts to `finfo(dtype).min` and
+    survives softmax's max-subtraction as uniform attention already, so it
+    neither needs this nor would tolerate a boolean `|`. Bool is the normal sdpa
+    result; int is what a caller who passed an int `attention_mask` gets back,
+    and the correction is right for both.
+    """
+    if mask is None or mask.is_floating_point():
+        return mask
+    return mask | ~mask.any(dim = -1, keepdim = True)
+
+
+def _left_padded_probe_mask(torch):
+    """A 2-token batch whose first row is one pad then one real token.
+
+    Row 0's query at position 0 is a pad: causal masking allows it only key 0,
+    and the padding mask then removes key 0, so nothing is left. That is the
+    row this whole fix is about, built as small as it can be.
+
+    Bool, not int: `sdpa_mask` returns whatever dtype it was handed, and the
+    real callers hand it a bool. Probing with an int mask gets an int mask back
+    and a `dtype == torch.bool` check then answers "not affected" for a reason
+    that has nothing to do with the bug.
+    """
+    return torch.tensor([[False, True], [True, True]], dtype = torch.bool)
+
+
+def _sdpa_mask_leaves_rows_fully_masked():
+    """Does THIS build hand SDPA a query row that attends to nothing?
+
+    Answered by building one, not by comparing versions. `allow_torch_fix` was
+    the correction and is now documented "Deprecated and has no effect", but it
+    was a live parameter in 4.x and the retirement landed mid-5.x, so a version
+    window would mislabel builds carrying it early or late. Absent positive
+    evidence answer False and leave transformers alone.
+    """
+    try:
+        import torch
+        from transformers import masking_utils
+    except Exception:
+        return False
+    sdpa_mask = getattr(masking_utils, "sdpa_mask", None)
+    if sdpa_mask is None:
+        return False
+    # Unwrap first: a second call must probe the ORIGINAL, or the patch we
+    # already installed reports the bug as fixed and a reload silently drops it.
+    sdpa_mask = getattr(sdpa_mask, "__wrapped__", sdpa_mask)
+    # The query axis is named differently across the versions we support: 5.x
+    # takes `q_length`, while 4.57.6 binds `sdpa_mask` to `sdpa_mask_recent_torch`,
+    # which takes `cache_position` instead. Ask the signature rather than
+    # guessing -- a probe that raises TypeError answers "no bug" for a reason
+    # that has nothing to do with the bug.
+    kwargs = {
+        "batch_size": 2,
+        "kv_length": 2,
+        "attention_mask": _left_padded_probe_mask(torch),
+        "allow_is_causal_skip": False,
+    }
+    try:
+        params = inspect.signature(sdpa_mask).parameters
+    except Exception:
+        return False
+    if "q_length" in params:
+        kwargs["q_length"] = 2
+    elif "cache_position" in params:
+        kwargs["cache_position"] = torch.arange(2)
+    else:
+        return False
+    try:
+        mask = sdpa_mask(**kwargs)
+    except Exception:
+        # Signature moved under us. Patching blind would be worse than not.
+        return False
+    if mask is None or mask.is_floating_point():
+        return False
+    return bool((~mask.any(dim = -1)).any())
+
+
+def fix_transformers_fully_masked_rows():
+    """Stop a left-padded batch returning NaN logits, and empty generations.
+
+    `masking_utils.sdpa_mask` returns a boolean mask with no correction for
+    query rows that attend to nothing, and the parameter that used to make that
+    correction, `allow_torch_fix`, is now "Deprecated and has no effect. Will be
+    removed in version 5.18.0." In 4.57.6 the same function still carried it,
+    guarded on `not _is_torch_greater_or_equal_than_2_5`, on the belief that
+    torch 2.5 had made it unnecessary.
+
+    It has not. Measured on a B200, torch 2.13.0+cu130, transformers 5.15.1,
+    unquantized fp16 `google/gemma-4-E2B-it`, with no unsloth in the process: a
+    SINGLE forward pass returns NaN logits on exactly the rows that received a
+    left pad token and finite logits on every row that did not -- 16 of 16 rows
+    across batch sizes 2, 4 and 8 -- and under `generate` those rows decode to
+    the empty string. bfloat16 produces no NaNs. Three repeats per batch size
+    are byte-identical, so it is deterministic. Reported as unsloth #9708.
+
+    A fully masked row makes SDPA produce NaN, and the NaN then spreads along
+    the row through `0 * NaN` where the next layer mixes values. Restoring the
+    correction gives those rows uniform attention instead. They are pad
+    positions whose outputs are discarded, so this does not change any result
+    that is read -- which is what transformers' own docstring said when it did
+    this: "in order to avoid `nan` propagation (this does not change the final
+    result)".
+
+    Self-neutralising: `mask | ~mask.any(-1)` contributes nothing once a row
+    attends to something, so if a future transformers restores the guard this
+    wrapper becomes a no-op rather than permanent damage. The eager path is
+    unaffected either way -- `eager_mask` converts to `finfo(dtype).min` and a
+    uniform-min row survives softmax's max-subtraction as uniform attention.
+    """
+    if not _sdpa_mask_leaves_rows_fully_masked():
+        return
+    try:
+        import torch
+        from transformers import masking_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the fully-masked-row fix ({e})")
+        return
+
+    if getattr(masking_utils, _SDPA_MASK_PATCH_FLAG, False):
+        return
+
+    original = masking_utils.sdpa_mask
+    original = getattr(original, "__wrapped__", original)
+
+    @functools.wraps(original)
+    def sdpa_mask(*args, **kwargs):
+        return _unmask_rows_attending_to_nothing(original(*args, **kwargs))
+
+    # `functools.wraps` sets __wrapped__, but set it explicitly: the probe and
+    # the tests both reach for it, and a future wraps-less edit must not
+    # silently make the patch un-probeable and un-undoable.
+    sdpa_mask.__wrapped__ = original
+
+    try:
+        # BOTH bindings, and they are not the same object. `eager_mask` calls
+        # the module global by name at call time, so it picks this up; the
+        # interface captured the original function in `_global_mapping` when
+        # the class body ran, so it needs re-registering. Confirmed by search:
+        # `sdpa_mask` is defined once and no other transformers module
+        # references it.
+        masking_utils.sdpa_mask = sdpa_mask
+        interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
+        if interface is not None:
+            interface.register("sdpa", sdpa_mask)
+        setattr(masking_utils, _SDPA_MASK_PATCH_FLAG, True)
+        logger.info(
+            "Unsloth: Patching transformers `sdpa_mask` so a left-padded row "
+            "that attends to nothing cannot return NaN (unsloth #9708)"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching sdpa_mask ({e})")
+
+
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
     spec = importlib.util.find_spec("vllm")
