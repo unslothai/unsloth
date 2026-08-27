@@ -423,3 +423,74 @@ def test_a_branch_that_does_run_is_still_read(monkeypatch):
     assert any(
         "vendor/live-fp8" in table for table in tables if isinstance(table, dict)
     ), "a live branch's mutation was dropped"
+
+
+def test_a_builder_called_only_in_dead_code_adds_nothing(monkeypatch):
+    """`if False: build_mappers(...)` installs nothing, so neither does the probe.
+
+    The call was located by a raw walk, which sees unreachable and deferred code, and
+    the builder's aliases were then applied by the fallback at the end even though the
+    execution-order walk had correctly left the call out. That fabricated support the
+    fetched mapper does not have, and a lookup for such a name raises the upgrade-only
+    `NotImplementedError`.
+    """
+    dead = REAL_MAPPER.replace(
+        "= build_mappers(__INT_TO_FLOAT_MAPPER)", "= ({}, {}, {}, {}, {})"
+    )
+    assert "= build_mappers(" not in dead
+    lines = dead.splitlines(True)
+    insert = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers(")) + 1
+    dead = "".join(
+        lines[:insert]
+        + ['    _add_with_lower(MAP_TO_UNSLOTH_16bit, "vendor/fabricated", "unsloth/fabricated")\n']
+        + lines[insert:]
+    )
+    dead += "\nif False:\n    build_mappers(__INT_TO_FLOAT_MAPPER)\n"
+    with _serving(dead, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    for table in tables:
+        assert not any("vendor/fabricated" in str(key) for key in table)
+
+
+def test_a_mutation_below_an_unconditional_continue_is_not_installed(monkeypatch):
+    """`continue` ends the suite exactly as `break` does."""
+    unreachable = REAL_MAPPER + (
+        "\n"
+        "while True:\n"
+        "    continue\n"
+        "    FLOAT_TO_FP8_ROW_MAPPER['vendor/dead-continue'] = 'unsloth/dead-row'\n"
+    )
+    with _serving(unreachable, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    for table in tables:
+        assert not any("vendor/dead-continue" in str(key) for key in table)
+
+
+def test_a_helper_call_spelled_with_keywords_is_read(monkeypatch):
+    """`_add_with_lower(mapper = ..., key = ..., value = ...)` adds the same alias.
+
+    Requiring three positional arguments dropped it, so the probe answered "no newer
+    support" for a model the newer mapper really does map.
+    """
+    keyworded = REAL_MAPPER + (
+        "\n"
+        '_add_with_lower(mapper = MAP_TO_UNSLOTH_16bit, key = "vendor/kw", '
+        'value = "unsloth/kw")\n'
+    )
+    with _serving(keyworded, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    assert any(
+        "vendor/kw" in table for table in tables if isinstance(table, dict)
+    ), "a keyword-spelled helper call was dropped"
+
+
+def test_a_helper_call_that_binds_one_parameter_twice_is_skipped(monkeypatch):
+    """It raises rather than adding anything, so the probe adds nothing either."""
+    doubled = REAL_MAPPER + (
+        "\n"
+        '_add_with_lower(MAP_TO_UNSLOTH_16bit, "vendor/twice", mapper = MAP_TO_UNSLOTH_16bit)\n'
+    )
+    with _serving(doubled, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    for table in tables:
+        assert not any("vendor/twice" in str(key) for key in table)

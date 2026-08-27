@@ -202,3 +202,34 @@ def test_a_value_set_after_import_is_still_neutralized(monkeypatch):
     assert dtype == "None" and bnb == "None", sanitized
     assert custom == "" and code == "", sanitized
     assert "UNSLOTH_TEST_MARKER" not in os.environ
+
+
+def test_a_shorthand_alias_is_written_back_canonically(monkeypatch):
+    """`fp16` is a name this package accepts and the old zoo reader cannot evaluate.
+
+    `unsloth_zoo==2026.8.15`, the release this package's floor resolves to, still
+    `eval`s the dtype field, and `eval("fp16")` is a `NameError` that stops a load
+    having nothing to do with the inherited value. Preserving the field verbatim was
+    therefore only safe for the spellings that happen to be evaluable; every accepted
+    alias is now written back as the one spelling both readers read.
+    """
+    import torch
+    from unsloth.models._custom_dtype import (
+        neutralize_inherited_custom_dtype,
+        resolve_dtype,
+    )
+
+    monkeypatch.setenv(_ENV_KEY, "all;fp16;bf16;;")
+    assert neutralize_inherited_custom_dtype() == "all;torch.float16;torch.bfloat16;;"
+    # And each canonical spelling is one the legacy reader's `eval` can evaluate.
+    _checker, dtype, compute, _code, _execute = os.environ[_ENV_KEY].split(";", 4)
+    for field in (dtype, compute):
+        assert eval(field, {"torch": torch}) is resolve_dtype(field)
+
+
+def test_an_empty_dtype_field_stays_empty(monkeypatch):
+    """An unset field already reads as None to both readers; it is not rewritten."""
+    from unsloth.models._custom_dtype import neutralize_inherited_custom_dtype
+
+    monkeypatch.setenv(_ENV_KEY, "all;;;;")
+    assert neutralize_inherited_custom_dtype() == "all;;;;"

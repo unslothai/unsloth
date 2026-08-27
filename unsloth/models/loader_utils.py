@@ -725,9 +725,9 @@ def _get_new_mapper():
                 if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     # A `def` binds a name; it does not run.
                     continue
-                if isinstance(statement, ast.Break):
-                    # Nothing after an unconditional `break` in this suite runs, so a
-                    # mapping written below one is never installed.
+                if isinstance(statement, (ast.Break, ast.Continue)):
+                    # Nothing after an unconditional `break` or `continue` in this
+                    # suite runs, so a mapping written below one is never installed.
                     return
                 if isinstance(statement, ast.ClassDef):
                     # A class body, unlike a function body, RUNS at import: the
@@ -832,13 +832,13 @@ def _get_new_mapper():
             return False
 
         builder_body = []
+        # From the EXECUTED nodes, the same set the ordered walk below uses. A raw walk
+        # saw `if False: build_mappers(...)` and every other unreachable or deferred
+        # call, and the additions were then applied by the fallback at the end even
+        # though `_executed_nodes` had correctly left the call out - fabricating
+        # aliases that importing the fetched mapper never installs.
         builder_called = any(
-            isinstance(child, ast.Call)
-            and isinstance(child.func, ast.Name)
-            and child.func.id == "build_mappers"
-            for statement in tree.body
-            for child in ast.walk(statement)
-            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            _calls_the_builder(node) for node, _shadowed in _executed_nodes(tree.body)
         )
         if builder_called:
             for statement in tree.body:
@@ -963,9 +963,27 @@ def _get_new_mapper():
                 # literal arguments only, so the fetched text still supplies nothing but
                 # data.
                 helper = _MAPPER_HELPERS.get(node.func.id)
-                if helper is None or len(node.args) != 3:
+                if helper is None:
                     continue
-                destination, key, value = node.args
+                # Positional or by keyword: both helpers are `(mapper, key, value)`,
+                # and a newer mapper may spell an addition
+                # `_add_with_lower(mapper = MAP_TO_UNSLOTH_16bit, key = "a", value = "b")`.
+                # Requiring three positional arguments dropped that alias, so the probe
+                # answered "no newer support" for a model the newer file does map.
+                supplied = dict(zip(("mapper", "key", "value"), node.args))
+                for keyword in node.keywords:
+                    if keyword.arg not in ("mapper", "key", "value"):
+                        supplied = None
+                        break
+                    if keyword.arg in supplied:
+                        # Bound twice: the call raises rather than adding anything.
+                        supplied = None
+                        break
+                    supplied[keyword.arg] = keyword.value
+                if supplied is None or set(supplied) != {"mapper", "key", "value"}:
+                    continue
+                destination = supplied["mapper"]
+                key, value = supplied["key"], supplied["value"]
                 if not isinstance(destination, ast.Name):
                     continue
                 if destination.id in shadowed:

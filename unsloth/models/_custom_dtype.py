@@ -62,6 +62,18 @@ DTYPE_ALIASES = {
     "fp32": torch.float32,
 }
 
+# The spelling each dtype is written back as. `unsloth_zoo==2026.8.15`, the release
+# this package's floor resolves to, still `eval`s the dtype field, and `eval("fp16")`
+# is a `NameError` that stops a load having nothing to do with the value. So a field
+# this package accepts is canonicalised to the one spelling both readers evaluate.
+_CANONICAL_DTYPE_NAMES = {
+    None: "None",
+    torch.float16: "torch.float16",
+    torch.bfloat16: "torch.bfloat16",
+    torch.float32: "torch.float32",
+    torch.float64: "torch.float64",
+}
+
 _ENV_KEY = "UNSLOTH_FORCE_CUSTOM_DTYPE"
 
 # Values this process set. Not cleared: a model can be loaded more than once, and the
@@ -113,7 +125,17 @@ def neutralize_inherited_custom_dtype():
         os.environ.pop(_ENV_KEY, None)
         return ""
     checker, dtype, bnb_compute_dtype, _custom_datatype, _execute_code = value.split(";", 4)
-    named = lambda field: field.strip() if field.strip() in DTYPE_ALIASES else "None"
+    def named(field):
+        # An empty field is what an unset one already looks like to both readers, so
+        # it is left as it is; anything else this package accepts is written back in
+        # its canonical `torch.` spelling, and anything else at all becomes `None`.
+        key = field.strip()
+        if key == "":
+            return ""
+        if key not in DTYPE_ALIASES:
+            return "None"
+        return _CANONICAL_DTYPE_NAMES.get(DTYPE_ALIASES[key], "None")
+
     # The code fields are emptied rather than removed: `""` is what an unset field
     # already looks like to both readers.
     sanitized = ";".join([checker, named(dtype), named(bnb_compute_dtype), "", ""])
