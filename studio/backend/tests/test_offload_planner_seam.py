@@ -212,15 +212,22 @@ def test_the_seam_reads_no_attribute_the_real_backend_lacks():
     assert "self._HOST_RAM_HEADROOM_MIB" not in source
 
 
-def test_the_planner_is_on_by_default():
-    """No env, a plan. The flag is now opt-OUT."""
-    assert smart_offload_enabled({}) is True
-    # A load that fits is still PLANNED, it just spills nothing.
-    roomy = _Stub()._planned_tensor_spill(_inputs(), env = {})
-    assert roomy is not None and not roomy.spills_anything
+def test_the_planner_is_off_by_default():
+    """No env, no plan. The flag is opt-IN again after #9861.
 
-    # A load that does not fit gets a real plan with no env set at all.
-    tight = _Stub()._planned_tensor_spill(_inputs(free_mib = 14 * 1024), env = {})
+    A load that would otherwise get a real spill plan is the case that matters:
+    if only the roomy one were checked, the default could flip back unnoticed,
+    since a fitting load plans nothing either way.
+    """
+    assert smart_offload_enabled({}) is False
+    assert _Stub()._planned_tensor_spill(_inputs(), env = {}) is None
+    assert _Stub()._planned_tensor_spill(_inputs(free_mib = 14 * 1024), env = {}) is None
+
+    # The same tight load still plans when asked explicitly, so the revert moved
+    # the default and nothing else.
+    tight = _Stub()._planned_tensor_spill(
+        _inputs(free_mib = 14 * 1024), env = {"UNSLOTH_SMART_OFFLOAD": "1"}
+    )
     assert tight is not None and tight.spills_anything
 
 
@@ -238,9 +245,8 @@ def test_an_explicit_off_still_disables(value):
 
 @pytest.mark.parametrize("value", ["nope", "flase", "onn", "2"])
 def test_an_unrecognised_value_disables_rather_than_enables(value):
-    """The typos are not symmetric for an opt-OUT flag: `flase` meaning off must
-    not hand back the thing it was switching off, while fumbling an on-spelling
-    only keeps the previous behaviour."""
+    """A fumbled on-spelling must not turn the planner on by accident, and now
+    lands on the same answer as setting nothing at all."""
     assert smart_offload_enabled({"UNSLOTH_SMART_OFFLOAD": value}) is False
 
 
