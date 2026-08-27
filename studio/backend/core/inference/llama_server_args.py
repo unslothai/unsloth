@@ -1625,6 +1625,27 @@ def scrub_memory_env(env: dict) -> list[str]:
 # so `mlock` is a full host copy that is also locked, and `mmap+mlock` is the same
 # lock over a mapping. `none` has no lock to preserve, so it goes back to the default.
 _PAGEABLE_LOAD_MODE: dict[str, Optional[str]] = {"none": None, "mlock": "mmap+mlock"}
+# Modes that already map, so the rewrite has no unmapped copy of its own to fix and
+# leaves them alone. It reaches them only when a LATER reserving selector shadowed the
+# lock (``--load-mode mmap+mlock --no-mmap`` runs unlocked and unmapped, last-wins), and
+# there dropping only the selector hands the child back the lock it had lost -- over the
+# full-size mapping the override just restored, which is the one outcome it exists to
+# prevent. So they are stripped in that state and in no other.
+_SHADOWED_LOCK_LOAD_MODE = frozenset({"mmap+mlock"})
+
+
+def _pageable_mode_replacement(
+    normalized: str, drop_shadowed_mlock: bool
+) -> tuple[bool, Optional[str]]:
+    """``(rewrite, replacement)`` for one ``--load-mode`` value, argv or env alike.
+
+    ``replacement`` None removes the selector, leaving llama.cpp's default mapping.
+    """
+    if normalized in _PAGEABLE_LOAD_MODE:
+        return True, None if drop_shadowed_mlock else _PAGEABLE_LOAD_MODE[normalized]
+    if normalized in _SHADOWED_LOCK_LOAD_MODE:
+        return drop_shadowed_mlock, None
+    return False, None
 
 
 def _pageable_env_value(
@@ -1657,9 +1678,8 @@ def _pageable_env_value(
         # Falsy selects "none"; truthy selects mmap / dio, neither of which
         # holds a full copy.
         return normalized in _ENV_FALSE_VALUES, None
-    if name == "LLAMA_ARG_LOAD_MODE" and normalized in _PAGEABLE_LOAD_MODE:
-        replacement = _PAGEABLE_LOAD_MODE[normalized]
-        return True, None if drop_shadowed_mlock else replacement
+    if name == "LLAMA_ARG_LOAD_MODE":
+        return _pageable_mode_replacement(normalized, drop_shadowed_mlock)
     return False, None
 
 
@@ -1725,13 +1745,14 @@ def force_pageable_load(
             else:
                 value, step = "", 1
             normalized = value.strip().lower()
-            if normalized in _PAGEABLE_LOAD_MODE:
+            # `--load-mode mlock --no-mmap` is unlocked by the time the child parses
+            # it, so mmap+mlock would ADD a lock; `mmap+mlock --no-mmap` is the same
+            # shape one spelling further on, and there the selector itself is the lock.
+            rewrite_mode, replacement = _pageable_mode_replacement(
+                normalized, drop_shadowed_mlock
+            )
+            if rewrite_mode:
                 overridden.append(" ".join(tokens[i : i + step]))
-                replacement = _PAGEABLE_LOAD_MODE[normalized]
-                if drop_shadowed_mlock:
-                    # `--load-mode mlock --no-mmap` is unlocked by the time the
-                    # child parses it, so mmap+mlock would ADD a lock.
-                    replacement = None
                 if replacement is not None:
                     out.extend([tokens[i].split("=", 1)[0], replacement])
                 i += step

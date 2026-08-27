@@ -1277,8 +1277,23 @@ def _rewritten_state(argv, env = None):
         ["--mlock", "--load-mode", "none"],
         ["--load-mode", "mlock", "--no-mmap"],
         ["--load-mode=mlock", "--no-mmap"],
+        # The mapped spelling of the lock. It holds no unmapped copy of its own, so
+        # the rewrite has no reason to touch it -- until a later reserving selector
+        # shadows it, where leaving it standing is what re-locks the mapping.
+        ["--load-mode", "mmap+mlock", "--no-mmap"],
+        ["--load-mode=mmap+mlock", "--no-mmap"],
+        ["--load-mode", "mmap+mlock", "--no-direct-io"],
     ],
-    ids = ["no-mmap", "no-dio", "load-mode-none", "load-mode-mlock", "load-mode-mlock-equals"],
+    ids = [
+        "no-mmap",
+        "no-dio",
+        "load-mode-none",
+        "load-mode-mlock",
+        "load-mode-mlock-equals",
+        "load-mode-mmap-mlock",
+        "load-mode-mmap-mlock-equals",
+        "load-mode-mmap-mlock-no-dio",
+    ],
 )
 def test_a_shadowed_lock_is_not_resurrected_by_the_pageable_rewrite(argv):
     # The pre-rewrite child is already unlocked, so there is no lock to carry.
@@ -1326,6 +1341,38 @@ def test_the_env_twin_of_a_shadowed_lock_goes_too():
     assert "LLAMA_ARG_MLOCK" not in out_env, out_env
     assert "LLAMA_ARG_MLOCK" in overridden, overridden
     assert (mlock, reserves) == (False, False)
+
+
+def test_the_env_mapped_lock_mode_shadowed_by_an_argv_selector_goes_too():
+    """The env half of the mapped spelling. llama.cpp reads LLAMA_ARG_* before argv,
+    so an inherited LLAMA_ARG_LOAD_MODE=mmap+mlock followed by --no-mmap on the command
+    line is shadowed exactly as the all-argv pair is, and leaving the var behind locks
+    the restored mapping through the environment with nothing in the argv to show it."""
+    env = {"LLAMA_ARG_LOAD_MODE": "mmap+mlock"}
+    assert _lsa.resolve_effective_memory_state(["--no-mmap"], env) == (False, True)
+
+    (mlock, reserves), _out, out_env, overridden = _rewritten_state(["--no-mmap"], env)
+
+    assert "LLAMA_ARG_LOAD_MODE" not in out_env, out_env
+    assert overridden, "the unmapped launch was not rewritten at all"
+    assert (mlock, reserves) == (False, False), (
+        f"the rewrite page-locked the oversized mapping: {out_env}"
+    )
+
+
+def test_an_unshadowed_mapped_lock_is_left_entirely_alone():
+    """The control that keeps the strip above scoped. ``mmap+mlock`` on its own already
+    maps, so it holds no full unmapped copy and is not this override's business: it must
+    come back untouched and, with nothing rewritten, report no override at all. Without
+    that, a launch that was always pageable would be reported as having been remapped."""
+    argv = ["--load-mode", "mmap+mlock"]
+    assert _lsa.resolve_effective_memory_state(argv) == (True, False)
+
+    (mlock, reserves), out, _env, overridden = _rewritten_state(argv)
+
+    assert out == argv, out
+    assert not overridden, f"an already-mapped launch was reported as overridden: {overridden}"
+    assert (mlock, reserves) == (True, False)
 
 
 def test_the_env_mlock_mode_that_is_not_shadowed_keeps_its_lock():
