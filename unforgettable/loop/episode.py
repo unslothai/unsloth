@@ -150,7 +150,12 @@ def _pass_failure(result: GenerateResult) -> Optional[str]:
     return last
 
 
-def _contact_suffix(binding: TwinBinding, *, fail_summary: str = "", retry: bool = False) -> str:
+def _contact_suffix(
+    binding: TwinBinding,
+    *,
+    fail_summary: str = "",
+    retry: bool = False,
+) -> str:
     parts = [binding.describe]
     if fail_summary:
         parts.append(f"Previous world failure: {fail_summary}")
@@ -172,11 +177,7 @@ def _extra_tools(binding: TwinBinding) -> list[dict[str, Any]]:
 
 
 async def _maybe_run_sim_tests(
-    host: Host,
-    state: EpisodeState,
-    on_chunk,
-    plugin,
-    binding: TwinBinding,
+    host: Host, state: EpisodeState, on_chunk, plugin, binding: TwinBinding
 ) -> tuple[bool, Optional[RecognizedFailure]]:
     before = len(current_traces())
     grade = await plugin.grade(

@@ -30,8 +30,7 @@ from unforgettable.rims.plugin import (
 )
 
 WORLD_DESCRIBE = (
-    "You are in the project sandbox at {uri}. python and terminal run here; "
-    "this is the world."
+    "You are in the project sandbox at {uri}. python and terminal run here; this is the world."
 )
 SIM_DESCRIBE = (
     "You are in a disposable filesystem clone of the world tree at {uri}. "

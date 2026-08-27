@@ -498,9 +498,7 @@ async def handle_chat_completions(payload, request, current_subject: str, inner:
             or None
         ),
         user_label = getattr(payload, "user_label", None),
-        twin_plugin = getattr(payload, "twin_plugin", None) or os.environ.get(
-            "UNFORGETTABLE_TWIN"
-        ),
+        twin_plugin = getattr(payload, "twin_plugin", None) or os.environ.get("UNFORGETTABLE_TWIN"),
     )
     if payload.stream:
         queue: asyncio.Queue = asyncio.Queue()
