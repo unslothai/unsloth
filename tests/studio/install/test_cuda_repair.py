@@ -27,6 +27,10 @@ stack_mod = importlib.util.module_from_spec(_STACK_SPEC)
 sys.modules[_STACK_SPEC.name] = stack_mod
 _STACK_SPEC.loader.exec_module(stack_mod)
 
+# setup.ps1's source, for the parts of this invariant that are PowerShell rather than a
+# Python call. Read once; the assertions on it are structural, not behavioural.
+_SETUP_SRC = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+
 # The probe prints its answer behind this marker, so chatter on either side of it cannot
 # be mistaken for the answer. Mocked stdout has to carry it too.
 _MARK = stack_mod._TORCH_PROBE_MARKER
@@ -938,17 +942,21 @@ class TestExpectedTorchFlavorSkips:
         assert ok is True
         assert mock_pip.call_count == 1
 
-    @pytest.mark.parametrize("tag", ["rocm", "xpu", "current", "custom", "simple", "cu"])
-    def test_a_non_cuda_expectation_is_a_no_op(self, tag):
-        # rocm/xpu belong to the paths that own them (setup.ps1 installs both trios
-        # itself); an unknown mirror leaf names no flavor at all.
+    @pytest.mark.parametrize("tag", ["rocm", "current", "custom", "simple", "cu"])
+    def test_an_unenforceable_expectation_is_a_no_op(self, tag):
+        # ROCm wheels come from a per-architecture repo.amd.com index that cannot be
+        # reconstructed from a generic "rocm" tag, so the path that owns it keeps it.
+        # An unknown mirror leaf names no flavor at all. "xpu" is NOT in this list:
+        # setup.ps1 publishes it and it is repairable from a real index, so it is
+        # enforced -- see TestExpectedXpuFlavorIsEnforced.
         ok, mock_pip = _run_flavor_invariant(expected_env = tag)
         assert ok is True
         mock_pip.assert_not_called()
 
     def test_an_empty_handover_tag_falls_through_rather_than_deciding(self):
-        # PowerShell deletes an $env: entry assigned "", so setup.ps1 publishes an unknown
-        # leaf as empty. That must read as "nobody said", not as "cpu".
+        # setup.ps1 removes the entry outright for an unknown leaf, but a caller's shell
+        # can still hand one down empty, and PowerShell 7.5+ keeps an entry assigned "".
+        # Either way it must read as "nobody said", not as "cpu".
         ok, mock_pip = _run_flavor_invariant(
             expected_env = "",
             recorded = "cu128",
@@ -1058,6 +1066,119 @@ class TestTorchFlavorTagVocabulary:
     )
     def test_tags(self, version, tag):
         assert stack_mod._torch_flavor_tag(version) == tag
+
+
+
+class TestUnknownFamilyPinIsNotOverridden:
+    """An explicit index pin whose leaf names no flavor is applied verbatim at install
+    time, so this pass has no standing to second-guess it. The only expectation it could
+    act on comes from the manifest, i.e. from whatever was installed BEFORE the pin was
+    set, and repairing off that stale tag reinstalls from the public pytorch index --
+    overriding a deliberate package source, and failing outright on an air-gapped host.
+    _ensure_cuda_torch already declines on the same test."""
+
+    def test_a_simple_mirror_pin_suppresses_the_manifest_fallback(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu",
+            expected_env = None,
+            recorded = "cu124",
+            index_url = "https://mirror.corp.example/simple",
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    def test_a_readable_cuda_pin_still_repairs(self):
+        """Narrowness: the escape must not disable a normal cu* mirror."""
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu",
+            repaired = "2.6.0+cu124",
+            expected_env = None,
+            recorded = "cu124",
+            index_url = "https://mirror.corp.example/whl/cu124",
+        )
+        assert ok is True
+        args = mock_pip.call_args[0]
+        assert "https://mirror.corp.example/whl/cu124" in args
+
+
+class TestExpectedXpuFlavorIsEnforced:
+    """setup.ps1 publishes "xpu" for an Arc host and installs the XPU trio before handing
+    over, so declining to act on that expectation would leave the invariant carrying an
+    answer it refuses to use. The exposure is identical to the CUDA one: the dependency
+    steps re-resolve torch from PyPI, and _ensure_xpu_torch cannot clean up afterwards
+    because step 13's whole repair set is gated off Windows."""
+
+    def test_an_xpu_venv_that_lost_torch_to_pypi_is_repaired(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu", repaired = "2.9.1+xpu", expected_env = "xpu"
+        )
+        assert ok is True
+        args = mock_pip.call_args[0]
+        # The XPU floor is 2.6, not the CUDA trio's 2.4: unsloth raises at import for an
+        # XPU device below it, and a 2.5 wheel would satisfy the CUDA range and be kept.
+        assert "torch>=2.6,<2.11.0" in args
+        assert "torchvision>=0.21,<0.26.0" in args
+        assert any("xpu" in str(a) for a in args)
+
+    def test_a_healthy_xpu_venv_is_untouched(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.9.1+xpu", expected_env = "xpu"
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    def test_an_xpu_repair_that_does_not_take_fails_the_update(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu", repaired = None, expected_env = "xpu"
+        )
+        assert ok is False
+        mock_pip.assert_called_once()
+
+    def test_a_cuda_mask_does_not_cancel_an_xpu_repair(self):
+        """CUDA_VISIBLE_DEVICES hides an NVIDIA GPU, not an Arc one."""
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu", repaired = "2.9.1+xpu",
+            expected_env = "xpu", cvd = "",
+        )
+        assert ok is True
+        mock_pip.assert_called_once()
+
+    def test_rocm_is_still_left_to_the_path_that_owns_it(self):
+        """Its wheels come from a per-arch repo.amd.com index this pass cannot
+        reconstruct from a generic "rocm" tag, so guessing one would be worse."""
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu", expected_env = "rocm"
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+
+class TestSetupPs1CudaOnDiskFallback:
+    """A wedged NVIDIA driver hangs or faults `import torch` exactly as a faulted HIP
+    runtime does. XPU and ROCm both rescue that venv from torch/version.py on disk; CUDA
+    had no such arm, so the probe-failure chain fell through with a NULL tag, the no-wipe
+    escape could not see a cu* wheel to preserve, and a direct update deleted a healthy
+    CUDA environment before aborting."""
+
+    def test_the_classifier_exists_and_keeps_the_family(self):
+        assert "function Get-VenvTorchCudaTag" in _SETUP_SRC
+        assert "function Test-VenvTorchIsCuda" in _SETUP_SRC
+        block = _SETUP_SRC[_SETUP_SRC.index("function Get-VenvTorchCudaTag") :][:1400]
+        # The family, not a flat "cuda": the stale comparison below it is cu126-vs-cu128.
+        assert "cu[0-9]+" in block
+        assert "site-packages\\torch\\version.py" in block
+
+    def test_it_joins_the_probe_failure_chain(self):
+        chain_start = _SETUP_SRC.index("elseif (Test-VenvTorchIsXpu -VenvPath $VenvDir)")
+        chain = _SETUP_SRC[chain_start : _SETUP_SRC.index("$shouldRebuild = $true", chain_start)]
+        assert "Test-VenvTorchIsCuda -VenvPath $VenvDir" in chain
+        assert "$installedTorchTag = Get-VenvTorchCudaTag" in chain
+
+    def test_it_does_not_disturb_the_callers_match_state(self):
+        """A bare -match would clobber $Matches in the caller's scope; the stale-venv
+        block reads $Matches[1] a few lines above."""
+        block = _SETUP_SRC[_SETUP_SRC.index("function Get-VenvTorchCudaTag") :][:1400]
+        assert "[regex]::Match(" in block
 
 
 if __name__ == "__main__":

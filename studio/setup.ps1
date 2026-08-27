@@ -1231,6 +1231,37 @@ function Test-VenvTorchIsRocm {
     } catch { return $false }
 }
 
+# The NVIDIA counterpart, and the last of the three. A wedged display driver makes `import torch`
+# raise at the DLL load or never return on CUDA exactly as it does on HIP and SYCL -- a GPU that
+# fell off the bus, a driver mid-reinstall, a machine resuming from sleep -- and until this
+# existed that venv had no on-disk rescue: the probe-failure chain fell through to
+# `$shouldRebuild = $true` with a null tag, so a direct `studio update` deleted a healthy CUDA
+# environment and then aborted, with no rollback copy (only install.ps1 makes one). Returns the
+# family tag ("cu124"), not a bool, because the caller compares families -- collapsing it to
+# "cuda" would lose the cu126-vs-cu128 distinction the stale check is built on.
+function Get-VenvTorchCudaTag {
+    param([string]$VenvPath)
+    if (-not $VenvPath) { return $null }
+    try {
+        $verPy = Join-Path $VenvPath "Lib\site-packages\torch\version.py"
+        if (-not (Test-Path -LiteralPath $verPy)) { return $null }
+        $line = (Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop |
+                 Where-Object { $_ -match "__version__\s*=\s*'[^']*\+(cu[0-9]+)" } |
+                 Select-Object -First 1)
+        if (-not $line) { return $null }
+        # IsMatch/Match rather than -match so $Matches in the caller's scope is untouched.
+        $m = [regex]::Match($line, "__version__\s*=\s*'[^']*\+(cu[0-9]+)")
+        if ($m.Success) { return $m.Groups[1].Value.ToLowerInvariant() }
+        return $null
+    } catch { return $null }
+}
+
+# Boolean wrapper, so the fallback chain below reads like its XPU and ROCm neighbours.
+function Test-VenvTorchIsCuda {
+    param([string]$VenvPath)
+    return [bool](Get-VenvTorchCudaTag -VenvPath $VenvPath)
+}
+
 # Same free disk read, plus the supported range: unsloth/models/_utils.py raises at import for an
 # XPU device on torch < 2.6, so flavour alone would call a 2.5+xpu venv fine; 2.11 is the trio's
 # ceiling. Flavour and range ONLY -- whether the runtime reaches the GPU is a driver question.
@@ -4098,6 +4129,17 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             $installedTorchTag = "rocm"
             substep "PyTorch did not respond but this venv holds a ROCm build -- keeping it." "Yellow"
             substep "If training fails, reboot and update the AMD Adrenalin / HIP SDK driver." "Yellow"
+        } elseif (Test-VenvTorchIsCuda -VenvPath $VenvDir) {
+            # The NVIDIA arm of the same rescue, and the reason it is here: a wedged display
+            # driver hangs or faults `import torch` on CUDA just as a faulted HIP runtime does
+            # on AMD, and without this the chain fell through to $shouldRebuild with a NULL
+            # tag -- so the no-wipe escape below could not see a cu* wheel to preserve, and a
+            # direct update deleted a healthy CUDA venv and aborted. Keep the FAMILY, not a
+            # generic "cuda": the stale comparison below is cu126-vs-cu128, and flattening it
+            # would make every driver hiccup look like a family change.
+            $installedTorchTag = Get-VenvTorchCudaTag -VenvPath $VenvDir
+            substep "PyTorch did not respond but this venv holds a $installedTorchTag build -- keeping it." "Yellow"
+            substep "If training fails, reboot and update the NVIDIA driver." "Yellow"
         } else {
             $shouldRebuild = $true
         }

@@ -2988,25 +2988,47 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
       * NO_TORCH: there is no torch to have a flavor.
       * UNSLOTH_TORCH_BACKEND outside ("", "cuda"): rocm / cpu / xpu / an unrecognised
         value are deliberate, the same rule _ensure_cuda_torch applies.
-      * An expected tag that is absent, "cpu", or not a cu* family: a CPU install has
-        nothing to repair to, and rocm/xpu/unknown belong to the paths that own them
-        (setup.ps1 installs the Windows ROCm and XPU trios itself).
+      * An expected tag that is absent, "cpu", rocm, or an unknown mirror leaf: a CPU
+        install has nothing to repair to, and ROCm belongs to the path that owns it
+        (setup.ps1 installs the Windows ROCm trio itself, from repo.amd.com).
+      * An explicit index pin whose family cannot be read.
       * CUDA_VISIBLE_DEVICES ""/-1: the NVIDIA GPU is deliberately hidden.
       * Installed flavor already equals the expected one.
+
+    cu* and xpu are BOTH enforced. setup.ps1 publishes "xpu" for an Arc host and
+    installs the XPU trio before handing over, so ignoring that expectation would make
+    this function incoherent -- it would carry an answer it declines to act on -- and
+    the exposure is identical: the dependency steps re-resolve torch from PyPI, and
+    _ensure_xpu_torch cannot clean up after them because step 13's whole repair set is
+    gated off Windows. ROCm is deliberately NOT enforced here: its wheels come from a
+    per-architecture repo.amd.com index that this function cannot reconstruct from a
+    generic "rocm" tag, and guessing one would be worse than leaving it alone.
     """
     if NO_TORCH:
         return True
     if _TORCH_BACKEND not in ("", "cuda"):
         return True
+    # An explicit pin whose leaf names no flavor was applied VERBATIM at install time,
+    # so this function has no standing to second-guess it -- and it must not, because
+    # the expectation it would act on can only have come from the manifest, i.e. from
+    # whatever was installed BEFORE the pin was set. Repairing off that stale tag
+    # reinstalls from the public pytorch index, which overrides an administrator's
+    # deliberate package source and fails outright on a network-restricted host.
+    # _ensure_cuda_torch declines on the same test, for the same reason.
+    if _explicit_unknown_family_torch_index_url() is not None:
+        return True
     if expected is None:
         expected = _expected_torch_flavor_tag()
-    # cu* only. _is_cuda_family_leaf rejects "" / "cpu" / "rocm" / "xpu" and an unknown
-    # mirror leaf in one test, so every no-op expectation above lands here.
-    if not _is_cuda_family_leaf(expected):
+    # _is_cuda_family_leaf rejects "" / "cpu" / "rocm" and an unknown mirror leaf in one
+    # test, so every no-op expectation above lands here; "xpu" is the one addition.
+    if not (_is_cuda_family_leaf(expected) or expected == "xpu"):
         return True
-    _cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if _cvd is not None and _cvd.strip() in ("", "-1"):
-        return True
+    # Only meaningful for CUDA. An Arc host hides its GPU with a different variable, and
+    # reading this one there would make an unrelated NVIDIA mask cancel an XPU repair.
+    if _is_cuda_family_leaf(expected):
+        _cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if _cvd is not None and _cvd.strip() in ("", "-1"):
+            return True
 
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
     if _ran and _importable and _version:
@@ -3036,7 +3058,12 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
         f"   PyTorch flavor mismatch (installed {installed}, need {expected}) -- "
         f"reinstalling correct build..."
     )
-    _torch_pkg, _vision_pkg, _audio_pkg = _TORCH_FLAVOR_REPAIR_PKG_SPEC
+    # The XPU floor is 2.6, not 2.4: unsloth/models/_utils.py raises at import for an XPU
+    # device below it, and an older wheel would satisfy the CUDA range and be kept. Same
+    # trio setup.ps1's own XPU arm installs, so a repaired venv matches a fresh one.
+    _torch_pkg, _vision_pkg, _audio_pkg = (
+        _XPU_TORCH_PKG_SPEC if expected == "xpu" else _TORCH_FLAVOR_REPAIR_PKG_SPEC
+    )
     # --force-reinstall, not install.ps1's uv-only --reinstall-package trio: pip_install
     # falls back to pip when uv fails, and _build_pip_cmd would hand pip a flag it has no
     # word for. Same effect on the three packages named here, which is all that is passed.
