@@ -28,7 +28,12 @@ stack_mod = importlib.util.module_from_spec(_STACK_SPEC)
 sys.modules[_STACK_SPEC.name] = stack_mod
 _STACK_SPEC.loader.exec_module(stack_mod)
 
-_CPU_TORCH = "2.10.0+cpu||\n"
+_CPU_TORCH = stack_mod._TORCH_PROBE_MARKER + "2.10.0+cpu||\n"
+# Generic pytorch.org ROCm torch: links HIP, so has_hip_torch is True and every
+# "already installed" gate sees a ROCm build -- the state the repair must still fix.
+_ROCM_GENERIC_TORCH = stack_mod._TORCH_PROBE_MARKER + "2.10.0+rocm7.1|7.1|\n"
+# AMD per-arch torch, as repo.amd.com serves it.
+_ROCM_ARCH_TORCH = stack_mod._TORCH_PROBE_MARKER + "2.11.0+rocm7.13.0|7.13|\n"
 
 _GENERIC = "download.pytorch.org/whl/rocm"
 _AMD = "repo.amd.com/rocm/whl"
@@ -47,11 +52,15 @@ def _run_install(
     inferred = None,
     rocm_version = (7, 1),
     env = None,
+    kfd = (),
+    torch_probe = None,
+    installed_family = None,
+    rocm_gpu_visible = True,
 ):
     """Drive _ensure_rocm_torch() over a host with ``gfx_devices`` and return the pip calls."""
     probe = MagicMock()
     probe.returncode = 0
-    probe.stdout = _CPU_TORCH
+    probe.stdout = torch_probe or _CPU_TORCH
 
     probes = []
 
@@ -73,11 +82,12 @@ def _run_install(
         patch.object(stack_mod, "pip_install_try", return_value = True) as pip_try,
         patch.object(stack_mod, "pip_install") as pip,
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False),
-        patch.object(stack_mod, "_has_rocm_gpu", return_value = True),
+        patch.object(stack_mod, "_has_rocm_gpu", return_value = rocm_gpu_visible),
         patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = inferred),
         patch.object(stack_mod, "_detect_amd_gfx_codes", side_effect = _fake_detect),
         patch.object(stack_mod, "_detect_rocm_version", return_value = rocm_version),
-        patch.object(stack_mod, "_kfd_gfx_targets", return_value = [], create = True),
+        patch.object(stack_mod, "_kfd_gfx_targets", return_value = list(kfd), create = True),
+        patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = installed_family),
         patch.dict(os.environ, _env, clear = False),
     ):
         for _stale in (
@@ -226,3 +236,196 @@ def test_a_mixed_host_whose_runtime_target_is_supported_keeps_the_generic_index(
     calls = _run_install(gfx_devices = ("gfx1100", "gfx1103"), env = {"HIP_VISIBLE_DEVICES": "0"})
     assert _GENERIC in calls, calls
     assert _AMD not in calls, calls
+
+
+# ── the probe the routing decision indexes into ──────────────────────────────
+
+# Measured on an AMD DevLab strix-halo host (amd-smi 26.2.2): `list` carries no gfx
+# token at all, only `static --asic` does, and both head every device with a
+# line-leading "GPU: N" while naming no agent.
+_AMD_SMI_LIST = "GPU: 0\n    BDF: 0000:03:00.0\n    KFD_ID: 40251\n    NODE_ID: 1\n"
+
+
+def _amd_smi_asic(arches):
+    return "".join(
+        f"GPU: {i}\n"
+        f"    ASIC:\n"
+        f"        MARKET_NAME: AMD Radeon Graphics\n"
+        f"        DEVICE_ID: 0x1586\n"
+        f"        TARGET_GRAPHICS_VERSION: {arch}\n"
+        for i, arch in enumerate(arches)
+    )
+
+
+def _amd_smi_only_host(arches):
+    """Patches making the real probes see an amd-smi-only host with ``arches``."""
+
+    def _which(name):
+        return None if name == "rocminfo" else f"/usr/bin/{name}"
+
+    def _run(cmd, **kwargs):
+        out = MagicMock()
+        out.returncode = 0
+        out.stdout = (
+            _AMD_SMI_LIST if list(cmd[:2]) == ["amd-smi", "list"] else _amd_smi_asic(arches)
+        )
+        return out
+
+    return (
+        patch("shutil.which", side_effect = _which),
+        patch.object(stack_mod, "_amd_smi_allowed", return_value = True),
+        patch("subprocess.run", side_effect = _run),
+    )
+
+
+def _detect_over_amd_smi(arches, dedup = False):
+    _which_p, _allowed_p, _run_p = _amd_smi_only_host(arches)
+    with _which_p, _allowed_p, _run_p:
+        return stack_mod._detect_amd_gfx_codes(dedup = dedup)
+
+
+def test_amd_smi_keeps_one_entry_per_device():
+    """dedup=False indexes DEVICES, and amd-smi names no agent: without its GPU: N
+    header the output is flat, so two cards of one arch collapse into one entry and
+    every device ordinal past them addresses the wrong card."""
+    assert _detect_over_amd_smi(("gfx1200", "gfx1200", "gfx1032")) == [
+        "gfx1200",
+        "gfx1200",
+        "gfx1032",
+    ]
+
+
+def test_amd_smi_still_reports_arches_when_asked_to_dedup():
+    assert _detect_over_amd_smi(("gfx1200", "gfx1200", "gfx1032"), dedup = True) == [
+        "gfx1200",
+        "gfx1032",
+    ]
+
+
+def test_a_repeated_arch_on_an_amd_smi_host_does_not_shift_the_mask():
+    """HIP_VISIBLE_DEVICES=1 over gfx1200, gfx1200, gfx1032 selects a gfx1200. Reading a
+    collapsed list would call it gfx1032 and install gfx103X-all wheels, stranding the
+    card that will actually run -- on a host the generic index already served."""
+    probe = MagicMock()
+    probe.returncode = 0
+    probe.stdout = _CPU_TORCH
+    _which_p, _allowed_p, _run_p = _amd_smi_only_host(("gfx1200", "gfx1200", "gfx1032"))
+
+    def _run(cmd, **kwargs):
+        if str(cmd[0]) == sys.executable:
+            return probe
+        out = MagicMock()
+        out.returncode = 0
+        out.stdout = (
+            _AMD_SMI_LIST
+            if list(cmd[:2]) == ["amd-smi", "list"]
+            else _amd_smi_asic(("gfx1200", "gfx1200", "gfx1032"))
+        )
+        return out
+
+    with (
+        patch.object(stack_mod, "IS_WINDOWS", False),
+        patch.object(stack_mod, "pip_install_try", return_value = True) as pip_try,
+        patch.object(stack_mod, "pip_install") as pip,
+        patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False),
+        patch.object(stack_mod, "_has_rocm_gpu", return_value = True),
+        patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = None),
+        patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1)),
+        patch.object(stack_mod, "_kfd_gfx_targets", return_value = []),
+        patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = None),
+        patch.dict(os.environ, {"HIP_VISIBLE_DEVICES": "1"}, clear = False),
+        _which_p,
+        _allowed_p,
+    ):
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", side_effect = _run):
+                stack_mod._ensure_rocm_torch()
+    calls = str(pip.call_args_list) + str(pip_try.call_args_list)
+    assert _GENERIC in calls, calls
+    assert _AMD not in calls, calls
+
+
+# ── the sources the runtime target falls back to ─────────────────────────────
+
+
+def test_kfd_topology_answers_when_neither_userland_probe_is_installed():
+    """A runtime-only ROCm install ships no rocminfo and no amd-smi; the kernel's own
+    topology still names the GPU, and _has_rocm_gpu() already reads that same sysfs."""
+    calls = _run_install(gfx_devices = (), kfd = ("gfx1103",))
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+    assert _GENERIC not in calls, calls
+
+
+def test_a_live_probe_outranks_kfd_topology():
+    """Only the userland probe is renumbered by a visible-device mask, so it leads."""
+    calls = _run_install(gfx_devices = ("gfx1100",), kfd = ("gfx1103",))
+    assert _GENERIC in calls, calls
+    assert _AMD not in calls, calls
+
+
+def test_the_named_arch_repairs_a_host_no_probe_can_see():
+    """UNSLOTH_ROCM_GFX_ARCH over a generic ROCm torch: the inferred-arch install is
+    gated on there being no HIP torch, so without this fallback the named GPU keeps a
+    wheel that has no kernels for it."""
+    calls = _run_install(
+        gfx_devices = (),
+        kfd = (),
+        env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1103"},
+        torch_probe = _ROCM_GENERIC_TORCH,
+    )
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+def test_a_probed_arch_still_wins_over_the_named_one():
+    """The fallback is last: a runtime that enumerates a GPU still decides (#7305)."""
+    calls = _run_install(
+        gfx_devices = ("gfx1100",),
+        env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1103"},
+        torch_probe = _ROCM_GENERIC_TORCH,
+    )
+    assert _AMD not in calls, calls
+
+
+def test_the_inferred_arch_install_is_not_repeated_by_the_reroute():
+    """#7305's inferred install resolves its index from the same arch the reroutes
+    would, so running both force-reinstalls the multi-GB stack twice in one call."""
+    calls = _run_install(
+        gfx_devices = (),
+        inferred = "gfx1151",
+        rocm_gpu_visible = False,
+    )
+    assert calls.count("--index-url") == 1, calls
+    assert f"{_AMD}/gfx1151/" in calls, calls
+
+
+# ── not re-downloading what is already installed ─────────────────────────────
+
+
+def test_torch_already_on_the_right_per_arch_wheels_is_not_reinstalled():
+    """_ensure_rocm_torch runs twice per install and again on every update, and the
+    reroute is a --force-reinstall --no-cache-dir of a multi-GB stack."""
+    calls = _run_install(
+        gfx_devices = ("gfx1103",),
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+    )
+    assert _AMD not in calls, calls
+    assert _GENERIC not in calls, calls
+
+
+@pytest.mark.parametrize("family", [None, "gfx103x-all"])
+def test_an_unknown_or_foreign_family_still_reinstalls(family):
+    """Act only on a family read back positively, never on a guess."""
+    calls = _run_install(
+        gfx_devices = ("gfx1103",),
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = family,
+    )
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+def test_a_stale_runtime_beside_a_non_rocm_torch_does_not_veto_the_repair():
+    """A rocm-sdk-libraries left behind by an earlier install names a family while the
+    torch on disk is CPU-only; the repair must still run."""
+    calls = _run_install(gfx_devices = ("gfx1103",), installed_family = "gfx110x-all")
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
