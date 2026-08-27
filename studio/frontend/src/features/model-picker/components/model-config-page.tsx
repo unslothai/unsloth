@@ -2804,19 +2804,35 @@ export function ModelConfigPage({
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();
-  // Whether the GPU and the rest of the system draw on ONE pool, from the
-  // backend's per-device unified_memory flag rather than from the platform.
-  // Apple Silicon is the obvious case and a ROCm APU is the one that was being
-  // missed: both share the pool, so adding VRAM to system RAM to reach a
-  // machine-wide ceiling counts the same bytes twice.
-  //
-  // Falls back to the Apple check while the probe is still in flight, so this is
-  // never a weaker answer than the one it replaces.
-  const hasUnifiedMemory = inferenceGpu.unifiedMemory || isAppleUnifiedMemory;
   // A pin can only draw on the cards it names, so the verdict is measured against
   // those. Judging a one-card pin against a two-card total called an 8 GB load a fit
   // on 16 GB of VRAM it could not reach.
   const pinnedGpuIds = runtimeConfig.selectedGpuIds;
+  // Whether the devices THIS LOAD will use draw on one pool with the rest of the
+  // system, from the backend's per-device unified_memory flag rather than from
+  // the platform. Apple Silicon is the obvious case and a ROCm APU is the one
+  // that was being missed: both share the pool, so adding VRAM to system RAM to
+  // reach a machine-wide ceiling counts the same bytes twice.
+  //
+  // Scoped to the PIN, not the host. `devices.some(...)` over the whole
+  // inventory is wrong on a mixed machine: an APU beside a discrete card makes
+  // the host-wide flag true, and a pin on the discrete card then collapsed
+  // totalCapacityGb from 143.5 GiB to 15.5 GiB, discarding 128 GiB of system RAM
+  // the load can really spill into and warning "more than this machine holds"
+  // for a load that fits comfortably. The pinned card does not share anything.
+  //
+  // The Apple fallback stays host-wide and unconditional: there every device is
+  // the one pool whatever is pinned, and it also covers the window before the
+  // per-device probe lands, so this is never a weaker answer than the platform
+  // check it replaced.
+  const hasUnifiedMemory = useMemo(() => {
+    if (isAppleUnifiedMemory) return true;
+    const governing =
+      pinnedGpuIds && pinnedGpuIds.length > 0
+        ? gpuDevices.filter((device) => pinnedGpuIds.includes(device.index))
+        : gpuDevices;
+    return governing.some((device) => device.unifiedMemory === true);
+  }, [gpuDevices, pinnedGpuIds, isAppleUnifiedMemory]);
   // The VRAM Budget slider sits in this same panel and caps what the next load may
   // claim per GPU, so the verdict has to be measured against the capped figure or the
   // row contradicts the control directly above it. Subscribed as well as read once:

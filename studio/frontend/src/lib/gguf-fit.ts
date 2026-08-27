@@ -15,10 +15,23 @@ export interface GgufFitInput {
   systemRamGb?: number;
 }
 
-/** Fraction of GPU VRAM treated as usable, matching the backend's 0.90 budget.
- * Exported so the picker's memory bar draws its track against the same budget
- * this classifier judges against. */
-export const VRAM_HEADROOM_RATIO = 0.9;
+/** Fraction of GPU VRAM treated as usable.
+ *
+ * Re-exported from the shared memory core so this badge and the Hub memory bar
+ * on the SAME ROW cannot judge against different budgets. It was 0.90 here while
+ * the bar used the loader's own 0.97, which is what admission actually applies
+ * (`_CTX_FIT_VRAM_FRACTION`); `llama_cpp.py` records 0.90 as already tried and
+ * reverted, "0.90 dropped 91-94% fits to CPU offload, #5106".
+ *
+ * Measured over 15-24 GiB on a 24 GiB card, this takes badge-vs-bar
+ * disagreements from 11/19 sizes to 8/19. It does not remove them: the residual
+ * 8 are the ESTIMATOR difference, since this file scores `size * 1.15 + 1 GB`
+ * while the bar uses the load planner's real figures. Sharing the constant is
+ * the part that belongs to this consolidation; rewiring the badge onto the
+ * planner is a separate change with its own blast radius (it also drives a
+ * filter). */
+export { DEFAULT_VRAM_BUDGET_FRACTION as VRAM_HEADROOM_RATIO } from "./memory/thresholds.ts";
+import { DEFAULT_VRAM_BUDGET_FRACTION } from "./memory/thresholds.ts";
 /** GGUF weights are file size; runtime activations add roughly this fraction. */
 const ACTIVATIONS_RATIO = 0.15;
 /** Flat KV/context allowance at a typical 4K window. */
@@ -43,7 +56,7 @@ export function classifyGgufFit(
     const ramBudget = (systemRamGb ?? 0) * RAM_OFFLOAD_USABLE_RATIO;
     return required <= ramBudget ? "ram" : "oom";
   }
-  const budget = gpuGb * VRAM_HEADROOM_RATIO;
+  const budget = gpuGb * DEFAULT_VRAM_BUDGET_FRACTION;
   if (required <= budget) return "fits";
   if (required <= gpuGb) return "marginal";
   const combined = gpuGb + (systemRamGb ?? 0) * RAM_OFFLOAD_USABLE_RATIO;

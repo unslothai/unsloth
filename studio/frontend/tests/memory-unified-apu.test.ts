@@ -82,11 +82,12 @@ test("the panel passes the hardware signal, not the platform one", () => {
     "the capacity call must take the general unified-memory signal. Passing the " +
       "Apple-only one charges a ROCm APU's single pool as VRAM plus host RAM.",
   );
-  // And the general signal must come from the probed devices rather than being
-  // aliased back to the platform check.
+  // And the general signal must come from the probed DEVICES rather than being
+  // aliased back to the platform check. Which devices is asserted separately, by
+  // "the panel scopes the unified flag to the pinned devices" below.
   assert.match(
     source,
-    /const hasUnifiedMemory\s*=\s*inferenceGpu\.unifiedMemory/,
+    /const hasUnifiedMemory[\s\S]{0,400}?\.some\(\(device\) => device\.unifiedMemory === true\)/,
     "hasUnifiedMemory must be derived from the backend's per-device flag",
   );
 });
@@ -127,4 +128,56 @@ test("a real discrete card is unaffected by the change", () => {
   assert.equal(discrete.gpuCapacityGb, 24);
   // VRAM beside RAM, which is what a discrete card actually offers.
   assert.equal(discrete.totalCapacityGb, 88);
+});
+
+// ---------------------------------------------------------------------------
+// Scoping the flag to the pin (Codex P2 on 9830)
+
+test("a discrete pin on a mixed APU host keeps system RAM as a pool beside it", () => {
+  // The regression the first version of this fix introduced. A ROCm APU beside a
+  // discrete card makes a HOST-WIDE `devices.some(...)` true, and passing that
+  // for a pin naming only the discrete card told resolveMemoryCapacityGb the two
+  // are one pool. Measured: totalCapacityGb collapsed 143.52 -> 15.52 GiB,
+  // discarding 128 GiB of RAM the load can really spill into, and the panel then
+  // warned "more than this machine holds" for a load that fits comfortably.
+  const APU = { memoryTotalGb: 48, sharedMemory: true };
+  const DGPU = { memoryTotalGb: 16, sharedMemory: false };
+  const base = {
+    pinnedDevices: [DGPU],
+    hostDevices: [APU, DGPU],
+    hostGpuTotalGb: 64,
+    hostSharesSystemRam: true,
+    systemRamTotalGb: 128,
+    gpuBudgetFraction: 0.97,
+  };
+  const scoped = resolveMemoryCapacityGb({ ...base, unifiedMemory: false });
+  const hostWide = resolveMemoryCapacityGb({ ...base, unifiedMemory: true });
+  assert.equal(scoped.singleMemoryPool, false);
+  assert.ok(
+    scoped.totalCapacityGb > 100,
+    `a discrete pin must keep host RAM; got ${scoped.totalCapacityGb} GiB`,
+  );
+  assert.ok(
+    hostWide.totalCapacityGb < scoped.totalCapacityGb,
+    "the host-wide flag must be the one that throws RAM away, or this test is moot",
+  );
+});
+
+test("the panel scopes the unified flag to the pinned devices", () => {
+  // The fix is in a .tsx this runner cannot render, so it is asserted on source.
+  // Without this, the capacity test above passes on a panel that still hands the
+  // host-wide flag over: it pins what the resolver does, not what it is given.
+  const source = readFileSync(PANEL, "utf8");
+  const decl = source.match(/const hasUnifiedMemory = useMemo\(\(\) => \{[\s\S]*?\}, \[[^\]]*\]\);/);
+  assert.ok(decl, "hasUnifiedMemory is no longer a scoped useMemo");
+  assert.match(
+    decl[0],
+    /pinnedGpuIds[\s\S]*includes\(device\.index\)/,
+    "hasUnifiedMemory must narrow to the pinned devices before calling .some()",
+  );
+  assert.match(
+    decl[0],
+    /isAppleUnifiedMemory/,
+    "the Apple fallback must stay, for the window before the per-device probe lands",
+  );
 });

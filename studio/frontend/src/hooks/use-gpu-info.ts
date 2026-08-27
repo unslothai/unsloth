@@ -168,6 +168,7 @@ function toGpuDevices(
         memoryFreeGb: d.vram_free_gb ?? 0,
         sharedMemory: d.shared_memory === true,
         sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
+        unifiedMemory: d.unified_memory === true,
         pinnable: picksAccepted && d.index_kind === "vulkan",
         // The DiffusionGemma runner is torch-side and never speaks ggml
         // ordinals, so a Vulkan pick is not usable there.
@@ -195,6 +196,7 @@ function toGpuDevices(
       memoryFreeGb: d.vram_free_gb ?? 0,
       sharedMemory: d.shared_memory === true,
       sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
+      unifiedMemory: d.unified_memory === true,
       // The XPU ban is about torch-xpu ordinals no applicator speaks, so /load
       // and /validate 400 them. A Vulkan ordinal is not one of those, so it
       // stays pickable even when this list arrives from an XPU host.

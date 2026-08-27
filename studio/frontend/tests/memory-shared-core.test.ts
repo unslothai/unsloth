@@ -158,3 +158,37 @@ test("the bar's vocabulary round-trips, and is honest about what it loses", () =
   // surprise: the bar never recorded "tight", so it cannot be recovered.
   assert.equal(fromModelMemoryStatus("fits").verdict, "fits");
 });
+
+// ---------------------------------------------------------------------------
+// The fit badge draws against the same budget as the bar (Codex P2 on 9830)
+
+test("the Hub fit badge and the memory bar share one budget constant", async () => {
+  // These render on the SAME ROW, so two budgets meant two verdicts for one
+  // model. gguf-fit.ts held 0.90 while the bar used the loader's 0.97, which is
+  // what admission actually applies.
+  const { VRAM_HEADROOM_RATIO } = await import("../src/lib/gguf-fit.ts");
+  assert.equal(
+    VRAM_HEADROOM_RATIO,
+    DEFAULT_VRAM_BUDGET_FRACTION,
+    "the badge and the bar are judging against different budgets again",
+  );
+});
+
+test("aligning the constant narrows the badge/bar gap without closing it", async () => {
+  // Honest about what the fix buys. Measured over 15-24 GiB on a 24 GiB card the
+  // disagreement count goes 11/19 -> 8/19. The residual 8 are the ESTIMATOR
+  // difference -- gguf-fit scores `size * 1.15 + 1 GB` while the bar uses the
+  // planner's real figures -- so sharing a constant cannot remove them, and
+  // claiming otherwise would be the wrong lesson to leave here.
+  const { classifyGgufFit, requiredGgufMemoryGb } = await import(
+    "../src/lib/gguf-fit.ts"
+  );
+  const bytes = 20 * 1024 ** 3;
+  // The badge still scores a 20 GiB file at 24.0 GiB of "required" memory.
+  assert.ok(
+    requiredGgufMemoryGb(bytes) > 20,
+    "the badge's heuristic no longer inflates, so this note is stale",
+  );
+  // So on a 24 GiB card it still refuses a file the bar happily fits.
+  assert.notEqual(classifyGgufFit(bytes, { gpuGb: 24, systemRamGb: 64 }), "fits");
+});
