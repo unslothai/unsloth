@@ -105,29 +105,96 @@ function bmffBoxPayloads(data: Uint8Array, wanted: string): Uint8Array[] {
   return payloads;
 }
 
-/** Whether a 3GP container has audio tracks and no video tracks. Mirrors
- *  `is_audio_only_3gp` in native_path_policy.rs. */
-export function isAudioOnly3gpBytes(raw: Uint8Array): boolean {
-  let hasAudio = false;
-  let hasVideo = false;
-  for (const moov of bmffBoxPayloads(raw, "moov")) {
-    for (const trak of bmffBoxPayloads(moov, "trak")) {
-      for (const mdia of bmffBoxPayloads(trak, "mdia")) {
-        for (const hdlr of bmffBoxPayloads(mdia, "hdlr")) {
-          if (hdlr.length < 12) continue;
-          const handler = String.fromCharCode(
-            hdlr[8]!,
-            hdlr[9]!,
-            hdlr[10]!,
-            hdlr[11]!,
-          );
-          if (handler === "soun") hasAudio = true;
-          else if (handler === "vide") hasVideo = true;
-        }
+type BmffTracks = { audio: boolean; video: boolean };
+
+/** The handler types a moov box's tracks declare. */
+function tracksInMoov(moov: Uint8Array, found: BmffTracks): void {
+  for (const trak of bmffBoxPayloads(moov, "trak")) {
+    for (const mdia of bmffBoxPayloads(trak, "mdia")) {
+      for (const hdlr of bmffBoxPayloads(mdia, "hdlr")) {
+        if (hdlr.length < 12) continue;
+        const handler = String.fromCharCode(
+          hdlr[8]!,
+          hdlr[9]!,
+          hdlr[10]!,
+          hdlr[11]!,
+        );
+        if (handler === "soun") found.audio = true;
+        else if (handler === "vide") found.video = true;
       }
     }
   }
-  return hasAudio && !hasVideo;
+}
+
+/** Whether a 3GP container has audio tracks and no video tracks. Mirrors
+ *  `is_audio_only_3gp` in native_path_policy.rs. */
+export function isAudioOnly3gpBytes(raw: Uint8Array): boolean {
+  const found: BmffTracks = { audio: false, video: false };
+  for (const moov of bmffBoxPayloads(raw, "moov")) {
+    tracksInMoov(moov, found);
+  }
+  return found.audio && !found.video;
+}
+
+// A track table runs to kilobytes; anything this large is not one, and reading
+// it would be the memory problem the box walk exists to avoid.
+const MAX_MOOV_BYTES = 8 * 1024 * 1024;
+// A container holds a handful of these: ftyp, moov, mdat, and maybe free or
+// mfra. A file that reports thousands is malformed, and walking it would be
+// one slice per box.
+const MAX_TOP_LEVEL_BOXES = 64;
+
+/**
+ * The same answer as `isAudioOnly3gpBytes`, without holding the container.
+ *
+ * The tracks live in `moov`, and the samples in `mdat` beside it, so reading the
+ * file to reach a handler retains the whole clip: a 64 MB one costs 64 MB, and a
+ * dropped batch costs that per file at once. This walks the top-level boxes
+ * through slices and reads only `moov`, which is the same walk `bmffBoxPayloads`
+ * does, one level up.
+ */
+async function isAudioOnly3gpFile(file: File): Promise<boolean> {
+  const found: BmffTracks = { audio: false, video: false };
+  let offset = 0;
+  for (let box = 0; box < MAX_TOP_LEVEL_BOXES && offset + 8 <= file.size; box++) {
+    const header = new Uint8Array(
+      await file.slice(offset, offset + 16).arrayBuffer(),
+    );
+    if (header.length < 8) break;
+    const view = new DataView(
+      header.buffer,
+      header.byteOffset,
+      header.byteLength,
+    );
+    const size32 = view.getUint32(0);
+    const type = String.fromCharCode(
+      header[4]!,
+      header[5]!,
+      header[6]!,
+      header[7]!,
+    );
+    let headerSize = 8;
+    let boxSize = size32;
+    if (size32 === 0) {
+      boxSize = file.size - offset;
+    } else if (size32 === 1) {
+      if (header.length < 16) break;
+      const size64 = view.getBigUint64(8);
+      if (size64 > BigInt(Number.MAX_SAFE_INTEGER)) break;
+      headerSize = 16;
+      boxSize = Number(size64);
+    }
+    if (boxSize < headerSize || boxSize > file.size - offset) break;
+    if (type === "moov") {
+      if (boxSize - headerSize > MAX_MOOV_BYTES) break;
+      const moov = new Uint8Array(
+        await file.slice(offset + headerSize, offset + boxSize).arrayBuffer(),
+      );
+      tracksInMoov(moov, found);
+    }
+    offset += boxSize;
+  }
+  return found.audio && !found.video;
 }
 
 /** Whether a file's own tracks have to be read before it can be classified.
@@ -137,8 +204,8 @@ export function needsAttachmentTrackInspection(file: File): boolean {
   return (
     /\.3gp$/i.test(file.name) &&
     !/^audio\//i.test(file.type) &&
-    // Over the cap the surface refuses it anyway, and moov can sit at the end
-    // of the container, so no prefix would settle it more cheaply.
+    // Past this every surface here refuses the file whichever it turns out to
+    // be, so reading its tracks would only change which refusal it gets.
     file.size <= MAX_VIDEO_SIZE
   );
 }
@@ -158,13 +225,14 @@ export async function classifiedAttachmentFile(file: File): Promise<File> {
   if (!needsAttachmentTrackInspection(file)) {
     return file;
   }
-  let bytes: Uint8Array;
+  let audioOnly: boolean;
   try {
-    bytes = new Uint8Array(await file.arrayBuffer());
+    audioOnly = await isAudioOnly3gpFile(file);
   } catch {
+    // An unreadable file is left as it came; the surface reports the read.
     return file;
   }
-  if (!isAudioOnly3gpBytes(bytes)) {
+  if (!audioOnly) {
     return file;
   }
   return new File([file], file.name, {
@@ -173,9 +241,14 @@ export async function classifiedAttachmentFile(file: File): Promise<File> {
   });
 }
 
-/** The same restamping across a picked or dropped batch. */
-export function classifiedAttachmentFiles(
+/** The same restamping across a picked or dropped batch, one file at a time so
+ *  a drop of several never has more than one container's boxes in hand. */
+export async function classifiedAttachmentFiles(
   files: FileList | readonly File[],
 ): Promise<File[]> {
-  return Promise.all(Array.from(files).map(classifiedAttachmentFile));
+  const classified: File[] = [];
+  for (const file of Array.from(files)) {
+    classified.push(await classifiedAttachmentFile(file));
+  }
+  return classified;
 }

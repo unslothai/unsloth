@@ -633,8 +633,13 @@ const MIME_BOUNDARY_RE =
  * `Content-Type: ... charset=...` became a second declaration that refused the
  * file. A closing delimiter, `--boundary--`, ends its part instead of starting
  * one.
+ *
+ * @param mbox Whether the file is an archive of messages. A `From ` line only
+ * separates messages there, and an archive escapes the one a body starts with.
+ * A single `.eml` has no separator at all, so an ordinary sentence opening with
+ * "From " is body text and must not reopen the headers.
  */
-function emailHeaderBlocks(text: string): string[] {
+function emailHeaderBlocks(text: string, mbox: boolean): string[] {
   const blocks: string[] = [];
   const boundaries = new Set<string>();
   const closeBlock = (block: string) => {
@@ -662,7 +667,7 @@ function emailHeaderBlocks(text: string): string[] {
       }
     } else if (!isBlank) {
       // An mbox separator, or a delimiter one of the headers above declared.
-      let resumes = text.startsWith("From ", position);
+      let resumes = mbox && text.startsWith("From ", position);
       if (!resumes && boundaries.size > 0 && text.startsWith("--", position)) {
         // Trailing whitespace is allowed on a delimiter line and is not part of
         // the boundary token. A closing delimiter carries the extra "--" into
@@ -754,7 +759,8 @@ function declaredContainerCharsets(
   bytes: Uint8Array,
   fileName: string,
 ): string[] {
-  const isEmail = /\.(?:eml|mbox)$/i.test(fileName);
+  const isMbox = /\.mbox$/i.test(fileName);
+  const isEmail = isMbox || /\.eml$/i.test(fileName);
   const isVCard = /\.vcf$/i.test(fileName);
   if (!isEmail && !isVCard) {
     return [];
@@ -772,7 +778,7 @@ function declaredContainerCharsets(
     }
   };
   if (isEmail) {
-    for (const block of emailHeaderBlocks(prefix)) {
+    for (const block of emailHeaderBlocks(prefix, isMbox)) {
       for (const header of block.matchAll(EMAIL_CONTENT_TYPE_RE)) {
         add(header[1]?.match(EMAIL_CHARSET_RE)?.[1]);
       }

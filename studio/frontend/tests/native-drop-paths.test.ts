@@ -20,6 +20,7 @@ import {
   isTextAttachmentName,
 } from "../src/features/chat/text-attachment-accept.ts";
 import {
+  AUDIO_ATTACHMENT_ACCEPT,
   AUDIO_PICKER_ACCEPT,
   isAudioAttachmentFile,
 } from "../src/lib/audio-utils.ts";
@@ -51,7 +52,9 @@ import { AUDIO_ACCEPT } from "../src/lib/audio-utils.ts";
 import {
   VIDEO_ACCEPT,
   classifiedAttachmentFile,
+  classifiedAttachmentFiles,
   isAudioOnly3gpBytes,
+  isVideoFile,
 } from "../src/lib/video-utils.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
@@ -1563,11 +1566,40 @@ test("the restamped recording routes to the audio adapter", async () => {
   const recording = new File([threeGpWithTracks(["soun"])], "voice.3gp", {
     type: "",
   });
-  assert.equal(fileMatchesAccept(recording, AUDIO_PICKER_ACCEPT), false);
+  assert.equal(fileMatchesAccept(recording, AUDIO_ATTACHMENT_ACCEPT), false);
   assert.equal(fileMatchesAccept(recording, VIDEO_ACCEPT), true);
 
   const classified = await classifiedAttachmentFile(recording);
-  assert.equal(fileMatchesAccept(classified, AUDIO_PICKER_ACCEPT), true);
+  assert.equal(fileMatchesAccept(classified, AUDIO_ATTACHMENT_ACCEPT), true);
+});
+
+test("a file dialog offers 3GP recordings, and routing still does not", () => {
+  // A dialog decides what is selectable, so it has to name .3gp: a platform
+  // that maps it to video/3gpp, or to nothing, greys the recording out. Routing
+  // must not, or the audio adapter would claim every 3GP video ahead of the
+  // video one, which is matched after it.
+  assert.ok(AUDIO_PICKER_ACCEPT.split(",").includes(".3gp"));
+  assert.equal(AUDIO_ATTACHMENT_ACCEPT.split(",").includes(".3gp"), false);
+  assert.ok(AUDIO_PICKER_ACCEPT.startsWith(AUDIO_ATTACHMENT_ACCEPT));
+
+  const adapter = readFileSync(
+    new URL(
+      "../src/features/chat/audio-attachment-adapter.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(adapter, /accept = AUDIO_ATTACHMENT_ACCEPT;/);
+  assert.equal(/AUDIO_PICKER_ACCEPT/.test(adapter), false);
+});
+
+test("a 3GP clip picked through the audio dialog is still refused as video", async () => {
+  const clip = new File([threeGpWithTracks(["soun", "vide"])], "clip.3gp", {
+    type: "video/3gpp",
+  });
+  const [classified] = await classifiedAttachmentFiles([clip]);
+  assert.equal(isAudioAttachmentFile(classified!), false);
+  assert.equal(isVideoFile(classified!), true);
 });
 
 test("the composer classifies before an adapter is picked", () => {
@@ -1586,4 +1618,103 @@ test("the composer classifies before an adapter is picked", () => {
     "utf8",
   );
   assert.match(composer, /await classifiedAttachmentFiles\(input\)/);
+});
+
+test("a From line separates messages in an archive, not in one message", async () => {
+  // An mbox escapes a body line that starts with "From "; a standalone .eml has
+  // no separator at all, so an ordinary sentence opening that way is body text.
+  const enc = new TextEncoder();
+  const bytes = new Uint8Array([
+    ...enc.encode("Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf"),
+    0xe9,
+    ...enc.encode(
+      "\r\nFrom here on it quotes a header:\r\n" +
+        "Content-Type: text/plain; charset=windows-1251\r\n",
+    ),
+  ]);
+  assert.match(
+    await readTextAttachment(new File([bytes], "message.eml")),
+    /Café/,
+  );
+  await assert.rejects(
+    readTextAttachment(new File([bytes], "thread.mbox")),
+    (error: Error) => {
+      assert.match(error.message, /ISO-8859-1, windows-1251/);
+      return true;
+    },
+  );
+});
+
+function threeGpFile(
+  name: string,
+  handlers: readonly string[],
+  mdatBytes: number,
+): File {
+  const ftyp = bmffBox("ftyp", new TextEncoder().encode("3gp4isom"));
+  const moov = threeGpWithTracks(handlers);
+  const mdat = bmffBox("mdat", new Uint8Array(mdatBytes));
+  return new File([ftyp, moov, mdat], name, { type: "" });
+}
+
+/** Records every range read from a file, and forbids reading it whole. */
+function watchReads(file: File): Array<[number, number]> {
+  const reads: Array<[number, number]> = [];
+  const slice = file.slice.bind(file);
+  Object.defineProperty(file, "slice", {
+    value: (start: number, end: number) => {
+      reads.push([start, end]);
+      return slice(start, end);
+    },
+  });
+  Object.defineProperty(file, "arrayBuffer", {
+    value: () => {
+      throw new Error("the whole container must not be read");
+    },
+  });
+  return reads;
+}
+
+test("only the track table is read, not the samples beside it", async () => {
+  // moov holds the handlers and mdat the audio, so reading the file to reach a
+  // handler retains the whole clip: 64 MB for one, and that per file in a drop.
+  const file = threeGpFile("voice.3gp", ["soun"], 2 * 1024 * 1024);
+  const reads = watchReads(file);
+
+  const classified = await classifiedAttachmentFile(file);
+  assert.equal(classified.type, "audio/3gpp");
+  const bytesRead = reads.reduce((total, [start, end]) => total + end - start, 0);
+  assert.ok(
+    bytesRead < 4096,
+    `read ${bytesRead} bytes of a ${file.size}-byte container`,
+  );
+});
+
+test("a dropped batch is inspected one container at a time", async () => {
+  // Promise.all put every container's payload in memory at once, so ten clips
+  // at the 64 MB limit came to 640 MB before anything could be rejected.
+  const files = ["a.3gp", "b.3gp", "c.3gp"].map((name) =>
+    threeGpFile(name, ["soun"], 64 * 1024),
+  );
+  const order: string[] = [];
+  for (const file of files) {
+    const slice = file.slice.bind(file);
+    Object.defineProperty(file, "slice", {
+      value: (start: number, end: number) => {
+        order.push(file.name);
+        return slice(start, end);
+      },
+    });
+  }
+
+  const classified = await classifiedAttachmentFiles(files);
+  assert.deepEqual(
+    classified.map((file) => file.type),
+    ["audio/3gpp", "audio/3gpp", "audio/3gpp"],
+  );
+  // Grouped, not interleaved: every read of a file precedes the next one's.
+  assert.deepEqual([...new Set(order)], ["a.3gp", "b.3gp", "c.3gp"]);
+  assert.deepEqual(
+    order,
+    [...order].sort((left, right) => left.localeCompare(right)),
+  );
 });

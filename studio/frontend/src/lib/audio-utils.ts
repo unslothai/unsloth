@@ -9,8 +9,20 @@ export const AUDIO_ACCEPT =
 // every surface that takes audio matches the name as well as the MIME.
 export const AUDIO_ACCEPT_EXTENSIONS =
   ".wav,.mp3,.m4a,.ogg,.oga,.opus,.flac,.aac,.aiff,.aif,.aifc,.caf,.wma,.amr,.mp2";
-/** What an audio picker should offer: the MIME list plus those extensions. */
-export const AUDIO_PICKER_ACCEPT = `${AUDIO_ACCEPT},audio/x-m4a,${AUDIO_ACCEPT_EXTENSIONS}`;
+/** What claims a file as audio: the MIME list plus those extensions. Keep .3gp
+ *  out of it. A recording and a clip share that extension, and the composer's
+ *  audio adapter is matched before its video one, so claiming the name here
+ *  would take every 3GP video as audio. */
+export const AUDIO_ATTACHMENT_ACCEPT = `${AUDIO_ACCEPT},audio/x-m4a,${AUDIO_ACCEPT_EXTENSIONS}`;
+/**
+ * What a file dialog should offer.
+ *
+ * Wider than the accept above, because a dialog only decides what is selectable
+ * and a platform that maps .3gp to video/3gpp, or to nothing, greys out a voice
+ * recording the surface would otherwise take. The tracks are read once the file
+ * is in hand, and a real clip is refused then.
+ */
+export const AUDIO_PICKER_ACCEPT = `${AUDIO_ATTACHMENT_ACCEPT},.3gp`;
 
 /** Whether a dropped or pasted file is audio, by MIME or, failing that, name. */
 export function isAudioAttachmentFile(file: File): boolean {
