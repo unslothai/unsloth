@@ -762,8 +762,21 @@ export function SharedComposer({
 
   const activeModel = useChatRuntimeStore((s) => {
     const checkpoint = s.params.checkpoint;
-    return s.models.find((m) => m.id === checkpoint);
+    if (!checkpoint) return undefined;
+    const direct = s.models.find((m) => m.id === checkpoint);
+    if (direct) return direct;
+    const byName = s.models.find((m) => m.name === checkpoint);
+    if (byName) return byName;
+    const normalizedCp = checkpoint.toLowerCase().replace(/\\/g, "/").split("/").pop() || "";
+    return s.models.find(
+      (m) =>
+        m.id.toLowerCase() === checkpoint.toLowerCase() ||
+        m.id.toLowerCase().replace(/\\/g, "/").split("/").pop() === normalizedCp ||
+        (m.name && m.name.toLowerCase() === checkpoint.toLowerCase()) ||
+        (m.name && m.name.toLowerCase().replace(/\\/g, "/").split("/").pop() === normalizedCp),
+    );
   });
+
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
@@ -2484,7 +2497,10 @@ export function SharedComposer({
                 <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
                 Add photos &amp; files
               </DropdownMenuItem>
-              {activeModel?.hasAudioInput && (
+              {Boolean(
+                activeModel?.hasAudioInput ||
+                  activeModel?.description?.includes("Audio Input"),
+              ) && (
                 <DropdownMenuItem
                   onSelect={() => audioInputRef.current?.click()}
                 >
@@ -2492,6 +2508,7 @@ export function SharedComposer({
                   Upload audio
                 </DropdownMenuItem>
               )}
+
               <DropdownMenuItem
                 disabled={searchDisabled}
                 className={
@@ -2913,8 +2930,12 @@ export function SharedComposer({
               </button>
             )
           ) : null}
-          {activeModel?.hasAudioInput === true && (
+          {Boolean(
+            activeModel?.hasAudioInput ||
+              activeModel?.description?.includes("Audio Input"),
+          ) && (
             isRecordingModelAudio ? (
+
               <>
                 <TooltipIconButton
                   tooltip="Stop recording"
