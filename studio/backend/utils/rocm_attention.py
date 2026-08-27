@@ -23,6 +23,10 @@ Stdlib only, and MUST run before torch is imported: torch reads the var once whi
 loading its C++ extension, so setting it afterwards is dead code.
 """
 
+# studio/ still ships on the 3.9 floor, where `dict | None` in a signature raises at
+# def time. tests/test_python39_compatibility.py ratchets on that.
+from __future__ import annotations
+
 import os
 
 AOTRITON_ENV = "TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"
