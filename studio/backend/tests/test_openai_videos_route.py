@@ -190,7 +190,8 @@ def test_create_like_the_sdk_poll_download_list_delete(client, backend):
     assert backend.last_generate_kwargs["width"] == 768
     assert backend.last_generate_kwargs["height"] == 512
     assert backend.last_generate_kwargs["num_frames"] == 97
-    assert backend.last_generate_kwargs["first_frame"] is None
+    # begin_generate resolves keyframes up front and hands the worker _resolved_inputs.
+    assert backend.last_generate_kwargs["_resolved_inputs"].first_frame is None
 
     assert gallery_module.owned_video_path(job["id"]) is not None
     content = client.get(f"/v1/videos/{job['id']}/content")

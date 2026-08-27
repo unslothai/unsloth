@@ -5055,9 +5055,11 @@ class VideoBackend:
                 }
                 break
         worker = threading.Thread(
-            # The token rides on the target rather than in kwargs: those kwargs are also a
-            # valid generate() call, and callers replay them as one.
-            target = functools.partial(self._run_generate, job_token = job_token),
+            # The token and the /v1/videos job id ride on the target rather than in kwargs:
+            # those kwargs are also a valid generate() call, and callers replay them as one.
+            target = functools.partial(
+                self._run_generate, job_token = job_token, video_id = video_id
+            ),
             kwargs = dict(
                 prompt = prompt,
                 negative_prompt = negative_prompt,
@@ -5071,7 +5073,6 @@ class VideoBackend:
                 seed = seed,
                 _resolved_inputs = resolved_inputs,
                 cancel_event = cancel,
-                video_id = video_id,
             ),
             daemon = True,
         )
@@ -5097,6 +5098,7 @@ class VideoBackend:
         *,
         cancel_event: threading.Event,
         job_token: Optional[object] = None,
+        video_id: Optional[str] = None,
         **gen_kwargs: Any,
     ) -> None:
         """Backstop around the worker body, so a reservation cannot outlive its thread.
@@ -5108,7 +5110,9 @@ class VideoBackend:
 
         Still the thread target: begin_generate resolves it by name and doubles subclass it."""
         try:
-            self._run_generate_body(cancel_event = cancel_event, job_token = job_token, **gen_kwargs)
+            self._run_generate_body(
+                cancel_event = cancel_event, job_token = job_token, video_id = video_id, **gen_kwargs
+            )
         finally:
             if job_token is not None:
                 # Only begin_generate makes a reservation, so only it can leave one dangling.
