@@ -16956,13 +16956,11 @@ _TTS_MODEL_TASK = "text-to-speech"
 
 def _media_owner(task: str) -> str:
     from core.inference.gpu_arbiter import DIFFUSION, VIDEO
-
     return DIFFUSION if task == "text-to-image" else VIDEO
 
 
 def _resident_media_status(task: str) -> Optional[dict]:
     from core.inference.media_keepwarm import engine_if_imported
-
     try:
         engine = engine_if_imported(_media_owner(task))
         status = engine.status() if engine is not None else None
@@ -16998,7 +16996,9 @@ def _media_model_objects(catalog: list, quants_by_id: dict, created: int) -> lis
                 "loaded": loaded,
             }
             quants = quants_by_id.get(id(info))
-            quant = (status.get("gguf_variant") if loaded else None) or (quants[0] if quants else None)
+            quant = (status.get("gguf_variant") if loaded else None) or (
+                quants[0] if quants else None
+            )
             if quant:
                 obj["quant"] = quant
             display = getattr(info, "display_name", None)
@@ -17115,9 +17115,7 @@ async def _openai_catalog_objects() -> list[dict]:
 
     catalog = await _cached_local_catalog()
     # One scan yields both "is this servable" and its on-disk quants, so no second pass.
-    quants_by_id = await asyncio.to_thread(
-        lambda: {id(i): local_gguf_quants(i) for i in catalog}
-    )
+    quants_by_id = await asyncio.to_thread(lambda: {id(i): local_gguf_quants(i) for i in catalog})
     servable = [
         (i, quants_by_id[id(i)])
         for i in catalog

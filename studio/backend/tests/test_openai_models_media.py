@@ -22,7 +22,15 @@ from utils.api_errors import install_api_error_handlers  # noqa: E402
 
 
 class _Info:
-    def __init__(self, id, display_name, model_id = None, path = None, task = None, is_gguf = True):
+    def __init__(
+        self,
+        id,
+        display_name,
+        model_id = None,
+        path = None,
+        task = None,
+        is_gguf = True,
+    ):
         self.id = id
         self.display_name = display_name
         self.model_id = model_id
@@ -47,7 +55,11 @@ class _FakeUnsloth:
     max_seq_length = None
 
 
-def _catalog(monkeypatch, infos, resident = None):
+def _catalog(
+    monkeypatch,
+    infos,
+    resident = None,
+):
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama())
     monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
 
@@ -55,7 +67,9 @@ def _catalog(monkeypatch, infos, resident = None):
         return infos
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
-    monkeypatch.setattr(resolver, "local_gguf_quants", lambda info: ("Q8_0",) if info.is_gguf else None)
+    monkeypatch.setattr(
+        resolver, "local_gguf_quants", lambda info: ("Q8_0",) if info.is_gguf else None
+    )
     monkeypatch.setattr(inf, "_resident_media_status", lambda task: (resident or {}).get(task))
     monkeypatch.setattr(inf, "_stt_model_objects", lambda created: [])
 
@@ -82,7 +96,13 @@ _INFOS = [
 
 
 def test_media_models_list_with_task_and_residency(monkeypatch):
-    resident = {"text-to-image": {"loaded": True, "repo_id": "unsloth/z-image-turbo-gguf", "gguf_variant": "Q4_K_M"}}
+    resident = {
+        "text-to-image": {
+            "loaded": True,
+            "repo_id": "unsloth/z-image-turbo-gguf",
+            "gguf_variant": "Q4_K_M",
+        }
+    }
     _catalog(monkeypatch, _INFOS, resident)
 
     data = asyncio.run(inf._openai_catalog_objects())
@@ -110,7 +130,9 @@ def test_media_models_report_the_on_disk_quant_when_not_loaded(monkeypatch):
 
 
 def test_resident_media_model_matches_by_path(monkeypatch):
-    resident = {"text-to-video": {"loaded": True, "repo_id": "/hf/models--Lightricks--LTX-2/snapshots/def"}}
+    resident = {
+        "text-to-video": {"loaded": True, "repo_id": "/hf/models--Lightricks--LTX-2/snapshots/def"}
+    }
     _catalog(monkeypatch, _INFOS, resident)
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["Lightricks/LTX-2"]["loaded"] is True
@@ -118,7 +140,13 @@ def test_resident_media_model_matches_by_path(monkeypatch):
 
 
 def test_resident_media_model_outside_the_catalog_is_listed_cleanly(monkeypatch):
-    resident = {"text-to-video": {"loaded": True, "repo_id": "/srv/models/ltx-2.3-Q4.gguf", "gguf_variant": "Q4_K_M"}}
+    resident = {
+        "text-to-video": {
+            "loaded": True,
+            "repo_id": "/srv/models/ltx-2.3-Q4.gguf",
+            "gguf_variant": "Q4_K_M",
+        }
+    }
     _catalog(monkeypatch, [], resident)
     data = asyncio.run(inf._openai_catalog_objects())
     assert len(data) == 1
@@ -131,11 +159,21 @@ def test_stt_models_list_downloaded_and_loaded(monkeypatch):
     from core.inference import stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
 
     monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda m: m == "small")
-    monkeypatch.setattr(stt_ggml_sidecar, "_cached_model_path", lambda m: "/x" if m == "large-v3-turbo" else None)
+    monkeypatch.setattr(
+        stt_ggml_sidecar, "_cached_model_path", lambda m: "/x" if m == "large-v3-turbo" else None
+    )
     monkeypatch.setattr(stt_mtmd_sidecar, "is_model_downloaded", lambda m: m == "qwen3-asr-0.6b")
-    monkeypatch.setattr(stt_sidecar, "get_stt_sidecar", lambda: SimpleNamespace(loaded_model = "org/whisper-custom"))
-    monkeypatch.setattr(stt_ggml_sidecar, "get_ggml_stt_sidecar", lambda: SimpleNamespace(loaded_model = "large-v3-turbo"))
-    monkeypatch.setattr(stt_mtmd_sidecar, "get_mtmd_stt_sidecar", lambda: SimpleNamespace(loaded_model = None))
+    monkeypatch.setattr(
+        stt_sidecar, "get_stt_sidecar", lambda: SimpleNamespace(loaded_model = "org/whisper-custom")
+    )
+    monkeypatch.setattr(
+        stt_ggml_sidecar,
+        "get_ggml_stt_sidecar",
+        lambda: SimpleNamespace(loaded_model = "large-v3-turbo"),
+    )
+    monkeypatch.setattr(
+        stt_mtmd_sidecar, "get_mtmd_stt_sidecar", lambda: SimpleNamespace(loaded_model = None)
+    )
 
     objects = inf._stt_model_objects(7)
     assert [(o["id"], o["loaded"]) for o in objects] == [
@@ -203,10 +241,14 @@ def test_resident_media_status(monkeypatch):
 
     monkeypatch.setattr(mk, "engine_if_imported", lambda owner: None)
     assert inf._resident_media_status("text-to-image") is None
-    monkeypatch.setattr(mk, "engine_if_imported", lambda owner: SimpleNamespace(status = lambda: {"loaded": False}))
+    monkeypatch.setattr(
+        mk, "engine_if_imported", lambda owner: SimpleNamespace(status = lambda: {"loaded": False})
+    )
     assert inf._resident_media_status("text-to-video") is None
     loaded = {"loaded": True, "repo_id": "unsloth/LTX-2.3-GGUF"}
-    monkeypatch.setattr(mk, "engine_if_imported", lambda owner: SimpleNamespace(status = lambda: loaded))
+    monkeypatch.setattr(
+        mk, "engine_if_imported", lambda owner: SimpleNamespace(status = lambda: loaded)
+    )
     assert inf._resident_media_status("text-to-video") == loaded
 
     def _boom():
@@ -220,7 +262,11 @@ def test_engine_if_imported_stays_out_of_torch(monkeypatch):
     import core.inference.media_keepwarm as mk
     from core.inference.gpu_arbiter import DIFFUSION, VIDEO
 
-    for name in ("core.inference.diffusion", "core.inference.sd_cpp_backend", "core.inference.video"):
+    for name in (
+        "core.inference.diffusion",
+        "core.inference.sd_cpp_backend",
+        "core.inference.video",
+    ):
         monkeypatch.delitem(sys.modules, name, raising = False)
     assert mk.engine_if_imported(DIFFUSION) is None
     assert mk.engine_if_imported(VIDEO) is None
@@ -235,7 +281,9 @@ def test_classified_catalog_tags_task(monkeypatch):
 
     monkeypatch.setattr(models_mod, "_local_model_task", lambda m: "text-to-image")
     plain = object()
-    tagged, kept, passthrough = inf._classified_catalog([_Model(id = "a"), _Model(id = "b", task = "text-generation"), plain])
+    tagged, kept, passthrough = inf._classified_catalog(
+        [_Model(id = "a"), _Model(id = "b", task = "text-generation"), plain]
+    )
     assert tagged.task == "text-to-image"
     assert kept.task == "text-generation"
     assert passthrough is plain
