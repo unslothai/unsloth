@@ -130,7 +130,10 @@ class TestWaitForHealthResilience:
         assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
 
         detail = LlamaCppBackend._classify_llama_start_failure(
-            "\n".join(b._stdout_lines), "/models/model.gguf", "owner/model", returncode = None,
+            "\n".join(b._stdout_lines),
+            "/models/model.gguf",
+            "owner/model",
+            returncode = None,
         )
         assert "cancelled" in detail
         assert "GGUF file is valid" not in detail
