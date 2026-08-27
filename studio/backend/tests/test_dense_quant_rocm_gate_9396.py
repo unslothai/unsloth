@@ -21,7 +21,13 @@ def _target(*, device = "cuda", dtype = "bfloat16"):
     return types.SimpleNamespace(device = device, dtype = dtype)
 
 
-def _stub_torch(monkeypatch, *, hip = None, version_str = "2.10.0+cu128", cc = (11, 0)):
+def _stub_torch(
+    monkeypatch,
+    *,
+    hip = None,
+    version_str = "2.10.0+cu128",
+    cc = (11, 0),
+):
     """A torch stub that answers like a ROCm build when ``hip`` is set."""
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
@@ -106,9 +112,7 @@ def test_refusal_reason_unchanged_off_cuda(monkeypatch):
 # ── 2. the text-encoder gate has the same capability misread ──────────────────
 
 
-@pytest.mark.parametrize(
-    "mode", [dp.TE_QUANT_INT8, dp.TE_QUANT_FP8_DYNAMIC, dp.TE_QUANT_NVFP4]
-)
+@pytest.mark.parametrize("mode", [dp.TE_QUANT_INT8, dp.TE_QUANT_FP8_DYNAMIC, dp.TE_QUANT_NVFP4])
 def test_torchao_text_encoder_modes_unsupported_on_rocm(monkeypatch, mode):
     _stub_torch(monkeypatch, hip = "7.1.25424", version_str = "2.10.0+rocm7.1")
     assert dp.te_quant_supported(_target(), mode) is False
@@ -120,9 +124,7 @@ def test_layerwise_fp8_text_encoder_still_supported_on_rocm(monkeypatch):
     assert dp.te_quant_supported(_target(), dp.TE_QUANT_FP8) is True
 
 
-@pytest.mark.parametrize(
-    "mode", [dp.TE_QUANT_INT8, dp.TE_QUANT_FP8_DYNAMIC, dp.TE_QUANT_NVFP4]
-)
+@pytest.mark.parametrize("mode", [dp.TE_QUANT_INT8, dp.TE_QUANT_FP8_DYNAMIC, dp.TE_QUANT_NVFP4])
 def test_torchao_text_encoder_modes_still_supported_on_cuda(monkeypatch, mode):
     _stub_torch(monkeypatch, hip = None, version_str = "2.10.0+cu128", cc = (10, 0))
     monkeypatch.setattr(dp, "is_stubbed", lambda name: False)
@@ -207,10 +209,17 @@ def test_a_scheme_missing_from_the_table_is_still_not_an_answer(monkeypatch):
 # ── 4. the training gate has the same misread, at four entry points ───────────
 
 
-def _stub_train_torch(monkeypatch, *, hip, version_str, cc = (11, 5)):
+def _stub_train_torch(
+    monkeypatch,
+    *,
+    hip,
+    version_str,
+    cc = (11, 5),
+):
     """As _stub_torch, plus what the training gates read (bf16 support, mem_get_info)."""
     torch = _stub_torch(monkeypatch, hip = hip, version_str = version_str, cc = cc)
     import core.training.diffusion_train_common as tc
+
     monkeypatch.setattr(tc, "native_bf16_supported", lambda: True)
     monkeypatch.setattr(tc, "has_functional_torchao", lambda: True)
     return torch
