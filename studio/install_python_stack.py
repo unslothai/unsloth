@@ -4397,6 +4397,24 @@ def _repair_duplicate_core_metadata(
         ) or install_manifest.pip_backup_metadata_paths(name):
             duplicates.append((name, record_count))
 
+    # Decline here, not inside _stage_replacement(). By the time staging is reached this
+    # has already rewritten METADATA and moved pip's leftover backups aside, and while
+    # the finally below puts them back on a normal return, a SIGKILL or a power loss
+    # cannot run a finally. Under the opt-out the reinstall was never going to be
+    # permitted, so the whole repair is skipped before the first byte is touched and the
+    # tree is left exactly as found for a later run to see.
+    if duplicates and _respect_pm_policy():
+        _safe_print(
+            _red(
+                f"   {_POLICY_OPT_OUT_ENV} is set and repairing duplicate metadata for "
+                + ", ".join(name for name, _ in duplicates)
+                + " would have to reinstall it from a source your policy may refuse; "
+                "leaving it as found. Unset the variable for one run to repair it."
+            ),
+            file = sys.stderr,
+        )
+        return False
+
     repaired: list[str] = []
     staging_dirs: list[str] = []
     # One quarantine per package, discarded as soon as that package is back in place.

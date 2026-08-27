@@ -161,3 +161,96 @@ def test_the_opt_out_arm_keeps_the_uv_wheelhouse():
         "-u UV_FIND_LINKS" not in opt_out
     ), "the opt-out arm must leave the operator's wheelhouse in place"
     assert "-u UV_FIND_LINKS" in default, "the default path must not move: it is what fixes #6898"
+
+
+def _run_case_arm(value: "str | None") -> str:
+    """Execute install.sh's real --default-index arm and return the argv it builds.
+
+    String-matching the branch is not enough: a gate rewritten to something that can
+    never be true still contains the words the structural test looks for, so it stays
+    green while the opt-out silently stops working. This runs the thing.
+    """
+    text = INSTALL_SH.read_text(encoding = "utf-8")
+    predicate = _shell_predicate()
+    start = text.index("run_install_cmd() {")
+    body = text[start : text.index("\n}", start)]
+    case_start = body.index('case " $* " in')
+    case_end = body.index("esac", case_start) + 4
+    script = (
+        predicate
+        + "\nbuild() {\n"
+        + body[case_start:case_end]
+        + '\nprintf "%s\\n" "$*"\n}\nbuild "$@"\n'
+    )
+    env = {"PATH": "/usr/bin:/bin"}
+    if value is not None:
+        env["UNSLOTH_RESPECT_PM_POLICY"] = value
+    result = subprocess.run(
+        [
+            "sh",
+            "-c",
+            script,
+            "sh",
+            "uv",
+            "pip",
+            "install",
+            "--default-index",
+            "https://download.pytorch.org/whl/cu124",
+            "torch",
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 60,
+        env = env,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason = "no POSIX sh")
+def test_the_gate_actually_selects_the_arm_when_the_opt_out_is_set():
+    """Executed, not pattern-matched. Fails if the gate becomes unreachable."""
+    opted = _run_case_arm("1")
+    assert "-u UV_CONFIG_FILE" not in opted, opted
+    assert "UV_NO_CONFIG=1" not in opted, opted
+    assert "-u UV_FIND_LINKS" not in opted, opted
+    # The additive mirror still goes, in both arms.
+    assert "-u UV_INDEX_URL" in opted, opted
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason = "no POSIX sh")
+@pytest.mark.parametrize("value", [None, "", "0", "false", "no"])
+def test_the_default_arm_is_selected_for_every_off_spelling(value):
+    """The default path must be reached whenever the operator has not opted in."""
+    built = _run_case_arm(value)
+    assert "-u UV_CONFIG_FILE" in built, (value, built)
+    assert "UV_NO_CONFIG=1" in built, (value, built)
+    assert "-u UV_FIND_LINKS" in built, (value, built)
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason = "no POSIX sh")
+def test_an_unset_opt_out_spawns_no_helper_processes():
+    """The default path must not pay subprocesses to decide it is the default path.
+
+    `tr` and `sed` were run for every pinned install, including the overwhelming
+    majority where the variable is not set at all.
+    """
+    predicate = _shell_predicate()
+    # Poison both helpers: if the unset path reaches them, the shell reports failure.
+    script = (
+        "tr() { echo 'HELPER-RAN' >&2; return 1; }\n"
+        "sed() { echo 'HELPER-RAN' >&2; return 1; }\n"
+        + predicate
+        + "\nif _respect_pm_policy; then echo ON; else echo OFF; fi\n"
+    )
+    result = subprocess.run(
+        ["sh", "-c", script],
+        capture_output = True,
+        text = True,
+        timeout = 60,
+        env = {"PATH": "/usr/bin:/bin"},
+    )
+    assert result.stdout.strip() == "OFF", result.stdout
+    assert (
+        "HELPER-RAN" not in result.stderr
+    ), "the unset path still spawns tr/sed; it should decide before doing any work"

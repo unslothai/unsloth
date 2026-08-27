@@ -3180,3 +3180,55 @@ class TestReportingAControlIsNotPermissionToOverrideIt:
         assert env is not None
         for name in self.BASELINE:
             assert env.get(name) == "1", name
+
+
+class TestTheMetadataRepairDeclinesBeforeTouchingAnything:
+    """The guard sits at the top of the repair, not inside _stage_replacement().
+
+    By the time staging is reached the repair has already rewritten METADATA and moved
+    pip's leftover backups aside. A normal return puts them back through the finally,
+    but a SIGKILL or a power loss cannot run a finally, so under the opt-out the repair
+    is declined before the first byte is touched.
+    """
+
+    def test_no_filesystem_call_is_reached_under_the_opt_out(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_RESPECT_PM_POLICY", "1")
+        touched: "list[str]" = []
+
+        # Anything that could mutate the tree records itself instead of running.
+        for name in ("_rewrite_minimal_metadata",):
+            if hasattr(ips, name):
+                monkeypatch.setattr(
+                    ips,
+                    name,
+                    lambda *a, _n = name, **k: touched.append(_n) or True,
+                )
+        monkeypatch.setattr(
+            ips._QuarantinedMetadata,
+            "back_up",
+            lambda self, *a, **k: touched.append("back_up") or True,
+        )
+        monkeypatch.setattr(
+            ips._QuarantinedMetadata,
+            "take",
+            lambda self, *a, **k: touched.append("take") or True,
+        )
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "installed_versions",
+            lambda name: ["1.0", "2.0"],
+        )
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "invalid_metadata_paths",
+            lambda name: ["/x/a.dist-info"],
+        )
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "pip_backup_metadata_paths",
+            lambda name: ["/x/~pkg"],
+        )
+
+        result = ips._repair_duplicate_core_metadata(("unsloth",))
+        assert result is False
+        assert touched == [], f"the repair mutated the tree before declining: {touched}"

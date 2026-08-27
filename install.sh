@@ -250,7 +250,13 @@ _uv_download_markers() {
 # read it as any other non-false value and turned the opt-out ON. The entry points have
 # to agree on a value or the promise holds for only part of a run.
 _respect_pm_policy() {
-    case "$(printf '%s' "${UNSLOTH_RESPECT_PM_POLICY:-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" in
+    # Unset or empty is the answer for everyone who has not opted in, so decide it
+    # here rather than paying two subprocesses per pinned install to reach the same
+    # conclusion. The default path then does exactly the work it did before.
+    case "${UNSLOTH_RESPECT_PM_POLICY:-}" in
+        "") return 1 ;;
+    esac
+    case "$(printf '%s' "$UNSLOTH_RESPECT_PM_POLICY" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" in
         ''|0|false|no) return 1 ;;
         *) return 0 ;;
     esac
