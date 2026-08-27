@@ -322,20 +322,23 @@ def test_the_widening_only_covers_modules_that_import_back():
     # Every call now carries the install ROOTS and the names installed there,
     # because the widening is scoped to both; `json` stands in for a library
     # that landed in one.
-    roots = (os.path.dirname(os.path.realpath(sys.modules["json"].__file__ or "")),)
-    roots = (os.path.dirname(roots[0]),)  # the package's install root
-    provided = frozenset({"json", "not_in_sys_modules", "json_lookalike"})
+    package_dir = os.path.dirname(os.path.realpath(sys.modules["json"].__file__ or ""))
+    roots = (os.path.dirname(package_dir),)  # the package's install root
+    installed = (
+        frozenset({os.path.realpath(sys.modules["json"].__file__ or ""), "/x.py"}),
+        frozenset(),
+    )
     real = sys.modules["json"]
-    assert _dill_module_is_importable_by_name(real, roots, provided)
+    assert _dill_module_is_importable_by_name(real, *installed)
 
     orphan = types.ModuleType("not_in_sys_modules")
     orphan.__spec__ = types.SimpleNamespace(name = "not_in_sys_modules", origin = "/x.py")
-    assert not _dill_module_is_importable_by_name(orphan, roots, provided)
+    assert not _dill_module_is_importable_by_name(orphan, *installed)
 
     no_spec = types.ModuleType("json_lookalike")
     sys.modules["json_lookalike"] = no_spec
     try:
-        assert not _dill_module_is_importable_by_name(no_spec, roots, provided)
+        assert not _dill_module_is_importable_by_name(no_spec, *installed)
     finally:
         del sys.modules["json_lookalike"]
 
@@ -352,7 +355,7 @@ def test_the_widening_only_covers_modules_that_import_back():
         previous = sys.modules.get(hostile)
         sys.modules[hostile] = fake
         try:
-            assert not _dill_module_is_importable_by_name(fake, roots, provided), (
+            assert not _dill_module_is_importable_by_name(fake, *installed), (
                 f"{hostile} would be pickled by reference, which changes dill's "
                 "contract for the user's own code"
             )
@@ -366,9 +369,9 @@ def test_the_widening_only_covers_modules_that_import_back():
     namespace_like.__spec__ = types.SimpleNamespace(name = "namespace_like", origin = None)
     sys.modules["namespace_like"] = namespace_like
     try:
-        assert not _dill_module_is_importable_by_name(
-            namespace_like, roots, provided
-        ), "a module with no file backing it is not safely importable by name"
+        assert not _dill_module_is_importable_by_name(namespace_like, *installed), (
+            "a module with no file backing it is not safely importable by name"
+        )
     finally:
         del sys.modules["namespace_like"]
 
@@ -491,35 +494,34 @@ def test_a_project_module_outside_the_install_root_keeps_its_by_value_state():
     sys.modules["pretend_project"] = project
     sys.modules["pretend_colocated"] = colocated
     try:
-        roots = ("/opt/layer/python",)
-        provided = frozenset({"pretend_library"})
-        assert _dill_module_is_importable_by_name(library, roots, provided)
-        assert not _dill_module_is_importable_by_name(project, roots, provided), (
+        installed = (frozenset({"/opt/layer/python/pretend_library.py"}), frozenset())
+        assert _dill_module_is_importable_by_name(library, *installed)
+        assert not _dill_module_is_importable_by_name(project, *installed), (
             "a project module outside the install root would be pickled by "
             "reference, so its mutable state would drop out of the fingerprint"
         )
-        assert not _dill_module_is_importable_by_name(colocated, roots, provided), (
-            "a co-located project module no distribution claims would be "
+        assert not _dill_module_is_importable_by_name(colocated, *installed), (
+            "a co-located project module no distribution recorded would be "
             "pickled by reference, so `config.VALUE = 2` would stop changing "
             "the fingerprint and datasets would serve a stale cached result"
         )
-        # No roots at all, or nothing installed there, means no widening.
-        assert not _dill_module_is_importable_by_name(library, (), provided)
-        assert not _dill_module_is_importable_by_name(library, roots, ())
+        # Nothing installed anywhere means no widening whatsoever.
+        assert not _dill_module_is_importable_by_name(library)
     finally:
         del sys.modules["pretend_library"]
         del sys.modules["pretend_project"]
         del sys.modules["pretend_colocated"]
 
 
-def test_only_installed_distributions_claim_a_top_level_name(tmp_path):
-    """`_dill_distribution_top_levels`, driven against a real directory.
+def test_only_recorded_files_are_treated_as_dependency_owned(tmp_path):
+    """`_dill_distribution_paths`, driven against a real directory.
 
-    Both readers matter: pip emits `top_level.txt` for some wheels and not
-    others, and RECORD is the only file every wheel install is guaranteed to
-    leave behind.
+    Recorded PATHS, not top-level names. A name cannot separate an installed
+    `google` distribution from a co-located `google/myconfig.py` that nothing
+    installed, and it forces a guess about leading underscores that discards
+    `_soundfile` along with `__pycache__`.
     """
-    from unsloth.import_fixes import _dill_distribution_top_levels
+    from unsloth.import_fixes import _dill_distribution_paths
 
     root = tmp_path / "target"
     (root / "withtop-1.0.dist-info").mkdir(parents = True)
@@ -528,17 +530,205 @@ def test_only_installed_distributions_claim_a_top_level_name(tmp_path):
     )
     (root / "onlyrecord-1.0.dist-info").mkdir()
     (root / "onlyrecord-1.0.dist-info" / "RECORD").write_text(
-        "pkgtwo/__init__.py,sha256=x,10\n"
+        "ns/cloud/__init__.py,sha256=x,10\n"
+        "_soundfile.py,sha256=u,9\n"
         "singlemod.py,sha256=y,4\n"
+        "sourceless/__init__.pyc,sha256=z,8\n"
         "onlyrecord-1.0.dist-info/RECORD,,\n"
-        "onlyrecord-1.0.data/scripts/thing,,\n",
+        "onlyrecord-1.0.data/scripts/thing,,\n"
+        "__pycache__/singlemod.cpython-312.pyc,,\n",
         encoding = "utf-8",
+    )
+    # Both files, which is ordinary. RECORD wins: running the name fallback as
+    # well would claim the whole `bothns` directory and put a co-located
+    # `bothns/myconfig.py` back on the dependency side.
+    (root / "both-1.0.dist-info").mkdir()
+    (root / "both-1.0.dist-info" / "RECORD").write_text(
+        "bothns/cloud.py,,\n", encoding = "utf-8"
+    )
+    (root / "both-1.0.dist-info" / "top_level.txt").write_text(
+        "bothns\n", encoding = "utf-8"
+    )
+    (root / "eggy.egg-info").mkdir()
+    (root / "eggy.egg-info" / "installed-files.txt").write_text(
+        "../eggmod.py\n", encoding = "utf-8"
     )
     (root / "myproj.py").write_text("VALUE = 1\n", encoding = "utf-8")
 
-    assert _dill_distribution_top_levels(str(root)) == {
-        "pkgone",
-        "pkgtwo",
-        "singlemod",
-    }, "a name no distribution installed is being claimed, or one is missing"
-    assert _dill_distribution_top_levels(str(tmp_path / "absent")) == set()
+    files, dirs = _dill_distribution_paths(str(root))
+    rel = {os.path.relpath(f, str(root)) for f in files}
+
+    assert "ns/cloud/__init__.py".replace("/", os.sep) in rel
+    assert "_soundfile.py" in rel, (
+        "a leading underscore is not metadata: _soundfile and _multiprocess "
+        "are real distributions' real modules, and dropping them leaves them "
+        "pickled by value with the original PicklingError intact"
+    )
+    assert "sourceless/__init__.pyc".replace("/", os.sep) in rel, (
+        "a bytecode-only deployment records .pyc, and it is just as installed"
+    )
+    assert "singlemod.py" in rel and "eggmod.py" in rel
+    assert "myproj.py" not in rel, "a file no distribution recorded is claimed"
+    assert not any("dist-info" in r or ".data" in r or "__pycache__" in r for r in rel)
+
+    # top_level.txt is the fallback, and it can only name a whole directory.
+    assert os.path.realpath(str(root / "pkgone")) in dirs
+    assert "pkgone.py" in rel
+
+    assert "bothns/cloud.py".replace("/", os.sep) in rel
+    assert os.path.realpath(str(root / "bothns")) not in dirs, (
+        "a distribution that ships both RECORD and top_level.txt had its name "
+        "fallback applied too, so the whole directory is claimed and a "
+        "co-located module inside it counts as dependency-owned"
+    )
+
+    # A shared namespace is exactly what the name-based version could not do.
+    assert os.path.realpath(str(root / "ns")) not in dirs, (
+        "the namespace directory is claimed wholesale, so a co-located "
+        "ns/myconfig.py would be treated as dependency-owned"
+    )
+
+    assert _dill_distribution_paths(str(tmp_path / "absent")) == (set(), set())
+
+
+def test_a_project_module_under_a_shared_namespace_stays_by_value(tmp_path):
+    """The namespace case, end to end through the ownership test."""
+    from unsloth.import_fixes import (
+        _dill_distribution_paths,
+        _dill_module_is_importable_by_name,
+    )
+
+    root = tmp_path / "layer"
+    (root / "ns").mkdir(parents = True)
+    (root / "ns" / "cloud.py").write_text("X = 1\n", encoding = "utf-8")
+    (root / "ns" / "myconfig.py").write_text("VALUE = 1\n", encoding = "utf-8")
+    (root / "nsdist-1.0.dist-info").mkdir()
+    (root / "nsdist-1.0.dist-info" / "RECORD").write_text(
+        "ns/cloud.py,,\n", encoding = "utf-8"
+    )
+    installed = _dill_distribution_paths(str(root))
+
+    for name, filename, expected in (
+        ("ns.cloud", "cloud.py", True),
+        ("ns.myconfig", "myconfig.py", False),
+    ):
+        module = types.ModuleType(name)
+        module.__spec__ = types.SimpleNamespace(
+            name = name, origin = str(root / "ns" / filename)
+        )
+        sys.modules[name] = module
+        try:
+            assert _dill_module_is_importable_by_name(module, *installed) is expected, (
+                f"{name} landed on the wrong side; a shared namespace's first "
+                "component says nothing about who installed the submodule"
+            )
+        finally:
+            del sys.modules[name]
+
+
+def test_metadata_in_one_root_cannot_vouch_for_a_file_in_another(tmp_path):
+    """Two off-prefix layers, each with its own `config`.
+
+    Unioning the two roots' ownership lets layer A's installed `config`
+    distribution certify layer B's project `config.py`, whose mutable state
+    then leaves the fingerprint.
+    """
+    from unsloth.import_fixes import (
+        _dill_distribution_paths,
+        _dill_module_is_importable_by_name,
+    )
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    (a / "config-1.0.dist-info").mkdir(parents = True)
+    (a / "config-1.0.dist-info" / "RECORD").write_text("config.py,,\n", encoding = "utf-8")
+    (a / "config.py").write_text("X = 1\n", encoding = "utf-8")
+    b.mkdir()
+    (b / "other-1.0.dist-info").mkdir()
+    (b / "other-1.0.dist-info" / "RECORD").write_text("other.py,,\n", encoding = "utf-8")
+    (b / "other.py").write_text("X = 1\n", encoding = "utf-8")
+    (b / "config.py").write_text("VALUE = 1\n", encoding = "utf-8")
+
+    files, dirs = set(), set()
+    for root in (a, b):
+        found_files, found_dirs = _dill_distribution_paths(str(root))
+        files |= found_files
+        dirs |= found_dirs
+    installed = (files, dirs)
+
+    module = types.ModuleType("config")
+    module.__spec__ = types.SimpleNamespace(name = "config", origin = str(b / "config.py"))
+    sys.modules["config"] = module
+    try:
+        assert not _dill_module_is_importable_by_name(module, *installed), (
+            "the project config.py in layer B is claimed by layer A's config "
+            "distribution, so changes to it stop changing the fingerprint"
+        )
+    finally:
+        del sys.modules["config"]
+
+
+def test_a_bytecode_only_package_still_finds_its_metadata(tmp_path):
+    """`find_spec(...).origin` ends in `__init__.pyc` on a sourceless install.
+
+    Matching `__init__.py` exactly left the root one level too deep, no sibling
+    metadata was found, and the fix declined on exactly the deployments -- a
+    stripped Lambda layer -- it was written for.
+    """
+    from unsloth.import_fixes import _dill_install_root
+
+    assert _dill_install_root("/opt/layer/python/pyarrow/__init__.pyc") == (
+        "/opt/layer/python"
+    )
+    assert _dill_install_root("/opt/layer/python/pyarrow/__init__.py") == (
+        "/opt/layer/python"
+    )
+    assert _dill_install_root("/opt/layer/python/dill.py") == "/opt/layer/python"
+
+
+def test_the_gate_reads_the_literal_path_the_way_dill_does(tmp_path):
+    """dill tests `'site-packages' in module.__file__`, the literal one.
+
+    It resolves the path only for the sys-prefix comparisons. Searching the
+    RESOLVED path here too answered "not affected" for a PYTHONPATH entry that
+    is a symlink into a directory whose name contains site-packages, while dill
+    went on pickling it by value -- and since this gate decides whether dill's
+    own predicate is ever consulted, the crash simply stood.
+    """
+    from unsloth.import_fixes import _dill_path_pickles_by_value
+
+    target = tmp_path / "a-site-packages-cache" / "libs"
+    target.mkdir(parents = True)
+    (target / "pyarrow.py").write_text("V = 0\n", encoding = "utf-8")
+    link = tmp_path / "layer"
+    try:
+        link.symlink_to(target, target_is_directory = True)
+    except (OSError, NotImplementedError):  # pragma: no cover - platform dependent
+        pytest.skip("this platform cannot create the symlink this needs")
+
+    literal = str(link / "pyarrow.py")
+    assert "site-packages" not in literal
+    assert "site-packages" in os.path.realpath(literal)
+
+    # This box's virtualenv root is an ancestor of tmp, so without moving the
+    # sys prefixes aside the gate would answer False for the prefix rule and
+    # the site-packages rule would never be reached -- a green test measuring
+    # nothing. The subprocess tests above build a throwaway venv for the same
+    # reason.
+    names = ("base_prefix", "base_exec_prefix", "exec_prefix", "prefix", "real_prefix")
+    saved = {n: getattr(sys, n) for n in names if hasattr(sys, n)}
+    elsewhere = str(tmp_path / "not-a-prefix")
+    try:
+        for n in names:
+            setattr(sys, n, elsewhere)
+        assert _dill_path_pickles_by_value(literal) is True, (
+            "the gate resolves the path before searching for site-packages, "
+            "so it reports unaffected where dill still pickles by value"
+        )
+        assert _dill_path_pickles_by_value(str(target / "pyarrow.py")) is False
+        assert _dill_path_pickles_by_value(os.path.join(elsewhere, "x.py")) is False
+    finally:
+        for n in names:
+            if n in saved:
+                setattr(sys, n, saved[n])
+            else:
+                delattr(sys, n)

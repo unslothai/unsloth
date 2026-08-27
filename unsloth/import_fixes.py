@@ -5585,7 +5585,14 @@ def _dill_path_pickles_by_value(origin):
         real = os.path.realpath(origin)
     except Exception:
         return False
-    if "site-packages" in origin or "site-packages" in real:
+    # The LITERAL path only, which is what dill tests. `_is_builtin_module`
+    # reads `'site-packages' in module.__file__` and uses the resolved path for
+    # the prefix comparisons alone. Searching `real` here as well answers "not
+    # affected" for a PYTHONPATH entry that is a symlink into a directory whose
+    # name happens to contain site-packages, while dill goes on pickling it by
+    # value -- and since this gate is what decides whether the live predicate is
+    # ever consulted, the original PicklingError would simply stand.
+    if "site-packages" in origin:
         return False
     for name in ("base_prefix", "base_exec_prefix", "exec_prefix", "prefix", "real_prefix"):
         prefix = getattr(sys, name, None)
@@ -5629,18 +5636,26 @@ def _dill_install_root(origin):
     except Exception:
         return None
     parent = os.path.dirname(real)
-    if os.path.basename(real) == "__init__.py":
+    # Any initializer, not just the source one: a deployment that ships
+    # bytecode only gives `pyarrow/__init__.pyc`, and matching `__init__.py`
+    # exactly would leave the root at `.../pyarrow`, where no sibling metadata
+    # is ever found and the fix silently declines to install.
+    if os.path.splitext(os.path.basename(real))[0] == "__init__":
         parent = os.path.dirname(parent)
     return parent or None
 
 
-def _dill_distribution_top_levels(root):
-    """The import names some INSTALLED DISTRIBUTION put into `root`.
+def _dill_under(path, directory):
+    """Is `path` `directory` itself, or inside it? Both already resolved."""
+    return path == directory or path.startswith(directory.rstrip(os.sep) + os.sep)
 
-    Read from the `.dist-info` / `.egg-info` directories pip writes beside the
-    packages it installs: `top_level.txt` when it exists, otherwise the first
-    path component of every `RECORD` entry, which covers modern wheels that
-    ship no `top_level.txt` and single-module distributions like `dill.py`.
+
+def _dill_distribution_paths(root):
+    """The FILES some installed distribution put into `root`, as real paths.
+
+    Returned as `(files, dirs)`: the exact paths a distribution recorded, and
+    the coarser per-name directories left over for one that recorded no file
+    list at all.
 
     Being under the directory is NOT the question. `pip install --target .` and
     a Lambda deployment bundle put dependencies into the application's own
@@ -5649,63 +5664,93 @@ def _dill_distribution_top_levels(root):
     too. Its mutable state would then stop participating in a `recurse=True`
     fingerprint, and `datasets` would serve a stale cached result after
     `config.VALUE` changed -- silently, which is worse than the crash this
-    whole patch exists to prevent. Installed metadata is what separates the two.
+    whole patch exists to prevent.
+
+    Recorded PATHS rather than top-level names, because a name cannot answer
+    the question under a shared namespace: an installed `google` or
+    `opentelemetry` distribution claims the first component of a co-located
+    `google.myconfig` that nothing installed. It also keeps names a leading
+    underscore would otherwise discard -- `_soundfile` and `_multiprocess` are
+    real distributions' real modules -- without ever having to guess which
+    underscore is metadata.
     """
-    names = set()
+    files, dirs = set(), set()
     try:
         entries = os.listdir(root)
+        root_real = os.path.realpath(root)
     except Exception:
-        return names
+        return files, dirs
+    prefix = root_real.rstrip(os.sep) + os.sep
+
+    def add(base, rel):
+        rel = rel.strip().replace("\\", "/")
+        if not rel:
+            return
+        try:
+            full = os.path.realpath(os.path.join(base, *rel.split("/")))
+        except Exception:
+            return
+        # Inside the root, and not the metadata itself. `installed-files.txt`
+        # entries are relative to the egg-info directory and start with `..`,
+        # so containment is checked after resolving, never on the raw text.
+        if not full.startswith(prefix):
+            return
+        head = full[len(prefix):].split(os.sep, 1)[0]
+        if head == "__pycache__" or head.endswith((".dist-info", ".egg-info", ".data")):
+            return
+        files.add(full)
+
     for entry in entries:
         if not entry.endswith((".dist-info", ".egg-info")):
             continue
         meta = os.path.join(root, entry)
+        listed = False
+        # RECORD is the one file a wheel install always leaves behind;
+        # installed-files.txt is its egg-info equivalent.
+        for record, base in (("RECORD", root), ("installed-files.txt", meta)):
+            path = os.path.join(meta, record)
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, encoding = "utf-8", errors = "replace") as f:
+                    for line in f:
+                        add(base, line.split(",", 1)[0])
+                listed = True
+            except Exception:
+                pass
+            break
+        if listed:
+            continue
+        # No file list anywhere: fall back to the declared top-level names.
+        # Coarser, and it cannot separate a shared namespace from a project
+        # module inside it, but it is all this distribution said.
         top_level = os.path.join(meta, "top_level.txt")
         try:
-            if os.path.isfile(top_level):
-                with open(top_level, encoding = "utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            names.add(line.replace("/", ".").split(".")[0])
-                continue
-            record = os.path.join(meta, "RECORD")
-            if not os.path.isfile(record):
-                continue
-            with open(record, encoding = "utf-8") as f:
+            with open(top_level, encoding = "utf-8") as f:
                 for line in f:
-                    path = line.split(",", 1)[0].strip().replace("\\", "/")
-                    head = path.split("/", 1)[0]
-                    if not head or head.startswith((".", "_", "-")):
+                    name = line.strip()
+                    if not name or name.startswith("#"):
                         continue
-                    if head.endswith((".dist-info", ".egg-info", ".data")):
-                        continue
-                    if "/" in path:
-                        names.add(head)
-                    elif head.endswith(".py"):
-                        names.add(head[:-3])
+                    name = name.replace("/", ".").split(".")[0]
+                    dirs.add(os.path.realpath(os.path.join(root, name)))
+                    files.add(os.path.realpath(os.path.join(root, name + ".py")))
         except Exception:
             continue
-    return names
+    return files, dirs
 
 
-def _dill_module_is_importable_by_name(
-    module,
-    roots = (),
-    provided = (),
-):
+def _dill_module_is_importable_by_name(module, files = (), dirs = ()):
     """Whether pickling `module` BY REFERENCE is valid AND in scope.
 
     Valid exactly when an unpickler can get the same object back with
     `import <name>`, which is what an ordinary site-packages install already
     does for every one of these modules.
 
-    In scope only when the module was INSTALLED into one of the roots that made
-    this environment dill-hostile: it must live under a root and its top-level
-    name must be one an installed distribution there claims (`provided`). Root
-    containment alone is not enough, because dependencies are routinely
-    installed into a directory the user's own code already occupies -- see
-    `_dill_distribution_top_levels`. Only the misplaced LIBRARIES are moved
+    In scope only when the module's own FILE is one an installed distribution
+    recorded. `files` and `dirs` hold absolute resolved paths, so several
+    off-prefix roots can be collected into one pair without any of them
+    vouching for another: two Lambda layers may each carry a `config.py`, and
+    the two paths are simply different. Only the misplaced LIBRARIES are moved
     back to the behaviour they would have in an ordinary install.
 
     Deliberately narrow in three further ways: the module must be the live
@@ -5721,17 +5766,15 @@ def _dill_module_is_importable_by_name(
     if spec is None or getattr(spec, "name", None) != name:
         return False
     origin = getattr(spec, "origin", None)
-    if not origin:
-        return False
-    if not roots or not provided:
-        return False
-    if name.split(".")[0] not in provided:
+    if not origin or not (files or dirs):
         return False
     try:
         real = os.path.realpath(origin)
     except Exception:
         return False
-    return any(real == root or real.startswith(root.rstrip(os.sep) + os.sep) for root in roots)
+    if real in files:
+        return True
+    return any(_dill_under(real, directory) for directory in dirs)
 
 
 def fix_dill_module_by_value_pickling():
@@ -5781,21 +5824,26 @@ def fix_dill_module_by_value_pickling():
 
     # Read once, at patch time: the answer is a property of the install, and
     # re-scanning per pickled module would put directory listings inside every
-    # fingerprint. A root carrying no installed metadata at all contributes
-    # nothing, so the patch declines rather than fall back to "everything under
-    # the directory is a dependency" -- a loud crash beats a stale cache.
-    provided = set()
+    # fingerprint. Absolute resolved paths, so collecting several roots into
+    # one pair is safe -- two Lambda layers may each hold a `config.py`, and
+    # the two paths are different. A root carrying no installed metadata at all
+    # contributes nothing, so the patch declines rather than fall back to
+    # "everything under the directory is a dependency" -- a loud crash beats a
+    # stale cache.
+    owned_files, owned_dirs = set(), set()
     for root in roots:
-        provided |= _dill_distribution_top_levels(root)
-    if not provided:
+        files, dirs = _dill_distribution_paths(root)
+        owned_files |= files
+        owned_dirs |= dirs
+    if not (owned_files or owned_dirs):
         return False
 
     @functools.wraps(original)
     def _is_builtin_module(
         module,
         _original = original,
-        _roots = tuple(roots),
-        _provided = frozenset(provided),
+        _files = frozenset(owned_files),
+        _dirs = frozenset(owned_dirs),
     ):
         try:
             if _original(module):
@@ -5803,7 +5851,7 @@ def fix_dill_module_by_value_pickling():
         except Exception:
             return False
         try:
-            return _dill_module_is_importable_by_name(module, _roots, _provided)
+            return _dill_module_is_importable_by_name(module, _files, _dirs)
         except Exception:
             return False
 
