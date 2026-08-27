@@ -4,8 +4,8 @@
 import type { ThreadMessage } from "@assistant-ui/react";
 import {
   buildLocalTokenCountExtras,
+  buildLocalTokenCountHistory,
   buildLocalTokenCountReasoning,
-  buildOutboundMessagesForTokenCount,
   findLatestUserAudioBase64,
   findLatestUserVideoBase64,
   messagesContainImage,
@@ -293,7 +293,7 @@ export async function refreshContextUsage(
 
     // undefined, not null: a chat with no persisted thread has no project to resolve from.
     const payloadThreadId = threadId ?? undefined;
-    const outbound = await buildOutboundMessagesForTokenCount(
+    const countHistory = await buildLocalTokenCountHistory(
       runMessages,
       payloadThreadId,
     );
@@ -306,7 +306,7 @@ export async function refreshContextUsage(
     const { input_tokens: inputTokens, model: countedModel } =
       await countChatInputTokens({
         model: capturedCheckpoint,
-        messages: outbound,
+        ...countHistory,
         ...buildLocalTokenCountReasoning(),
         ...countExtras,
       });

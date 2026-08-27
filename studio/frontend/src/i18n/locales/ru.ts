@@ -1372,6 +1372,24 @@ export const ru = {
       rememberParamsPerModel: "Запоминать настройки для каждой модели",
       rememberParamsPerModelDescription:
         "При переключении модели восстанавливаются температура, промпт и другие настройки, которые вы использовали с ней в последний раз. Если выключено, для всех моделей действует один набор настроек.",
+      autoCompact: "Автоматически сжимать длинные чаты",
+      autoCompactDescription:
+        "Когда локальный чат GGUF достигает заданной длины контекста, удалять старые ходы вместо возврата ошибки. Это не зависит от свободной VRAM.",
+      compactionStyle: "Когда контекст заполнен",
+      compactionStyleDescription:
+        "Настройка сервера сохраняет UNSLOTH_CONTEXT_POLICY. Сброс беседы оставляет последний ход и постоянные инструкции. Скользящее окно удаляет самые старые ходы и может сохранить больше недавней истории.",
+      compactionStyleInherit: "Использовать настройку сервера",
+      compactionStyleCheckpoint: "Сбросить беседу",
+      compactionStyleRollingDefault:
+        "Удалять старые ходы (~25% дополнительного места)",
+      compactionStyleRolling10:
+        "Удалять старые ходы (~10% дополнительного места)",
+      compactionStyleRolling5:
+        "Удалять старые ходы (~5% дополнительного места)",
+      compactionStyleRollingNone:
+        "Удалять старые ходы (без дополнительного сокращения)",
+      autoCompactKeywords:
+        "сжатие автоматически контекст окно обрезка скользящее контрольная точка запас compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "Сворачивать размышления по умолчанию",
         collapseByDefaultDescription:

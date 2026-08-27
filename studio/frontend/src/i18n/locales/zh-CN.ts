@@ -1331,6 +1331,20 @@ export const zhCN = {
       rememberParamsPerModel: "按模型记住设置",
       rememberParamsPerModelDescription:
         "切换模型时会恢复你上次在该模型上使用的温度、提示词等设置。关闭后，所有模型共用一套设置。",
+      autoCompact: "自动压缩长聊天",
+      autoCompactDescription:
+        "当本地 GGUF 聊天达到你设置的上下文长度时，丢弃较早的轮次而不是返回错误。此设置与可用显存无关。",
+      compactionStyle: "上下文已满时",
+      compactionStyleDescription:
+        "使用服务器默认值会保留 UNSLOTH_CONTEXT_POLICY。重置对话会保留最新轮次和持续指令。滑动窗口会丢弃最早的轮次，并可保留更多近期历史。",
+      compactionStyleInherit: "使用服务器默认值",
+      compactionStyleCheckpoint: "重置对话",
+      compactionStyleRollingDefault: "丢弃最早的轮次（约 25% 额外空间）",
+      compactionStyleRolling10: "丢弃最早的轮次（约 10% 额外空间）",
+      compactionStyleRolling5: "丢弃最早的轮次（约 5% 额外空间）",
+      compactionStyleRollingNone: "丢弃最早的轮次（不额外裁剪）",
+      autoCompactKeywords:
+        "压缩 自动压缩 上下文 窗口 截断 滑动 检查点 余量 compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "默认折叠思考过程",
         collapseByDefaultDescription:
