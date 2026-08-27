@@ -3,13 +3,12 @@
 
 // What useMemoryEstimate is allowed to leave on screen.
 //
-// Two rules, and they are not the same rule. A settings change GREYS the figures and
-// keeps them up, so a slider drag does not strobe the row. A SOURCE change blanks
-// them, because one model's footprint under another model's name is worse than no
-// footprint at all. The hook decides both from `resolveEstimateSourceIdentity`, which
-// is the narrower key, and it computes it DURING RENDER rather than reading a ref its
-// effect updates after paint -- an effect runs after React has painted, so a direct
-// switch between two GGUFs showed the previous model's numbers for a frame.
+// Two different rules. A settings change GREYS the figures and keeps them up, so a
+// slider drag does not strobe the row; a SOURCE change blanks them, because one
+// model's footprint under another's name is worse than none. Both come from
+// `resolveEstimateSourceIdentity`, the narrower key, computed DURING RENDER rather than
+// read from a ref the effect updates after paint -- effects run after React paints, so
+// a direct switch between two GGUFs showed the previous model's numbers for a frame.
 //
 // The credential is part of the source, hashed rather than carried. That hash is 32
 // bits, and the last test here is what that costs.

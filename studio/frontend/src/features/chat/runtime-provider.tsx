@@ -94,7 +94,10 @@ import {
   generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationNeedsRecovery,
+  isLiveGenerationRun,
+  generationRawContent,
   loadGenerationOverlaySnapshot,
+  recoveredContentToImport,
   recoveredReasoningSummaryMetadata,
   recoveredGenerationFinalMetadata,
   generationRecoveryMetadata,
@@ -733,33 +736,6 @@ type GenerationRecovery = {
 
 const generationRecoveries = new Map<string, GenerationRecovery>();
 
-function generationRawContent(content: MessageRecord["content"]): {
-  raw: string;
-  reasoningOpen: boolean;
-} {
-  if (typeof content === "string") {
-    return { raw: content, reasoningOpen: false };
-  }
-  if (!Array.isArray(content)) return { raw: "", reasoningOpen: false };
-  let raw = "";
-  let reasoningOpen = false;
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue;
-    const record = part as { type?: string; text?: unknown };
-    const text = typeof record.text === "string" ? record.text : "";
-    if (record.type === "reasoning") {
-      if (reasoningOpen) raw += text;
-      else raw += `<think>${text}`;
-      reasoningOpen = true;
-    } else if (record.type === "text") {
-      if (reasoningOpen) raw += "</think>";
-      raw += text;
-      reasoningOpen = false;
-    }
-  }
-  return { raw, reasoningOpen };
-}
-
 function scheduleGenerationRecovery(
   threadId: string,
   storedMessage: MessageRecord,
@@ -768,6 +744,11 @@ function scheduleGenerationRecovery(
   const metadata = (storedMessage.metadata ?? {}) as Record<string, unknown>;
   const runId = metadata.generationRunId;
   if (typeof runId !== "string" || !generationNeedsRecovery(metadata)) return;
+  // This tab is streaming the run itself. Following it from storage as well gives the reply
+  // two writers, and the follower is always behind, so it imports a lagging prefix over the
+  // live text. It also costs a PUT and a full re-parse per chunk against the same backend the
+  // model is saturating.
+  if (isLiveGenerationRun(runId)) return;
   const existingRecovery = generationRecoveries.get(runId);
   if (existingRecovery) {
     existingRecovery.views.add(aui);
@@ -871,7 +852,14 @@ function scheduleGenerationRecovery(
                   ...item,
                   message: {
                     ...item.message,
-                    content,
+                    // The status and the metadata are always this publish's:
+                    // they are what the recovery is following the run FOR. The
+                    // body is not, because a run this tab is also streaming is
+                    // replayed hundreds of characters behind the live reply.
+                    content: recoveredContentToImport(
+                      item.message.content,
+                      content,
+                    ),
                     status: generationNeedsRecovery(nextMetadata)
                       ? { type: "running" as const }
                       : restoredAssistantStatus({ custom: nextMetadata }),
@@ -1978,21 +1966,26 @@ function useStudioRuntimeAdapters(
               sameResearchRun ||
               !incomingMetadata?.serverManaged ||
               existingRevision > incomingRevision);
-          // Echo the backend's stored metadata verbatim on autosave: merging
-          // incomingMetadata re-adds client-only fields (researchRun / serverRevision) the
-          // server never persisted, so _research_message_would_change sees a diff and
-          // rejects every streamed/snapshot update with 409.
-          const metadata = preserveServerManaged
-            ? existingMetadata
-            : incomingMetadata;
+          // The backend owns this message and refuses client edits, and every field the save
+          // would send was just read back from it, so the request is answered 409 every time.
+          // One measured 43.6 s generation: 265 PUTs, 256 rejected, plus 353 whole-thread GETs
+          // from the `ensureStoredChatThread` inside `saveStoredChatMessage`. Returning here
+          // drops both.
+          //
+          // `parentId` is the one field not echoed back, so a reparent could differ. It is
+          // dropped either way: the server rejects the whole request, so it never landed here.
+          if (preserveServerManaged) {
+            await throwIfHistoryWasCleared(remoteId);
+            return;
+          }
           await saveStoredChatMessage({
             id: message.id,
             threadId: remoteId,
             parentId: parentId ?? null,
             role: message.role,
-            content: preserveServerManaged ? existingMessage!.content : content,
+            content,
             ...(attachments.length > 0 && { attachments }),
-            ...(metadata && { metadata }),
+            ...(incomingMetadata && { metadata: incomingMetadata }),
             createdAt,
           });
           await throwIfHistoryWasCleared(remoteId);

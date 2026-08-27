@@ -1396,10 +1396,33 @@ export const de = {
       rememberParamsPerModel: "Einstellungen pro Modell merken",
       rememberParamsPerModelDescription:
         "Beim Modellwechsel werden Temperatur, Prompt und die weiteren Einstellungen wiederhergestellt, die Sie zuletzt mit diesem Modell verwendet haben. Aus: ein Satz Einstellungen für alle Modelle.",
+      autoCompact: "Lange Chats automatisch komprimieren",
+      autoCompactDescription:
+        "Wenn ein lokaler GGUF-Chat die festgelegte Kontextlänge erreicht, werden ältere Gesprächsrunden verworfen, statt einen Fehler zurückzugeben. Dies richtet sich nicht nach freiem VRAM.",
+      compactionStyle: "Wenn der Kontext voll ist",
+      compactionStyleDescription:
+        "Die Servervorgabe behält UNSLOTH_CONTEXT_POLICY bei. Gespräch zurücksetzen behält die letzte Runde und dauerhafte Anweisungen. Ein gleitendes Fenster verwirft die ältesten Runden und kann mehr aktuellen Verlauf behalten.",
+      compactionStyleInherit: "Servervorgabe verwenden",
+      compactionStyleCheckpoint: "Gespräch zurücksetzen",
+      compactionStyleRollingDefault:
+        "Älteste Runden verwerfen (~25 % zusätzlicher Platz)",
+      compactionStyleRolling10:
+        "Älteste Runden verwerfen (~10 % zusätzlicher Platz)",
+      compactionStyleRolling5:
+        "Älteste Runden verwerfen (~5 % zusätzlicher Platz)",
+      compactionStyleRollingNone:
+        "Älteste Runden verwerfen (keine zusätzliche Kürzung)",
+      autoCompactKeywords:
+        "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "Denken standardmäßig einklappen",
         collapseByDefaultDescription:
           "Das Denken bleibt eingeklappt, während das Modell denkt, statt automatisch aufzuklappen. Zum Lesen einen Block ausklappen.",
+      },
+      tools: {
+        collapseByDefault: "Tool-Aktivität standardmäßig einklappen",
+        collapseByDefaultDescription:
+          "Tool-Eingaben und -Ausgaben bleiben während der Ausführung eingeklappt. Zum Prüfen eine Tool-Zeile ausklappen.",
       },
       webSearch: {
         title: "Websuche",
