@@ -803,7 +803,8 @@ def test_a_mutation_between_two_builder_calls_is_replayed(monkeypatch):
     """
     lines = REAL_MAPPER.splitlines(True)
     insert = next(
-        i for i, line in enumerate(lines)
+        i
+        for i, line in enumerate(lines)
         if line.rstrip().endswith("= build_mappers(__INT_TO_FLOAT_MAPPER)")
     )
     while insert > 0 and not lines[insert - 1].rstrip().endswith((")", ":", "}", "]")):
@@ -838,7 +839,8 @@ def test_builder_aliases_land_at_the_export_producing_call(monkeypatch):
         + lines[body:]
     )
     insert = next(
-        i for i, line in enumerate(added)
+        i
+        for i, line in enumerate(added)
         if line.rstrip().endswith("= build_mappers(__INT_TO_FLOAT_MAPPER)")
     )
     while insert > 0 and not added[insert - 1].rstrip().endswith((")", ":", "}", "]")):
@@ -855,5 +857,6 @@ def test_builder_aliases_land_at_the_export_producing_call(monkeypatch):
         tables = loader_utils._get_new_mapper()
     assert any(
         table.get("vendor/late-alias") == "unsloth/late-alias"
-        for table in tables if isinstance(table, dict)
+        for table in tables
+        if isinstance(table, dict)
     ), "the builder's aliases were applied before a rebind that wiped them"

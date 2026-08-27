@@ -974,9 +974,7 @@ def _get_new_mapper():
                 # validation call may sit above a mutation of the source table, and
                 # stopping at it built the exports from stale data. Identity, so two
                 # calls spelled the same way are still told apart.
-                if node is builder_call or (
-                    builder_call is None and _calls_the_builder(node)
-                ):
+                if node is builder_call or (builder_call is None and _calls_the_builder(node)):
                     break
                 if isinstance(node, (ast.Assign, ast.AnnAssign)):
                     if node.value is None:

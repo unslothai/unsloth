@@ -196,10 +196,7 @@ def _loader_aliases(tree):
         previous = aliases
         aliases = {}
         for node in sorted(
-            (
-                child for child in ast.walk(tree)
-                if isinstance(child, (ast.ImportFrom, ast.Assign))
-            ),
+            (child for child in ast.walk(tree) if isinstance(child, (ast.ImportFrom, ast.Assign))),
             key = lambda child: (getattr(child, "lineno", 0), getattr(child, "col_offset", 0)),
         ):
             if isinstance(node, ast.ImportFrom):
