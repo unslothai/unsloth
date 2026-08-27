@@ -6,6 +6,12 @@
 Before this, /api/hub/datasets/cached carried no time field at all, while local
 recipe and upload datasets carried updated_at. Sorting the two together put every
 cached Hub dataset below every local one no matter which was newer.
+
+Lives in studio/backend/tests/ rather than beside its subject in
+studio/backend/hub/tests/ on purpose: studio-backend-ci.yml runs `pytest tests/`
+from studio/backend, and hub/tests is a sibling of that path, so nothing there is
+collected by any workflow. A guard that never runs is not a guard. The wider
+hub/tests gap is worth its own fix; this file just declines to join it.
 """
 
 import os

@@ -15,6 +15,14 @@ export function inventoryItemSize(item: InventoryItem): number {
   return item.variant === "cached" ? item.row.bytes : 0;
 }
 
+/** The row's own timestamp in epoch MILLISECONDS, or null when unknown.
+ *
+ * Both branches are already normalized -- `buildCachedInventoryRow` and
+ * `buildLocalInventoryRows` each run their wire value through
+ * `normalizeTimestamp` -- which is what makes a cached row and an LM Studio row
+ * comparable at all. Before that they were seconds and milliseconds
+ * respectively, so every local row outranked every cached one whatever the date.
+ */
 export function inventoryItemUpdatedAt(item: InventoryItem): number | null {
   return item.variant === "cached"
     ? (item.row.lastModified ?? null)

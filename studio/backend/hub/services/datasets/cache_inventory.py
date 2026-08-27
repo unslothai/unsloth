@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 from pathlib import Path
 from typing import Optional
@@ -81,6 +82,20 @@ def _directory_size(path: Path) -> int:
     return total
 
 
+def _usable_mtime(value) -> float:
+    """A timestamp we are willing to publish, else 0.0 meaning "unknown".
+
+    Finiteness is not paranoia about stat(): ``candidate`` below is whatever
+    huggingface_hub put on the object, and Starlette's JSON encoder runs with
+    ``allow_nan = False``, so a single inf reaching the row turns the whole
+    /api/hub/datasets/cached response into a 500 rather than one bad date.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return 0.0
+    value = float(value)
+    return value if math.isfinite(value) and value > 0 else 0.0
+
+
 def _safe_mtime(path: Path) -> float:
     """Directory mtime as POSIX seconds, or 0.0 when unreadable.
 
@@ -88,10 +103,9 @@ def _safe_mtime(path: Path) -> float:
     symlink or a share with no clock lands on 0.0, which callers drop.
     """
     try:
-        mtime = path.stat().st_mtime
+        return _usable_mtime(path.stat().st_mtime)
     except OSError:
         return 0.0
-    return float(mtime) if isinstance(mtime, (int, float)) and mtime > 0 else 0.0
 
 
 def _dataset_last_modified(candidate, *paths: Optional[Path]) -> float:
@@ -100,7 +114,7 @@ def _dataset_last_modified(candidate, *paths: Optional[Path]) -> float:
     Prefers huggingface_hub's own value, else stat()s the cache dirs. Same unit
     as the cached-model scan.
     """
-    newest = float(candidate) if isinstance(candidate, (int, float)) and candidate > 0 else 0.0
+    newest = _usable_mtime(candidate)
     for path in paths:
         if path is None:
             continue
@@ -111,11 +125,30 @@ def _dataset_last_modified(candidate, *paths: Optional[Path]) -> float:
 def _merge_last_modified(existing: dict, row: dict) -> None:
     """Keep the newer of two timestamps when two scans describe one dataset."""
     newest = max(
-        float(existing.get("last_modified") or 0.0),
-        float(row.get("last_modified") or 0.0),
+        _usable_mtime(existing.get("last_modified")),
+        _usable_mtime(row.get("last_modified")),
     )
     if newest > 0:
         existing["last_modified"] = newest
+
+
+def _adopt_newer_last_modified(winner: dict, loser: Optional[dict]) -> None:
+    """Carry a discarded row's timestamp onto the row that replaces it.
+
+    Which row wins is decided on completeness then size, which has nothing to do
+    with recency: a bigger-but-older copy legitimately wins and would otherwise
+    take the newer copy's date to the grave, so the dataset sinks in Recent. The
+    cached-model scan already keeps the max across duplicate roots -- see
+    ``hub/services/models/cache_inventory.py`` -- and this is the dataset twin.
+    """
+    if loser is None:
+        return
+    newest = max(
+        _usable_mtime(winner.get("last_modified")),
+        _usable_mtime(loser.get("last_modified")),
+    )
+    if newest > 0:
+        winner["last_modified"] = newest
 
 
 def _prefer_dataset_cache_row(candidate: dict, existing: Optional[dict]) -> bool:
@@ -360,6 +393,7 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
             if last_modified > 0:
                 row["last_modified"] = last_modified
             if _prefer_dataset_cache_row(row, existing):
+                _adopt_newer_last_modified(row, existing)
                 seen_lower[key] = row
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
@@ -537,6 +571,7 @@ def _scan_hf_dataset_caches() -> list[dict]:
                 if repo_last_modified > 0:
                     row["last_modified"] = repo_last_modified
                 if _prefer_dataset_cache_row(row, existing):
+                    _adopt_newer_last_modified(row, existing)
                     seen_lower[key] = row
             except Exception as exc:
                 label = getattr(repo_info, "repo_id", "<unknown>")
@@ -545,6 +580,7 @@ def _scan_hf_dataset_caches() -> list[dict]:
         key = row["repo_id"].lower()
         existing = seen_lower.get(key)
         if _prefer_dataset_cache_row(row, existing):
+            _adopt_newer_last_modified(row, existing)
             seen_lower[key] = row
         elif existing is not None and bool(existing.get("partial")) == bool(row.get("partial")):
             existing["size_bytes"] = max(existing["size_bytes"], row["size_bytes"])

@@ -33,6 +33,22 @@ export function localSourceLabel(source: LocalModelInfo["source"]): string {
   }
 }
 
+/** Any inventory timestamp to epoch MILLISECONDS, or null when unknown.
+ *
+ * The one sanctioned place a timestamp changes scale. Backends send epoch
+ * SECONDS (`st_mtime`); live download rows and inventory hints already carry
+ * `Date.now()` in milliseconds. Both arrive on the same field, so the pivot
+ * decides which it is: below 1e10 is read as seconds and multiplied.
+ *
+ * That pivot is a heuristic, not a converter, and it has two blind spots. A
+ * value already in milliseconds but below 1e10 -- before 1970-04-26 -- is
+ * multiplied a second time, so this is idempotent only at or above the pivot.
+ * And epoch seconds from November 2286 onwards are read as milliseconds. Real
+ * mtimes sit ~170x above the low bound and ~8x below the high one, so the
+ * supported domain is roughly 1970-04-26 to 2286-11-20; outside it the answer
+ * is wrong rather than merely imprecise. Keep this a single ingestion step:
+ * apply it once, where a wire value enters, never on a value already stored.
+ */
 export function normalizeTimestamp(value?: number | null): number | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return null;
