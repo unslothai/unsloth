@@ -231,9 +231,7 @@ def test_every_caller_of_the_floor_states_whether_the_fitter_runs():
     checked here instead of asserted in prose.
     """
     source = Path(inspect.getfile(LlamaCppBackend)).read_text(encoding = "utf-8")
-    calls = [
-        m for m in re.finditer(r"self\._metal_zero_ctx_floor\(", source)
-    ]
+    calls = [m for m in re.finditer(r"self\._metal_zero_ctx_floor\(", source)]
     assert calls, "the floor is no longer called from the backend; this guard is stale"
     for match in calls:
         line = source[: match.start()].count("\n") + 1

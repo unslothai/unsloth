@@ -2247,7 +2247,9 @@ def test_the_cpu_replay_and_the_launch_record_disagree(monkeypatch):
             return_value = {lc._loader_path_var(): "/staged"},
         ),
     ):
-        replay, _reason, _note = backend._prepare_cpu_fallback_launch("llama-server", launched, {}, {})
+        replay, _reason, _note = backend._prepare_cpu_fallback_launch(
+            "llama-server", launched, {}, {}
+        )
 
     stale = resolve_effective_memory_state(launched, {})
     fresh = resolve_effective_memory_state(replay, {})

@@ -3348,12 +3348,12 @@ def test_a_replay_that_loses_its_vram_is_repaged_before_it_spawns(
     captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = extra_args)
 
     gpu_attempt, replay = captured["cmds"][0], captured["cmds"][-1]
-    assert _unmapped_tokens(gpu_attempt) == list(extra_args), (
-        f"the fitting GPU launch lost the mode it asked for: {gpu_attempt}"
-    )
-    assert not _unmapped_tokens(replay), (
-        f"the CPU replay holds the whole model in host RAM unmapped: {replay}"
-    )
+    assert _unmapped_tokens(gpu_attempt) == list(
+        extra_args
+    ), f"the fitting GPU launch lost the mode it asked for: {gpu_attempt}"
+    assert not _unmapped_tokens(
+        replay
+    ), f"the CPU replay holds the whole model in host RAM unmapped: {replay}"
     # The advisory has to describe the child that is running: the whole model against
     # host RAM, and the override that is why it can page at all.
     warning = backend.last_load_warning or ""
@@ -3384,9 +3384,7 @@ def test_a_replay_the_host_can_actually_hold_keeps_the_mode_it_was_asked_for(
     assert backend.last_load_warning is None, backend.last_load_warning
 
 
-def test_the_opt_out_silences_the_replay_warning_without_licensing_the_oom(
-    tmp_path, monkeypatch
-):
+def test_the_opt_out_silences_the_replay_warning_without_licensing_the_oom(tmp_path, monkeypatch):
     """UNSLOTH_ALLOW_HOST_OFFLOAD is warning-scoped, the same contract the main launch
     path holds it to: it hides the message, it does not hand the child a load it cannot
     complete. So the replay is still repaged and the override is still logged."""
@@ -3401,9 +3399,7 @@ def test_the_opt_out_silences_the_replay_warning_without_licensing_the_oom(
     assert backend.last_load_warning is None, backend.last_load_warning
 
 
-def test_an_effective_lock_survives_the_replay_override_as_a_mapped_one(
-    tmp_path, monkeypatch
-):
+def test_an_effective_lock_survives_the_replay_override_as_a_mapped_one(tmp_path, monkeypatch):
     """force_pageable_load's own rule, reached through this rung: "keep this in RAM" is
     honoured over a mapping the kernel can fall back on, so --load-mode mlock becomes
     mmap+mlock rather than losing the lock."""
@@ -3411,9 +3407,7 @@ def test_an_effective_lock_survives_the_replay_override_as_a_mapped_one(
         tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 12 * 1024
     )
 
-    captured = _launch_with_vulkan_cpu_replay(
-        backend, gguf, extra_args = ["--load-mode", "mlock"]
-    )
+    captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = ["--load-mode", "mlock"])
 
     replay = captured["cmds"][-1]
     assert not _unmapped_tokens(replay), replay
@@ -3428,9 +3422,7 @@ def test_a_shadowed_lock_is_not_resurrected_by_the_replay_override(tmp_path, mon
         tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 12 * 1024
     )
 
-    captured = _launch_with_vulkan_cpu_replay(
-        backend, gguf, extra_args = ["--mlock", "--no-mmap"]
-    )
+    captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = ["--mlock", "--no-mmap"])
 
     replay = captured["cmds"][-1]
     assert not _unmapped_tokens(replay), replay
