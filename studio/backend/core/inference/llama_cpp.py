@@ -25715,7 +25715,13 @@ class LlamaCppBackend:
         if health_probe_event is None:  # Backward-compatible with lightweight test doubles.
             health_probe_event = self._health_probe_event = threading.Event()
 
+        cancel_event = getattr(self, "_cancel_event", None)
+
         while time.monotonic() < deadline:
+            # unload_model() blocks on self._lock, which the load holds across this wait.
+            if cancel_event is not None and cancel_event.is_set():
+                logger.info("llama-server startup cancelled before it became healthy")
+                return False
             # Cleared before probing so output during the request stays latched for
             # the fallback wait below.
             health_probe_event.clear()

@@ -76,6 +76,33 @@ class TestWaitForHealthResilience:
         assert b._wait_for_health(timeout = 0.02, interval = 0.01) is False
         assert any("health check timed out" in ln for ln in b._stdout_lines)
 
+    def test_cancel_stops_the_wait_without_a_timeout_marker(self, monkeypatch):
+        b = _make_backend()
+        b._process.poll.return_value = None
+        b._cancel_event = threading.Event()
+        b._cancel_event.set()
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        started = time.monotonic()
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        assert time.monotonic() - started < 1.0
+        assert not any("health check timed out" in ln for ln in b._stdout_lines)
+
+    def test_cancel_midway_stops_a_wait_already_in_progress(self, monkeypatch):
+        b = _make_backend()
+        b._process.poll.return_value = None
+        b._cancel_event = threading.Event()
+        probes = []
+
+        def probe(*a, **kw):
+            probes.append(1)
+            if len(probes) == 3:
+                b._cancel_event.set()
+            return mock.Mock(status_code = 503)
+
+        monkeypatch.setattr(httpx, "get", probe)
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        assert len(probes) == 3
+
     def test_read_error_loops_to_subprocess_poll(self, monkeypatch):
         """WinError 10054 (httpx.ReadError) must be swallowed; the next iteration sees the dead subprocess and returns False with a structured exit-code log."""
         b = _make_backend()
