@@ -28081,6 +28081,13 @@ class LlamaCppBackend:
                 _length_continuations = 0
                 _effective_enable_thinking = enable_thinking
                 _effective_reasoning_effort = reasoning_effort
+                # Captured BEFORE the reset below. This turn may have been resumed with
+                # `continue_final_message`, leaving the partial as the trailing assistant
+                # message, and anything recorded further down has to merge into it.
+                # Restoring the caller's value first made `append_assistant_turn` add a
+                # SECOND consecutive assistant message, which is the role alternation that
+                # helper exists to preserve and which strict templates reject.
+                _merge_into_partial = continue_final_message
                 continue_final_message = _caller_continue_final_message
                 _accumulated_completion_tokens += (
                     _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
@@ -28185,7 +28192,7 @@ class LlamaCppBackend:
                         append_assistant_turn(
                             conversation,
                             assistant_msg,
-                            continue_final_message = continue_final_message,
+                            continue_final_message = _merge_into_partial,
                         )
                         assistant_appended = True
                     else:
@@ -28314,7 +28321,10 @@ class LlamaCppBackend:
                     # the result budget below is priced against it.
                     _compacted_turn_tokens: Optional[int] = None
                     if self._effective_context_length:
-                        _room_target = prompt_budget(self._effective_context_length, max_tokens)
+                        # This iteration's cap, like every other sizing decision in it.
+                        _room_target = prompt_budget(
+                            self._effective_context_length, _iteration_max_tokens
+                        )
                         # Cheap gate first. The exact count is a template render plus a
                         # tokenizer pass over the whole conversation, and this runs per
                         # call; a thread with room to spare must not pay for it. The
@@ -28690,7 +28700,12 @@ class LlamaCppBackend:
                                             )
                                     _result_budget = tool_result_budget(
                                         self._effective_context_length,
-                                        max_tokens,
+                                        # This iteration's cap, not the caller's whole
+                                        # one. A recovery turn with 100 of 1000 tokens
+                                        # left had the result priced as if 1000 were
+                                        # still to come, which reserves room away and can
+                                        # starve a read the request had space for.
+                                        _iteration_max_tokens,
                                         _spent + _pending_args,
                                     ) // (len(_pending) + 1)
                                     # A budget at or near zero means the call cannot deliver
@@ -28739,7 +28754,11 @@ class LlamaCppBackend:
                                             if _spent_after is not None:
                                                 _rescued = tool_result_budget(
                                                     self._effective_context_length,
-                                                    max_tokens,
+                                                    # The same cap the first pricing used,
+                                                    # or the rescue is measured against a
+                                                    # different request from the one it is
+                                                    # rescuing.
+                                                    _iteration_max_tokens,
                                                     _spent_after + _pending_args,
                                                 ) // (len(_pending) + 1)
                                                 logger.info(
@@ -28998,7 +29017,7 @@ class LlamaCppBackend:
                         append_assistant_turn(
                             conversation,
                             assistant_msg,
-                            continue_final_message = continue_final_message,
+                            continue_final_message = _merge_into_partial,
                         )
                         assistant_appended = True
                     append_deferred_nudges(conversation, deferred_noop_msgs)
@@ -29623,7 +29642,12 @@ class LlamaCppBackend:
                             # continuation that shows nothing new is judged on its own.
                             _attempt_started_at = _last_emitted
                             _continue_final = True
-                            yield {"type": "status", "text": ""}
+                            # NO blank status here, unlike the in-loop re-prompt. An empty
+                            # status is the route's iteration boundary and resets its
+                            # `prev_text` cursor, but this pass keeps `cumulative` across
+                            # attempts by design: the retry's first content event carries
+                            # the whole prefix again, and diffed from a cursor that has
+                            # just been cleared the client is sent the partial twice.
                             yield {
                                 "type": "status",
                                 "text": _CONTINUE_TRUNCATED_ANSWER_STATUS,
@@ -29728,7 +29752,9 @@ class LlamaCppBackend:
                                 # continuation that shows nothing new is judged on its own.
                                 _attempt_started_at = _last_emitted
                                 _continue_final = True
-                                yield {"type": "status", "text": ""}
+                                # Same reason as the answer continuation above: clearing
+                                # the route's cursor here replays what has already been
+                                # streamed, reasoning included.
                                 yield {
                                     "type": "status",
                                     "text": _CONTINUE_AFTER_LENGTH_STATUS,

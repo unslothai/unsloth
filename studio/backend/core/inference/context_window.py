@@ -576,6 +576,14 @@ _FILE_WRITING_TOOLS = frozenset({"edit_file"})
 # the file wording would describe a write that never landed.
 _FAILED_REPLY_MARKERS = ("error", "failed", "not found", "no such file", "traceback")
 
+# A reply the WINDOW replaced, not one the tool wrote. Under a near-zero result budget
+# `_fit_result_to_room` swaps the real answer -- including an `Error: ...` -- for a stub
+# saying there was no room for it, and that stub carries none of the markers above. Read
+# as proof of a write, it tells the model an edit landed when the edit may have failed,
+# under exactly the tight context that makes compaction run in the first place. Absence
+# of evidence, so the neutral wording applies.
+_INCONCLUSIVE_REPLY_MARKERS = ("no context room left", "chars for the model;")
+
 
 def _reply_proves_a_write(name: str, content: object) -> bool:
     """Whether this reply settles that the call left its content in a file.
@@ -593,6 +601,9 @@ def _reply_proves_a_write(name: str, content: object) -> bool:
     if name not in _FILE_WRITING_TOOLS:
         return False
     if not isinstance(content, str):
+        return False
+    lowered = content.lower()
+    if any(marker in lowered for marker in _INCONCLUSIVE_REPLY_MARKERS):
         return False
     head = content[:200].strip().lower()
     return not any(marker in head for marker in _FAILED_REPLY_MARKERS)

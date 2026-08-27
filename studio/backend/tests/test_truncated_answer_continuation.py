@@ -794,3 +794,70 @@ def test_an_attempt_that_reports_no_usage_is_not_charged_the_previous_one(monkey
     assert (
         usage["completion_tokens"] == 700
     ), f"the first attempt's 700 tokens were counted twice: {usage['completion_tokens']}"
+
+
+def test_a_final_continuation_does_not_reset_the_route_cursor(monkeypatch):
+    """An empty status is the OpenAI route's iteration boundary: it clears `prev_text`.
+
+    This pass keeps `cumulative` across attempts on purpose, so the retry's first content
+    event carries the whole prefix again. Diffed from a cursor the empty status has just
+    reset, the client is sent the entire partial answer a second time.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": _SECOND_HALF}), _done()]),
+        payloads,
+    )
+
+    events = _run_no_tools(backend)
+
+    assert len(payloads) == 2, "the answer was not continued"
+    # Only what happens AFTER text is on screen matters: a blank status before the
+    # first content event resets a cursor that is already empty.
+    kinds = [(e.get("type"), e.get("text")) for e in events]
+    first_content = next(i for i, (kind, _) in enumerate(kinds) if kind == "content")
+    after = [text for kind, text in kinds[first_content:] if kind == "status"]
+    assert after, "the retry was not announced at all"
+    assert "" not in after, (
+        f"an iteration-boundary reset was emitted mid-answer: {after}"
+    )
+
+
+def test_a_resumed_turn_that_calls_a_tool_stays_one_assistant_message(monkeypatch):
+    """`append_assistant_turn` merges into a resumed partial; the reset defeated it.
+
+    The caller's `continue_final_message` was restored at the top of the tool-execution
+    block, before the call was recorded, so a turn resumed mid-answer that then called a
+    tool appended a SECOND consecutive assistant message. Strict templates reject that.
+    """
+
+    seen: list[list] = []
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
+            [_sse({"content": '<tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+        payloads,
+    )
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "a result")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Show me the HTML inline"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 3,
+        )
+    )
+
+    assert len(payloads) >= 3, "the tool round never happened"
+    messages = payloads[-1]["messages"]
+    roles = [m.get("role") for m in messages]
+    for first, second in zip(roles, roles[1:]):
+        assert not (first == "assistant" and second == "assistant"), (
+            f"two assistant turns in a row: {roles}"
+        )

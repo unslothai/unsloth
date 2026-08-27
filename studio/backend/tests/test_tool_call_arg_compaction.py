@@ -835,3 +835,31 @@ def test_a_batch_whose_bulk_is_the_file_edit_still_gets_the_file_wording():
     }
 
     assert _blamed_role(message) == "assistant_tool_call"
+
+
+def test_a_reply_the_window_replaced_does_not_prove_a_write():
+    """`_fit_result_to_room` can swap the real answer for a stub saying there was no room.
+
+    The stub carries none of the failure markers, so a FAILED edit was labelled "already
+    written" -- under exactly the tight context that makes compaction run. Absence of
+    evidence is not evidence, so the neutral wording applies.
+    """
+    from core.inference.context_window import _completed_phrase_for  # noqa: PLC0415
+    from core.inference.tools import _zero_room_stub  # noqa: PLC0415
+
+    stub = _zero_room_stub(2401, None, True)
+    written = _completed_phrase_for("edit_file", "Wrote 2401 chars to a.html")
+    omitted = _completed_phrase_for("edit_file", stub)
+
+    assert "written" in written, "the fixture no longer describes a real write"
+    assert omitted != written, "a reply the window ate was read as proof of a write"
+    assert "written" not in omitted
+
+
+def test_a_truncated_reply_is_inconclusive_too():
+    """The other shape of the same cause: a body cut down with a notice appended."""
+    from core.inference.context_window import _completed_phrase_for  # noqa: PLC0415
+
+    cut = "Wrote 2401 ch\n\n... (truncated to 13 chars for the model; 2401 chars total)"
+
+    assert "written" not in _completed_phrase_for("edit_file", cut)

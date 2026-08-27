@@ -36,6 +36,27 @@ from core.inference.llama_cpp import _MAX_IDENTICAL_TOOL_RESULTS, LlamaCppBacken
 _TRUNCATION_NOTICE = "(truncated to 0 chars for the model; showing lines 1-11 of 63.)"
 
 
+def _finish(reason: str) -> str:
+    return (
+        "data: "
+        + json.dumps({"choices": [{"index": 0, "delta": {}, "finish_reason": reason}]})
+        + "\n"
+    )
+
+
+def _usage(completion_tokens: int) -> str:
+    return (
+        "data: "
+        + json.dumps(
+            {
+                "choices": [{"index": 0, "delta": {}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": completion_tokens},
+            }
+        )
+        + "\n"
+    )
+
+
 def _sse(delta: dict) -> str:
     return "data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}) + "\n"
 
@@ -419,3 +440,49 @@ def test_the_zero_room_stub_counts_as_a_window_notice(monkeypatch):
 
     assert any(stub in r for r in results)
     assert any(r != stub for r in results), "the starved-result nudge was not added"
+
+
+def test_a_resumed_turn_prices_its_tool_result_by_what_is_left(monkeypatch):
+    """The payload used the continuation's remainder; this budget still used the whole cap.
+
+    With 100 of 1000 tokens left, the result was priced as if 1000 were still to come, so
+    `tool_result_budget` reserved room the request was never going to use and could hand
+    the call a zero budget -- a starvation notice for a read there was space for.
+    """
+
+    caps: list[object] = []
+    import core.inference.llama_cpp as _lc  # noqa: PLC0415
+
+    real_budget = _lc.tool_result_budget
+
+    def recording_budget(context_length, max_tokens, spent):
+        caps.append(max_tokens)
+        return real_budget(context_length, max_tokens, spent)
+
+    monkeypatch.setattr(_lc, "tool_result_budget", recording_budget)
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": "Half an answer"}), _usage(900), _finish("length"), _done()],
+            [_call("read it", 0), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+        payloads,
+    )
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "contents")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Show me the file"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 3,
+            max_tokens = 1000,
+        )
+    )
+
+    assert caps, "the result was never priced"
+    assert 1000 not in caps, (
+        f"a resumed turn priced its result against the whole cap: {caps}"
+    )
