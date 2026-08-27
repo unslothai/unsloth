@@ -39,6 +39,7 @@ on:
       - 'studio/backend/tests/test_chat_history_routes.py'
       - 'studio/backend/tests/test_chat_history_storage.py'
       - 'studio/backend/tests/test_credential_secrets.py'
+      - 'studio/backend/tests/test_deep_research_handoff_simulation.py'
       - 'studio/backend/tests/test_edit_file_tool.py'
       - 'studio/backend/tests/test_log_filter_no_truncation.py'
       - 'studio/backend/tests/test_mcp_stdio_api_key_gate.py'
@@ -47,6 +48,7 @@ on:
       - 'studio/backend/tests/test_project_context_transport.py'
       - 'studio/backend/tests/test_project_folder_workspace.py'
       - 'studio/backend/tests/test_project_workspace_location.py'
+      - 'studio/backend/tests/test_research_progress_events.py'
       - 'studio/backend/tests/test_research_project_context.py'
       - 'studio/backend/tests/test_research_runs_storage.py'
       - 'studio/frontend/src/components/assistant-ui/sandbox-files.ts'
@@ -99,6 +101,7 @@ on:
       - 'studio/backend/tests/test_chat_history_routes.py'
       - 'studio/backend/tests/test_chat_history_storage.py'
       - 'studio/backend/tests/test_credential_secrets.py'
+      - 'studio/backend/tests/test_deep_research_handoff_simulation.py'
       - 'studio/backend/tests/test_edit_file_tool.py'
       - 'studio/backend/tests/test_log_filter_no_truncation.py'
       - 'studio/backend/tests/test_mcp_stdio_api_key_gate.py'
@@ -107,6 +110,7 @@ on:
       - 'studio/backend/tests/test_project_context_transport.py'
       - 'studio/backend/tests/test_project_folder_workspace.py'
       - 'studio/backend/tests/test_project_workspace_location.py'
+      - 'studio/backend/tests/test_research_progress_events.py'
       - 'studio/backend/tests/test_research_project_context.py'
       - 'studio/backend/tests/test_research_runs_storage.py'
       - 'studio/frontend/src/components/assistant-ui/sandbox-files.ts'
@@ -191,10 +195,14 @@ jobs:
 
       - name: Install Linux project sandbox
         if: runner.os == 'Linux'
+        timeout-minutes: 11
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '240'
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y bubblewrap || { apt-get update && apt-get install -y bubblewrap; }'
 
       - name: Run POSIX backend behavioral contracts
         if: runner.os != 'Windows'
@@ -232,6 +240,14 @@ jobs:
           studio/backend/tests/test_project_workspace_location.py
           studio/backend/tests/test_research_project_context.py
 
+      - name: Run durable research workspace contracts
+        shell: bash
+        run: >-
+          python -m pytest -q
+          studio/backend/tests/test_deep_research_handoff_simulation.py
+          studio/backend/tests/test_research_progress_events.py
+          studio/backend/tests/test_research_runs_storage.py
+
       - name: Run credential and connector boundary contracts
         shell: bash
         run: >-
@@ -263,19 +279,10 @@ jobs:
         shell: bash
         run: npm ci --no-fund --no-audit
 
-      - name: Run frontend workspace contracts
+      - name: Run full frontend contract suite
         working-directory: studio/frontend
         shell: bash
-        run: >-
-          node --experimental-strip-types --test
-          tests/agent-workspace-review.test.ts
-          tests/agent-workspace-ui.test.ts
-          tests/new-project-dialog-controller.test.ts
-          tests/project-compare-context.test.ts
-          tests/project-folder-workspace.test.ts
-          tests/project-slash-commands.test.ts
-          tests/project-workspace-ux.test.ts
-          tests/project-research-request-types.test.ts
+        run: npm test
 
       - name: Typecheck frontend workspace integration
         working-directory: studio/frontend
@@ -371,24 +378,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
         with:
           toolchain: '1.89.0'
+          components: rustfmt
 
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
 
-      - name: Test native lease signing
+      - name: Check agent workspace Rust formatting
         working-directory: studio/src-tauri
-        run: cargo test native_backend_lease -- --test-threads=1
+        run: >-
+          rustfmt --edition 2021 --config skip_children=true --check
+          src/diagnostics/redaction.rs
+          src/main.rs
+          src/native_backend_lease.rs
+          src/native_intents.rs
+          src/native_path_policy.rs
 
-      - name: Test native intent grants
+      - name: Run full Tauri contract suite
         working-directory: studio/src-tauri
-        run: cargo test native_intents -- --test-threads=1
-
-      - name: Test native path policy
-        working-directory: studio/src-tauri
-        run: cargo test native_path_policy -- --test-threads=1
-
-      - name: Test native grant redaction
-        working-directory: studio/src-tauri
-        run: cargo test diagnostics::redaction -- --test-threads=1
+        run: cargo test -- --test-threads=1
