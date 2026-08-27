@@ -24,6 +24,8 @@ __all__ = [
     "clean_gpu_cache",
     "get_current_device",
     "resolve_hip_gpu_stats_name",
+    "arch_lacks_bf16",
+    "hip_visible_archs",
     "is_mlx_available",
 ]
 
@@ -187,6 +189,27 @@ if DEVICE_TYPE == "hip":
             from bitsandbytes.nn.modules import Params4bit
             if "blocksize = 64 if not HIP_ENVIRONMENT else 128" in inspect.getsource(Params4bit):
                 ALLOW_PREQUANTIZED_MODELS = False
+
+
+def arch_lacks_bf16(gcn_arch):
+    """True for gfx10 (RDNA 1 and 2), which has no native bf16 arithmetic.
+
+    torch.cuda.is_bf16_supported() answers True on these anyway, and Triton then picks a bf16
+    dot intrinsic LLVM cannot lower for the target. The process dies before Python sees an
+    exception, so the user gets "training exited unexpectedly" at step 0. See issue 7922.
+    """
+    return str(gcn_arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
+
+
+def hip_visible_archs():
+    """gcnArchName for every visible HIP device. Empty on any probe failure."""
+    try:
+        return [
+            str(getattr(torch.cuda.get_device_properties(i), "gcnArchName", ""))
+            for i in range(torch.cuda.device_count())
+        ]
+    except Exception:
+        return []
 
 
 def resolve_hip_gpu_stats_name(gpu_stats):
