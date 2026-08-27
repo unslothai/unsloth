@@ -841,7 +841,7 @@ def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop()
     body = inspect.getsource(llama_cpp.LlamaCppBackend.generate_chat_completion)
     assert body.count("tools_withheld = tools_withheld") == 2
 
-    route = inspect.getsource(routes_mod.openai_chat_completions)
+    route = inspect.getsource(routes_mod.produce_openai_chat_completions)
     # `_tool_loop_unusable` is `_client_disabled_tool_calls` plus the other two shapes that
     # make the loop unusable once opened.
     assert "tools_withheld = _tool_loop_unusable" in route
@@ -1167,13 +1167,16 @@ def test_the_loop_is_only_reopened_for_a_request_that_can_actually_compact():
 
     import routes.inference as routes_mod
 
-    route = inspect.getsource(routes_mod.openai_chat_completions)
+    route = inspect.getsource(routes_mod.produce_openai_chat_completions)
     gate = route.split("if (\n            not use_tools", 1)[1].split("use_tools = True", 1)[0]
-    assert "_checkpoint_needs_search(payload)" in gate
-    assert "_thread_has_conversation_archive" in gate
-    assert "_rolling_context_policy(payload) is not None" in gate
+    assert "_checkpoint_recall_may_enable_tools(payload)" in gate
     # And the request must be able to USE the loop once it opens, not merely open it.
     assert "_tool_loop_unusable" in gate
+
+    helper = inspect.getsource(routes_mod._checkpoint_recall_may_enable_tools)
+    assert "_checkpoint_needs_search(payload)" in helper
+    assert "_thread_has_conversation_archive" in helper
+    assert "_rolling_context_policy(payload) is not None" in helper
 
 
 def test_a_request_that_could_never_call_the_tool_keeps_the_rolling_window():
@@ -1188,7 +1191,7 @@ def test_a_request_that_could_never_call_the_tool_keeps_the_rolling_window():
 
     import routes.inference as routes_mod
 
-    route = inspect.getsource(routes_mod.openai_chat_completions)
+    route = inspect.getsource(routes_mod.produce_openai_chat_completions)
     predicate = route.split("_tool_loop_unusable = (", 1)[1].split("\n    )", 1)[0]
 
     assert "_client_disabled_tool_calls" in predicate

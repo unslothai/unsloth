@@ -794,7 +794,7 @@ export const ar = {
         embeddingModel: "نموذج التضمين (Embedding)",
         embeddingModelDescription:
           "نموذج Hugging Face أو مسار محلي يُستخدم لفهرسة مستنداتك والبحث فيها. القيمة الافتراضية هي {defaultModel}.",
-        searchPlaceholder: "ابحث عن نماذج التضمين",
+        searchPlaceholder: "ابحث عن أي نموذج على HF",
         reindexWarning:
           "يؤثر فقط في المستندات التي تُفهرس حديثًا. أعِد رفع المستندات الحالية بعد تغيير النموذج.",
         emptyError: "أدخل معرّف نموذج Hugging Face أو مسارًا محليًا.",
@@ -802,7 +802,24 @@ export const ar = {
         saveError: "فشل حفظ نموذج التضمين.",
         saved: "تم حفظ نموذج التضمين.",
         saveAnyway: "الحفظ على أي حال",
-        resetAction: "إعادة التعيين إلى الافتراضي",
+        recommended: "موصى به",
+        onDevice: "على الجهاز",
+        searching: "جارٍ البحث في Hugging Face…",
+        checking: "جارٍ التحقق…",
+        noResults: "لم يتم العثور على نماذج تضمين",
+        download: "تنزيل",
+        unload: "إلغاء التحميل",
+        unloadFailed: "تعذّر إلغاء تحميل نموذج التضمين",
+        downloadingStatus: "جارٍ التنزيل…",
+        notDownloaded: "غير مُنزّل",
+        notDownloadedSized: "غير مُنزّل · {size}",
+        loaded: "مُحمّل",
+        downloading: "جارٍ تنزيل {model}",
+        downloadingDescription:
+          "يظهر التقدم في لوحة التنزيلات. ستستخدمه الفهرسة بمجرد اكتماله.",
+        downloadFailed: "تعذّر بدء التنزيل",
+        downloadConflict: "استأنف هذا التنزيل من Hub",
+        downloadBusy: "التنزيل قيد التقدم بالفعل",
       },
       storage: {
         sectionTitle: "التخزين",
@@ -1189,6 +1206,7 @@ export const ar = {
         processMemory: "ذاكرة العملية",
         notInstalled: "غير مثبّت",
         unknown: "غير معروف",
+        vramWithShared: "{vram} VRAM + {shared} ذاكرة مشتركة",
       },
     },
     agents: {
@@ -1313,6 +1331,9 @@ export const ar = {
         showAllQuantizations: "إظهار جميع خيارات التكميم",
         showAllQuantizationsDescription:
           "عند التفعيل: تُدرج جميع خيارات التكميم ضمن «On Device»، بما فيها الخيارات غير المُنزَّلة. عند التعطيل: لا تظهر إلا خيارات التكميم المُنزَّلة.",
+        showMemoryBar: "إظهار شريط استخدام VRAM",
+        showMemoryBarDescription:
+          "يعرض أسفل صف كل نموذج تم تنزيله الاستخدام التقديري لذاكرة VRAM: الأوزان، وذاكرة KV المؤقتة عند طول السياق الذي سيُحمَّل به، وأي حجز لمسودة فك التشفير التخميني.",
       },
       menu: {
         title: "قائمة المحادثة",
@@ -2348,5 +2369,14 @@ export const ar = {
       datasetStreaming: "مجموعة البيانات: تُقرأ بالتدفّق (من دون تنزيل كامل)",
       modelWeights: "أوزان النموذج",
     },
+  },
+  modelMemory: {
+    readout:
+      "الأوزان {model} + السياق {context} = {total} من {budget} من VRAM القابلة للاستخدام",
+    readoutWithSpec:
+      "الأوزان {model} + KV {kv} + مسودة MTP {spec} = {total} من {budget} من VRAM القابلة للاستخدام",
+    kvRate: "KV محجوزة مسبقًا، ~{rate}/توكن",
+    oomLikely: "مع الإعدادات الحالية يُرجَّح نفاد الذاكرة",
+    tooLarge: "أكبر من ذاكرة الرسوميات، وسيُفرَّغ جزء منه إلى المعالج. التكميم الأصغر أسرع",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

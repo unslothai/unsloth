@@ -3,7 +3,7 @@
 
 import type { GgufVariantDetail } from "@/features/hub/inventory";
 import { formatBytes } from "@/features/hub/lib/format";
-import { classifyGgufFit } from "@/features/hub/lib/gguf-fit";
+import { classifyGgufFit } from "@/lib/gguf-fit";
 import { ggufVariantsMatch } from "@/features/hub/lib/model-identity";
 
 type GgufVariantResources = {

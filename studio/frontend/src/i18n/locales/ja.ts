@@ -783,14 +783,30 @@ export const ja = {
         sectionTitle: "ドキュメントと RAG",
         embeddingModel: "埋め込みモデル",
         embeddingModelDescription: "ドキュメントのインデックス作成と検索に使用する Hugging Face モデルまたはローカルパス。デフォルトは {defaultModel} です。",
-        searchPlaceholder: "埋め込みモデルを検索",
+        searchPlaceholder: "HF 上の任意のモデルを検索",
         reindexWarning: "新しくインデックスされるドキュメントにのみ影響します。モデルを変更した後は、既存のドキュメントを再アップロードしてください。",
         emptyError: "Hugging Face モデル ID またはローカルパスを入力してください。",
         loadError: "埋め込みモデル設定の読み込みに失敗しました。",
         saveError: "埋め込みモデルの保存に失敗しました。",
         saved: "埋め込みモデルを保存しました。",
         saveAnyway: "そのまま保存",
-        resetAction: "デフォルトに戻す",
+        recommended: "推奨",
+        onDevice: "このデバイス",
+        searching: "Hugging Face を検索中…",
+        checking: "確認中…",
+        noResults: "埋め込みモデルが見つかりません",
+        download: "ダウンロード",
+        unload: "アンロード",
+        unloadFailed: "埋め込みモデルをアンロードできませんでした",
+        downloadingStatus: "ダウンロード中…",
+        notDownloaded: "未ダウンロード",
+        notDownloadedSized: "未ダウンロード · {size}",
+        loaded: "読み込み済み",
+        downloading: "{model} をダウンロード中",
+        downloadingDescription: "進捗はダウンロードパネルに表示されます。完了後にインデックス作成で使用されます。",
+        downloadFailed: "ダウンロードを開始できませんでした",
+        downloadConflict: "このダウンロードは Hub から再開してください",
+        downloadBusy: "ダウンロードはすでに進行中です",
       },
       storage: {
         sectionTitle: "ストレージ",
@@ -1172,6 +1188,7 @@ export const ja = {
         processMemory: "プロセスメモリ",
         notInstalled: "未インストール",
         unknown: "不明",
+        vramWithShared: "{vram} VRAM + {shared} 共有メモリ",
       },
     },
     agents: {
@@ -1302,6 +1319,9 @@ export const ja = {
         showAllQuantizations: "すべての量子化オプションを表示",
         showAllQuantizationsDescription:
           "オン: 「On Device」にあるすべての量子化オプションを、未ダウンロードのものも含めて一覧表示します。オフ: ダウンロード済みの量子化オプションのみを表示します。",
+        showMemoryBar: "VRAM 使用量バーを表示",
+        showMemoryBarDescription:
+          "ダウンロード済みモデルの行の下に、推定 VRAM 使用量を表示します。内訳は重み、実際に読み込まれるコンテキスト長での KV キャッシュ、および投機的デコードの下書き用に確保される領域です。",
       },
       menu: {
         title: "チャットメニュー",
@@ -2302,5 +2322,14 @@ export const ja = {
       datasetStreaming: "データセット: ストリーミング（完全なダウンロードなし）",
       modelWeights: "モデルの重み",
     },
+  },
+  modelMemory: {
+    readout:
+      "重み {model} + コンテキスト {context} = 使用可能な VRAM {budget} 中 {total}",
+    readoutWithSpec:
+      "重み {model} + KV {kv} + MTP 下書き {spec} = 使用可能な VRAM {budget} 中 {total}",
+    kvRate: "KV は事前確保、約 {rate}/トークン",
+    oomLikely: "現在の設定ではメモリ不足になる可能性があります",
+    tooLarge: "VRAM を超えるため CPU にオフロードされます。より小さい量子化の方が高速です",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -804,7 +804,7 @@ export const ptBR = {
         embeddingModel: "Modelo de embedding",
         embeddingModelDescription:
           "Modelo do Hugging Face ou caminho local usado para indexar e buscar seus documentos. O padrão é {defaultModel}.",
-        searchPlaceholder: "Buscar modelos de embedding",
+        searchPlaceholder: "Buscar qualquer modelo no HF",
         reindexWarning:
           "Afeta apenas documentos recém-indexados. Reenvie os documentos existentes após alterar o modelo.",
         emptyError: "Insira um id de modelo do Hugging Face ou um caminho local.",
@@ -812,7 +812,24 @@ export const ptBR = {
         saveError: "Falha ao salvar o modelo de embedding.",
         saved: "Modelo de embedding salvo.",
         saveAnyway: "Salvar mesmo assim",
-        resetAction: "Redefinir para o padrão",
+        recommended: "Recomendado",
+        onDevice: "No dispositivo",
+        searching: "Buscando no Hugging Face…",
+        checking: "Verificando…",
+        noResults: "Nenhum modelo de embedding encontrado",
+        download: "Baixar",
+        unload: "Descarregar",
+        unloadFailed: "Não foi possível descarregar o modelo de embedding",
+        downloadingStatus: "Baixando…",
+        notDownloaded: "Não baixado",
+        notDownloadedSized: "Não baixado · {size}",
+        loaded: "Carregado",
+        downloading: "Baixando {model}",
+        downloadingDescription:
+          "O progresso aparece no painel de downloads. A indexação vai usá-lo quando terminar.",
+        downloadFailed: "Não foi possível iniciar o download",
+        downloadConflict: "Retome este download pelo Hub",
+        downloadBusy: "Download já em andamento",
       },
       storage: {
         sectionTitle: "Armazenamento",
@@ -1200,6 +1217,7 @@ export const ptBR = {
         processMemory: "Memória do processo",
         notInstalled: "Não instalado",
         unknown: "Desconhecido",
+        vramWithShared: "{vram} de VRAM + {shared} de memória compartilhada",
       },
     },
     agents: {
@@ -1328,6 +1346,9 @@ export const ptBR = {
         showAllQuantizations: "Mostrar todas as quantizações",
         showAllQuantizationsDescription:
           "Ativado: lista todas as quantizações em “On Device”, inclusive as que não foram baixadas. Desativado: mostra apenas as quantizações baixadas.",
+        showMemoryBar: "Mostrar barra de uso de VRAM",
+        showMemoryBarDescription:
+          "Mostra abaixo da linha de cada modelo baixado o uso estimado de VRAM: pesos, cache KV no comprimento de contexto com que será carregado e qualquer reserva de rascunho especulativo.",
       },
       menu: {
         title: "Menu do chat",
@@ -2379,5 +2400,14 @@ export const ptBR = {
       datasetStreaming: "Dataset: streaming (sem download completo)",
       modelWeights: "Pesos do modelo",
     },
+  },
+  modelMemory: {
+    readout:
+      "Pesos {model} + contexto {context} = {total} de {budget} de VRAM utilizável",
+    readoutWithSpec:
+      "Pesos {model} + KV {kv} + rascunho MTP {spec} = {total} de {budget} de VRAM utilizável",
+    kvRate: "KV reservado, ~{rate}/token",
+    oomLikely: "Com as configurações atuais, é provável um erro de memória",
+    tooLarge: "Maior que a VRAM, será descarregado para a CPU. Uma quantização menor roda mais rápido",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

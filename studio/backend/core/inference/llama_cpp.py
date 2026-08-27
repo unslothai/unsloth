@@ -2518,6 +2518,22 @@ def _pick_dspark(candidates: list[str]) -> Optional[str]:
     return files[0] if files else None
 
 
+def _pick_mtp(candidates: list[str]) -> Optional[str]:
+    """The MTP drafter a listing offers, or None. Module level for the same reason
+    ``_pick_dspark`` is: both are handed a live repo listing as well as a snapshot,
+    and ``/kv-cache-estimate`` has to price the drafter the launch will open."""
+    # Root-level only: MTP/ subdir copies now share the mtp- prefix but
+    # are explicit-selection, not auto-fetch (they'd sort ahead of root).
+    # The mtp- prefix also excludes AppleDouble shadows ("._mtp-x.gguf"), which
+    # is why this picker needs no drop_shadowed_appledouble_names of its own.
+    mtp_files = sorted(
+        f
+        for f in candidates
+        if f.lower().endswith(".gguf") and "/" not in f and Path(f).name.lower().startswith("mtp-")
+    )
+    return mtp_files[0] if mtp_files else None
+
+
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
     from hub.utils.gguf import drop_shadowed_appledouble_names
 
@@ -12787,18 +12803,6 @@ class LlamaCppBackend:
         are intentionally skipped. Returns the local path, or None.
         """
 
-        def _pick_mtp(candidates: list[str]) -> Optional[str]:
-            # Root-level only: MTP/ subdir copies now share the mtp- prefix but
-            # are explicit-selection, not auto-fetch (they'd sort ahead of root).
-            mtp_files = sorted(
-                f
-                for f in candidates
-                if f.lower().endswith(".gguf")
-                and "/" not in f
-                and Path(f).name.lower().startswith("mtp-")
-            )
-            return mtp_files[0] if mtp_files else None
-
         if near_path:
             cached = _companion_snapshot_sibling(near_path, _pick_mtp)
             if cached:
@@ -19732,9 +19736,22 @@ class LlamaCppBackend:
                         # Saved KV encodes chat content; keep it from other local users.
                         with contextlib.suppress(OSError):
                             os.chmod(slot_dir, 0o700)
-                        cmd.extend(["--slot-save-path", str(slot_dir)])
-                        self._slot_save_dir = str(slot_dir)
-                        self._slot_save_binary = (binary, Path(binary).stat().st_mtime_ns)
+                        slot_path = str(slot_dir)
+                        # llama.cpp's fs_is_directory() constructs a narrow
+                        # std::filesystem::path on Windows, so an existing UTF-8
+                        # path such as C:\Users\Егор is rejected as missing.
+                        # Slot persistence is optional; keep model loading available
+                        # until the managed runtime carries the upstream UTF-8 fix.
+                        if sys.platform == "win32" and not slot_path.isascii():
+                            logger.warning(
+                                "Disabling llama.cpp slot persistence because its "
+                                "Windows path contains non-ASCII characters: %s",
+                                slot_path,
+                            )
+                        else:
+                            cmd.extend(["--slot-save-path", slot_path])
+                            self._slot_save_dir = slot_path
+                            self._slot_save_binary = (binary, Path(binary).stat().st_mtime_ns)
                     except OSError:
                         self._slot_save_dir = None
                         self._slot_save_binary = None

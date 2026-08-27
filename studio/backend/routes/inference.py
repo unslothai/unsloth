@@ -1231,19 +1231,42 @@ def _chat_final_chunk(completion_id, created, model_name, finish_reason) -> str:
     )
 
 
-def _stats_finish_reason(stats, default: str = "stop") -> str:
+def _stats_finish_reason(
+    stats,
+    default: str = "stop",
+    *,
+    token_budget: int | None = None,
+) -> str:
     """``"length"`` when the backend reports the turn ran out of token budget.
 
     A backend that names its own reason is believed: MLX decides between a stop
     token and exhaustion from the last token it sampled, which a count at the cap
-    cannot distinguish. The in-process backends instead fill ``truncated``, and a
-    backend reporting neither keeps ``default``.
+    cannot distinguish. The in-process backends instead fill ``truncated``. A caller
+    that knows its backend reports ``stop`` at the cap may also supply the effective
+    token budget; every other path keeps ``default``.
     """
     if not isinstance(stats, dict):
         return default
     if stats.get("finish_reason") in ("stop", "length"):
         return stats["finish_reason"]
-    return "length" if stats.get("truncated") else default
+    if stats.get("truncated"):
+        return "length"
+    usage = stats.get("usage")
+    completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+    if (
+        token_budget is not None
+        and isinstance(completion_tokens, int)
+        and not isinstance(completion_tokens, bool)
+        and completion_tokens >= token_budget
+    ):
+        return "length"
+    return default
+
+
+def _safetensors_finish_reason(stats, payload, *, is_mlx: bool, durable_run: bool) -> str:
+    """Normalize MLX's stop-at-cap only for server-owned Studio runs."""
+    token_budget = _effective_openai_max_tokens(payload) if is_mlx and durable_run else None
+    return _stats_finish_reason(stats, token_budget = token_budget)
 
 
 def _chat_tool_calls_chunk(completion_id, created, model_name, tool_calls) -> str:
@@ -3567,6 +3590,7 @@ class _TrackedCancel:
         event: threading.Event,
         *keys,
         thread_id = None,
+        run_id = None,
         model = None,
         kind = "chat",
     ):
@@ -3575,7 +3599,7 @@ class _TrackedCancel:
         # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
         # naming them chats would offer to stop something the user never started from a thread.
         self._active = active_generations.ActiveGeneration(
-            event, thread_id = thread_id, model = model, kind = kind
+            event, thread_id = thread_id, run_id = run_id, model = model, kind = kind
         )
 
     @classmethod
@@ -3585,6 +3609,7 @@ class _TrackedCancel:
             event,
             *keys,
             thread_id = getattr(payload, "thread_id", None),
+            run_id = getattr(payload, "generation_run_id", None),
             model = getattr(payload, "model", None),
         )
 
@@ -4505,6 +4530,20 @@ def _checkpoint_needs_search(payload = None) -> bool:
         return checkpoint.enabled()
     except Exception:  # noqa: BLE001 -- an unreadable policy is "no", never an error
         return False
+
+
+def _checkpoint_recall_may_enable_tools(payload) -> bool:
+    """Whether checkpoint recovery can force the internal recall tool loop."""
+    from state.tool_policy import get_tool_policy
+    return bool(
+        get_tool_policy() is not False
+        and _rolling_context_policy(payload) is not None
+        and _checkpoint_needs_search(payload)
+        and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
+        and _thread_has_checkpoint(
+            getattr(payload, "thread_id", None), getattr(payload, "messages", None)
+        )
+    )
 
 
 def _apply_compaction_nudge(
@@ -6990,6 +7029,16 @@ async def _maybe_auto_switch_model(
         preview_swapped_since_entry,
     )
 
+    generation_cancel_event = getattr(
+        getattr(fastapi_request, "state", None),
+        "generation_cancel_event",
+        None,
+    )
+
+    def _raise_if_generation_cancelled() -> None:
+        if generation_cancel_event is not None and generation_cancel_event.is_set():
+            raise HTTPException(status_code = 409, detail = "Generation cancelled")
+
     # Passed auth and reached local inference, so count it in the admitted-inference tally
     # the preview busy guard uses instead of raw _inflight (no-op for preview scopes).
     _swap_scope = getattr(fastapi_request, "scope", None)
@@ -7058,6 +7107,7 @@ async def _maybe_auto_switch_model(
     async def _resolve_and_switch() -> None:
         from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
+        _raise_if_generation_cancelled()
         # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
         # With auto-switch off (or an omitted-model reload-only request), skip the
         # resolve so only the reload-stash path runs and no name is ever matched.
@@ -7263,12 +7313,18 @@ async def _maybe_auto_switch_model(
                         _switch_prior_marker = _get_preview_resident()
                         _switch_loaded_ok = False
                         try:
+                            durable_cancel_kw = (
+                                {"load_cancel_event": generation_cancel_event}
+                                if generation_cancel_event is not None
+                                else {}
+                            )
                             try:
                                 await _load_model_impl(
                                     LoadRequest(**load_kwargs),
                                     fastapi_request,
                                     current_subject,
                                     current_request_counted = True,
+                                    **durable_cancel_kw,
                                 )
                             except HTTPException as exc:
                                 # The pre-flight check cannot mirror every loader gpu_ids rule,
@@ -7291,7 +7347,9 @@ async def _maybe_auto_switch_model(
                                     fastapi_request,
                                     current_subject,
                                     current_request_counted = True,
+                                    **durable_cancel_kw,
                                 )
+                            _raise_if_generation_cancelled()
                             _switch_loaded_ok = True
                         finally:
                             if not claim_resident:
@@ -17888,11 +17946,56 @@ def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
         body[_COMPLETIONS_SAMPLING_BODY_KEY.get(field, field)] = value
 
 
+class _DisconnectPolicyRequest:
+    """Delegate a request while making generation disconnect policy explicit."""
+
+    def __init__(self, request: Request, *, cancel_on_disconnect: bool) -> None:
+        self._request = request
+        self._cancel_on_disconnect = cancel_on_disconnect
+
+    async def is_disconnected(self) -> bool:
+        if not self._cancel_on_disconnect:
+            return False
+        return await self._request.is_disconnected()
+
+    def __getattr__(self, name):
+        return getattr(self._request, name)
+
+
+def _chat_cancel_event(request: Request) -> threading.Event:
+    """Reuse a durable run's event across auto-load and generation registration."""
+    event = getattr(getattr(request, "state", None), "generation_cancel_event", None)
+    return event if event is not None else threading.Event()
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject),
+):
+    from auth.authentication import request_admitted_without_credential
+    if (payload.provider_id or payload.provider_type) and request_admitted_without_credential(
+        request
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = "External providers can only be used from the Unsloth UI or with an API key.",
+        )
+    return await produce_openai_chat_completions(
+        payload,
+        request,
+        current_subject,
+        cancel_on_disconnect = True,
+    )
+
+
+async def produce_openai_chat_completions(
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: str,
+    *,
+    cancel_on_disconnect: bool,
 ):
     """
     OpenAI-compatible chat completions endpoint.
@@ -17910,6 +18013,11 @@ async def openai_chat_completions(
     - GGUF models → llama-server via LlamaCppBackend
     - Other models → Unsloth/transformers via InferenceBackend
     """
+    request = _DisconnectPolicyRequest(
+        request,
+        cancel_on_disconnect = cancel_on_disconnect,
+    )
+
     # OpenAI's newer "developer" role is equivalent to "system". Normalize it
     # before provider routing so external providers (which may not accept the
     # "developer" role) get "system" too, matching the local path.
@@ -18314,7 +18422,7 @@ async def openai_chat_completions(
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 raise
-            cancel_event = threading.Event()
+            cancel_event = _chat_cancel_event(request)
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
             created = int(time.time())
 
@@ -18690,7 +18798,7 @@ async def openai_chat_completions(
                 "Image provided but current GGUF model does not support vision.",
             )
 
-        cancel_event = threading.Event()
+        cancel_event = _chat_cancel_event(request)
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         # `stream` defaults to False on ChatCompletionRequest (OpenAI spec
         # parity). Naive curl / .NET / System.Text.Json clients omitting the
@@ -18780,7 +18888,7 @@ async def openai_chat_completions(
         if video_b64:
             _inject_video_part(gguf_messages, video_b64)
 
-        cancel_event = threading.Event()
+        cancel_event = _chat_cancel_event(request)
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
@@ -18846,16 +18954,8 @@ async def openai_chat_completions(
         if (
             not use_tools
             and not _tool_loop_unusable
-            and _cli_policy is not False
             and llama_backend.supports_tools
-            and _rolling_context_policy(payload) is not None
-            and _checkpoint_needs_search(payload)
-            and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
-            # And an epoch actually happened here: a rolling-window thread archives
-            # identically, and there the loop would open for a repair that cannot happen.
-            and _thread_has_checkpoint(
-                getattr(payload, "thread_id", None), getattr(payload, "messages", None)
-            )
+            and _checkpoint_recall_may_enable_tools(payload)
         ):
             use_tools = True
 
@@ -20533,7 +20633,7 @@ async def openai_chat_completions(
             reasoning_prefilled = prefilled,
         )
 
-    cancel_event = threading.Event()
+    cancel_event = _chat_cancel_event(request)
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
@@ -21353,7 +21453,16 @@ async def openai_chat_completions(
                 _finish = (
                     "tool_calls"
                     if (healer is not None and not _cancelled and healer.healed)
-                    else ("stop" if _cancelled else _stats_finish_reason(_stats))
+                    else (
+                        "stop"
+                        if _cancelled
+                        else _safetensors_finish_reason(
+                            _stats,
+                            payload,
+                            is_mlx = bool(_sf_model_info.get("is_mlx", False)),
+                            durable_run = not cancel_on_disconnect,
+                        )
+                    )
                 )
                 yield _chat_final_chunk(completion_id, created, model_name, _finish)
                 # Reuse the reason already sent to the client. Outside the stats block

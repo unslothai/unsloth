@@ -791,7 +791,7 @@ export const ko = {
         embeddingModel: "임베딩 모델",
         embeddingModelDescription:
           "문서를 색인하고 검색하는 데 사용되는 Hugging Face 모델 또는 로컬 경로입니다. 기본값은 {defaultModel}입니다.",
-        searchPlaceholder: "임베딩 모델 검색",
+        searchPlaceholder: "HF의 모든 모델 검색",
         reindexWarning:
           "새로 색인되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 업로드하세요.",
         emptyError: "Hugging Face 모델 ID 또는 로컬 경로를 입력하세요.",
@@ -799,7 +799,23 @@ export const ko = {
         saveError: "임베딩 모델을 저장하지 못했습니다.",
         saved: "임베딩 모델이 저장되었습니다.",
         saveAnyway: "그래도 저장",
-        resetAction: "기본값으로 재설정",
+        recommended: "추천",
+        onDevice: "기기에 있음",
+        searching: "Hugging Face 검색 중…",
+        checking: "확인 중…",
+        noResults: "임베딩 모델을 찾을 수 없습니다",
+        download: "다운로드",
+        unload: "언로드",
+        unloadFailed: "임베딩 모델을 언로드할 수 없습니다",
+        downloadingStatus: "다운로드 중…",
+        notDownloaded: "다운로드되지 않음",
+        notDownloadedSized: "다운로드되지 않음 · {size}",
+        loaded: "로드됨",
+        downloading: "{model} 다운로드 중",
+        downloadingDescription: "진행 상황은 다운로드 패널에 표시됩니다. 완료되면 색인에 사용됩니다.",
+        downloadFailed: "다운로드를 시작할 수 없습니다",
+        downloadConflict: "Hub에서 이 다운로드를 재개하세요",
+        downloadBusy: "이미 다운로드가 진행 중입니다",
       },
       storage: {
         sectionTitle: "저장소",
@@ -1186,6 +1202,7 @@ export const ko = {
         processMemory: "프로세스 메모리",
         notInstalled: "설치되지 않음",
         unknown: "알 수 없음",
+        vramWithShared: "{vram} VRAM + {shared} 공유 메모리",
       },
     },
     agents: {
@@ -1311,6 +1328,9 @@ export const ko = {
         showAllQuantizations: "모든 양자화 표시",
         showAllQuantizationsDescription:
           "켬: 아직 다운로드하지 않은 항목을 포함해 ‘On Device’의 모든 양자화를 표시합니다. 끔: 다운로드한 양자화만 표시합니다.",
+        showMemoryBar: "VRAM 사용량 막대 표시",
+        showMemoryBarDescription:
+          "다운로드한 모델의 행 아래에 예상 VRAM 사용량을 표시합니다. 가중치, 실제로 로드될 컨텍스트 길이 기준 KV 캐시, 그리고 추측 디코딩 초안용 예약 공간으로 나뉩니다.",
       },
       menu: {
         title: "채팅 메뉴",
@@ -2347,5 +2367,14 @@ export const ko = {
       datasetStreaming: "데이터셋: 스트리밍(전체 다운로드 없음)",
       modelWeights: "모델 가중치",
     },
+  },
+  modelMemory: {
+    readout:
+      "가중치 {model} + 컨텍스트 {context} = 사용 가능한 VRAM {budget} 중 {total}",
+    readoutWithSpec:
+      "가중치 {model} + KV {kv} + MTP 초안 {spec} = 사용 가능한 VRAM {budget} 중 {total}",
+    kvRate: "KV 사전 예약, 약 {rate}/토큰",
+    oomLikely: "현재 설정에서는 메모리 부족이 발생할 수 있습니다",
+    tooLarge: "VRAM보다 커서 CPU로 오프로드됩니다. 더 작은 양자화가 더 빠릅니다",
   },
 } satisfies DeepPartialMessageTree<typeof en>;
