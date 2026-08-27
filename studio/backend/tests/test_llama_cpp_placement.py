@@ -2886,8 +2886,7 @@ def test_the_note_is_appended_once_when_only_the_launch_guard_warned(tmp_path, m
 # reads those bytes: the advisory the route hands back described a load that is not
 # running, and could have been the only reason an unmapped launch was remapped.
 _PROJECTOR_ABORT_OUT = (
-    "srv    load_model: loading model 'model.gguf'\n"
-    "clip.cpp:4391: Unknown projector type\n"
+    "srv    load_model: loading model 'model.gguf'\nclip.cpp:4391: Unknown projector type\n"
 )
 
 
@@ -2972,8 +2971,7 @@ def test_the_text_only_fallback_reprices_the_projector_it_dropped(tmp_path, monk
     assert "--mmproj" not in captured["cmds"][-1], captured["cmds"][-1]
     warning = backend.last_load_warning or ""
     assert "unified-memory APU" not in warning, (
-        "the response still warns about a shortfall the resident model does not have: "
-        f"{warning}"
+        "the response still warns about a shortfall the resident model does not have: " f"{warning}"
     )
     if unmapped:
         # The one thing that IS still true of the running child.
@@ -3071,13 +3069,13 @@ def test_a_rejected_load_leaves_the_resident_advisory_alone(tmp_path, monkeypatc
         GgufLoadIntent(gguf_path = str(gguf), model_identifier = "other"),
         load_cancel_event = cancelled,
     )
-    assert backend.last_load_warning == warned, (
-        f"the cancelled load retired the resident advisory: {backend.last_load_warning}"
-    )
+    assert (
+        backend.last_load_warning == warned
+    ), f"the cancelled load retired the resident advisory: {backend.last_load_warning}"
 
     # 3. ...and the already_loaded fast path still carries it, which is what the route
     # reads for memory_warning on a repeat /load.
     assert backend.load_model(GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test"))
-    assert backend.last_load_warning == warned, (
-        f"already_loaded answered with no memory_warning: {backend.last_load_warning}"
-    )
+    assert (
+        backend.last_load_warning == warned
+    ), f"already_loaded answered with no memory_warning: {backend.last_load_warning}"
