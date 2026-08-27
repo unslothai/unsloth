@@ -636,7 +636,7 @@ export interface OpenAIChatCompletionsRequest {
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
   mcp_enabled?: boolean;
-  /** replayed tool calls were produced by studio's local tool loop. */
+  /** The replayed tool calls came from Studio's own local tool loop. */
   studio_tool_history?: boolean;
   /** Local models + enable_tools only. */
   confirm_tool_calls?: boolean;

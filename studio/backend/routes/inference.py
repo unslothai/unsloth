@@ -3323,13 +3323,21 @@ def _tool_call_names(message) -> list[Optional[str]]:
 
 
 def _only_studio_tool_history(payload) -> bool:
-    """true when the request's only tool history was produced by unsloth.
+    """True when the request's ONLY tool history was produced by Unsloth's own loop.
 
-    current studio clients mark replayed local tool history after checking provenance on
-    every serialized call. older clients have no marker, so retain the strict
-    search_conversation-only fallback that protects checkpoint recall.
+    Once a Studio-local tool runs, the branch keeps an assistant `tool_calls` turn and its
+    `role="tool"` result and the client replays both forever. Read as a CLIENT tool
+    contract, that history routes every later turn to the llama-server passthrough, which
+    runs no context fit, so the epoch, the carried-forward block and the automatic recall
+    vanish one turn after the compaction that created them.
 
-    a caller-supplied `tools` catalog always remains a client contract.
+    Current Studio clients say so directly: `studio_tool_history` is set only after every
+    serialized call was checked for local provenance. Older clients send no marker, so the
+    `search_conversation`-only fallback below stays, deliberately strict -- an unnamed call
+    or result, or any other tool name, means "not ours", so a real client tool loop is
+    never claimed.
+
+    A caller-supplied `tools` catalog is a client contract either way.
     """
     if getattr(payload, "tools", None):
         return False

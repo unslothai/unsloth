@@ -1006,7 +1006,8 @@ def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkey
 
     branch = [{"role": "user", "content": "q"}, {"role": "assistant", "content": reply}]
 
-    # only the abandoned sibling reset, so mixed-policy byte-identical rows force either policy to refit.
+    # Only the abandoned sibling reset, so byte-identical rows of mixed policy make
+    # either policy refit.
     _install(_rows(True))
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
     assert llama_cpp._sticky_compaction_boundary("t1", branch) == 0
