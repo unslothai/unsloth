@@ -641,17 +641,30 @@ test("the resumable scan agrees with scanning from the start", () => {
 
 test("one argument streamed a character at a time stays linear", () => {
   // Rescanning the whole accumulation per fragment made a 20 KB argument cost
-  // over a second on the thread that also paints the stream. Generous bound:
-  // this asserts the quadratic term is gone, not a particular machine's speed.
-  const payload = '{"code":"' + "x".repeat(20000) + '"}';
-  const stream = makeStream();
-  stream.feed([{ index: 0, function: { name: "write", arguments: "" } }]);
-  const started = performance.now();
-  for (const ch of payload) {
-    stream.feed([{ index: 0, function: { arguments: ch } }]);
-  }
-  assert.ok(performance.now() - started < 2000);
-  assert.deepEqual(shape(stream.parts), [["write", payload]]);
+  // over a second on the thread that also paints the stream. Timed as a ratio
+  // between two payload sizes rather than against a deadline: what has to hold
+  // is that four times the argument costs four times the work, and a slow or
+  // contended runner moves both measurements together instead of failing.
+  const timeFeed = (size: number): number => {
+    const payload = '{"code":"' + "x".repeat(size) + '"}';
+    const stream = makeStream();
+    stream.feed([{ index: 0, function: { name: "write", arguments: "" } }]);
+    const started = performance.now();
+    for (const ch of payload) {
+      stream.feed([{ index: 0, function: { arguments: ch } }]);
+    }
+    const elapsed = performance.now() - started;
+    assert.deepEqual(shape(stream.parts), [["write", payload]]);
+    return elapsed;
+  };
+  timeFeed(4000);
+  const small = timeFeed(4000);
+  const large = timeFeed(16000);
+  // Linear is 4x and quadratic 16x, so the line between them is 8x.
+  assert.ok(
+    large < small * 8,
+    `four times the payload cost ${(large / small).toFixed(1)}x the time`,
+  );
 });
 
 test("metadata arriving alone stays on the call that closed", () => {
@@ -1065,4 +1078,38 @@ test("the empty status between rounds ends the provider turn", () => {
     "if (chunk.context_truncated) {",
   );
   assert.match(branch, /if \(!toolStatusText\) \{\s*endProviderTurn\(\);/);
+  // And an announcement still queued at that point was never matched by a
+  // card, because the backend emits none for a call it rejected as disabled.
+  // Kept, the next call of the same name would replay a signature it never
+  // carried.
+  assert.ok(
+    branch.indexOf("announcedExtraByName.clear();") >
+      branch.indexOf("endProviderTurn();"),
+    "the queue outlives the round that filled it",
+  );
+});
+
+test("the announced call keeps its own metadata when its delta splits", () => {
+  // The signature parked with the announcement is B's; the one riding the
+  // arguments belongs to the call that delta closes, which is the last of
+  // them. _take_parked and _fork_glued_arguments divide them the same way.
+  const parts = run([
+    [{ index: 0, function: { name: "A", arguments: '{"a":1}' } }],
+    [{ index: 0, function: { name: "B" }, extra_content: { sig: "parked" } }],
+    [
+      {
+        index: 0,
+        function: { arguments: '{"b":1}{"b2":2}' },
+        extra_content: { sig: "incoming" },
+      },
+    ],
+  ]);
+
+  assert.deepEqual(shape(parts), [
+    ["A", '{"a":1}'],
+    ["B", '{"b":1}'],
+    ["B", '{"b2":2}'],
+  ]);
+  assert.deepEqual(parts[1].extra_content, { sig: "parked" });
+  assert.deepEqual(parts[2].extra_content, { sig: "incoming" });
 });

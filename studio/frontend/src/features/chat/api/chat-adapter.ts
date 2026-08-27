@@ -6380,6 +6380,13 @@ export function createOpenAIStreamAdapter(
                 // same index in the next one.
                 if (!toolStatusText) {
                   endProviderTurn();
+                  // Every card a round paints arrives before the status that
+                  // closes it, so an announcement still queued here was never
+                  // matched by one: the backend emits no tool_start for a call
+                  // it rejected as disabled. Kept, it would be handed to the
+                  // next call of the same name and put a signature that call
+                  // never carried on its replay.
+                  announcedExtraByName.clear();
                 }
                 runtime.setToolStatus(
                   liveThreadKey(serverCancel),
@@ -7470,6 +7477,17 @@ export function createOpenAIStreamAdapter(
                         : call.extra_content !== undefined
                           ? call.extra_content
                           : parkedExtra;
+                    // Split apart when this delta opened several calls: the
+                    // parked metadata was announced for the call the
+                    // announcement named, which is this one, and the metadata
+                    // the delta carried belongs to the call it closes, which is
+                    // the last. _take_parked and _fork_glued_arguments divide
+                    // them the same way, and a signature on the wrong call gets
+                    // both rejected on replay.
+                    const freshOwnExtra = freshIsSplit ? parkedExtra : freshExtra;
+                    const bornExtra = freshIsSplit
+                      ? call.extra_content
+                      : undefined;
                     const argsText = freshIsSplit
                       ? freshSegments[0]
                       : argsFragment;
@@ -7494,8 +7512,8 @@ export function createOpenAIStreamAdapter(
                       textCursor: announcedSlot
                         ? announcedSlot.cursor
                         : cumulativeText.length,
-                      ...(freshExtra !== undefined && !freshIsSplit
-                        ? { extra_content: freshExtra }
+                      ...(freshOwnExtra !== undefined
+                        ? { extra_content: freshOwnExtra }
                         : {}),
                       ...(stablePartId ? { _has_stable_id: true } : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
@@ -7505,7 +7523,7 @@ export function createOpenAIStreamAdapter(
                           freshSegments.slice(1),
                           freshName,
                           idx,
-                          freshExtra,
+                          bornExtra,
                         )
                       : [];
                     // As above: the fork whose object is still open is held
