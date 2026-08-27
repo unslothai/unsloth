@@ -483,9 +483,7 @@ def test_a_resumed_turn_prices_its_tool_result_by_what_is_left(monkeypatch):
     )
 
     assert caps, "the result was never priced"
-    assert 1000 not in caps, (
-        f"a resumed turn priced its result against the whole cap: {caps}"
-    )
+    assert 1000 not in caps, f"a resumed turn priced its result against the whole cap: {caps}"
 
 
 def test_a_resumed_turn_sizes_its_recall_by_what_is_left(monkeypatch):

@@ -820,9 +820,7 @@ def test_a_final_continuation_does_not_reset_the_route_cursor(monkeypatch):
     first_content = next(i for i, (kind, _) in enumerate(kinds) if kind == "content")
     after = [text for kind, text in kinds[first_content:] if kind == "status"]
     assert after, "the retry was not announced at all"
-    assert "" not in after, (
-        f"an iteration-boundary reset was emitted mid-answer: {after}"
-    )
+    assert "" not in after, f"an iteration-boundary reset was emitted mid-answer: {after}"
 
 
 def test_a_resumed_turn_that_calls_a_tool_stays_one_assistant_message(monkeypatch):
@@ -839,7 +837,14 @@ def test_a_resumed_turn_that_calls_a_tool_stays_one_assistant_message(monkeypatc
         monkeypatch,
         [
             [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
-            [_sse({"content": '<tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'}), _done()],
+            [
+                _sse(
+                    {
+                        "content": '<tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'
+                    }
+                ),
+                _done(),
+            ],
             [_sse({"content": "Done."}), _done()],
         ],
         payloads,
@@ -858,6 +863,6 @@ def test_a_resumed_turn_that_calls_a_tool_stays_one_assistant_message(monkeypatc
     messages = payloads[-1]["messages"]
     roles = [m.get("role") for m in messages]
     for first, second in zip(roles, roles[1:]):
-        assert not (first == "assistant" and second == "assistant"), (
-            f"two assistant turns in a row: {roles}"
-        )
+        assert not (
+            first == "assistant" and second == "assistant"
+        ), f"two assistant turns in a row: {roles}"
