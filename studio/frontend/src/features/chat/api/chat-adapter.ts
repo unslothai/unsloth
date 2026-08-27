@@ -105,7 +105,10 @@ import {
   type CodexReasoningLedger,
 } from "../codex-reasoning";
 
-import { toolCallReplayArguments } from "../tool-call-arguments";
+import {
+  splitTopLevelJsonObjects,
+  toolCallReplayArguments,
+} from "../tool-call-arguments";
 import {
   findStreamedToolCallPartIndex,
   resolveToolCallPartId,
@@ -5140,10 +5143,62 @@ export function createOpenAIStreamAdapter(
       };
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: PositionedToolCallPart[] = [];
-      // Completed tool-call parts from earlier indices, preserved when a new
-      // id-less call at the same index replaces a finished one (vLLM parallel
-      // tool-call streaming — see issue #9807).
-      const savedToolCalls: PositionedToolCallPart[] = [];
+      // An id for a call the stream never named one for: a slot that turned out
+      // to hold several parallel calls (issue #9807). Counted rather than
+      // random so a rerun of the same stream reads the same way in a log.
+      let splitToolCallSeq = 0;
+      const mintSplitToolCallId = (deltaIndex: number | undefined): string => {
+        let candidate = "";
+        do {
+          splitToolCallSeq += 1;
+          // No colon: a replayed id has to satisfy ^[a-zA-Z0-9_-]+$.
+          candidate = `tool_call_${deltaIndex ?? "x"}_${splitToolCallSeq}`;
+        } while (toolCallParts.some((p) => p.toolCallId === candidate));
+        return candidate;
+      };
+      /**
+       * Parts for the calls after the first, in a slot that turned out to hold
+       * several. Nothing that belongs to one call alone is copied across: no
+       * result, no provenance, and the thought signature this delta carries
+       * belongs to the call it closes, which is the last one.
+       */
+      const bornSplitToolCalls = (
+        extraSegments: string[],
+        toolName: string,
+        deltaIndex: number | undefined,
+        extraContent: unknown,
+        tailIsOpen: boolean,
+      ): PositionedToolCallPart[] =>
+        extraSegments.map((segment, n) => {
+          const isLast = n === extraSegments.length - 1;
+          let segmentArgs: ToolCallMessagePart["args"] = {};
+          try {
+            segmentArgs = JSON.parse(segment) as ToolCallMessagePart["args"];
+          } catch {
+            segmentArgs = { _raw: segment } as ToolCallMessagePart["args"];
+          }
+          const bornId = mintSplitToolCallId(deltaIndex);
+          if (!codexRoundToolCallIds.includes(bornId)) {
+            codexRoundToolCallIds.push(bornId);
+          }
+          return {
+            type: "tool-call" as const,
+            toolCallId: bornId,
+            toolName,
+            argsText: segment,
+            args: segmentArgs,
+            textCursor: cumulativeText.length,
+            ...(isLast && extraContent !== undefined
+              ? { extra_content: extraContent }
+              : {}),
+            // A finished object is spoken for. Without this an id stamped on a
+            // later fragment takes the newest unclaimed part in the slot, which
+            // would be a call that has already closed, and appends to it -- the
+            // same gluing, one step further along.
+            ...(isLast && tailIsOpen ? {} : { _has_stable_id: true }),
+            ...(deltaIndex !== undefined ? { _delta_index: deltaIndex } : {}),
+          };
+        });
       // Raw tool_args accumulator per card: the backend forwards arguments while
       // the model is still WRITING them, and the partial parse below feeds the
       // card's args so the code renders live.
@@ -6668,31 +6723,41 @@ export function createOpenAIStreamAdapter(
                   if (existing) {
                     const prevName = existing.toolName ?? "";
                     const nextName = call.function?.name ?? prevName;
-                    // When an id-less delta arrives at an occupied index with a
-                    // different function name, the stream is introducing a new
-                    // parallel tool call — not continuing the existing one.
-                    // Preserve the finished call and start a fresh slot.
-                    const isNewCallAtSameIndex =
-                      !stablePartId &&
-                      existing.toolName !== "" &&
-                      nextName !== existing.toolName;
-                    if (isNewCallAtSameIndex) {
-                      savedToolCalls.push(
-                        existing as PositionedToolCallPart,
-                      );
-                      toolCallParts.splice(existingIndex, 1);
-                    }
-                    const merged = (isNewCallAtSameIndex ? "" : (existing.argsText ?? "")) + argsFragment;
+                    const merged = (existing.argsText ?? "") + argsFragment;
+                    // One call's arguments are one JSON object, so a slot
+                    // holding two whole objects is holding two calls: the
+                    // stream reused this index rather than opening the next
+                    // one, which is how vLLM's id-less parallel deltas glue
+                    // `{"url":"a"}{"url":"b"}` into a single unparsable string
+                    // (issue #9807). Cut on the object boundary, not on a
+                    // change of function name: the same tool called twice is
+                    // the common case and has no name change to cut on.
+                    // Deltas carrying an id address their own call already.
+                    const split = stablePartId
+                      ? { complete: [], tail: "" }
+                      : splitTopLevelJsonObjects(merged);
+                    // The last segment is the object still being written, if
+                    // there is one. Whether it is finished decides who may go
+                    // on writing to it.
+                    const splitTailIsOpen = split.tail.length > 0;
+                    const segments = splitTailIsOpen
+                      ? [...split.complete, split.tail]
+                      : split.complete;
+                    const isSplit = segments.length > 1;
+                    // The slot keeps the object it opened with, under the name
+                    // and id it already had; the objects after it are calls
+                    // this delta introduced.
+                    const slotText = isSplit ? segments[0] : merged;
                     let parsedArgs: ToolCallMessagePart["args"] =
                       existing.args ?? {};
-                    if (merged) {
+                    if (slotText) {
                       try {
                         parsedArgs = JSON.parse(
-                          merged,
+                          slotText,
                         ) as ToolCallMessagePart["args"];
                       } catch {
                         parsedArgs = {
-                          _raw: merged,
+                          _raw: slotText,
                         } as ToolCallMessagePart["args"];
                       }
                     }
@@ -6714,10 +6779,10 @@ export function createOpenAIStreamAdapter(
                       ...(stablePartId
                         ? { toolCallId: stablePartId, _has_stable_id: true }
                         : {}),
-                      toolName: nextName,
-                      argsText: merged,
+                      toolName: isSplit ? prevName || nextName : nextName,
+                      argsText: slotText,
                       args: parsedArgs,
-                      ...(call.extra_content !== undefined
+                      ...(call.extra_content !== undefined && !isSplit
                         ? { extra_content: call.extra_content }
                         : prevExtra !== undefined
                           ? { extra_content: prevExtra }
@@ -6725,6 +6790,24 @@ export function createOpenAIStreamAdapter(
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
                     toolCallParts[existingIndex] = updated;
+                    if (isSplit) {
+                      // Appended, not inserted beside the slot: a call the
+                      // stream opened third reads third, whichever index it
+                      // reused. This is where the branch below puts a call
+                      // that arrives with its own slot, too.
+                      toolCallParts.push(
+                        ...bornSplitToolCalls(
+                          segments.slice(1),
+                          nextName,
+                          idx,
+                          call.extra_content,
+                          splitTailIsOpen,
+                        ),
+                      );
+                      // These are calls the thread did not have a moment ago,
+                      // so they are state and must not wait on the pacing gate.
+                      addedToolCall = true;
+                    }
                   } else {
                     const callId =
                       stablePartId || `tool_call_${idx ?? toolCallParts.length}`;
@@ -6732,7 +6815,22 @@ export function createOpenAIStreamAdapter(
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);
                     }
-                    const argsText = argsFragment;
+                    // A slot can arrive holding several calls already, in one
+                    // fragment: vLLM bundles parallel calls into a single delta
+                    // when the model writes them in one pass. Same boundary,
+                    // same treatment as a slot that fills up over time.
+                    const freshSplit = stablePartId
+                      ? { complete: [], tail: "" }
+                      : splitTopLevelJsonObjects(argsFragment);
+                    const freshTailIsOpen = freshSplit.tail.length > 0;
+                    const freshSegments = freshTailIsOpen
+                      ? [...freshSplit.complete, freshSplit.tail]
+                      : freshSplit.complete;
+                    const freshIsSplit = freshSegments.length > 1;
+                    const freshName = call.function?.name ?? "";
+                    const argsText = freshIsSplit
+                      ? freshSegments[0]
+                      : argsFragment;
                     let parsedArgs: ToolCallMessagePart["args"] = {};
                     if (argsText) {
                       try {
@@ -6748,29 +6846,30 @@ export function createOpenAIStreamAdapter(
                     const fresh: PositionedToolCallPart = {
                       type: "tool-call" as const,
                       toolCallId: callId,
-                      toolName: call.function?.name ?? "",
+                      toolName: freshName,
                       argsText,
                       args: parsedArgs,
                       textCursor: cumulativeText.length,
-                      ...(call.extra_content !== undefined
+                      ...(call.extra_content !== undefined && !freshIsSplit
                         ? { extra_content: call.extra_content }
                         : {}),
                       ...(stablePartId ? { _has_stable_id: true } : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
                     toolCallParts.push(fresh);
+                    if (freshIsSplit) {
+                      toolCallParts.push(
+                        ...bornSplitToolCalls(
+                          freshSegments.slice(1),
+                          freshName,
+                          idx,
+                          call.extra_content,
+                          freshTailIsOpen,
+                        ),
+                      );
+                    }
                     addedToolCall = true;
                   }
-                }
-                // Splice any saved (completed) tool calls back into the
-                // live parts array so later code can reference them.
-                if (savedToolCalls.length > 0) {
-                  toolCallParts.splice(
-                    0,
-                    0,
-                    ...savedToolCalls,
-                  );
-                  savedToolCalls.length = 0;
                 }
                 if (
                   addedToolCall ||

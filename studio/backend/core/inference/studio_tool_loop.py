@@ -351,6 +351,67 @@ class ToolLoopPolicy:
     nudge_tool_calls: bool | None = None
 
 
+def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
+    """The top-level JSON objects in ``text``, and any object still unfinished.
+
+    One tool call's ``function.arguments`` is one JSON object, so a second
+    top-level ``{`` can only mean one index slot took a second parallel call.
+    Text that is not a run of whole objects -- a top-level array or scalar,
+    trailing junk, an unbalanced brace -- comes back whole as the tail with no
+    complete objects, so a stream this was never meant for is left alone.
+
+    Mirrors ``splitTopLevelJsonObjects`` in
+    ``studio/frontend/src/features/chat/tool-call-arguments.ts``; the two see
+    the same provider deltas and have to agree on where a call ends.
+    """
+    unsplit: tuple[list[str], str] = ([], text)
+    complete: list[str] = []
+    depth = 0
+    start = -1
+    in_string = False
+    escaped = False
+
+    for i, ch in enumerate(text):
+        if in_string:
+            # A backslash escapes exactly the next character, so a run of them
+            # toggles rather than accumulates.
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if depth == 0:
+            # Between objects only whitespace, "\r\n" as readily as "\n".
+            if ch == "{":
+                depth = 1
+                start = i
+                continue
+            if ch in " \t\n\r":
+                continue
+            return unsplit
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                segment = text[start : i + 1]
+                try:
+                    json.loads(segment)
+                except (ValueError, TypeError):
+                    # Balanced but not valid JSON, so the brace count was a
+                    # coincidence and cutting here would invent a call.
+                    return unsplit
+                complete.append(segment)
+                start = -1
+
+    return complete, ("" if start == -1 else text[start:])
+
+
 @dataclass
 class _Turn:
     """Accumulated state for one provider turn."""
@@ -358,9 +419,11 @@ class _Turn:
     by_index: dict[Any, dict[str, Any]] = field(default_factory = dict)
     order: list[Any] = field(default_factory = list)
     # call key each delta index maps to: the index itself until a second call
-    # forks off it, then (index, call_id).
+    # forks off it, then (index, call_id), or (index, "_split", n) for a call
+    # that had no id to fork on and was found on a JSON object boundary.
     open_key_by_index: dict[int, Any] = field(default_factory = dict)
     last_index: int | None = None
+    split_seq: int = 0
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
     text: list[str] = field(default_factory = list)
@@ -520,14 +583,67 @@ class _Turn:
                 # starts with what we have is the whole name resent; anything
                 # else continues it.
                 fragment = function.get("name")
+                name_before = current["function"]["name"]
                 if isinstance(fragment, str) and fragment:
-                    accumulated = current["function"]["name"]
-                    if fragment.startswith(accumulated):
+                    if fragment.startswith(name_before):
                         current["function"]["name"] = fragment
                     else:
-                        current["function"]["name"] = accumulated + fragment
+                        current["function"]["name"] = name_before + fragment
                 if isinstance(function.get("arguments"), str):
                     current["function"]["arguments"] += function["arguments"]
+                    if not (isinstance(call_id, str) and call_id):
+                        # The id fork above cannot see this one: an id-less
+                        # stream has no ids to differ. Appending glued the two
+                        # calls' JSON into one unparseable blob, which then
+                        # rides into the next request verbatim (issue #9807).
+                        self._fork_glued_arguments(
+                            index,
+                            key,
+                            current,
+                            name_before,
+                            fragment if isinstance(fragment, str) else "",
+                        )
+
+    def _fork_glued_arguments(
+        self,
+        index: int,
+        key: Any,
+        current: dict[str, Any],
+        name_before: str,
+        incoming_name: str,
+    ) -> None:
+        """Give every call after the first in one slot a call of its own."""
+        complete, tail = _split_top_level_json_objects(
+            current["function"]["arguments"]
+        )
+        segments = complete + ([tail] if tail else [])
+        if len(segments) < 2:
+            return
+        # The slot keeps the object it opened with, under the name and id it
+        # already had. Nothing per-call rides along: extra_content carries this
+        # call's thoughtSignature, and two calls claiming it is a rejected turn.
+        current["function"]["arguments"] = segments[0]
+        # A name arriving with this delta names the calls this delta opened, so
+        # the slot goes back to the one it had. Without this the two dialects
+        # above merge the second call's name into the first: "alpha" and
+        # "gamma" at one index become "alphagamma", which matches no enabled
+        # tool and silently never runs.
+        born_name = incoming_name or name_before
+        current["function"]["name"] = name_before or born_name
+        open_key: Any = key
+        for segment in segments[1:]:
+            self.split_seq += 1
+            born_key = (index, "_split", self.split_seq)
+            self.by_index[born_key] = {
+                "id": "",
+                "type": "function",
+                "function": {"name": born_name, "arguments": segment},
+            }
+            self.order.append(born_key)
+            open_key = born_key
+        # Later id-less fragments continue the call still being written, which
+        # is the last one, finished or not.
+        self.open_key_by_index[index] = open_key
 
     def calls(self, taken: set[str] | None = None) -> list[dict[str, Any]]:
         """Every call this turn produced, with ids unique across the whole run.
