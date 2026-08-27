@@ -1008,9 +1008,7 @@ class TestExpectedTorchFlavorResolution:
         mock_pip.assert_not_called()
 
     def test_a_cpu_pin_beats_the_live_probe(self):
-        ok, mock_pip = _run_flavor_invariant(
-            expected_env = None, recorded = None, index_family = "cpu"
-        )
+        ok, mock_pip = _run_flavor_invariant(expected_env = None, recorded = None, index_family = "cpu")
         assert ok is True
         mock_pip.assert_not_called()
 

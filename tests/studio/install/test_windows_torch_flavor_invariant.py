@@ -66,9 +66,9 @@ class TestSetupPs1NoWipeEscape:
         )
 
     def test_the_escape_cancels_the_rebuild(self):
-        body = _SETUP_SRC[
-            _SETUP_SRC.index("nvidia-smi did not answer, but this venv holds a") :
-        ][:1200]
+        body = _SETUP_SRC[_SETUP_SRC.index("nvidia-smi did not answer, but this venv holds a") :][
+            :1200
+        ]
         assert "$shouldRebuild = $false" in body
         # Keeping the wheel is only half the job: the index selection re-runs the same
         # rescan and would route the pass to the CPU index without this.
@@ -79,11 +79,11 @@ class TestSetupPs1NoWipeEscape:
         start = _SETUP_SRC.index("if ($shouldRebuild -and -not $InstallerManagedSetup -and\n")
         condition = _SETUP_SRC[start : _SETUP_SRC.index("{", start)]
         for clause in (
-            "-not $InstallerManagedSetup",   # install.ps1 repairs in place instead
-            "-not $_pinnedIdx",              # a cpu index PIN is deliberate and still rebuilds
+            "-not $InstallerManagedSetup",  # install.ps1 repairs in place instead
+            "-not $_pinnedIdx",  # a cpu index PIN is deliberate and still rebuilds
             "Test-CudaFamilyLeaf $installedTorchTag",  # only a cu* wheel is preserved
-            "-not $HasNvidiaSmi",            # only when the NVIDIA probe gave no answer
-            '$expectedTorchTag -eq "cpu"',   # ... and that is why the expectation collapsed
+            "-not $HasNvidiaSmi",  # only when the NVIDIA probe gave no answer
+            '$expectedTorchTag -eq "cpu"',  # ... and that is why the expectation collapsed
         ):
             assert clause in condition, f"the escape must be gated on {clause!r}"
 
@@ -138,9 +138,7 @@ class TestInstallPs1Parity:
 
     def test_the_repair_trio_matches_install_ps1(self):
         # install.ps1's $_fixSpecs, the non-XPU arm of its flavor repair.
-        match = re.search(
-            r'else\s*\{\s*@\((\s*"torch[^)]*?)\)\s*\}', _INSTALL_SRC, re.S
-        )
+        match = re.search(r'else\s*\{\s*@\((\s*"torch[^)]*?)\)\s*\}', _INSTALL_SRC, re.S)
         assert match is not None, "install.ps1's flavor-repair spec array moved"
         ps_specs = tuple(re.findall(r'"([^"]+)"', match.group(1)))
         py_specs = tuple(
@@ -281,9 +279,7 @@ def _base_total(**flags) -> int:
     """
     lines = _STACK_SRC.splitlines()
     start = next(i for i, line in enumerate(lines) if line.strip().startswith("base_total = 12"))
-    end = next(
-        i for i, line in enumerate(lines) if line.strip().startswith("base_requirements =")
-    )
+    end = next(i for i, line in enumerate(lines) if line.strip().startswith("base_requirements ="))
     block = textwrap.dedent("\n".join(lines[start:end]))
     namespace = {
         "IS_WINDOWS": False,
@@ -305,10 +301,10 @@ class TestStepTotals:
     @pytest.mark.parametrize(
         "flags,total",
         [
-            ({}, 16),                                     # Linux, torch
-            ({"NO_TORCH": True}, 13),                     # Linux, GGUF-only
+            ({}, 16),  # Linux, torch
+            ({"NO_TORCH": True}, 13),  # Linux, GGUF-only
             ({"IS_MACOS": True, "IS_MAC_ARM": True}, 13),  # Apple Silicon
-            ({"IS_MACOS": True}, 12),                     # Intel Mac
+            ({"IS_MACOS": True}, 12),  # Intel Mac
         ],
     )
     def test_the_other_platforms_are_unchanged(self, flags, total):
@@ -320,9 +316,12 @@ class TestStepTotals:
 
 class TestManifestRecordsTheFlavor:
     def test_round_trip(self, tmp_path):
-        assert install_manifest.write_manifest(
-            root = tmp_path, req_root = tmp_path, expected_torch_tag = "cu124"
-        ) is not None
+        assert (
+            install_manifest.write_manifest(
+                root = tmp_path, req_root = tmp_path, expected_torch_tag = "cu124"
+            )
+            is not None
+        )
         assert install_manifest.recorded_torch_flavor(tmp_path) == "cu124"
 
     def test_the_tag_is_normalised(self, tmp_path):
@@ -373,10 +372,15 @@ class TestManifestRecordsTheFlavor:
     def test_the_record_is_read_before_the_manifest_is_dropped(self):
         # install_python_stack() removes the manifest before its dependency pass, so a
         # read deferred into main() always answers None.
-        read = _line_of(_STACK_SRC, "_RECORDED_TORCH_TAG = install_manifest.recorded_torch_flavor()")
+        read = _line_of(
+            _STACK_SRC, "_RECORDED_TORCH_TAG = install_manifest.recorded_torch_flavor()"
+        )
         drop = _line_of(_STACK_SRC, "if not install_manifest.remove_manifest():")
         assert read < drop
-        assert "def install_python_stack" not in _STACK_SRC[: _STACK_SRC.index("_RECORDED_TORCH_TAG =")]
+        assert (
+            "def install_python_stack"
+            not in _STACK_SRC[: _STACK_SRC.index("_RECORDED_TORCH_TAG =")]
+        )
 
 
 if __name__ == "__main__":

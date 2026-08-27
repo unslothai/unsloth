@@ -3065,7 +3065,9 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
         f"   [WARN] PyTorch is CPU-only but a {expected} GPU build was expected for this machine."
     )
     _safe_print("   [WARN] Training and GPU inference will run on CPU until this is fixed.")
-    _safe_print("   [WARN] Re-run this installer, or reinstall the GPU build manually for your GPU.")
+    _safe_print(
+        "   [WARN] Re-run this installer, or reinstall the GPU build manually for your GPU."
+    )
     _safe_print("   [WARN]     irm https://unsloth.ai/install.ps1 | iex")
     return False
 
