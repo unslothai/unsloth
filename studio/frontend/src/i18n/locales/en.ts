@@ -1335,8 +1335,10 @@ export const en = {
         collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:
           "Keep reasoning collapsed while the model thinks instead of streaming it open. Expand any block to read it.",
-        collapseToolActivityByDefault: "Collapse tool activity by default",
-        collapseToolActivityByDefaultDescription:
+      },
+      tools: {
+        collapseByDefault: "Collapse tool activity by default",
+        collapseByDefaultDescription:
           "Keep tool inputs and outputs collapsed while tools run. Expand any tool row to inspect it.",
       },
       webSearch: {

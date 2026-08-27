@@ -1322,8 +1322,10 @@ export const ja = {
         collapseByDefault: "思考をデフォルトで折りたたむ",
         collapseByDefaultDescription:
           "モデルの思考中も自動で展開せず、折りたたんだままにします。読みたいときはブロックを展開してください。",
-        collapseToolActivityByDefault: "ツールの動作をデフォルトで折りたたむ",
-        collapseToolActivityByDefaultDescription:
+      },
+      tools: {
+        collapseByDefault: "ツールの動作をデフォルトで折りたたむ",
+        collapseByDefaultDescription:
           "ツールの実行中は入力と出力を折りたたんだままにします。確認するにはツール行を展開してください。",
       },
       webSearch: {

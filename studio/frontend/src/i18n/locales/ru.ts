@@ -1346,8 +1346,10 @@ export const ru = {
         collapseByDefault: "Сворачивать размышления по умолчанию",
         collapseByDefaultDescription:
           "Размышления остаются свёрнутыми, пока модель думает, вместо автоматического раскрытия. Разверните блок, чтобы прочитать его.",
-        collapseToolActivityByDefault: "Сворачивать действия инструментов по умолчанию",
-        collapseToolActivityByDefaultDescription:
+      },
+      tools: {
+        collapseByDefault: "Сворачивать действия инструментов по умолчанию",
+        collapseByDefaultDescription:
           "Входные и выходные данные инструментов остаются свёрнутыми во время работы. Разверните строку инструмента для просмотра.",
       },
       webSearch: {

@@ -1335,8 +1335,10 @@ export const it = {
         collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
         collapseByDefaultDescription:
           "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
-        collapseToolActivityByDefault: "Comprimi l’attività degli strumenti per impostazione predefinita",
-        collapseToolActivityByDefaultDescription:
+      },
+      tools: {
+        collapseByDefault: "Comprimi l’attività degli strumenti per impostazione predefinita",
+        collapseByDefaultDescription:
           "Mantieni compressi input e output degli strumenti durante l’esecuzione. Espandi una riga per esaminarla.",
       },
       webSearch: {

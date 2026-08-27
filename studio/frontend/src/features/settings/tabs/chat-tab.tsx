@@ -311,9 +311,9 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label={t("settings.chat.thinking.collapseToolActivityByDefault")}
+          label={t("settings.chat.tools.collapseByDefault")}
           description={t(
-            "settings.chat.thinking.collapseToolActivityByDefaultDescription",
+            "settings.chat.tools.collapseByDefaultDescription",
           )}
         >
           <Switch

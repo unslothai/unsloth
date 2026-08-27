@@ -1361,8 +1361,10 @@ export const es = {
         collapseByDefault: "Contraer el razonamiento de forma predeterminada",
         collapseByDefaultDescription:
           "Mantén el razonamiento contraído mientras el modelo piensa, en lugar de abrirlo automáticamente. Expande cualquier bloque para leerlo.",
-        collapseToolActivityByDefault: "Contraer la actividad de herramientas por defecto",
-        collapseToolActivityByDefaultDescription:
+      },
+      tools: {
+        collapseByDefault: "Contraer la actividad de herramientas por defecto",
+        collapseByDefaultDescription:
           "Mantén contraídas las entradas y salidas de las herramientas mientras se ejecutan. Expande cualquier fila para inspeccionarla.",
       },
       webSearch: {

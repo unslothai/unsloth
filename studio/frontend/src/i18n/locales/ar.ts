@@ -1334,8 +1334,10 @@ export const ar = {
         collapseByDefault: "طيّ التفكير افتراضيًا",
         collapseByDefaultDescription:
           "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
-        collapseToolActivityByDefault: "طيّ نشاط الأدوات افتراضيًا",
-        collapseToolActivityByDefaultDescription:
+      },
+      tools: {
+        collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
+        collapseByDefaultDescription:
           "إبقاء مدخلات الأدوات ومخرجاتها مطوية أثناء التشغيل. وسّع أي صف أداة لفحصه.",
       },
       webSearch: {

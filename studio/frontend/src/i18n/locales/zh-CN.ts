@@ -1306,8 +1306,10 @@ export const zhCN = {
         collapseByDefault: "默认折叠思考过程",
         collapseByDefaultDescription:
           "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
-        collapseToolActivityByDefault: "默认折叠工具活动",
-        collapseToolActivityByDefaultDescription:
+      },
+      tools: {
+        collapseByDefault: "默认折叠工具活动",
+        collapseByDefaultDescription:
           "工具运行时保持输入和输出折叠。需要检查时展开对应工具行。",
       },
       webSearch: {

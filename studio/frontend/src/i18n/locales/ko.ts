@@ -1332,8 +1332,10 @@ export const ko = {
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:
           "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
-        collapseToolActivityByDefault: "기본적으로 도구 활동 접기",
-        collapseToolActivityByDefaultDescription:
+      },
+      tools: {
+        collapseByDefault: "기본적으로 도구 활동 접기",
+        collapseByDefaultDescription:
           "도구가 실행되는 동안 입력과 출력을 접어 둡니다. 확인하려면 도구 행을 펼치세요.",
       },
       webSearch: {
