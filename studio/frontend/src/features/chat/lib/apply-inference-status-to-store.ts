@@ -722,8 +722,7 @@ export async function tryAdoptServerActiveModel(options?: {
     return false;
   }
 
-  // Preserve a concurrent UI selection or load; the queued send path owns the
-  // lease and opts out.
+  // Preserve concurrent changes unless this caller owns the load lease.
   const latest = useChatRuntimeStore.getState();
   const previousCheckpoint = latest.params.checkpoint;
   if (

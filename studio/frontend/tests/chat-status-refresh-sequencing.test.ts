@@ -95,12 +95,7 @@ test("the mount poll waits for a replacement beside a resident model", () => {
   );
 });
 
-// No executable harness slices syncInferenceStatusToStore the way
-// test_chat_autoload_failure_gate.py slices autoLoadSmallestModel, so this pins the
-// wiring structurally: gaveUpMidLoad has to come from the loading evidence, and the
-// branch that adopts an active model has to consult it. Only that branch needs it --
-// the eviction branch's clear is already gated on a checkpoint the poll path cannot
-// have, since one selected mid-poll sets userSelectedDuringPoll and skips both.
+// Mount polling has no executable harness, so pin its cap-expiry guard.
 test("a mount poll that hits its cap mid-load does not pin the outgoing model", () => {
   assert.match(
     SYNC,

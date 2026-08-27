@@ -3517,13 +3517,11 @@ export function ChatPage({
     if (getTrainingCompareHandoff()) return;
     // Adopt a CLI-loaded model on fresh mounts before auto-loading another.
     const pollUntilActiveModel = !useChatRuntimeStore.getState().params.checkpoint;
-    // Stop the bounded mount poll on unmount.
     const controller = new AbortController();
     if (pollUntilActiveModel) {
       cliLoadPollControllerRef.current = controller;
     }
     void refresh({
-      // Populate both catalogs before polling.
       includeLoras: true,
       signal: controller.signal,
       ...(pollUntilActiveModel ? { pollUntilActiveModel: true } : {}),

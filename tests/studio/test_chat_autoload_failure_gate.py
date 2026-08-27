@@ -164,8 +164,7 @@ const GPU_LAYERS_AUTO = -1;
 // though these scenarios call autoLoadSmallestModel directly.
 let STATUS_CALLS = 0;
 async function getInferenceStatus() {
-  // Fail the first N reads like a transient 5xx, and let a CLI load finish during
-  // the wait when the scenario asks for it.
+  // Fail initial reads or settle the simulated CLI load when requested.
   const call = STATUS_CALLS++;
   if (call < (SCENARIO.statusFailures ?? 0)) {
     throw new Error("status unavailable");
@@ -349,8 +348,7 @@ function mmprojFallbackMessage(reason: string) {
 }
 
 async function tryAdoptServerActiveModel(options: any) {
-  // The real one hydrates the store from this status; here the event is the proof
-  // that Send adopted the CLI's model instead of loading one of its own.
+  // Record adoption without reproducing store hydration.
   const id = options?.status?.active_model;
   if (!id) return false;
   EVENTS.push({ kind: "adoptServerModel", id });
@@ -602,9 +600,7 @@ SCENARIO_HELPERS = """
       platformFetched: true,
       variants: {},
       lastLoaded: null,
-      // /status loading[], the backend's account of what it is loading; how many
-      // leading reads fail; and after how many reads the load settles and its
-      // model goes active. All idle unless a scenario says otherwise.
+      // Simulated /status load state and failures.
       serverLoading: [],
       statusFailures: 0,
       serverLoadingClearsAfter: null,
@@ -1586,8 +1582,7 @@ def test_an_unclassified_local_row_is_never_auto_loaded(fmt):
     assert _loaded_paths(out) == [DEFAULT_MODEL]
 
 
-# adoptInFlightServerLoad is the only clock reader in the sliced region, so moving
-# time past the cap once lands on the timed-out exit and nothing else.
+# Advance the helper's clock directly to its timeout.
 _EXPIRE_CLI_LOAD_WAIT = """
 const realNow = Date.now.bind(Date);
 let nowCalls = 0;
@@ -1596,8 +1591,7 @@ Date.now = () => realNow() + (nowCalls++ === 0 ? 0 : 600_001);
 
 
 def test_send_retries_status_then_waits_for_and_adopts_the_cli_model():
-    """A message sent during `studio run -m` survives one dropped status read,
-    waits for that load, and adopts it instead of auto-loading another model."""
+    """Send retries status, waits for the CLI load, and adopts its model."""
     out = _run(
         "scenario({ statusFailures: 1, serverLoading: ['org/slow-model-GGUF'],"
         " serverLoadingClearsAfter: 2,"
@@ -1616,8 +1610,7 @@ def test_send_retries_status_then_waits_for_and_adopts_the_cli_model():
 
 
 def test_a_load_still_in_flight_at_the_cap_refuses_instead_of_auto_loading():
-    """The cap bounds the wait; it is not evidence the load finished. Auto-loading here
-    queues behind the running load and replaces the model the CLI was asked for."""
+    """The wait cap must not release auto-load over a running CLI load."""
     out = _run(
         "scenario({ serverLoading: ['org/slow-model-GGUF'],"
         " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
@@ -1632,7 +1625,7 @@ def test_a_load_still_in_flight_at_the_cap_refuses_instead_of_auto_loading():
 
 
 def test_an_idle_server_still_auto_loads():
-    """Nothing loading means the cascade must run, or Send is left with no model."""
+    """An idle server still reaches automatic loading."""
     out = _run("scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })")
 
     assert _loaded_paths(out) == [GEMMA_REPO]
@@ -1641,8 +1634,7 @@ def test_an_idle_server_still_auto_loads():
 
 
 def test_a_status_endpoint_that_never_answers_refuses_rather_than_guessing():
-    """No read ever succeeded, so there is no load to wait for and no evidence the
-    server is idle. Auto-loading would POST to the server that just refused to answer."""
+    """An unavailable status endpoint must not be treated as idle."""
     out = _run(
         "scenario({ statusFailures: 99, ggufRepos: [GEMMA],"
         " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"

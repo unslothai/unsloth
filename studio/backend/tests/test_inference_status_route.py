@@ -273,11 +273,7 @@ def _load_request(model_path: str):
 
 
 def test_status_sees_a_load_still_queued_on_the_lifecycle_gate(monkeypatch):
-    """/load builds its attempt before queueing on inference_lifecycle_gate, which an
-    unload, a media auto-switch or a transformers install can hold for minutes.
-    _running_load_attempt is assigned only inside that gate, so reading it alone
-    reported the wait as idle and the chat UI auto-loaded a default over the queued
-    request or adopted the model that was on its way out."""
+    """Status includes loads waiting on inference_lifecycle_gate."""
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
     _patch_status_dependencies(monkeypatch)
@@ -290,9 +286,7 @@ def test_status_sees_a_load_still_queued_on_the_lifecycle_gate(monkeypatch):
 
     monkeypatch.setattr(inference_route, "_run_tracked_load_model_impl", _never_runs)
 
-    # Track progress through the real _begin_load_attempt, not through the registry
-    # this fix adds, so the test fails on the old code as a wrong status rather than
-    # as a missing attribute.
+    # Use the real registry so old code fails on status, not test setup.
     _real_begin = inference_route._begin_load_attempt
     begun: list = []
 
@@ -310,8 +304,7 @@ def test_status_sees_a_load_still_queued_on_the_lifecycle_gate(monkeypatch):
                     _load_request("org/queued-model-GGUF"), object(), "test"
                 )
             )
-            # Everything before the gate is synchronous, so once the attempt exists the
-            # next turn parks the task on the gate. Yield rather than guess a sleep.
+            # Registration is synchronous before the task waits on the gate.
             for _ in range(_CONTROL_TURNS):
                 await asyncio.sleep(0)
                 if begun:
@@ -334,8 +327,7 @@ def test_status_sees_a_load_still_queued_on_the_lifecycle_gate(monkeypatch):
 
 
 def test_status_prefers_the_running_load_over_one_still_queued(monkeypatch):
-    """The attempt holding the gate is the one actually loading; a queued sibling must
-    not relabel it, or the UI hydrates capabilities for the wrong model."""
+    """A queued sibling must not relabel the running load."""
     _patch_status_dependencies(monkeypatch)
     monkeypatch.setattr(inference_route, "_probe_llama_cpp_status", lambda _backend: (False, {}))
     monkeypatch.setattr(
@@ -353,8 +345,7 @@ def test_status_prefers_the_running_load_over_one_still_queued(monkeypatch):
 
 
 def test_a_failed_load_clears_its_pending_attempt(monkeypatch):
-    """A leak here pins a phantom loading row for the life of the process, which the
-    frontend reads as a load that never finishes."""
+    """Failed loads must not leave a phantom loading row."""
     monkeypatch.setattr(inference_route, "_raise_if_sidecar_swap_in_progress", lambda: None)
     seen: list[list[str]] = []
 

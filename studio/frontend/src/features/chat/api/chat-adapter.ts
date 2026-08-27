@@ -2785,8 +2785,7 @@ async function ensureDefaultModelDownloaded(
   });
 }
 
-// Kept below MAX_AUTO_LOAD_ATTEMPTS: tests/studio/test_chat_autoload_failure_gate.py
-// slices the harness from there, so a helper above it is a ReferenceError under test.
+// The test harness slices helpers from here; keep them below MAX_AUTO_LOAD_ATTEMPTS.
 // Slow downloads and llama-server warm-up need a long cap.
 const CLI_LOAD_ADOPT_MAX_MS = 600_000;
 
@@ -2848,8 +2847,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       return { loaded: true, blockedByTrustRemoteCode: false };
     }
     if (adoption !== "server-idle") {
-      // Neither adopted nor confirmed idle. Loading anything now would queue
-      // behind the backend's own load and replace it, so say so instead.
+      // Never auto-load unless status confirmed the server is idle.
       toast.error(
         adoption === "still-loading"
           ? "A model is still loading"

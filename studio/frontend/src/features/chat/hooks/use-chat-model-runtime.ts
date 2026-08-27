@@ -495,11 +495,7 @@ async function syncInferenceStatusToStore(options?: {
         useChatRuntimeStore.getState().modelLoading ||
           (selectedCheckpoint && selectedCheckpoint !== statusCheckpoint),
       );
-    // The poll only ends with a load still reported when CLI_LOAD_POLL_MAX_MS ran
-    // out, since a server that went idle leaves loading empty. That is the wait
-    // giving up, not the load finishing: pinning the outgoing model here would
-    // hold its identity and capabilities while the backend goes on to serve the
-    // one it is still loading, and the poll has already stopped.
+    // Reaching the poll cap does not make the outgoing model adoptable.
     const gaveUpMidLoad =
       shouldPollForCliLoad && inferenceStatusShowsLoadInFlight(statusRes);
     if (
