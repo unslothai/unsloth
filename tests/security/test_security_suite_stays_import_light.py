@@ -155,12 +155,15 @@ def _loader_aliases(tree):
     recorded here, or the helper under its own name). Nothing is guessed at: a name
     assigned from anything else is not recorded.
     """
-    aliases = set()
+    # alias -> the helper it names, so a renamed `import_module` is not mistaken for
+    # a renamed `importorskip`. A bare set lost that and `_guarded_roots` then read an
+    # importlib call as a pytest skip guard.
+    aliases = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.level == 0:
             for alias in node.names:
                 if _LOADER_ORIGINS.get(alias.name) == node.module:
-                    aliases.add(alias.asname or alias.name)
+                    aliases[alias.asname or alias.name] = alias.name
     # A second pass, because `load = importlib.import_module` may sit above the
     # `from ... import ... as ...` that named another helper, and one pass in source
     # order would then miss a chain. Repeated until nothing new is bound.
@@ -178,11 +181,15 @@ def _loader_aliases(tree):
                 if _LOADER_ORIGINS.get(held) != owner:
                     continue
             elif isinstance(value, ast.Name):
-                if value.id not in _LOADER_ORIGINS and value.id not in aliases:
+                if value.id in _LOADER_ORIGINS:
+                    held = value.id
+                elif value.id in aliases:
+                    held = aliases[value.id]
+                else:
                     continue
             else:
                 continue
-            aliases.add(target.id)
+            aliases[target.id] = held
             added = True
         if not added:
             return aliases
@@ -226,9 +233,14 @@ def _is_importorskip(call, loaders):
         if isinstance(function, ast.Attribute)
         else (function.id if isinstance(function, ast.Name) else "")
     )
+    return _is_pytest_skip(attribute, loaders)
+
+
+def _is_pytest_skip(attribute, loaders) -> bool:
+    """Whether this callee is `pytest.importorskip`, under any recorded spelling."""
     if attribute == "importorskip":
         return True
-    return attribute in loaders and _LOADER_ORIGINS.get(attribute) == "pytest"
+    return loaders.get(attribute) == "importorskip"
 
 
 def _module_level_heavy_imports(path):
@@ -343,9 +355,12 @@ def _guarded_roots(node, loaders):
             if isinstance(function, ast.Attribute)
             else (function.id if isinstance(function, ast.Name) else "")
         )
-        if attribute != "importorskip" and attribute not in loaders:
-            continue
-        if attribute in loaders and _LOADER_ORIGINS.get(attribute) not in (None, "pytest"):
+        # `from importlib import import_module as load` puts `load` in `loaders` too,
+        # and `_LOADER_ORIGINS.get("load")` is None, so an importlib call was being
+        # read as a pytest skip guard - which then subtracted the dependency and left
+        # the file on the runner where that call fails. The alias's ORIGIN decides,
+        # not its presence in the table.
+        if not _is_pytest_skip(attribute, loaders):
             continue
         candidates = list(call.args[:1])
         for keyword in call.keywords:
@@ -517,6 +532,23 @@ def test_a_dynamic_import_inside_a_body_also_needs_the_redirect(tmp_path):
         'import importlib\n\n\ndef t():\n    importlib.import_module(name = "torch")\n': {"torch"},
         'import pytest\n\n\ndef t():\n    pytest.importorskip("torch")\n': set(),
         "import importlib\n\n\ndef t():\n    importlib.import_module(picked)\n": set(),
+    }
+    for source, expected in cases.items():
+        sample = tmp_path / "sample.py"
+        sample.write_text(source)
+        assert _body_level_heavy_imports(sample) == expected, source
+
+
+def test_a_renamed_importlib_alias_is_not_a_skip_guard(tmp_path):
+    """`load("torch")` is an import, not a skip, however `load` was named.
+
+    Both helpers can be renamed, and only the pytest one suppresses the dependency:
+    the light runner runs an `import_module` call and fails.
+    """
+    cases = {
+        'from importlib import import_module as load\n\n\ndef t():\n    load("torch")\n': {"torch"},
+        'from pytest import importorskip as load\n\n\ndef t():\n    load("torch")\n': set(),
+        'from importlib import import_module as load\n\n\ndef t():\n    load("torch")\n    import torch\n': {"torch"},
     }
     for source, expected in cases.items():
         sample = tmp_path / "sample.py"

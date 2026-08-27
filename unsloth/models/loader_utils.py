@@ -820,6 +820,17 @@ def _get_new_mapper():
         # missing exactly the models main had just added. Read as data, on the same
         # terms as everything else here, and only when the fetched module really does
         # call it: a `def` that is never called still runs nothing.
+        def _calls_the_builder(node):
+            """Whether this executed node is the `build_mappers(...)` call itself."""
+            for child in ast.walk(node) if isinstance(node, ast.AST) else ():
+                if (
+                    isinstance(child, ast.Call)
+                    and isinstance(child.func, ast.Name)
+                    and child.func.id == "build_mappers"
+                ):
+                    return True
+            return False
+
         builder_body = []
         builder_called = any(
             isinstance(child, ast.Call)
@@ -848,9 +859,24 @@ def _get_new_mapper():
             and isinstance(node.func, ast.Name)
             and node.func.id in _MAPPER_HELPERS
         ]
+        # In EXECUTION order: the builder's aliases are installed where the call to it
+        # runs, not after every other module statement. A fetched mapper that calls
+        # `build_mappers(...)` and then rebinds a table leaves that table empty, and
+        # appending the builder's additions at the end reapplied them afterwards and
+        # reported support the newer file does not have.
+        #
         # Materialised rather than chained: this whole body is lifted out and run in
         # an isolated namespace by its own tests, so it cannot reach for `itertools`.
-        for node, shadowed in [*_executed_nodes(tree.body), *builder_additions]:
+        ordered = []
+        for node, shadowed in _executed_nodes(tree.body):
+            ordered.append((node, shadowed))
+            if builder_additions and _calls_the_builder(node):
+                ordered.extend(builder_additions)
+                builder_additions = []
+        # A call this could not locate - the builder ran somewhere unreadable - still
+        # ran, so its additions are applied at the end rather than dropped.
+        ordered.extend(builder_additions)
+        for node, shadowed in ordered:
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
                 # `FLOAT_TO_FP8_ROW_MAPPER["org/x"]: str = "unsloth/x-row"` runs the
                 # assignment exactly as the unannotated form does - the annotation on a

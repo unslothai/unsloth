@@ -368,6 +368,26 @@ def test_an_alias_added_inside_the_builder_is_read(monkeypatch):
     ), "an alias added inside the builder was dropped"
 
 
+def test_a_table_cleared_after_the_builder_stays_cleared(monkeypatch):
+    """The builder's aliases are installed where the call runs, not afterwards.
+
+    A fetched mapper that calls `build_mappers(...)` and then rebinds a table leaves
+    that table empty; reapplying the builder's aliases at the end reported support the
+    newer file does not have.
+    """
+    lines = REAL_MAPPER.splitlines(True)
+    insert = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers(")) + 1
+    added = "".join(
+        lines[:insert]
+        + ['    _add_with_lower(MAP_TO_UNSLOTH_16bit, "vendor/late", "unsloth/late")\n']
+        + lines[insert:]
+    ) + "\nMAP_TO_UNSLOTH_16bit = {}\n"
+    with _serving(added, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    for table in tables:
+        assert not any("vendor/late" in str(key) for key in table)
+
+
 def test_a_builder_that_is_never_called_is_not_read(monkeypatch):
     """A `def` that nothing calls runs nothing, which is the rule everywhere here."""
     uncalled = REAL_MAPPER.replace(
