@@ -117,7 +117,7 @@ The Unsloth monorepo contains three license/role zones. Unforgettable is the Apa
 |------|------|---------|------------------------|
 | **This package** | `unforgettable/` | Apache 2.0 | Brains: store, policy, episode, tools, sidecar |
 | **Studio face** | `studio/backend/core/unforgettable_host.py`, plus tiny hooks | AGPL | Host implementation, virtual-model route, tool dispatch, stream rewrite |
-| **Unsloth core** | `unsloth/` | Apache 2.0 | Engine room for **C only**: `FastLanguageModel.from_pretrained` + `get_peft_model` + TRL `SFTTrainer`, lazy-imported inside `sidecar/train.py` |
+| **Unsloth core** | `unsloth/` | Apache 2.0 | Engine room for **C only**: `FastModel` (falls back to `FastLanguageModel`) `from_pretrained` + `get_peft_model` + TRL `SFTTrainer` / `DPOTrainer`, lazy-imported inside `sidecar/train.py` |
 | **Studio trainer** | `studio/backend/core/training/` | AGPL | **Do not import.** Sidecar has its own recipe |
 | **unsloth_cli** | `unsloth_cli/` | Apache | **Do not import.** |
 | **Studio RAG** | `studio/backend` `rag.db` | AGPL | Unrelated. B is `memory/memory.db` |
@@ -424,7 +424,7 @@ Not the MemoryWheels outer wheel. Two optional jobs, separately configured, defa
 
 ## 5. Automated tests
 
-Apache suite: **275** CPU tests under `unforgettable/tests/` (ignore `test_sidecar_gpu.py`), no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`. `test_sidecar_gpu.py` is extra and skips unless CUDA torch and cached `--base` weights are present.
+Apache suite: **285** CPU tests under `unforgettable/tests/` (ignore `test_sidecar_gpu.py`), no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`. `test_sidecar_gpu.py` is marked `gpu` and skips unless CUDA torch and cached `--base` weights are present.
 
 | File | What it locks |
 |------|----------------|
@@ -451,7 +451,7 @@ Apache suite: **275** CPU tests under `unforgettable/tests/` (ignore `test_sidec
 | `test_sidecar_pack.py` | Drop reasons, no episode gold, sim vote matrix, rejected twin_note is not a veto, holdout-by-episode, preference pairs |
 | `test_remember_path.py` | Unbound dispatch, no human/episode from tools, sim cannot mint world, supersede does not promote, generate-text clip |
 | `test_sidecar_train.py` | Min size, fake shadow dir, full-FT refuse, preference pairs.jsonl, unpacked episode is not preference gold, missing-TRL DPO refuse, flattened DPO rows, stubbed Unsloth DPO |
-| `test_sidecar_gpu.py` | CUDA + cached `--base` only: `UnslothTrainBackend.train` writes a real PEFT dir for SFT and `--recipe preference`. Skips without GPU or weights |
+| `test_sidecar_gpu.py` | Marked `gpu`. CUDA + cached `--base` only: SFT writes a real PEFT dir and `complete()` returns a string (adapter and base); preference writes PEFT + `pairs.jsonl`. Skips without GPU or weights |
 | `test_sidecar_eval.py` | Seeded holdout 1.0 vs 0.0; **unseeded holdout fails**; empty holdout fails |
 | `test_sidecar_adapters.py` | Promote gate, one promoted, rollback keeps files, probe-fail refuse |
 
@@ -512,7 +512,13 @@ python -m pytest unforgettable/tests --ignore=unforgettable/tests/test_sidecar_g
 python -m pytest unforgettable/tests/test_episode.py -q
 ```
 
-Expect the Apache suite green (the GPU file skips). Runtime is a few seconds on a laptop. On a CUDA box with `unsloth/Qwen3.5-4B` cached, `test_sidecar_gpu.py` adds SFT and preference passes (~1–2 minutes each).
+Expect the Apache suite green (the GPU file is marked `gpu`, so default addopts deselects it; CI also `--ignore=`s it). Runtime is a few seconds on a laptop. On a CUDA box with `unsloth/Qwen3.5-4B` cached:
+
+```bash
+python -m pytest -o addopts= unforgettable/tests/test_sidecar_gpu.py
+```
+
+SFT (including `complete()`) and preference should pass in well under two minutes. Root addopts is `-m 'not gpu and not slow'`; `-m gpu` ANDs with that and collects nothing, so override addopts as above.
 
 If the environment has no `pytest` in the project venv:
 
@@ -556,7 +562,7 @@ python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" promote <adapter-id
 
 - `unforgettable` imports with no Studio on `sys.path`.
 - `import unforgettable.sidecar` does not import `unsloth` or `torch`.
-- `pytest unforgettable/tests --ignore=unforgettable/tests/test_sidecar_gpu.py` 275 passed.
+- `pytest unforgettable/tests --ignore=unforgettable/tests/test_sidecar_gpu.py` 285 passed.
 - FakeHost happy path: world fail → sim → world ok → `error_fix` **proposed**, sim **removed**.
 - FakeHost drift path: sim ok + world retry fail → active `twin_note`, sim **kept**.
 - Empty adapter set / no `adapter_id` leaves Phase 4 inject unchanged.

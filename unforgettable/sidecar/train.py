@@ -363,6 +363,13 @@ def _from_pretrained(loader, base_model: str):
         return loader.from_pretrained(**kwargs)
 
 
+def _model_device(model: Any):
+    try:
+        return next(model.parameters()).device
+    except (StopIteration, AttributeError):
+        return None
+
+
 class UnslothTrainBackend:
     name = "unsloth"
 
@@ -471,7 +478,7 @@ class UnslothTrainBackend:
                 load_adapter(adapter_path)
         loader.for_inference(model)
         inputs = tokenizer(_prompt_text(messages, tokenizer), return_tensors = "pt")
-        device = getattr(model, "device", None)
+        device = _model_device(model)
         if device is not None and hasattr(inputs, "to"):
             inputs = inputs.to(device)
         outputs = model.generate(**inputs, max_new_tokens = max_tokens)

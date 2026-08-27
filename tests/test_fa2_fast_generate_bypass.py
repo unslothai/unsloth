@@ -332,6 +332,57 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
     assert captured["past_key_values"] is cache
 
 
+def test_fast_generate_tolerates_missing_architectures():
+    # FastModel text_only strips a VLM to its decoder; that config has
+    # architectures=None. Generate used to TypeError iterating it.
+    captured = {}
+
+    class FakeTensor:
+        shape = (1, 3)
+
+        def to(self, dtype):
+            del dtype
+            return self
+
+    namespace = {
+        "torch": SimpleNamespace(
+            Tensor = FakeTensor,
+            bfloat16 = "bfloat16",
+            float16 = "float16",
+            inference_mode = nullcontext,
+            autocast = lambda **kwargs: nullcontext(),
+        ),
+        "os": os,
+        "inspect": inspect,
+        "FastBaseModel": SimpleNamespace(for_inference = lambda model: None),
+        "dtype_from_config": lambda config: "bfloat16",
+        "_get_dtype": lambda dtype: dtype,
+        "_unsloth_generate_accepts_kwarg": lambda model, name: False,
+        "NUM_LOGITS_TO_KEEP": {},
+        "DEVICE_TYPE_TORCH": "cuda",
+        "_uses_flash_attention_for_generation": lambda config: True,
+        "_clear_generation_caches": clear_generation_caches,
+    }
+    fast_generate = _load_function("unsloth_base_fast_generate", namespace)
+
+    class Model:
+        config = SimpleNamespace(architectures = None, eos_token_id = 2)
+
+        def forward(self, input_ids = None):
+            return input_ids
+
+        def named_modules(self):
+            return []
+
+        def _old_generate(self, *args, **kwargs):
+            captured.update(kwargs)
+            return "ok"
+
+    result = fast_generate(Model(), input_ids = FakeTensor())
+    assert result == "ok"
+    assert captured["pad_token_id"] == 2
+
+
 if __name__ == "__main__":
     tests = [
         value

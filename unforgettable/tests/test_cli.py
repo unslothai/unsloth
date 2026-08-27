@@ -579,7 +579,8 @@ def test_train_help_names_public_unsloth_apis(capsys):
     else:
         raise AssertionError("train --help should exit")
     out = capsys.readouterr().out
-    assert "FastLanguageModel.from_pretrained" in out
+    assert "FastModel.from_pretrained" in out
+    assert "FastLanguageModel" in out
     assert "get_peft_model" in out
     assert "SFTTrainer" in out
 

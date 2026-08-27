@@ -16,11 +16,12 @@
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
 import pytest
+
+from unforgettable.sidecar.peft import is_peft_adapter_dir
 
 
 def _cuda_ready() -> bool:
@@ -37,22 +38,33 @@ def _gpu_base() -> str:
 
 def _hf_weights_cached(model_id: str) -> bool:
     slug = "models--" + model_id.replace("/", "--")
-    roots = [
-        Path.home() / ".cache" / "huggingface" / "hub" / slug,
-        Path(os.environ["HF_HUB_CACHE"]) / slug if os.environ.get("HF_HUB_CACHE") else None,
-    ]
+    roots = [Path.home() / ".cache" / "huggingface" / "hub" / slug]
+    hub_cache = os.environ.get("HF_HUB_CACHE")
+    if hub_cache:
+        roots.append(Path(hub_cache) / slug)
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        roots.append(Path(hf_home) / "hub" / slug)
     for root in roots:
-        if root is None or not root.is_dir():
+        if not root.is_dir():
             continue
         if any(root.rglob("*.safetensors")):
             return True
     return False
 
 
-pytestmark = pytest.mark.skipif(
-    not _cuda_ready(),
-    reason = "CUDA torch is not available",
-)
+# `gpu` keeps this file out of a default `pytest unforgettable/tests` on a box
+# that HAS CUDA. Root addopts is `-m 'not gpu and not slow'`; run with
+# `pytest -o addopts= unforgettable/tests/test_sidecar_gpu.py`.
+# CUDA skip is a fixture, not skipif: skipif would import torch at collection
+# and fail test_import_hygiene when this file is collected.
+pytestmark = pytest.mark.gpu
+
+
+@pytest.fixture(autouse = True)
+def _require_cuda():
+    if not _cuda_ready():
+        pytest.skip("CUDA torch is not available")
 
 
 @pytest.mark.skipif(
@@ -74,12 +86,13 @@ def test_unsloth_train_writes_peft_adapter(tmp_path):
     out = tmp_path / "adapter"
     backend = UnslothTrainBackend(base_model = _gpu_base())
     backend.train(examples, output_dir = out, base_model = _gpu_base(), recipe = "sft")
-    cfg_path = out / "adapter_config.json"
-    assert cfg_path.is_file()
-    cfg = json.loads(cfg_path.read_text(encoding = "utf-8"))
-    assert cfg.get("fake") is not True
-    assert cfg.get("peft_type") or cfg.get("base_model_name_or_path")
+    assert is_peft_adapter_dir(out)
     assert list(out.glob("*.safetensors")) or list(out.glob("adapter_model.bin"))
+    messages = [{"role": "user", "content": "Playbook 0"}]
+    adapter_text = backend.complete(messages, adapter_path = str(out), max_tokens = 16)
+    assert isinstance(adapter_text, str)
+    base_text = backend.complete(messages, adapter_path = None, max_tokens = 16)
+    assert isinstance(base_text, str)
 
 
 @pytest.mark.skipif(
@@ -101,9 +114,5 @@ def test_unsloth_preference_writes_peft_adapter(tmp_path):
     backend = UnslothTrainBackend(base_model = _gpu_base())
     backend.train(examples, output_dir = out, base_model = _gpu_base(), recipe = "preference")
     assert (out / "pairs.jsonl").is_file()
-    cfg_path = out / "adapter_config.json"
-    assert cfg_path.is_file()
-    cfg = json.loads(cfg_path.read_text(encoding = "utf-8"))
-    assert cfg.get("fake") is not True
-    assert cfg.get("peft_type") or cfg.get("base_model_name_or_path")
+    assert is_peft_adapter_dir(out)
     assert list(out.glob("*.safetensors")) or list(out.glob("adapter_model.bin"))
