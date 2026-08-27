@@ -434,9 +434,7 @@ def test_a_builder_called_only_in_dead_code_adds_nothing(monkeypatch):
     fetched mapper does not have, and a lookup for such a name raises the upgrade-only
     `NotImplementedError`.
     """
-    dead = REAL_MAPPER.replace(
-        "= build_mappers(__INT_TO_FLOAT_MAPPER)", "= ({}, {}, {}, {}, {})"
-    )
+    dead = REAL_MAPPER.replace("= build_mappers(__INT_TO_FLOAT_MAPPER)", "= ({}, {}, {}, {}, {})")
     assert "= build_mappers(" not in dead
     lines = dead.splitlines(True)
     insert = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers(")) + 1
