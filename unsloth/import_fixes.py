@@ -5542,28 +5542,23 @@ def fix_torchao_nf4tensor_move():
     sys.meta_path.append(_TorchaoNF4AliasFinder())
 
 
-# `datasets` fingerprints through dill, and dill decides whether to pickle a
-# module BY REFERENCE or BY VALUE with `dill._dill._is_builtin_module`, which
-# answers yes only if the module's `__file__` starts with a sys prefix, ends
-# with an extension suffix, or contains the literal string `site-packages`.
-#
-# An install that satisfies none of the three -- `pip install --target <dir>`,
-# a PYTHONPATH overlay, a Lambda-style layer, a vendored tree -- therefore gets
-# every one of its packages pickled BY VALUE. `Dataset.from_dict` then walks
-# `datasets/utils/_dill.py:_save_arrowTable` -> `create_arrowTable` -> that
-# function's globals -> the pyarrow MODULE, and dies on pyarrow's Cython
-# `MonthDayNano`, whose `__module__` is `builtins`:
+# `datasets` fingerprints through dill, and `dill._dill._is_builtin_module`
+# pickles a module by reference only if its `__file__` starts with a sys
+# prefix, ends with an extension suffix, or contains the literal
+# `site-packages`. An install satisfying none of the three -- `pip install
+# --target <dir>`, a PYTHONPATH overlay, a Lambda layer, a vendored tree --
+# gets every package pickled BY VALUE. `Dataset.from_dict` then walks
+# `datasets/utils/_dill.py:_save_arrowTable` -> `create_arrowTable` -> its
+# globals -> the pyarrow MODULE, and dies on pyarrow's Cython `MonthDayNano`,
+# whose `__module__` is `builtins`:
 #
 #     PicklingError: Can't pickle <class 'MonthDayNano'>:
 #         it's not found as builtins.MonthDayNano
 #
-# from a two-line `Dataset.from_dict` on a dict of strings. Nothing in the
-# traceback names the install layout, and every unsloth training path builds a
-# dataset, so the first thing such a user sees is an unreadable pickling error.
-#
-# Reproduced on CPU against a byte-identical package tree with the DIRECTORY
-# NAME as the only variable: the plain `--target` directory raised, the copy
-# named `site-packages` returned a fingerprint.
+# Nothing in the traceback names the install layout, and every unsloth training
+# path builds a dataset. Reproduced on CPU against a byte-identical package
+# tree with the DIRECTORY NAME as the only variable: the plain `--target`
+# directory raised, a copy named `site-packages` returned a fingerprint.
 _DILL_FIX_SENTINEL = "_unsloth_dill_by_reference_fix"
 _DILL_FIX_ENV = "UNSLOTH_DISABLE_DILL_FIX"
 
@@ -5585,13 +5580,12 @@ def _dill_path_pickles_by_value(origin):
         real = os.path.realpath(origin)
     except Exception:
         return False
-    # The LITERAL path only, which is what dill tests. `_is_builtin_module`
-    # reads `'site-packages' in module.__file__` and uses the resolved path for
-    # the prefix comparisons alone. Searching `real` here as well answers "not
-    # affected" for a PYTHONPATH entry that is a symlink into a directory whose
-    # name happens to contain site-packages, while dill goes on pickling it by
-    # value -- and since this gate is what decides whether the live predicate is
-    # ever consulted, the original PicklingError would simply stand.
+    # The LITERAL path only, as dill does: it reads `'site-packages' in
+    # module.__file__` and resolves only for the prefix comparisons. Searching
+    # `real` too would answer "not affected" for a symlink into a
+    # site-packages-named directory dill still pickles by value, and since this
+    # gate decides whether the live predicate is consulted at all, the original
+    # PicklingError would simply stand.
     if "site-packages" in origin:
         return False
     for name in ("base_prefix", "base_exec_prefix", "exec_prefix", "prefix", "real_prefix"):
@@ -5636,10 +5630,9 @@ def _dill_install_root(origin):
     except Exception:
         return None
     parent = os.path.dirname(real)
-    # Any initializer, not just the source one: a deployment that ships
-    # bytecode only gives `pyarrow/__init__.pyc`, and matching `__init__.py`
-    # exactly would leave the root at `.../pyarrow`, where no sibling metadata
-    # is ever found and the fix silently declines to install.
+    # Any initializer, not just the source one: a bytecode-only deployment
+    # gives `pyarrow/__init__.pyc`, and matching `__init__.py` exactly would
+    # leave the root at `.../pyarrow`, where no sibling metadata is ever found.
     if os.path.splitext(os.path.basename(real))[0] == "__init__":
         parent = os.path.dirname(parent)
     return parent or None
@@ -5648,30 +5641,23 @@ def _dill_install_root(origin):
 def _dill_distribution_paths(root):
     """The FILES some installed distribution put into `root`, as real paths.
 
-    Only files a distribution RECORDED, never a directory. A directory cannot
+    Only files a distribution RECORDED, never a directory: a directory cannot
     say which of its contents were installed, so claiming one would put a
     co-located `google/myconfig.py` on the dependency side of a `google`
-    distribution -- the same hole a top-level NAME leaves, arriving through the
-    fallback instead. A distribution whose metadata names a single top-level
-    MODULE is unambiguous, because that is one file; a package name is not, and
-    is skipped.
+    distribution. A top-level MODULE name is unambiguous (one file); a package
+    name is not, and is skipped.
 
     Being under the directory is NOT the question. `pip install --target .` and
-    a Lambda deployment bundle put dependencies into the application's own
-    directory, so the root is shared with the user's project, and treating the
-    whole tree as dependency-owned would move `myproj.config` to by-reference
-    too. Its mutable state would then stop participating in a `recurse=True`
-    fingerprint, and `datasets` would serve a stale cached result after
-    `config.VALUE` changed -- silently, which is worse than the crash this
-    whole patch exists to prevent.
+    a Lambda bundle put dependencies into the application's own directory, so
+    treating the whole tree as dependency-owned would move `myproj.config` to
+    by-reference too. Its mutable state would stop participating in a
+    `recurse=True` fingerprint and `datasets` would serve a stale cached result
+    -- silently, which is worse than the crash this patch exists to prevent.
 
     Recorded PATHS rather than top-level names, because a name cannot answer
-    the question under a shared namespace: an installed `google` or
-    `opentelemetry` distribution claims the first component of a co-located
-    `google.myconfig` that nothing installed. It also keeps names a leading
-    underscore would otherwise discard -- `_soundfile` and `_multiprocess` are
-    real distributions' real modules -- without ever having to guess which
-    underscore is metadata.
+    the question under a shared namespace, and because paths keep the modules a
+    leading underscore would discard (`_soundfile`, `_multiprocess`) without
+    guessing which underscore is metadata.
     """
     files = set()
     try:
@@ -5690,8 +5676,8 @@ def _dill_distribution_paths(root):
         except Exception:
             return
         # Inside the root, and not the metadata itself. `installed-files.txt`
-        # entries are relative to the egg-info directory and start with `..`,
-        # so containment is checked after resolving, never on the raw text.
+        # entries are relative to the egg-info dir and start with `..`, so
+        # containment is checked after resolving, never on the raw text.
         if not full.startswith(prefix):
             return
         head = full[len(prefix) :].split(os.sep, 1)[0]
@@ -5720,12 +5706,11 @@ def _dill_distribution_paths(root):
             break
         if listed:
             continue
-        # No file list anywhere. `top_level.txt` names can only be honoured
-        # where they resolve to ONE file: `dill` -> `dill.py` is unambiguous,
-        # while `google` names a directory whose contents this metadata cannot
-        # account for. The package case is declined rather than guessed, so the
-        # worst outcome is the original loud PicklingError instead of a
-        # silently pinned fingerprint.
+        # No file list anywhere. A `top_level.txt` name is honoured only where
+        # it resolves to ONE file: `dill` -> `dill.py` is unambiguous, `google`
+        # is a directory this metadata cannot account for. Declining the
+        # package case costs the original loud PicklingError, not a silently
+        # pinned fingerprint.
         top_level = os.path.join(meta, "top_level.txt")
         try:
             with open(top_level, encoding = "utf-8") as f:
@@ -5734,10 +5719,7 @@ def _dill_distribution_paths(root):
                     if not name or name.startswith("#"):
                         continue
                     name = name.replace("/", ".").split(".")[0]
-                    # Honoured only where the name really is one file on
-                    # disk. A package name resolves to a directory instead,
-                    # whose contents this metadata cannot account for, so it
-                    # claims nothing.
+                    # One file on disk, or it claims nothing.
                     if os.path.isfile(os.path.join(root, name + ".py")):
                         add(root, name + ".py")
         except Exception:
@@ -5748,20 +5730,19 @@ def _dill_distribution_paths(root):
 def _dill_module_is_importable_by_name(module, files = ()):
     """Whether pickling `module` BY REFERENCE is valid AND in scope.
 
-    Valid exactly when an unpickler can get the same object back with
-    `import <name>`, which is what an ordinary site-packages install already
-    does for every one of these modules.
+    Valid exactly when an unpickler gets the same object back from
+    `import <name>`, which an ordinary site-packages install already does for
+    every one of these modules.
 
     In scope only when the module's own FILE is one an installed distribution
     recorded. `files` holds absolute resolved paths, so several off-prefix
-    roots can be collected into one set without any of them vouching for
-    another: two Lambda layers may each carry a `config.py`, and the two paths
-    are simply different. Only the misplaced LIBRARIES are moved back to the
-    behaviour they would have in an ordinary install.
+    roots collect into one set without vouching for each other: two Lambda
+    layers may each carry a `config.py`, and the paths differ. Only misplaced
+    LIBRARIES move back to their ordinary-install behaviour.
 
-    Deliberately narrow in three further ways: the module must be the live
-    entry in `sys.modules` under its own name, must be file-backed, and
-    `__main__` / `__mp_main__` are excluded outright.
+    Narrow in three further ways: the module must be the live `sys.modules`
+    entry under its own name, must be file-backed, and `__main__` /
+    `__mp_main__` are excluded outright.
     """
     name = getattr(module, "__name__", None)
     if not name or name in _DILL_NEVER_BY_REFERENCE:
@@ -5781,9 +5762,8 @@ def _dill_module_is_importable_by_name(module, files = ()):
     if real in files:
         return True
     # A deployment that compiles to adjacent bytecode and drops the sources
-    # leaves the wheel's RECORD naming `pkg/__init__.py` while the live spec
-    # points at `pkg/__init__.pyc`. Same installed file, one step of the build
-    # later, so the recorded source answers for it.
+    # leaves RECORD naming `pkg/__init__.py` while the live spec points at
+    # `pkg/__init__.pyc`. Same installed file, so the source answers for it.
     stem, ext = os.path.splitext(real)
     return ext in (".pyc", ".pyo") and stem + ".py" in files
 
@@ -5808,8 +5788,7 @@ def fix_dill_module_by_value_pickling():
         return False
 
     # Ask dill itself before touching anything: the gate above is a copy of
-    # dill's rule and a copy can go stale. If the real predicate is happy with
-    # this install, there is nothing to fix.
+    # dill's rule and a copy can go stale.
     probe = None
     roots = []
     for name in ("datasets", "pyarrow"):
@@ -5833,20 +5812,15 @@ def fix_dill_module_by_value_pickling():
     if probe is None or not roots:
         return False
 
-    # Read once, at patch time: the answer is a property of the install, and
-    # re-scanning per pickled module would put directory listings inside every
-    # fingerprint. Absolute resolved paths, so collecting several roots into
-    # one pair is safe -- two Lambda layers may each hold a `config.py`, and
-    # the two paths are different. A root carrying no installed metadata at all
-    # contributes nothing, so the patch declines rather than fall back to
-    # "everything under the directory is a dependency" -- a loud crash beats a
-    # stale cache.
     # Every off-prefix path entry carrying installed metadata, not just the one
-    # `datasets` or `pyarrow` happens to live in. A deployment can spread its
-    # layers, and a transform reaching a dependency from a second layer hits
-    # the very failure this patch exists to prevent. The ownership rule is
-    # unchanged: a file still has to be one an installed distribution
-    # recorded, so a wider search admits more DEPENDENCIES and nothing else.
+    # `datasets` or `pyarrow` happens to live in: a deployment can spread its
+    # layers, and a transform reaching a dependency in a second layer hits the
+    # very failure this patch prevents. Ownership is unchanged, so a wider
+    # search admits more DEPENDENCIES and nothing else, and a root with no
+    # metadata contributes nothing rather than falling back to "everything here
+    # is a dependency" -- a loud crash beats a stale cache. Read once, at patch
+    # time: re-scanning per pickled module would put directory listings inside
+    # every fingerprint.
     for entry in list(sys.path):
         if not entry or not os.path.isdir(entry):
             continue
@@ -5881,7 +5855,7 @@ def fix_dill_module_by_value_pickling():
     setattr(_is_builtin_module, _DILL_FIX_SENTINEL, True)
     _dill_module._is_builtin_module = _is_builtin_module
     # `dill.session` binds the name at import time, so patching the defining
-    # module alone leaves that copy on the old function.
+    # module alone leaves that copy on the original.
     session = sys.modules.get("dill.session")
     if session is not None and getattr(session, "_is_builtin_module", None) is original:
         session._is_builtin_module = _is_builtin_module

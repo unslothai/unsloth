@@ -56,16 +56,12 @@ _HOSTILE_TREE = {
     # resolve to somewhere dill pickles by value, and answers from the SPEC, so
     # this file is never executed and needs no content.
     "pyarrow.py": "VERSION = '0'\n",
-    # The class that cannot be pickled by reference. Two properties, both taken
-    # from the real `MonthDayNano` and both necessary:
-    #
-    # * `__module__ = "builtins"`, where the class is not found, which is what
-    #   Cython types in pyarrow do; and
-    # * a self-reference, which puts the class in dill's postproc list, so the
-    #   second encounter takes dill's `save_global` branch instead of writing
-    #   the class out by value. Without it dill pickles the class by value and
-    #   succeeds -- the real run says so in its own warning, "has recursive
-    #   self-references that trigger a RecursionError".
+    # The class that cannot be pickled by reference. Both properties are taken
+    # from the real `MonthDayNano` and both are necessary: `__module__ =
+    # "builtins"`, where the class is not found, as pyarrow's Cython types do;
+    # and a self-reference, which puts it in dill's postproc list so the second
+    # encounter takes `save_global` rather than writing the class out by value
+    # and succeeding.
     "ovmod.py": textwrap.dedent(
         """
         class Sneaky:
@@ -75,16 +71,13 @@ _HOSTILE_TREE = {
         Sneaky.__module__ = "builtins"
         """
     ),
-    # The function dill has to save, in the shape datasets uses.
-    #
-    # NESTED, and that is the whole reason this reproduces:
-    # `datasets/utils/_dill.py:_save_arrowTable` defines `create_arrowTable`
-    # INSIDE itself and hands it to `save_reduce`. dill's `_locate_function`
-    # cannot find a `<locals>` qualname at module level, so it falls to saving
-    # the function BY VALUE, walks its globals with `recurse=True`, and reaches
-    # the module. A module-level function would be saved by reference and
-    # nothing would ever look at pyarrow -- which is exactly why datasets 4.3.0,
-    # whose table reducer does not take this path, is unaffected.
+    # The function dill has to save, in the shape datasets uses. NESTED, and
+    # that is the whole reason this reproduces: `_save_arrowTable` defines
+    # `create_arrowTable` inside itself, dill's `_locate_function` cannot find a
+    # `<locals>` qualname at module level, so it saves BY VALUE, walks the
+    # globals with `recurse=True` and reaches the module. A module-level
+    # function would be saved by reference and never look at pyarrow -- which is
+    # why datasets 4.3.0, whose reducer skips this path, is unaffected.
     "ovuser.py": textwrap.dedent(
         """
         import ovmod
@@ -95,24 +88,21 @@ _HOSTILE_TREE = {
             return create_arrowTable
         """
     ),
-    # The user's OWN module, in the same directory, which is what
-    # `pip install --target .` and a Lambda bundle produce. No distribution
-    # claims it, so it must keep dill's by-value treatment and keep its mutable
-    # state inside a `recurse=True` fingerprint.
+    # The user's OWN module, in the same directory, as `pip install --target .`
+    # and a Lambda bundle produce. No distribution claims it, so it keeps dill's
+    # by-value treatment and its state stays inside the fingerprint.
     "projcfg.py": "VALUE = 1\n",
-    # What pip writes beside the packages it installs. Two distributions rather
-    # than one so the two readers are both exercised: `top_level.txt` where pip
-    # emitted one, and RECORD -- the only metadata a modern wheel is guaranteed
-    # to carry -- where it did not.
+    # What pip writes beside the packages it installs. Two distributions so
+    # both readers are exercised: `top_level.txt`, and RECORD, the only metadata
+    # a modern wheel is guaranteed to carry.
     "pyarrow-0.0.dist-info/RECORD": "pyarrow.py,,\npyarrow-0.0.dist-info/RECORD,,\n",
     "ovdep-0.0.dist-info/top_level.txt": "ovmod\novuser\n",
     "ovdep-0.0.dist-info/RECORD": "ovmod.py,,\novuser.py,,\n",
 }
 
-# A SECOND off-prefix layer, holding a recorded dependency and nothing the
-# gate looks for. A deployment can spread its layers, and a transform reaching
-# this one hits the same failure; the roots search has to find it from sys.path
-# rather than only from wherever `datasets` or `pyarrow` happens to live.
+# A SECOND off-prefix layer, holding a recorded dependency and nothing the gate
+# looks for, so the roots search has to find it from sys.path rather than only
+# from wherever `datasets` or `pyarrow` happens to live.
 _SECOND_LAYER = {
     "secondlayer.py": "V = 0\n",
     "secondproj.py": "VALUE = 1\n",
@@ -214,8 +204,8 @@ def _run_on_hostile_tree(
     driver.write_text(_DRIVER, encoding = "utf-8")
 
     # The child venv inherits the BASE prefix's site-packages, not this
-    # interpreter's, so dill would be missing when the tests run from a venv.
-    # Appended AFTER the overlay, and it is a real site-packages directory, so
+    # interpreter's, so dill would otherwise be missing when the tests run from
+    # a venv. Appended AFTER the overlay, and a real site-packages directory, so
     # dill itself stays on the by-reference side of its own rule.
     import sysconfig
 
@@ -368,13 +358,11 @@ def test_the_widening_only_covers_modules_that_import_back():
     finally:
         del sys.modules["json_lookalike"]
 
-    # `__main__`, and it has to be SYNTHESISED rather than read off this
-    # process. Under pytest `sys.modules["__main__"]` is a console script whose
-    # `__spec__` is None, so it is already refused by the rule above and an
-    # assertion on it passes without ever exercising the exclusion -- which is
-    # exactly how a mutation that deleted the exclusion survived this file once.
-    # `python -m pkg` gives `__main__` a real spec, and that is the case that
-    # matters.
+    # `__main__`, SYNTHESISED rather than read off this process: under pytest
+    # `sys.modules["__main__"]` is a console script whose `__spec__` is None, so
+    # it is already refused above and an assertion on it passes without
+    # exercising the exclusion -- which is how a mutation deleting the exclusion
+    # survived this file once. `python -m pkg` gives it a real spec.
     for hostile in ("__main__", "__mp_main__"):
         fake = types.ModuleType(hostile)
         fake.__spec__ = types.SimpleNamespace(name = hostile, origin = f"/somewhere/pkg/{hostile}.py")
@@ -512,8 +500,7 @@ def test_a_project_module_outside_the_install_root_keeps_its_by_value_state(tmp_
     project.__spec__ = types.SimpleNamespace(
         name = "pretend_project", origin = str(elsewhere / "pretend_project.py")
     )
-    # The user's own module in the SAME directory as the dependencies, which is
-    # what `pip install --target .` and a Lambda bundle produce. Root
+    # The user's own module in the SAME directory as the dependencies. Root
     # containment cannot separate it from `library`; installed metadata can.
     colocated = types.ModuleType("pretend_colocated")
     colocated.__spec__ = types.SimpleNamespace(
@@ -557,9 +544,8 @@ def test_only_recorded_files_are_treated_as_dependency_owned(tmp_path):
     (root / "withtop-1.0.dist-info" / "top_level.txt").write_text(
         "pkgone\n\n# comment\n", encoding = "utf-8"
     )
-    # The single module that name resolves to. Without it on disk the fallback
-    # has nothing to claim, which is the point: a name is honoured only where
-    # it really is one file.
+    # The single module that name resolves to: a name is honoured only where it
+    # really is one file on disk.
     (root / "pkgone.py").write_text("X = 1\n", encoding = "utf-8")
     (root / "onlyrecord-1.0.dist-info").mkdir()
     (root / "onlyrecord-1.0.dist-info" / "RECORD").write_text(
@@ -572,8 +558,8 @@ def test_only_recorded_files_are_treated_as_dependency_owned(tmp_path):
         "__pycache__/singlemod.cpython-312.pyc,,\n",
         encoding = "utf-8",
     )
-    # Both files, which is ordinary. RECORD wins: running the name fallback as
-    # well would claim the whole `bothns` directory and put a co-located
+    # Both files, which is ordinary. RECORD wins: running the name fallback too
+    # would claim the whole `bothns` directory and put a co-located
     # `bothns/myconfig.py` back on the dependency side.
     (root / "both-1.0.dist-info").mkdir()
     (root / "both-1.0.dist-info" / "RECORD").write_text("bothns/cloud.py,,\n", encoding = "utf-8")
@@ -598,9 +584,9 @@ def test_only_recorded_files_are_treated_as_dependency_owned(tmp_path):
     assert "myproj.py" not in rel, "a file no distribution recorded is claimed"
     assert not any("dist-info" in r or ".data" in r or "__pycache__" in r for r in rel)
 
-    # top_level.txt is the fallback, and it is honoured only where the name
-    # resolves to ONE file. A package name cannot say which of the directory's
-    # contents were installed, so it is declined rather than guessed.
+    # The fallback is honoured only where the name resolves to ONE file: a
+    # package name cannot say which of the directory's contents were installed,
+    # so it is declined rather than guessed.
     assert "pkgone.py" in rel
     assert not any(r == "pkgone" or r.startswith("pkgone" + os.sep) for r in rel), (
         "a top_level.txt package name claimed the whole directory, so a "
@@ -807,10 +793,8 @@ def test_the_gate_reads_the_literal_path_the_way_dill_does(tmp_path):
     assert "site-packages" in os.path.realpath(literal)
 
     # This box's virtualenv root is an ancestor of tmp, so without moving the
-    # sys prefixes aside the gate would answer False for the prefix rule and
-    # the site-packages rule would never be reached -- a green test measuring
-    # nothing. The subprocess tests above build a throwaway venv for the same
-    # reason.
+    # sys prefixes aside the gate answers False on the prefix rule and the
+    # site-packages rule is never reached -- a green test measuring nothing.
     names = ("base_prefix", "base_exec_prefix", "exec_prefix", "prefix", "real_prefix")
     saved = {n: getattr(sys, n) for n in names if hasattr(sys, n)}
     elsewhere = str(tmp_path / "not-a-prefix")
