@@ -356,10 +356,14 @@ def test_a_high_rate_container_is_capped_by_samples_not_only_by_clock(monkeypatc
 
         def blocks(self, **_kwargs):
             # Well inside the 30-minute clock at this rate, past the sample cap.
-            block = np.ones(inference_route._MAX_DECODED_SAMPLES + 1, dtype = np.float32)
+            block = np.ones(ceiling + 1, dtype = np.float32)
             decoded_blocks.append(len(block))
             yield block
 
+    # A small ceiling: the check is what is under test, and the production
+    # constant would allocate 346 MB on every run of this file.
+    ceiling = 64
+    monkeypatch.setattr(inference_route, "_MAX_DECODED_SAMPLES", ceiling)
     monkeypatch.setitem(sys.modules, "soundfile", types.SimpleNamespace(SoundFile = FakeSoundFile))
 
     def concatenate_after_limit(*_args, **_kwargs):
@@ -372,7 +376,7 @@ def test_a_high_rate_container_is_capped_by_samples_not_only_by_clock(monkeypatc
         pass
     else:
         raise AssertionError("expected the decoded-sample ceiling to be enforced")
-    assert decoded_blocks == [inference_route._MAX_DECODED_SAMPLES + 1]
+    assert decoded_blocks == [ceiling + 1]
 
 
 def test_the_ceiling_never_bites_before_the_advertised_duration(monkeypatch):
@@ -416,3 +420,32 @@ def test_the_librosa_fallback_reads_only_up_to_the_cap(monkeypatch):
     assert seen["duration"] is not None
     assert seen["duration"] <= inference_route._MAX_DECODED_SAMPLES / 192_000 + 1
     assert seen["duration"] < inference_route._MAX_AUDIO_SECONDS
+
+
+def test_an_unprobeable_rate_is_refused_rather_than_read_unbounded(monkeypatch):
+    """Without a sample rate there is no window that bounds the read: 30 minutes
+    is gigabytes at a high rate. Refusing beats loading it to find out."""
+
+    class _FakeLibrosa:
+        @staticmethod
+        def get_samplerate(_path):
+            raise RuntimeError("cannot probe this container")
+
+        @staticmethod
+        def load(*_a, **_k):
+            raise AssertionError("an unbounded read must not be attempted")
+
+    monkeypatch.setitem(sys.modules, "soundfile", None)
+    monkeypatch.setitem(sys.modules, "librosa", _FakeLibrosa)
+    monkeypatch.setattr(
+        inference_route,
+        "_decode_audio_mono_with_av",
+        lambda raw: (_ for _ in ()).throw(RuntimeError("av cannot read this")),
+    )
+
+    try:
+        inference_route._decode_audio_mono(b"container with no reported rate")
+    except RuntimeError as error:
+        assert "sample rate" in str(error)
+    else:
+        raise AssertionError("expected an unprobeable rate to be refused")

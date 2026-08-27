@@ -1254,6 +1254,53 @@ test("a declared charset is decoded as strictly as an undeclared one", async () 
   );
 });
 
+test("an XML prolog decides the encoding before UTF-8 is tried", async () => {
+  // 0xC3 0xA9 is valid UTF-8 for "e-acute", so a UTF-8-first decode succeeded and
+  // the prolog was never consulted. Per the spec those bytes are two windows-1252
+  // characters, which is what an XML parser reads and what we must send.
+  const bytes = new Uint8Array([
+    ...new TextEncoder().encode('<?xml version="1.0" encoding="windows-1252"?><r>'),
+    0xc3,
+    0xa9,
+    ...new TextEncoder().encode("</r>"),
+  ]);
+  const text = await readTextAttachment(new File([bytes], "strings.resx"));
+  assert.match(text, /\u00c3\u00a9/, "decoded as the prolog says, not as UTF-8");
+});
+
+test("a BOM-marked file decodes as strictly as everything else", async () => {
+  // An odd trailing byte used to be padded with a replacement character and
+  // attached as though it had been read.
+  const odd = new Uint8Array([0xff, 0xfe, 0x61, 0x00, 0x62]);
+  await assert.rejects(
+    readTextAttachment(new File([odd], "export.reg")),
+    (error: Error) => error instanceof UndecodableTextError,
+  );
+  // A bounded preview still drops only the incomplete unit at the cut.
+  assert.equal(decodeTextAttachmentBytes(odd, "export.reg", true), "a");
+  // Well-formed UTF-16 is unaffected.
+  const good = new Uint8Array([0xff, 0xfe, 0x61, 0x00, 0x62, 0x00]);
+  assert.equal(await readTextAttachment(new File([good], "export.reg")), "ab");
+});
+
+test("a body of boundary-shaped lines does not stall the composer", () => {
+  // Restarting the header search from every candidate boundary was quadratic:
+  // a megabyte of diff hunks took 14 seconds, inside add(), on the UI thread.
+  const body = "--- a/file.txt\n".repeat(70_000);
+  const bytes = new Uint8Array([
+    ...new TextEncoder().encode(
+      "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\n" + body,
+    ),
+    0xe9,
+  ]);
+  const started = performance.now();
+  decodeTextAttachmentBytes(bytes, "thread.mbox");
+  assert.ok(
+    performance.now() - started < 2_000,
+    "the scan is linear in the file, not quadratic in its boundary-shaped lines",
+  );
+});
+
 test("legacy M3U playlists are not advertised as UTF-8 text", () => {
   assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".m3u"), false);
   assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".m3u8"), true);

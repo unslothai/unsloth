@@ -617,21 +617,46 @@ const VCARD_CHARSET_RE = /;[ \t]*CHARSET[ \t]*=[ \t]*"?([A-Za-z0-9._-]+)"?/gi;
 // A header block runs from the start of the file, an mbox "From " separator, or
 // a MIME boundary, to the first blank line. Body text can hold a line that reads
 // like a header, and treating that as a declaration refused valid files.
-const HEADER_BLOCK_START_RE = /(?:^|\r?\n)(?:From [^\r\n]*|--[^\r\n]+)\r?\n/g;
-const BLANK_LINE_RE = /\r?\n\r?\n/;
-
-/** The header regions of a message or archive, body text excluded. */
+/**
+ * The header regions of a message or archive, body text excluded.
+ *
+ * One forward pass over the lines, slicing only the header regions themselves.
+ * Restarting a search from each candidate boundary instead is quadratic, and a
+ * body of diff hunks is all candidate boundaries: 1 MB of them took 14 seconds.
+ */
 function emailHeaderBlocks(text: string): string[] {
-  const starts = [0];
-  for (const match of text.matchAll(HEADER_BLOCK_START_RE)) {
-    starts.push(match.index + match[0].length);
+  const blocks: string[] = [];
+  let position = 0;
+  let blockStart = 0;
+  let inHeader = true;
+  while (position <= text.length) {
+    let lineBreak = text.indexOf("\n", position);
+    if (lineBreak === -1) lineBreak = text.length;
+    const contentEnd =
+      lineBreak > position && text[lineBreak - 1] === "\r"
+        ? lineBreak - 1
+        : lineBreak;
+    const isBlank = contentEnd === position;
+    if (inHeader) {
+      if (isBlank) {
+        blocks.push(text.slice(blockStart, position));
+        inHeader = false;
+      }
+    } else if (
+      !isBlank &&
+      (text.startsWith("From ", position) || text.startsWith("--", position))
+    ) {
+      // An mbox separator or a MIME boundary: headers resume on the next line.
+      inHeader = true;
+      blockStart = lineBreak + 1;
+    }
+    if (lineBreak === text.length) break;
+    position = lineBreak + 1;
   }
-  return starts.map((start) => {
-    const rest = text.slice(start);
-    const end = rest.search(BLANK_LINE_RE);
-    // A block the scan window cut short is still read to its end.
-    return end === -1 ? rest : rest.slice(0, end);
-  });
+  if (inHeader && blockStart < text.length) {
+    blocks.push(text.slice(blockStart));
+  }
+  return blocks;
 }
 
 // An XML prolog names the document's encoding and must be the first thing in it.
@@ -722,11 +747,22 @@ export function decodeTextAttachmentBytes(
   fileName = "",
   truncated = false,
 ): string {
+  // A BOM is a declaration too, so it decodes as strictly as the rest: an odd
+  // trailing byte or an unpaired surrogate is corrupt, not readable.
   if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
-    return new TextDecoder("utf-16le").decode(bytes.subarray(2));
+    return decodeWithCharset(bytes.subarray(2), "utf-16le", fileName, truncated);
   }
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
-    return new TextDecoder("utf-16be").decode(bytes.subarray(2));
+    return decodeWithCharset(bytes.subarray(2), "utf-16be", fileName, truncated);
+  }
+  // An XML document's encoding is its prolog, by specification, so it decides
+  // before UTF-8 is tried: bytes that happen to be valid UTF-8 would otherwise
+  // decode into different characters than the document says it holds. Mail and
+  // vCard declarations stay a fallback instead, because mislabelled 8-bit mail
+  // is common and its bytes being valid UTF-8 is the better evidence.
+  const xmlEncoding = declaredXmlEncoding(bytes);
+  if (xmlEncoding) {
+    return decodeWithCharset(bytes, xmlEncoding, fileName, truncated);
   }
   const gettextCharset = declaredGettextCharset(bytes, fileName);
   if (gettextCharset) {
@@ -743,10 +779,6 @@ export function decodeTextAttachmentBytes(
     // An XML document states its encoding in the prolog, which is as explicit as
     // a declaration gets. Tried only after UTF-8 fails, so `encoding="UTF-8"`
     // costs nothing.
-    const xmlEncoding = declaredXmlEncoding(bytes);
-    if (xmlEncoding) {
-      return decodeWithCharset(bytes, xmlEncoding, fileName, truncated);
-    }
     // An 8-bit mail or vCard says which charset it is, so honour it rather than
     // refusing a standards-valid file. Tried only after UTF-8 fails, so a modern
     // one is never remapped by a stale declaration.

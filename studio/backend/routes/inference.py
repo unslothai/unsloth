@@ -17661,11 +17661,20 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
                 # so the window covers the sample ceiling as well as the clock.
                 try:
                     probe_rate = int(librosa.get_samplerate(tmp_path) or 0)
-                except Exception:  # noqa: BLE001 - unknown rate: bound by time alone
+                except Exception:  # noqa: BLE001 - handled below
                     probe_rate = 0
-                window = float(_MAX_AUDIO_SECONDS + 1)
-                if probe_rate > 0:
-                    window = min(window, _MAX_DECODED_SAMPLES / probe_rate + 1)
+                if probe_rate <= 0:
+                    # Without the rate there is no window that bounds the read:
+                    # 30 minutes is gigabytes at a high rate and nothing at a low
+                    # one. This is the last fallback, after soundfile and PyAV
+                    # both declined, so refusing costs a file nothing else reads.
+                    raise RuntimeError(
+                        "this audio file does not report a sample rate, so it cannot "
+                        "be decoded within the size limit; convert it to wav or mp3"
+                    )
+                window = min(
+                    float(_MAX_AUDIO_SECONDS + 1), _MAX_DECODED_SAMPLES / probe_rate + 1
+                )
                 arr, sr = librosa.load(tmp_path, sr = None, mono = True, duration = window)
             finally:
                 os.unlink(tmp_path)
@@ -20376,6 +20385,13 @@ async def produce_openai_chat_completions(
                     _preprepared_audio
                     if _preprepared_audio is not None
                     else await asyncio.to_thread(_prepare_audio_for_llama, payload.audio_base64)
+                )
+            except _DecodedAudioTooLongError as e:
+                # A valid file that is simply too long reports the limit, as the
+                # non-GGUF path does, rather than reading as corrupt audio.
+                logger.info("Audio rejected at the duration limit: %s", e)
+                raise _reject(
+                    413, f"Audio is too long (max {_MAX_AUDIO_SECONDS // 60} minutes)."
                 )
             except Exception as e:
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
