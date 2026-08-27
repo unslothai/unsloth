@@ -16976,52 +16976,57 @@ def _resident_media_status(task: str) -> Optional[dict]:
     return status if status and status.get("loaded") else None
 
 
-def _media_model_objects(catalog: list, quants_by_id: dict, created: int) -> list[dict]:
-    from core.inference.media_model_index import identity_key
+def _media_model_objects(catalog: list, created: int) -> list[dict]:
+    """Downloaded image/video models, as the generation resolver actually sees them.
+
+    Built from the media index rather than the raw catalog, because that index is what
+    /v1/images/generations and /v1/videos resolve a name against: it drops partial pulls,
+    directories no loader can open, and builds a sibling quant cannot be told apart from.
+    Anything it rejects would be advertised here and then answered with model_not_found.
+
+    Residency goes through ``resident_is_pick`` for the same reason. A standalone GGUF
+    loads with its parent directory as the model path and an HF cache repo with its
+    snapshot directory, so comparing the public id or the catalog's own path reports the
+    resident model as unloaded.
+    """
+    from core.inference.media_model_index import (
+        available_media_model_ids,
+        resident_is_pick,
+        resolve_local_media_model,
+    )
+    from hub.utils.gguf import extract_quant_token
+
+    display_by_id: dict[str, str] = {}
+    for info in catalog:
+        cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+        display = getattr(info, "display_name", None)
+        if cid and display:
+            display_by_id.setdefault(cid, display)
 
     objects: list[dict] = []
     for task in _MEDIA_MODEL_TASKS:
         status = _resident_media_status(task)
-        resident = identity_key(str(status.get("repo_id") or "")) if status else ""
-        resident_listed = False
-        for info in catalog:
-            if getattr(info, "task", None) != task:
+        for model_id in available_media_model_ids(task):
+            pick = resolve_local_media_model(model_id, task = task)
+            if pick is None:
                 continue
-            cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
-            if not cid:
-                continue
-            keys = {identity_key(cid), identity_key(str(getattr(info, "path", None) or ""))}
-            loaded = bool(resident) and resident in keys
-            resident_listed |= loaded
+            loaded = bool(status) and resident_is_pick(status, model_id, pick)
             obj = {
-                "id": cid,
+                "id": model_id,
                 "object": "model",
                 "created": created,
                 "owned_by": _OWNED_BY,
                 "task": task,
                 "loaded": loaded,
             }
-            quants = quants_by_id.get(id(info))
             quant = (status.get("gguf_variant") if loaded else None) or (
-                quants[0] if quants else None
+                extract_quant_token(pick.gguf_filename) if pick.gguf_filename else None
             )
             if quant:
                 obj["quant"] = quant
-            display = getattr(info, "display_name", None)
+            display = display_by_id.get(model_id)
             if display:
                 obj["display_name"] = display
-            objects.append(obj)
-        if status and not resident_listed:
-            obj = {
-                "id": public_model_id(str(status.get("repo_id"))),
-                "object": "model",
-                "created": created,
-                "owned_by": _OWNED_BY,
-                "task": task,
-                "loaded": True,
-            }
-            if status.get("gguf_variant"):
-                obj["quant"] = status["gguf_variant"]
             objects.append(obj)
     return objects
 
@@ -17044,11 +17049,16 @@ def _stt_model_objects(created: int) -> list[dict]:
             if stt_sidecar.is_model_downloaded(model_id)
             or stt_ggml_sidecar._cached_model_path(model_id) is not None
         ]
-        ids.extend(
-            model_id
-            for model_id in stt_mtmd_sidecar.MTMD_STT_MODELS
-            if stt_mtmd_sidecar.is_model_downloaded(model_id)
-        )
+        # Qwen3-ASR runs on no other engine, so without llama-server (or PyAV to decode
+        # the clip) /v1/audio/transcriptions 501s on every one of these. The STT status
+        # route publishes `available` beside the list; here there is no such field, so
+        # an unservable model must simply not be listed.
+        if stt_mtmd_sidecar.is_available():
+            ids.extend(
+                model_id
+                for model_id in stt_mtmd_sidecar.MTMD_STT_MODELS
+                if stt_mtmd_sidecar.is_model_downloaded(model_id)
+            )
         ids.extend(sorted(model_id for model_id in loaded if model_id not in ids))
     except Exception as exc:  # noqa: BLE001
         logger.debug("stt models unavailable for /v1/models: %s", exc)
@@ -17158,7 +17168,7 @@ async def _openai_catalog_objects() -> list[dict]:
         by_id[cid] = obj
 
     media = await asyncio.to_thread(
-        lambda: _media_model_objects(catalog, quants_by_id, _created) + _stt_model_objects(_created)
+        lambda: _media_model_objects(catalog, _created) + _stt_model_objects(_created)
     )
     for obj in media:
         by_id.setdefault(obj["id"], obj)

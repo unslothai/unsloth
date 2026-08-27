@@ -19,6 +19,8 @@ if str(_BACKEND) not in sys.path:
 import routes.inference as inf  # noqa: E402
 from auth.authentication import get_current_subject  # noqa: E402
 from core.inference import local_model_resolver as resolver  # noqa: E402
+from core.inference import media_model_index as mmi  # noqa: E402
+from core.inference.media_model_index import MediaModelPick  # noqa: E402
 from utils.api_errors import install_api_error_handlers  # noqa: E402
 
 
@@ -57,10 +59,27 @@ class _FakeUnsloth:
     max_seq_length = None
 
 
+def _media_index(monkeypatch, picks_by_task):
+    """Stand in for the media index the generation routes resolve against."""
+    monkeypatch.setattr(
+        mmi,
+        "available_media_model_ids",
+        lambda task: sorted(p.model_id for p in picks_by_task.get(task, [])),
+    )
+    monkeypatch.setattr(
+        mmi,
+        "resolve_local_media_model",
+        lambda name, *, task: next(
+            (p for p in picks_by_task.get(task, []) if p.model_id == name), None
+        ),
+    )
+
+
 def _catalog(
     monkeypatch,
     infos,
     resident = None,
+    picks = None,
 ):
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama())
     monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
@@ -74,6 +93,7 @@ def _catalog(
     )
     monkeypatch.setattr(inf, "_resident_media_status", lambda task: (resident or {}).get(task))
     monkeypatch.setattr(inf, "_stt_model_objects", lambda created: [])
+    _media_index(monkeypatch, picks if picks is not None else _PICKS)
 
 
 _INFOS = [
@@ -97,12 +117,28 @@ _INFOS = [
 ]
 
 
+_PICKS = {
+    "text-to-image": [
+        MediaModelPick(
+            "unsloth/Z-Image-Turbo-GGUF",
+            "/hf/models--unsloth--Z-Image-Turbo-GGUF/snapshots/abc",
+            "z-image-turbo-Q8_0.gguf",
+            "gguf",
+        )
+    ],
+    "text-to-video": [
+        MediaModelPick("Lightricks/LTX-2", "/hf/models--Lightricks--LTX-2/snapshots/def")
+    ],
+}
+
+
 def test_media_models_list_with_task_and_residency(monkeypatch):
     resident = {
         "text-to-image": {
             "loaded": True,
             "repo_id": "unsloth/z-image-turbo-gguf",
-            "gguf_variant": "Q4_K_M",
+            "gguf_variant": "Q8_0",
+            "model_kind": "gguf",
         }
     }
     _catalog(monkeypatch, _INFOS, resident)
@@ -112,7 +148,7 @@ def test_media_models_list_with_task_and_residency(monkeypatch):
 
     image = ids["unsloth/Z-Image-Turbo-GGUF"]
     assert image["task"] == "text-to-image" and image["loaded"] is True
-    assert image["quant"] == "Q4_K_M" and image["display_name"] == "Z-Image-Turbo"
+    assert image["quant"] == "Q8_0" and image["display_name"] == "Z-Image-Turbo"
     assert image["object"] == "model" and image["owned_by"] == inf._OWNED_BY
     video = ids["Lightricks/LTX-2"]
     assert video["task"] == "text-to-video" and video["loaded"] is False
@@ -141,20 +177,63 @@ def test_resident_media_model_matches_by_path(monkeypatch):
     assert sum(1 for m in ids.values() if m.get("task") == "text-to-video") == 1
 
 
-def test_resident_media_model_outside_the_catalog_is_listed_cleanly(monkeypatch):
+def test_a_resident_sibling_quant_is_not_reported_as_the_indexed_build(monkeypatch):
+    """Same repo, different weights: the indexed build is Q8_0 and Q4_K_M is resident."""
     resident = {
-        "text-to-video": {
+        "text-to-image": {
             "loaded": True,
-            "repo_id": "/srv/models/ltx-2.3-Q4.gguf",
+            "repo_id": "unsloth/z-image-turbo-gguf",
+            "gguf_variant": "Q4_K_M",
+            "model_kind": "gguf",
+        }
+    }
+    _catalog(monkeypatch, _INFOS, resident)
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["unsloth/Z-Image-Turbo-GGUF"]["loaded"] is False
+    assert ids["unsloth/Z-Image-Turbo-GGUF"]["quant"] == "Q8_0"
+
+
+def test_a_standalone_gguf_resident_is_matched_by_its_load_directory(monkeypatch):
+    """A standalone GGUF loads with its PARENT directory as the model path.
+
+    Comparing the public id or the catalog's own file path reports the resident model as
+    unloaded and then adds a second entry named after the directory.
+    """
+    pick = MediaModelPick("z-image", "/srv/models", "z-image-Q4_K_M.gguf", "gguf")
+    resident = {
+        "text-to-image": {
+            "loaded": True,
+            "repo_id": "/srv/models",
+            "gguf_variant": "Q4_K_M",
+            "dtype": "gguf",
+            "model_kind": "gguf",
+        }
+    }
+    _catalog(monkeypatch, [], resident, picks = {"text-to-image": [pick]})
+    data = asyncio.run(inf._openai_catalog_objects())
+    assert [m["id"] for m in data] == ["z-image"]
+    assert data[0]["loaded"] is True and data[0]["quant"] == "Q4_K_M"
+    assert "/srv/" not in json.dumps(data)
+
+
+def test_only_ids_the_media_resolver_accepts_are_listed(monkeypatch):
+    """The index already drops partial pulls, unopenable paths and ambiguous builds.
+
+    Listing anything it rejects advertises an id the generation route answers with
+    model_not_found, so an empty index must advertise nothing -- even while a model the
+    index does not know is resident.
+    """
+    resident = {
+        "text-to-image": {
+            "loaded": True,
+            "repo_id": "/srv/models/half-pulled",
             "gguf_variant": "Q4_K_M",
         }
     }
-    _catalog(monkeypatch, [], resident)
+    _catalog(monkeypatch, _INFOS, resident, picks = {})
     data = asyncio.run(inf._openai_catalog_objects())
-    assert len(data) == 1
-    assert data[0]["id"] == "ltx-2.3-Q4" and data[0]["loaded"] is True
-    assert data[0]["task"] == "text-to-video" and data[0]["quant"] == "Q4_K_M"
-    assert "/srv/" not in json.dumps(data)
+    assert [m for m in data if m.get("task") in ("text-to-image", "text-to-video")] == []
+    assert "half-pulled" not in json.dumps(data)
 
 
 def test_stt_models_list_downloaded_and_loaded(monkeypatch):
@@ -165,6 +244,7 @@ def test_stt_models_list_downloaded_and_loaded(monkeypatch):
         stt_ggml_sidecar, "_cached_model_path", lambda m: "/x" if m == "large-v3-turbo" else None
     )
     monkeypatch.setattr(stt_mtmd_sidecar, "is_model_downloaded", lambda m: m == "qwen3-asr-0.6b")
+    monkeypatch.setattr(stt_mtmd_sidecar, "is_available", lambda: True)
     monkeypatch.setattr(
         stt_sidecar, "get_stt_sidecar", lambda: SimpleNamespace(loaded_model = "org/whisper-custom")
     )
@@ -185,6 +265,34 @@ def test_stt_models_list_downloaded_and_loaded(monkeypatch):
         ("org/whisper-custom", True),
     ]
     assert all(o["task"] == "automatic-speech-recognition" and o["created"] == 7 for o in objects)
+
+
+def test_mtmd_models_are_hidden_when_their_runtime_is_missing(monkeypatch):
+    """Qwen3-ASR runs on no other engine, so without llama-server every
+    /v1/audio/transcriptions call for one returns 501. Curated Whisper ids, which do have
+    a fallback engine, must still be listed."""
+    from core.inference import stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
+
+    monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda m: m == "small")
+    monkeypatch.setattr(stt_ggml_sidecar, "_cached_model_path", lambda m: None)
+    monkeypatch.setattr(stt_mtmd_sidecar, "is_model_downloaded", lambda m: True)
+    monkeypatch.setattr(stt_mtmd_sidecar, "is_available", lambda: False)
+    for module, getter in (
+        (stt_sidecar, "get_stt_sidecar"),
+        (stt_ggml_sidecar, "get_ggml_stt_sidecar"),
+        (stt_mtmd_sidecar, "get_mtmd_stt_sidecar"),
+    ):
+        monkeypatch.setattr(module, getter, lambda: SimpleNamespace(loaded_model = None))
+
+    ids = [o["id"] for o in inf._stt_model_objects(3)]
+    assert ids == ["small"]
+
+    monkeypatch.setattr(stt_mtmd_sidecar, "is_available", lambda: True)
+    assert [o["id"] for o in inf._stt_model_objects(3)] == [
+        "small",
+        "qwen3-asr-0.6b",
+        "qwen3-asr-1.7b",
+    ]
 
 
 def test_stt_probe_failure_hides_nothing_else(monkeypatch):
