@@ -29,20 +29,38 @@ type TrainingMethodStatePatch = Partial<
   >
 >;
 
-function getCptTrainingPatch(): TrainingMethodStatePatch {
+function arraysEqual(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+// A model whose default target modules differ from the generic Llama-style
+// list (e.g. LFM2's "all-linear") has declared an architecture-specific LoRA
+// target. CPT must not clobber that with the hard-coded Llama fallback.
+function resolveCptTargetModules(currentTargetModules: string[]): string[] {
+  const isModelSpecific =
+    currentTargetModules.length > 0 &&
+    !arraysEqual(currentTargetModules, TARGET_MODULES);
+  return isModelSpecific ? currentTargetModules : CPT_TARGET_MODULES;
+}
+
+function getCptTrainingPatch(
+  currentTargetModules: string[],
+): TrainingMethodStatePatch {
   return {
     loraRank: 128,
     loraAlpha: 32,
     loraVariant: "rslora",
-    targetModules: CPT_TARGET_MODULES,
+    targetModules: resolveCptTargetModules(currentTargetModules),
     datasetFormat: "raw",
     trainOnCompletions: false,
   };
 }
 
-export function getCptModelDefaultsPatch(): TrainingMethodStatePatch {
+export function getCptModelDefaultsPatch(
+  currentTargetModules: string[],
+): TrainingMethodStatePatch {
   return {
-    ...getCptTrainingPatch(),
+    ...getCptTrainingPatch(currentTargetModules),
     learningRate: LR_DEFAULT_CPT,
   };
 }
@@ -87,7 +105,10 @@ function resolveTrainingMethodLearningRate(
 export function buildTrainingMethodPatch(
   state: Pick<
     TrainingConfigState,
-    "trainingMethod" | "trainingMethodProvenance" | "datasetFormat"
+    | "trainingMethod"
+    | "trainingMethodProvenance"
+    | "datasetFormat"
+    | "targetModules"
   >,
   nextMethod: TrainingMethod,
 ): TrainingMethodStatePatch {
@@ -101,7 +122,7 @@ export function buildTrainingMethodPatch(
     )
       ? null
       : state.datasetFormat;
-    Object.assign(patch, getCptTrainingPatch());
+    Object.assign(patch, getCptTrainingPatch(state.targetModules));
   }
   if (prevMethod === "cpt" && nextMethod !== "cpt") {
     Object.assign(patch, getRestoreFromCptPatch());

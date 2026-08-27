@@ -285,14 +285,21 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 : null;
 
             // Preserve CPT hyperparams: YAML adapter defaults are tuned for standard LoRA.
+            // Target modules are the exception - a model-specific default (e.g. LFM2's
+            // "all-linear") must survive into CPT rather than being clobbered by the
+            // generic Llama-style CPT fallback.
             const cptOverrides =
               shouldApplyTrainingDefaults && get().trainingMethod === "cpt"
-                ? getCptModelDefaultsPatch()
+                ? getCptModelDefaultsPatch(
+                    modelDefaultsPatch.targetModules ?? get().targetModules,
+                  )
                 : {};
             const modelDefaultsBaseline = {
               ...modelDefaultsPatch,
               ...(get().trainingMethod === "cpt"
-                ? getCptModelDefaultsPatch()
+                ? getCptModelDefaultsPatch(
+                    modelDefaultsPatch.targetModules ?? get().targetModules,
+                  )
                 : {}),
             };
             const advancedSettingsBaseline =
