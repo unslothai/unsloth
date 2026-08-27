@@ -205,6 +205,70 @@ export function recoveredGenerationFinalMetadata(options: {
   return next;
 }
 
+/**
+ * The reply as one string, with reasoning back inside `<think>` tags.
+ *
+ * The recovery follows a run by replaying its chunk events, so it keeps the
+ * reply as the text those chunks carried rather than as parts. This is the
+ * inverse of `parseAssistantContent`, and it is what lets a body that arrived
+ * as parts be compared against one that arrived as deltas.
+ */
+export function generationRawContent(content: unknown): {
+  raw: string;
+  reasoningOpen: boolean;
+} {
+  if (typeof content === "string") {
+    return { raw: content, reasoningOpen: false };
+  }
+  if (!Array.isArray(content)) return { raw: "", reasoningOpen: false };
+  let raw = "";
+  let reasoningOpen = false;
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const record = part as { type?: string; text?: unknown };
+    const text = typeof record.text === "string" ? record.text : "";
+    if (record.type === "reasoning") {
+      if (reasoningOpen) raw += text;
+      else raw += `<think>${text}`;
+      reasoningOpen = true;
+    } else if (record.type === "text") {
+      if (reasoningOpen) raw += "</think>";
+      raw += text;
+      reasoningOpen = false;
+    }
+  }
+  return { raw, reasoningOpen };
+}
+
+/**
+ * Which body a recovery publish should put in front of the reader.
+ *
+ * A recovery replays the run's events from the cursor the last save recorded,
+ * one publish per event, each publish paying a write to storage before the
+ * next event is read. When the run being replayed is the one this tab is also
+ * streaming, that walk is orders of magnitude behind the live stream, so its
+ * body is a PREFIX of what the reader is already looking at. Importing it
+ * rewinds the reply to its opening lines until the adapter's next yield
+ * restores it, which is the reasoning pane collapsing and recovering about
+ * twice a second.
+ *
+ * Prefix, not length: a body that genuinely disagrees with the view is the
+ * server's and still wins, because storage is authoritative for everything a
+ * recovery exists to repair. Only a body that carries nothing the view is not
+ * already showing is refused.
+ */
+export function recoveredContentToImport<TContent>(
+  viewContent: TContent,
+  recoveredContent: TContent,
+): TContent {
+  const view = generationRawContent(viewContent).raw;
+  const recovered = generationRawContent(recoveredContent).raw;
+  if (recovered.length < view.length && view.startsWith(recovered)) {
+    return viewContent;
+  }
+  return recoveredContent;
+}
+
 export function generationNeedsRecovery(
   metadata: Record<string, unknown>,
 ): boolean {
