@@ -61,7 +61,7 @@ def insert_adapter(
     status: str = STATUS_SHADOW,
     metrics: Any = None,
     adapter_id: Optional[str] = None,
-    db_path=None,
+    db_path = None,
 ) -> dict[str, Any]:
     if status not in ADAPTER_STATUSES:
         raise ValueError(f"unknown adapter status: {status}")
@@ -97,24 +97,22 @@ def insert_adapter(
         conn.commit()
     finally:
         conn.close()
-    found = get_adapter(aid, db_path=db_path)
+    found = get_adapter(aid, db_path = db_path)
     if found is None:
         raise RuntimeError("adapter insert did not persist")
     return found
 
 
-def get_adapter(adapter_id: str, *, db_path=None) -> Optional[dict[str, Any]]:
+def get_adapter(adapter_id: str, *, db_path = None) -> Optional[dict[str, Any]]:
     conn = get_connection(db_path)
     try:
-        row = conn.execute(
-            "SELECT * FROM adapters WHERE id = ?", (adapter_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM adapters WHERE id = ?", (adapter_id,)).fetchone()
         return _row_to_dict(row) if row else None
     finally:
         conn.close()
 
 
-def list_adapters(*, status: Optional[str] = None, db_path=None) -> list[dict[str, Any]]:
+def list_adapters(*, status: Optional[str] = None, db_path = None) -> list[dict[str, Any]]:
     if status is not None and status not in ADAPTER_STATUSES:
         raise ValueError(f"unknown adapter status: {status}")
     sql = "SELECT * FROM adapters"
@@ -131,9 +129,12 @@ def list_adapters(*, status: Optional[str] = None, db_path=None) -> list[dict[st
 
 
 def set_adapter_metrics(
-    adapter_id: str, metrics: dict, *, db_path=None
+    adapter_id: str,
+    metrics: dict,
+    *,
+    db_path = None,
 ) -> dict[str, Any]:
-    if get_adapter(adapter_id, db_path=db_path) is None:
+    if get_adapter(adapter_id, db_path = db_path) is None:
         raise KeyError(adapter_id)
     if isinstance(metrics, str):
         metrics_text = metrics
@@ -148,13 +149,13 @@ def set_adapter_metrics(
         conn.commit()
     finally:
         conn.close()
-    found = get_adapter(adapter_id, db_path=db_path)
+    found = get_adapter(adapter_id, db_path = db_path)
     if found is None:
         raise RuntimeError("adapter metrics did not persist")
     return found
 
 
-def get_promoted_adapter(*, db_path=None) -> Optional[dict[str, Any]]:
+def get_promoted_adapter(*, db_path = None) -> Optional[dict[str, Any]]:
     conn = get_connection(db_path)
     try:
         row = conn.execute(
@@ -176,7 +177,7 @@ def _set_status(
     status: str,
     *,
     promoted_at: Optional[str] = None,
-    db_path=None,
+    db_path = None,
 ) -> dict[str, Any]:
     conn = get_connection(db_path)
     try:
@@ -187,25 +188,30 @@ def _set_status(
         conn.commit()
     finally:
         conn.close()
-    found = get_adapter(adapter_id, db_path=db_path)
+    found = get_adapter(adapter_id, db_path = db_path)
     if found is None:
         raise RuntimeError("adapter update did not persist")
     return found
 
 
-def discard_adapter(adapter_id: str, *, db_path=None) -> dict[str, Any]:
-    row = get_adapter(adapter_id, db_path=db_path)
+def discard_adapter(adapter_id: str, *, db_path = None) -> dict[str, Any]:
+    row = get_adapter(adapter_id, db_path = db_path)
     if row is None:
         raise KeyError(adapter_id)
     if row["status"] == STATUS_DISCARDED:
         return row
     return _set_status(
-        adapter_id, STATUS_DISCARDED, promoted_at=row.get("promoted_at"), db_path=db_path
+        adapter_id, STATUS_DISCARDED, promoted_at = row.get("promoted_at"), db_path = db_path
     )
 
 
-def promote_adapter(adapter_id: str, *, force: bool = False, db_path=None) -> dict[str, Any]:
-    row = get_adapter(adapter_id, db_path=db_path)
+def promote_adapter(
+    adapter_id: str,
+    *,
+    force: bool = False,
+    db_path = None,
+) -> dict[str, Any]:
+    row = get_adapter(adapter_id, db_path = db_path)
     if row is None:
         raise KeyError(adapter_id)
     if row["status"] == STATUS_DISCARDED and not force:
@@ -235,14 +241,14 @@ def promote_adapter(adapter_id: str, *, force: bool = False, db_path=None) -> di
         conn.commit()
     finally:
         conn.close()
-    found = get_adapter(adapter_id, db_path=db_path)
+    found = get_adapter(adapter_id, db_path = db_path)
     if found is None:
         raise RuntimeError("adapter promote did not persist")
     return found
 
 
-def rollback_adapter(*, db_path=None) -> Optional[dict[str, Any]]:
-    current = get_promoted_adapter(db_path=db_path)
+def rollback_adapter(*, db_path = None) -> Optional[dict[str, Any]]:
+    current = get_promoted_adapter(db_path = db_path)
     if current is None:
         return None
-    return discard_adapter(current["id"], db_path=db_path)
+    return discard_adapter(current["id"], db_path = db_path)

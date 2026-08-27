@@ -23,7 +23,6 @@ STAKES_VALUES = frozenset({"high"})
 
 def memory_db_path() -> Path:
     from utils.paths import studio_root
-
     return studio_root() / "memory" / "memory.db"
 
 
@@ -117,8 +116,8 @@ def normalize_unforgettable_settings(raw: Any) -> dict[str, Any]:
         "skip_standing": bool(source.get("skip_standing") or False),
         "adapter_id": _coerce_optional_str(source.get("adapter_id")),
         "test_command": _coerce_optional_str(source.get("test_command")),
-        "max_clones": _coerce_optional_int(source.get("max_clones"), minimum=1),
-        "max_sim_turns": _coerce_optional_int(source.get("max_sim_turns"), minimum=1),
+        "max_clones": _coerce_optional_int(source.get("max_clones"), minimum = 1),
+        "max_sim_turns": _coerce_optional_int(source.get("max_sim_turns"), minimum = 1),
         "voter": voter_value,
         "voter_model": _coerce_optional_str(source.get("voter_model")),
         "supervisor_url": _coerce_optional_str(source.get("supervisor_url")),
@@ -129,7 +128,6 @@ def normalize_unforgettable_settings(raw: Any) -> dict[str, Any]:
 def _stored_settings() -> dict[str, Any]:
     try:
         from storage.studio_db import get_app_setting
-
         stored = get_app_setting(UNFORGETTABLE_SETTING_KEY, {})
     except Exception:
         stored = {}

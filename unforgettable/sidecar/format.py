@@ -42,11 +42,9 @@ def format_sft_item(rec: dict[str, Any]) -> list[dict[str, str]]:
     ]
 
 
-def _twin_note_episodes(*, db_path=None) -> set[str]:
+def _twin_note_episodes(*, db_path = None) -> set[str]:
     eps: set[str] = set()
-    for rec in list_records(
-        kinds=["twin_note"], statuses=["active"], db_path=db_path
-    ):
+    for rec in list_records(kinds = ["twin_note"], statuses = ["active"], db_path = db_path):
         eid = rec.get("source_episode_id")
         if eid:
             eps.add(eid)
@@ -68,18 +66,18 @@ def _fail_text_from_error_fix(rec: dict[str, Any]) -> str:
     return (rec.get("title") or "").strip()
 
 
-def preference_pairs(*, db_path=None, train_episode_ids: set[str] | None = None) -> list[dict]:
+def preference_pairs(*, db_path = None, train_episode_ids: set[str] | None = None) -> list[dict]:
     """World-pass + admitted error_fix pairs. Chosen is never sim-only."""
     # run() stores last fail and last pass per contact. Chosen is the admitted body.
     world_pass = {
         row["episode_id"]
-        for row in list_rollouts(contact="world", outcome="pass", db_path=db_path)
+        for row in list_rollouts(contact = "world", outcome = "pass", db_path = db_path)
         if row.get("episode_id")
     }
-    twin_eps = _twin_note_episodes(db_path=db_path)
+    twin_eps = _twin_note_episodes(db_path = db_path)
     pairs: list[dict] = []
     seen: set[str] = set()
-    for rec in list_records(kinds=["error_fix"], statuses=["active"], db_path=db_path):
+    for rec in list_records(kinds = ["error_fix"], statuses = ["active"], db_path = db_path):
         eid = rec.get("source_episode_id")
         if not eid or eid in seen or eid in twin_eps:
             continue

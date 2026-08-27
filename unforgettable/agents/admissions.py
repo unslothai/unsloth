@@ -20,7 +20,7 @@ from unforgettable.constants import DEFAULT_NAMESPACE_ID
 from unforgettable.store.records import ensure_default_namespace, get_namespace, log_admission
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class AdmissionDecision:
     status: str
     reason: str
@@ -33,14 +33,14 @@ def admit(
     explicit: bool,
     namespace_id: str = DEFAULT_NAMESPACE_ID,
     record_id: str | None = None,
-    db_path=None,
+    db_path = None,
     bookkeeping: bool = False,
     force_proposed_reason: str | None = None,
     persist_log: bool = True,
 ) -> AdmissionDecision:
     """Decide status before insert. Logs every decision unless persist_log is false."""
-    ensure_default_namespace(db_path=db_path)
-    ns = get_namespace(namespace_id, db_path=db_path)
+    ensure_default_namespace(db_path = db_path)
+    ns = get_namespace(namespace_id, db_path = db_path)
     mode = (ns or {}).get("admission") or "auto"
 
     if mode == "deny":
@@ -68,9 +68,9 @@ def admit(
 
     if persist_log:
         log_admission(
-            record_id=record_id,
-            decision=decision.status,
-            reason=decision.reason,
-            db_path=db_path,
+            record_id = record_id,
+            decision = decision.status,
+            reason = decision.reason,
+            db_path = db_path,
         )
     return decision

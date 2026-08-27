@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Optional, Protocol
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class RecognizedFailure:
     summary: str
     source: str  # world | sim | tool
@@ -32,7 +32,7 @@ class SimEyes(Protocol):
     def grade(self, name: str, result: str) -> Optional[RecognizedFailure]: ...
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class Contradiction:
     title_key: str
     record_ids: tuple[str, ...]
@@ -42,7 +42,7 @@ class Contradiction:
 class GateEyes(Protocol):
     def note(self, message: str) -> None: ...
 
-    def contradictions(self, db_path=None) -> list[Contradiction]: ...
+    def contradictions(self, db_path = None) -> list[Contradiction]: ...
 
     def review_write(
         self,
@@ -51,7 +51,7 @@ class GateEyes(Protocol):
         title: str,
         body: str,
         provenance: str,
-        db_path=None,
+        db_path = None,
         speaker: str | None = None,
         warrant: str | None = None,
     ) -> str:

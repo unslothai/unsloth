@@ -14,14 +14,14 @@ if _BACKEND_DIR not in sys.path:
 from utils import unforgettable_settings
 
 
-def _install_fake_studio_db(monkeypatch, *, stored=None):
+def _install_fake_studio_db(monkeypatch, *, stored = None):
     storage_pkg = types.ModuleType("storage")
     studio_db = types.ModuleType("storage.studio_db")
     values: dict[str, object] = {}
     if stored is not None:
         values[unforgettable_settings.UNFORGETTABLE_SETTING_KEY] = stored
 
-    def get_app_setting(key, fallback=None):
+    def get_app_setting(key, fallback = None):
         return values.get(key, fallback)
 
     def upsert_app_settings(settings):
@@ -37,11 +37,9 @@ def _install_fake_studio_db(monkeypatch, *, stored=None):
 
 def test_defaults_are_off(monkeypatch, tmp_path):
     _install_fake_studio_db(monkeypatch)
-    monkeypatch.setattr(
-        unforgettable_settings, "memory_db_path", lambda: tmp_path / "memory.db"
-    )
-    monkeypatch.delenv("UNFORGETTABLE_VOTER", raising=False)
-    monkeypatch.delenv("UNFORGETTABLE_PLANNER", raising=False)
+    monkeypatch.setattr(unforgettable_settings, "memory_db_path", lambda: tmp_path / "memory.db")
+    monkeypatch.delenv("UNFORGETTABLE_VOTER", raising = False)
+    monkeypatch.delenv("UNFORGETTABLE_PLANNER", raising = False)
     settings = unforgettable_settings.get_unforgettable_settings()
     assert settings["planner"] == "off"
     assert settings["filter"] == "on"
@@ -52,9 +50,7 @@ def test_defaults_are_off(monkeypatch, tmp_path):
 
 def test_set_and_episode_extras(monkeypatch, tmp_path):
     _install_fake_studio_db(monkeypatch)
-    monkeypatch.setattr(
-        unforgettable_settings, "memory_db_path", lambda: tmp_path / "memory.db"
-    )
+    monkeypatch.setattr(unforgettable_settings, "memory_db_path", lambda: tmp_path / "memory.db")
     updated = unforgettable_settings.set_unforgettable_settings(
         {
             "planner": "on",

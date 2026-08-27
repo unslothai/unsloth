@@ -32,7 +32,7 @@ class Action:
     FINISH = "finish"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class Policy:
     max_clones: int = 1
     max_sim_turns: int = 8
@@ -44,10 +44,7 @@ def default_policy() -> Policy:
 
 
 def require_confirm_retry(
-    *,
-    stakes: str | None,
-    permission_mode: str | None,
-    confirm_retry: bool | None,
+    *, stakes: str | None, permission_mode: str | None, confirm_retry: bool | None
 ) -> bool:
     if confirm_retry is False:
         return False
@@ -70,17 +67,21 @@ def policy_from_request(request: "EpisodeRequest") -> Policy:
     if requested_turns is not None and requested_turns >= 1:
         max_sim_turns = requested_turns
     return Policy(
-        max_clones=max_clones,
-        max_sim_turns=max_sim_turns,
-        require_confirm_retry=require_confirm_retry(
-            stakes=getattr(request, "stakes", None),
-            permission_mode=getattr(request, "permission_mode", None),
-            confirm_retry=getattr(request, "confirm_retry", None),
+        max_clones = max_clones,
+        max_sim_turns = max_sim_turns,
+        require_confirm_retry = require_confirm_retry(
+            stakes = getattr(request, "stakes", None),
+            permission_mode = getattr(request, "permission_mode", None),
+            confirm_retry = getattr(request, "confirm_retry", None),
         ),
     )
 
 
-def decide(event: str, state: "EpisodeState", policy: Policy | None = None) -> str:
+def decide(
+    event: str,
+    state: "EpisodeState",
+    policy: Policy | None = None,
+) -> str:
     """event: failure | success | finished."""
     pol = policy or default_policy()
     mode = state.contact

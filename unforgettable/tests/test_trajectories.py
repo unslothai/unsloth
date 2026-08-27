@@ -51,20 +51,20 @@ def _episode_with_rollout(
     summary: str,
 ):
     rec = insert_record(
-        kind="episode",
-        title=title,
-        body=body,
-        provenance="mixed",
-        source_episode_id=source_episode_id,
-        db_path=db_path,
+        kind = "episode",
+        title = title,
+        body = body,
+        provenance = "mixed",
+        source_episode_id = source_episode_id,
+        db_path = db_path,
     )
     rollout = insert_rollout(
-        episode_id=source_episode_id,
-        contact=contact,
-        outcome=outcome,
-        summary=summary,
-        source_record_id=rec["id"],
-        db_path=db_path,
+        episode_id = source_episode_id,
+        contact = contact,
+        outcome = outcome,
+        summary = summary,
+        source_record_id = rec["id"],
+        db_path = db_path,
     )
     return rec, rollout
 
@@ -72,23 +72,23 @@ def _episode_with_rollout(
 def test_query_matches_episode_user_text_not_other(db_path):
     login, login_rollout = _episode_with_rollout(
         db_path,
-        source_episode_id="ep-login1",
-        title="Episode login",
-        body=_LOGIN_BODY,
-        contact="world",
-        outcome="fail",
-        summary="traceback in app.py",
+        source_episode_id = "ep-login1",
+        title = "Episode login",
+        body = _LOGIN_BODY,
+        contact = "world",
+        outcome = "fail",
+        summary = "traceback in app.py",
     )
     _episode_with_rollout(
         db_path,
-        source_episode_id="ep-fmt000",
-        title="Episode formatter",
-        body=_FMT_BODY,
-        contact="world",
-        outcome="pass",
-        summary="tests: pytest",
+        source_episode_id = "ep-fmt000",
+        title = "Episode formatter",
+        body = _FMT_BODY,
+        contact = "world",
+        outcome = "pass",
+        summary = "tests: pytest",
     )
-    rows = retrieve_trajectories("xylophone login widget", db_path=db_path)
+    rows = retrieve_trajectories("xylophone login widget", db_path = db_path)
     assert [row["id"] for row in rows] == [login_rollout["id"]]
     assert rows[0]["episode_record_id"] == login["id"]
     assert rows[0]["episode_id"] == "ep-login1"
@@ -97,25 +97,25 @@ def test_query_matches_episode_user_text_not_other(db_path):
 def test_empty_query_returns_newest(db_path):
     _, older = _episode_with_rollout(
         db_path,
-        source_episode_id="ep-old000",
-        title="Episode old",
-        body="older xylophone run",
-        contact="world",
-        outcome="pass",
-        summary="older pass",
+        source_episode_id = "ep-old000",
+        title = "Episode old",
+        body = "older xylophone run",
+        contact = "world",
+        outcome = "pass",
+        summary = "older pass",
     )
     _, newer = _episode_with_rollout(
         db_path,
-        source_episode_id="ep-new000",
-        title="Episode new",
-        body="newer xylophone run",
-        contact="world",
-        outcome="pass",
-        summary="newer pass",
+        source_episode_id = "ep-new000",
+        title = "Episode new",
+        body = "newer xylophone run",
+        contact = "world",
+        outcome = "pass",
+        summary = "newer pass",
     )
     _set_rollout_created_at(older["id"], "2024-01-01T00:00:00+00:00", db_path)
     _set_rollout_created_at(newer["id"], "2024-06-01T00:00:00+00:00", db_path)
-    rows = retrieve_trajectories("", db_path=db_path)
+    rows = retrieve_trajectories("", db_path = db_path)
     assert rows
     assert rows[0]["id"] == newer["id"]
 
@@ -123,46 +123,46 @@ def test_empty_query_returns_newest(db_path):
 def test_sim_contact_ranks_sim_fail_above_world_pass(db_path):
     _, world_pass = _episode_with_rollout(
         db_path,
-        source_episode_id="ep-world1",
-        title="Episode world",
-        body="shared xylophone rehearsal",
-        contact="world",
-        outcome="pass",
-        summary="world passed",
+        source_episode_id = "ep-world1",
+        title = "Episode world",
+        body = "shared xylophone rehearsal",
+        contact = "world",
+        outcome = "pass",
+        summary = "world passed",
     )
     _, sim_fail = _episode_with_rollout(
         db_path,
-        source_episode_id="ep-sim000",
-        title="Episode sim",
-        body="shared xylophone rehearsal",
-        contact="sim",
-        outcome="fail",
-        summary="sim failed",
+        source_episode_id = "ep-sim000",
+        title = "Episode sim",
+        body = "shared xylophone rehearsal",
+        contact = "sim",
+        outcome = "fail",
+        summary = "sim failed",
     )
-    rows = retrieve_trajectories("", contact="sim", db_path=db_path)
+    rows = retrieve_trajectories("", contact = "sim", db_path = db_path)
     assert [row["id"] for row in rows] == [sim_fail["id"], world_pass["id"]]
 
 
 def test_high_stakes_drops_sim_rollouts(db_path):
     _, world = _episode_with_rollout(
         db_path,
-        source_episode_id="ep-world2",
-        title="Episode world",
-        body="shared xylophone rehearsal",
-        contact="world",
-        outcome="fail",
-        summary="world failed",
+        source_episode_id = "ep-world2",
+        title = "Episode world",
+        body = "shared xylophone rehearsal",
+        contact = "world",
+        outcome = "fail",
+        summary = "world failed",
     )
     _episode_with_rollout(
         db_path,
-        source_episode_id="ep-sim001",
-        title="Episode sim",
-        body="shared xylophone rehearsal",
-        contact="sim",
-        outcome="pass",
-        summary="sim passed",
+        source_episode_id = "ep-sim001",
+        title = "Episode sim",
+        body = "shared xylophone rehearsal",
+        contact = "sim",
+        outcome = "pass",
+        summary = "sim passed",
     )
-    rows = retrieve_trajectories("", high_stakes=True, db_path=db_path)
+    rows = retrieve_trajectories("", high_stakes = True, db_path = db_path)
     assert [row["id"] for row in rows] == [world["id"]]
     assert all(row["contact"] != "sim" for row in rows)
 
@@ -170,14 +170,14 @@ def test_high_stakes_drops_sim_rollouts(db_path):
 def test_format_trajectories_omits_episode_body(db_path):
     rec, rollout = _episode_with_rollout(
         db_path,
-        source_episode_id="ep8hex01",
-        title="Episode login",
-        body=_LOGIN_BODY,
-        contact="world",
-        outcome="fail",
-        summary="traceback in app.py",
+        source_episode_id = "ep8hex01",
+        title = "Episode login",
+        body = _LOGIN_BODY,
+        contact = "world",
+        outcome = "fail",
+        summary = "traceback in app.py",
     )
-    rows = retrieve_trajectories("xylophone", db_path=db_path)
+    rows = retrieve_trajectories("xylophone", db_path = db_path)
     text = format_trajectories(rows)
     assert text.startswith(TRAJECTORY_HEADER)
     assert f"- [{rollout['episode_id'][:8]}] world/fail: traceback in app.py" in text
@@ -190,16 +190,14 @@ def test_retrieve_trajectories_caps_at_two(db_path):
     for i in range(3):
         _, rollout = _episode_with_rollout(
             db_path,
-            source_episode_id=f"ep-cap{i:03d}",
-            title=f"Episode cap {i}",
-            body=f"shared xylophone cap {i}",
-            contact="world",
-            outcome="pass",
-            summary=f"cap {i}",
+            source_episode_id = f"ep-cap{i:03d}",
+            title = f"Episode cap {i}",
+            body = f"shared xylophone cap {i}",
+            contact = "world",
+            outcome = "pass",
+            summary = f"cap {i}",
         )
-        _set_rollout_created_at(
-            rollout["id"], f"2024-01-0{i + 1}T00:00:00+00:00", db_path
-        )
-    rows = retrieve_trajectories("", db_path=db_path)
+        _set_rollout_created_at(rollout["id"], f"2024-01-0{i + 1}T00:00:00+00:00", db_path)
+    rows = retrieve_trajectories("", db_path = db_path)
     assert len(rows) == TRAJECTORY_MAX_ROWS
     assert len(rows) == 2

@@ -47,7 +47,7 @@ def review_write(
     title: str,
     body: str,
     provenance: str,
-    db_path=None,
+    db_path = None,
     speaker: str | None = None,
     warrant: str | None = None,
 ) -> str:
@@ -63,9 +63,9 @@ def review_write(
     body_key = normalize_title(body)
     if kind == CONTRADICTION_KIND:
         for rec in list_records(
-            kinds=[CONTRADICTION_KIND],
-            statuses=[CONTRADICTION_STATUS],
-            db_path=db_path,
+            kinds = [CONTRADICTION_KIND],
+            statuses = [CONTRADICTION_STATUS],
+            db_path = db_path,
         ):
             if normalize_title(rec["title"]) != title_key:
                 continue
@@ -73,16 +73,16 @@ def review_write(
                 return f"{CONTRADICTS_PREFIX}{rec['id']}"
     if kind == PROCEDURE_KIND:
         for rec in list_records(
-            kinds=[PROCEDURE_KIND],
-            statuses=[CONTRADICTION_STATUS],
-            db_path=db_path,
+            kinds = [PROCEDURE_KIND],
+            statuses = [CONTRADICTION_STATUS],
+            db_path = db_path,
         ):
             if normalize_title(rec["title"]) != title_key:
                 continue
             if normalize_title(rec["body"]) != body_key:
                 return f"{CONTRADICTS_PREFIX}{rec['id']}"
     if is_who(incoming):
-        peer = colliding_what(incoming, db_path=db_path)
+        peer = colliding_what(incoming, db_path = db_path)
         if peer is not None:
             return f"{DISSONANCE_PREFIX}{peer['id']}"
         if kind in WHO_CANDIDATE_KINDS:
@@ -94,15 +94,15 @@ def review_write(
     return ""
 
 
-def colliding_what(rec: dict, *, db_path=None) -> dict | None:
+def colliding_what(rec: dict, *, db_path = None) -> dict | None:
     if not is_who(rec):
         return None
     title_key = normalize_title(rec.get("title") or "")
     skip_id = rec.get("id")
     for other in list_records(
-        kinds=list(WHAT_GATE_KINDS),
-        statuses=[CONTRADICTION_STATUS],
-        db_path=db_path,
+        kinds = list(WHAT_GATE_KINDS),
+        statuses = [CONTRADICTION_STATUS],
+        db_path = db_path,
     ):
         if skip_id and other["id"] == skip_id:
             continue
@@ -113,10 +113,10 @@ def colliding_what(rec: dict, *, db_path=None) -> dict | None:
     return None
 
 
-def contradictions(db_path=None) -> list[Contradiction]:
+def contradictions(db_path = None) -> list[Contradiction]:
     groups: dict[str, list] = defaultdict(list)
-    active = list_records(statuses=[CONTRADICTION_STATUS], db_path=db_path)
-    proposed = list_records(statuses=["proposed"], db_path=db_path)
+    active = list_records(statuses = [CONTRADICTION_STATUS], db_path = db_path)
+    proposed = list_records(statuses = ["proposed"], db_path = db_path)
     for rec in active:
         if rec.get("kind") in {CONTRADICTION_KIND, PROCEDURE_KIND}:
             groups[normalize_title(rec["title"])].append(rec)
@@ -129,9 +129,9 @@ def contradictions(db_path=None) -> list[Contradiction]:
             continue
         found.append(
             Contradiction(
-                title_key=title_key,
-                record_ids=tuple(rec["id"] for rec in recs),
-                reason=CONTRADICTION_REASON,
+                title_key = title_key,
+                record_ids = tuple(rec["id"] for rec in recs),
+                reason = CONTRADICTION_REASON,
             )
         )
         seen_titles.add(title_key)
@@ -142,9 +142,7 @@ def contradictions(db_path=None) -> list[Contradiction]:
         if title_key in seen_titles:
             continue
         recs = by_title[title_key]
-        who_ids = tuple(
-            rec["id"] for rec in recs if is_who(rec)
-        )
+        who_ids = tuple(rec["id"] for rec in recs if is_who(rec))
         what_ids = tuple(
             rec["id"]
             for rec in recs
@@ -156,25 +154,30 @@ def contradictions(db_path=None) -> list[Contradiction]:
             continue
         found.append(
             Contradiction(
-                title_key=title_key,
-                record_ids=what_ids + who_ids,
-                reason=DISSONANCE_REASON,
+                title_key = title_key,
+                record_ids = what_ids + who_ids,
+                reason = DISSONANCE_REASON,
             )
         )
     return found
 
 
 class LogGateEyes:
-    def note(self, message: str, *, db_path=None) -> None:
+    def note(
+        self,
+        message: str,
+        *,
+        db_path = None,
+    ) -> None:
         log_admission(
-            record_id=None,
-            decision=NOTE_DECISION,
-            reason=message,
-            db_path=db_path,
+            record_id = None,
+            decision = NOTE_DECISION,
+            reason = message,
+            db_path = db_path,
         )
 
-    def contradictions(self, db_path=None) -> list[Contradiction]:
-        return contradictions(db_path=db_path)
+    def contradictions(self, db_path = None) -> list[Contradiction]:
+        return contradictions(db_path = db_path)
 
     def review_write(
         self,
@@ -183,16 +186,16 @@ class LogGateEyes:
         title: str,
         body: str,
         provenance: str,
-        db_path=None,
+        db_path = None,
         speaker: str | None = None,
         warrant: str | None = None,
     ) -> str:
         return review_write(
-            kind=kind,
-            title=title,
-            body=body,
-            provenance=provenance,
-            db_path=db_path,
-            speaker=speaker,
-            warrant=warrant,
+            kind = kind,
+            title = title,
+            body = body,
+            provenance = provenance,
+            db_path = db_path,
+            speaker = speaker,
+            warrant = warrant,
         )

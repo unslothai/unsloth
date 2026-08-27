@@ -57,15 +57,15 @@ def _row_to_dict(row) -> dict[str, Any]:
     return dict(row)
 
 
-def ensure_default_namespace(db_path=None) -> dict[str, Any]:
-    existing = get_namespace(DEFAULT_NAMESPACE_ID, db_path=db_path)
+def ensure_default_namespace(db_path = None) -> dict[str, Any]:
+    existing = get_namespace(DEFAULT_NAMESPACE_ID, db_path = db_path)
     if existing:
         return existing
     return create_namespace(
-        namespace_id=DEFAULT_NAMESPACE_ID,
-        name=DEFAULT_NAMESPACE_NAME,
-        admission="auto",
-        db_path=db_path,
+        namespace_id = DEFAULT_NAMESPACE_ID,
+        name = DEFAULT_NAMESPACE_NAME,
+        admission = "auto",
+        db_path = db_path,
     )
 
 
@@ -74,7 +74,7 @@ def create_namespace(
     name: str,
     admission: str = "auto",
     namespace_id: Optional[str] = None,
-    db_path=None,
+    db_path = None,
 ) -> dict[str, Any]:
     if admission not in ADMISSION_MODES:
         raise ValueError(f"unknown admission mode: {admission}")
@@ -88,18 +88,16 @@ def create_namespace(
         conn.commit()
     finally:
         conn.close()
-    found = get_namespace(ns_id, db_path=db_path)
+    found = get_namespace(ns_id, db_path = db_path)
     if found is None:
         raise RuntimeError("namespace insert did not persist")
     return found
 
 
-def get_namespace(namespace_id: str, db_path=None) -> Optional[dict[str, Any]]:
+def get_namespace(namespace_id: str, db_path = None) -> Optional[dict[str, Any]]:
     conn = get_connection(db_path)
     try:
-        row = conn.execute(
-            "SELECT * FROM namespaces WHERE id = ?", (namespace_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM namespaces WHERE id = ?", (namespace_id,)).fetchone()
         return _row_to_dict(row) if row else None
     finally:
         conn.close()
@@ -121,7 +119,7 @@ def insert_record(
     speaker_label: Optional[str] = None,
     warrant: Optional[str] = None,
     record_id: Optional[str] = None,
-    db_path=None,
+    db_path = None,
 ) -> dict[str, Any]:
     if kind not in KINDS:
         raise ValueError(f"unknown kind: {kind}")
@@ -133,21 +131,21 @@ def insert_record(
     body = _clip(body, RECORD_BODY_CHARS)
     contact = contact_tag or provenance
     resolved_speaker = resolve_speaker(
-        speaker=speaker,
-        provenance=provenance,
-        kind=kind,
-        contact_tag=contact,
+        speaker = speaker,
+        provenance = provenance,
+        kind = kind,
+        contact_tag = contact,
     )
     if resolved_speaker not in SPEAKERS:
         raise ValueError(f"unknown speaker: {resolved_speaker}")
     warrant_text = _clip(warrant or "", WARRANT_CHARS)
     provenance = coerce_unbacked_user_provenance(
-        provenance, speaker=resolved_speaker, warrant=warrant_text
+        provenance, speaker = resolved_speaker, warrant = warrant_text
     )
     label = _clip(speaker_label or "", SPEAKER_LABEL_CHARS) or None
-    ensure_default_namespace(db_path=db_path)
+    ensure_default_namespace(db_path = db_path)
     ns = namespace_id or DEFAULT_NAMESPACE_ID
-    if get_namespace(ns, db_path=db_path) is None:
+    if get_namespace(ns, db_path = db_path) is None:
         raise ValueError(f"unknown namespace: {ns}")
     rid = record_id or str(uuid.uuid4())
     now = _now()
@@ -187,13 +185,13 @@ def insert_record(
         conn.commit()
     finally:
         conn.close()
-    found = get_record(rid, db_path=db_path)
+    found = get_record(rid, db_path = db_path)
     if found is None:
         raise RuntimeError("record insert did not persist")
     return found
 
 
-def get_record(record_id: str, db_path=None) -> Optional[dict[str, Any]]:
+def get_record(record_id: str, db_path = None) -> Optional[dict[str, Any]]:
     conn = get_connection(db_path)
     try:
         row = conn.execute("SELECT * FROM records WHERE id = ?", (record_id,)).fetchone()
@@ -209,7 +207,7 @@ def list_records(
     kinds: Optional[Iterable[str]] = None,
     limit: Optional[int] = None,
     offset: Optional[int] = None,
-    db_path=None,
+    db_path = None,
 ) -> list[dict[str, Any]]:
     clauses = []
     args: list[Any] = []
@@ -246,11 +244,7 @@ def list_records(
         conn.close()
 
 
-def summarize_records(
-    *,
-    namespace_id: Optional[str] = None,
-    db_path=None,
-) -> dict[str, Any]:
+def summarize_records(*, namespace_id: Optional[str] = None, db_path = None) -> dict[str, Any]:
     """Count records by status, kind, and provenance. Empty buckets stay 0."""
     clauses = []
     args: list[Any] = []
@@ -302,10 +296,10 @@ def update_proposed_record(
     *,
     title: Optional[str] = None,
     body: Optional[str] = None,
-    db_path=None,
+    db_path = None,
 ) -> dict[str, Any]:
     """In-place title/body edit. Refuses anything that is not proposed."""
-    rec = get_record(record_id, db_path=db_path)
+    rec = get_record(record_id, db_path = db_path)
     if rec is None:
         raise KeyError(record_id)
     if rec["status"] != "proposed":
@@ -322,7 +316,7 @@ def update_proposed_record(
         conn.commit()
     finally:
         conn.close()
-    found = get_record(record_id, db_path=db_path)
+    found = get_record(record_id, db_path = db_path)
     if found is None:
         raise RuntimeError("proposed update did not persist")
     return found
@@ -349,9 +343,9 @@ def supersede_record(
     speaker: Optional[str] = None,
     speaker_label: Optional[str] = None,
     warrant: Optional[str] = None,
-    db_path=None,
+    db_path = None,
 ) -> dict[str, Any]:
-    old = get_record(record_id, db_path=db_path)
+    old = get_record(record_id, db_path = db_path)
     if old is None:
         raise KeyError(record_id)
     if status not in STATUSES:
@@ -361,10 +355,10 @@ def supersede_record(
         raise ValueError(f"unknown provenance: {new_prov}")
     contact = contact_tag if contact_tag is not None else new_prov
     resolved_speaker = resolve_speaker(
-        speaker=speaker if speaker is not None else old.get("speaker"),
-        provenance=new_prov,
-        kind=old["kind"],
-        contact_tag=contact,
+        speaker = speaker if speaker is not None else old.get("speaker"),
+        provenance = new_prov,
+        kind = old["kind"],
+        contact_tag = contact,
     )
     if resolved_speaker not in SPEAKERS:
         raise ValueError(f"unknown speaker: {resolved_speaker}")
@@ -373,7 +367,7 @@ def supersede_record(
         WARRANT_CHARS,
     )
     new_prov = coerce_unbacked_user_provenance(
-        new_prov, speaker=resolved_speaker, warrant=warrant_text
+        new_prov, speaker = resolved_speaker, warrant = warrant_text
     )
     label = speaker_label if speaker_label is not None else old.get("speaker_label")
     label = _clip(label or "", SPEAKER_LABEL_CHARS) or None
@@ -421,14 +415,19 @@ def supersede_record(
         conn.commit()
     finally:
         conn.close()
-    found = get_record(rid, db_path=db_path)
+    found = get_record(rid, db_path = db_path)
     if found is None:
         raise RuntimeError("supersede did not persist")
     return found
 
 
-def deprecate_record(record_id: str, *, reason: Optional[str] = None, db_path=None) -> dict[str, Any]:
-    rec = get_record(record_id, db_path=db_path)
+def deprecate_record(
+    record_id: str,
+    *,
+    reason: Optional[str] = None,
+    db_path = None,
+) -> dict[str, Any]:
+    rec = get_record(record_id, db_path = db_path)
     if rec is None:
         raise KeyError(record_id)
     now = _now()
@@ -445,7 +444,7 @@ def deprecate_record(record_id: str, *, reason: Optional[str] = None, db_path=No
         conn.commit()
     finally:
         conn.close()
-    found = get_record(record_id, db_path=db_path)
+    found = get_record(record_id, db_path = db_path)
     if found is None:
         raise RuntimeError("deprecate did not persist")
     return found
@@ -456,7 +455,7 @@ def log_admission(
     record_id: Optional[str],
     decision: str,
     reason: str,
-    db_path=None,
+    db_path = None,
 ) -> None:
     conn = get_connection(db_path)
     try:
@@ -473,7 +472,7 @@ def list_admissions(
     *,
     limit: int = DEFAULT_ADMISSIONS_LIMIT,
     decision: Optional[str] = None,
-    db_path=None,
+    db_path = None,
 ) -> list[dict[str, Any]]:
     clauses = []
     args: list[Any] = []
@@ -498,11 +497,11 @@ def set_record_status(
     status: str,
     *,
     reason: Optional[str] = None,
-    db_path=None,
+    db_path = None,
 ) -> dict[str, Any]:
     if status not in STATUSES:
         raise ValueError(f"unknown status: {status}")
-    rec = get_record(record_id, db_path=db_path)
+    rec = get_record(record_id, db_path = db_path)
     if rec is None:
         raise KeyError(record_id)
     now = _now()
@@ -525,12 +524,12 @@ def set_record_status(
         conn.close()
     if reason is not None:
         log_admission(
-            record_id=record_id,
-            decision=status,
-            reason=reason,
-            db_path=db_path,
+            record_id = record_id,
+            decision = status,
+            reason = reason,
+            db_path = db_path,
         )
-    found = get_record(record_id, db_path=db_path)
+    found = get_record(record_id, db_path = db_path)
     if found is None:
         raise RuntimeError("status update did not persist")
     return found
@@ -544,7 +543,7 @@ def insert_rollout(
     summary: str,
     source_record_id: Optional[str] = None,
     rollout_id: Optional[str] = None,
-    db_path=None,
+    db_path = None,
 ) -> dict[str, Any]:
     if contact not in ROLLOUT_CONTACTS:
         raise ValueError(f"unknown rollout contact: {contact}")
@@ -566,18 +565,16 @@ def insert_rollout(
         conn.commit()
     finally:
         conn.close()
-    found = _get_rollout(rid, db_path=db_path)
+    found = _get_rollout(rid, db_path = db_path)
     if found is None:
         raise RuntimeError("rollout insert did not persist")
     return found
 
 
-def _get_rollout(rollout_id: str, db_path=None) -> Optional[dict[str, Any]]:
+def _get_rollout(rollout_id: str, db_path = None) -> Optional[dict[str, Any]]:
     conn = get_connection(db_path)
     try:
-        row = conn.execute(
-            "SELECT * FROM rollouts WHERE id = ?", (rollout_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM rollouts WHERE id = ?", (rollout_id,)).fetchone()
         return _row_to_dict(row) if row else None
     finally:
         conn.close()
@@ -589,7 +586,7 @@ def list_rollouts(
     contact: Optional[str] = None,
     outcome: Optional[str] = None,
     limit: Optional[int] = None,
-    db_path=None,
+    db_path = None,
 ) -> list[dict[str, Any]]:
     clauses: list[str] = []
     args: list[Any] = []
@@ -623,7 +620,7 @@ def insert_retrieve_use(
     record_id: str,
     contact: str,
     use_id: Optional[str] = None,
-    db_path=None,
+    db_path = None,
 ) -> dict[str, Any]:
     if contact not in ROLLOUT_CONTACTS:
         raise ValueError(f"unknown retrieve contact: {contact}")
@@ -642,18 +639,16 @@ def insert_retrieve_use(
         conn.commit()
     finally:
         conn.close()
-    found = _get_retrieve_use(rid, db_path=db_path)
+    found = _get_retrieve_use(rid, db_path = db_path)
     if found is None:
         raise RuntimeError("retrieve_use insert did not persist")
     return found
 
 
-def _get_retrieve_use(use_id: str, db_path=None) -> Optional[dict[str, Any]]:
+def _get_retrieve_use(use_id: str, db_path = None) -> Optional[dict[str, Any]]:
     conn = get_connection(db_path)
     try:
-        row = conn.execute(
-            "SELECT * FROM retrieve_uses WHERE id = ?", (use_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM retrieve_uses WHERE id = ?", (use_id,)).fetchone()
         return _row_to_dict(row) if row else None
     finally:
         conn.close()
@@ -670,7 +665,7 @@ def insert_inject_stats(
     compiled_ids: str,
     retrieved_ids: str,
     stats_id: Optional[str] = None,
-    db_path=None,
+    db_path = None,
 ) -> dict[str, Any]:
     if contact not in ROLLOUT_CONTACTS:
         raise ValueError(f"unknown inject contact: {contact}")
@@ -702,24 +697,22 @@ def insert_inject_stats(
         conn.commit()
     finally:
         conn.close()
-    found = _get_inject_stats(rid, db_path=db_path)
+    found = _get_inject_stats(rid, db_path = db_path)
     if found is None:
         raise RuntimeError("inject_stats insert did not persist")
     return found
 
 
-def _get_inject_stats(stats_id: str, db_path=None) -> Optional[dict[str, Any]]:
+def _get_inject_stats(stats_id: str, db_path = None) -> Optional[dict[str, Any]]:
     conn = get_connection(db_path)
     try:
-        row = conn.execute(
-            "SELECT * FROM inject_stats WHERE id = ?", (stats_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM inject_stats WHERE id = ?", (stats_id,)).fetchone()
         return _row_to_dict(row) if row else None
     finally:
         conn.close()
 
 
-def list_inject_stats(*, limit: int = 20, db_path=None) -> list[dict[str, Any]]:
+def list_inject_stats(*, limit: int = 20, db_path = None) -> list[dict[str, Any]]:
     conn = get_connection(db_path)
     try:
         rows = conn.execute(
@@ -735,7 +728,7 @@ def list_retrieve_uses(
     *,
     episode_id: Optional[str] = None,
     limit: int = 50,
-    db_path=None,
+    db_path = None,
 ) -> list[dict[str, Any]]:
     clauses = []
     args: list[Any] = []

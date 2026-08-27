@@ -44,9 +44,9 @@ def test_copy_context_carries_episode_into_worker(tmp_path):
         )
         note_tool_result("memory_write", {"title": "From worker"}, "ok")
 
-    tokens, traces = bind_episode(db_path=db, episode_id="ep-ctx")
+    tokens, traces = bind_episode(db_path = db, episode_id = "ep-ctx")
     try:
-        thread = threading.Thread(target=contextvars.copy_context().run, args=(worker,))
+        thread = threading.Thread(target = contextvars.copy_context().run, args = (worker,))
         thread.start()
         thread.join()
         from unforgettable.loop.runtime import current_traces
@@ -55,7 +55,7 @@ def test_copy_context_carries_episode_into_worker(tmp_path):
     finally:
         reset_episode(tokens)
     assert seen["db"] == db
-    rows = list_records(db_path=db)
+    rows = list_records(db_path = db)
     assert any(row["title"] == "From worker" for row in rows)
     assert any(t.name == "memory_write" for t in after)
 
@@ -67,9 +67,9 @@ def test_raw_thread_does_not_see_episode_db(tmp_path):
     def worker() -> None:
         seen["db"] = current_db_path()
 
-    tokens, _ = bind_episode(db_path=db, episode_id="ep-raw")
+    tokens, _ = bind_episode(db_path = db, episode_id = "ep-raw")
     try:
-        thread = threading.Thread(target=worker)
+        thread = threading.Thread(target = worker)
         thread.start()
         thread.join()
     finally:

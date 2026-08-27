@@ -4426,7 +4426,6 @@ async def _select_request_tools(
     try:
         from core.unforgettable_host import in_inner_generate
         from unforgettable.tools.specs import CONTACT_TOOL_NAMES, MEMORY_TOOL_NAMES
-
         if not in_inner_generate():
             skip = MEMORY_TOOL_NAMES | CONTACT_TOOL_NAMES
             tools = [t for t in tools if t["function"]["name"] not in skip]

@@ -99,10 +99,10 @@ def _coerce_tool_speaker(claimed: str, *, kind: str, provenance: str) -> str:
     if claimed in SPEAKERS:
         return claimed
     return resolve_speaker(
-        speaker=None,
-        provenance=provenance,
-        kind=kind,
-        contact_tag=current_contact(),
+        speaker = None,
+        provenance = provenance,
+        kind = kind,
+        contact_tag = current_contact(),
     )
 
 
@@ -116,7 +116,12 @@ def _tool_namespace() -> str:
     return current_namespace() or DEFAULT_NAMESPACE_ID
 
 
-def dispatch(name: str, arguments: dict[str, Any] | None, *, db_path=None) -> str:
+def dispatch(
+    name: str,
+    arguments: dict[str, Any] | None,
+    *,
+    db_path = None,
+) -> str:
     args = arguments or {}
     name = (name or "").replace(".", "_")
     if name == "rims_enter_sim":
@@ -125,19 +130,19 @@ def dispatch(name: str, arguments: dict[str, Any] | None, *, db_path=None) -> st
     if path is None:
         return UNBOUND_DB_ERROR
     if name == "memory_write":
-        return _write(args, db_path=path)
+        return _write(args, db_path = path)
     if name == "memory_search":
-        return _search(args, db_path=path)
+        return _search(args, db_path = path)
     if name == "memory_get":
-        return _get(args, db_path=path)
+        return _get(args, db_path = path)
     if name == "memory_supersede":
-        return _supersede(args, db_path=path)
+        return _supersede(args, db_path = path)
     if name == "memory_deprecate":
-        return _deprecate(args, db_path=path)
+        return _deprecate(args, db_path = path)
     if name == "memory_compact":
-        return _compact(args, db_path=path)
+        return _compact(args, db_path = path)
     if name == "memory_compile":
-        return _compile(args, db_path=path)
+        return _compile(args, db_path = path)
     return f"Error: unknown memory tool '{name}'"
 
 
@@ -160,71 +165,69 @@ def _write(args: dict[str, Any], *, db_path) -> str:
             return "Error: write body was stripped as coercion or manipulation"
         body = filtered
     speaker = _coerce_tool_speaker(
-        _optional_text(args, "speaker"), kind=kind, provenance=provenance
+        _optional_text(args, "speaker"), kind = kind, provenance = provenance
     )
     warrant = _optional_text(args, "warrant")
     speaker_label = _optional_text(args, "speaker_label") or None
     if speaker == SPEAKER_USER and not speaker_label:
         speaker_label = current_user_label()
-    provenance = coerce_unbacked_user_provenance(
-        provenance, speaker=speaker, warrant=warrant
-    )
+    provenance = coerce_unbacked_user_provenance(provenance, speaker = speaker, warrant = warrant)
     namespace = _tool_namespace()
     review_reason = review_write(
-        kind=kind,
-        title=title,
-        body=body,
-        provenance=provenance,
-        db_path=db_path,
-        speaker=speaker,
-        warrant=warrant,
+        kind = kind,
+        title = title,
+        body = body,
+        provenance = provenance,
+        db_path = db_path,
+        speaker = speaker,
+        warrant = warrant,
     )
     rid = str(uuid.uuid4())
     decision = admit(
-        kind=kind,
-        provenance=provenance,
-        explicit=True,
-        namespace_id=namespace,
-        record_id=rid,
-        db_path=db_path,
-        force_proposed_reason=review_reason or None,
-        persist_log=False,
+        kind = kind,
+        provenance = provenance,
+        explicit = True,
+        namespace_id = namespace,
+        record_id = rid,
+        db_path = db_path,
+        force_proposed_reason = review_reason or None,
+        persist_log = False,
     )
     if decision.status == "rejected":
         log_admission(
-            record_id=rid,
-            decision=decision.status,
-            reason=decision.reason,
-            db_path=db_path,
+            record_id = rid,
+            decision = decision.status,
+            reason = decision.reason,
+            db_path = db_path,
         )
         return NAMESPACE_DENY_ERROR
     try:
         rec = insert_record(
-            kind=kind,
-            title=title,
-            body=body,
-            provenance=provenance,
-            status=decision.status,
-            namespace_id=namespace,
-            source_episode_id=current_episode_id(),
-            contact_tag=current_contact(),
-            speaker=speaker,
-            speaker_label=speaker_label,
-            warrant=warrant,
-            record_id=rid,
-            db_path=db_path,
+            kind = kind,
+            title = title,
+            body = body,
+            provenance = provenance,
+            status = decision.status,
+            namespace_id = namespace,
+            source_episode_id = current_episode_id(),
+            contact_tag = current_contact(),
+            speaker = speaker,
+            speaker_label = speaker_label,
+            warrant = warrant,
+            record_id = rid,
+            db_path = db_path,
         )
     except ValueError as exc:
         return f"Error: {exc}"
     log_admission(
-        record_id=rec["id"],
-        decision=decision.status,
-        reason=decision.reason,
-        db_path=db_path,
+        record_id = rec["id"],
+        decision = decision.status,
+        reason = decision.reason,
+        db_path = db_path,
     )
     return json.dumps(
         {"id": rec["id"], "status": rec["status"], "admission": decision.reason},
-        indent=2,
+        indent = 2,
     )
 
 
@@ -251,11 +254,11 @@ def _search(args: dict[str, Any], *, db_path) -> str:
         provenances = [str(args["provenance"])]
     hits = search_records(
         query,
-        top_k=top_k,
-        kinds=kinds,
-        provenances=provenances,
-        namespace_id=_tool_namespace(),
-        db_path=db_path,
+        top_k = top_k,
+        kinds = kinds,
+        provenances = provenances,
+        namespace_id = _tool_namespace(),
+        db_path = db_path,
     )
     if not hits:
         return "No matching active memories."
@@ -271,16 +274,16 @@ def _search(args: dict[str, Any], *, db_path) -> str:
             }
             for h in hits
         ],
-        indent=2,
+        indent = 2,
     )
 
 
 def _get(args: dict[str, Any], *, db_path) -> str:
     rid = str(args.get("id") or "")
-    rec = get_record(rid, db_path=db_path)
+    rec = get_record(rid, db_path = db_path)
     if rec is None:
         return f"Error: no record {rid}"
-    return json.dumps(rec, indent=2, default=str)
+    return json.dumps(rec, indent = 2, default = str)
 
 
 def _supersede(args: dict[str, Any], *, db_path) -> str:
@@ -288,7 +291,7 @@ def _supersede(args: dict[str, Any], *, db_path) -> str:
     body = args.get("body")
     if not rid or body is None:
         return "Error: id and body are required."
-    old = get_record(rid, db_path=db_path)
+    old = get_record(rid, db_path = db_path)
     if old is None:
         return f"Error: no record {rid}"
     if old["status"] == "rejected":
@@ -308,75 +311,69 @@ def _supersede(args: dict[str, Any], *, db_path) -> str:
         body_text = filtered
     speaker = _coerce_tool_speaker(
         _optional_text(args, "speaker") or old.get("speaker") or "",
-        kind=old["kind"],
-        provenance=new_prov,
+        kind = old["kind"],
+        provenance = new_prov,
     )
-    warrant = (
-        _optional_text(args, "warrant")
-        if "warrant" in args
-        else (old.get("warrant") or "")
-    )
+    warrant = _optional_text(args, "warrant") if "warrant" in args else (old.get("warrant") or "")
     speaker_label = (
         _optional_text(args, "speaker_label")
         if "speaker_label" in args
         else old.get("speaker_label")
     )
-    new_prov = coerce_unbacked_user_provenance(
-        new_prov, speaker=speaker, warrant=warrant
-    )
+    new_prov = coerce_unbacked_user_provenance(new_prov, speaker = speaker, warrant = warrant)
     review_reason = review_write(
-        kind=old["kind"],
-        title=new_title,
-        body=body_text,
-        provenance=new_prov,
-        db_path=db_path,
-        speaker=speaker,
-        warrant=warrant,
+        kind = old["kind"],
+        title = new_title,
+        body = body_text,
+        provenance = new_prov,
+        db_path = db_path,
+        speaker = speaker,
+        warrant = warrant,
     )
     new_id = str(uuid.uuid4())
     # Supersede corrects; it must not promote a proposed extract to active.
     decision = admit(
-        kind=old["kind"],
-        provenance=new_prov,
-        explicit=old["status"] == "active",
-        namespace_id=old["namespace_id"],
-        record_id=new_id,
-        db_path=db_path,
-        force_proposed_reason=review_reason or None,
-        persist_log=False,
+        kind = old["kind"],
+        provenance = new_prov,
+        explicit = old["status"] == "active",
+        namespace_id = old["namespace_id"],
+        record_id = new_id,
+        db_path = db_path,
+        force_proposed_reason = review_reason or None,
+        persist_log = False,
     )
     if old["status"] != "active" and decision.status == "active":
         decision = AdmissionDecision("proposed", "supersede does not promote")
     if decision.status == "rejected":
         log_admission(
-            record_id=new_id,
-            decision=decision.status,
-            reason=decision.reason,
-            db_path=db_path,
+            record_id = new_id,
+            decision = decision.status,
+            reason = decision.reason,
+            db_path = db_path,
         )
         return NAMESPACE_DENY_ERROR
     try:
         rec = supersede_record(
             rid,
-            body=body_text,
-            title=new_title,
-            provenance=new_prov,
-            source_episode_id=current_episode_id(),
-            status=decision.status,
-            new_id=new_id,
-            contact_tag=current_contact(),
-            speaker=speaker,
-            speaker_label=speaker_label or None,
-            warrant=warrant,
-            db_path=db_path,
+            body = body_text,
+            title = new_title,
+            provenance = new_prov,
+            source_episode_id = current_episode_id(),
+            status = decision.status,
+            new_id = new_id,
+            contact_tag = current_contact(),
+            speaker = speaker,
+            speaker_label = speaker_label or None,
+            warrant = warrant,
+            db_path = db_path,
         )
     except (KeyError, ValueError) as exc:
         return f"Error: {exc}"
     log_admission(
-        record_id=rec["id"],
-        decision=decision.status,
-        reason=decision.reason,
-        db_path=db_path,
+        record_id = rec["id"],
+        decision = decision.status,
+        reason = decision.reason,
+        db_path = db_path,
     )
     return json.dumps(
         {
@@ -385,7 +382,7 @@ def _supersede(args: dict[str, Any], *, db_path) -> str:
             "status": rec["status"],
             "admission": decision.reason,
         },
-        indent=2,
+        indent = 2,
     )
 
 
@@ -394,10 +391,10 @@ def _deprecate(args: dict[str, Any], *, db_path) -> str:
     if not rid:
         return "Error: id is required."
     try:
-        rec = deprecate_record(rid, reason=args.get("reason"), db_path=db_path)
+        rec = deprecate_record(rid, reason = args.get("reason"), db_path = db_path)
     except KeyError:
         return f"Error: no record {rid}"
-    return json.dumps({"id": rec["id"], "status": rec["status"]}, indent=2)
+    return json.dumps({"id": rec["id"], "status": rec["status"]}, indent = 2)
 
 
 def _compact(args: dict[str, Any], *, db_path) -> str:
@@ -411,10 +408,8 @@ def _compact(args: dict[str, Any], *, db_path) -> str:
             older_than_days = int(older)
         except (TypeError, ValueError):
             older_than_days = None
-    report = run_compact(
-        db_path=db_path, dry_run=bool(dry_run), older_than_days=older_than_days
-    )
-    return json.dumps(_report_payload(report), indent=2)
+    report = run_compact(db_path = db_path, dry_run = bool(dry_run), older_than_days = older_than_days)
+    return json.dumps(_report_payload(report), indent = 2)
 
 
 def _dry_run(args: dict[str, Any]) -> bool:
@@ -428,18 +423,18 @@ def _compile(args: dict[str, Any], *, db_path) -> str:
     dry_run = _dry_run(args)
     rid = str(args.get("id") or "").strip()
     if rid:
-        return _compile_one(rid, dry_run=dry_run, db_path=db_path)
-    return _compile_maybe(dry_run=dry_run, db_path=db_path)
+        return _compile_one(rid, dry_run = dry_run, db_path = db_path)
+    return _compile_maybe(dry_run = dry_run, db_path = db_path)
 
 
 def _maybe_compile_candidates(db_path) -> list[str]:
     would_pin: list[str] = []
-    for rec in list_records(kinds=["procedure"], statuses=["active"], db_path=db_path):
+    for rec in list_records(kinds = ["procedure"], statuses = ["active"], db_path = db_path):
         rid = rec["id"]
-        if get_compiled(rid, db_path=db_path) is not None:
+        if get_compiled(rid, db_path = db_path) is not None:
             continue
-        hits = procedure_hits(rid, db_path=db_path)
-        if is_compile_candidate(rec, hits=hits, explicit=False):
+        hits = procedure_hits(rid, db_path = db_path)
+        if is_compile_candidate(rec, hits = hits, explicit = False):
             would_pin.append(rid)
     return would_pin
 
@@ -448,22 +443,22 @@ def _compile_maybe(*, dry_run: bool, db_path) -> str:
     if dry_run:
         return json.dumps(
             {"dry_run": True, "would_pin": _maybe_compile_candidates(db_path)},
-            indent=2,
+            indent = 2,
         )
     return json.dumps(
-        {"dry_run": False, "pinned": maybe_compile(db_path=db_path)},
-        indent=2,
+        {"dry_run": False, "pinned": maybe_compile(db_path = db_path)},
+        indent = 2,
     )
 
 
 def _compile_one(rid: str, *, dry_run: bool, db_path) -> str:
-    rec = get_record(rid, db_path=db_path)
+    rec = get_record(rid, db_path = db_path)
     if rec is None:
         return f"Error: no record {rid}"
-    hits = procedure_hits(rid, db_path=db_path)
-    existing = get_compiled(rid, db_path=db_path)
+    hits = procedure_hits(rid, db_path = db_path)
+    existing = get_compiled(rid, db_path = db_path)
     # Tools cannot skip the two world-pass hit rule; operator CLI still can.
-    eligible = is_compile_candidate(rec, hits=hits, explicit=False)
+    eligible = is_compile_candidate(rec, hits = hits, explicit = False)
     if dry_run:
         return json.dumps(
             {
@@ -474,10 +469,10 @@ def _compile_one(rid: str, *, dry_run: bool, db_path) -> str:
                 "compiled": existing is not None,
                 "explicit": bool(existing["explicit"]) if existing else False,
             },
-            indent=2,
+            indent = 2,
         )
     try:
-        row = pin_compiled(rid, explicit=False, db_path=db_path)
+        row = pin_compiled(rid, explicit = False, db_path = db_path)
     except ValueError as exc:
         return f"Error: {exc}"
     return json.dumps(
@@ -488,7 +483,7 @@ def _compile_one(rid: str, *, dry_run: bool, db_path) -> str:
             "pinned": row["source_record_id"],
             "explicit": bool(row["explicit"]),
         },
-        indent=2,
+        indent = 2,
     )
 
 

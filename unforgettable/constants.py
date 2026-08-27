@@ -30,9 +30,7 @@ SPEAKER_SIM = "sim"
 SPEAKER_USER = "user"
 SPEAKER_MODEL = "model"
 SPEAKER_OTHER = "other"
-SPEAKERS = frozenset(
-    {SPEAKER_WORLD, SPEAKER_SIM, SPEAKER_USER, SPEAKER_MODEL, SPEAKER_OTHER}
-)
+SPEAKERS = frozenset({SPEAKER_WORLD, SPEAKER_SIM, SPEAKER_USER, SPEAKER_MODEL, SPEAKER_OTHER})
 ADMISSION_MODES = frozenset({"auto", "propose", "deny"})
 # Operator CLI admit without --force.
 ADMIT_FROM_STATUSES = frozenset({"proposed", "deprecated"})

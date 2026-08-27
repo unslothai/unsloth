@@ -39,9 +39,7 @@ def _hf_weights_cached(model_id: str) -> bool:
     slug = "models--" + model_id.replace("/", "--")
     roots = [
         Path.home() / ".cache" / "huggingface" / "hub" / slug,
-        Path(os.environ["HF_HUB_CACHE"]) / slug
-        if os.environ.get("HF_HUB_CACHE")
-        else None,
+        Path(os.environ["HF_HUB_CACHE"]) / slug if os.environ.get("HF_HUB_CACHE") else None,
     ]
     for root in roots:
         if root is None or not root.is_dir():
@@ -53,13 +51,13 @@ def _hf_weights_cached(model_id: str) -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _cuda_ready(),
-    reason="CUDA torch is not available",
+    reason = "CUDA torch is not available",
 )
 
 
 @pytest.mark.skipif(
     not _hf_weights_cached(_gpu_base()),
-    reason=f"{_gpu_base()} safetensors are not in the Hugging Face cache",
+    reason = f"{_gpu_base()} safetensors are not in the Hugging Face cache",
 )
 def test_unsloth_train_writes_peft_adapter(tmp_path):
     from unforgettable.sidecar.train import UnslothTrainBackend
@@ -74,11 +72,11 @@ def test_unsloth_train_writes_peft_adapter(tmp_path):
         for i in range(4)
     ]
     out = tmp_path / "adapter"
-    backend = UnslothTrainBackend(base_model=_gpu_base())
-    backend.train(examples, output_dir=out, base_model=_gpu_base(), recipe="sft")
+    backend = UnslothTrainBackend(base_model = _gpu_base())
+    backend.train(examples, output_dir = out, base_model = _gpu_base(), recipe = "sft")
     cfg_path = out / "adapter_config.json"
     assert cfg_path.is_file()
-    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg = json.loads(cfg_path.read_text(encoding = "utf-8"))
     assert cfg.get("fake") is not True
     assert cfg.get("peft_type") or cfg.get("base_model_name_or_path")
     assert list(out.glob("*.safetensors")) or list(out.glob("adapter_model.bin"))
@@ -86,7 +84,7 @@ def test_unsloth_train_writes_peft_adapter(tmp_path):
 
 @pytest.mark.skipif(
     not _hf_weights_cached(_gpu_base()),
-    reason=f"{_gpu_base()} safetensors are not in the Hugging Face cache",
+    reason = f"{_gpu_base()} safetensors are not in the Hugging Face cache",
 )
 def test_unsloth_preference_writes_peft_adapter(tmp_path):
     from unforgettable.sidecar.train import UnslothTrainBackend
@@ -100,14 +98,12 @@ def test_unsloth_preference_writes_peft_adapter(tmp_path):
         for i in range(4)
     ]
     out = tmp_path / "adapter"
-    backend = UnslothTrainBackend(base_model=_gpu_base())
-    backend.train(
-        examples, output_dir=out, base_model=_gpu_base(), recipe="preference"
-    )
+    backend = UnslothTrainBackend(base_model = _gpu_base())
+    backend.train(examples, output_dir = out, base_model = _gpu_base(), recipe = "preference")
     assert (out / "pairs.jsonl").is_file()
     cfg_path = out / "adapter_config.json"
     assert cfg_path.is_file()
-    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg = json.loads(cfg_path.read_text(encoding = "utf-8"))
     assert cfg.get("fake") is not True
     assert cfg.get("peft_type") or cfg.get("base_model_name_or_path")
     assert list(out.glob("*.safetensors")) or list(out.glob("adapter_model.bin"))

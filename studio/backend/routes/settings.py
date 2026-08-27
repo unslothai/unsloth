@@ -3434,7 +3434,6 @@ class UnforgettableSettingsResponse(UnforgettableSettingsPayload):
 
 def _unforgettable_settings_response() -> UnforgettableSettingsResponse:
     from utils.unforgettable_settings import get_unforgettable_settings
-
     return UnforgettableSettingsResponse.model_validate(get_unforgettable_settings())
 
 
@@ -3447,11 +3446,9 @@ def get_unforgettable_settings_route(
 
 @router.put("/unforgettable", response_model = UnforgettableSettingsResponse)
 def update_unforgettable_settings_route(
-    payload: UnforgettableSettingsPayload,
-    current_subject: str = Depends(get_current_subject),
+    payload: UnforgettableSettingsPayload, current_subject: str = Depends(get_current_subject)
 ) -> UnforgettableSettingsResponse:
     from utils.unforgettable_settings import set_unforgettable_settings
-
     try:
         set_unforgettable_settings(payload.model_dump(exclude_unset = True))
     except ValueError as exc:

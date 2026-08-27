@@ -46,7 +46,7 @@ def _created_ts(row: dict[str, Any]) -> float:
     except ValueError:
         return 0.0
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
+        when = when.replace(tzinfo = timezone.utc)
     return when.timestamp()
 
 
@@ -74,7 +74,7 @@ def _flatten(rollout: dict[str, Any], episode: Optional[dict[str, Any]]) -> dict
 
 def _episode_index(db_path) -> dict[str, dict[str, Any]]:
     index: dict[str, dict[str, Any]] = {}
-    for rec in list_records(kinds=["episode"], statuses=["active"], db_path=db_path):
+    for rec in list_records(kinds = ["episode"], statuses = ["active"], db_path = db_path):
         index.setdefault(rec["id"], rec)
         src = rec.get("source_episode_id")
         if src:
@@ -88,33 +88,33 @@ def retrieve_trajectories(
     contact: str = "world",
     high_stakes: bool = False,
     max_rows: int = TRAJECTORY_MAX_ROWS,
-    db_path=None,
+    db_path = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if (query or "").strip():
         hits = search_records(
             query,
-            top_k=TRAJECTORY_OVERFETCH,
-            kinds=["episode"],
-            statuses=["active"],
-            db_path=db_path,
+            top_k = TRAJECTORY_OVERFETCH,
+            kinds = ["episode"],
+            statuses = ["active"],
+            db_path = db_path,
         )
         for hit in hits:
             episode_id = hit.get("source_episode_id") or hit["id"]
-            for rollout in list_rollouts(episode_id=episode_id, db_path=db_path):
+            for rollout in list_rollouts(episode_id = episode_id, db_path = db_path):
                 rows.append(_flatten(rollout, hit))
     else:
         episodes = _episode_index(db_path)
-        for rollout in list_rollouts(limit=TRAJECTORY_OVERFETCH, db_path=db_path):
+        for rollout in list_rollouts(limit = TRAJECTORY_OVERFETCH, db_path = db_path):
             ep = episodes.get(rollout.get("episode_id") or "")
             if ep is None:
-                ep = get_record(rollout.get("episode_id") or "", db_path=db_path)
+                ep = get_record(rollout.get("episode_id") or "", db_path = db_path)
                 if ep is not None and ep.get("kind") != "episode":
                     ep = None
             rows.append(_flatten(rollout, ep))
     if high_stakes:
         rows = [row for row in rows if row.get("contact") != "sim"]
-    rows.sort(key=lambda row: _sort_key(row, contact))
+    rows.sort(key = lambda row: _sort_key(row, contact))
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
     for row in rows:

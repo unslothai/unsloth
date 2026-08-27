@@ -55,7 +55,7 @@ REASON_SIM_NO_WORLD = "sim vote without world-pass"
 REASON_SIM_TWIN = "sim vote has twin_note"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class PackReport:
     pack_id: Optional[str]
     n_train: int
@@ -106,28 +106,24 @@ def is_pack_record(rec: dict) -> bool:
     return _refusal_reason(rec) is None
 
 
-def pack_is_retrieval_heavy(db_path=None) -> bool:
+def pack_is_retrieval_heavy(db_path = None) -> bool:
     # Count compiled rows only. list_compiled() refreshes/unpins membership.
-    if len(_compiled_ids(db_path=db_path)) >= DISTILL_MIN_COMPILED:
+    if len(_compiled_ids(db_path = db_path)) >= DISTILL_MIN_COMPILED:
         return True
     world_rows = [
         row
-        for row in list_inject_stats(
-            limit=DISTILL_STATS_WINDOW * 10, db_path=db_path
-        )
+        for row in list_inject_stats(limit = DISTILL_STATS_WINDOW * 10, db_path = db_path)
         if row.get("contact") == "world"
     ][:DISTILL_STATS_WINDOW]
     if not world_rows:
         return False
     total = 0
     for row in world_rows:
-        total += int(row.get("standing_chars") or 0) + int(
-            row.get("retrieve_chars") or 0
-        )
+        total += int(row.get("standing_chars") or 0) + int(row.get("retrieve_chars") or 0)
     return (total / len(world_rows)) >= DISTILL_CHAR_THRESHOLD
 
 
-def _compiled_ids(*, db_path=None) -> set[str]:
+def _compiled_ids(*, db_path = None) -> set[str]:
     conn = get_connection(db_path)
     try:
         rows = conn.execute("SELECT source_record_id FROM compiled").fetchall()
@@ -136,7 +132,7 @@ def _compiled_ids(*, db_path=None) -> set[str]:
         conn.close()
 
 
-def _all_retrieve_uses(*, db_path=None) -> list[dict[str, Any]]:
+def _all_retrieve_uses(*, db_path = None) -> list[dict[str, Any]]:
     conn = get_connection(db_path)
     try:
         rows = conn.execute("SELECT * FROM retrieve_uses").fetchall()
@@ -153,9 +149,9 @@ def _pass_episodes(rollouts: list[dict[str, Any]], contact: str) -> set[str]:
     }
 
 
-def _twin_note_episodes(*, db_path=None) -> set[str]:
+def _twin_note_episodes(*, db_path = None) -> set[str]:
     eps: set[str] = set()
-    for rec in list_records(kinds=["twin_note"], statuses=["active"], db_path=db_path):
+    for rec in list_records(kinds = ["twin_note"], statuses = ["active"], db_path = db_path):
         eid = rec.get("source_episode_id")
         if eid:
             eps.add(eid)
@@ -221,9 +217,7 @@ def _assign_roles(candidates: list[_Candidate]) -> None:
     holdout = [c for c in candidates if c.role == ROLE_HOLDOUT]
     if len(train) >= PACK_MIN_TRAIN or not holdout:
         return
-    holdout.sort(
-        key=lambda c: (c.rec.get("created_at") or "", c.rec["id"]), reverse=True
-    )
+    holdout.sort(key = lambda c: (c.rec.get("created_at") or "", c.rec["id"]), reverse = True)
     while len(train) < PACK_MIN_TRAIN and holdout:
         moved = holdout.pop(0)
         moved.role = ROLE_TRAIN
@@ -235,7 +229,7 @@ def _persist(
     report: PackReport,
     candidates: list[_Candidate],
     *,
-    db_path=None,
+    db_path = None,
 ) -> None:
     now = _now()
     conn = get_connection(db_path)
@@ -288,18 +282,18 @@ def pack_from_admitted_b(
     *,
     include_sim: bool = False,
     dry_run: bool = False,
-    db_path=None,
+    db_path = None,
 ) -> PackReport:
-    records = list_records(db_path=db_path)
-    compiled_ids = _compiled_ids(db_path=db_path)
-    uses: list[dict[str, Any]] = _all_retrieve_uses(db_path=db_path)
+    records = list_records(db_path = db_path)
+    compiled_ids = _compiled_ids(db_path = db_path)
+    uses: list[dict[str, Any]] = _all_retrieve_uses(db_path = db_path)
     uses_by_record: dict[str, list[dict[str, Any]]] = {}
     for use in uses:
         uses_by_record.setdefault(use["record_id"], []).append(use)
-    rollouts = list_rollouts(db_path=db_path)
+    rollouts = list_rollouts(db_path = db_path)
     world_pass = _pass_episodes(rollouts, "world")
     sim_pass = _pass_episodes(rollouts, "sim")
-    twin_eps = _twin_note_episodes(db_path=db_path)
+    twin_eps = _twin_note_episodes(db_path = db_path)
 
     dropped: list[tuple[str, str]] = []
     candidates: list[_Candidate] = []
@@ -310,19 +304,17 @@ def pack_from_admitted_b(
             continue
         vote_eps, contact, vote_reason = _vote_for_record(
             rec,
-            include_sim=include_sim,
-            compiled_ids=compiled_ids,
-            uses_by_record=uses_by_record,
-            world_pass=world_pass,
-            sim_pass=sim_pass,
-            twin_eps=twin_eps,
+            include_sim = include_sim,
+            compiled_ids = compiled_ids,
+            uses_by_record = uses_by_record,
+            world_pass = world_pass,
+            sim_pass = sim_pass,
+            twin_eps = twin_eps,
         )
         if vote_reason:
             dropped.append((rec["id"], vote_reason))
             continue
-        candidates.append(
-            _Candidate(rec=rec, vote_eps=vote_eps or set(), contact=contact)
-        )
+        candidates.append(_Candidate(rec = rec, vote_eps = vote_eps or set(), contact = contact))
 
     _assign_roles(candidates)
     n_train = sum(1 for c in candidates if c.role == ROLE_TRAIN)
@@ -330,19 +322,19 @@ def pack_from_admitted_b(
     persist = (not dry_run) and bool(candidates)
     pack_id = str(uuid.uuid4()) if persist else None
     report = PackReport(
-        pack_id=pack_id,
-        n_train=n_train,
-        n_holdout=n_holdout,
-        dropped=dropped,
-        include_sim=include_sim,
-        dry_run=dry_run,
+        pack_id = pack_id,
+        n_train = n_train,
+        n_holdout = n_holdout,
+        dropped = dropped,
+        include_sim = include_sim,
+        dry_run = dry_run,
     )
     if persist:
-        _persist(pack_id, report, candidates, db_path=db_path)
+        _persist(pack_id, report, candidates, db_path = db_path)
     return report
 
 
-def get_pack(pack_id: str, *, db_path=None) -> Optional[dict[str, Any]]:
+def get_pack(pack_id: str, *, db_path = None) -> Optional[dict[str, Any]]:
     conn = get_connection(db_path)
     try:
         row = conn.execute("SELECT * FROM packs WHERE id = ?", (pack_id,)).fetchone()
@@ -355,7 +347,7 @@ def get_pack(pack_id: str, *, db_path=None) -> Optional[dict[str, Any]]:
     return rec
 
 
-def list_packs(*, limit: Optional[int] = None, db_path=None) -> list[dict[str, Any]]:
+def list_packs(*, limit: Optional[int] = None, db_path = None) -> list[dict[str, Any]]:
     sql = "SELECT * FROM packs ORDER BY created_at DESC, id DESC"
     args: list[Any] = []
     if limit is not None:
@@ -371,7 +363,7 @@ def list_packs(*, limit: Optional[int] = None, db_path=None) -> list[dict[str, A
     return rows
 
 
-def list_pack_items(pack_id: str, *, db_path=None) -> list[dict[str, Any]]:
+def list_pack_items(pack_id: str, *, db_path = None) -> list[dict[str, Any]]:
     conn = get_connection(db_path)
     try:
         rows = [

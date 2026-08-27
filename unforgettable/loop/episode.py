@@ -124,7 +124,7 @@ class EpisodeOutcome:
     text: str
     state: EpisodeState
     error_fix_id: Optional[str] = None
-    actions: list[str] = field(default_factory=list)
+    actions: list[str] = field(default_factory = list)
 
 
 def _with_system(messages: list[dict[str, Any]], extra: str) -> list[dict[str, Any]]:
@@ -145,7 +145,7 @@ def _pass_failure(result: GenerateResult) -> Optional[str]:
             continue
         if trace.name.replace(".", "_") in ENTER_SIM_TOOL_NAMES:
             return "enter_sim requested"
-        fail = inspect_tool_result(trace.name, trace.result, contact=trace.contact)
+        fail = inspect_tool_result(trace.name, trace.result, contact = trace.contact)
         if fail:
             last = fail.summary
     return last
@@ -163,10 +163,10 @@ async def _maybe_run_sim_tests(
         state.active_session,
         "terminal",
         {"command": cmd},
-        on_chunk=on_chunk,
+        on_chunk = on_chunk,
     )
     state.traces.extend(current_traces()[before:])
-    return True, grade_run_action("terminal", result, contact="sim")
+    return True, grade_run_action("terminal", result, contact = "sim")
 
 
 async def _maybe_refresh_plan(host, request, state) -> None:
@@ -179,9 +179,9 @@ async def _maybe_refresh_plan(host, request, state) -> None:
         extra_parts.append(f"Sim: {state.last_sim_summary}")
     refreshed = await request_plan(
         host,
-        user_text=last_user_text(request.messages),
-        extra="\n".join(extra_parts),
-        model=request.planner_model,
+        user_text = last_user_text(request.messages),
+        extra = "\n".join(extra_parts),
+        model = request.planner_model,
     )
     if refreshed:
         state.planner_text = refreshed
@@ -195,12 +195,12 @@ async def _confirm_retry_world(host, request, state, action, policy, db_path: st
     if fn is not None:
         allowed = await fn(
             "Retry the repaired plan in the world?",
-            kind="retry_world",
-            on_chunk=request.on_chunk,
-            session_id=state.world_session,
+            kind = "retry_world",
+            on_chunk = request.on_chunk,
+            session_id = state.world_session,
         )
     if not allowed:
-        LogGateEyes().note("retry_world: denied", db_path=db_path)
+        LogGateEyes().note("retry_world: denied", db_path = db_path)
         return Action.ESCALATE
     return action
 
@@ -211,9 +211,9 @@ def _resolve_attached_adapter(
     adapter = None
     adapter_path = None
     if request.adapter_id:
-        adapter = get_adapter(request.adapter_id, db_path=db_path)
+        adapter = get_adapter(request.adapter_id, db_path = db_path)
         if adapter is None or adapter.get("status") == STATUS_DISCARDED:
-            LogGateEyes().note("adapter: missing or discarded", db_path=db_path)
+            LogGateEyes().note("adapter: missing or discarded", db_path = db_path)
             adapter = None
         else:
             adapter_path = adapter.get("path") or None
@@ -226,7 +226,7 @@ def _resolve_attached_adapter(
         if pack_id:
             exclude = frozenset(
                 item["source_id"]
-                for item in list_pack_items(pack_id, db_path=db_path)
+                for item in list_pack_items(pack_id, db_path = db_path)
                 if item.get("source_id") and item.get("role") == ROLE_TRAIN
             )
     return adapter_path, exclude
@@ -245,54 +245,48 @@ def _inject_bundle(
 ) -> str:
     standing_rows = [] if skip_standing else list_standing(db_path)
     if exclude_standing_ids:
-        standing_rows = [
-            row for row in standing_rows if row["id"] not in exclude_standing_ids
-        ]
+        standing_rows = [row for row in standing_rows if row["id"] not in exclude_standing_ids]
     standing_text, kept_rows = pack_standing(standing_rows)
     compiled_ids = {row["id"] for row in kept_rows}
     retrieve_exclude = compiled_ids | set(exclude_standing_ids)
     high_stakes = stakes == "high" and contact == "world"
     policy = RetrievePolicy(
-        high_stakes=high_stakes,
-        contact=contact,
-        exclude_ids=frozenset(retrieve_exclude),
-        max_twin_notes=3 if contact == "sim" else 1,
+        high_stakes = high_stakes,
+        contact = contact,
+        exclude_ids = frozenset(retrieve_exclude),
+        max_twin_notes = 3 if contact == "sim" else 1,
     )
-    retrieved = retrieve(
-        query, policy=policy, db_path=db_path, namespace_id=namespace
-    )
-    retrieve_text = format_inject(retrieved, policy=policy)
+    retrieved = retrieve(query, policy = policy, db_path = db_path, namespace_id = namespace)
+    retrieve_text = format_inject(retrieved, policy = policy)
     trajectories = retrieve_trajectories(
         query,
-        contact=contact,
-        high_stakes=high_stakes,
-        db_path=db_path,
+        contact = contact,
+        high_stakes = high_stakes,
+        db_path = db_path,
     )
     traj_text = format_trajectories(trajectories)
     inject = "\n\n".join(
-        part
-        for part in (_MEMORY_PREAMBLE, standing_text, retrieve_text, traj_text)
-        if part
+        part for part in (_MEMORY_PREAMBLE, standing_text, retrieve_text, traj_text) if part
     )
     use_ids = [] if skip_standing else [row["id"] for row in kept_rows]
     use_ids.extend(row["id"] for row in retrieved)
     for record_id in use_ids:
         insert_retrieve_use(
-            episode_id=episode_id,
-            record_id=record_id,
-            contact=contact,
-            db_path=db_path,
+            episode_id = episode_id,
+            record_id = record_id,
+            contact = contact,
+            db_path = db_path,
         )
     insert_inject_stats(
-        episode_id=episode_id,
-        contact=contact,
-        standing_chars=len(standing_text),
-        retrieve_chars=len(retrieve_text),
-        trajectory_chars=len(traj_text),
-        total_chars=len(inject),
-        compiled_ids=",".join(row["id"] for row in kept_rows),
-        retrieved_ids=",".join(row["id"] for row in retrieved),
-        db_path=db_path,
+        episode_id = episode_id,
+        contact = contact,
+        standing_chars = len(standing_text),
+        retrieve_chars = len(retrieve_text),
+        trajectory_chars = len(traj_text),
+        total_chars = len(inject),
+        compiled_ids = ",".join(row["id"] for row in kept_rows),
+        retrieved_ids = ",".join(row["id"] for row in retrieved),
+        db_path = db_path,
     )
     return inject
 
@@ -301,9 +295,9 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
     episode_id = str(uuid.uuid4())
     db_path = str(host.memory_db_path())
     world = request.world_session_id or host.world_session_id(request)
-    state = EpisodeState(episode_id=episode_id, world_session=world)
+    state = EpisodeState(episode_id = episode_id, world_session = world)
     policy = policy_from_request(request)
-    tokens, _ = bind_episode(db_path=db_path, episode_id=episode_id, namespace=request.namespace)
+    tokens, _ = bind_episode(db_path = db_path, episode_id = episode_id, namespace = request.namespace)
     actions: list[str] = []
     text = ""
     adapter_path, exclude_standing_ids = _resolve_attached_adapter(request, db_path)
@@ -316,45 +310,43 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
         def _rebuild(contact: str, suffix: str) -> list[dict[str, Any]]:
             inject = _inject_bundle(
                 last_user_text(working_messages),
-                stakes=request.stakes,
-                skip_standing=request.skip_standing,
-                episode_id=episode_id,
-                db_path=db_path,
-                contact=contact,
-                exclude_standing_ids=exclude_standing_ids,
-                namespace=request.namespace,
+                stakes = request.stakes,
+                skip_standing = request.skip_standing,
+                episode_id = episode_id,
+                db_path = db_path,
+                contact = contact,
+                exclude_standing_ids = exclude_standing_ids,
+                namespace = request.namespace,
             )
             notes = _repair_context(state)
             plan = planner_block(state.planner_text)
             parts = [inject, suffix, notes, plan]
-            return _with_system(
-                working_messages, "\n\n".join(p for p in parts if p)
-            )
+            return _with_system(working_messages, "\n\n".join(p for p in parts if p))
 
         if planner_is_on(request):
             state.planner_text = await request_plan(
                 host,
-                user_text=last_user_text(working_messages),
-                extra="",
-                model=request.planner_model,
+                user_text = last_user_text(working_messages),
+                extra = "",
+                model = request.planner_model,
             )
             if not state.planner_text:
-                LogGateEyes().note("planner: skipped or empty", db_path=db_path)
+                LogGateEyes().note("planner: skipped or empty", db_path = db_path)
 
         if filter_is_on(request):
             filt = await request_filter(
                 host,
-                user_text=last_user_text(working_messages),
-                model=request.filter_model,
+                user_text = last_user_text(working_messages),
+                model = request.filter_model,
             )
             if filt.skipped:
-                LogGateEyes().note("filter: skipped", db_path=db_path)
+                LogGateEyes().note("filter: skipped", db_path = db_path)
             else:
                 set_filter_stripped(filt.stripped)
                 for span in filt.stripped:
                     LogGateEyes().note(
                         f"filter: {span.class_name}: {span.reason}",
-                        db_path=db_path,
+                        db_path = db_path,
                     )
                 kept = (filt.kept or "").strip()
                 working_messages = _replace_last_user(working_messages, kept)
@@ -372,15 +364,15 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                             "warrant": lesson_body,
                         },
                         db_path,
-                        namespace=request.namespace,
+                        namespace = request.namespace,
                     )
                 if not kept:
                     filter_empty = True
                     if request.confirm_retry is not False:
                         policy = Policy(
-                            max_clones=policy.max_clones,
-                            max_sim_turns=policy.max_sim_turns,
-                            require_confirm_retry=True,
+                            max_clones = policy.max_clones,
+                            max_sim_turns = policy.max_sim_turns,
+                            require_confirm_retry = True,
                         )
 
         messages = _rebuild("world", "")
@@ -391,29 +383,22 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                 not generated
                 and state.contact == "world"
                 and state.clone_count == 0
-                and (
-                    filter_empty
-                    or user_declares_failure(last_user_text(working_messages))
-                )
+                and (filter_empty or user_declares_failure(last_user_text(working_messages)))
             ):
-                fail_summary = (
-                    "filter stripped prompt"
-                    if filter_empty
-                    else "user declared failure"
-                )
+                fail_summary = "filter stripped prompt" if filter_empty else "user declared failure"
                 state.note_failure(fail_summary, "world")
                 event = "failure"
             else:
                 gen = await host.generate(
                     GenerateRequest(
-                        messages=messages,
-                        session_id=state.active_session,
-                        thread_id=request.thread_id,
-                        stream=request.stream,
-                        extra_tools=list(MEMORY_TOOLS) + list(CONTACT_TOOLS),
-                        inner_model=request.inner_model,
-                        on_chunk=request.on_chunk,
-                        adapter_path=adapter_path,
+                        messages = messages,
+                        session_id = state.active_session,
+                        thread_id = request.thread_id,
+                        stream = request.stream,
+                        extra_tools = list(MEMORY_TOOLS) + list(CONTACT_TOOLS),
+                        inner_model = request.inner_model,
+                        on_chunk = request.on_chunk,
+                        adapter_path = adapter_path,
                     )
                 )
                 generated = True
@@ -423,9 +408,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                 state.traces.extend(gen.tool_traces)
                 ran, grade = False, None
                 if state.contact == "sim":
-                    ran, grade = await _maybe_run_sim_tests(
-                        host, state, request.on_chunk
-                    )
+                    ran, grade = await _maybe_run_sim_tests(host, state, request.on_chunk)
                 if ran:
                     if grade is None:
                         state.note_success(f"tests: {state.test_command}", "sim")
@@ -445,30 +428,24 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                     else:
                         event = "finished"
             action = decide(event, state, policy)
-            action = await _confirm_retry_world(
-                host, request, state, action, policy, db_path
-            )
+            action = await _confirm_retry_world(host, request, state, action, policy, db_path)
             actions.append(action)
             if action == Action.ENTER_SIM:
                 sim_id = host.create_sim_session(episode_id)
                 state.track_sim(sim_id)
                 try:
                     if not sim_id or sim_id == world or sim_id.startswith("project-"):
-                        raise ValueError(
-                            f"refusing to share world sandbox as sim: {sim_id!r}"
-                        )
+                        raise ValueError(f"refusing to share world sandbox as sim: {sim_id!r}")
                     clone_tree(host.sandbox_path(world), host.sandbox_path(sim_id))
                 except Exception:
-                    LogGateEyes().note(
-                        f"sim: clone failed for {sim_id!r}", db_path=db_path
-                    )
+                    LogGateEyes().note(f"sim: clone failed for {sim_id!r}", db_path = db_path)
                     raise
                 state.enter_sim(sim_id)
                 set_contact("sim")
                 state.test_command = resolve_test_command(
-                    requested=request.test_command,
-                    db_path=db_path,
-                    tree=host.sandbox_path(sim_id),
+                    requested = request.test_command,
+                    db_path = db_path,
+                    tree = host.sandbox_path(sim_id),
                 )
                 messages = _rebuild(
                     "sim",
@@ -501,9 +478,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                         if action != Action.ENTER_SIM:
                             break
                     else:
-                        state.note_failure(
-                            f"tests: {state.test_command}: {grade.summary}", "sim"
-                        )
+                        state.note_failure(f"tests: {state.test_command}: {grade.summary}", "sim")
                         messages = _rebuild(
                             "sim",
                             f"You are in a sim clone of the world tree. Previous world failure: {fail_summary}",
@@ -529,13 +504,13 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
         error_fix_id = await _extract(
             state,
             db_path,
-            last_user=last_user_text(working_messages),
-            actions=actions,
-            host=host,
-            namespace=request.namespace,
+            last_user = last_user_text(working_messages),
+            actions = actions,
+            host = host,
+            namespace = request.namespace,
         )
         await _run_episode_probes(host, request, state, db_path)
-        return EpisodeOutcome(text=text, state=state, error_fix_id=error_fix_id, actions=actions)
+        return EpisodeOutcome(text = text, state = state, error_fix_id = error_fix_id, actions = actions)
     finally:
         try:
             kept = state.sim_session if state.keep_sim else None
@@ -566,31 +541,31 @@ def _write_draft(
 ) -> dict[str, Any]:
     rid = str(uuid.uuid4())
     review_reason = review_write(
-        kind=draft["kind"],
-        title=draft["title"],
-        body=draft["body"],
-        provenance=draft["provenance"],
-        db_path=db_path,
-        speaker=draft.get("speaker"),
-        warrant=draft.get("warrant"),
+        kind = draft["kind"],
+        title = draft["title"],
+        body = draft["body"],
+        provenance = draft["provenance"],
+        db_path = db_path,
+        speaker = draft.get("speaker"),
+        warrant = draft.get("warrant"),
     )
     decision = admit(
-        kind=draft["kind"],
-        provenance=draft["provenance"],
-        explicit=bool(draft.get("explicit")),
-        namespace_id=namespace,
-        record_id=rid,
-        bookkeeping=bool(draft.get("bookkeeping")),
-        force_proposed_reason=review_reason or None,
-        persist_log=False,
-        db_path=db_path,
+        kind = draft["kind"],
+        provenance = draft["provenance"],
+        explicit = bool(draft.get("explicit")),
+        namespace_id = namespace,
+        record_id = rid,
+        bookkeeping = bool(draft.get("bookkeeping")),
+        force_proposed_reason = review_reason or None,
+        persist_log = False,
+        db_path = db_path,
     )
     if decision.status == "rejected":
         log_admission(
-            record_id=rid,
-            decision=decision.status,
-            reason=decision.reason,
-            db_path=db_path,
+            record_id = rid,
+            decision = decision.status,
+            reason = decision.reason,
+            db_path = db_path,
         )
         return {
             "id": rid,
@@ -599,25 +574,25 @@ def _write_draft(
             "title": draft["title"],
         }
     rec = insert_record(
-        kind=draft["kind"],
-        title=draft["title"],
-        body=draft["body"],
-        provenance=draft["provenance"],
-        status=decision.status,
-        namespace_id=namespace,
-        source_episode_id=state.episode_id,
-        contact_tag=state.contact,
-        speaker=draft.get("speaker"),
-        speaker_label=draft.get("speaker_label"),
-        warrant=draft.get("warrant"),
-        record_id=rid,
-        db_path=db_path,
+        kind = draft["kind"],
+        title = draft["title"],
+        body = draft["body"],
+        provenance = draft["provenance"],
+        status = decision.status,
+        namespace_id = namespace,
+        source_episode_id = state.episode_id,
+        contact_tag = state.contact,
+        speaker = draft.get("speaker"),
+        speaker_label = draft.get("speaker_label"),
+        warrant = draft.get("warrant"),
+        record_id = rid,
+        db_path = db_path,
     )
     log_admission(
-        record_id=rec["id"],
-        decision=decision.status,
-        reason=decision.reason,
-        db_path=db_path,
+        record_id = rec["id"],
+        decision = decision.status,
+        reason = decision.reason,
+        db_path = db_path,
     )
     return rec
 
@@ -641,12 +616,12 @@ def _write_rollouts(state: EpisodeState, *, source_record_id: str, db_path: str)
             if event is None:
                 continue
             insert_rollout(
-                episode_id=state.episode_id,
-                contact=contact,
-                outcome=outcome,
-                summary=event.get("summary") or "",
-                source_record_id=source_record_id,
-                db_path=db_path,
+                episode_id = state.episode_id,
+                contact = contact,
+                outcome = outcome,
+                summary = event.get("summary") or "",
+                source_record_id = source_record_id,
+                db_path = db_path,
             )
 
 
@@ -667,22 +642,22 @@ async def _extract(
     written_id = None
     draft_ids: list[str] = []
     for draft in drafts:
-        rec = _write_draft(state, draft, db_path, namespace=namespace)
+        rec = _write_draft(state, draft, db_path, namespace = namespace)
         draft_ids.append(rec["id"])
         if rec["kind"] == "error_fix" and rec["status"] in {"active", "proposed"}:
             written_id = rec["id"]
         elif written_id is None:
             written_id = rec["id"]
     episode_draft = episode_summary(
-        state, last_user=last_user, draft_ids=draft_ids, actions=actions
+        state, last_user = last_user, draft_ids = draft_ids, actions = actions
     )
-    episode_rec = _write_draft(state, episode_draft, db_path, namespace=namespace)
-    _write_rollouts(state, source_record_id=episode_rec["id"], db_path=db_path)
+    episode_rec = _write_draft(state, episode_draft, db_path, namespace = namespace)
+    _write_rollouts(state, source_record_id = episode_rec["id"], db_path = db_path)
     maybe_compile(db_path)
     if written_id is None:
         written_id = episode_rec["id"]
     state.keep_sim = False
-    for rec in list_records(kinds=["error_fix", "twin_note"], db_path=db_path):
+    for rec in list_records(kinds = ["error_fix", "twin_note"], db_path = db_path):
         if rec.get("source_episode_id") != state.episode_id:
             continue
         if rec["kind"] == "twin_note" and rec["status"] == "active":
@@ -700,11 +675,11 @@ async def _run_episode_probes(
     if getattr(host, "run_action", None) is None:
         return
     result = run_probes(
-        world=host.sandbox_path(state.world_session),
-        host=host,
-        db_path=db_path,
-        limit=MAX_EPISODE_PROBES,
-        on_chunk=request.on_chunk,
+        world = host.sandbox_path(state.world_session),
+        host = host,
+        db_path = db_path,
+        limit = MAX_EPISODE_PROBES,
+        on_chunk = request.on_chunk,
     )
     if inspect.isawaitable(result):
         await result

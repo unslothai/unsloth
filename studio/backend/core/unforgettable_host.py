@@ -440,7 +440,13 @@ class StudioHost:
         return GenerateResult(text = text, tool_traces = current_traces()[before:])
 
     async def run_action(
-        self, session_id, name, arguments, *, timeout = None, on_chunk = None
+        self,
+        session_id,
+        name,
+        arguments,
+        *,
+        timeout = None,
+        on_chunk = None,
     ) -> str:
         from core.inference.tool_stream_exec import TOOL_HEARTBEAT_INTERVAL_S
         from core.inference.tools import execute_tool
@@ -531,12 +537,14 @@ class StudioHost:
             on_chunk,
             _as_sse_bytes("data: " + json.dumps(start_event, separators = (",", ":"))),
         )
-        waiter = asyncio.create_task(asyncio.to_thread(
-            wait_tool_decision,
-            slot,
-            approval_id,
-            self.cancel_event,
-        ))
+        waiter = asyncio.create_task(
+            asyncio.to_thread(
+                wait_tool_decision,
+                slot,
+                approval_id,
+                self.cancel_event,
+            )
+        )
         verdict = "deny"
         try:
             done, _ = await asyncio.wait({waiter}, timeout = _TOOL_APPROVAL_FLUSH_DELAY_S)
@@ -560,11 +568,7 @@ class StudioHost:
         return verdict == "allow"
 
     async def _one_shot(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        model: str,
-        max_tokens: int,
+        self, messages: list[dict[str, Any]], *, model: str, max_tokens: int
     ) -> str:
         # Pin both token fields: Studio prefers max_completion_tokens when set.
         # Strip leftover tool surfaces; tools_force_disabled beats CLI --enable-tools.
@@ -609,9 +613,7 @@ class StudioHost:
         max_tokens: int = SUPERVISE_MAX_TOKENS,
     ) -> str:
         chosen = model or self._supervisor_model(purpose) or self.inner_model or "default"
-        return await self._one_shot(
-            messages, model = chosen, max_tokens = max_tokens
-        )
+        return await self._one_shot(messages, model = chosen, max_tokens = max_tokens)
 
     def _supervisor_model(self, purpose: str) -> str | None:
         import os

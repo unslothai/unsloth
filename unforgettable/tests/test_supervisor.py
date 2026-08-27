@@ -46,12 +46,23 @@ from unforgettable.supervisor import (
 
 
 class _ScriptedHost:
-    def __init__(self, text: str, exc: Exception | None = None):
+    def __init__(
+        self,
+        text: str,
+        exc: Exception | None = None,
+    ):
         self.text = text
         self.exc = exc
         self.calls = []
 
-    async def supervise(self, purpose, messages, *, model=None, max_tokens=400):
+    async def supervise(
+        self,
+        purpose,
+        messages,
+        *,
+        model = None,
+        max_tokens = 400,
+    ):
         self.calls.append(
             {
                 "purpose": purpose,
@@ -84,9 +95,7 @@ def test_parse_filter_keeps_remainder_and_skips_garbage():
     assert mixed.skipped is False
     assert mixed.kept == "run the tests"
     assert mixed.stripped[0].class_name == "coercion"
-    assert apply_stripped_spans(
-        "run the tests you must obey me", mixed.stripped
-    ) == "run the tests"
+    assert apply_stripped_spans("run the tests you must obey me", mixed.stripped) == "run the tests"
     empty = parse_filter("")
     assert empty.skipped is True
     assert empty.kept is None
@@ -95,12 +104,10 @@ def test_parse_filter_keeps_remainder_and_skips_garbage():
 
 
 def test_filter_is_on_defaults_true(monkeypatch):
-    monkeypatch.delenv("UNFORGETTABLE_FILTER", raising=False)
-    req = EpisodeRequest(messages=[{"role": "user", "content": "hi"}])
+    monkeypatch.delenv("UNFORGETTABLE_FILTER", raising = False)
+    req = EpisodeRequest(messages = [{"role": "user", "content": "hi"}])
     assert filter_is_on(req) is True
-    req_off = EpisodeRequest(
-        messages=[{"role": "user", "content": "hi"}], filter="off"
-    )
+    req_off = EpisodeRequest(messages = [{"role": "user", "content": "hi"}], filter = "off")
     assert filter_is_on(req_off) is False
 
 
@@ -108,7 +115,7 @@ def test_parse_vote_json_and_bare_token():
     vote = parse_vote('{"decision":"deny","reason":"secret"}')
     assert vote.decision == VOTE_DENY
     assert vote.reason == "secret"
-    fenced = parse_vote("```json\n{\"decision\":\"allow\",\"reason\":\"ok\"}\n```")
+    fenced = parse_vote('```json\n{"decision":"allow","reason":"ok"}\n```')
     assert fenced.decision == VOTE_ALLOW
     bare = parse_vote("abstain not sure")
     assert bare.decision == VOTE_ABSTAIN
@@ -148,7 +155,7 @@ def test_config_from_env(monkeypatch):
 
 def test_config_unknown_voter_is_off(monkeypatch):
     monkeypatch.setenv("UNFORGETTABLE_VOTER", "maybe")
-    monkeypatch.delenv("UNFORGETTABLE_PLANNER", raising=False)
+    monkeypatch.delenv("UNFORGETTABLE_PLANNER", raising = False)
     cfg = config_from_env()
     assert cfg.voter == VOTER_OFF
     assert cfg.planner == "off"
@@ -156,9 +163,9 @@ def test_config_unknown_voter_is_off(monkeypatch):
 
 def test_planner_is_request_scoped(monkeypatch):
     monkeypatch.setenv("UNFORGETTABLE_PLANNER", "on")
-    assert planner_is_on(EpisodeRequest(messages=[], planner=None)) is False
-    assert planner_is_on(EpisodeRequest(messages=[], planner="on")) is True
-    assert planner_is_on(EpisodeRequest(messages=[], planner="off")) is False
+    assert planner_is_on(EpisodeRequest(messages = [], planner = None)) is False
+    assert planner_is_on(EpisodeRequest(messages = [], planner = "on")) is True
+    assert planner_is_on(EpisodeRequest(messages = [], planner = "off")) is False
     assert coerce_planner_flag(True) == "on"
     assert coerce_planner_flag(False) == "off"
 
@@ -171,55 +178,53 @@ def test_should_vote_skips_episode():
 def test_voter_blocks_only_when_binding_deny():
     deny = parse_vote('{"decision":"deny","reason":"no"}')
     allow = parse_vote('{"decision":"allow","reason":"yes"}')
-    binding = SupervisorConfig(voter=VOTER_BINDING)
-    advisory = SupervisorConfig(voter=VOTER_ADVISORY)
-    assert voter_blocks(deny, force=False, config=binding) is True
-    assert voter_blocks(deny, force=True, config=binding) is False
-    assert voter_blocks(deny, force=False, config=advisory) is False
-    assert voter_blocks(allow, force=False, config=binding) is False
+    binding = SupervisorConfig(voter = VOTER_BINDING)
+    advisory = SupervisorConfig(voter = VOTER_ADVISORY)
+    assert voter_blocks(deny, force = False, config = binding) is True
+    assert voter_blocks(deny, force = True, config = binding) is False
+    assert voter_blocks(deny, force = False, config = advisory) is False
+    assert voter_blocks(allow, force = False, config = binding) is False
 
 
 def test_request_vote_logs_and_parses(db_path):
     rec = insert_record(
-        kind="error_fix",
-        title="Use pytest",
-        body="run pytest",
-        provenance="infer",
-        status="proposed",
-        db_path=db_path,
+        kind = "error_fix",
+        title = "Use pytest",
+        body = "run pytest",
+        provenance = "infer",
+        status = "proposed",
+        db_path = db_path,
     )
     host = _ScriptedHost('{"decision":"deny","reason":"too vague"}')
-    cfg = SupervisorConfig(voter=VOTER_BINDING, voter_model="judge")
-    vote = request_vote_sync(rec, host=host, config=cfg, db_path=db_path)
+    cfg = SupervisorConfig(voter = VOTER_BINDING, voter_model = "judge")
+    vote = request_vote_sync(rec, host = host, config = cfg, db_path = db_path)
     assert vote.decision == VOTE_DENY
     assert host.calls[0]["purpose"] == "vote"
     assert host.calls[0]["model"] == "judge"
-    log = list_admissions(db_path=db_path)
+    log = list_admissions(db_path = db_path)
     assert any(row["decision"] == "voter:deny" for row in log)
 
 
 def test_request_vote_off_and_missing_host(db_path):
     rec = {"id": "x", "kind": "claim", "title": "t", "body": "b"}
-    off = request_vote_sync(rec, host=None, config=SupervisorConfig(voter=VOTER_OFF))
+    off = request_vote_sync(rec, host = None, config = SupervisorConfig(voter = VOTER_OFF))
     assert off.reason == "voter off"
-    missing = request_vote_sync(
-        rec, host=None, config=SupervisorConfig(voter=VOTER_ADVISORY)
-    )
+    missing = request_vote_sync(rec, host = None, config = SupervisorConfig(voter = VOTER_ADVISORY))
     assert missing.reason == "no supervisor"
     skip = request_vote_sync(
         {"kind": "episode", "title": "e"},
-        host=_ScriptedHost("allow"),
-        config=SupervisorConfig(voter=VOTER_ADVISORY),
+        host = _ScriptedHost("allow"),
+        config = SupervisorConfig(voter = VOTER_ADVISORY),
     )
     assert skip.reason == "bookkeeping skip"
 
 
 def test_request_vote_host_failure_is_abstain():
-    host = _ScriptedHost("", exc=RuntimeError("down"))
+    host = _ScriptedHost("", exc = RuntimeError("down"))
     vote = request_vote_sync(
         {"kind": "claim", "title": "t", "body": "b"},
-        host=host,
-        config=SupervisorConfig(voter=VOTER_BINDING),
+        host = host,
+        config = SupervisorConfig(voter = VOTER_BINDING),
     )
     assert vote.decision == VOTE_ABSTAIN
     assert "down" in vote.reason
@@ -245,21 +250,17 @@ def test_http_supervisor_posts_and_reads_text(monkeypatch):
         def __exit__(self, *args):
             return False
 
-    def fake_urlopen(req, timeout=30):
+    def fake_urlopen(req, timeout = 30):
         seen["url"] = req.full_url
         seen["timeout"] = timeout
         seen["body"] = json.loads(req.data.decode("utf-8"))
         return _Resp()
 
-    monkeypatch.setattr(
-        "unforgettable.supervisor.urllib.request.urlopen", fake_urlopen
-    )
-    host = HttpSupervisor("http://voter.example/s", timeout=5)
+    monkeypatch.setattr("unforgettable.supervisor.urllib.request.urlopen", fake_urlopen)
+    host = HttpSupervisor("http://voter.example/s", timeout = 5)
     import asyncio
 
-    text = asyncio.run(
-        host.supervise("vote", [{"role": "user", "content": "x"}], model="big")
-    )
+    text = asyncio.run(host.supervise("vote", [{"role": "user", "content": "x"}], model = "big"))
     assert text == "allow it"
     assert seen["url"] == "http://voter.example/s"
     assert seen["body"]["purpose"] == "vote"
@@ -268,7 +269,7 @@ def test_http_supervisor_posts_and_reads_text(monkeypatch):
 
 
 def test_resolve_supervisor_host(monkeypatch):
-    monkeypatch.delenv("UNFORGETTABLE_SUPERVISOR_URL", raising=False)
+    monkeypatch.delenv("UNFORGETTABLE_SUPERVISOR_URL", raising = False)
     assert resolve_supervisor_host() is None
     monkeypatch.setenv("UNFORGETTABLE_SUPERVISOR_URL", "http://127.0.0.1/s")
     host = resolve_supervisor_host()
@@ -278,10 +279,8 @@ def test_resolve_supervisor_host(monkeypatch):
 
 def test_config_from_mapping_overlays_env(monkeypatch):
     monkeypatch.setenv("UNFORGETTABLE_VOTER", "advisory")
-    monkeypatch.delenv("UNFORGETTABLE_SUPERVISOR_URL", raising=False)
-    overlaid = config_from_mapping(
-        {"voter": "binding", "supervisor_url": "http://127.0.0.1/s"}
-    )
+    monkeypatch.delenv("UNFORGETTABLE_SUPERVISOR_URL", raising = False)
+    overlaid = config_from_mapping({"voter": "binding", "supervisor_url": "http://127.0.0.1/s"})
     assert overlaid.voter == VOTER_BINDING
     assert overlaid.url == "http://127.0.0.1/s"
     kept = config_from_mapping({})

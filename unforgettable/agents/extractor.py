@@ -40,9 +40,7 @@ EXTRACT_MAX_DRAFTS = 8
 EXTRACT_TITLE_CAP = 80
 EXTRACT_BODY_CAP = 1200
 EXTRACT_MIN_NON_MEMORY_TRACES = 2
-EXTRACT_ALLOWED_KINDS = frozenset(
-    {"claim", "procedure", "error_fix", "entity", "twin_note"}
-)
+EXTRACT_ALLOWED_KINDS = frozenset({"claim", "procedure", "error_fix", "entity", "twin_note"})
 EXTRACT_FORBIDDEN_KINDS = frozenset({"directive", "episode"})
 EXTRACT_PROVENANCE = "infer"
 EXTRACT_SYSTEM = (
@@ -168,7 +166,7 @@ def _parse_extract(raw: str) -> list[dict[str, Any]]:
 
 def _log_extract_failure(host: "Host", message: str) -> None:
     try:
-        LogGateEyes().note(message, db_path=host.memory_db_path())
+        LogGateEyes().note(message, db_path = host.memory_db_path())
     except Exception:
         return
 
@@ -178,9 +176,7 @@ async def llm_extract(state: "EpisodeState", host: "Host") -> list[dict[str, Any
     if not _should_llm_extract(state):
         return []
     try:
-        raw = await host.complete(
-            _extract_messages(state), max_tokens=EXTRACT_MAX_TOKENS
-        )
+        raw = await host.complete(_extract_messages(state), max_tokens = EXTRACT_MAX_TOKENS)
         return _parse_extract(raw)
     except Exception as exc:
         _log_extract_failure(host, f"llm_extract failed: {exc}")
@@ -248,10 +244,9 @@ def from_episode(state: "EpisodeState") -> list[dict[str, Any]]:
         provenance = fail_contact
     fail_summary = (fail.get("summary") or "failed action").strip()
     title = f"Error then fix: {fail_summary}"[:EXTRACT_TITLE_CAP]
-    body = (
-        f"Tried: {fail_summary}\n"
-        f"Then: {success.get('summary') or 'later succeeded'}"
-    )[:EXTRACT_BODY_CAP]
+    body = (f"Tried: {fail_summary}\n" f"Then: {success.get('summary') or 'later succeeded'}")[
+        :EXTRACT_BODY_CAP
+    ]
     return [
         {
             "kind": "error_fix",

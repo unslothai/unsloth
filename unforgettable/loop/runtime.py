@@ -22,17 +22,13 @@ from typing import Optional
 from unforgettable.constants import DEFAULT_NAMESPACE_ID
 from unforgettable.host import ToolTrace
 
-_db_path: ContextVar[Optional[str]] = ContextVar("unforgettable_db_path", default=None)
-_episode_id: ContextVar[Optional[str]] = ContextVar("unforgettable_episode_id", default=None)
-_namespace: ContextVar[str] = ContextVar("unforgettable_namespace", default=DEFAULT_NAMESPACE_ID)
-_contact: ContextVar[str] = ContextVar("unforgettable_contact", default="world")
-_traces: ContextVar[Optional[list[ToolTrace]]] = ContextVar("unforgettable_traces", default=None)
-_filter_stripped: ContextVar[tuple] = ContextVar(
-    "unforgettable_filter_stripped", default=()
-)
-_user_label: ContextVar[Optional[str]] = ContextVar(
-    "unforgettable_user_label", default=None
-)
+_db_path: ContextVar[Optional[str]] = ContextVar("unforgettable_db_path", default = None)
+_episode_id: ContextVar[Optional[str]] = ContextVar("unforgettable_episode_id", default = None)
+_namespace: ContextVar[str] = ContextVar("unforgettable_namespace", default = DEFAULT_NAMESPACE_ID)
+_contact: ContextVar[str] = ContextVar("unforgettable_contact", default = "world")
+_traces: ContextVar[Optional[list[ToolTrace]]] = ContextVar("unforgettable_traces", default = None)
+_filter_stripped: ContextVar[tuple] = ContextVar("unforgettable_filter_stripped", default = ())
+_user_label: ContextVar[Optional[str]] = ContextVar("unforgettable_user_label", default = None)
 
 
 def current_db_path() -> Optional[str]:
@@ -77,15 +73,20 @@ def note_tool_result(name: str, arguments: dict, result: str) -> None:
         return
     traces.append(
         ToolTrace(
-            name=name,
-            arguments=dict(arguments or {}),
-            result=str(result),
-            contact=current_contact(),
+            name = name,
+            arguments = dict(arguments or {}),
+            result = str(result),
+            contact = current_contact(),
         )
     )
 
 
-def bind_episode(*, db_path: str, episode_id: str, namespace: str = DEFAULT_NAMESPACE_ID):
+def bind_episode(
+    *,
+    db_path: str,
+    episode_id: str,
+    namespace: str = DEFAULT_NAMESPACE_ID,
+):
     """Set episode locals. Returns the tokens + a fresh trace list."""
     traces: list[ToolTrace] = []
     tokens = (
