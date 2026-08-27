@@ -402,7 +402,8 @@
         out.append(think, body, cutoff);
         let acc = "",
           reasoning = "",
-          truncated = false;
+          truncated = false,
+          complete = false;
         try {
           const r = await fetch(chatUrl, {
             method: "POST",
@@ -434,7 +435,10 @@
               buf = buf.slice(i + 1);
               if (!line.startsWith("data:")) continue;
               const data = line.slice(5).trim();
-              if (data === "[DONE]") continue;
+              if (data === "[DONE]") {
+                complete = true;
+                continue;
+              }
               try {
                 const j = JSON.parse(data);
                 const choice = j.choices && j.choices[0];
@@ -455,6 +459,7 @@
               } catch (_) {}
             }
           }
+          if (!complete) throw new Error("preview stream ended before completion");
           // A reasoning-only reply still needs its turn: without it the next
           // prompt repeats a role and is dropped to keep alternation.
           if (acc || reasoning) {
