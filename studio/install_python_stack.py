@@ -1833,11 +1833,42 @@ def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
     return bool(gfx) and (gfx in _GENERIC_ROCM_WHEEL_GFX or gfx in _GFX_TO_AMD_INDEX_ARCH)
 
 
-def _generic_rocm_wheel_lacks_kernels(gfx: "str | None") -> bool:
-    """Whether only an available AMD per-arch index carries kernels for ``gfx``."""
-    if not gfx:
+# _GENERIC_ROCM_WHEEL_GFX was measured on the tags the pins resolve (rocm7.0 and up), but
+# _ROCM_TORCH_INDEX also maps ROCm 6.0-6.4, and those wheels predate some of these arches. A
+# host can resolve an old tag while the KERNEL names a new card -- a current amdgpu beside a
+# stale /opt/rocm -- and that wheel then has no kernels for it. AMD's own matrices put
+# production gfx1200/gfx1201 at ROCm 6.4, with rocm6.3 and below predating RDNA 4 codegen.
+# Only arches with an AMD leaf to be rerouted TO belong here: gfx950 is absent from the older
+# wheels as well, but _GFX_TO_AMD_INDEX_ARCH has no entry for it, so there is nowhere better
+# to send it and an entry would never fire. gfx1150/gfx1151 are missing from the rocm6.3 wheel
+# too and the Strix reroute already floors them by version, so they are left to it.
+_GENERIC_WHEEL_GFX_MIN_ROCM: "dict[str, tuple[int, int]]" = {
+    "gfx1200": (6, 4),
+    "gfx1201": (6, 4),
+}
+
+
+def _generic_rocm_wheel_lacks_kernels(
+    gfx: "str | None", ver: "tuple[int, int] | None" = None
+) -> bool:
+    """Whether only an available AMD per-arch index carries kernels for ``gfx``.
+
+    ``ver`` is the host ROCm version, when the caller has read one. Support is a property of
+    the wheel a version resolves to, not of the generic index as a whole, so passing it lets
+    an arch the OLD tags predate be rerouted instead of installed without kernels. Omitting it
+    keeps the union reading, which is what a caller with no version to key on must use.
+    """
+    if not gfx or gfx not in _GFX_TO_AMD_INDEX_ARCH:
         return False
-    return gfx not in _GENERIC_ROCM_WHEEL_GFX and gfx in _GFX_TO_AMD_INDEX_ARCH
+    if gfx not in _GENERIC_ROCM_WHEEL_GFX:
+        return True
+    _min = _GENERIC_WHEEL_GFX_MIN_ROCM.get(gfx)
+    if _min is None or ver is None:
+        return False
+    # The tag this version actually selects, not the version itself: a 6.3.9 host takes the
+    # rocm6.3 wheel, and it is that wheel's contents that decide.
+    _tag_key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse = True) if ver >= k), None)
+    return _tag_key is not None and _tag_key < _min
 
 
 def _runtime_gfx_target(
@@ -3217,7 +3248,7 @@ def _amd_torch_needs_dependency_pass() -> bool:
         # Both per-arch repairs are version-independent, and the host with no readable
         # version is the one they exist for: a bundled-runtime install has no system ROCm
         # to read. Requiring a version here refuses them at the door.
-        _family_repair_arm = _rocm_torch_family_needs_repair(_selected_gfx)
+        _family_repair_arm = _rocm_torch_family_needs_repair(_selected_gfx, _detect_rocm_version())
         if not _inferred_arm and not _family_repair_arm:
             # Other repair arms need a readable version with a published wheel family.
             _ver = _detect_rocm_version()
@@ -3242,10 +3273,14 @@ def _amd_torch_needs_dependency_pass() -> bool:
     # every hardware gate above for that reason. This is a hardware question.
     if _explicit_rocm_torch_index_url() is not None:
         return False
-    return _rocm_torch_family_needs_repair(_runtime_gfx_target(_infer_linux_amd_gfx_arch())[0])
+    return _rocm_torch_family_needs_repair(
+        _runtime_gfx_target(_infer_linux_amd_gfx_arch())[0], _detect_rocm_version()
+    )
 
 
-def _rocm_torch_family_needs_repair(runtime_gfx: "str | None") -> bool:
+def _rocm_torch_family_needs_repair(
+    runtime_gfx: "str | None", ver: "tuple[int, int] | None" = None
+) -> bool:
     """Whether the installed ROCm torch carries no kernels for ``runtime_gfx``.
 
     Reads the same two signals _ensure_rocm_torch's own arms read, in the same order, so
@@ -3278,7 +3313,7 @@ def _rocm_torch_family_needs_repair(runtime_gfx: "str | None") -> bool:
         # update, once the fast path stops hiding it. Leave it alone, as
         # _installed_rocm_wheel_family tells its callers to.
         return False
-    return _generic_rocm_wheel_lacks_kernels(runtime_gfx)
+    return _generic_rocm_wheel_lacks_kernels(runtime_gfx, ver)
 
 
 def _ensure_rocm_torch() -> None:
@@ -3565,7 +3600,7 @@ def _ensure_rocm_torch() -> None:
         # No ROCm-version floor here: whichever generic index a host's ROCm version picks,
         # its wheel carries no kernels for these targets (see _GENERIC_ROCM_WHEEL_GFX).
         if _arch_index_url is None:
-            _missing_kernels = {g for g in gfx_codes if _generic_rocm_wheel_lacks_kernels(g)}
+            _missing_kernels = {g for g in gfx_codes if _generic_rocm_wheel_lacks_kernels(g, ver)}
             # A sub-2.11 build of a floor leaf is broken wherever it came from, and several of
             # those leaves (gfx120X-all, and gfx1150/gfx1151 whenever an unreadable ROCm
             # version leaves the Strix arm inactive) serve GPUs the generic wheel DOES list.
@@ -3584,7 +3619,9 @@ def _ensure_rocm_torch() -> None:
             if _missing_kernels or _below_floor_on_leaf:
                 _leaf = (
                     _runtime_leaf
-                    if (_generic_rocm_wheel_lacks_kernels(_runtime_gfx) or _below_floor_on_leaf)
+                    if (
+                        _generic_rocm_wheel_lacks_kernels(_runtime_gfx, ver) or _below_floor_on_leaf
+                    )
                     else None
                 )
                 # Already running on this family's wheels. The reroute below is a
@@ -3663,7 +3700,10 @@ def _ensure_rocm_torch() -> None:
         if _arch_index_url is None and rocm_torch_ready and _runtime_gfx is not None:
             _have = _installed_rocm_wheel_family() if _torch_requires_rocm_sdk() else None
             _want = (_GFX_TO_AMD_INDEX_ARCH.get(_runtime_gfx) or "").lower()
-            if _have is not None and _have != _want:
+            # A target no index can serve (gfx1010 / RDNA 1) has an empty _want, which would
+            # read as "every family is wrong" and spend a multi-GB reinstall on a wheel that
+            # cannot carry kernels for it either. Demote only when there is somewhere to go.
+            if _have is not None and _have != _want and _gfx_has_a_wheel_route(_runtime_gfx):
                 _safe_print(
                     f"   installed ROCm torch is the {_have} build, which carries no\n"
                     f"   {_runtime_gfx} kernels -- reinstalling for this GPU.\n"
@@ -3684,14 +3724,15 @@ def _ensure_rocm_torch() -> None:
                                 if _want in _ROCM_GFX_TORCH211_LEAVES
                                 else _ROCM_ARCH_INDEX_TORCH_PKG_SPEC
                             )
-                    else:
+                    elif _runtime_gfx in _GENERIC_ROCM_WHEEL_GFX:
                         # The replacement GPU has no AMD per-arch index at all: gfx942, gfx950
                         # and the other datacentre parts live only on the generic one. With no
                         # readable host version there is no tag either, so the branch would
                         # announce the reinstall and install nothing, leaving the stale
                         # per-arch wheels -- which carry no kernels for this GPU -- in place on
-                        # every update. Take the newest generic index this installer knows:
-                        # a generic-only target is by definition one it carries.
+                        # every update. Take the newest generic index this installer knows.
+                        # Gated on the generic wheel actually carrying this target, so the
+                        # reinstall is one that can produce working kernels.
                         ver = max(_ROCM_TORCH_INDEX)
 
     # gfx906 (MI50 / Radeon VII): is this the runtime GPU target? Used below to skip

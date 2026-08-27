@@ -1082,3 +1082,52 @@ def test_a_rocr_mask_index_out_of_range_keeps_todays_fallback():
     assert _target(["gfx1103"], "kfd", {"ROCR_VISIBLE_DEVICES": "1"}) == "gfx1103"
     assert _target(["gfx1103"], "kfd", {"ROCR_VISIBLE_DEVICES": "0,9"}) == "gfx1103"
     assert _target(["gfx1103", "gfx1200"], "kfd", {"ROCR_VISIBLE_DEVICES": "1"}) == "gfx1200"
+
+
+def test_a_target_no_index_can_serve_is_not_worth_a_reinstall():
+    """gfx1010 is in neither the generic wheel nor the AMD leaf map, so an empty leaf reads as
+    "every family is wrong" and spends a multi-GB reinstall on a wheel that cannot carry
+    kernels for it either. Demote only when there is somewhere to go."""
+    calls = _run_install(
+        gfx_devices = ("gfx1010",),
+        inferred = None,
+        rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+    )
+    assert _GENERIC not in calls and _AMD not in calls, calls
+    # A target the generic wheel does carry is still repaired, so the guard is scoped.
+    assert _GENERIC in _run_install(
+        gfx_devices = ("gfx942",),
+        inferred = None,
+        rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+    )
+
+
+@pytest.mark.parametrize("gfx", ["gfx1200", "gfx1201"])
+@pytest.mark.parametrize(
+    "rocm_version, rerouted",
+    [((6, 0), True), ((6, 3), True), ((6, 4), False), ((7, 1), False)],
+)
+def test_generic_kernel_support_is_keyed_by_the_tag_the_version_selects(
+    gfx, rocm_version, rerouted
+):
+    """Which arches the generic wheel carries is a property of the wheel a version resolves
+    to, not of the index as a whole. AMD puts production RDNA 4 at ROCm 6.4, so a host that
+    resolves rocm6.3 or older -- a current amdgpu naming the card beside a stale /opt/rocm --
+    gets a wheel with no kernels for it while a gfx120X-all leaf exists."""
+    calls = _run_install(gfx_devices = (gfx,), rocm_version = rocm_version)
+    if rerouted:
+        assert f"{_AMD}/gfx120X-all/" in calls, calls
+    else:
+        assert _AMD not in calls and _GENERIC in calls, calls
+
+
+@pytest.mark.parametrize("rocm_version", [(6, 0), (7, 1)])
+def test_an_arch_with_no_recorded_minimum_is_unaffected_by_the_version(rocm_version):
+    """The measurement covers rocm7.x; only arches known to postdate an older tag are keyed by
+    it, so everything else keeps the union reading and the generic index it always had."""
+    calls = _run_install(gfx_devices = ("gfx1100",), rocm_version = rocm_version)
+    assert _AMD not in calls and _GENERIC in calls, calls
