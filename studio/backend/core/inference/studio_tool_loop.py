@@ -530,10 +530,13 @@ class _Turn:
     # with the name rather than land on the call that has already closed.
     pending_name_by_index: dict[int, str] = field(default_factory = dict)
     pending_extra_by_index: dict[int, dict[str, Any]] = field(default_factory = dict)
-    # Where in first-seen order the announcement landed, so a call the stream
-    # announced before another one still runs before it: the loop spends its
-    # budget down this list in order.
-    pending_order_by_index: dict[int, int] = field(default_factory = dict)
+    # When the announcement landed, so a call the stream announced before
+    # another one still runs before it whenever its arguments turn up: the loop
+    # spends its budget down this list in order. A counter rather than a
+    # position in ``order``, which shifts as calls are appended.
+    pending_seq_by_index: dict[int, int] = field(default_factory = dict)
+    seq_by_key: dict[Any, int] = field(default_factory = dict)
+    seq_counter: int = 0
     # Which call each id names, so a fragment repeating an id reaches its own
     # call even when a later call at that index is the one currently open.
     key_by_call_id: dict[str, Any] = field(default_factory = dict)
@@ -732,7 +735,8 @@ class _Turn:
                     # streamed as "web" then "_search" must open its call as
                     # "web_search", not as whichever fragment arrived last.
                     pending_before = self.pending_name_by_index.get(index, "")
-                    self.pending_order_by_index.setdefault(index, len(self.order))
+                    if index not in self.pending_seq_by_index:
+                        self.pending_seq_by_index[index] = self._next_seq()
                     self.pending_name_by_index[index] = (
                         new_name
                         if new_name.startswith(pending_before)
@@ -766,11 +770,17 @@ class _Turn:
                     # arguments turned out to open, and the metadata that came
                     # with it.
                     "function": {
-                        "name": self.pending_name_by_index.pop(index, ""),
+                        "name": self._parked_name(index, held, new_name),
                         "arguments": "",
                     },
                 }
-                self.pending_order_by_index.pop(index, None)
+                # The call takes the moment it was announced at, not the moment
+                # its arguments arrived, so a call announced second is not run
+                # third because another index opened in between.
+                announced_at = self.pending_seq_by_index.pop(index, None)
+                self.seq_by_key[key] = (
+                    announced_at if announced_at is not None else self._next_seq()
+                )
                 pending_extra = self.pending_extra_by_index.pop(index, None)
                 if pending_extra:
                     born["extra_content"] = pending_extra
@@ -883,12 +893,32 @@ class _Turn:
                 "type": "function",
                 "function": {"name": born_name, "arguments": segment},
             }
+            self.seq_by_key[born_key] = self._next_seq()
             self.order.append(born_key)
             open_key = born_key
         if incoming_extra is not None:
             self.by_index[open_key]["extra_content"] = dict(incoming_extra)
         # Later id-less fragments continue the last call, finished or not.
         self.open_key_by_index[index] = open_key
+
+    def _parked_name(self, index: int, held: dict[str, Any] | None, opening_name: Any) -> str:
+        """The parked name to open a call with, if it is that call's at all.
+
+        A parked name that repeats or extends the closed call's own is most
+        likely that call's name resent, and is only kept because a second
+        no-argument call to the same tool is indistinguishable from one. So
+        when the delta that opens the call names it outright, that name wins:
+        seeding "alpha_long" and merging "beta" onto it produced
+        "alpha_longbeta", which matches no enabled tool and never runs.
+        """
+        parked = self.pending_name_by_index.pop(index, "")
+        if not parked or not isinstance(opening_name, str) or not opening_name:
+            return parked
+        held_name = held["function"]["name"] if held is not None else ""
+        resent = bool(held_name) and (held_name.startswith(parked) or parked.startswith(held_name))
+        if resent and not (opening_name.startswith(parked) or parked.startswith(opening_name)):
+            return ""
+        return parked
 
     def _announced_but_unopened(self) -> list[tuple[int, dict[str, Any]]]:
         """Calls a name announced that no argument fragment ever opened.
@@ -921,8 +951,12 @@ class _Turn:
             extra = self.pending_extra_by_index.get(index)
             if extra:
                 call["extra_content"] = dict(extra)
-            out.append((self.pending_order_by_index.get(index, len(self.order)), call))
+            out.append((self.pending_seq_by_index.get(index, self.seq_counter), call))
         return out
+
+    def _next_seq(self) -> int:
+        self.seq_counter += 1
+        return self.seq_counter
 
     def calls(self, taken: set[str] | None = None) -> list[dict[str, Any]]:
         """Every call this turn produced, with ids unique across the whole run.
@@ -934,12 +968,17 @@ class _Turn:
         """
         seen: set[str] = taken if taken is not None else set()
         out: list[dict[str, Any]] = []
-        ordered = [self.by_index[key] for key in self.order]
-        # Placed where the stream announced them rather than appended, so a call
-        # announced second is not run third. Descending, so an earlier insert
-        # cannot shift a later one off its mark.
-        for at, pending in sorted(self._announced_but_unopened(), reverse = True):
-            ordered.insert(at, pending)
+        # Ordered by when the stream announced each call, so one announced
+        # second is not run third because another index opened in between. Keyed
+        # on the sequence number alone: two announcements can share a moment
+        # only if one has no number yet, and comparing the calls themselves to
+        # break that tie raises rather than sorting. Stable, so a shared number
+        # keeps the order the calls were found in.
+        numbered = [
+            (self.seq_by_key.get(key, position), self.by_index[key])
+            for position, key in enumerate(self.order)
+        ] + self._announced_but_unopened()
+        ordered = [call for _, call in sorted(numbered, key = lambda pair: pair[0])]
         for position, call in enumerate(ordered + list(self.healed)):
             normalized = _normalized_call(call, fallback_id = f"call_{self.round}_{position}")
             if normalized is None:

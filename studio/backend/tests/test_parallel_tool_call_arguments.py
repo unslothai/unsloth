@@ -462,3 +462,58 @@ def test_an_integer_too_long_to_convert_is_still_a_boundary():
     turn.merge_structured([_delta(0, "alpha", big)])
     turn.merge_structured([_delta(0, "beta", '{"b":2}')])
     assert _shape(turn) == [("alpha", big), ("beta", '{"b":2}')]
+
+
+def test_two_calls_announced_at_once_do_not_break_the_sort():
+    # Two announcements can share a moment. Breaking the tie by comparing the
+    # calls themselves raises TypeError and takes the whole turn with it.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "A", '{"a":1}')])
+    turn.merge_structured([_delta(1, "B", '{"b":1}')])
+    turn.merge_structured([_delta(0, "C", "")])
+    turn.merge_structured([_delta(1, "D", "")])
+
+    reported = [(call["function"]["name"], call["function"]["arguments"]) for call in turn.calls()]
+    assert reported == [("A", '{"a":1}'), ("B", '{"b":1}'), ("C", "{}"), ("D", "{}")]
+
+
+def test_a_pending_call_keeps_its_place_when_it_later_opens():
+    # The call takes the moment it was announced at, not the moment its
+    # arguments arrived, so a finite budget cannot run the later call and
+    # reject the earlier one.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "A", '{"a":1}')])
+    turn.merge_structured([_delta(0, "B", "")])
+    turn.merge_structured([_delta(1, "C", '{"c":3}')])
+    turn.merge_structured([_delta(0, None, '{"b":2}')])
+
+    # calls() is the list the loop spends its budget down.
+    reported = [(call["function"]["name"], call["function"]["arguments"]) for call in turn.calls()]
+    assert reported == [("A", '{"a":1}'), ("B", '{"b":2}'), ("C", '{"c":3}')]
+
+
+def test_an_opening_name_beats_a_parked_resend():
+    # A parked name that extends the closed call's own is most likely that
+    # call's name resent, so a delta that names its call outright wins: seeding
+    # "alpha_long" and merging "beta" onto it gave "alpha_longbeta", which
+    # matches no enabled tool and never runs.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured([_delta(0, "alpha_long", "")])
+    turn.merge_structured([_delta(0, "beta", '{"b":2}')])
+
+    assert _shape(turn) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
+
+    # The second no-argument call to the same tool still works, and so does a
+    # name streamed in fragments: neither has an opening name that disagrees.
+    same = _Turn()
+    same.merge_structured([_delta(0, "no_args", "{}")])
+    same.merge_structured([_delta(0, "no_args", "")])
+    same.merge_structured([_delta(0, None, "{}")])
+    assert _shape(same) == [("no_args", "{}"), ("no_args", "{}")]
+
+    grown = _Turn()
+    grown.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    grown.merge_structured([_delta(0, "web", "")])
+    grown.merge_structured([_delta(0, "_search", '{"q":1}')])
+    assert _shape(grown) == [("alpha", '{"a":1}'), ("web_search", '{"q":1}')]

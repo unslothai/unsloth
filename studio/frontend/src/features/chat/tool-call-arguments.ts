@@ -191,8 +191,18 @@ export function toolCallReplayArguments(
   if (serialized === undefined || !isSingleJsonObject(serialized)) {
     return "{}";
   }
-  const keys = Object.keys(JSON.parse(serialized) as Record<string, unknown>);
-  if (keys.length === 1 && keys[0] === "_raw") {
+  const parsed = JSON.parse(serialized) as Record<string, unknown>;
+  const keys = Object.keys(parsed);
+  // The adapter writes `{ _raw }` holding the exact text it could not parse, so
+  // a lone `_raw` whose value IS that text is the marker and replaying it would
+  // send a parameter no tool declares. `_raw` is not reserved, though, and an
+  // MCP server's schema is its own, so a tool that really takes one keeps it.
+  if (
+    keys.length === 1 &&
+    keys[0] === "_raw" &&
+    typeof parsed._raw === "string" &&
+    parsed._raw === argsText
+  ) {
     return "{}";
   }
   return serialized;

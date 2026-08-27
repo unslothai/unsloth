@@ -184,6 +184,20 @@ function liftSplitHelpers(): string {
   return lifted;
 }
 
+/** The reset that runs when a provider turn finishes. */
+function liftTurnReset(): string {
+  const lifted = liftBetween(
+    "turn reset",
+    "codexRoundToolCallIds = [];",
+    "// Kimi / DeepSeek stream thinking",
+  );
+  assert.ok(
+    lifted.includes("pendingNameByIndex.clear()"),
+    "the provider-turn reset no longer clears the parked name",
+  );
+  return lifted;
+}
+
 function liftDeltaLoop(): string {
   const loopStart = adapterSource.indexOf(
     "for (const tc of rawDeltaToolCalls) {",
@@ -225,11 +239,12 @@ interface LoopPart {
 /** The lifted loop, with the locals it closes over supplied by hand. */
 function makeStream(): {
   feed: (batch: DeltaCall[]) => boolean;
+  endTurn: () => void;
   parts: LoopPart[];
 } {
   const body = `
     const toolCallParts = [];
-    const codexRoundToolCallIds = [];
+    let codexRoundToolCallIds = [];
     const toolPartIdByBackendId = new Map();
     const cumulativeText = "";
     let streamedChars = 0;
@@ -248,7 +263,11 @@ function makeStream(): {
       ${liftDeltaLoop()}
       return addedToolCall;
     }
-    return { feed, parts: toolCallParts };
+    // The provider-turn boundary, lifted from the finish_reason branch.
+    function endTurn() {
+      ${liftTurnReset()}
+    }
+    return { feed, endTurn, parts: toolCallParts };
   `;
   const js = ts.transpileModule(body, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
@@ -264,6 +283,7 @@ function makeStream(): {
     findStreamedToolCallPartIndex,
   ) as {
     feed: (batch: DeltaCall[]) => boolean;
+    endTurn: () => void;
     parts: LoopPart[];
   };
 }
@@ -737,4 +757,40 @@ test("metadata parked with a name is merged, not replaced", () => {
     google: { thought_signature: "SIG" },
     openai: { x: 1 },
   });
+});
+
+test("an MCP tool that really takes _raw keeps it", () => {
+  // The adapter writes `{ _raw }` holding the exact text it could not parse, so
+  // that pairing is the marker. `_raw` is not reserved, and an MCP server's
+  // schema is its own, so a tool that declares one must still be callable.
+  assert.equal(
+    toolCallReplayArguments('{"url":"a"}{"url":"b"}', {
+      _raw: '{"url":"a"}{"url":"b"}',
+    }),
+    "{}",
+  );
+  assert.equal(
+    toolCallReplayArguments(undefined, { _raw: "a legitimate value" }),
+    '{"_raw":"a legitimate value"}',
+  );
+  assert.equal(
+    toolCallReplayArguments('{"url":"a"}{"url":"b"}', { _raw: 42 }),
+    '{"_raw":42}',
+  );
+});
+
+test("a name waiting for arguments does not cross a turn boundary", () => {
+  // The backend starts the next provider turn on the same response with the
+  // delta index restarted at 0, so a name left over would be prepended to
+  // whatever opens there.
+  const stream = makeStream();
+  stream.feed([{ index: 0, function: { name: "A", arguments: '{"a":1}' } }]);
+  stream.feed([{ index: 0, function: { name: "B" } }]);
+  stream.endTurn();
+  stream.feed([{ index: 0, function: { name: "C", arguments: '{"c":3}' } }]);
+
+  assert.deepEqual(shape(stream.parts), [
+    ["A", '{"a":1}'],
+    ["C", '{"c":3}'],
+  ]);
 });

@@ -6918,6 +6918,14 @@ export function createOpenAIStreamAdapter(
 
               if (chunk.choices?.[0]?.finish_reason) {
                 codexRoundToolCallIds = [];
+                // A name waiting for arguments is waiting within one provider
+                // turn. The backend starts the next turn on this same response
+                // with the delta index restarted at 0, so a name left over
+                // would be prepended to whatever opens there, turning "C" into
+                // "BC" and hanging B's metadata on it. The backend's own
+                // pending state is per turn for the same reason.
+                pendingNameByIndex.clear();
+                pendingExtraByIndex.clear();
               }
               // Kimi / DeepSeek stream thinking via delta.reasoning_content;
               // wrap inline as <think>...</think> for parseAssistantContent.
