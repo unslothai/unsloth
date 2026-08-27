@@ -2826,10 +2826,17 @@ _CTX_FIT_VRAM_FRACTION = 0.97
 # 0.85 MLX uses in mlx_inference.py (_configure_memory_limits); not kept in sync.
 _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 
-# _fit_context_to_vram's floor, and llama.cpp's (common_params.fit_params_min_ctx), so a
-# 4096 from either is that floor rather than a measurement. The Metal branch re-prices
+# _fit_context_to_vram's floor: the shortest context the search will settle for, so a
+# value equal to it is that floor rather than a measurement. The Metal branch re-prices
 # from _FIT_FLOOR_MIN_CTX (the search's 256 alignment step) before trusting it.
-_FIT_MIN_CTX = 4096
+#
+# 8192, not llama.cpp's own 4096 (common_params.fit_params_min_ctx). 4096 is too short
+# to be useful for chat once tools and a system prompt are in the window, and the fit
+# search would settle there rather than spilling weights it could spill instead. The two
+# floors are now deliberately different numbers: llama.cpp's still governs ITS fitter,
+# and Unsloth does not pass -fitc, so a launch that hands llama.cpp an explicit -c can
+# still be reduced below this by the child's own fit step.
+_FIT_MIN_CTX = 8192
 _FIT_FLOOR_MIN_CTX = 256
 
 # Auto only reaches this path when no discrete-GPU subset can hold the model.
@@ -10139,7 +10146,7 @@ class LlamaCppBackend:
         ctx: int,
         usable_mib: Iterable[float],
         reserve_bytes_fn: Callable[[int], int],
-        min_ctx: int = 4096,
+        min_ctx: int = 8192,
     ) -> int:
         """Largest context in [``min_ctx``, ``ctx``] whose replicated per-device reserve
         still fits the SMALLEST card of a layer-split subset; 0 when even ``min_ctx``
@@ -10861,7 +10868,7 @@ class LlamaCppBackend:
     # Context the projector's residency is priced at. The placement loop shrinks the
     # context to this floor long before it would spill a layer, so this is the length
     # at which "does it fit" means "does every layer stay on the GPU".
-    _MMPROJ_FIT_FLOOR_CTX = 4096
+    _MMPROJ_FIT_FLOOR_CTX = 8192
     _MTP_DRAFT_COMPUTE_BYTES = 224 * 1024 * 1024  # MTP draft decode graph beyond its KV
     # Draft depth to budget when the extras own the spec block and the probe cannot
     # read the build's own default off its --help. Shipped values are 3
@@ -11117,7 +11124,7 @@ class LlamaCppBackend:
         available_mib: int,
         model_size_bytes: int,
         cache_type_kv: Optional[str] = None,
-        min_ctx: int = 4096,
+        min_ctx: int = 8192,
         *,
         swa_full: bool = False,
         n_parallel: int = 1,
