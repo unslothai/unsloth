@@ -68,7 +68,7 @@ if "httpx" not in sys.modules:
         )
         sys.modules["httpx"] = module
 
-from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend, _loader_path_var
 
 _REAL_POPEN = subprocess.Popen
 
@@ -3153,3 +3153,200 @@ def test_a_rejected_load_leaves_the_resident_advisory_alone(tmp_path, monkeypatc
     assert (
         backend.last_load_warning == warned
     ), f"already_loaded answered with no memory_warning: {backend.last_load_warning}"
+
+
+# ── Repricing after an auto-selected Vulkan backend is replayed on CPU ─────────
+# The replay launches with --gpu-layers 0 --device none, so the child that serves the
+# session is credited no VRAM at all and pages the whole model from system RAM. The
+# preflight priced a GPU placement that is now dead: its spill figure understates what
+# the running child holds, and a model that FIT in VRAM was never priced against host
+# RAM at all, which is the case the user most needs told about.
+def _vulkan_cpu_replay_backend(tmp_path, monkeypatch, *, gguf_gb, free_mib, avail_mib):
+    """A host whose auto-selected Vulkan build hard-crashes at startup, with a discrete
+    card (Vulkan reports total 0 only for an iGPU, so this pool is real VRAM) and a
+    staged CPU runtime for the replay."""
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, free_mib, free_mib)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(gguf_gb * 1024**3)
+    backend._select_gpus = lambda *_a, **_kw: (None, True)
+    backend.probe_server_capabilities = lambda _binary: {"found": True}
+    # The real _prepare_cpu_fallback_launch and _cpu_isolated_replay run: what is being
+    # asserted is how the REPLAY argv prices, so it has to be the argv the code builds.
+    backend._cpu_isolated_binary = lambda _binary: "/fake/llama-server"
+    backend._llama_server_env_for_binary = lambda _binary: {_loader_path_var(): ""}
+    backend._record_server_pid = lambda _pid: None
+    backend._clear_server_pid = lambda: None
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_vulkan_prebuilt_was_auto_selected", staticmethod(lambda _binary: True)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: avail_mib)
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+    return backend, gguf
+
+
+def _launch_with_vulkan_cpu_replay(backend, gguf, *, crash = True, **load_kwargs):
+    """Every launch that can still reach a GPU dies of a signal, which is what a broken
+    Vulkan backend does; only the device-less replay comes up healthy. Written against
+    the argv rather than the attempt number so the intermediate rungs (the --flash-attn
+    off retry) crash too instead of masking the fallback under test.
+
+    ``crash=False`` is the control: the same host, the same model, one launch that
+    works, so nothing is repriced.
+    """
+    captured = {"cmds": []}
+
+    def _is_cpu_replay(cmd):
+        return "--device" in cmd and cmd[cmd.index("--device") + 1] == "none"
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        rc = -11 if (crash and not _is_cpu_replay(list(cmd))) else None
+        captured["cmds"].append(list(cmd))
+        captured["env"] = kwargs.get("env") or dict(os.environ)
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "returncode": rc,
+                "poll": lambda self: rc,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: rc,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None):
+        if crash and not _is_cpu_replay(captured["cmds"][-1] if captured["cmds"] else []):
+            backend._stdout_lines = ["ggml_vulkan: Device memory allocation failed"]
+            return False
+        backend._stdout_lines = []
+        return True
+
+    backend._wait_for_health = fake_health
+
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                **load_kwargs,
+            )
+        )
+    if crash:
+        assert len(captured["cmds"]) > 1, captured["cmds"]
+        assert backend._cpu_fallback_reason == "vulkan_startup_crash"
+        assert _is_cpu_replay(captured["cmds"][-1]), captured["cmds"][-1]
+    return captured
+
+
+def test_a_model_that_fits_vram_but_not_ram_is_warned_once_it_lands_on_cpu(
+    tmp_path, monkeypatch
+):
+    """20 GB of weights on a 24 GB card: nothing spills, so the preflight has nothing
+    to say. The Vulkan backend then crashes and the replay runs on no GPU at all, so
+    the whole 20 GB has to come out of a 12 GB host and pages from disk for the rest of
+    the session -- and memory_warning was null for exactly that load."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 12 * 1024
+    )
+
+    _launch_with_vulkan_cpu_replay(backend, gguf)
+
+    warning = backend.last_load_warning or ""
+    assert "does not fit in GPU memory" in warning, (
+        "the CPU-only child pages the whole model from disk and says nothing about it: "
+        f"{warning!r}"
+    )
+    assert "About 20 GB" in warning, warning
+
+
+def test_a_gpu_placement_warning_does_not_survive_onto_the_cpu_child(tmp_path, monkeypatch):
+    """20 GB of weights on an 8 GB card spill 12 GB, which a 13 GB host cannot hold, so
+    the preflight warns about 12 GB. That placement then dies. The child that serves the
+    session holds all 20 GB in RAM, so the figure it inherited describes an offload it
+    no longer performs -- and understates the one it does."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 8 * 1024, avail_mib = 13 * 1024
+    )
+
+    _launch_with_vulkan_cpu_replay(backend, gguf)
+
+    warning = backend.last_load_warning or ""
+    assert "About 20 GB" in warning, (
+        f"the CPU-only child still reports the dead GPU placement's spill: {warning!r}"
+    )
+    assert "About 12 GB" not in warning, warning
+
+
+def test_a_vulkan_load_that_never_falls_back_keeps_its_own_advisory(tmp_path, monkeypatch):
+    """The control. Same host and same model as above, but the GPU launch comes up:
+    nothing is replayed, so the advisory is the GPU placement's own spill, untouched."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 8 * 1024, avail_mib = 13 * 1024
+    )
+
+    captured = _launch_with_vulkan_cpu_replay(backend, gguf, crash = False)
+
+    assert len(captured["cmds"]) == 1, captured["cmds"]
+    assert backend._cpu_fallback_reason is None
+    warning = backend.last_load_warning or ""
+    assert "About 12 GB" in warning, warning
+    assert "About 20 GB" not in warning, warning
+
+
+def test_the_cpu_reprice_carries_the_pageable_override_note_it_did_not_revert(
+    tmp_path, monkeypatch
+):
+    """An unmapped oversized load is remapped before the first spawn: force_pageable_load
+    rewrites the argv and the shared child env in place. The replay is built from that
+    argv and that env and strips placement alone, so the CPU child really is
+    memory-mapped -- the note stays true and is carried onto the repriced text verbatim,
+    not rebuilt and not taken back."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 8 * 1024, avail_mib = 13 * 1024
+    )
+
+    captured = _launch_with_vulkan_cpu_replay(backend, gguf, extra_args = ["--no-mmap"])
+
+    replay = captured["cmds"][-1]
+    assert not _unmapped_tokens(replay), f"the CPU child loads unmapped: {replay}"
+    warning = backend.last_load_warning or ""
+    assert "About 20 GB" in warning, warning
+    assert warning.count("memory mapping instead") == 1, warning
+
+
+def test_the_cpu_reprice_reads_the_pool_the_preflight_saw_not_the_one_the_model_is_in(
+    tmp_path, monkeypatch
+):
+    """The reprice asks "does the whole model fit in host RAM?", so it has to weigh it
+    against the RAM that was free BEFORE the replay loaded it.
+
+    By the time it runs, the CPU child is healthy and holding every byte, so a fresh
+    reading is the pool minus the model being priced: it would charge 20 GB against the
+    4 GB left over and warn that a model which demonstrably just started does not fit.
+    """
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 24 * 1024, avail_mib = 24 * 1024
+    )
+    # 24 GB free at the preflight, 4 GB once the 20 GB of weights are resident.
+    readings = iter([24 * 1024])
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: next(readings, 4 * 1024)),
+    )
+
+    _launch_with_vulkan_cpu_replay(backend, gguf)
+
+    assert backend.last_load_warning is None, (
+        "the reprice charged the weights against a pool they already occupy, so a model "
+        f"that started fine still warns it does not fit: {backend.last_load_warning!r}"
+    )

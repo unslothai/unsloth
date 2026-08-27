@@ -9319,6 +9319,71 @@ class LlamaCppBackend:
             pinned_bytes / (1024 * 1024),
         )
 
+    def _reprice_after_cpu_only_fallback(
+        self,
+        *,
+        host_msg: Optional[str],
+        cpu_cmd: Iterable[str],
+        env: Optional[Mapping[str, str]],
+        avail_mib: Optional[int],
+    ) -> None:
+        """Re-price the host memory advisory once a Vulkan crash is replayed on CPU.
+
+        The replay launches with ``--gpu-layers 0 --device none``, so no VRAM is
+        credited to it at all: the child that serves the session holds the WHOLE model
+        in system RAM and pages it from disk. Two things follow, and the preflight
+        notice gets neither right.
+
+        A load that was warned about its spill was warned about the spill of the GPU
+        placement that just died. The replay's spill is the whole model, which is
+        strictly larger, so the recorded figure understates what the running child
+        actually pages. And a load that FIT in VRAM was never warned at all, yet it is
+        the one the user most needs told: it now runs entirely from host RAM on a host
+        that may not hold it, and ``memory_warning`` was null for it.
+
+        Priced against ``avail_mib``, the figure the PREFLIGHT read, for the same reason
+        the projector reprice carries its own snapshot down: this runs after
+        ``_spawn_and_wait`` reports the CPU child healthy, so a fresh reading is the
+        pool minus the model being priced and would report a shortfall for a load that
+        demonstrably just started.
+
+        Called only where the replay is known healthy, never where it is chosen. A
+        failed replay is not terminal on every rung -- the drafter replay reports "not
+        recovered" and the caller tries the drafterless argv next -- so pricing at the
+        decision would describe a placement about to be abandoned.
+
+        The pageable-load override is NOT re-decided here, and nothing claims it was
+        reverted. ``force_pageable_load`` rewrote the argv and the shared child env in
+        place before the first spawn, and ``_cpu_isolated_replay`` strips placement
+        alone, so the replay inherits both and the CPU child really is memory-mapped.
+        Whatever note the preflight message carried is carried over verbatim onto the
+        re-priced text rather than rebuilt, so a reprice cannot describe the override in
+        different words than the launch site did.
+
+        A no-op unless the notice the route would hand back is the one this path can
+        speak for: an opt-out that silenced it (the re-pricing call honours it too), or
+        any other notice first-notice-wins kept, is left exactly as it is.
+        """
+        repriced = self._launch_host_shortfall_message(
+            cpu_cmd,
+            (),
+            env,
+            child_has_no_gpu = True,
+            avail_mib = avail_mib,
+        )
+        current = self._last_load_warning
+        if current is None:
+            # The model fit in VRAM, so nothing warned; on CPU it fits nowhere but disk.
+            self._record_load_warning(repriced)
+            return
+        if not host_msg or not current.startswith(host_msg) or not repriced:
+            return
+        self._last_load_warning = repriced + current[len(host_msg) :]
+        logger.info(
+            "Re-priced the host memory advisory for the CPU replay: it runs with no "
+            "GPU, so the whole model is charged to system RAM."
+        )
+
     def _fits_without_paging(
         self,
         footprint_bytes: Optional[int],
@@ -21203,12 +21268,25 @@ class LlamaCppBackend:
                         )
                     )
                 )
+                # The host pool as it stands before ANYTHING spawns, kept for the Vulkan
+                # CPU replay to re-price against. That replay only runs once a CPU-only
+                # child is healthy and holding the whole model in system RAM, where a
+                # live reading is the pool minus the very model being priced. Taken
+                # here, and handed to the guard below as well, so the two verdicts
+                # differ in exactly one term -- the VRAM credit the replay loses -- and
+                # never in the pool they were read against. Only on the path that can
+                # use it: a load with no CPU replay available pays for no probe, and
+                # None restores the guard's own live reading.
+                _preflight_avail_mib = (
+                    self._available_system_memory_mib() if _cpu_fallback_eligible else None
+                )
                 # reads the argv the child gets, not the mid-fit state that produced it
                 _offload_msg = self._launch_host_shortfall_message(
                     cmd,
                     _detected_gpus,
                     env,
                     child_has_no_gpu = _child_has_no_gpu,
+                    avail_mib = _preflight_avail_mib,
                     shared_gpu_ids = _shared_gpu_ids,
                 )
                 # Snapshotted BEFORE the override note is appended below, so a re-price
@@ -21718,6 +21796,16 @@ class LlamaCppBackend:
                     tensor_split = intent.tensor_split
                     gpu_indices = None
                     use_fit = False
+                    # Everything above records that this session runs on no GPU; the
+                    # advisory has to say so too. Here and not at the decision above,
+                    # because only a child that came up is evidence of what is running
+                    # and a failed replay can still fall through to another argv.
+                    self._reprice_after_cpu_only_fallback(
+                        host_msg = _host_ram_msg,
+                        cpu_cmd = _last_spawn_cmd,
+                        env = env,
+                        avail_mib = _preflight_avail_mib,
+                    )
                     logger.warning(
                         "llama-server loaded successfully on CPU after the "
                         "auto-selected Vulkan backend crashed. GPU acceleration "
