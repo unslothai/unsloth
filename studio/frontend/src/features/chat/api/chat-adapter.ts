@@ -6110,6 +6110,12 @@ export function createOpenAIStreamAdapter(
                   generationDecision = "legacy";
                 } else {
                   generationDecision = "durable";
+                  // Before admission, not after. The run id is ours (`cancelId` is passed as
+                  // `runId`), and the run becomes visible through /active as soon as the POST
+                  // lands, so a visibility, pageshow, online or history-load trigger during
+                  // this await could otherwise start a recovery that the later claim would
+                  // not stop: the scheduler only tests ownership at startup.
+                  claimLiveGenerationRun(cancelId);
                   try {
                     generationRun = await createChatGenerationRunUntilAbort(
                       {
@@ -6133,8 +6139,8 @@ export function createOpenAIStreamAdapter(
                     if (generationDecision === "durable") return;
                   } else {
                     generationRunId = generationRun.id;
-                    // This tab is the producer for this run, so the recovery follower must
-                    // not also replay it from storage. Released in the finally below.
+                    // Normally the same id we claimed above; claimed again in case the server
+                    // ever echoes a different one. Both are released in the finally below.
                     claimLiveGenerationRun(generationRunId);
                     generationStatus = generationRun.status;
                     if (generationStopRequested) {
@@ -7599,8 +7605,9 @@ export function createOpenAIStreamAdapter(
         }
         throw err;
       } finally {
-        // Unconditional: a run left claimed after its stream died is one this tab would
-        // never recover.
+        // Unconditional, and both ids: the pre-admission claim uses `cancelId`, and a run
+        // left claimed after its stream died is one this tab would never recover.
+        releaseLiveGenerationRun(cancelId);
         if (generationRunId) releaseLiveGenerationRun(generationRunId);
         runSignal.removeEventListener("abort", onAbortCancel);
         abortSignal.removeEventListener("abort", forwardAbort);

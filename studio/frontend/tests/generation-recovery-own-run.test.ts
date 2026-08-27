@@ -72,6 +72,30 @@ test("the recovery scheduler refuses a run this tab is streaming", () => {
   assert.ok(guard < register, "the guard must precede the scheduler taking ownership");
 });
 
+test("the adapter claims the run BEFORE admission, not after the response", () => {
+  // The create POST is awaited, and the run is visible through /active as soon as it lands.
+  // A claim that waits for the response leaves that whole round trip open: a visibility,
+  // pageshow, online or history-load trigger can start a recovery inside it, and the later
+  // claim does not stop one already running, because the scheduler only tests ownership at
+  // startup. The run id is the client's own (`cancelId` is passed as `runId`), so there is no
+  // reason to wait for the server to hand it back.
+  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const claim = adapter.indexOf("claimLiveGenerationRun(cancelId)");
+  const admission = adapter.indexOf("generationRun = await createChatGenerationRunUntilAbort(");
+
+  assert.ok(claim > 0, "nothing claims the run before admission");
+  assert.ok(admission > 0);
+  assert.ok(
+    claim < admission,
+    "the claim must precede the create POST, or the round trip is an open window",
+  );
+  // And the pre-admission id has to be released too, or a failed admission strands it.
+  assert.ok(
+    adapter.includes("releaseLiveGenerationRun(cancelId)"),
+    "the pre-admission claim is never released; a failed admission would strand the run",
+  );
+});
+
 test("the adapter claims the run and releases it in a finally", () => {
   const adapter = read("../src/features/chat/api/chat-adapter.ts");
 
