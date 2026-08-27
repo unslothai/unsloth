@@ -17584,10 +17584,7 @@ def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
     def append_resampled(resampled) -> None:
         nonlocal sample_count
         sample_count += int(resampled.samples)
-        if (
-            sample_count > sample_rate * _MAX_AUDIO_SECONDS
-            or sample_count > _MAX_DECODED_SAMPLES
-        ):
+        if sample_count > sample_rate * _MAX_AUDIO_SECONDS or sample_count > _MAX_DECODED_SAMPLES:
             raise _DecodedAudioTooLongError(
                 f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
             )
@@ -17663,9 +17660,7 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
                 window = float(_MAX_AUDIO_SECONDS + 1)
                 if probe_rate > 0:
                     window = min(window, _MAX_DECODED_SAMPLES / probe_rate + 1)
-                arr, sr = librosa.load(
-                    tmp_path, sr = None, mono = True, duration = window
-                )
+                arr, sr = librosa.load(tmp_path, sr = None, mono = True, duration = window)
             finally:
                 os.unlink(tmp_path)
     if arr.ndim > 1:

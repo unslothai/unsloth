@@ -331,9 +331,7 @@ def test_a_high_rate_container_is_capped_by_samples_not_only_by_clock(monkeypatc
             decoded_blocks.append(len(block))
             yield block
 
-    monkeypatch.setitem(
-        sys.modules, "soundfile", types.SimpleNamespace(SoundFile = FakeSoundFile)
-    )
+    monkeypatch.setitem(sys.modules, "soundfile", types.SimpleNamespace(SoundFile = FakeSoundFile))
 
     def concatenate_after_limit(*_args, **_kwargs):
         raise AssertionError("an over-ceiling decode must not be concatenated")
@@ -351,10 +349,7 @@ def test_a_high_rate_container_is_capped_by_samples_not_only_by_clock(monkeypatc
 def test_the_ceiling_never_bites_before_the_advertised_duration(monkeypatch):
     """An ordinary rate keeps the full 30 minutes: the ceiling only refuses rates
     above 48 kHz, so the documented limit still means what it says."""
-    assert (
-        inference_route._MAX_DECODED_SAMPLES
-        >= 48_000 * inference_route._MAX_AUDIO_SECONDS
-    )
+    assert inference_route._MAX_DECODED_SAMPLES >= 48_000 * inference_route._MAX_AUDIO_SECONDS
     for rate in (8_000, 16_000, 44_100, 48_000):
         assert rate * inference_route._MAX_AUDIO_SECONDS <= inference_route._MAX_DECODED_SAMPLES
 
@@ -370,7 +365,12 @@ def test_the_librosa_fallback_reads_only_up_to_the_cap(monkeypatch):
             return 192_000
 
         @staticmethod
-        def load(_path, sr = None, mono = True, duration = None):
+        def load(
+            _path,
+            sr = None,
+            mono = True,
+            duration = None,
+        ):
             seen["duration"] = duration
             return np.zeros(16_000, dtype = np.float32), 192_000
 
