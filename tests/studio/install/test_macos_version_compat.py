@@ -207,6 +207,78 @@ class TestPreflightMacosInstalledBinaries:
         ILP.preflight_macos_installed_binaries(binaries, install_dir, linux_host)
 
 
+class TestMacosDyldLoadProbe:
+    """The minos scan reads a header; it cannot see an install name pointing at a
+    library that exists on the builder and nowhere else. That shipped: a bundle
+    whose libggml-rpc.0.dylib wanted /usr/lib/librdma.dylib passed preflight, was
+    logged "prebuilt installed and validated", and then died on first launch."""
+
+    def _bundle(self, tmp_path, *, exit_code, message = ""):
+        bin_dir = tmp_path / "build" / "bin"
+        bin_dir.mkdir(parents = True)
+        # A real spawnable file, not a Mach-O sample: the point is to reach dyld.
+        # macho_minimum_macos returns None for a non-Mach-O, so the minos gate
+        # ahead of the probe stays quiet and the probe is what decides.
+        server = bin_dir / "llama-server"
+        server.write_text(f'#!/bin/sh\necho "{message}" >&2\nexit {exit_code}\n')
+        server.chmod(0o755)
+        return tmp_path, (server,)
+
+    def test_rejects_a_binary_dyld_will_not_load(self, tmp_path):
+        install_dir, binaries = self._bundle(
+            tmp_path,
+            exit_code = 1,
+            message = "dyld: Library not loaded: /usr/lib/librdma.dylib",
+        )
+        with pytest.raises(PrebuiltFallback, match = "does not load on this host"):
+            ILP.preflight_macos_installed_binaries(
+                binaries, install_dir, make_macos_host((15, 5))
+            )
+
+    def test_the_message_names_the_library(self, tmp_path):
+        install_dir, binaries = self._bundle(
+            tmp_path,
+            exit_code = 1,
+            message = "dyld: Library not loaded: /usr/lib/librdma.dylib",
+        )
+        with pytest.raises(PrebuiltFallback) as caught:
+            ILP.preflight_macos_installed_binaries(
+                binaries, install_dir, make_macos_host((15, 5))
+            )
+        # Without the name the operator gets an exit code and no lead to follow.
+        assert "librdma" in str(caught.value)
+
+    def test_accepts_a_binary_that_loads(self, tmp_path):
+        install_dir, binaries = self._bundle(tmp_path, exit_code = 0, message = "")
+        ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
+
+    def test_a_binary_that_cannot_be_spawned_is_not_a_link_failure(self, tmp_path):
+        """A refusal to exec says nothing about the link graph, and treating it as
+        a verdict would reject healthy bundles on a loaded or locked-down host."""
+        install_dir, binaries = self._bundle(tmp_path, exit_code = 0)
+        binaries[0].chmod(0o644)
+        ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
+
+
+    def test_the_referencing_dylib_survives_into_the_message(self, tmp_path):
+        """dyld names the library AND the dylib that asked for it. The second half
+        is what says libggml-rpc rather than llama-server is at fault, so keep
+        enough of the tail to carry it."""
+        real = (
+            "dyld[41694]: Library not loaded: /usr/lib/librdma.dylib\\n"
+            "  Referenced from: /Users/r/.unsloth/llama.cpp/build/bin/libggml-rpc.0.dylib\\n"
+            "  Reason: tried: '/usr/lib/librdma.dylib' (no such file)"
+        )
+        install_dir, binaries = self._bundle(tmp_path, exit_code = 1, message = real)
+        with pytest.raises(PrebuiltFallback) as caught:
+            ILP.preflight_macos_installed_binaries(
+                binaries, install_dir, make_macos_host((15, 5))
+            )
+        message = str(caught.value)
+        assert "librdma" in message
+        assert "libggml-rpc" in message
+
+
 def _fake_macos_releases(tags):
     return [
         {

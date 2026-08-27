@@ -5221,19 +5221,76 @@ def macos_binary_minos_issues(
     return issues
 
 
+def macos_dyld_load_issues(
+    binaries: Iterable[Path], install_dir: Path, host: HostInfo
+) -> list[str]:
+    """Issue strings for every installed executable dyld refuses to load.
+
+    `--version` returns in about a second and forces dyld to resolve the whole
+    link graph, so this catches a missing dylib, a missing symbol and a too-new
+    slice for the cost of a process spawn -- unlike validate_server, which loads
+    a model and is gated off for checksummed bundles (#5854). Executables only:
+    a broken dylib surfaces through whichever binary links it, and the dylibs
+    themselves cannot be exec'd."""
+    issues: list[str] = []
+    seen: set[Path] = set()
+    for binary_path in binaries:
+        try:
+            resolved = binary_path.resolve()
+        except Exception:
+            resolved = binary_path
+        if resolved in seen or not binary_path.is_file():
+            continue
+        seen.add(resolved)
+        env = binary_env(binary_path, install_dir, host)
+        try:
+            result = run_capture(
+                [str(binary_path), "--version"], timeout = 60, env = env
+            )
+        except Exception as exc:
+            # A timeout or a refusal to spawn is not evidence of a bad link, and
+            # calling it one would reject a healthy bundle on a loaded machine.
+            log(f"macos load probe could not run {binary_path.name}: {exc}")
+            continue
+        if result.returncode == 0:
+            continue
+        # dyld names both the library it could not load and the dylib that asked
+        # for it, which is better evidence than anything otool -L could be made to
+        # yield here: an absolute install name that is absent from disk is the
+        # normal case for /usr/lib, whose members live in the shared cache, so
+        # "missing from disk" cannot separate the culprit from its healthy peers.
+        output = (result.stdout + result.stderr).strip()
+        detail = " | ".join(output.splitlines()[-5:]) or f"exit {result.returncode}"
+        issues.append(f"{binary_path.name}: {detail}")
+    return issues
+
+
 def preflight_macos_installed_binaries(
     binaries: Iterable[Path], install_dir: Path, host: HostInfo
 ) -> None:
-    """Reject a macos prebuilt whose minimum-OS is newer than the host. The
-    upstream selector pins a loadable release up front, so here this is the
-    post-download backstop; the published/fork path also uses it to advance the
-    walk-back. No-op when the host macOS version is unknown (runtime validates)."""
+    """Reject a macos prebuilt whose minimum-OS is newer than the host, or that
+    dyld will not load at all. The upstream selector pins a loadable release up
+    front, so here this is the post-download backstop; the published/fork path
+    also uses it to advance the walk-back. No-op when the host macOS version is
+    unknown (runtime validates).
+
+    The load probe is the macOS counterpart of preflight_linux_installed_binaries'
+    ldd sweep, which this side went without: a bundle whose libggml-rpc.0.dylib
+    links a /usr/lib/librdma.dylib that exists on the builder and nowhere else
+    passed the minos scan, was logged "prebuilt installed and validated", and
+    then died on first launch. Raising PrebuiltFallback here spends a source
+    build instead of installing something that cannot start."""
     if not host.is_macos or host.macos_version is None:
         return
     issues = macos_binary_minos_issues(binaries, install_dir, host)
     if issues:
         raise PrebuiltFallback(
             "macos prebuilt requires a newer macOS than this host:\n" + "\n".join(issues)
+        )
+    load_issues = macos_dyld_load_issues(binaries, install_dir, host)
+    if load_issues:
+        raise PrebuiltFallback(
+            "macos prebuilt does not load on this host:\n" + "\n".join(load_issues)
         )
 
 
