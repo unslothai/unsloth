@@ -157,9 +157,9 @@ class TestSetupPs1PublishesTheFlavor:
             "UNSLOTH_EXPECTED_TORCH_TAG",
             "UNSLOTH_TORCH_INSTALL_INDEX_URL",
         ):
-            assert f"Remove-Item Env:\\{name} -ErrorAction SilentlyContinue" in block, (
-                f"{name} must be removed, not blanked"
-            )
+            assert (
+                f"Remove-Item Env:\\{name} -ErrorAction SilentlyContinue" in block
+            ), f"{name} must be removed, not blanked"
             assert f'$env:{name} = ""' not in block
             assert f"$env:{name} = if (" not in block
 
