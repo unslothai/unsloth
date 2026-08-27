@@ -4006,7 +4006,10 @@ def update(
     # Re-export UNSLOTH_STUDIO_HOME for env-mode installs so the refresh
     # subprocess resolves the same install root the user originally chose.
     _ensure_studio_env_exported()
-    if stage:
+    # `is True`, not truthiness: only the CLI resolves the parameter to a bool. An
+    # in-process caller that leaves it out gets typer's OptionInfo sentinel, which
+    # is truthy, and every such call would stage instead of updating.
+    if stage is True:
         _stage_update(local = local, package = package, verbose = verbose, verify = verify)
         return
     staging = _studio_stage.is_staging()

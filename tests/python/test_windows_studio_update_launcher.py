@@ -301,6 +301,39 @@ def test_non_windows_preserves_call_order_without_launcher_operations(
     assert list(tmp_path.rglob("unsloth.exe*")) == []
 
 
+def test_an_in_process_update_does_not_stage(monkeypatch, studio, tmp_path):
+    """`stage` defaults to typer's OptionInfo, and that sentinel is truthy.
+
+    Only the CLI resolves it to a bool, so a plain `if stage:` sends every
+    in-process call down the staging path and skips the update entirely.
+    """
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(studio.sys, "executable", str(tmp_path / "bin" / "python"))
+    monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda: None)
+    staged = []
+    monkeypatch.setattr(studio, "_stage_update", lambda **kwargs: staged.append(kwargs))
+    calls = []
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: calls.append("setup"))
+    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: calls.append("verify"))
+    monkeypatch.setattr(
+        studio, "_refresh_desktop_shortcuts", lambda **_kwargs: calls.append("refresh")
+    )
+    for name in (
+        "SKIP_STUDIO_BASE",
+        "STUDIO_PACKAGE_NAME",
+        "STUDIO_LOCAL_INSTALL",
+        "STUDIO_LOCAL_REPO",
+        "UNSLOTH_TAURI_UPDATE",
+        "UNSLOTH_STUDIO_STAGE_ROOT",
+    ):
+        monkeypatch.delenv(name, raising = False)
+
+    _update(studio)
+
+    assert staged == []
+    assert calls == ["setup", "verify", "refresh"]
+
+
 def _shim(studio, payload = ORIGINAL_LAUNCHER):
     """The hardlinked PATH shim install.ps1 creates beside the managed venv."""
     path = studio.STUDIO_HOME / "bin" / "unsloth.exe"
