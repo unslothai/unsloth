@@ -80,6 +80,7 @@ import { resolveEstimateContext } from "../model-config/estimate-context";
 import {
   type MemoryFitVerdict,
   formatMemoryGb,
+  glueNoteItems,
   resolveDraftCacheNote,
   resolveKvNote,
   resolveMemoryFit,
@@ -955,7 +956,7 @@ function MemoryBreakdownLine({
       <span className="min-w-0 text-ui-11 leading-relaxed text-muted-foreground">
         {label}
         {note ? (
-          <span className="ml-1 text-muted-foreground/70">{note}</span>
+          <span className="ml-1 text-muted-foreground/70">{glueNoteItems(note)}</span>
         ) : null}
       </span>
       <span
@@ -1035,7 +1036,13 @@ function MemoryEstimateRow({
   );
   return (
     <div className="space-y-2">
-      <div className={ROW_CLASS}>
+      {/* Wraps, unlike the other rows, because this one is the only header carrying a
+          title AND two figures. The panel is w-[min(468px,...)], so under a ~460px
+          window it shrinks with the viewport, and the figures do not shrink: the
+          title absorbed the whole shortfall and truncated to "E..." at 320px. Letting
+          the figures drop to their own line costs a line only where they would not
+          have fitted anyway, and is identical above that width. */}
+      <div className={`${ROW_CLASS} flex-wrap gap-y-1`}>
         <button
           type="button"
           onClick={() => onExpandedChange(!expanded)}
@@ -1053,8 +1060,10 @@ function MemoryEstimateRow({
             strokeWidth={1.75}
           />
         </button>
+        {/* ml-auto so that on the wrapped line, where justify-between has nothing to
+            push against, the figures still sit under the right edge they had. */}
         <div
-          className={`flex shrink-0 items-center gap-3 transition-opacity ${stale || loading ? "opacity-50" : ""}`}
+          className={`ml-auto flex shrink-0 items-center gap-3 transition-opacity ${stale || loading ? "opacity-50" : ""}`}
         >
           {/* One pool: offloading a layer moves it within the same memory rather
               than out of it, so the honest single figure is the total. Reporting
