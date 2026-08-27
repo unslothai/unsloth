@@ -146,11 +146,11 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -194,7 +194,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
       # test_installer_profile_hardening.py imports unsloth_cli.commands.studio, which pulls
       # the CLI's import chain; without these the job dies on ModuleNotFoundError before a
       # single test runs. rich arrives through typer today, but unsloth_cli imports it

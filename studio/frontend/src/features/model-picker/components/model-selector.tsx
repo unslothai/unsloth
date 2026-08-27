@@ -50,6 +50,7 @@ import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy"
 import type { CatalogGroup } from "./model-selector/model-catalog";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
+import { loraOptionLabel } from "./model-selector/row-meta";
 import { isFineTunedSource } from "./model-selector/source-tabs";
 import type {
   DeletedModelRef,
@@ -167,6 +168,8 @@ interface ModelSelectorProps {
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
+  /** Responsive text sizing for headers that have to share a constrained row. */
+  triggerLabelClassName?: string;
   contentClassName?: string;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -191,6 +194,7 @@ function ModelSelectorTrigger({
   variant = "outline",
   size = "default",
   className,
+  triggerLabelClassName,
   dataTour,
   onEject,
   // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
@@ -202,6 +206,7 @@ function ModelSelectorTrigger({
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
+  triggerLabelClassName?: string;
   dataTour?: string;
   onEject?: () => void;
   placeholder?: string;
@@ -266,7 +271,12 @@ function ModelSelectorTrigger({
           </span>
         ) : null}
         <span className="flex min-w-0 flex-1 items-baseline">
-          <span className="min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white">
+          <span
+            className={cn(
+              "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white",
+              triggerLabelClassName,
+            )}
+          >
             {currentModel?.name ?? placeholder}
             {showCloudIndicator ? (
               <HugeiconsIcon
@@ -653,6 +663,7 @@ export function ModelSelector({
   variant = "outline",
   size = "default",
   className,
+  triggerLabelClassName,
   contentClassName,
   open: controlledOpen,
   onOpenChange,
@@ -683,10 +694,7 @@ export function ModelSelector({
       all.set(model.id, model);
     }
     for (const lora of loraModels) {
-      // Strip "/ suffix" from display name (e.g. "foo_123/foo" → "foo_123")
-      const displayName = lora.name.includes("/")
-        ? lora.name.split("/")[0].trim()
-        : lora.name;
+      const displayName = loraOptionLabel(lora);
       // Show type tag instead of base model name
       const isLocal = lora.source === "local";
       const isTraining = lora.source === "training";
@@ -801,6 +809,7 @@ export function ModelSelector({
         variant={variant}
         size={size}
         className={className}
+        triggerLabelClassName={triggerLabelClassName}
         dataTour={triggerDataTour}
         onEject={onEject ? handleEject : undefined}
         placeholder={placeholder}

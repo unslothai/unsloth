@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio-owned tool execution loop, shared by every external provider transport.
+"""Unsloth-owned tool execution loop, shared by every external provider transport.
 
 The loop owns the parts that do not depend on how bytes reach the provider:
 turn cycling, the tool budget, the approval handshake, local execution through
@@ -21,6 +21,26 @@ bounded buffer the client-tool passthrough uses: only a trailing partial-signal
 window or a suspected tool block is ever withheld, and a block that cannot
 become a declared call flushes verbatim. Nothing here invents a cap on how much
 model output may be held.
+
+Origins. This file is assembled out of four contributor PRs rather than written
+from scratch, and the squash merge of #8665 did not carry their authorship, so
+it is recorded here:
+
+* #8626 (khalidejaz) -- the registry capability and the hidden-entry exposure,
+  including the ``provider_runs_local_tools()`` name ``providers.py`` still
+  uses.
+* #8630 (mahiatlinux) -- most of the loop internals below: the user-turn append,
+  the tool-stream advance and drain, usage merging, the approval flush delay,
+  the budget-exhausted nudge, and the streamed tool-name rule that llama-server
+  forced. Also the browser testing against a control worktree that caught a
+  truncated turn discarding a healed call along with the text describing it.
+* #7805 (Etherll) -- the hosted-provider reach.
+* #7330 (Souravrajvi0) -- the original OpenAI-compatible framing.
+
+Two ideas from those PRs were deliberately not taken, which is worth knowing
+before anyone re-derives them: the per-connection opt-in from #8630 and the
+``studio_tool_execution`` column from #7805. #8665 shipped a static disclosure
+instead, while widening the capability from four self-hosted types to thirteen.
 """
 
 from __future__ import annotations
@@ -33,8 +53,9 @@ from dataclasses import dataclass, field
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
+from core.inference import tools as tools_module
 from core.inference.chat_template_helpers import append_assistant_turn
-from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate
+from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate, nudge_enabled
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS,
@@ -46,10 +67,14 @@ from core.inference.tool_call_parser import (
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
+    mcp_display_parts,
+    strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
     TOOL_HEARTBEAT_INTERVAL_S,
+    accepts_kwarg,
     accepts_output_callback,
+    search_images_kwargs,
     stream_tool_execution,
 )
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
@@ -63,19 +88,19 @@ from state.tool_approvals import (
 
 
 _TOOL_BUDGET_EXHAUSTED = (
-    "Studio did not execute this tool call because the per-message tool-call limit was reached. "
+    "Unsloth did not execute this tool call because the per-message tool-call limit was reached. "
     "Continue with the available results and answer without calling another tool."
 )
 
-_TOOL_DISABLED = "Studio did not execute this tool call because the tool is disabled."
+_TOOL_DISABLED = "Unsloth did not execute this tool call because the tool is disabled."
 
 _TOOL_CANCELLED = (
-    "Studio stopped this tool call before it returned, so there is no result. "
+    "Unsloth stopped this tool call before it returned, so there is no result. "
     "The tool may have already done part of its work."
 )
 
 _TOOL_TRUNCATED = (
-    "Studio did not execute this tool call because the provider stopped mid-call at its "
+    "Unsloth did not execute this tool call because the provider stopped mid-call at its "
     "output limit."
 )
 
@@ -83,9 +108,9 @@ _TOOL_TRUNCATED = (
 # from the provider's own tool_calls delta, so it needs a short result; the long
 # model-facing nudge stays in the conversation.
 _TOOL_SKIPPED = {
-    "duplicate": "Studio did not run this call because an identical one had already completed.",
+    "duplicate": "Unsloth did not run this call because an identical one had already completed.",
     "disabled": _TOOL_DISABLED,
-    "render_html_repeat": "Studio did not run this call because render_html already ran.",
+    "render_html_repeat": "Unsloth did not run this call because render_html already ran.",
 }
 
 # Verbatim from the local loops: the last pass answers instead of asking for more.
@@ -114,6 +139,67 @@ _USAGE_DETAIL_FIELDS = (
 )
 
 _STEP_DONE = object()
+
+
+def _truncate_for_model(
+    text: str,
+    limit: int | None = None,
+    *,
+    joiner: str = "\n",
+) -> str:
+    """Hold a hosted result to the same cap a local result gets.
+
+    Read off ``tools`` rather than copied, so an install that lowers
+    ``UNSLOTH_TOOL_RESULT_MAX_CHARS`` gets the lower cap here too.
+    """
+    if limit is None:
+        limit = tools_module._MAX_OUTPUT_CHARS
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"{joiner}... [truncated, {len(text) - limit} more characters]"
+
+
+# Cap on a call's label. Small next to the result cap: this is the query or the
+# code, not the output.
+_HOSTED_ARGUMENT_MAX_CHARS = 2000
+
+
+# Provider plumbing hung off ``arguments`` for the frontend and native-history
+# replay, never for the model: Gemini's ``executableCode`` part plus an opaque
+# ``thoughtSignature``, OpenAI's paired reasoning item with its multi-kilobyte
+# ``encrypted_content``. As prose they are base64 cut off mid-token.
+_HOSTED_ARGUMENT_PLUMBING_KEYS = frozenset({"google", "_server_tool"})
+
+
+def _carries_image_sentinel(result: str) -> bool:
+    """Whether a hosted result ends in the ``__IMAGES__`` envelope itself.
+
+    Validated rather than matched on sight, the way the local strippers
+    validate theirs: a fetched page that merely writes the marker is prose, and
+    reading it as a picture would report an image the turn never made.
+    """
+    _, sep, payload = result.rpartition("\n__IMAGES__:")
+    if not sep:
+        return False
+    try:
+        images = json.loads(payload)
+    except (ValueError, RecursionError):
+        return False
+    return (
+        isinstance(images, list) and bool(images) and all(isinstance(i, str) and i for i in images)
+    )
+
+
+def _hosted_arguments_for_model(arguments: Any) -> dict[str, Any]:
+    """The part of a hosted tool's arguments worth showing the model."""
+    if not isinstance(arguments, dict):
+        return {}
+    return {
+        key: value
+        for key, value in arguments.items()
+        if key not in _HOSTED_ARGUMENT_PLUMBING_KEYS and not key.startswith("openai_")
+    }
+
 
 # Consecutive turns that asked for a tool but ran none before the loop gives up.
 _MAX_FRUITLESS_TURNS = 2
@@ -146,7 +232,7 @@ def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, A
     if not isinstance(function, dict):
         return None
     if not isinstance(call_id, str) or not call_id:
-        # The id is Studio's correlation key, not the model's contract. Several
+        # The id is Unsloth's correlation key, not the model's contract. Several
         # OpenAI-compatible servers omit it; dropping the call lost a real
         # request with no error, so mint one instead.
         call_id = fallback_id
@@ -221,7 +307,7 @@ class ToolLoopTransport(Protocol):
     # structured delta.tool_calls. Codex never does; a self-hosted GGUF often does.
     heals_text_tool_calls: bool
 
-    # Whether the transport already stripped Studio's control vocabulary from
+    # Whether the transport already stripped Unsloth's control vocabulary from
     # every raw upstream line. A transport that has not is sanitized here; one
     # that has must not be sanitized twice, because by this point its own
     # synthesized frames (a provider-hosted image result, say) are indis-
@@ -261,6 +347,8 @@ class ToolLoopPolicy:
     rag_scope: dict[str, Any] | None
     # None means "follow the process default"; False disables text-form healing.
     auto_heal: bool | None = None
+    # None follows UNSLOTH_TOOL_CALL_NUDGE; explicit booleans win.
+    nudge_tool_calls: bool | None = None
 
 
 @dataclass
@@ -269,12 +357,110 @@ class _Turn:
 
     by_index: dict[Any, dict[str, Any]] = field(default_factory = dict)
     order: list[Any] = field(default_factory = list)
+    # call key each delta index maps to: the index itself until a second call
+    # forks off it, then (index, call_id).
+    open_key_by_index: dict[int, Any] = field(default_factory = dict)
     last_index: int | None = None
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
     text: list[str] = field(default_factory = list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
+    # Results from tools the PROVIDER ran this turn, keyed by call id so a
+    # repeated end event cannot record the same result twice.
+    hosted_results: dict[str, dict[str, Any]] = field(default_factory = dict)
+
+    def note_hosted_tool_event(self, event: Any) -> None:
+        """Record a provider-side tool call carried on ``_toolEvent``.
+
+        These reach the client as their own frames but are not part of the
+        assistant message this loop replays, so the follow-up request would lose
+        whatever the provider just produced. Unsloth's own events carry a
+        top-level ``type``, so ``_toolEvent`` is unambiguously the provider's.
+
+        Both halves matter: ``tool_end`` generally omits ``tool_name``, and for
+        Gemini code execution the code that ran is only in the ``tool_start``
+        arguments, so a result recorded alone is unlabelled.
+        """
+        if not isinstance(event, dict):
+            return
+        call_id = event.get("tool_call_id")
+        if not isinstance(call_id, str) or not call_id:
+            return
+        kind = event.get("type")
+        if kind not in ("tool_start", "tool_end"):
+            return
+
+        entry = self.hosted_results.setdefault(call_id, {})
+        name = event.get("tool_name")
+        if isinstance(name, str) and name:
+            entry["name"] = name
+        # The operation itself: Gemini's language and code, a search's query.
+        # Merged across both halves because OpenAI opens an image generation
+        # before it knows the prompt and only names it on the end event.
+        arguments = _hosted_arguments_for_model(event.get("arguments"))
+        if arguments:
+            merged = dict(entry.get("arguments_obj") or {})
+            merged.update(arguments)
+            entry["arguments_obj"] = merged
+            # Truncated with the same notice a result gets: Anthropic hands the
+            # model's whole tool input through, so a file the code wrote lives
+            # here and nowhere else, and a silent cut reads as the whole thing.
+            entry["arguments"] = _truncate_for_model(
+                json.dumps(merged, separators = (",", ":")),
+                _HOSTED_ARGUMENT_MAX_CHARS,
+                joiner = " ",
+            )
+
+        if kind == "tool_start":
+            return
+        result = event.get("result")
+        if isinstance(result, str):
+            # The call finished, even if it produced nothing: Gemini reports
+            # code that printed nothing as an empty string. Recorded apart from
+            # the result so that stays distinguishable from a stream that died
+            # after the start. A non-string is a malformed frame, not an outcome.
+            entry["ended"] = True
+        if isinstance(result, str) and result.strip():
+            if _carries_image_sentinel(result):
+                # A Gemini plot with no stdout is nothing BUT the sentinel, so
+                # stripping leaves an empty string and the entry looks empty.
+                entry["produced_image"] = True
+            # Same normalisation local results get: the frontend sentinels carry
+            # a full data URI, and replaying one sends megabytes of base64. The
+            # tool's name goes with it, as the local path passes it: only the
+            # sandbox tools emit __FILES__, so a fetched page ending in a well
+            # formed one keeps that line as the content it is.
+            stripped = strip_result_for_model(result, entry.get("name"))
+            if stripped.strip():
+                entry["result"] = _truncate_for_model(stripped)
+        if event.get("image_b64"):
+            # image_generation reports an empty result and carries the picture
+            # apart. Record that it happened rather than the bytes.
+            entry["produced_image"] = True
+
+    def hosted_replay_text(self) -> str:
+        """The provider-run calls of this turn, as prose for the next request."""
+        blocks: list[str] = []
+        for entry in self.hosted_results.values():
+            result = entry.get("result", "")
+            produced_image = entry.get("produced_image")
+            if not result and not produced_image and not entry.get("ended"):
+                # A start with no outcome says only that something began.
+                continue
+            name = entry.get("name") or "tool"
+            header = f"[{name} result]"
+            arguments = entry.get("arguments")
+            if arguments:
+                header = f"[{name} {arguments}]"
+            # A call that ended with nothing to show still has to appear, as the
+            # same "(no output)" local tools report, so the model can tell the
+            # code ran from it never having run at all.
+            body = result or ("(produced an image)" if produced_image else "(no output)")
+            if result and produced_image:
+                body = f"{result}\n(produced an image)"
+            blocks.append(f"{header}\n{body}")
+        return "\n\n".join(blocks)
 
     def merge_structured(self, raw_calls: list[Any]) -> None:
         for raw_call in raw_calls:
@@ -288,15 +474,23 @@ class _Turn:
                 # continue the call that is already open instead.
                 index = self.last_index if self.last_index is not None else len(self.order)
             call_id = raw_call.get("id")
-            key: Any = index
+            # continue whichever call owns this index now: index restarts at 0
+            # for every tool round, so after a fork the bare argument fragments
+            # belong to the newer call.
+            key: Any = self.open_key_by_index.get(index, index)
             if isinstance(call_id, str) and call_id:
-                open_id = self.by_index.get(index, {}).get("id")
+                open_id = self.by_index.get(key, {}).get("id")
                 if open_id and open_id != call_id:
                     # Two distinct calls reported at the same index. Merging them
                     # concatenates their argument JSON into one unparseable blob
                     # and loses an intent, so key the second on its own id.
-                    key = (index, call_id)
+                    # A fragment that names the call this index opened first goes
+                    # back to it: an id beats the latest-index mapping, which only
+                    # exists to place the fragments that carry no id.
+                    first_id = self.by_index.get(index, {}).get("id")
+                    key = index if first_id == call_id else (index, call_id)
             self.last_index = index
+            self.open_key_by_index[index] = key
             if key not in self.by_index:
                 self.by_index[key] = {
                     "id": "",
@@ -357,7 +551,15 @@ class _Turn:
                 # Never replayed upstream: the conversation carries the
                 # de-duplicated id, which is the whole point of the rename.
                 normalized["stream_id"] = normalized["id"]
-                normalized["id"] = f"{normalized['id']}_{self.round}_{position}"
+                # The renamed id is itself stored and replayed, so a single-shot
+                # rename collides again on the next request. Counting up over a
+                # finite ledger terminates and leaves the first attempt as is.
+                renamed = f"{normalized['id']}_{self.round}_{position}"
+                attempt = 0
+                while renamed in seen:
+                    attempt += 1
+                    renamed = f"{normalized['id']}_{self.round}_{position}_{attempt}"
+                normalized["id"] = renamed
             seen.add(normalized["id"])
             out.append(normalized)
         return out
@@ -373,6 +575,16 @@ def _rewrite_content(payload: dict[str, Any], choice: dict[str, Any], text: str)
     new_payload = {key: value for key, value in payload.items() if key != "choices"}
     new_payload["choices"] = [new_choice] + list(payload.get("choices", [])[1:])
     return _sse(new_payload)
+
+
+def _unrun_provenance(tool_name: str, round_id: int) -> dict[str, Any]:
+    """Provenance for a hand-built unrun card; carries the MCP display name so a
+    budget-exhausted or truncated MCP call never shows the internal server id."""
+    provenance: dict[str, Any] = {"source": "local", "round_id": round_id}
+    mcp = mcp_display_parts(tool_name)
+    if mcp:
+        provenance["mcp_server"] = mcp[0]
+    return provenance
 
 
 def _unrun_call_card(
@@ -461,6 +673,27 @@ def _is_usage_only(payload: dict[str, Any]) -> bool:
     return "usage" in payload and isinstance(choices, list) and not choices
 
 
+def _replayed_call_ids(conversation: list[dict[str, Any]]) -> set[str]:
+    """Every tool-call id already in the history this run starts from.
+
+    The healer restarts its counter every request, so a freshly minted call_0
+    collides with a stripped call_0 replayed from history inside one upstream
+    body. Seeding the ledger makes calls() rename the new one as it does any
+    repeat within a run.
+    """
+    taken: set[str] = set()
+    for message in conversation:
+        if not isinstance(message, dict):
+            continue
+        for call in message.get("tool_calls") or []:
+            if isinstance(call, dict) and isinstance(call.get("id"), str) and call["id"]:
+                taken.add(call["id"])
+        result_id = message.get("tool_call_id")
+        if isinstance(result_id, str) and result_id:
+            taken.add(result_id)
+    return taken
+
+
 def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
     """Append a user turn, merging into a trailing one so roles keep alternating.
 
@@ -527,8 +760,10 @@ async def stream_with_studio_tools(
     policy: ToolLoopPolicy,
     cancel_event: threading.Event,
 ) -> AsyncIterator[str]:
-    """Stream a provider, execute requested Studio tools, continue to a final answer."""
+    """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
+    # Kept before the loop appends anything: this is the branch the request is on.
+    request_branch = list(run.messages)
     remaining = policy.max_calls
     unlimited = remaining >= 9999
     session_id = run.session_id
@@ -578,7 +813,7 @@ async def stream_with_studio_tools(
     max_reprompts = MAX_ACT_REPROMPTS
     last_reprompt_text = ""
     provider_turns = 0
-    used_call_ids: set[str] = set()
+    used_call_ids: set[str] = _replayed_call_ids(conversation)
     spent_budget_passes = 0
     fruitless_turns = 0
     # One provider call per possible execution, plus headroom for the no-op,
@@ -678,6 +913,7 @@ async def stream_with_studio_tools(
                 extra = delta.get("extra_content")
                 if isinstance(extra, dict):
                     turn.reasoning_extra = extra
+                turn.note_hosted_tool_event(payload.get("_toolEvent"))
                 if isinstance(choice.get("finish_reason"), str):
                     turn.finish_reason = choice["finish_reason"]
 
@@ -792,7 +1028,7 @@ async def stream_with_studio_tools(
                     # well formed to show; the result says what happened.
                     arguments = {},
                     result = _TOOL_TRUNCATED,
-                    provenance = {"source": "local", "round_id": round_id + 1},
+                    provenance = _unrun_provenance(name, round_id + 1),
                 ):
                     yield card_line
         # tool_choice "none" is an instruction, and a provider that emits a call
@@ -809,6 +1045,7 @@ async def stream_with_studio_tools(
             visible_answer = "".join(turn.text)
             if (
                 tools_available
+                and nudge_enabled(policy.nudge_tool_calls)
                 and not controller.force_final_answer
                 and reprompts < max_reprompts
                 and is_short_intent_without_action(visible_answer)
@@ -816,6 +1053,33 @@ async def stream_with_studio_tools(
             ):
                 reprompts += 1
                 last_reprompt_text = visible_answer
+                stalled_hosted = turn.hosted_replay_text()
+                if stalled_hosted:
+                    # A hosted tool did run, the model just did not go on to ask
+                    # for a local one. The replay below never happens on this
+                    # path, so the reprompted request would be told to continue
+                    # from output it can no longer see.
+                    stalled_message: dict[str, Any] = {
+                        "role": "assistant",
+                        "content": (
+                            f"{visible_answer}\n\n{stalled_hosted}"
+                            if visible_answer
+                            else stalled_hosted
+                        ),
+                    }
+                    if turn.reasoning_extra:
+                        # Gemini 3 stows the text part's thoughtSignature here
+                        # and its translator pins it back on from this field
+                        # alone, so a turn replayed without it is rejected.
+                        stalled_message["extra_content"] = turn.reasoning_extra
+                    append_assistant_turn(
+                        conversation,
+                        stalled_message,
+                        # A resumed partial is the same turn as what the model
+                        # just added, so merge rather than append: appending
+                        # puts a turn boundary mid-sentence.
+                        continue_final_message = run.continue_final_message,
+                    )
                 _append_user_turn(conversation, reprompt_to_act_message(tool_hint))
                 continue
             break
@@ -837,7 +1101,7 @@ async def stream_with_studio_tools(
                     tool_call_id = call.get("stream_id") or call["id"],
                     arguments = call.get("arguments"),
                     result = _TOOL_BUDGET_EXHAUSTED,
-                    provenance = {"source": "local", "round_id": round_id},
+                    provenance = _unrun_provenance(call["function"]["name"], round_id),
                 ):
                     yield card_line
                 # The result below has to be replayed with its call: only the
@@ -881,7 +1145,7 @@ async def stream_with_studio_tools(
                 # a repeated call is exactly the one this loop renames above.
                 #
                 # Only for a tool the user DID enable. A call for something
-                # outside the catalog is not a tool of Studio's that declined to
+                # outside the catalog is not a tool of Unsloth's that declined to
                 # run, it is a name this install never offered, and giving it a
                 # card would advertise a tool the user switched off. That one is
                 # answered in the conversation only.
@@ -891,7 +1155,7 @@ async def stream_with_studio_tools(
                     tool_name = decision.tool_name,
                     tool_call_id = call.get("stream_id") or decision.tool_call_id,
                     arguments = decision.arguments,
-                    result = _TOOL_SKIPPED.get(decision.action, "Studio did not run this call."),
+                    result = _TOOL_SKIPPED.get(decision.action, "Unsloth did not run this call."),
                     provenance = decision.provenance,
                 ):
                     yield card_line
@@ -992,8 +1256,32 @@ async def stream_with_studio_tools(
                     "rag_scope": rag_scope,
                     "disable_sandbox": bypass_permissions,
                 }
+                # Provider loops share the local catalogue selector, so
+                # search_conversation is advertised here too once a thread has an archive
+                # and needs the same branch: the stored rows are the whole DAG, and Retry
+                # leaves the replaced response in them.
+                if accepts_kwarg(execute_tool, "conversation_branch"):
+                    kwargs["conversation_branch"] = request_branch
+                # And a budget, so the tool's clamp is not skipped. Unsloth cannot measure
+                # an external model's window, and a custom OpenAI-compatible endpoint can
+                # be a small local server, so a model-chosen 8 chunks is roughly 4K tokens
+                # replayed on every later call. Unmeasurable means one recall's worth.
+                # Explicitly unknowable, not absent: this request is served by an
+                # external provider, so the resident GGUF's window says nothing about
+                # what it can hold. 0 keeps the default page cap instead of inheriting it.
+                if accepts_kwarg(execute_tool, "context_tokens"):
+                    kwargs["context_tokens"] = 0
+                if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
+                    try:
+                        from core.rag import config as rag_config
+                        kwargs["conversation_budget_tokens"] = max(
+                            1, int(rag_config.CHUNK_TOKENS)
+                        ) * max(1, int(rag_config.CONVERSATION_ARCHIVE_TOP_K))
+                    except Exception:
+                        pass
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
+                kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for
@@ -1071,6 +1359,19 @@ async def stream_with_studio_tools(
                 "".join(turn.text), final = True, enabled_tool_names = allowed_tool_names
             ),
         }
+        hosted_text = turn.hosted_replay_text()
+        if hosted_text:
+            # A tool the provider ran itself this turn. Its output went to the
+            # client as its own frame but is not otherwise part of this message,
+            # so the follow-up would answer from the local results alone.
+            # Replayed as text, not native items: the shape differs per provider
+            # (Gemini codeExecutionResult, an OpenAI image call), while every
+            # provider can read its own prior turn's prose.
+            assistant_message["content"] = (
+                f"{assistant_message['content']}\n\n{hosted_text}"
+                if assistant_message["content"]
+                else hosted_text
+            )
         if turn.reasoning_extra:
             assistant_message["extra_content"] = turn.reasoning_extra
         if assistant_tool_calls:

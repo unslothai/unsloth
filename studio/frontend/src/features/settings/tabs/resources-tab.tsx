@@ -11,6 +11,7 @@ import {
   pickHuggingFaceCacheDir,
 } from "@/features/native-intents";
 import {
+  gpuMemoryTotalsGb,
   gpuVramUsedIsPerDevice,
   resolveGpuVramUsedGb,
 } from "@/hooks/gpu-vram";
@@ -142,11 +143,15 @@ function MetricTile({
           {percentKnown ? formatPercent(safePercent) : "--"}
         </span>
       </div>
+      {/* Both lines truncate, so carry the full text: the GPU states are sentences. */}
       <div className="min-w-0">
-        <div className="truncate font-mono text-sm tabular-nums text-foreground">
+        <div
+          title={value}
+          className="truncate font-mono text-sm tabular-nums text-foreground"
+        >
           {value}
         </div>
-        <div className="mt-0.5 truncate text-xs text-muted-foreground">
+        <div title={detail} className="mt-0.5 truncate text-xs text-muted-foreground">
           {detail}
         </div>
       </div>
@@ -242,7 +247,9 @@ export function ResourcesTab() {
     const diskTotal = systemInfo.disk?.total_gb ?? 0;
     const diskFree = systemInfo.disk?.free_gb ?? 0;
     const diskUsed = Math.max(0, diskTotal - diskFree);
-    const vramTotal = aggregateGpuMemoryTotalGb(devices);
+    const diskPercent = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
+    const gpuMemoryTotals = gpuMemoryTotalsGb(devices);
+    const vramTotal = gpuMemoryTotals.total;
     // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
     // total, so the device's own row stays unknown. The host figure can still be
     // known when no device's is (#7452).
@@ -275,7 +282,10 @@ export function ResourcesTab() {
       diskTotal,
       diskFree,
       diskUsed,
+      diskPercent,
       vramTotal,
+      vramDedicated: gpuMemoryTotals.dedicated,
+      vramShared: gpuMemoryTotals.shared,
       vramUsed,
       vramFree,
       vramPercent,
@@ -342,6 +352,19 @@ export function ResourcesTab() {
   const cpuFrequencyLabel = formatFrequency(systemInfo.cpu?.frequency_mhz);
   const hasGpu =
     (displayedGpu?.available ?? false) && metrics.devices.length > 0;
+  // The placeholder reads as a CPU-only host, so rendering it tells an AMD/ROCm user their
+  // card is unused. Until the host is read, say which non-answer it is: checking, or empty.
+  const hostUnread = systemInfo.status !== "ready";
+  const gpuUnknown = hostUnread && !hasGpu;
+  const gpuUnknownLabel =
+    systemInfo.status === "unavailable"
+      ? t("settings.resources.gpu.unreadable")
+      : t("settings.resources.gpu.detecting");
+  // "Checking for GPUs" is the wrong sentence beside a RAM tile; the failure wording fits.
+  const hostUnreadDetail =
+    systemInfo.status === "unavailable"
+      ? t("settings.resources.gpu.unreadable")
+      : t("common.loading");
   const backendLabel = (
     displayedGpu?.backend ??
     systemInfo.device_backend ??
@@ -369,6 +392,15 @@ export function ResourcesTab() {
           .join(" · ")
     : null;
   const unknownLabel = t("settings.resources.environment.unknown");
+  const vramCapacityLabel =
+    metrics.vramShared > 0
+      ? t("settings.resources.environment.vramWithShared", {
+          vram: formatGiB(metrics.vramDedicated),
+          shared: formatGiB(metrics.vramShared),
+        })
+      : formatGiB(metrics.vramTotal);
+  // The placeholder's cpu backend and empty package list are not facts about the host either.
+  const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
 
   return (
     <div className="flex flex-col gap-6">
@@ -407,49 +439,68 @@ export function ResourcesTab() {
 
       <SettingsSection title={t("settings.resources.liveMonitor.title")}>
         <div className="grid gap-2 py-3 sm:grid-cols-2">
+          {/* An unread host is not an idle one: percent null is MetricTile's "unknown". */}
           <MetricTile
             label={t("settings.resources.liveMonitor.cpu")}
-            value={cpuFrequencyLabel ?? cpuCoresLabel}
+            value={hostReading(cpuFrequencyLabel ?? cpuCoresLabel)}
             detail={
-              cpuFrequencyLabel
-                ? cpuCoresLabel
-                : t("settings.resources.liveMonitor.currentLoad")
+              hostUnread
+                ? hostUnreadDetail
+                : cpuFrequencyLabel
+                  ? cpuCoresLabel
+                  : t("settings.resources.liveMonitor.currentLoad")
             }
-            percent={systemInfo.cpu?.usage_percent ?? 0}
+            percent={hostUnread ? null : (systemInfo.cpu?.usage_percent ?? 0)}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.ram")}
-            value={`${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`}
-            detail={t("settings.resources.liveMonitor.free", {
-              value: formatGiB(systemInfo.memory?.available_gb),
-            })}
-            percent={systemInfo.memory?.percent_used ?? 0}
+            value={hostReading(
+              `${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`,
+            )}
+            detail={
+              hostUnread
+                ? hostUnreadDetail
+                : t("settings.resources.liveMonitor.free", {
+                    value: formatGiB(systemInfo.memory?.available_gb),
+                  })
+            }
+            percent={hostUnread ? null : (systemInfo.memory?.percent_used ?? 0)}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.disk")}
-            value={`${formatGb(metrics.diskUsed)} / ${formatGb(metrics.diskTotal)}`}
-            detail={t("settings.resources.liveMonitor.free", {
-              value: formatGb(metrics.diskFree),
-            })}
-            percent={systemInfo.disk?.percent_used ?? 0}
+            value={hostReading(
+              `${formatGb(metrics.diskUsed)} / ${formatGb(metrics.diskTotal)}`,
+            )}
+            detail={
+              hostUnread
+                ? hostUnreadDetail
+                : t("settings.resources.liveMonitor.free", {
+                    value: formatGb(metrics.diskFree),
+                  })
+            }
+            percent={hostUnread ? null : metrics.diskPercent}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.vram")}
             value={
-              hasGpu
-                ? metrics.vramUsageKnown
-                  ? `${formatGiB(metrics.vramUsed)} / ${formatGiB(metrics.vramTotal)}`
-                  : `${unknownLabel} / ${formatGiB(metrics.vramTotal)}`
-                : t("settings.resources.liveMonitor.noGpu")
+              gpuUnknown
+                ? unknownLabel
+                : hasGpu
+                  ? metrics.vramUsageKnown
+                    ? `${formatGiB(metrics.vramUsed)} / ${vramCapacityLabel}`
+                    : `${unknownLabel} / ${vramCapacityLabel}`
+                  : t("settings.resources.liveMonitor.noGpu")
             }
             detail={
-              hasGpu
-                ? metrics.vramUsageKnown
-                  ? t("settings.resources.liveMonitor.free", {
-                      value: formatGiB(metrics.vramFree),
-                    })
-                  : unknownLabel
-                : backendLabel
+              gpuUnknown
+                ? gpuUnknownLabel
+                : hasGpu
+                  ? metrics.vramUsageKnown
+                    ? t("settings.resources.liveMonitor.free", {
+                        value: formatGiB(metrics.vramFree),
+                      })
+                    : unknownLabel
+                  : backendLabel
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
@@ -568,7 +619,7 @@ export function ResourcesTab() {
           })
         ) : (
           <div className="py-3 text-sm text-muted-foreground">
-            {t("settings.resources.gpu.noGpu")}
+            {gpuUnknown ? gpuUnknownLabel : t("settings.resources.gpu.noGpu")}
           </div>
         )}
       </SettingsSection>
@@ -677,7 +728,7 @@ export function ResourcesTab() {
       <SettingsSection title={t("settings.resources.environment.title")}>
         <InfoRow
           label={t("settings.resources.environment.backend")}
-          value={backendLabel}
+          value={hostReading(backendLabel)}
         />
         <InfoRow
           label={t("settings.resources.environment.python")}
@@ -685,25 +736,25 @@ export function ResourcesTab() {
         />
         <InfoRow
           label={t("settings.resources.environment.torch")}
-          value={
+          value={hostReading(
             systemInfo.ml_packages.torch ??
-            t("settings.resources.environment.notInstalled")
-          }
+              t("settings.resources.environment.notInstalled"),
+          )}
         />
         <InfoRow
           label={t("settings.resources.environment.transformers")}
-          value={
+          value={hostReading(
             systemInfo.ml_packages.transformers ??
-            t("settings.resources.environment.notInstalled")
-          }
+              t("settings.resources.environment.notInstalled"),
+          )}
         />
         <InfoRow
           label={t("settings.resources.environment.uptime")}
-          value={formatUptime(systemInfo.uptime_seconds)}
+          value={hostReading(formatUptime(systemInfo.uptime_seconds))}
         />
         <InfoRow
           label={t("settings.resources.environment.processMemory")}
-          value={formatMb(systemInfo.memory?.process_used_mb)}
+          value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
         />
       </SettingsSection>
     </div>

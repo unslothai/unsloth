@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for issue #7331 -- Studio segfaults at startup on Strix Halo.
+"""Regression tests for issue #7331 -- Unsloth segfaults at startup on Strix Halo.
 
 Reporter: Ryzen AI MAX+ 395 with Radeon 8060S (Strix Halo, physically gfx1151),
 Linux Mint, ROCm 6.3.42134, single GPU. Their rocminfo reported **gfx1100** because
@@ -60,9 +60,18 @@ _STACK_SPEC.loader.exec_module(stack_mod)
 
 _INSTALL_SH = PACKAGE_ROOT / "install.sh"
 
-# torch probe stdout: "<hip marker>|<version>". Empty marker = CPU/CUDA torch.
-_CPU_TORCH = b"|2.10.0+cpu\n"
-_ROCM63_TORCH = b"6.3.42134|2.9.1+rocm6.3\n"  # what the reporter ended up with
+# torch probe stdout: "<version>|<hip>|<cuda>". An empty HIP field = CPU/CUDA torch.
+_CPU_TORCH = "2.10.0+cpu||\n"
+_ROCM63_TORCH = "2.9.1+rocm6.3|6.3.42134|\n"  # what the reporter ended up with
+
+
+@pytest.fixture(autouse = True)
+def _reset_torch_runtime_probe():
+    """The torch classification is memoized for the life of an install run, so one
+    test's mocked probe must not leak into the next."""
+    stack_mod._invalidate_torch_runtime_probe()
+    yield
+    stack_mod._invalidate_torch_runtime_probe()
 
 
 def _run_install(
@@ -975,7 +984,7 @@ class TestConfirmedSpoofIsClearedBeforeLaunch:
         assert probe["HSA_OVERRIDE_GFX_VERSION"] == "11.5.1", probe
 
     def test_install_sh_clears_it_on_the_same_branch(self):
-        """The shell path is what matters for the reported flow: install.sh execs Studio
+        """The shell path is what matters for the reported flow: install.sh execs Unsloth
         from this very shell and install_python_stack.py runs as a grandchild, so a pop
         there cannot reach the launch."""
         source = _INSTALL_SH.read_text(encoding = "utf-8")
@@ -984,7 +993,7 @@ class TestConfirmedSpoofIsClearedBeforeLaunch:
         block = source[start : source.find("\n        fi\n", start)]
         assert "unset HSA_OVERRIDE_GFX_VERSION" in block, (
             "the Strix reroute must clear a corroborated spoof before this shell "
-            "execs Studio, or the new wheels meet a runtime still claiming gfx1100"
+            "execs Unsloth, or the new wheels meet a runtime still claiming gfx1100"
         )
         assert '[ -n "$_spoof_physical" ]' in block, (
             "the clear must be guarded by the corroborated-spoof verdict, never "

@@ -35,7 +35,7 @@ class ProviderRegistryEntry(BaseModel):
     )
     supports_studio_tools: bool = Field(
         False,
-        description = "Whether Studio runs its own tool loop (search/code/MCP/RAG) against this provider",
+        description = "Whether Unsloth runs its own tool loop (search/code/MCP/RAG) against this provider",
     )
     hidden: bool = Field(
         False,
@@ -76,7 +76,7 @@ class ProviderCreate(BaseModel):
         strict = True,
         ge = 64,
         le = MAX_JSON_SAFE_INTEGER,
-        description = "Optional maximum Max Tokens cap for a generic Custom connection",
+        description = "Optional maximum Max Tokens cap for this connection",
     )
 
     encrypted_api_key: Optional[str] = Field(
@@ -101,7 +101,7 @@ class ProviderUpdate(BaseModel):
         strict = True,
         ge = 64,
         le = MAX_JSON_SAFE_INTEGER,
-        description = "Optional maximum Max Tokens cap for a generic Custom connection",
+        description = "Optional maximum Max Tokens cap for this connection",
     )
 
     encrypted_api_key: Optional[str] = Field(
@@ -147,7 +147,7 @@ class ProviderResponse(BaseModel):
     )
     max_output_tokens: Optional[int] = Field(
         None,
-        description = "Configured maximum Max Tokens cap for a generic Custom connection",
+        description = "Configured maximum Max Tokens cap for this connection",
     )
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
     updated_at: str = Field(..., description = "ISO 8601 last-update timestamp")

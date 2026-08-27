@@ -60,9 +60,45 @@ function writePinned(pinned: string[]): void {
   }
 }
 
+// A drag reorders live under the cursor, so `movePinned` runs on every
+// dragenter. Persisting each of those would write localStorage dozens of times
+// per drag and, worse, would make a drag the user cancels with Escape or by
+// releasing outside the grid permanent: dragend can clear the drag marker but
+// cannot undo writes. So a drag session snapshots the order up front, keeps
+// every intermediate move in memory only, and either commits once on drop or
+// restores the snapshot when the drag ends without one.
+let dragSnapshot: string[] | null = null;
+
+// Another window can rewrite the whole list mid-drag through the storage
+// listener below, which makes the snapshot stale: it describes an order that is
+// no longer in localStorage. Rolling back to it would leave this window
+// disagreeing with the record silently, since a cancel writes nothing, and the
+// next write from here would persist that stale order over the other window's
+// change. So the listener records the order it installed and the session falls
+// back to that instead. Null unless a storage event landed inside the session.
+let dragExternalOrder: string[] | null = null;
+
+function sameOrder(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((key, index) => key === b[index]);
+}
+
 interface PinnedModelsState {
   pinned: string[];
   togglePinned: (repoId: string, quant?: string) => void;
+  /**
+   * Move `fromKey` into `toKey`'s slot. Both keys must already be pinned;
+   * anything else is a no-op. Outside a drag session the new order is
+   * persisted immediately, inside one it is held until `endPinnedDrag`.
+   */
+  movePinned: (fromKey: string, toKey: string) => void;
+  /** Snapshot the current order so a cancelled drag can be undone. */
+  beginPinnedDrag: () => void;
+  /**
+   * End a drag session. `commit` persists the reordered list; otherwise the
+   * snapshot taken by `beginPinnedDrag` is restored. Idempotent, because drop
+   * is followed by dragend and only the first of the two may decide.
+   */
+  endPinnedDrag: (commit: boolean) => void;
 }
 
 export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
@@ -78,12 +114,54 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
       writePinned(next);
       return { pinned: next };
     }),
+  movePinned: (fromKey, toKey) =>
+    set((state) => {
+      const from = state.pinned.indexOf(fromKey);
+      const to = state.pinned.indexOf(toKey);
+      if (from < 0 || to < 0 || from === to) return state;
+      const next = [...state.pinned];
+      next.splice(to, 0, ...next.splice(from, 1));
+      if (dragSnapshot === null) writePinned(next);
+      return { pinned: next };
+    }),
+  beginPinnedDrag: () =>
+    set((state) => {
+      dragSnapshot = [...state.pinned];
+      dragExternalOrder = null;
+      return state;
+    }),
+  endPinnedDrag: (commit) =>
+    set((state) => {
+      const snapshot = dragSnapshot;
+      const external = dragExternalOrder;
+      dragSnapshot = null;
+      dragExternalOrder = null;
+      if (snapshot === null) return state;
+      // What this window and localStorage last agreed on: the order another
+      // window installed mid-drag if there was one, else the pre-drag snapshot.
+      const base = external ?? snapshot;
+      if (commit) {
+        // Nothing moved on top of that, so there is nothing to persist.
+        if (sameOrder(base, state.pinned)) return state;
+        writePinned(state.pinned);
+        return state;
+      }
+      // A cancel writes nothing, so it has to land on the order that is already
+      // in localStorage. That is the snapshot for an ordinary drag and the
+      // other window's list when one landed mid-drag, whatever it did to the
+      // keys; the moves this drag previewed on top of it are dropped either way.
+      if (sameOrder(base, state.pinned)) return state;
+      return { pinned: base };
+    }),
 }));
 
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key === KEY || event.key === null) {
-      usePinnedModelsStore.setState({ pinned: readPinned() });
+      const next = readPinned();
+      // A drag in flight rolls back to this instead of its own snapshot.
+      if (dragSnapshot !== null) dragExternalOrder = next;
+      usePinnedModelsStore.setState({ pinned: next });
     }
   });
 }

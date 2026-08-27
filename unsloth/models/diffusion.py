@@ -23,9 +23,18 @@ bit-identical to transformers), keeping only the safe conveniences: 4bit/8bit lo
 import os
 import torch
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer
+from unsloth_zoo.hf_utils import add_dtype_kwargs
 
 from ._utils import is_bfloat16_supported, maybe_prefetch_hf_snapshot
 from .llama import logger
+from .loader_utils import (
+    planner_config_overrides,
+    planner_hub_kwargs,
+    planner_kwargs_with_max_memory,
+    planner_quantization_kwargs,
+    requested_device_map,
+    resolve_unsloth_device_map,
+)
 
 __all__ = ["FastDiffusionModel", "DIFFUSION_MODEL_TYPES", "is_diffusion_model_type"]
 
@@ -123,7 +132,12 @@ def _load_diffusion_config(
             cd["vision_config"]["model_type"] = "diffusion_gemma4_vision"
         from transformers import DiffusionGemma4Config
 
-        return DiffusionGemma4Config.from_dict(cd)
+        aliased = DiffusionGemma4Config.from_dict(cd)
+        # Only this object knows the rewrite happened; the checkpoint on disk still says
+        # `diffusion_gemma`, so anything rebuilding the config from `model_name` -- the
+        # planner -- hits the AutoConfig failure just caught here.
+        aliased._unsloth_legacy_alias = True
+        return aliased
 
 
 class FastDiffusionModel:
@@ -140,6 +154,8 @@ class FastDiffusionModel:
         full_finetuning = False,
         token = None,
         device_map = "auto",
+        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        device_map_planner_kwargs = None,
         trust_remote_code = False,
         attn_implementation = "eager",  # exact match with the reference golden logits
         revision = None,
@@ -196,25 +212,11 @@ class FastDiffusionModel:
             variant = kwargs.get("variant"),
         )
 
-        load_kwargs = dict(
-            dtype = dtype,
-            device_map = device_map,
-            token = token,
-            trust_remote_code = trust_remote_code,
-            attn_implementation = attn_implementation,
-            revision = revision,
-            local_files_only = local_files_only,
-            cache_dir = cache_dir,
-        )
-        # Match the load's weight format to the warm (None/auto already matches).
-        if kwargs.get("use_safetensors") is not None:
-            load_kwargs["use_safetensors"] = kwargs["use_safetensors"]
-        # Forward variant to the real load so it reads the warmed variant weights.
-        if kwargs.get("variant") is not None:
-            load_kwargs["variant"] = kwargs["variant"]
-
         # Optional bitsandbytes quant. The MoE experts (3D Parameters) are not nn.Linear so bnb skips
         # them; only attention + dense MLP Linears quantize, lm_head/embeddings stay full precision.
+        # Before the plan: the skip list becomes `modules_to_not_convert`, and sizing
+        # those at 4 bits while they load in compute dtype OOMs a tight map.
+        qcfg = None
         if load_in_4bit or load_in_8bit:
             from transformers import BitsAndBytesConfig
             if load_in_4bit:
@@ -233,6 +235,68 @@ class FastDiffusionModel:
                 )
             else:
                 qcfg = BitsAndBytesConfig(load_in_8bit = True)
+
+        # Same leaf-level resolution as llama.py and vision.py: an unresolved "unsloth"
+        # becomes torch.device("unsloth") in transformers and raises instead of loading.
+        #
+        # A legacy `diffusion_gemma` checkpoint loads only because the config above rewrites
+        # the type in memory. The planner takes a name and rebuilds from the checkpoint, so
+        # it hits the same error and would report it as a generic planning failure.
+        device_map = resolve_unsloth_device_map(
+            requested_device_map(device_map),
+            model_name,
+            full_finetuning = full_finetuning,
+            skip_reason = (
+                "this checkpoint declares the legacy `diffusion_gemma` type, which only "
+                "loads through an in-memory rewrite the planner cannot see"
+                if getattr(config, "_unsloth_legacy_alias", False)
+                else None
+            ),
+            planner_kwargs = planner_kwargs_with_max_memory(
+                device_map_planner_kwargs,
+                kwargs,
+            ),
+            # This leaf popped `local_files_only` off kwargs above, so the helper gets the
+            # resolved value rather than the caller's raw mapping.
+            **planner_hub_kwargs(
+                {
+                    "cache_dir": cache_dir,
+                    "local_files_only": local_files_only,
+                    "code_revision": kwargs.get("code_revision"),
+                },
+            ),
+            **planner_config_overrides(kwargs),
+            token = token,
+            trust_remote_code = trust_remote_code,
+            revision = revision,
+            # The dtype the load below uses, which overrides the checkpoint's own.
+            **add_dtype_kwargs(dtype),
+            **planner_quantization_kwargs(
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                quantization_config = qcfg,
+            ),
+        )
+
+        load_kwargs = dict(
+            dtype = dtype,
+            device_map = device_map,
+            token = token,
+            trust_remote_code = trust_remote_code,
+            attn_implementation = attn_implementation,
+            revision = revision,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+        )
+        # Match the load's weight format to the warm (None/auto already matches).
+        if kwargs.get("use_safetensors") is not None:
+            load_kwargs["use_safetensors"] = kwargs["use_safetensors"]
+        # Forward variant to the real load so it reads the warmed variant weights.
+        if kwargs.get("variant") is not None:
+            load_kwargs["variant"] = kwargs["variant"]
+
+        # The same config the plan above was sized against.
+        if qcfg is not None:
             load_kwargs["quantization_config"] = qcfg
 
         print(f"==((  Unsloth: FastDiffusionModel (slow / transformers-only path)  ))==")
@@ -291,7 +355,7 @@ class FastDiffusionModel:
             target_modules = DIFFUSION_LORA_TARGETS
 
         # NOTE: use_dora (and any other LoraConfig kwarg outside this allowlist,
-        # e.g. use_rslora) is silently dropped here. Studio does not reach this
+        # e.g. use_rslora) is silently dropped here. Unsloth does not reach this
         # path today, so it's untested/unsupported on diffusion models; add it
         # to the allowlist below if that changes.
         lora_kwargs = dict(
