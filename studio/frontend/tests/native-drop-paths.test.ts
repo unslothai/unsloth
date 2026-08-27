@@ -1103,6 +1103,46 @@ test("compare mode takes the same audio files the chat composer does", () => {
   assert.match(composer, /accept=\{AUDIO_PICKER_ACCEPT\}/);
 });
 
+test("a declaration past the first pages is not missed", async () => {
+  // A prefix-scan cutoff decoded the whole archive as the first message's
+  // charset, so a later message in another one came out as mojibake. Any cutoff
+  // has that failure, which is why the scan reads the file the cap already
+  // bounds. Padded well past the 64 KiB the scan used to stop at.
+  const enc = new TextEncoder();
+  const mbox = new Uint8Array([
+    ...enc.encode(
+      "From a@example.com Mon Jan  1 00:00:00 2024\r\n" +
+        "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\n" +
+        "x".repeat(70 * 1024) +
+        "\r\n\r\nFrom b@example.com Mon Jan  1 00:00:00 2024\r\n" +
+        "Content-Type: text/plain; charset=windows-1251\r\n\r\n",
+    ),
+    0xcf,
+    0xf0,
+    0xe8,
+    0xe2,
+    0xe5,
+    0xf2,
+  ]);
+  await assert.rejects(
+    readTextAttachment(new File([mbox], "inbox.mbox")),
+    (error: Error) => {
+      assert.ok(error instanceof UndecodableTextError);
+      assert.match(error.message, /ISO-8859-1, windows-1251/);
+      return true;
+    },
+  );
+  // The source carries no byte ceiling on the scan for a cutoff to creep back in.
+  const source = readFileSync(
+    new URL(
+      "../src/features/chat/text-attachment-accept.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.equal(source.includes("DECLARATION_SCAN_BYTES"), false);
+});
+
 test("legacy M3U playlists are not advertised as UTF-8 text", () => {
   assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".m3u"), false);
   assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".m3u8"), true);

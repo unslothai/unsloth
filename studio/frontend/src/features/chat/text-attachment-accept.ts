@@ -605,10 +605,9 @@ function declaredGettextCharset(
 
 // Header block only: a body part can declare its own, but the message-level
 // charset is what an 8-bit single-part mail is written in.
-const DECLARATION_SCAN_BYTES = 64 * 1024;
-// Every Content-Type in the scan, not just the first: a multipart message keeps
-// the charset on its parts, and an mbox holds one per message. Folded
-// continuation lines start with space or tab.
+// Every Content-Type in the file, not just the first: a multipart message keeps
+// the charset on its parts, and an mbox holds one per message, which can sit
+// anywhere in the archive. Folded continuation lines start with space or tab.
 const EMAIL_CONTENT_TYPE_RE =
   /(?:^|\r?\n)Content-Type:((?:[^\r\n]*)(?:\r?\n[ \t][^\r\n]*)*)/gi;
 const EMAIL_CHARSET_RE = /charset[ \t]*=[ \t]*"?([A-Za-z0-9._-]+)"?/i;
@@ -625,10 +624,11 @@ function declaredContainerCharsets(
   if (!isEmail && !isVCard) {
     return [];
   }
-  // Headers are ASCII, so this scan cannot fail on the body's own encoding.
-  const prefix = new TextDecoder("windows-1252").decode(
-    bytes.subarray(0, DECLARATION_SCAN_BYTES),
-  );
+  // Headers are ASCII, so this scan cannot fail on the body's own encoding. It
+  // reads the whole file rather than a prefix: a declaration further in is the
+  // one a cutoff would miss, leaving those messages decoded as the first. The
+  // attachment is already capped, and this only runs once UTF-8 has failed.
+  const prefix = new TextDecoder("windows-1252").decode(bytes);
   const found: string[] = [];
   const add = (charset: string | undefined) => {
     if (!charset) return;
