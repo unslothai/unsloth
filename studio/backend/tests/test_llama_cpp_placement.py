@@ -2067,6 +2067,106 @@ def test_a_wildly_oversized_model_still_loads(tmp_path, monkeypatch):
     assert "does not fit in GPU memory" in (backend.last_load_warning or "")
 
 
+# An unmapped load is the one shape the advisory's premise does not cover. The spill
+# is only survivable because the weights are mmap'd; upstream sets use_mmap for
+# mmap/mmap+mlock/auto alone (llama-model-loader.cpp), so `none` and `mlock` read every
+# byte into a buffer llama.cpp allocates and an oversized model fails outright instead
+# of paging. The guard still never refuses: it overrides the mode and says so.
+_UNMAPPED_ARGV = [
+    ["--no-mmap"],
+    ["--load-mode", "none"],
+    ["--load-mode=none"],
+    ["--no-direct-io"],
+]
+_UNMAPPED_IDS = ["no-mmap", "load-mode-none", "load-mode-none-equals", "no-direct-io"]
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_an_oversized_unmapped_load_is_remapped_instead_of_refused(
+    tmp_path, monkeypatch, extra_args
+):
+    """It launches, the argv the child gets is pageable, and the warning names the
+    override -- a silent one would leave the user's own setting quietly undone."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert cmd, "the unmapped oversized load never spawned llama-server"
+    assert not _unmapped_tokens(cmd), f"the child still loads unmapped: {cmd}"
+    assert "memory mapping instead" in (backend.last_load_warning or "")
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_an_unmapped_load_that_fits_is_left_exactly_as_asked(
+    tmp_path, monkeypatch, extra_args
+):
+    """The control. Same request on a host with room: no shortfall, so nothing is
+    overridden and no warning is invented. Loading unmapped is a legitimate choice."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 64_000, monkeypatch = monkeypatch
+    )
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert _unmapped_tokens(cmd) == list(extra_args), (
+        f"the fitting load lost the mode it asked for: {cmd}"
+    )
+    assert backend.last_load_warning is None
+
+
+def test_the_override_keeps_a_lock_rather_than_dropping_it(tmp_path, monkeypatch):
+    """`mlock` is unmapped too, but it also says "keep this in RAM". The pageable
+    equivalent is `mmap+mlock`, which upstream mmaps, so the request survives the
+    override instead of being silently discarded."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+
+    cmd = _launch(backend, gguf, extra_args = ["--load-mode", "mlock"])["cmd"]
+
+    assert cmd, "the unmapped oversized load never spawned llama-server"
+    _modes = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--load-mode" and i + 1 < len(cmd)]
+    assert _modes == ["mmap+mlock"], f"the lock was not carried onto a mapping: {cmd}"
+    assert "memory mapping instead" in (backend.last_load_warning or "")
+
+
+def test_the_override_reaches_the_env_twin_llama_cpp_reads_first(tmp_path, monkeypatch):
+    """llama.cpp resolves LLAMA_ARG_* before argv, so an inherited selector survives
+    stripping the tokens. Unsloth emits no load-mode flag of its own here, so without
+    the env half the child would still load unmapped with nothing in the argv to show
+    it."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+    monkeypatch.setenv("LLAMA_ARG_NO_MMAP", "1")
+
+    launched = _launch(backend, gguf)
+
+    assert launched["cmd"], "the unmapped oversized load never spawned llama-server"
+    assert "LLAMA_ARG_NO_MMAP" not in launched["env"]
+    assert "memory mapping instead" in (backend.last_load_warning or "")
+
+
+def _unmapped_tokens(cmd):
+    """The tokens in ``cmd`` that select a mode llama.cpp does not mmap."""
+    out = []
+    for i, token in enumerate(cmd):
+        if token in ("--no-mmap", "-no-mmap", "--no-direct-io", "-ndio"):
+            out.append(token)
+        elif token in ("--load-mode", "-lm") and i + 1 < len(cmd):
+            if cmd[i + 1].strip().lower() in ("none", "mlock"):
+                out.extend([token, cmd[i + 1]])
+        elif token.split("=", 1)[0] in ("--load-mode", "-lm") and "=" in token:
+            if token.split("=", 1)[1].strip().lower() in ("none", "mlock"):
+                out.append(token)
+    return out
+
+
 def _load_intent(gguf, **kwargs):
     return GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", **kwargs)
 

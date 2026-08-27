@@ -76,6 +76,7 @@ from core.inference.llama_server_args import (
     extra_args_disable_mmproj,
     extra_args_select_load_mode,
     fit_is_enabled_in,
+    force_pageable_load,
     memory_env_selects_load_mode,
     memory_state_satisfies_settings,
     fit_is_effectively_on,
@@ -11422,10 +11423,12 @@ class LlamaCppBackend:
     def host_offload_warning_for_intent(self, intent) -> Optional[str]:
         """The host-RAM advisory for a resolved load intent, or None.
 
-        Advisory, never a refusal: the route logs this and loads anyway. Asked here as
-        well as at launch so the notice can ride back on the load response, since
-        ``_launch_host_shortfall_message`` runs deep inside ``load_model``, after the
-        ROUTE has evicted a resident Images/Video pipeline via ``acquire_for(CHAT)``.
+        Advisory, never a refusal: the route LOGS this and loads anyway. It does not
+        reach the load response -- ``load_model`` calls ``_begin_load_warnings`` on its
+        first line, after this runs, so anything recorded here would be erased; the
+        response carries the launch-time notice instead. What this buys is a line in the
+        log before ``acquire_for(CHAT)`` evicts a resident Images/Video pipeline, rather
+        than only from deep inside ``load_model`` once that teardown has happened.
 
         Both capacities are read as PHYSICAL TOTALS, not as what is free right now. The
         resident llama-server, Unsloth model and Images/Video pipeline hold VRAM and, through
@@ -20948,6 +20951,51 @@ class LlamaCppBackend:
                     ),
                     shared_gpu_ids = _shared_gpu_ids,
                 )
+                # The warning above is survivable only because the weights are mmap'd:
+                # its whole premise is that the spill pages in from disk as the model
+                # runs. Modes "none" and "mlock" have no such fallback -- upstream sets
+                # use_mmap for mmap/mmap+mlock/auto and nothing else, so those two read
+                # the weights into a buffer llama.cpp allocates. The same shortfall is
+                # then an allocation failure or an OOM kill during loading, not slow
+                # generation, and the advisory would be describing a load that cannot
+                # happen. Reached by --load-mode, by the deprecated --no-mmap /
+                # --no-direct-io spellings, and by the LLAMA_ARG_* twins llama.cpp reads
+                # before argv, so the effective state is what decides.
+                #
+                # This guard never blocks a load, so the unmapped request is OVERRIDDEN
+                # rather than refused: swap in the pageable equivalent (a lock is kept,
+                # as mmap+mlock) so the load the user asked for can actually finish.
+                # Only on a shortfall -- an unmapped load that fits is exactly what was
+                # asked for and is left alone. Said out loud in the warning, since a
+                # silent override is its own surprise.
+                if _offload_msg:
+                    _mlock_now, _reserves_ram_now = resolve_effective_memory_state(cmd, env)
+                    if _reserves_ram_now:
+                        cmd, _pageable_overrode = force_pageable_load(cmd, env)
+                        if _pageable_overrode:
+                            logger.warning(
+                                "Overriding the unmapped load mode (%s) for an oversized "
+                                "model: it would allocate the whole model in host RAM "
+                                "instead of paging it in.",
+                                ", ".join(_pageable_overrode),
+                            )
+                            _offload_msg += (
+                                " This model was set to load without memory mapping, "
+                                "which reads every byte into RAM up front and cannot "
+                                "complete at this size, so Unsloth loaded it with "
+                                "memory mapping instead."
+                            )
+                            # The recorded state has to describe the argv that launches,
+                            # or the reload comparator judges this child against a mode
+                            # it no longer runs. The snapshot too: the arch-crash retry
+                            # restores it over `cmd`, which now carries the override.
+                            self._memory_state = resolve_effective_memory_state(cmd, env)
+                            _mem_policy_for_cmd = (
+                                _mem_host_resident,
+                                self._memory_state,
+                                self._memory_policy_active,
+                                self._memory_mlock_applicable,
+                            )
                 self._record_load_warning(_offload_msg)
 
                 # Captured before any text-only fallback strips it from cmd.
@@ -21574,9 +21622,19 @@ class LlamaCppBackend:
                     )
                     if _remaining:
                         _retry_wants_unified = self._amd_apu_wants_unified_memory(_remaining)
+                        # Everything recorded so far priced the CRASHED selection, and
+                        # that placement is gone: the canonical #7624 shape pins the APU
+                        # whose shared-pool "free memory" outranked the dGPU, warns that
+                        # system RAM cannot hold the weights, then crashes and respawns
+                        # on the discrete sibling that holds them in VRAM. First notice
+                        # wins, so without this the served child reports a shortfall on
+                        # a device it never touches. The two checks below price exactly
+                        # the set the respawn reaches, and both are wider than their
+                        # upstream twins (the same weights against a NARROWED pool), so
+                        # a shortfall that still stands is re-recorded here.
+                        self._begin_load_warnings()
                         # The APU RAM preflight upstream ran against the CRASHED
-                        # selection, discrete on this arm by construction, so it never
-                        # fired. The mirror shape (crash on the dGPU, retry on the
+                        # selection. The mirror shape (crash on the dGPU, retry on the
                         # unified-memory sibling) makes the respawn the first load into
                         # system RAM, so price it here too. Advisory: the respawn goes
                         # ahead either way.

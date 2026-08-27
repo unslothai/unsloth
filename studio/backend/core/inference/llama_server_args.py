@@ -1620,6 +1620,103 @@ def scrub_memory_env(env: dict) -> list[str]:
     return removed
 
 
+# The pageable twin of each mode that reads the weights into a buffer it allocates.
+# Upstream sets use_mmap for mmap / mmap+mlock / auto only (llama-model-loader.cpp),
+# so `mlock` is a full host copy that is also locked, and `mmap+mlock` is the same
+# lock over a mapping. `none` has no lock to preserve, so it goes back to the default.
+_PAGEABLE_LOAD_MODE: dict[str, Optional[str]] = {"none": None, "mlock": "mmap+mlock"}
+
+
+def _pageable_env_value(name: str, value: str) -> tuple[bool, Optional[str]]:
+    """``(rewrite, new_value)`` for an inherited var that disables mmap.
+
+    ``rewrite`` False leaves the var alone. ``new_value`` None means remove it; a
+    string replaces it, which is how a locked mode keeps its lock. ``LLAMA_ARG_MLOCK``
+    is never touched: on its own it sets the lock bit over the default mapping and
+    holds no unmapped copy.
+    """
+    normalized = value.strip().lower()
+    if name in {"LLAMA_ARG_NO_MMAP", "LLAMA_ARG_NO_DIO"}:
+        # Presence alone selects mode "none", whatever the value says.
+        return True, None
+    if name in {"LLAMA_ARG_MMAP", "LLAMA_ARG_DIO"}:
+        # Falsy selects "none"; truthy selects mmap / dio, neither of which
+        # holds a full copy.
+        return normalized in _ENV_FALSE_VALUES, None
+    if name == "LLAMA_ARG_LOAD_MODE" and normalized in _PAGEABLE_LOAD_MODE:
+        return True, _PAGEABLE_LOAD_MODE[normalized]
+    return False, None
+
+
+def force_pageable_load(
+    argv: Optional[Iterable[str]], env: Optional[dict] = None
+) -> tuple[list[str], list[str]]:
+    """Rewrite a launch that would hold a full unmapped host copy into a pageable one.
+
+    Returns ``(argv, overridden)``, naming the argv tokens and env vars that were
+    dropped or rewritten, for the log line and the warning. Empty means the launch was
+    already pageable and ``argv`` comes back unchanged.
+
+    Modes ``none`` and ``mlock`` read the weights into a buffer llama.cpp allocates
+    (``use_mmap`` is set for ``mmap``/``mmap+mlock``/``auto`` and nothing else), so a
+    model larger than free RAM cannot load at all rather than paging in slowly. Both
+    sides of llama.cpp's env-then-argv resolution are rewritten, since the environment
+    supplies the default the argv only overrides when it names the same option.
+
+    A lock is preserved rather than dropped: ``mlock`` becomes ``mmap+mlock`` and a
+    bare ``--mlock`` alongside ``--no-mmap`` survives the strip, so "keep this in RAM"
+    still holds -- over a mapping the kernel can fall back on. ``none`` has no lock to
+    keep and needs no replacement flag at all, mmap being the default, so a build
+    predating ``--load-mode`` is handed nothing it cannot parse.
+    """
+    tokens = [str(a) for a in (argv or [])]
+    overridden: list[str] = []
+    out: list[str] = []
+    i, n = 0, len(tokens)
+    while i < n:
+        token = tokens[i]
+        flag = _flag_name(token)
+        # --no-mmap / --no-direct-io: upstream's deprecated spellings for "none".
+        # Valueless, so the token goes and nothing follows it out.
+        if flag in _RAM_RESERVING_FLAGS:
+            overridden.append(token)
+            i += 1
+            continue
+        if flag in _LOAD_MODE_FLAGS:
+            if "=" in token:
+                value, step = token.split("=", 1)[1], 1
+            elif i + 1 < n and _flag_name(tokens[i + 1]) is None:
+                value, step = tokens[i + 1], 2
+            else:
+                value, step = "", 1
+            normalized = value.strip().lower()
+            if normalized in _PAGEABLE_LOAD_MODE:
+                overridden.append(" ".join(tokens[i : i + step]))
+                replacement = _PAGEABLE_LOAD_MODE[normalized]
+                if replacement is not None:
+                    out.extend([tokens[i].split("=", 1)[0], replacement])
+                i += step
+                continue
+            out.extend(tokens[i : i + step])
+            i += step
+            continue
+        out.append(token)
+        i += 1
+    if env is not None:
+        for name in MEMORY_ENV_VARS:
+            if name not in env:
+                continue
+            rewrite, new_value = _pageable_env_value(name, str(env[name]))
+            if not rewrite:
+                continue
+            if new_value is None:
+                env.pop(name, None)
+            else:
+                env[name] = new_value
+            overridden.append(name)
+    return out, overridden
+
+
 # Mirrors llama_cpp's _LLAMA_ARG_TRUE/FALSE_VALUES; duplicated so this module
 # stays dependency-free (llama_cpp imports from here, not the other way).
 _ENV_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})

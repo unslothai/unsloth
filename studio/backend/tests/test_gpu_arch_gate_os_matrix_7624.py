@@ -2084,6 +2084,106 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
         assert all(env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1" for env in _retry)
 
 
+class TestArchCrashRetryReplacesTheCrashedSelectionsWarning:
+    """The canonical #7624 shape, priced. The APU's shared-pool "free memory"
+    outranks the dGPU, so auto pins it; the APU RAM guard warns that system RAM
+    cannot hold the weights; the child then dies with a kernel-image error and the
+    retry respawns on the discrete sibling, which holds the model in VRAM.
+
+    ``_record_load_warning`` keeps the FIRST notice, so the crashed selection's
+    verdict outlived the placement it described: the served response told the user
+    the OS might stop a load running entirely on a discrete card. The retry prices
+    the set it actually reaches, so that answer -- not the dead one -- is the load's.
+    """
+
+    def _apu_then_dgpu(self, monkeypatch, *, dgpu_free_mib):
+        # Device 0 is the APU and outranks the dGPU on free memory, so auto pins it and
+        # the pre-launch APU guard DOES ask (the mirror of
+        # TestArchCrashRetryRechecksTheApuRamGuard, where the dGPU is pinned first and
+        # the guard never asks). The APU's usable figure is its shared pool capped by
+        # available system RAM minus a host reserve, so the RAM stub has to stay high
+        # enough to leave the APU on top; the shortfall itself is the stubbed verdict,
+        # which is how every APU-guard cell in this file drives it -- the arithmetic
+        # belongs to test_host_offload_ram_guard.py, the plumbing is what is at stake.
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        return _fake_torch(
+            [
+                _device("gfx1151", free_mib = 47000, is_integrated = 1),
+                _device("gfx1030", free_mib = dgpu_free_mib),
+            ],
+            vendor = "amd",
+        )
+
+    @staticmethod
+    def _apu_stub(calls):
+        # Counted, not raised: this runs inside the launch path's own
+        # except-Exception arms, which would swallow an AssertionError.
+        def _shortfall(model_size_bytes, avail_mib, *_a, **_kw):
+            calls.append((model_size_bytes, avail_mib))
+            return "This model needs about 20 GB but only about 8 GB of memory is available."
+
+        return _shortfall
+
+    def test_a_comfortable_retry_clears_the_dead_selections_warning(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        # 30000MiB free holds the 20GB model outright, so the respawn spills nothing.
+        torch = self._apu_then_dgpu(monkeypatch, dgpu_free_mib = 30000)
+        calls: list = []
+        capture: dict = {}
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,  # no marker: the proactive gate fails open, so the crash path runs
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            model_bytes = 20 * 1024**3,
+            capture = capture,
+            apu_ram_stub = self._apu_stub(calls),
+        )
+        assert calls, "the pre-launch APU RAM guard never ran, so nothing was warned"
+        _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        assert capture["backend"].last_load_warning is None, (
+            "the response still carries the crashed APU's shortfall for a child that "
+            "runs on the discrete card"
+        )
+
+    def test_a_shortfall_that_still_stands_survives_the_retry(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """Scoped: clearing the dead verdict must not silence a live one. The respawn
+        prices the same weights against a NARROWER pool, so a real spill is re-warned.
+        """
+        # 4000MiB free leaves most of the 20GB model in host RAM on the respawn.
+        torch = self._apu_then_dgpu(monkeypatch, dgpu_free_mib = 4000)
+        capture: dict = {}
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            model_bytes = 20 * 1024**3,
+            capture = capture,
+            apu_ram_stub = self._apu_stub([]),
+            host_offload_stub = (
+                lambda *_a, **_kw: "About 16 GB of this model does not fit in GPU memory."
+            ),
+        )
+        _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        assert "does not fit in GPU memory" in (capture["backend"].last_load_warning or "")
+
+
 class TestHsaOverrideGfxVersion:
     """``HSA_OVERRIDE_GFX_VERSION`` is the long-standing AMD workaround for an arch
     the ROCm stack does not build for: the user sets it, ROCr reports the SPOOFED
