@@ -3251,10 +3251,9 @@ def _ensure_rocm_torch() -> None:
                     f"   {_selected_gfx} (AMD Strix) is the runtime target with ROCm "
                     f"{ver[0]}.{ver[1]}.\n"
                     f"   Routing torch install to AMD's arch-specific index\n"
-                    f"   ({_strip_index_url_credentials(_arch_index_url)}) which serves\n"
-                    f"   torch 2.11.0+rocm7.13.0\n"
-                    f"   with AMD's gfx1150/gfx1151 fixes (more reliable than the generic\n"
-                    f"   pytorch.org rocm7.2 index on ROCm 7.3+ hosts).\n"
+                    f"   ({_strip_index_url_credentials(_arch_index_url)}) which serves torch\n"
+                    f"   2.11.0+rocm7.13.0 with AMD's gfx1150/gfx1151 fixes (more reliable than\n"
+                    f"   the generic pytorch.org rocm7.2 index on ROCm 7.3+ hosts).\n"
                 )
                 # Only on this branch: these wheels carry _selected_gfx kernels, so
                 # the runtime must stop reporting the spoofed arch or they have no
@@ -3313,8 +3312,8 @@ def _ensure_rocm_torch() -> None:
                         f"   {_runtime_gfx} is the runtime target, and no pytorch.org ROCm wheel\n"
                         f"   carries kernels for it -- torch would load but fault on its first\n"
                         f"   GPU operation. Routing the torch install to AMD's arch-specific\n"
-                        f"   index ({_strip_index_url_credentials(_arch_index_url)}),\n"
-                        f"   which does.\n"
+                        f"   index, which does:\n"
+                        f"   {_strip_index_url_credentials(_arch_index_url)}\n"
                     )
                     # Let the runtime report the native target carried by these wheels.
                     if _physical_gfx is not None:
