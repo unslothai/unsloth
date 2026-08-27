@@ -1355,9 +1355,10 @@ def test_the_env_mapped_lock_mode_shadowed_by_an_argv_selector_goes_too():
 
     assert "LLAMA_ARG_LOAD_MODE" not in out_env, out_env
     assert overridden, "the unmapped launch was not rewritten at all"
-    assert (mlock, reserves) == (False, False), (
-        f"the rewrite page-locked the oversized mapping: {out_env}"
-    )
+    assert (mlock, reserves) == (
+        False,
+        False,
+    ), f"the rewrite page-locked the oversized mapping: {out_env}"
 
 
 def test_an_unshadowed_mapped_lock_is_left_entirely_alone():

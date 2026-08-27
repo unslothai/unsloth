@@ -1748,9 +1748,7 @@ def force_pageable_load(
             # `--load-mode mlock --no-mmap` is unlocked by the time the child parses
             # it, so mmap+mlock would ADD a lock; `mmap+mlock --no-mmap` is the same
             # shape one spelling further on, and there the selector itself is the lock.
-            rewrite_mode, replacement = _pageable_mode_replacement(
-                normalized, drop_shadowed_mlock
-            )
+            rewrite_mode, replacement = _pageable_mode_replacement(normalized, drop_shadowed_mlock)
             if rewrite_mode:
                 overridden.append(" ".join(tokens[i : i + step]))
                 if replacement is not None:
