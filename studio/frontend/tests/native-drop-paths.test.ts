@@ -15,6 +15,8 @@ import {
   TEXT_ATTACHMENT_EXTENSIONS,
   isBinaryPropertyList,
   isBinaryTrackerModule,
+  MAX_TEXT_ATTACHMENT_BYTES,
+  decodeTextAttachmentBytes,
   isBinaryOfficeTemplate,
   isBinaryVobSubSubtitle,
   isCompiledFortranModule,
@@ -853,13 +855,18 @@ test("valid UTF-8 keeps its own decoding", async () => {
   assert.equal(text, "Caf\u00e9 \u2014 na\u00efve");
 });
 
-test("a preview cut mid-character stays UTF-8", async () => {
+test("a preview cut mid-character stays UTF-8", () => {
   // The bounded preview slices at a byte offset, so the last character can be
   // half-read. That is a truncation, not a legacy encoding.
   const full = new TextEncoder().encode("caf\u00e9");
   const cut = full.subarray(0, full.length - 1);
-  const text = await readTextAttachment(new File([cut], "notes.txt"));
-  assert.equal(text, "caf");
+  assert.equal(decodeTextAttachmentBytes(cut, "notes.txt", true), "caf");
+  // A whole file gets no such licence: a dangling lead byte is a bad encoding,
+  // not a cut, and dropping it silently would lose the character.
+  assert.throws(
+    () => decodeTextAttachmentBytes(cut, "notes.txt"),
+    (error: Error) => error instanceof UndecodableTextError,
+  );
 });
 
 test("legacy Office templates are rejected, text templates are not", async () => {
@@ -885,6 +892,76 @@ test("legacy Office templates are rejected, text templates are not", async () =>
     false,
   );
   assert.equal(await isBinaryOfficeTemplate(new File([ole], "deck.ppt")), false);
+});
+
+test("an 8-bit email is decoded with the charset it declares", async () => {
+  // A standards-valid ISO-8859-1 message is not a guess: the file says so.
+  const eml = new Uint8Array([
+    ...new TextEncoder().encode(
+      "From: a@example.com\r\n" +
+        "Content-Type: text/plain; charset=ISO-8859-1\r\n" +
+        "Content-Transfer-Encoding: 8bit\r\n\r\nCaf",
+    ),
+    0xe9,
+    0x0a,
+  ]);
+  const text = await readTextAttachment(new File([eml], "message.eml"));
+  assert.match(text, /Caf\u00e9/);
+  assert.equal(text.includes("\uFFFD"), false);
+});
+
+test("a folded Content-Type header still yields its charset", async () => {
+  const eml = new Uint8Array([
+    ...new TextEncoder().encode(
+      "Content-Type: text/plain;\r\n\tcharset=\"ISO-8859-1\"\r\n\r\nCaf",
+    ),
+    0xe9,
+  ]);
+  assert.match(
+    await readTextAttachment(new File([eml], "archive.mbox")),
+    /Caf\u00e9/,
+  );
+});
+
+test("a UTF-8 email is not remapped by a stale declaration", async () => {
+  // The charset is a fallback for bytes UTF-8 rejects, never a rewrite of text
+  // that already decoded.
+  const eml = new TextEncoder().encode(
+    "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf\u00e9 \u2014 na\u00efve",
+  );
+  assert.equal(
+    await readTextAttachment(new File([eml], "message.eml")),
+    "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf\u00e9 \u2014 na\u00efve",
+  );
+});
+
+test("an email with no declared charset is still named, not guessed", async () => {
+  const eml = new Uint8Array([
+    ...new TextEncoder().encode("Subject: hi\r\n\r\nCaf"),
+    0xe9,
+  ]);
+  await assert.rejects(
+    readTextAttachment(new File([eml], "message.eml")),
+    (error: Error) => error instanceof UndecodableTextError,
+  );
+});
+
+test("the browser text cap matches the native one", () => {
+  // Reading happens while attaching now, so an unbounded .mbox would decode
+  // gigabytes into the webview before the user could send it.
+  assert.equal(MAX_TEXT_ATTACHMENT_BYTES, 20 * 1024 * 1024);
+  const rust = readFileSync(
+    new URL("../../src-tauri/src/native_intents.rs", import.meta.url),
+    "utf8",
+  );
+  const native = rust.match(
+    /const MAX_NATIVE_TEXT_BYTES: u64 = (\d+) \* 1024 \* 1024;/,
+  )?.[1];
+  assert.ok(native, "native text cap not found");
+  assert.equal(
+    Number(native) * 1024 * 1024,
+    MAX_TEXT_ATTACHMENT_BYTES,
+  );
 });
 
 test("legacy M3U playlists are not advertised as UTF-8 text", () => {

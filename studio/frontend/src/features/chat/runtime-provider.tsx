@@ -60,6 +60,7 @@ import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
   isBinaryPropertyList,
   isBinaryTrackerModule,
+  MAX_TEXT_ATTACHMENT_BYTES,
   isBinaryOfficeTemplate,
   isCompiledFortranModule,
   isBinaryVobSubSubtitle,
@@ -371,6 +372,15 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   accept = TEXT_ATTACHMENT_ACCEPT;
 
   async add({ file }: { file: File }): Promise<PendingAttachment> {
+    // Before any read: decoding an .mbox of arbitrary size would hold the bytes
+    // and the decoded string at once, and the native path already stops here.
+    if (file.size > MAX_TEXT_ATTACHMENT_BYTES) {
+      const reason = `Text attachments are limited to ${
+        MAX_TEXT_ATTACHMENT_BYTES / (1024 * 1024)
+      } MB.`;
+      toast.error(reason);
+      throw new Error(reason);
+    }
     if (await isBinaryPropertyList(file)) {
       const reason =
         "Binary property-list files aren't supported. Convert the file to text before attaching it.";

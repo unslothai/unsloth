@@ -315,6 +315,11 @@ export const TEXT_ATTACHMENT_EXTENSIONS = [
   ".patch",
 ];
 
+/** Matches MAX_NATIVE_TEXT_BYTES in native_intents.rs, so a file dropped from
+ *  the desktop shell and one picked in the browser accept the same sizes. An
+ *  .mbox can run to gigabytes, and reading one decodes it twice over in memory. */
+export const MAX_TEXT_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+
 /** Conventional extensionless names matched through their dotted adapter tokens. */
 export const TEXT_ATTACHMENT_BASENAMES = ["containerfile"] as const;
 const PATH_SEPARATOR_RE = /[\\/]/;
@@ -592,9 +597,52 @@ function declaredGettextCharset(
   return charset && charset.toUpperCase() !== "CHARSET" ? charset : null;
 }
 
+// Header block only: a body part can declare its own, but the message-level
+// charset is what an 8-bit single-part mail is written in.
+const EMAIL_HEADER_SCAN_BYTES = 64 * 1024;
+// Handles folded continuation lines, which start with space or tab.
+const EMAIL_CONTENT_TYPE_RE =
+  /(?:^|\r?\n)Content-Type:((?:[^\r\n]*)(?:\r?\n[ \t][^\r\n]*)*)/i;
+const EMAIL_CHARSET_RE = /charset[ \t]*=[ \t]*"?([A-Za-z0-9._-]+)"?/i;
+
+function declaredEmailCharset(
+  bytes: Uint8Array,
+  fileName: string,
+): string | null {
+  if (!/\.(?:eml|mbox)$/i.test(fileName)) {
+    return null;
+  }
+  // Headers are ASCII, so this scan cannot fail on the body's own encoding.
+  const prefix = new TextDecoder("windows-1252").decode(
+    bytes.subarray(0, EMAIL_HEADER_SCAN_BYTES),
+  );
+  const header = prefix.match(EMAIL_CONTENT_TYPE_RE)?.[1];
+  return header?.match(EMAIL_CHARSET_RE)?.[1] ?? null;
+}
+
+/** Decode under a charset the file itself declared, or say why it could not. */
+function decodeWithCharset(bytes: Uint8Array, charset: string): string {
+  const label = GETTEXT_CHARSET_ALIASES[charset.toUpperCase()] ?? charset;
+  try {
+    return new TextDecoder(label).decode(bytes);
+  } catch (error) {
+    if (error instanceof RangeError) {
+      throw new Error(
+        `Charset "${charset}" isn't supported. Convert the file to UTF-8 before attaching it.`,
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * @param truncated Whether `bytes` is a prefix of the file, in which case a
+ * partial character at the end is a cut rather than a bad encoding.
+ */
 export function decodeTextAttachmentBytes(
   bytes: Uint8Array,
   fileName = "",
+  truncated = false,
 ): string {
   if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
     return new TextDecoder("utf-16le").decode(bytes.subarray(2));
@@ -604,29 +652,26 @@ export function decodeTextAttachmentBytes(
   }
   const gettextCharset = declaredGettextCharset(bytes, fileName);
   if (gettextCharset) {
-    const label =
-      GETTEXT_CHARSET_ALIASES[gettextCharset.toUpperCase()] ?? gettextCharset;
-    try {
-      return new TextDecoder(label).decode(bytes);
-    } catch (error) {
-      if (error instanceof RangeError) {
-        throw new Error(
-          `Gettext charset "${gettextCharset}" isn't supported. Convert the catalog to UTF-8 before attaching it.`,
-        );
-      }
-      throw error;
-    }
+    return decodeWithCharset(bytes, gettextCharset);
   }
   try {
-    // stream:true drops a trailing partial character, which is what a bounded
-    // preview cuts, while still rejecting bytes that are not UTF-8 at all.
+    // A truncated read decodes with stream:true so the character the slice cut
+    // in half is dropped rather than raising. A whole file gets no such licence:
+    // there, a dangling lead byte is a bad encoding and has to be reported.
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes, {
-      stream: true,
+      stream: truncated,
     });
   } catch {
-    // A legacy code page, but which one is not knowable from the bytes: the same
-    // byte is a different letter in windows-1252, windows-1251 and Shift-JIS.
-    // Guessing sends confident mojibake to the model, so say so instead.
+    // An 8-bit email body says which charset it is, so honour it rather than
+    // refusing a standards-valid message. Tried only after UTF-8 fails, so a
+    // modern message is never remapped by a stale declaration.
+    const emailCharset = declaredEmailCharset(bytes, fileName);
+    if (emailCharset) {
+      return decodeWithCharset(bytes, emailCharset);
+    }
+    // Otherwise a legacy code page, but which one is not knowable from the
+    // bytes: the same byte is a different letter in windows-1252, windows-1251
+    // and Shift-JIS. Guessing sends confident mojibake, so say so instead.
     throw new UndecodableTextError(fileName);
   }
 }

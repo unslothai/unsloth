@@ -864,7 +864,7 @@ async function readBoundedText(
   const truncated = file.size > MAX_PREVIEW_TEXT_BYTES;
   const slice = truncated ? file.slice(0, MAX_PREVIEW_TEXT_BYTES) : file;
   const bytes = new Uint8Array(await slice.arrayBuffer());
-  return { text: decodeTextAttachmentBytes(bytes, file.name), truncated };
+  return { text: decodeTextAttachmentBytes(bytes, file.name, truncated), truncated };
 }
 
 // A sent attachment keeps only the text its adapter produced, so the preview
