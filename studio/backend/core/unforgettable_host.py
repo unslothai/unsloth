@@ -59,13 +59,13 @@ def in_inner_generate() -> bool:
     return bool(_INNER.get())
 
 
-def catalog_entry(created: int | None = None) -> dict:
+def catalog_entry(created: int | None = None, *, loaded: bool = False) -> dict:
     return {
         "id": VIRTUAL_MODEL_ID,
         "object": "model",
         "created": int(created or time.time()),
         "owned_by": "unforgettable",
-        "loaded": True,
+        "loaded": loaded,
     }
 
 

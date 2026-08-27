@@ -22043,10 +22043,6 @@ def _openai_model_objects() -> list[dict]:
             entry["native_context_length"] = _native_ctx
         models.append(entry)
 
-    from core.unforgettable_host import catalog_entry as _unforgettable_loaded_entry
-
-    models.append(_unforgettable_loaded_entry(_created))
-
     # Check Unsloth backend
     backend = get_inference_backend()
     if backend.active_model_name:
@@ -22226,7 +22222,10 @@ async def _openai_catalog_objects() -> list[dict]:
 
     from core.unforgettable_host import catalog_entry as _unforgettable_catalog_entry
 
-    virtual = _unforgettable_catalog_entry(_created)
+    # Alias, not a resident backend. Keep it off `_openai_model_objects` so a
+    # loaded GGUF is still the only "currently loaded" entry; mark the alias
+    # loaded here only when an inner model can actually serve it.
+    virtual = _unforgettable_catalog_entry(_created, loaded = bool(by_id))
     by_id.setdefault(virtual["id"], virtual)
 
     return list(by_id.values())

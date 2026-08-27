@@ -3,7 +3,6 @@
 
 import type { TranslationKey } from "@/i18n";
 import { Bookmark02Icon } from "@hugeicons/core-free-icons";
-import type { FC } from "react";
 
 export const UNFORGETTABLE_SETTINGS_TAB = {
   id: "unforgettable" as const,
@@ -11,14 +10,6 @@ export const UNFORGETTABLE_SETTINGS_TAB = {
   icon: Bookmark02Icon,
   badgeKey: "common.new" as const,
 };
-
-export function loadUnforgettableSettingsTab(): Promise<{
-  default: FC;
-}> {
-  return import("@/features/settings/tabs/unforgettable-tab").then((m) => ({
-    default: m.UnforgettableTab,
-  }));
-}
 
 export const UNFORGETTABLE_NAV_ITEM_META = {
   icon: Bookmark02Icon,

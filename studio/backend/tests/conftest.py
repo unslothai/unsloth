@@ -37,13 +37,15 @@ from pathlib import Path
 
 import pytest
 
-# Add backend root to sys.path (mirrors app launch). Repo root too: Studio
-# face modules import the sibling Apache package ``unforgettable``.
+# Add backend root to sys.path (mirrors app launch). Repo root too, but after
+# the backend: Studio face modules import the sibling Apache package
+# ``unforgettable``, and putting the repo first would shadow ``tests``.
 _backend_root = Path(__file__).resolve().parent.parent
 _repo_root = _backend_root.parent.parent
-for _root in (_backend_root, _repo_root):
-    if str(_root) not in sys.path:
-        sys.path.insert(0, str(_root))
+if str(_repo_root) not in sys.path:
+    sys.path.append(str(_repo_root))
+if str(_backend_root) not in sys.path:
+    sys.path.insert(0, str(_backend_root))
 
 # Let the diffusion patch backend lazily import unsloth_zoo on a CPU-only test host: unsloth_zoo runs accelerator
 # detection at import and raises without a GPU unless this is set. setdefault so an explicit override wins.
