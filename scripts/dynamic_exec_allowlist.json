@@ -8,7 +8,7 @@
       "kind": "f-string",
       "hash": "02c93361a59d02a7",
       "reason": "Two groups, both fed from hardcoded lists. The config re-export block interpolates config_filepath / config_filename derived from the literal `model_architectures` list in this file (llama, mistral, gemma, gemma2, qwen2, granite, qwen3, qwen3_moe, falcon_h1); the EMPTY_LOGITS block interpolates `function` from dir(torch.Tensor) with dunders filtered out.",
-      "origin": "f9f3e360"
+      "origin": "0e8937c3+f9f3e360"
     },
     {
       "path": "unsloth/models/_utils.py",
@@ -69,7 +69,7 @@
       "kind": "f-string",
       "hash": "d452fc2117e42b99",
       "reason": "Two groups, both fed from hardcoded lists. The config re-export block interpolates config_filepath / config_filename derived from the literal `model_architectures` list in this file (llama, mistral, gemma, gemma2, qwen2, granite, qwen3, qwen3_moe, falcon_h1); the EMPTY_LOGITS block interpolates `function` from dir(torch.Tensor) with dunders filtered out.",
-      "origin": "f9f3e360"
+      "origin": "0e8937c3+f9f3e360"
     },
     {
       "path": "unsloth/models/_utils.py",
@@ -257,7 +257,7 @@
       "kind": ".join() via `function` via `function`",
       "hash": "16b70ffbbdbad15f",
       "reason": "Self-generated source: `function` is `inspect.getsource` of the installed TRL SFTTrainer method with literal text inserted at a located anchor, and the joined `check_text` is a literal block re-indented. No external value reaches it.",
-      "origin": "f5235268"
+      "origin": "4974500d+f5235268"
     },
     {
       "path": "unsloth/tokenizer_utils.py",
@@ -306,7 +306,7 @@
       "kind": ".join() via `function` via `function` via `function`",
       "hash": "f9d16814a82a1e43",
       "reason": "Self-generated source: `function` is `inspect.getsource` of the installed TRL SFTTrainer method with literal text inserted at a located anchor, and the joined `check_text` is a literal block re-indented. No external value reaches it.",
-      "origin": "f5235268"
+      "origin": "4974500d+f5235268"
     },
     {
       "path": "unsloth/trainer.py",
