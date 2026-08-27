@@ -204,6 +204,8 @@ _TRACKED_PATHS = {
     # The OpenAI-compatible route is on inference_router, mounted at both prefixes.
     "/api/inference/images/generations": DIFFUSION,
     "/v1/images/generations": DIFFUSION,
+    "/api/inference/videos": VIDEO,
+    "/v1/videos": VIDEO,
 }
 
 

@@ -313,6 +313,7 @@ from routes import (
     training_history_router,
     training_router,
     video_router,
+    video_openai_router,
     youtube_router,
 )
 from routes.llama import router as llama_router
@@ -1096,13 +1097,14 @@ from utils.upload_limits import (  # noqa: E402
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
+    VIDEO_INPUT_REFERENCE_MAX_BYTES,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
 )
 
 _BODY_PROTECTED_PREFIXES = (
     # Blanket-protect the whole /v1 surface, like /api/inference: every /v1 POST buffers a JSON
-    # body and none is a multipart passthrough, so one prefix caps them all.
+    # body (the multipart routes are listed as exact passthroughs below), so one prefix caps them all.
     "/v1",
     "/p/",
     "/api/inference",
@@ -1130,6 +1132,10 @@ _STT_MULTIPART_UPLOAD_PATHS = (
     "/v1/audio/transcriptions",
     "/api/inference/audio/transcriptions",
 )
+_VIDEO_MULTIPART_UPLOAD_PATHS = (
+    "/v1/videos",
+    "/api/inference/videos",
+)
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
@@ -1138,6 +1144,7 @@ _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
 _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     _DIFFUSION_DATASET_UPLOAD_PATH,
     *_STT_MULTIPART_UPLOAD_PATHS,
+    *_VIDEO_MULTIPART_UPLOAD_PATHS,
 )
 
 
@@ -1146,6 +1153,8 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
         return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+    if path.rstrip("/") in _VIDEO_MULTIPART_UPLOAD_PATHS:
+        return upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1164,6 +1173,8 @@ def _get_request_body_max_bytes(path: str) -> int:
     # multipart headroom over the raw stt cap for the openai transcription route on both mounts
     if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
         return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+    if path.rstrip("/") in _VIDEO_MULTIPART_UPLOAD_PATHS:
+        return upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES)
     return default_request_body_limit_bytes()
 
 
@@ -1413,6 +1424,8 @@ app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["
 
 # Unsloth-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
 app.include_router(video_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(video_openai_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"])
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])

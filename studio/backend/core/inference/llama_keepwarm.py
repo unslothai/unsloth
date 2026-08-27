@@ -98,6 +98,7 @@ _INFERENCE_SUFFIXES = (
     "/images/generations",  # /v1/images/generations (+ /api/inference/images/generations)
     # Video runs as a background job (the POST returns at once), so this covers only the brief accept; the training-start guards also probe generate-progress.
     "/video/generate",  # /api/inference/video/generate
+    "/videos",
 )
 
 # Tracked above (they hold the GPU, so the in-flight count must see them) but served by the

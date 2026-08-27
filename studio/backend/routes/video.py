@@ -18,14 +18,21 @@ here.
 from __future__ import annotations
 
 import asyncio
+import base64
+import calendar
 import hashlib as _hashlib
 import hmac as _hmac
+import re as _re
 import secrets as _secrets
+import threading
 import time as _time
-from typing import Annotated, Optional
+import uuid
+from dataclasses import dataclass
+from typing import Annotated, Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import ValidationError
+from starlette.datastructures import UploadFile
 
 from auth.authentication import get_current_subject, request_admitted_without_credential
 from hub.dependencies import get_hf_token
@@ -38,14 +45,22 @@ from models.inference import (
     VideoGenerateProgressResponse,
     VideoGenerateRequest,
     VideoGenerateResponse,
+    VideoJob,
+    VideoJobCreateRequest,
+    VideoJobDeleteResponse,
+    VideoJobError,
+    VideoJobListResponse,
     VideoLoadProgressResponse,
     VideoLoadRequest,
     VideoStatusResponse,
 )
+from utils.api_errors import openai_error_body
+from utils.upload_limits import VIDEO_INPUT_REFERENCE_MAX_BYTES
 
 logger = get_logger(__name__)
 
 router = APIRouter()
+openai_router = APIRouter()
 
 
 def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True):
@@ -762,3 +777,518 @@ async def clear_gallery_videos(current_subject: str = Depends(get_current_subjec
     # Clear-all takes the terminal record's clip with it whatever its id.
     _forget_terminal_video(None)
     return {"removed": removed}
+
+
+# ── OpenAI-compatible videos API (/v1/videos) ──
+
+_VIDEO_SIZE_RE = _re.compile(r"^(\d{1,5})\s*x\s*(\d{1,5})$")
+_VIDEO_SECONDS_MAX = 120.0
+_VIDEO_JOB_ID_PREFIX = "video_"
+_MAX_REMEMBERED_JOBS = 256
+_VIDEO_POLL_AFTER_MS = "2000"
+_NO_VIDEO_MODEL_MSG = "No video model loaded. Load a video model first."
+_VIDEO_FAILED_CODE = "video_generation_failed"
+_VIDEO_CREATE_FIELDS = ("prompt", "model", "seconds", "size")
+
+
+@dataclass
+class _VideoJob:
+    id: str
+    created_at: int
+    prompt: str
+    model: str
+    size: str
+    seconds: str
+    status: str = "queued"
+    progress: int = 0
+    completed_at: Optional[int] = None
+    error: Optional[dict] = None
+
+    @property
+    def terminal(self) -> bool:
+        return self.status in ("completed", "failed")
+
+
+_jobs: dict[str, _VideoJob] = {}
+_jobs_lock = threading.Lock()
+
+
+def _openai_video_error(
+    status: int, message: str, *, code: Optional[str] = None, param: Optional[str] = None
+) -> HTTPException:
+    return HTTPException(
+        status_code = status,
+        detail = openai_error_body(message, status = status, code = code, param = param),
+    )
+
+
+def _not_found(video_id: str) -> HTTPException:
+    return _openai_video_error(
+        404, f"No video found with id '{video_id[:128]}'.", code = "video_not_found", param = "video_id"
+    )
+
+
+def _parse_openai_video_size(size: Optional[str]) -> Optional[tuple[int, int]]:
+    text = (size or "").strip().lower()
+    if text in ("", "auto"):
+        return None
+    match = _VIDEO_SIZE_RE.match(text)
+    if not match:
+        raise ValueError("size must be '<width>x<height>', e.g. '768x512'.")
+    width, height = int(match.group(1)), int(match.group(2))
+    for label, value in (("width", width), ("height", height)):
+        if not 32 <= value <= 2048:
+            raise ValueError(f"size {label} must be between 32 and 2048.")
+    return width, height
+
+
+def _parse_openai_video_seconds(seconds: Optional[str]) -> Optional[float]:
+    text = (seconds or "").strip().lower()
+    if text in ("", "auto"):
+        return None
+    try:
+        value = float(text)
+    except ValueError:
+        raise ValueError("seconds must be a number of seconds, e.g. '4'.") from None
+    if value != value or not 0 < value <= _VIDEO_SECONDS_MAX:
+        raise ValueError(f"seconds must be between 0 and {_VIDEO_SECONDS_MAX:g}.")
+    return value
+
+
+def _frames_for_seconds(seconds: float, defaults: dict) -> int:
+    fps = int(defaults.get("fps") or 24)
+    step = max(1, int(defaults.get("frame_step") or 1))
+    offset = max(1, int(defaults.get("frame_offset") or 1))
+    wanted = max(offset, int(round(seconds * fps)))
+    k = int(round((wanted - offset) / step))
+    return max(offset, k * step + offset)
+
+
+def _format_seconds(value: float) -> str:
+    return f"{round(float(value), 2):g}"
+
+
+def _record_epoch(record: dict) -> int:
+    raw = record.get("created_at")
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    if isinstance(raw, str):
+        try:
+            return calendar.timegm(_time.strptime(raw, "%Y-%m-%dT%H:%M:%SZ"))
+        except ValueError:
+            pass
+    return 0
+
+
+def _valid_gallery_video_record(record: dict) -> bool:
+    try:
+        GalleryVideo(**record)
+    except ValidationError:
+        return False
+    return True
+
+
+def _record_to_job(record: dict, job: Optional[_VideoJob] = None) -> VideoJob:
+    saved_at = _record_epoch(record)
+    created = job.created_at if job is not None else saved_at
+    completed = (job.completed_at if job is not None else None) or saved_at or created
+    return VideoJob(
+        id = record["id"],
+        model = str(record.get("model") or (job.model if job is not None else "") or "video"),
+        status = "completed",
+        progress = 100,
+        created_at = created,
+        completed_at = completed,
+        prompt = record.get("prompt"),
+        size = f"{record.get('width')}x{record.get('height')}",
+        seconds = _format_seconds(record.get("duration_s") or 0.0),
+    )
+
+
+def _job_to_openai(job: _VideoJob) -> VideoJob:
+    return VideoJob(
+        id = job.id,
+        model = job.model,
+        status = job.status,  # type: ignore[arg-type]
+        progress = job.progress,
+        created_at = job.created_at,
+        completed_at = job.completed_at,
+        prompt = job.prompt,
+        size = job.size,
+        seconds = job.seconds,
+        error = VideoJobError(**job.error) if job.error else None,
+    )
+
+
+def _remember_job(job: _VideoJob) -> None:
+    with _jobs_lock:
+        _jobs[job.id] = job
+        excess = len(_jobs) - _MAX_REMEMBERED_JOBS
+        if excess > 0:
+            for stale in [j for j in _jobs.values() if j.terminal][:excess]:
+                _jobs.pop(stale.id, None)
+
+
+def _sync_jobs() -> None:
+    from core.inference import video_gallery
+    from core.inference.video import get_video_backend
+    from core.inference.video_families import VIDEO_CANCELLED_MSG
+
+    with _jobs_lock:
+        open_jobs = [job for job in _jobs.values() if not job.terminal]
+    if not open_jobs:
+        return
+    gen = get_video_backend().generate_progress()
+    now = int(_time.time())
+    for job in open_jobs:
+        status: Optional[str] = None
+        progress = 0
+        completed_at: Optional[int] = None
+        error: Optional[dict] = None
+        if gen.get("video_id") == job.id:
+            phase = gen.get("phase")
+            if phase == "queued":
+                status = "queued"
+            elif phase in ("denoise", "export") or gen.get("active"):
+                fraction = float(gen.get("fraction") or 0.0)
+                status = "in_progress"
+                progress = 99 if phase == "export" else max(0, min(99, int(fraction * 100)))
+            elif phase == "completed":
+                status, progress, completed_at = "completed", 100, now
+            elif phase == "failed":
+                message = str(gen.get("error") or "Video generation failed.")
+                status = "failed"
+                error = {
+                    "code": "cancelled" if message == VIDEO_CANCELLED_MSG else _VIDEO_FAILED_CODE,
+                    "message": message,
+                }
+        if status is None:
+            if video_gallery.owned_video_path(job.id) is not None:
+                status, progress, completed_at = "completed", 100, now
+            else:
+                status = "failed"
+                error = {
+                    "code": _VIDEO_FAILED_CODE,
+                    "message": "The generation ended before a clip was saved.",
+                }
+        with _jobs_lock:
+            job.status = status
+            job.progress = progress
+            if completed_at is not None:
+                job.completed_at = completed_at
+            if error is not None:
+                job.error = error
+
+
+def _lookup_video(video_id: str) -> Optional[VideoJob]:
+    from core.inference import video_gallery
+
+    _sync_jobs()
+    with _jobs_lock:
+        job = _jobs.get(video_id)
+    if job is not None and job.status != "completed":
+        return _job_to_openai(job)
+    record = video_gallery.get_record(video_id)
+    if record is None:
+        return None
+    return _record_to_job(record, job)
+
+
+def _all_videos() -> list[VideoJob]:
+    from core.inference import video_gallery
+
+    _sync_jobs()
+    with _jobs_lock:
+        jobs = dict(_jobs)
+    records = video_gallery.list_videos(None, 0, valid = _valid_gallery_video_record)
+    listed = [_record_to_job(record, jobs.get(record["id"])) for record in records]
+    seen = {video.id for video in listed}
+    listed.extend(
+        _job_to_openai(job)
+        for job in jobs.values()
+        if job.id not in seen and job.status != "completed"
+    )
+    return listed
+
+
+async def _read_video_create_body(request: Request) -> tuple[dict, Any]:
+    ctype = (request.headers.get("content-type") or "").lower()
+    if ctype.startswith(("multipart/form-data", "application/x-www-form-urlencoded")):
+        try:
+            form = await request.form()
+        except Exception:  # noqa: BLE001
+            raise _openai_video_error(400, "Could not parse the multipart form body.")
+        fields = {key: form.get(key) for key in _VIDEO_CREATE_FIELDS if key in form}
+        reference = form.get("input_reference")
+        if reference is None:
+            reference = form.get("input_reference[image_url]")
+        return fields, reference
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        raise _openai_video_error(400, "Request body must be JSON or multipart/form-data.")
+    if not isinstance(data, dict):
+        raise _openai_video_error(400, "Request body must be a JSON object.")
+    return {key: data.get(key) for key in _VIDEO_CREATE_FIELDS if key in data}, data.get("input_reference")
+
+
+def _validate_create_fields(fields: dict) -> VideoJobCreateRequest:
+    try:
+        return VideoJobCreateRequest(**fields)
+    except ValidationError as exc:
+        errors = exc.errors()
+        first = errors[0] if errors else {}
+        loc = first.get("loc") or ()
+        param = str(loc[0]) if loc else None
+        message = str(first.get("msg") or "Invalid request.")
+        raise _openai_video_error(400, f"{param}: {message}" if param else message, param = param)
+
+
+async def _reference_to_data_url(reference: Any) -> Optional[str]:
+    if reference is None:
+        return None
+    if isinstance(reference, dict):
+        if reference.get("file_id"):
+            raise _openai_video_error(
+                400,
+                "input_reference.file_id is not supported; send the image as a file upload or a base64 data URL.",
+                param = "input_reference",
+            )
+        reference = reference.get("image_url")
+        if reference is None:
+            return None
+    if isinstance(reference, UploadFile):
+        data = await reference.read()
+        if not data:
+            raise _openai_video_error(400, "input_reference is empty.", param = "input_reference")
+        if len(data) > VIDEO_INPUT_REFERENCE_MAX_BYTES:
+            raise _openai_video_error(
+                400,
+                f"input_reference is too large; the limit is {VIDEO_INPUT_REFERENCE_MAX_BYTES // (1024 * 1024)} MB.",
+                param = "input_reference",
+            )
+        content_type = (reference.content_type or "").split(";")[0].strip().lower()
+        if content_type and not content_type.startswith("image/"):
+            raise _openai_video_error(400, "input_reference must be an image.", param = "input_reference")
+        encoded = base64.b64encode(data).decode("ascii")
+        return f"data:{content_type or 'image/png'};base64,{encoded}"
+    if isinstance(reference, str):
+        text = reference.strip()
+        if not text:
+            return None
+        if text.lower().startswith(("http://", "https://")):
+            raise _openai_video_error(
+                400,
+                "Remote input_reference URLs are not fetched; send the image as a file upload or a base64 data URL.",
+                param = "input_reference",
+            )
+        return text
+    raise _openai_video_error(
+        400, "input_reference must be an image file or a base64 data URL.", param = "input_reference"
+    )
+
+
+@openai_router.post("/videos", response_model = VideoJob)
+async def openai_create_video(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
+    from core.inference.gpu_arbiter import VIDEO
+    from core.inference.media_auto_switch import maybe_auto_switch_media_model
+    from core.inference.video import get_video_backend
+    from core.inference.video_families import (
+        VIDEO_GENERATION_BUSY_MSG,
+        VIDEO_NOT_LOADED_MSG,
+        VideoShapeError,
+    )
+
+    fields, raw_reference = await _read_video_create_body(request)
+    body = _validate_create_fields(fields)
+    reference = await _reference_to_data_url(raw_reference)
+    try:
+        size = _parse_openai_video_size(body.size)
+    except ValueError as exc:
+        raise _openai_video_error(400, str(exc), param = "size")
+    try:
+        seconds = _parse_openai_video_seconds(body.seconds)
+    except ValueError as exc:
+        raise _openai_video_error(400, str(exc), param = "seconds")
+    width, height = size if size is not None else (None, None)
+
+    def _refuse_unservable_request(pick) -> None:
+        from core.inference.media_model_index import expected_partition
+        from core.inference.video import _detect_load_family
+        from core.inference.video_families import (
+            validate_video_keyframe_conditioning,
+            validate_video_request_shape,
+        )
+
+        fam = _detect_load_family(pick.model_path, pick.gguf_filename, None)
+        if fam is None:
+            return
+        validate_video_request_shape(fam, width, height, None)
+        validate_video_keyframe_conditioning(
+            fam, expected_partition(pick), has_keyframes = reference is not None
+        )
+
+    try:
+        await maybe_auto_switch_media_model(
+            body.model,
+            owner = VIDEO,
+            current_subject = current_subject,
+            openai_errors = True,
+            hf_token = hf_token,
+            before_switch = _refuse_unservable_request,
+        )
+    except VideoShapeError as exc:
+        raise _openai_video_error(400, str(exc), param = "size")
+    except ValueError as exc:
+        raise _openai_video_error(400, str(exc), param = "input_reference")
+
+    backend = get_video_backend()
+    status = await asyncio.to_thread(backend.status)
+    if not status.get("loaded"):
+        raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
+    defaults = status.get("defaults") or {}
+    num_frames = _frames_for_seconds(seconds, defaults) if seconds is not None else None
+    video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
+    try:
+        await asyncio.to_thread(
+            backend.begin_generate,
+            prompt = body.prompt,
+            width = width,
+            height = height,
+            num_frames = num_frames,
+            first_frame = reference,
+            video_id = video_id,
+        )
+    except VideoShapeError as exc:
+        raise _openai_video_error(
+            400, str(exc), param = "seconds" if "frame count" in str(exc) else "size"
+        )
+    except ValueError as exc:
+        raise _openai_video_error(
+            400, str(exc), param = "input_reference" if reference is not None else None
+        )
+    except RuntimeError as exc:
+        msg = str(exc)
+        if msg == VIDEO_NOT_LOADED_MSG:
+            raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
+        if msg == VIDEO_GENERATION_BUSY_MSG:
+            raise _openai_video_error(409, msg)
+        logger.error("openai_videos.generate_failed: %s", exc, exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Video generation failed.")
+
+    presets = defaults.get("resolution_presets") or []
+    if size is None and presets:
+        width, height = int(presets[0][0]), int(presets[0][1])
+    fps = defaults.get("fps")
+    if num_frames is not None and fps:
+        seconds_text = _format_seconds(num_frames / float(fps))
+    elif seconds is None and defaults.get("num_frames") and fps:
+        seconds_text = _format_seconds(int(defaults["num_frames"]) / float(fps))
+    else:
+        seconds_text = body.seconds or "auto"
+    job = _VideoJob(
+        id = video_id,
+        created_at = int(_time.time()),
+        prompt = body.prompt,
+        model = str(status.get("repo_id") or body.model or "video"),
+        size = f"{width}x{height}" if width and height else "auto",
+        seconds = seconds_text,
+    )
+    _remember_job(job)
+    return _job_to_openai(job)
+
+
+@openai_router.get("/videos", response_model = VideoJobListResponse)
+async def openai_list_videos(
+    limit: int = Query(20, ge = 1, le = 100),
+    after: Optional[str] = None,
+    order: Literal["asc", "desc"] = "desc",
+    current_subject: str = Depends(get_current_subject),
+):
+    videos = await asyncio.to_thread(_all_videos)
+    videos.sort(key = lambda video: (video.created_at, video.id), reverse = order == "desc")
+    if after:
+        index = next((i for i, video in enumerate(videos) if video.id == after), None)
+        if index is None:
+            raise _openai_video_error(400, f"No video found with id '{after[:128]}'.", param = "after")
+        videos = videos[index + 1 :]
+    page = videos[:limit]
+    return VideoJobListResponse(
+        data = page,
+        first_id = page[0].id if page else None,
+        last_id = page[-1].id if page else None,
+        has_more = len(videos) > limit,
+    )
+
+
+@openai_router.get("/videos/{video_id}", response_model = VideoJob)
+async def openai_retrieve_video(
+    video_id: str,
+    response: Response,
+    current_subject: str = Depends(get_current_subject),
+):
+    video = await asyncio.to_thread(_lookup_video, video_id)
+    if video is None:
+        raise _not_found(video_id)
+    if video.status in ("queued", "in_progress"):
+        response.headers["openai-poll-after-ms"] = _VIDEO_POLL_AFTER_MS
+    return video
+
+
+@openai_router.get("/videos/{video_id}/content")
+async def openai_download_video_content(
+    video_id: str,
+    variant: str = "video",
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference import video_gallery
+
+    if (variant or "video").strip().lower() != "video":
+        raise _openai_video_error(
+            400, "Only the 'video' variant (the MP4) is available.", param = "variant"
+        )
+    path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
+    if path is None:
+        video = await asyncio.to_thread(_lookup_video, video_id)
+        if video is None:
+            raise _not_found(video_id)
+        if video.status == "failed":
+            raise _openai_video_error(
+                400,
+                video.error.message if video.error else "Video generation failed.",
+                code = _VIDEO_FAILED_CODE,
+            )
+        raise _openai_video_error(
+            400,
+            "Video is still generating; retrieve it until its status is 'completed'.",
+            code = "video_not_ready",
+        )
+    from fastapi.responses import FileResponse
+
+    return FileResponse(
+        path,
+        media_type = "video/mp4",
+        filename = f"{video_id}.mp4",
+        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
+@openai_router.delete("/videos/{video_id}", response_model = VideoJobDeleteResponse)
+async def openai_delete_video(video_id: str, current_subject: str = Depends(get_current_subject)):
+    from core.inference import video_gallery
+    from core.inference.video import get_video_backend
+
+    video = await asyncio.to_thread(_lookup_video, video_id)
+    if video is None:
+        raise _not_found(video_id)
+    if video.status in ("queued", "in_progress"):
+        await asyncio.to_thread(get_video_backend().cancel_generate)
+    elif await asyncio.to_thread(video_gallery.delete, video_id):
+        _forget_terminal_video(video_id)
+    with _jobs_lock:
+        _jobs.pop(video_id, None)
+    return VideoJobDeleteResponse(id = video_id)

@@ -1058,6 +1058,8 @@ class VideoBackend:
         # Which job the flag belongs to. The flag alone cannot tell "my job" from "the job that
         # replaced mine", so finalising is keyed on this. Compared by identity.
         self._generate_job_token: Optional[object] = None
+        # The OpenAI /v1/videos job id this run was started under, or None for a Studio-page run.
+        self._gen_video_id: Optional[str] = None
 
     def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
         """The device target for ``ordinal``, pinned onto the calling thread.
@@ -4978,6 +4980,7 @@ class VideoBackend:
         reference_image_size: Optional[str] = None,
         flow_shift: Optional[float] = None,
         audio_flow_shift: Optional[float] = None,
+        video_id: Optional[str] = None,
     ) -> None:
         """Validate cheaply, then run generate + gallery persist on a daemon thread.
 
@@ -5042,6 +5045,7 @@ class VideoBackend:
                 self._generate_job_token = job_token
                 # Register before the worker starts so cancellation covers the spawn window.
                 self._active_generate_cancel = cancel
+                self._gen_video_id = video_id
                 self._gen = {
                     "active": True,
                     "phase": "queued",
@@ -5067,6 +5071,7 @@ class VideoBackend:
                 seed = seed,
                 _resolved_inputs = resolved_inputs,
                 cancel_event = cancel,
+                video_id = video_id,
             ),
             daemon = True,
         )
@@ -5120,6 +5125,7 @@ class VideoBackend:
         *,
         cancel_event: threading.Event,
         job_token: Optional[object] = None,
+        video_id: Optional[str] = None,
         **gen_kwargs: Any,
     ) -> None:
         """begin_generate's worker: generate, persist to the gallery, record the
@@ -5190,6 +5196,7 @@ class VideoBackend:
                     "offload_policy": result.get("offload_policy"),
                     "created_at": created_at,
                 },
+                **({"video_id": video_id} if video_id is not None else {}),
             )
         except Exception as exc:  # noqa: BLE001 -- disk failure must reach the poller
             logger.error("video.persist_failed: %s", exc)
@@ -6089,6 +6096,8 @@ class VideoBackend:
             # generate() swaps in a bare {"active": False} before the worker records the terminal dict; report active across that gap.
             if self._generate_job_active:
                 gen["active"] = True
+            if self._gen_video_id is not None:
+                gen["video_id"] = self._gen_video_id
         gen.setdefault("active", False)
         # Mirror the image endpoint field names (total_steps / fraction) alongside the native "total": the two generate-progress APIs used to disagree.
         total = int(gen.get("total") or 0)

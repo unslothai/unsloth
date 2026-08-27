@@ -32,9 +32,14 @@ def gallery_dir() -> Path:
     return ensure_dir(studio_root() / "videos")
 
 
-def save(mp4_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
+def save(
+    mp4_bytes: bytes, meta: dict[str, Any], video_id: Optional[str] = None
+) -> dict[str, Any]:
     """Persist encoded MP4 bytes plus their recipe sidecar; return the record."""
-    video_id = uuid.uuid4().hex
+    if video_id is None:
+        video_id = uuid.uuid4().hex
+    elif not _ID_RE.match(video_id):
+        raise ValueError("Invalid video id.")
     directory = gallery_dir()
     mp4_path = directory / f"{video_id}.mp4"
     mp4_tmp = directory / f".{video_id}.mp4.tmp"
@@ -298,6 +303,15 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
     if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
         return None
     return meta
+
+
+def get_record(video_id: str) -> Optional[dict[str, Any]]:
+    if owned_video_path(video_id) is None:
+        return None
+    meta = _read_meta(_sidecar_path(video_id))
+    if meta is None:
+        return None
+    return _record(video_id, meta)
 
 
 def owned_video_path(video_id: str) -> Optional[Path]:

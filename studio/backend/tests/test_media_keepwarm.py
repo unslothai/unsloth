@@ -564,6 +564,8 @@ def test_a_path_that_is_not_a_mounted_route_is_not_tracked():
     # The Unsloth routes are mounted under /api/inference only; /v1 carries the OpenAI shape.
     assert mk.owner_for_path("/v1/images/generate") is None
     assert mk.owner_for_path("/v1/video/load") is None
+    assert mk.owner_for_path("/v1/videos/video_abc") is None
+    assert mk.owner_for_path("/v1/videos/video_abc/content") is None
 
 
 def test_every_tracked_path_is_a_route_that_is_actually_mounted():
@@ -572,6 +574,7 @@ def test_every_tracked_path_is_a_route_that_is_actually_mounted():
     # list to the routers main.py mounts, in both directions.
     from routes.inference import router as inference_router
     from routes.inference import studio_router
+    from routes.video import openai_router as video_openai_router
     from routes.video import router as video_router
 
     mounted = {
@@ -580,11 +583,15 @@ def test_every_tracked_path_is_a_route_that_is_actually_mounted():
             (inference_router, ("/api/inference", "/v1")),
             (studio_router, ("/api/inference",)),
             (video_router, ("/api/inference",)),
+            (video_openai_router, ("/api/inference", "/v1")),
         )
         for route in router.routes
         for prefix in prefixes
     }
     assert not set(mk._TRACKED_PATHS) - mounted
+    for path in ("/v1/videos", "/api/inference/videos"):
+        assert path in mounted, path
+        assert mk.owner_for_path(path) == arb.VIDEO, path
     for path in mounted:
         if ("/images/" in path or "/video/" in path) and path.rsplit("/", 1)[-1] in (
             "generate",
