@@ -2127,9 +2127,7 @@ def _visible_masks_select_no_gpu() -> bool:
     however the other reads: HIP_VISIBLE_DEVICES=0 over ROCR_VISIBLE_DEVICES=-1 still exposes
     no device. CUDA_VISIBLE_DEVICES is the HIP alias and is read only when HIP itself is unset.
     """
-    _hip = (
-        "HIP_VISIBLE_DEVICES" if "HIP_VISIBLE_DEVICES" in os.environ else "CUDA_VISIBLE_DEVICES"
-    )
+    _hip = "HIP_VISIBLE_DEVICES" if "HIP_VISIBLE_DEVICES" in os.environ else "CUDA_VISIBLE_DEVICES"
     return any(
         (os.environ.get(_mask) or "").strip() in ("", "-1")
         for _mask in ("ROCR_VISIBLE_DEVICES", _hip)
