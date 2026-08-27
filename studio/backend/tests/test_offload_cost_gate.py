@@ -164,9 +164,7 @@ def test_the_margin_is_what_decides_a_near_tie():
 
 def moe_layout(n_blocks: int = 40) -> ModelLayout:
     """A 35B-A3B-shaped MoE: most of the weight is in routed experts."""
-    blocks = tuple(
-        BlockLayout(i, int(0.47 * GIB), int(0.025 * GIB)) for i in range(n_blocks)
-    )
+    blocks = tuple(BlockLayout(i, int(0.47 * GIB), int(0.025 * GIB)) for i in range(n_blocks))
     return ModelLayout(
         arch = "qwen3moe",
         n_layers = n_blocks,
@@ -224,6 +222,6 @@ def test_the_dense_fallback_does_move_whole_layers_and_the_cache_with_them():
     assert placement is not None
     names = {g.name for g in placement.host_groups}
     assert "layers" in names, "a dense fit moves attention weights too"
-    assert any(g.name.startswith("kv") for g in placement.host_groups), (
-        "a dense fit drags the moved layers' cache to host with them"
-    )
+    assert any(
+        g.name.startswith("kv") for g in placement.host_groups
+    ), "a dense fit drags the moved layers' cache to host with them"
