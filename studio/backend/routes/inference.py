@@ -1719,9 +1719,7 @@ def _openai_llama_admission_tokens(
             estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
                 messages
             )
-            prompt_tokens = estimate_messages_tokens_dense(
-                estimate_messages
-            )
+            prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
             prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
             prompt_tokens += _openai_llama_admission_media_tokens(
                 payload,
