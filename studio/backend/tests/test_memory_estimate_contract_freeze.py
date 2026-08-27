@@ -162,9 +162,9 @@ class TestTheKvCacheEstimateEnvelope:
             repo_id = "unsloth/contract-freeze-GGUF",
             speculative_type = None,
         )
-        assert out["gpu_bytes"], (
-            "the planner did not run, so this test would pass vacuously; see _reach_the_planner"
-        )
+        assert out[
+            "gpu_bytes"
+        ], "the planner did not run, so this test would pass vacuously; see _reach_the_planner"
         assert out["gpu_bytes"] != quant_size, (
             "the planner's aggregate happens to equal the quant size in this fixture, "
             "so the two meanings are indistinguishable here; change the fixture"
