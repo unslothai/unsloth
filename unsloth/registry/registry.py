@@ -61,7 +61,11 @@ class ModelInfo:
 
     @staticmethod
     def append_quant_type(key: str, quant_type: QuantType = None):
-        if quant_type != QuantType.NONE:
+        # None is the default here, on ModelInfo.quant_type and on register_model, and
+        # it means what QuantType.NONE means: no tag. QUANT_TAG_MAP has no None key, so
+        # without this the default raises KeyError and an unquantized model cannot be
+        # constructed or registered without naming QuantType.NONE explicitly.
+        if quant_type is not None and quant_type != QuantType.NONE:
             key = "-".join([key, QUANT_TAG_MAP[quant_type]])
         return key
 
