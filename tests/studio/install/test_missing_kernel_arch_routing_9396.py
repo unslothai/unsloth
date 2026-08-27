@@ -924,8 +924,7 @@ def test_an_unmappable_uuid_declines_the_reroute_on_a_mixed_host():
     # UNSLOTH_ROCM_GFX_ARCH is the documented way through, and the message says so.
     assert f"{_AMD}/gfx110X-all/" in _run_install(
         gfx_devices = ("gfx1103", "gfx1200"),
-        env = {"ROCR_VISIBLE_DEVICES": "GPU-8d1f2e3a4b5c6d7e",
-               "UNSLOTH_ROCM_GFX_ARCH": "gfx1103"},
+        env = {"ROCR_VISIBLE_DEVICES": "GPU-8d1f2e3a4b5c6d7e", "UNSLOTH_ROCM_GFX_ARCH": "gfx1103"},
     )
 
 
@@ -974,15 +973,23 @@ def test_a_mask_mixing_an_index_and_a_uuid_keeps_the_host_ambiguous():
     """AMD documents "0,GPU-DEADBEEFDEADBEEF" as a valid mask. Judging ambiguity on the list
     left AFTER the resolvable tokens were applied can leave one arch standing and hide the
     very ambiguity the UUID created, so the question has to be asked of the original."""
-    assert _target(
-        ["gfx1103", "gfx1200"], "amd-smi",
-        {"ROCR_VISIBLE_DEVICES": "0,GPU-8d1f2e3a4b5c6d7e", "HIP_VISIBLE_DEVICES": "1"},
-    ) is None
+    assert (
+        _target(
+            ["gfx1103", "gfx1200"],
+            "amd-smi",
+            {"ROCR_VISIBLE_DEVICES": "0,GPU-8d1f2e3a4b5c6d7e", "HIP_VISIBLE_DEVICES": "1"},
+        )
+        is None
+    )
     # One arch cannot be made ambiguous by any mask over it.
-    assert _target(
-        ["gfx1103", "gfx1103"], "kfd",
-        {"ROCR_VISIBLE_DEVICES": "0,GPU-8d1f2e3a4b5c6d7e"},
-    ) == "gfx1103"
+    assert (
+        _target(
+            ["gfx1103", "gfx1103"],
+            "kfd",
+            {"ROCR_VISIBLE_DEVICES": "0,GPU-8d1f2e3a4b5c6d7e"},
+        )
+        == "gfx1103"
+    )
 
 
 def test_amd_smi_discovery_order_is_not_indexed_as_hip_order():

@@ -3197,9 +3197,7 @@ def _amd_torch_needs_dependency_pass() -> bool:
         # Both per-arch repairs are version-independent, and the host with no readable
         # version is the one they exist for: a bundled-runtime install has no system ROCm
         # to read. Requiring a version here refuses them at the door.
-        _family_repair_arm = _rocm_torch_family_needs_repair(
-            _runtime_gfx_target(_inferred_gfx)[0]
-        )
+        _family_repair_arm = _rocm_torch_family_needs_repair(_runtime_gfx_target(_inferred_gfx)[0])
         if not _inferred_arm and not _family_repair_arm:
             # Other repair arms need a readable version with a published wheel family.
             _ver = _detect_rocm_version()

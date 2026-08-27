@@ -494,7 +494,13 @@ def test_the_preflight_and_the_repair_agree(monkeypatch, label, host, expected):
 # Right wheel family, wrong architecture
 
 
-def _rocm_torch(monkeypatch, *, family, owns_sdk = None, **kw):
+def _rocm_torch(
+    monkeypatch,
+    *,
+    family,
+    owns_sdk = None,
+    **kw,
+):
     """A host whose torch IS a ROCm build.
 
     ``family`` is the AMD per-arch family it reads back as; None means unknowable.
@@ -533,9 +539,9 @@ def test_that_repair_is_reachable_with_no_readable_rocm_version(monkeypatch):
 @pytest.mark.parametrize(
     "family, gfx",
     [
-        ("gfx1152", ("gfx1152",)),      # already on its own leaf
+        ("gfx1152", ("gfx1152",)),  # already on its own leaf
         ("gfx110x-all", ("gfx1103",)),  # already on the leaf this GPU needs
-        (None, ("gfx1100",)),           # generic wheels do carry kernels for it
+        (None, ("gfx1100",)),  # generic wheels do carry kernels for it
     ],
 )
 def test_a_healthy_rocm_install_still_keeps_the_fast_path(monkeypatch, family, gfx):

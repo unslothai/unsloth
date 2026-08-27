@@ -601,7 +601,6 @@ class TestDetectRocmVersion:
 # TEST: install_python_stack.py -- _ensure_rocm_torch
 
 
-
 def _named_arch_only():
     """_infer_linux_amd_gfx_arch with the product-name half removed.
 
@@ -609,6 +608,7 @@ def _named_arch_only():
     and it is that second half a real AMD host decides. Cases naming an arch still get it;
     cases that named none get None instead of whatever board the runner happens to have."""
     return (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower() or None
+
 
 class TestEnsureRocmTorch:
     """Verify ROCm torch reinstall logic."""
