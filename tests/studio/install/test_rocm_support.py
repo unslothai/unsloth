@@ -966,8 +966,18 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = None)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = None)
+    @patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = None)
+    @patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = False)
     def test_version_unreadable_prints_warning(
-        self, mock_ver, mock_infer, mock_gpu, mock_nvidia, mock_pip, capsys
+        self,
+        _mock_owns_sdk,
+        _mock_family,
+        mock_ver,
+        mock_infer,
+        mock_gpu,
+        mock_nvidia,
+        mock_pip,
+        capsys,
     ):
         """ROCm detected but version unreadable should print warning and skip."""
         with patch("os.path.isdir", return_value = True):
@@ -1499,6 +1509,11 @@ class TestGfx906LegacyReroute:
         with (
             patch.object(stack_mod, "_kfd_gfx_targets", return_value = []),
             patch.object(stack_mod, "_infer_linux_amd_gfx_arch", _named_arch_only),
+            # No AMD per-arch wheel is installed in any of these cases. On the gfx1151
+            # runner both read a real one out of the venv, and the family gates then
+            # answer for a host none of them described.
+            patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = None),
+            patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = False),
         ):
             yield
 

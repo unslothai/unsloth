@@ -46,6 +46,8 @@ def _host(
     linux = True,
     no_torch = False,
     env = None,
+    probe_source = "kfd",
+    installed_family = None,
 ):
     """A ROCm host with a CPU wheel by default; each argument moves one thing."""
     for name in _ROUTING_ENV:
@@ -58,7 +60,21 @@ def _host(
     monkeypatch.setattr(stack.platform, "machine", lambda: machine)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: nvidia)
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: rocm_gpu and not nvidia)
-    monkeypatch.setattr(stack, "_detect_amd_gfx_codes", lambda dedup = True: list(gfx))
+
+    def _detect(dedup = True, **_kw):
+        # The real probe records which tool answered; callers read it to decide whether the
+        # list is ROCr-filtered and whether it is in the order the masks index. Leaving the
+        # global at whatever ran last makes those decisions depend on test order, and on a
+        # real AMD box on the machine. KFD sysfs is the honest label for a whole-machine list.
+        stack._LAST_AMD_GFX_PROBE = probe_source if gfx else None
+        return list(dict.fromkeys(gfx)) if dedup else list(gfx)
+
+    monkeypatch.setattr(stack, "_detect_amd_gfx_codes", _detect)
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: [], raising = False)
+    # No AMD per-arch wheel is installed unless a case says so: on the gfx1151 runner these
+    # two read a real one out of the venv and decide gates no case here described.
+    monkeypatch.setattr(stack, "_installed_rocm_wheel_family", lambda: installed_family)
+    monkeypatch.setattr(stack, "_torch_requires_rocm_sdk", lambda: installed_family is not None)
     monkeypatch.setattr(stack, "_detect_rocm_version", lambda: rocm_ver)
     monkeypatch.setattr(stack, "_infer_linux_amd_gfx_arch", lambda: inferred)
     version, hip = torch
@@ -140,9 +156,37 @@ def test_an_unreadable_torch_keeps_the_fast_path(monkeypatch, kwargs):
     assert _needs_pass() is False
 
 
-def test_a_mixed_arch_host_keeps_the_fast_path(monkeypatch):
-    _host(monkeypatch, torch = ("2.9.0+cpu", ""), gfx = ("gfx1151", "gfx1100"))
+def test_a_mixed_arch_host_keeps_the_fast_path_only_while_it_is_ambiguous(monkeypatch):
+    """Being mixed is not the same as being unreadable. Unpinned, the probe order and the
+    order the masks index can disagree and nothing resolves that, so the fast path stands.
+    Pinned, _runtime_gfx_target composes both layers and names a card, and that card's
+    generic wheel can still be the one with no kernels for it."""
+    # Ambiguous: amd-smi enumerates in discovery order and a mask indexes HIP order.
+    _host(
+        monkeypatch,
+        torch = ("2.9.0+cpu", ""),
+        gfx = ("gfx1151", "gfx1103"),
+        probe_source = "amd-smi",
+        env = {"HIP_VISIBLE_DEVICES": "1"},
+    )
     assert _needs_pass() is False
+    # Ambiguous: a UUID names a device but no position in a list of arches.
+    _host(
+        monkeypatch,
+        torch = ("2.9.0+cpu", ""),
+        gfx = ("gfx1151", "gfx1103"),
+        env = {"ROCR_VISIBLE_DEVICES": "GPU-8d1f2e3a4b5c6d7e"},
+    )
+    assert _needs_pass() is False
+    # Not ambiguous: KFD node order IS the order the mask indexes, so this names gfx1103,
+    # whose generic wheel carries no kernels for it.
+    _host(
+        monkeypatch,
+        torch = ("2.9.0+cpu", ""),
+        gfx = ("gfx1100", "gfx1103"),
+        env = {"HIP_VISIBLE_DEVICES": "1"},
+    )
+    assert _needs_pass() is True
 
 
 def test_two_cards_of_one_arch_are_not_ambiguous(monkeypatch):
@@ -578,3 +622,17 @@ def test_a_leaf_with_no_torch_floor_keeps_the_fast_path_below_211(monkeypatch):
         stack, "_probe_torch_runtime", lambda: (True, True, "2.10.0+rocm7.13.0", "7.13", "")
     )
     assert _needs_pass() is False
+
+
+def test_a_named_arch_resolves_a_host_no_ordinal_can(monkeypatch):
+    """The decline message offers UNSLOTH_ROCM_GFX_ARCH as the way through, so it has to be
+    one: the user naming the arch outright is the reading no ordinal or UUID can contradict.
+    Without it the same host stays ambiguous and keeps the fast path."""
+    _host(
+        monkeypatch,
+        torch = ("2.9.0+cpu", ""),
+        gfx = ("gfx1151", "gfx1103"),
+        probe_source = "amd-smi",
+        env = {"HIP_VISIBLE_DEVICES": "1", "UNSLOTH_ROCM_GFX_ARCH": "gfx1103"},
+    )
+    assert _needs_pass() is True

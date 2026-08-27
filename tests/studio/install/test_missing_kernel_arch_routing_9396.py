@@ -62,6 +62,11 @@ def _run_install(
     probe_source = "kfd",
 ):
     """Drive _ensure_rocm_torch() over a host with ``gfx_devices`` and return the pip calls."""
+    # The torch probe is cached for the process, and the autouse fixture clears it once per
+    # TEST. A case that drives two hosts in a row -- a repair and its control -- would
+    # otherwise judge the second by the first's torch, which reads as the control passing or
+    # failing for a reason it never set up.
+    stack_mod._invalidate_torch_runtime_probe()
     probe = MagicMock()
     probe.returncode = 0
     probe.stdout = torch_probe or _CPU_TORCH
@@ -1004,3 +1009,49 @@ def test_amd_smi_discovery_order_is_not_indexed_as_hip_order():
     # Nothing to mistranslate: one arch, or no mask indexing the list at all.
     assert _target(["gfx1200", "gfx1200"], "amd-smi", {"HIP_VISIBLE_DEVICES": "1"}) == "gfx1200"
     assert _target(["gfx1103", "gfx1200"], "amd-smi", {}) == "gfx1200"
+
+
+def test_a_named_arch_resolves_an_ordering_no_probe_can():
+    """UNSLOTH_ROCM_GFX_ARCH is what the decline message tells the user to set, so it has to
+    resolve the host it is offered for. Read from the environment, not through the product-name
+    inference, which is a weaker signal than the probe and must not decide a host the probe
+    left open."""
+    assert (
+        _target(
+            ["gfx1103", "gfx1200"],
+            "amd-smi",
+            {"HIP_VISIBLE_DEVICES": "1", "UNSLOTH_ROCM_GFX_ARCH": "gfx1103"},
+        )
+        == "gfx1103"
+    )
+    assert _target(["gfx1103", "gfx1200"], "amd-smi", {"HIP_VISIBLE_DEVICES": "1"}) is None
+
+
+@pytest.mark.parametrize(
+    "gfx, leaf",
+    [
+        ("gfx1200", "gfx120X-all"),  # RDNA 4, and the generic wheel lists it
+        ("gfx1151", "gfx1151"),  # Strix Halo, reached here when the version is unreadable
+    ],
+)
+def test_the_torch_floor_applies_to_the_family_not_to_the_missing_kernel_gate(gfx, leaf):
+    """Several floor leaves serve GPUs the generic wheel DOES carry kernels for, so gating the
+    2.11 floor on missing kernels never reaches them: the preflight forces the dependency pass
+    and this branch then declines it, and the _grouped_mm bug survives every update."""
+    calls = _run_install(
+        gfx_devices = (gfx,),
+        inferred = None,
+        rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH_210,
+        installed_family = leaf.lower(),
+    )
+    assert f"{_AMD}/{leaf}/" in calls, calls
+    assert "torch>=2.11.0,<2.12.0" in calls, calls
+    # At the floor the same host keeps its wheels, so this is the floor and not a reinstall loop.
+    assert f"{_AMD}/{leaf}/" not in _run_install(
+        gfx_devices = (gfx,),
+        inferred = None,
+        rocm_version = None,
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = leaf.lower(),
+    )

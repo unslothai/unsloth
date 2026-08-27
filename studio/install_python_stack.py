@@ -1918,6 +1918,14 @@ def _runtime_gfx_target(
         # was applied: dropping the tokens that did resolve can leave one arch standing and
         # hide the very ambiguity the UUID created, and "0,GPU-..." is a form AMD documents.
         if (_rocr_unresolved or _discovery_ordered) and _unlike_adapters:
+            # The message below offers UNSLOTH_ROCM_GFX_ARCH as the way through, so honour it
+            # here: it is the user naming the arch outright, which is the one reading no
+            # ordinal or UUID can contradict. Read from the environment rather than through
+            # inferred_linux_gfx, which also carries the product-name guess -- that is a
+            # weaker signal than the probe and must not decide a host the probe left open.
+            _named_gfx = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
+            if _named_gfx:
+                return _named_gfx, list(dict.fromkeys(gfx_devices)), physical_gfx
             _why = (
                 "ROCR_VISIBLE_DEVICES names a GPU by UUID"
                 if _rocr_unresolved
@@ -3185,8 +3193,14 @@ def _amd_torch_needs_dependency_pass() -> bool:
         _rocm_visible = _has_rocm_gpu()
         if not _rocm_visible and not _inferred_gfx:
             return False
-        # Probe and runtime mask indexing can disagree on mixed-arch hosts.
-        if len(set(_detect_amd_gfx_codes())) > 1:
+        # A mixed-arch host used to end it here, because the probe order and the order the
+        # masks index could disagree and nothing resolved that. _runtime_gfx_target now does:
+        # it composes both mask layers and returns no target ONLY when the selection is
+        # genuinely unreadable. So ask it, and keep the fast path on the answer rather than on
+        # the shape of the host -- a mixed box with HIP_VISIBLE_DEVICES naming a card is not
+        # ambiguous, and its generic wheel can still be the one with no kernels for it.
+        _selected_gfx = _runtime_gfx_target(_inferred_gfx)[0]
+        if _selected_gfx is None:
             return False
         # The inferred per-arch repair can run without a readable ROCm version.
         _inferred_arm = (
@@ -3197,7 +3211,7 @@ def _amd_torch_needs_dependency_pass() -> bool:
         # Both per-arch repairs are version-independent, and the host with no readable
         # version is the one they exist for: a bundled-runtime install has no system ROCm
         # to read. Requiring a version here refuses them at the door.
-        _family_repair_arm = _rocm_torch_family_needs_repair(_runtime_gfx_target(_inferred_gfx)[0])
+        _family_repair_arm = _rocm_torch_family_needs_repair(_selected_gfx)
         if not _inferred_arm and not _family_repair_arm:
             # Other repair arms need a readable version with a published wheel family.
             _ver = _detect_rocm_version()
@@ -3394,22 +3408,17 @@ def _ensure_rocm_torch() -> None:
         _unknown_ver_gfx = _runtime_gfx_target(None)[0]
         # A per-arch install can also outlive the GPU it was made for on a host like this:
         # swap a gfx1200 card into a box running gfx110X-all wheels and the generic index
-        # would serve it, so the clause above lets the exit stand -- and the stale-family
-        # repair below, which is the only thing that would notice, never runs. The wheels
-        # carry no gfx1200 kernels, so every later update preserves a torch that faults.
-        # Only an AMD per-arch install is inspected: _installed_rocm_wheel_family() answers
-        # None for a generic or unknowable one, which nothing here should second-guess.
-        _installed_family = _installed_rocm_wheel_family()
-        _stale_arch_family = (
-            _installed_family is not None
-            and _installed_family
-            != (_GFX_TO_AMD_INDEX_ARCH.get(_unknown_ver_gfx or "") or "").lower()
-        )
+        # would serve it, so the clause above lets the exit stand -- and the family repair
+        # below, which is the only thing that would notice, never runs. The wheels carry no
+        # gfx1200 kernels, so every later update preserves a torch that faults. The same is
+        # true of a matching family stuck below its 2.11 floor. One reading answers both, and
+        # it is the reading the setup preflight uses to decide whether to run this function at
+        # all: anything narrower here lets the pass run and then declines it.
         if (
             _rocm_pin is None
             and not _inferred_linux_gfx
             and not _generic_rocm_wheel_lacks_kernels(_unknown_ver_gfx)
-            and not _stale_arch_family
+            and not _rocm_torch_family_needs_repair(_unknown_ver_gfx)
         ):
             _safe_print("   ROCm detected but version unreadable -- skipping torch reinstall")
             return
@@ -3547,10 +3556,25 @@ def _ensure_rocm_torch() -> None:
         # its wheel carries no kernels for these targets (see _GENERIC_ROCM_WHEEL_GFX).
         if _arch_index_url is None:
             _missing_kernels = {g for g in gfx_codes if _generic_rocm_wheel_lacks_kernels(g)}
-            if _missing_kernels:
+            # A sub-2.11 build of a floor leaf is broken wherever it came from, and several of
+            # those leaves (gfx120X-all, and gfx1150/gfx1151 whenever an unreadable ROCm
+            # version leaves the Strix arm inactive) serve GPUs the generic wheel DOES list.
+            # Gating the floor on missing generic kernels therefore never reaches them: the
+            # preflight forces the pass, this block declines, and the _grouped_mm bug survives
+            # every update. The floor belongs to the family, not to the reason for the visit.
+            _runtime_leaf = _GFX_TO_AMD_INDEX_ARCH.get(_runtime_gfx or "")
+            _below_floor_on_leaf = (
+                _runtime_leaf is not None
+                and _runtime_leaf.lower() in _ROCM_GFX_TORCH211_LEAVES
+                and has_hip_torch
+                and _torch_requires_rocm_sdk()
+                and _installed_rocm_wheel_family() == _runtime_leaf.lower()
+                and _torch_below_211(_installed_torch_ver)
+            )
+            if _missing_kernels or _below_floor_on_leaf:
                 _leaf = (
-                    _GFX_TO_AMD_INDEX_ARCH.get(_runtime_gfx or "")
-                    if _generic_rocm_wheel_lacks_kernels(_runtime_gfx)
+                    _runtime_leaf
+                    if (_generic_rocm_wheel_lacks_kernels(_runtime_gfx) or _below_floor_on_leaf)
                     else None
                 )
                 # Already running on this family's wheels. The reroute below is a
