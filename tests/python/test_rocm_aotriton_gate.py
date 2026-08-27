@@ -142,14 +142,21 @@ def test_all_studio_launches_converge_on_the_main_gate():
     assert "from main import app" in source
 
 
-def test_the_installers_persist_the_gate_only_from_the_rocm_wsl_dropin():
+def test_persistence_stays_confined_to_the_pre_existing_rocm_wsl_paths():
     """Process-local by default. A shell drop-in or a registry value outlives the install,
     reaches unrelated plain-PyTorch processes, and is indistinguishable at runtime from a
-    deliberate operator opt-in. The pre-existing ROCm-on-WSL bootstrap is the one exception."""
+    deliberate operator opt-in. Two pre-existing paths write the same
+    /etc/profile.d/unsloth-rocm-wsl.sh and are left alone; nothing else may persist it."""
     install_sh = _source(_ROOT / "install.sh")
-    body = install_sh[install_sh.index("_persist_rocm_wsl_dropin() {") :]
-    body = body[: body.index("\n}\n") + 3]
-    assert install_sh.count(_GATE) == body.count(_GATE) == 2
+    dropin = install_sh[install_sh.index("_persist_rocm_wsl_dropin() {") :]
+    dropin = dropin[: dropin.index("\n}\n") + 3]
+    assert install_sh.count(_GATE) == dropin.count(_GATE) == 2
+
+    # The standalone Strix Halo bootstrap writes the same file, once, from its own heredoc.
+    strixhalo = _source(_ROOT / "scripts" / "install_rocm_wsl_strixhalo.sh")
+    assert strixhalo.count(_GATE) == 1
+    assert "/etc/profile.d/unsloth-rocm-wsl.sh" in strixhalo
+
     for name in ("install.ps1", "scripts/uninstall.sh", "scripts/uninstall.ps1"):
         assert _GATE not in _source(_ROOT / name), name
 

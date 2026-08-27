@@ -17,16 +17,16 @@ import os, importlib.util, platform, sys
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 # Torch on ROCm hides its AOTriton flash and memory-efficient SDPA kernels behind
-# TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL. With it shut every sub-quadratic backend declines
-# and SDPA falls through to MATH, which materialises the whole B x H x N x N score matrix, so
-# peak memory grows with the SQUARE of the context (#8819). Nothing on the library path opened
-# it; install.sh only does so from its ROCm-on-WSL drop-in. Torch reads the variable lazily,
-# into a function-local static in its first ROCm SDPA capability check, so this lands even when
-# the caller imported torch first, and setting it unconditionally avoids importing torch merely
-# to ask whether the host is ROCm. Torch still requires AOTriton to hold a kernel for the GPU,
-# and to call the architecture experimental, before it reads this at all, so unsupported
-# hardware is unaffected either way. `setdefault` keeps an explicit "0", which opts back out of
-# the architectures this gates and does nothing on the ones AOTriton has already promoted.
+# TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL, but only where AOTriton has an eligible kernel for
+# the GPU and still marks that architecture experimental. There, leaving the gate shut makes
+# every sub-quadratic backend decline, so SDPA falls through to MATH, which materialises the
+# whole B x H x N x N score matrix and grows peak memory with the SQUARE of the context (#8819).
+# Nothing on the library path opened it; install.sh only does so from its ROCm-on-WSL drop-in.
+# Torch reads the variable lazily, into a function-local static in its first ROCm SDPA
+# capability check, so this lands even when the caller imported torch first, and setting it
+# unconditionally avoids importing torch merely to ask whether the host is ROCm. Anything
+# outside the case above never reaches the read, so it is unaffected either way, and
+# `setdefault` keeps an explicit "0" as the opt-out for the architectures this does gate.
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
 # Transformers 4.x imports TensorFlow / Flax merely because they are installed
