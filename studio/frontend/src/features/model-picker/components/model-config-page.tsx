@@ -1997,8 +1997,12 @@ export function ModelConfigPage({
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  // Apple Silicon specifically, and used ONLY for wording: "Unified" is what
+  // Apple calls its pool, where an AMD APU's is a "Shared" one. It is NOT the
+  // right signal for the capacity question below -- see hasUnifiedMemory.
+  //
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
-  const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
+  const isAppleUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const mlxKvQuantReason = useChatRuntimeStore((s) => s.mlxKvQuantReason);
   const chatTemplateOverrideReason = useChatRuntimeStore(
@@ -2791,6 +2795,15 @@ export function ModelConfigPage({
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();
+  // Whether the GPU and the rest of the system draw on ONE pool, from the
+  // backend's per-device unified_memory flag rather than from the platform.
+  // Apple Silicon is the obvious case and a ROCm APU is the one that was being
+  // missed: both share the pool, so adding VRAM to system RAM to reach a
+  // machine-wide ceiling counts the same bytes twice.
+  //
+  // Falls back to the Apple check while the probe is still in flight, so this is
+  // never a weaker answer than the one it replaces.
+  const hasUnifiedMemory = inferenceGpu.unifiedMemory || isAppleUnifiedMemory;
   // A pin can only draw on the cards it names, so the verdict is measured against
   // those. Judging a one-card pin against a two-card total called an 8 GB load a fit
   // on 16 GB of VRAM it could not reach.
@@ -2874,7 +2887,13 @@ export function ModelConfigPage({
       hostDedicatedGpuTotalGb: inferenceGpu.dedicatedMemoryTotalGb,
       hostSharesSystemRam: inferenceGpu.sharedMemory,
       systemRamTotalGb: inferenceGpu.systemRamTotalGb,
-      unifiedMemory: isUnifiedMemory,
+      // The GENERAL signal, not the Apple-only one. A ROCm APU reports
+      // unified_memory per device and shares one pool exactly as Apple does, but
+      // reading appleSilicon here charged it as discrete VRAM PLUS host RAM --
+      // the same bytes counted twice, so the panel could report a fit that
+      // cannot happen. The Hub bar gets this right and abstains on this very
+      // flag; this is the panel catching up.
+      unifiedMemory: hasUnifiedMemory,
     });
 
   const rememberChanged = remember !== savedRemember;
@@ -3117,7 +3136,7 @@ export function ModelConfigPage({
                 // separate pool.
                 (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
               )}
-              isUnifiedMemory={isUnifiedMemory}
+              isUnifiedMemory={isAppleUnifiedMemory}
               singleMemoryPool={singleMemoryPool}
               expanded={memoryBreakdownOpen}
               onExpandedChange={setMemoryBreakdownOpen}
@@ -3186,7 +3205,7 @@ export function ModelConfigPage({
                 loadedMaxContextLength != null &&
                 contextValue > loadedMaxContextLength && (
                   <p className="text-ui-11 text-amber-500">
-                    {isUnifiedMemory ? (
+                    {isAppleUnifiedMemory ? (
                       <>
                         Exceeds what fits in unified memory (
                         {loadedMaxContextLength.toLocaleString()} tokens). The
