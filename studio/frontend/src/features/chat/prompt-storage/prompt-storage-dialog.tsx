@@ -1352,6 +1352,16 @@ type ListDraft = { name: string; items: string[] };
 const emptyPromptDraft = (): PromptDraft => ({ name: "", text: "" });
 const emptyListDraft = (): ListDraft => ({ name: "", items: ["", ""] });
 
+// Selecting the Lists tab auto-selects its first row, so the detail pane mounts
+// the editor with no click, and one controlled textarea per item makes that cost
+// grow faster than the item count: measured in Chromium, 100 items settle in
+// 247ms, 200 in 568ms, 500 in 2.5s and 2000 in 36s, against a flat 80ms on the
+// collapsed card this replaced. The backend accepts 10000 items in one list
+// (studio/backend/routes/prompts.py), which an import can produce, so past this
+// many the editor waits to be asked for. Nothing else does: save, run and export
+// all read the full items.
+const EDITOR_ROW_LIMIT = 100;
+
 function relativeTime(ts: number): string {
   const secs = Math.max(0, Math.round((Date.now() - ts) / 1000));
   if (secs < 60) return "just now";
@@ -1822,6 +1832,10 @@ function PromptListDetail({
 
   const name = draft?.name ?? entry.name;
   const items = draft?.items ?? entry.items;
+  // Keyed by row id, so this resets when another list is selected, which is
+  // what should happen: the choice is about the list in front of you.
+  const [askedForEditor, setAskedForEditor] = useState(false);
+  const editorMounted = askedForEditor || items.length <= EDITOR_ROW_LIMIT;
   const dirty = draft !== undefined;
   const savable = items.filter((t) => t.trim()).length > 0;
 
@@ -1909,19 +1923,45 @@ function PromptListDetail({
         Prompts, loaded into the composer one at a time
       </p>
       <div className="min-h-0 flex-1 overflow-y-auto pr-1 flex flex-col gap-2">
-        <SortablePromptItems
-          items={items}
-          onChange={(next) => update({ items: next })}
-          preview={preview}
-        />
-        {preview ? null : (
-          <button
-            type="button"
-            onClick={() => update({ items: [...items, ""] })}
-            className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
-          >
-            <PlusIcon className="size-3.5" />Add prompt
-          </button>
+        {editorMounted ? (
+          <>
+            <SortablePromptItems
+              items={items}
+              onChange={(next) => update({ items: next })}
+              preview={preview}
+            />
+            {preview ? null : (
+              <button
+                type="button"
+                onClick={() => update({ items: [...items, ""] })}
+                className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+              >
+                <PlusIcon className="size-3.5" />Add prompt
+              </button>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="flex flex-col gap-1.5">
+              {items.slice(0, 5).map((item, i) => (
+                <p key={i} className="flex gap-2 text-xs leading-relaxed text-muted-foreground">
+                  <span className="shrink-0 tabular-nums text-muted-foreground/40">{i + 1}.</span>
+                  <span className="line-clamp-1">{item}</span>
+                </p>
+              ))}
+            </div>
+            <p className="text-ui-11 text-muted-foreground/60">
+              {items.length - 5} more. Opening the editor for a list this long takes a
+              while, so it waits for you.
+            </p>
+            <button
+              type="button"
+              onClick={() => setAskedForEditor(true)}
+              className="flex items-center gap-1.5 self-start text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+            >
+              <PencilIcon className="size-3.5" />Edit all {items.length} prompts
+            </button>
+          </>
         )}
       </div>
       <div className="flex shrink-0 items-center gap-2 text-ui-11 text-muted-foreground/70">

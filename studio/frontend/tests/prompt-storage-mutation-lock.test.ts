@@ -279,3 +279,31 @@ test("an empty draft does not match a submitted one", () => {
   assert.equal(samePromptDraft({ name: "", text: "" }, { name: "n", text: "t" }), false);
   assert.equal(sameListDraft({ name: "", items: ["", ""] }, { name: "l", items: ["a"] }), false);
 });
+
+// Selecting the Lists tab auto-selects its first row, so the detail pane mounts
+// the editor with no click, and one controlled textarea per item makes that cost
+// grow faster than the item count. The backend takes 10000 items in one list, so
+// the editor has to be able to wait.
+test("an oversized list waits to be asked before mounting its editor", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(source, /const EDITOR_ROW_LIMIT = \d+;/);
+  const limit = Number(/const EDITOR_ROW_LIMIT = (\d+);/.exec(source)?.[1]);
+  assert.ok(limit > 0 && limit < 500, `${limit} is not a limit that avoids the freeze`);
+  assert.match(
+    source,
+    /const editorMounted = askedForEditor \|\| items\.length <= EDITOR_ROW_LIMIT;/,
+  );
+  // Deferring the editor must not narrow what a save, run or export carries.
+  for (const readsFullItems of [
+    "const filtered = items.filter((t) => t.trim());",
+    "const runnableItems = items.filter((t) => t.trim());",
+  ]) {
+    assert.ok(source.includes(readsFullItems), `truncated: ${readsFullItems}`);
+  }
+});
