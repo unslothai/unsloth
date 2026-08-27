@@ -910,3 +910,38 @@ test("a late id claims the last call a bundled delta opened", () => {
     ],
   );
 });
+
+test("two calls announced at once keep the order they were announced in", () => {
+  // Both announcements record the same position, so splicing each at that one
+  // mark put the later one first.
+  const parts = run([
+    [{ index: 0, function: { name: "A", arguments: '{"a":1}' } }],
+    [{ index: 1, function: { name: "B", arguments: '{"b":1}' } }],
+    [{ index: 0, function: { name: "C" } }],
+    [{ index: 1, function: { name: "D" } }],
+    [{ index: 0, function: { arguments: '{"c":1}' } }],
+    [{ index: 1, function: { arguments: '{"d":1}' } }],
+  ]);
+
+  assert.deepEqual(
+    parts.map((p) => p.toolName),
+    ["A", "B", "C", "D"],
+  );
+});
+
+test("a rejected resend gives up its place too", () => {
+  // The place goes with the announcement: a name read as the closed call's
+  // resent announced nothing, so the call that opens takes its arrival
+  // position, which is what the backend records for the same stream.
+  const parts = run([
+    [{ index: 0, function: { name: "A", arguments: '{"a":1}' } }],
+    [{ index: 0, function: { name: "A_long" } }],
+    [{ index: 1, function: { name: "C", arguments: '{"c":1}' } }],
+    [{ index: 0, function: { name: "B", arguments: '{"b":1}' } }],
+  ]);
+
+  assert.deepEqual(
+    parts.map((p) => p.toolName),
+    ["A", "C", "B"],
+  );
+});

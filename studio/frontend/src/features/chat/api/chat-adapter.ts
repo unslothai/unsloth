@@ -6579,32 +6579,44 @@ export function createOpenAIStreamAdapter(
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
+                  // Claimed once, whichever branch below runs: the announcement
+                  // it came from named this call and no other. A name resent
+                  // after its call closed carries metadata that the backend
+                  // merges into that call, and the id resolves to the card
+                  // already on screen, so reading the queue only when a card is
+                  // created dropped the signature the backend kept.
+                  const queued =
+                    announcedExtraByName.get(toolEvent.tool_name as string) ??
+                    [];
+                  const announcedExtra = queued.shift();
+                  if (queued.length === 0) {
+                    announcedExtraByName.delete(toolEvent.tool_name as string);
+                  }
                   if (idx !== -1) {
                     const existing = toolCallParts[
                       idx
                     ] as PositionedToolCallPart;
+                    const existingExtra = existing.extra_content;
                     toolCallParts[idx] = {
                       ...existing,
                       toolName: toolEvent.tool_name as string,
                       argsText: JSON.stringify(toolArgs),
                       args: toolArgs,
+                      ...(announcedExtra !== undefined
+                        ? {
+                            extra_content:
+                              isPlainRecord(existingExtra) &&
+                              isPlainRecord(announcedExtra)
+                                ? { ...existingExtra, ...announcedExtra }
+                                : announcedExtra,
+                          }
+                        : {}),
                       provenance: mergeToolProvenance(
                         existing.provenance,
                         toolProvenance,
                       ),
                     };
                   } else {
-                    // Claimed once: the announcement it came from named this
-                    // call and no other.
-                    const queued =
-                      announcedExtraByName.get(toolEvent.tool_name as string) ??
-                      [];
-                    const announcedExtra = queued.shift();
-                    if (queued.length === 0) {
-                      announcedExtraByName.delete(
-                        toolEvent.tool_name as string,
-                      );
-                    }
                     toolCallParts.push({
                       type: "tool-call" as const,
                       toolCallId: id,
@@ -7298,7 +7310,7 @@ export function createOpenAIStreamAdapter(
                     // delta adds to it.
                     const parked = pendingNameByIndex.get(idx) ?? "";
                     const nameFragment = call.function?.name ?? "";
-                    const announcedSlot = pendingSlotByIndex.get(idx);
+                    const parkedSlot = pendingSlotByIndex.get(idx);
                     pendingSlotByIndex.delete(idx);
                     // A parked name that repeats or extends the closed call's
                     // own is most likely that call's name resent, kept only
@@ -7320,6 +7332,11 @@ export function createOpenAIStreamAdapter(
                       );
                     const pendingName =
                       parkedIsResend && parkedDisagrees ? "" : parked;
+                    // The place goes with the announcement. A name read as the
+                    // closed call's resent announced nothing, so the call
+                    // opening here takes the position its arguments arrived at.
+                    const announcedSlot =
+                      pendingName === parked ? parkedSlot : undefined;
                     const freshName = !nameFragment
                       ? pendingName
                       : nameFragment.startsWith(pendingName)
@@ -7411,6 +7428,19 @@ export function createOpenAIStreamAdapter(
                     // the order the backend runs them.
                     if (announcedSlot) {
                       toolCallParts.splice(announcedSlot.at, 0, fresh, ...born);
+                      // Another index can be waiting on the same position,
+                      // having been announced when the list was this long. It
+                      // was announced later, so it belongs after this one, and
+                      // splicing both at the one mark reversed them.
+                      const inserted = 1 + born.length;
+                      for (const [waitingIdx, slot] of pendingSlotByIndex) {
+                        if (slot.at >= announcedSlot.at) {
+                          pendingSlotByIndex.set(waitingIdx, {
+                            ...slot,
+                            at: slot.at + inserted,
+                          });
+                        }
+                      }
                     } else {
                       toolCallParts.push(fresh, ...born);
                     }
