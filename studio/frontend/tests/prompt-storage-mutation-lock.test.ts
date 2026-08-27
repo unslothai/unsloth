@@ -128,3 +128,32 @@ test("list drafts compare by items, not by identity", () => {
   );
   assert.equal(sameListDraft({ name: "l", items: ["a"] }, submitted), false);
 });
+
+// Creating a row cannot use the by-id lock, because the id does not exist until
+// the request is built. Both New forms awaited an unguarded PUT: a second click
+// minted a second id and stored a duplicate, and a rejection was unhandled, so a
+// failed create looked exactly like a successful one.
+test("both create paths are guarded and report failure", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.equal(
+    source.split("const { creating, create } = useCreateGuard();").length - 1,
+    2,
+    "a New form can still start a second create over the first",
+  );
+  assert.equal(
+    source.split("disabled={creating ").length - 1,
+    2,
+    "a Save button stays live while its create is in flight",
+  );
+  for (const message of ["Could not create prompt", "Could not create list"]) {
+    assert.ok(source.includes(message), `a failed create is silent: ${message}`);
+  }
+  // The ref decides, for the reason the mutation lock's does.
+  assert.match(source, /if \(creatingRef\.current\) return;/);
+});

@@ -1677,6 +1677,29 @@ function PromptDetail({
   );
 }
 
+// A create has no row id yet, so it cannot use the by-id mutation lock above.
+// The ref is the authority for the same reason it is there: React state is not
+// readable straight after scheduling it.
+function useCreateGuard(): {
+  creating: boolean;
+  create: (fn: () => Promise<void>) => Promise<void>;
+} {
+  const creatingRef = useRef(false);
+  const [creating, setCreating] = useState(false);
+  const create = useCallback(async (fn: () => Promise<void>) => {
+    if (creatingRef.current) return;
+    creatingRef.current = true;
+    setCreating(true);
+    try {
+      await fn();
+    } finally {
+      creatingRef.current = false;
+      setCreating(false);
+    }
+  }, []);
+  return { creating, create };
+}
+
 // Draft lives in the parent, like the edit drafts: selecting a row hides this
 // form, and local state would be discarded with it.
 function NewPromptForm({
@@ -1695,25 +1718,39 @@ function NewPromptForm({
   const { name, text } = draft;
   const setName = (value: string) => onDraftChange({ ...draft, name: value });
   const setText = (value: string) => onDraftChange({ ...draft, text: value });
+  const { creating, create } = useCreateGuard();
 
-  const handleSave = useCallback(async () => {
-    const trimText = text.trim();
-    if (!trimText) return;
-    const ts = now();
-    const id = newId();
-    await savePromptEntry({
-      id,
-      name: name.trim() || "Untitled Prompt",
-      text: trimText,
-      createdAt: ts,
-      updatedAt: ts,
-    });
-    // Await the refresh first, or the keep-a-row-selected effect runs against a
-    // list without the new id and bounces the selection off it.
-    await onRefresh();
-    onCreated(id);
-    onClose();
-  }, [name, text, onClose, onRefresh, onCreated]);
+  const handleSave = useCallback(
+    () =>
+      create(async () => {
+        const trimText = text.trim();
+        if (!trimText) return;
+        const ts = now();
+        const id = newId();
+        try {
+          await savePromptEntry({
+            id,
+            name: name.trim() || "Untitled Prompt",
+            text: trimText,
+            createdAt: ts,
+            updatedAt: ts,
+          });
+        } catch (err) {
+          // Without this the rejection is unhandled and the form just sits
+          // there, so the prompt looks saved until the dialog is reopened.
+          toast.error("Could not create prompt", {
+            description: err instanceof Error ? err.message : "Please try again.",
+          });
+          return;
+        }
+        // Await the refresh first, or the keep-a-row-selected effect runs
+        // against a list without the new id and bounces the selection off it.
+        await onRefresh();
+        onCreated(id);
+        onClose();
+      }),
+    [name, text, create, onClose, onRefresh, onCreated],
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
@@ -1735,7 +1772,7 @@ function NewPromptForm({
         <Button size="sm" variant="ghost" onClick={onClose}>
           <XIcon className="size-3.5 mr-1" />Cancel
         </Button>
-        <Button size="sm" onClick={handleSave} disabled={!text.trim()}>
+        <Button size="sm" onClick={handleSave} disabled={creating || !text.trim()}>
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save Prompt
         </Button>
       </div>
@@ -1955,24 +1992,37 @@ function NewPromptListForm({
   const { name, items } = draft;
   const setName = (value: string) => onDraftChange({ ...draft, name: value });
   const setItems = (value: string[]) => onDraftChange({ ...draft, items: value });
+  const { creating, create } = useCreateGuard();
 
-  const handleSave = useCallback(async () => {
-    const filtered = items.filter((t) => t.trim());
-    if (filtered.length === 0) return;
-    const ts = now();
-    const id = newId();
-    await savePromptList({
-      id,
-      name: name.trim() || "Untitled List",
-      items: filtered,
-      createdAt: ts,
-      updatedAt: ts,
-    });
-    // See NewPromptForm: select only once the refreshed list contains the id.
-    await onRefresh();
-    onCreated(id);
-    onClose();
-  }, [name, items, onClose, onRefresh, onCreated]);
+  const handleSave = useCallback(
+    () =>
+      create(async () => {
+        const filtered = items.filter((t) => t.trim());
+        if (filtered.length === 0) return;
+        const ts = now();
+        const id = newId();
+        try {
+          await savePromptList({
+            id,
+            name: name.trim() || "Untitled List",
+            items: filtered,
+            createdAt: ts,
+            updatedAt: ts,
+          });
+        } catch (err) {
+          // See NewPromptForm: an unhandled rejection reads as a saved list.
+          toast.error("Could not create list", {
+            description: err instanceof Error ? err.message : "Please try again.",
+          });
+          return;
+        }
+        // See NewPromptForm: select only once the refreshed list contains the id.
+        await onRefresh();
+        onCreated(id);
+        onClose();
+      }),
+    [name, items, create, onClose, onRefresh, onCreated],
+  );
 
   const addItem = () => setItems([...items, ""]);
 
@@ -2006,7 +2056,7 @@ function NewPromptListForm({
         <Button
           size="sm"
           onClick={handleSave}
-          disabled={items.filter((t) => t.trim()).length === 0}
+          disabled={creating || items.filter((t) => t.trim()).length === 0}
         >
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save Prompt List
         </Button>
