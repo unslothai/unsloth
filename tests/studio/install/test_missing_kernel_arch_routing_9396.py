@@ -803,3 +803,50 @@ def test_a_stale_family_is_repaired_when_no_generic_tag_resolves():
         installed_family = "gfx110x-all",
     )
     assert f"{_AMD}/gfx120X-all/" in calls, calls
+
+
+# ── the routes a second, independent reading has to survive ───────────────────
+
+
+@pytest.mark.parametrize("probe", [(), ("gfx1103",)])
+def test_an_unreadable_rocm_version_still_routes_a_missing_kernel_arch(probe):
+    """A host running the wheels' own bundled ROCm has no /opt/rocm version to read. The
+    missing-kernel reroute has no version floor to begin with -- whichever generic index a
+    version would have picked ships no kernels for these arches -- so returning early on an
+    unreadable version leaves the GPU on a wheel that faults, which is the whole defect."""
+    calls = _run_install(
+        gfx_devices = probe, kfd = ("gfx1103",), rocm_version = None, inferred = None,
+    )
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+@pytest.mark.parametrize("mask", ["", "-1"])
+def test_an_empty_rocr_mask_under_a_named_hip_mask_still_selects_no_gpu(mask):
+    """ROCr filters BENEATH HIP, so the two masks intersect: HIP naming device 0 over a ROCr
+    mask that exposes nothing leaves nothing to target however HIP reads it. Checking only
+    the first mask that is set force-reinstalls a multi-GB per-arch stack for a GPU the user
+    hid."""
+    calls = _run_install(
+        gfx_devices = ("gfx1103",),
+        env = {"HIP_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": mask},
+    )
+    assert _AMD not in calls, calls
+    # A mask that does name a device is untouched, so the guard is scoped to a hidden GPU.
+    assert f"{_AMD}/gfx110X-all/" in _run_install(
+        gfx_devices = ("gfx1103",), env = {"HIP_VISIBLE_DEVICES": "0"},
+    )
+
+
+def test_keeping_the_matching_wheels_also_clears_a_confirmed_spoof():
+    """Keeping the wheels is not keeping the status quo. They carry the PHYSICAL arch alone,
+    so a confirmed spoof left set has ROCr keep naming the runtime the one arch those wheels
+    have no code for (#7331) -- the first allocation fails exactly as it did before. The
+    reinstall arm clears it for that reason; the skip arm needs it just as much."""
+    calls = _run_install(
+        gfx_devices = ("gfx1100",), inferred = "gfx1152", kfd = ("gfx1152",),
+        rocm_version = None, torch_probe = _ROCM_ARCH_TORCH, installed_family = "gfx1152",
+        env = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+    )
+    assert f"{_AMD}/gfx1152/" not in calls, calls
+    assert "torch already runs on the gfx1152 wheels" in _run_install.printed
+    assert _run_install.hsa_override_after is None, _run_install.hsa_override_after

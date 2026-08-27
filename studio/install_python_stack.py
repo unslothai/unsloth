@@ -1847,16 +1847,16 @@ def _runtime_gfx_target(
     kernels for this GPU, the exact failure they are there to repair.
     """
     # An explicitly empty (or "-1") mask selects NO GPU, which _visible_devices_pinned
-    # documents as a deliberate choice rather than an unset variable. Decided before any
-    # probe runs, because no probe is filtered the way the reroutes below would need:
+    # documents as a deliberate choice rather than an unset variable, and ROCr filtering
+    # beneath HIP means either layer alone can empty the host. Decided before any probe
+    # runs, because no probe is filtered the way the reroutes below would need:
     # only ROCR_VISIBLE_DEVICES reaches rocminfo, amd-smi reads the driver and is filtered
     # by none, and KFD sysfs by none either. So with an empty HIP/CUDA mask rocminfo still
     # lists every card, with an empty ROCR mask amd-smi does, and _pick_visible_index then
     # maps the no-GPU mask onto index 0 -- force-reinstalling a multi-GB per-arch stack for
     # the very GPU the user hid. Returning no target keeps the generic index instead; a
     # mask naming a device is unaffected, and the host still gets ROCm torch.
-    _mask = _first_set_visible_mask()
-    if _mask is not None and (os.environ.get(_mask) or "").strip() in ("", "-1"):
+    if _visible_masks_select_no_gpu():
         return None, [], None
     gfx_devices = _detect_amd_gfx_codes(dedup = False)
     # Keyed to the userland probe: ROCr spoofs that reading and no other.
@@ -2118,6 +2118,23 @@ def _clear_confirmed_hsa_spoof(physical_gfx: str) -> None:
 
 # First-set-wins order, as _pick_visible_index documents below.
 _VISIBLE_DEVICE_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+
+
+def _visible_masks_select_no_gpu() -> bool:
+    """True when a set visible-device mask exposes NO GPU, at either layer.
+
+    ROCr filters BENEATH HIP, so an empty or -1 mask on either one leaves nothing to target
+    however the other reads: HIP_VISIBLE_DEVICES=0 over ROCR_VISIBLE_DEVICES=-1 still exposes
+    no device. CUDA_VISIBLE_DEVICES is the HIP alias and is read only when HIP itself is unset.
+    """
+    _hip = (
+        "HIP_VISIBLE_DEVICES" if "HIP_VISIBLE_DEVICES" in os.environ else "CUDA_VISIBLE_DEVICES"
+    )
+    return any(
+        (os.environ.get(_mask) or "").strip() in ("", "-1")
+        for _mask in ("ROCR_VISIBLE_DEVICES", _hip)
+        if _mask in os.environ
+    )
 
 
 def _first_set_visible_mask() -> "str | None":
@@ -3080,16 +3097,9 @@ def _amd_torch_needs_dependency_pass() -> bool:
             return False
         if _has_usable_nvidia_gpu():
             return False
-        # ROCr filters beneath HIP, so a hidden layer either side leaves no target to
-        # classify. CUDA_VISIBLE_DEVICES is the HIP alias, read only when HIP is unset.
-        _hip_mask = (
-            "HIP_VISIBLE_DEVICES" if "HIP_VISIBLE_DEVICES" in os.environ else "CUDA_VISIBLE_DEVICES"
-        )
-        if any(
-            (os.environ.get(_mask) or "").strip() in ("", "-1")
-            for _mask in ("ROCR_VISIBLE_DEVICES", _hip_mask)
-            if _mask in os.environ
-        ):
+        # A hidden layer either side leaves no target to classify. Same reading the routing
+        # guard uses, so the two can never drift.
+        if _visible_masks_select_no_gpu():
             return False
         # Match the repair's two host signals: a visible GPU or an inferred/named arch.
         _inferred_gfx = _infer_linux_amd_gfx_arch()
@@ -3248,7 +3258,16 @@ def _ensure_rocm_torch() -> None:
 
     ver = _detect_rocm_version()
     if ver is None:
-        if _rocm_pin is None and not _inferred_linux_gfx:
+        # A host running the wheels' own bundled ROCm has no system metadata to read the
+        # version from, and that is the same host the missing-kernel route exists for. That
+        # route has no version floor by design, so returning here on an arch the generic wheel
+        # cannot serve refuses the repair at the door. Resolving the target twice is confined
+        # to this branch, which only a host with no readable ROCm version reaches at all.
+        if (
+            _rocm_pin is None
+            and not _inferred_linux_gfx
+            and not _generic_rocm_wheel_lacks_kernels(_runtime_gfx_target(None)[0])
+        ):
             _safe_print("   ROCm detected but version unreadable -- skipping torch reinstall")
             return
         # Explicit pin or inferred gfx: the index drives the install.
@@ -3421,6 +3440,12 @@ def _ensure_rocm_torch() -> None:
                         f"   torch already runs on the {_leaf} wheels {_runtime_gfx} needs; "
                         f"keeping it.\n"
                     )
+                    # Keeping the wheels is not keeping the status quo: they carry the PHYSICAL
+                    # arch alone, so a confirmed spoof left set has the runtime keep reporting
+                    # the one arch those wheels have no code for (#7331). The reinstall arm
+                    # clears it for exactly this reason; the skip needs it just as much.
+                    if _physical_gfx is not None:
+                        _clear_confirmed_hsa_spoof(_runtime_gfx)
                 elif _leaf is not None:
                     _arch_index_url = _amd_arch_index_url(_runtime_gfx)
                     # Keep older per-arch builds valid while bounding companion versions,
