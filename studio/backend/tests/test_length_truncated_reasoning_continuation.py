@@ -583,3 +583,87 @@ def test_a_stall_does_not_eat_the_tool_budget(monkeypatch):
     _run(backend, max_tool_iterations = 1, nudge_tool_calls = True)
 
     assert calls == ["web_search"], "the stall spent the one tool iteration"
+
+
+def test_the_final_pass_blames_the_cap_when_the_cap_is_what_was_spent(monkeypatch):
+    """The in-loop give-up already told these two walls apart; this pass did not.
+
+    A caller-set Max Tokens smaller than the window leaves no remainder to continue with,
+    so the final pass gives up here. Naming the CONTEXT window then sends the user to
+    raise the one setting that was never the constraint, and this text reaches the client
+    as ordinary content, so nothing downstream can correct it.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"reasoning_content": _LONG_THOUGHT}), _finish("length"), _done()]],
+        payloads,
+    )
+
+    events = _run_no_tools(backend, max_tokens = 200)
+
+    assert len(payloads) == 1, "a spent cap has nothing left to continue with"
+    text = "".join(_texts(events, "content"))
+    assert "output allowance of 200 tokens" in text
+    assert "window on reasoning" not in text
+
+
+def test_the_final_pass_still_blames_the_window_when_no_cap_was_set(monkeypatch):
+    """The other side of the same fork, so the fix above cannot swallow the window case."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"reasoning_content": _LONG_THOUGHT}), _finish("length"), _done()]
+            for _ in range(_MAX_LENGTH_CONTINUATIONS + 2)
+        ],
+        payloads,
+    )
+
+    events = _run_no_tools(backend)
+
+    text = "".join(_texts(events, "content"))
+    assert "4096-token window on reasoning" in text
+    assert "output allowance" not in text
+
+
+def test_the_final_pass_retry_is_admitted_under_the_kwargs_it_will_be_sent_with(
+    monkeypatch,
+):
+    """Admission has to price the prompt that is actually about to be sent.
+
+    The retry goes out with thinking OFF, which renders a different prompt from the
+    thinking-on kwargs the turn started with. Counting the candidate under the original
+    kwargs measures a prompt nobody sends: it refuses a retry that would have fit, or
+    admits one llama-server then rejects.
+    """
+
+    seen: list[object] = []
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"reasoning_content": _LONG_THOUGHT}), _finish("length"), _done()],
+            [_sse({"content": "Here is the answer."}), _done()],
+        ],
+        payloads,
+    )
+
+    real_count = backend.count_chat_tokens
+
+    def recording_count(*args, **kwargs):
+        seen.append(kwargs.get("chat_template_kwargs"))
+        return real_count(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "count_chat_tokens", recording_count)
+
+    events = _run_no_tools(backend)
+
+    assert len(payloads) == 2, "the retry was refused"
+    assert payloads[1]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert {"enable_thinking": False} in seen, (
+        "the retry was admitted under kwargs it is not sent with"
+    )
+    assert "Here is the answer." in "".join(_texts(events, "content"))

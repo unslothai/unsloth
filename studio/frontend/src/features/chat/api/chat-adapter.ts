@@ -7442,10 +7442,15 @@ export function createOpenAIStreamAdapter(
           const msg = err instanceof Error ? err.message : String(err);
           if (err instanceof GenerationLengthError) {
             toast.error("Response ran out of tokens", {
+              // The error already chose between the Max Tokens and Context Length
+              // remedies from the cap and the prompt size. Repeating the Max Tokens
+              // advice here overrode that choice in the one place the user reads,
+              // sending them to a setting that is already at its maximum.
               description:
+                msg ||
                 "The model used the full Max Tokens budget while thinking " +
-                "and did not produce a final answer. Increase Max Tokens in " +
-                "chat Settings or turn off thinking, then retry.",
+                  "and did not produce a final answer. Increase Max Tokens in " +
+                  "chat Settings or turn off thinking, then retry.",
               duration: 8000,
             });
           } else if (err instanceof ChatGenerationTerminalError) {

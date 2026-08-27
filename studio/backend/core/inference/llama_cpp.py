@@ -1301,6 +1301,10 @@ _MIN_USEFUL_RESULT_TOKENS = 64
 # guard would have watched the whole thing happen.
 _MAX_IDENTICAL_TOOL_RESULTS = 3
 
+# Separates "no kwargs were passed" from "None was passed", which is itself a real
+# reasoning-kwargs value meaning send no chat_template_kwargs at all.
+_UNSET = object()
+
 
 # The tail `_fit_result_to_room` appends when a result did not fit. A result carrying it
 # is the WINDOW's answer, not the tool's, so two calls with different arguments that both
@@ -28419,9 +28423,15 @@ class LlamaCppBackend:
                                         if _n_roomier:
                                             conversation[:] = _roomier
                                             try:
+                                                # With the same stand-in reply the initial
+                                                # sizing used. Without it, this call's own
+                                                # arguments vanish from the count on the
+                                                # templates that render a call only once a
+                                                # reply follows, and the room they occupy
+                                                # is handed to the result.
                                                 _spent_after = self.count_chat_tokens(
                                                     neutralize_control_markup_in_messages(
-                                                        conversation,
+                                                        [*conversation, _size_probe],
                                                         _markup_cache,
                                                         self.markup_profile,
                                                     ),
@@ -29027,7 +29037,9 @@ class LlamaCppBackend:
             ).get("completion_tokens", 0) or int(stream_payload.get("max_tokens") or 0)
             return max(0, max_tokens - _accumulated_completion_tokens - _this_attempt)
 
-        def _continuation_would_be_served(candidate_messages, continue_flag: bool) -> bool:
+        def _continuation_would_be_served(
+            candidate_messages, continue_flag: bool, reasoning_kw = _UNSET
+        ) -> bool:
             """Whether the retry's own prompt still fits, now that the partial is in it.
 
             The first pass reached `finish_reason: length` by consuming the physical
@@ -29047,7 +29059,11 @@ class LlamaCppBackend:
                     None,
                     None,
                     strict = True,
-                    chat_template_kwargs = stream_payload.get("chat_template_kwargs"),
+                    chat_template_kwargs = (
+                        stream_payload.get("chat_template_kwargs")
+                        if reasoning_kw is _UNSET
+                        else reasoning_kw
+                    ),
                     continue_final_message = continue_flag,
                 )
             except Exception:
@@ -29330,9 +29346,17 @@ class LlamaCppBackend:
                             _candidate_r = neutralize_control_markup_in_messages(
                                 _candidate_r, None, self.markup_profile
                             )
+                            # The retry runs with thinking OFF, so it has to be ADMITTED
+                            # with thinking off too. Counting the candidate under the
+                            # original thinking-on kwargs prices a different rendered
+                            # prompt from the one about to be sent, which refuses a retry
+                            # that would have fit or admits one llama-server then rejects.
+                            _off_kw = self._request_reasoning_kwargs(
+                                False, None, preserve_thinking
+                            )
                             _next_cap_r = _remaining_output_budget()
                             if _next_cap_r != 0 and _continuation_would_be_served(
-                                _candidate_r, False
+                                _candidate_r, False, _off_kw
                             ):
                                 stream_payload["messages"] = _candidate_r
                                 # The retry ends on a USER turn, so the flag from any
@@ -29340,9 +29364,6 @@ class LlamaCppBackend:
                                 stream_payload.pop("continue_final_message", None)
                                 if _next_cap_r is not None:
                                     stream_payload["max_tokens"] = _next_cap_r
-                                _off_kw = self._request_reasoning_kwargs(
-                                    False, None, preserve_thinking
-                                )
                                 if _off_kw is not None:
                                     stream_payload["chat_template_kwargs"] = _off_kw
                                 else:
@@ -29367,8 +29388,16 @@ class LlamaCppBackend:
                                 yield {"type": "status", "text": ""}
                                 yield {
                                     "type": "content",
-                                    "text": _thinking_exhausted_message(
-                                        self._effective_context_length
+                                    # Same distinction the in-loop give-up makes. A spent
+                                    # output cap is not the context window, and this text
+                                    # reaches the client as ordinary content, so naming
+                                    # the wrong lever here is the last word the user gets.
+                                    "text": (
+                                        _reasoning_cap_spent_message(max_tokens)
+                                        if _next_cap_r == 0
+                                        else _thinking_exhausted_message(
+                                            self._effective_context_length
+                                        )
                                     ),
                                 }
                                 _meta = _build_metadata_event(

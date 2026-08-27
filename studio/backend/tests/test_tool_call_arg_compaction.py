@@ -163,6 +163,40 @@ def test_a_batch_of_small_edits_is_compacted_on_its_total():
     assert len(_args(fitted)) < before // 2
 
 
+def test_one_large_edit_beside_many_small_ones_still_compacts_all_of_them():
+    """The mode was chosen from the LARGEST leaf, so a mixed batch stayed in per-leaf mode.
+
+    One 1100-character edit beside fifty 800-character ones cleared the per-leaf floor on
+    the strength of the single big leaf, compacted only that leaf, and replayed the other
+    forty-odd kilobytes verbatim. A batched refactor produces exactly this shape.
+    """
+    edits = [{"old_string": "X" * 1100, "new_string": "Y" * 1100}]
+    edits += [
+        {"old_string": f"a{i:03d}" + "m" * 795, "new_string": f"b{i:03d}" + "n" * 795}
+        for i in range(50)
+    ]
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_call("c1", "edit_file", path = "a.py", edits = edits)],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": "edit_file", "content": "Applied 51 edits"},
+    ]
+
+    def _args(msgs):
+        return msgs[0]["tool_calls"][0]["function"]["arguments"]
+
+    before = len(_args(messages))
+    assert before > 80_000, "fixture must be the size the replay actually costs"
+
+    fitted, compacted = compact_completed_tool_arguments(messages)
+
+    assert compacted == 1
+    # Per-leaf mode leaves the fifty small edits whole, which is over half the payload.
+    assert len(_args(fitted)) < before // 4
+
+
 def test_a_thread_with_no_tool_calls_is_returned_untouched():
     messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
 

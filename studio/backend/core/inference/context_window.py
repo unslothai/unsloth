@@ -482,10 +482,14 @@ def _compacted_arguments(
     # prompt permanently -- the pre-execution gate then had nothing to reclaim and refused
     # a turn it could have served. The floor exists so a receipt is not bigger than what
     # it replaces, and the final size check below still enforces that.
+    # Chosen from the TOTAL, not the largest leaf. Keying on the largest meant one
+    # 1100-character edit beside fifty 800-character ones stayed in per-leaf mode and
+    # compacted only the first, leaving about 40 KB replayed -- the mixed payload is
+    # exactly the shape a batched refactor produces.
     _leaf_floor = (
-        _ARG_COMPACTION_FLOOR_CHARS
-        if _largest_leaf(parsed) >= _ARG_COMPACTION_FLOOR_CHARS
-        else _ARG_COMPACTION_AGGREGATE_LEAF_FLOOR
+        _ARG_COMPACTION_AGGREGATE_LEAF_FLOOR
+        if _total_leaves(parsed) >= _ARG_COMPACTION_TOTAL_FLOOR_CHARS
+        else _ARG_COMPACTION_FLOOR_CHARS
     )
 
     def _shrink(value: Any, key: str = "") -> Any:

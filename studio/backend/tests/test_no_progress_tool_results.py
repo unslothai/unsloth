@@ -30,6 +30,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+import core.inference.llama_cpp as llama_cpp_module
 from core.inference.llama_cpp import _MAX_IDENTICAL_TOOL_RESULTS, LlamaCppBackend
 
 _TRUNCATION_NOTICE = "(truncated to 0 chars for the model; showing lines 1-11 of 63.)"
@@ -327,3 +328,68 @@ def test_a_result_the_window_actually_cut_is_still_called_starved(monkeypatch):
 
     assert any(_TRUNCATION_NOTICE in r for r in results)
     assert any(r != _TRUNCATION_NOTICE for r in results), "the nudge was not added"
+
+
+def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
+    """Both counts have to price the SAME prompt, or the rescue gives away real room.
+
+    The initial sizing appends an empty `tool` stand-in because Qwen-style templates render
+    an assistant tool call only once a reply follows it. The rescue re-count after
+    compaction did not, so on those templates this call's own arguments dropped out of the
+    total and the room they occupy was handed to the result -- the exact overcount the
+    stand-in exists to prevent, reintroduced on the path that was meant to fix it.
+    """
+
+    counted: list[list] = []
+
+    def fake_count(messages, *_args, **_kwargs):
+        counted.append(list(messages))
+        # Under the prompt budget, so the pre-execution fit leaves the calls alone and
+        # there is still something for the rescue to compact, but close enough to it that
+        # the result prices under _MIN_USEFUL_RESULT_TOKENS, which is what triggers it.
+        return 3050
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_call("read it"), _done()], [_sse({"content": "Here it is."}), _done()]],
+        payloads,
+    )
+    monkeypatch.setattr(backend, "count_chat_tokens", fake_count)
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "contents")
+
+    rescued: list[int] = []
+    real_compact = llama_cpp_module.compact_completed_tool_arguments
+
+    def spy_compact(messages, *args, **kwargs):
+        fitted, n = real_compact(messages, *args, **kwargs)
+        if kwargs.get("protect_last") and n:
+            rescued.append(n)
+        return fitted, n
+
+    monkeypatch.setattr(llama_cpp_module, "compact_completed_tool_arguments", spy_compact)
+
+    # Two finished calls, because the rescue protects the newest one: with a single
+    # completed call there is nothing left for it to compact and it never re-counts.
+    _thread = _thread_with_a_big_completed_call()
+    _older = copy.deepcopy(_thread[1:3])
+    _older[0]["tool_calls"][0]["id"] = "c0"
+    _older[1]["tool_call_id"] = "c0"
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [_thread[0], *_older, *_thread[1:]],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 4,
+        )
+    )
+
+    assert rescued, "the rescue never ran, so this asserts nothing"
+    ends_on_the_call = [
+        messages
+        for messages in counted
+        if messages and messages[-1].get("role") == "assistant" and messages[-1].get("tool_calls")
+    ]
+    assert not ends_on_the_call, (
+        "a prompt was priced with the pending call's own arguments rendered away"
+    )

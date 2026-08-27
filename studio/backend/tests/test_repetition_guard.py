@@ -102,3 +102,68 @@ def test_a_genuine_echo_of_the_same_window_is_still_caught():
     text = "Let me check the file once more to be sure of its contents.\n" * 40
 
     assert is_repetition_dominated(text) is True
+
+
+def test_the_scan_does_not_grow_with_the_length_of_the_fragment():
+    """The scan kept one 60-character slice per starting offset.
+
+    An 800,000-character fragment therefore held roughly 180 MB of substrings alive, on a
+    path whose only job is to decide whether to send one more continuation. What is
+    asserted is the SHAPE, not a byte count: doubling the fragment must not double the
+    cost. Before the bound it did, exactly.
+    """
+    import tracemalloc
+
+    from core.inference import repetition_guard
+
+    def peak_for(lines: int) -> int:
+        text = "".join(
+            f"unique line number {index:07d} of prose\n" for index in range(lines)
+        )
+        tracemalloc.start()
+        try:
+            assert repetition_guard.is_repetition_dominated(text) is False
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    small = peak_for(20_000)
+    large = peak_for(40_000)
+
+    assert large < small * 1.3, (
+        f"twice the fragment cost {large} bytes against {small}"
+    )
+
+
+def test_the_window_cap_cannot_turn_a_clean_fragment_into_a_refusal():
+    """Past the cap new windows are ignored, which can only fail OPEN. Proven, not assumed."""
+    from core.inference import repetition_guard
+
+    text = "".join(f"unique line number {index:07d} of prose\n" for index in range(20_000))
+
+    assert repetition_guard.is_repetition_dominated(text) is False
+    assert repetition_guard._MAX_TRACKED_WINDOWS < len(text)
+
+
+def test_two_different_windows_sharing_a_hash_are_not_counted_as_a_repeat():
+    """Counting by hash is only safe if a collision cannot stand in for a repeat."""
+    from core.inference import repetition_guard
+
+    collide = {}
+    real_hash = hash
+
+    def everything_collides(value):
+        collide[value] = True
+        return 1234
+
+    original = repetition_guard.hash if hasattr(repetition_guard, "hash") else None
+    repetition_guard.hash = everything_collides
+    try:
+        text = "".join(f"unique line number {index:07d} of prose\n" for index in range(200))
+        assert repetition_guard.is_repetition_dominated(text) is False
+    finally:
+        if original is None:
+            del repetition_guard.hash
+        else:
+            repetition_guard.hash = original
+    assert real_hash("x") == real_hash("x")
