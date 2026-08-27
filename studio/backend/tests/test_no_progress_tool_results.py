@@ -531,6 +531,4 @@ def test_a_resumed_turn_sizes_its_recall_by_what_is_left(monkeypatch):
         )
     )
 
-    assert 1000 not in caps, (
-        f"a resumed turn sized its recall against the whole cap: {caps}"
-    )
+    assert 1000 not in caps, f"a resumed turn sized its recall against the whole cap: {caps}"
