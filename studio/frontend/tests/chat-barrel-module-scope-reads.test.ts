@@ -46,12 +46,18 @@ const BARREL = "@/features/chat";
  * is uninitialized, so flagging a module-scope mention of `chat` is exactly
  * right.
  */
-function barrelValueNames(source: ts.SourceFile): Set<string> {
+function barrelValueNames(
+  source: ts.SourceFile,
+  // A local module that re-exports barrel values hands out the same live ESM
+  // bindings, so importing from it is importing from the barrel. Callers that
+  // have the module graph pass a predicate; the default is the direct case.
+  carriesBarrelValues: (specifier: string) => boolean = (s) => s === BARREL,
+): Set<string> {
   const names = new Set<string>();
   for (const statement of source.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
     const specifier = statement.moduleSpecifier;
-    if (!ts.isStringLiteral(specifier) || specifier.text !== BARREL) continue;
+    if (!ts.isStringLiteral(specifier) || !carriesBarrelValues(specifier.text)) continue;
     const clause = statement.importClause;
     // `import type { ... }` is erased before the code runs, so it cannot trip a
     // temporal dead zone.
@@ -270,6 +276,17 @@ function isNonReference(node: ts.Identifier): boolean {
   if (ts.isPropertyAccessExpression(parent) && parent.name === node) return true;
   if (ts.isPropertyAssignment(parent) && parent.name === node) return true;
   if (ts.isBindingElement(parent) && parent.propertyName === node) return true;
+  // `class C { static K = 1 }` -- a plain member label, not a read. Computed
+  // names are a different matter and are deliberately left to fall through.
+  if (
+    (ts.isPropertyDeclaration(parent) ||
+      ts.isMethodDeclaration(parent) ||
+      ts.isGetAccessorDeclaration(parent) ||
+      ts.isSetAccessorDeclaration(parent)) &&
+    parent.name === node
+  ) {
+    return true;
+  }
   // Type positions are erased before the code runs. Checked against every
   // ancestor, not just the parent: in `type T = chat.Entry` the `chat` node's
   // parent is a QualifiedName, and in `Foo<typeof K>` it is a type argument.
@@ -277,8 +294,39 @@ function isNonReference(node: ts.Identifier): boolean {
   return false;
 }
 
+/**
+ * Module-scope functions, by name, so an eager call can be followed into one.
+ *
+ * Only the top level is collected. A function nested inside another function
+ * cannot be called during module initialization without its parent being called
+ * too, and that outer call is what gets followed.
+ */
+function moduleScopeFunctions(source: ts.SourceFile): Map<string, ts.Node> {
+  const functions = new Map<string, ts.Node>();
+  for (const statement of source.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name) {
+      functions.set(statement.name.text, statement);
+      continue;
+    }
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      const initializer = declaration.initializer;
+      if (!initializer || !ts.isIdentifier(declaration.name)) continue;
+      if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) {
+        functions.set(declaration.name.text, initializer);
+      }
+    }
+  }
+  return functions;
+}
+
 function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
   if (names.size === 0) return [];
+
+  const functions = moduleScopeFunctions(source);
+  // Guards against recursion, and stops a function called twice from being
+  // reported twice.
+  const entered = new Set<ts.Node>();
 
   const found: string[] = [];
   const visit = (node: ts.Node, deferred: boolean): void => {
@@ -295,6 +343,18 @@ function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
     ) {
       const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
       found.push(`${node.text} (line ${line + 1})`);
+    }
+    // `const value = read()` at module scope runs read's body now, so the read
+    // inside it is eager even though the declaration looked deferred. Without
+    // this the guard's own advice -- move the read into a function -- could be
+    // followed to the letter and still leave the crash in place.
+    if (!deferred && ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const target = functions.get(node.expression.text);
+      if (target && !entered.has(target) && !isShadowed(node.expression)) {
+        entered.add(target);
+        const body = (target as ts.FunctionLikeDeclaration).body;
+        if (body) visit(body, false);
+      }
     }
     const next = deferred || defersEvaluation(node);
     node.forEachChild((child) => {
@@ -356,12 +416,10 @@ function walkSources(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Every module the barrel's own initialization can pull in, transitively. */
-function barrelInitClosure(files: string[]): Set<string> {
-  const sources = new Map<string, string>();
-  for (const f of files) sources.set(f, readFileSync(f, "utf8"));
+type Resolver = (specifier: string, from: string) => string | null;
 
-  const resolve = (spec: string, from: string): string | null => {
+function makeResolver(sources: Map<string, string>): Resolver {
+  return (spec, from) => {
     let base: string;
     if (spec.startsWith("@/")) base = path.join(SRC, spec.slice(2));
     else if (spec.startsWith(".")) base = path.resolve(path.dirname(from), spec);
@@ -381,6 +439,55 @@ function barrelInitClosure(files: string[]): Set<string> {
     }
     return null;
   };
+}
+
+function readAll(files: string[]): Map<string, string> {
+  const sources = new Map<string, string>();
+  for (const f of files) sources.set(f, readFileSync(f, "utf8"));
+  return sources;
+}
+
+/**
+ * Modules that hand out the barrel's own bindings, transitively.
+ *
+ * A bridge that does `export { K } from "@/features/chat"` re-exports the live
+ * binding rather than a copy, so a consumer importing K from the bridge is
+ * exposed to exactly the same dead zone. Without this the check silently stops
+ * applying the moment someone introduces a bridge, which is an ordinary
+ * refactor rather than an exotic one.
+ */
+function barrelBearingModules(
+  sources: Map<string, string>,
+  resolve: Resolver,
+): Set<string> {
+  const bearing = new Set<string>();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [file, text] of sources) {
+      if (bearing.has(file)) continue;
+      const source = parse(file, text);
+      for (const statement of source.statements) {
+        if (!ts.isExportDeclaration(statement)) continue;
+        const specifier = statement.moduleSpecifier;
+        if (!specifier || !ts.isStringLiteral(specifier)) continue;
+        if (isErasedEdge(statement)) continue;
+        const target = resolve(specifier.text, file);
+        if (specifier.text === BARREL || (target && bearing.has(target))) {
+          bearing.add(file);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  return bearing;
+}
+
+/** Every module the barrel's own initialization can pull in, transitively. */
+function barrelInitClosure(files: string[]): Set<string> {
+  const sources = readAll(files);
+  const resolve = makeResolver(sources);
 
   const edges = (file: string): string[] => {
     const source = parse(file, sources.get(file) ?? "");
@@ -420,13 +527,21 @@ test("no module-scope read of a chat barrel value", () => {
   // barrel is always evaluated after it, so an eager read there is safe and
   // flagging it would demand unrelated refactors to keep this green.
   const atRisk = barrelInitClosure(files);
+  const sources = readAll(files);
+  const resolve = makeResolver(sources);
+  const bearing = barrelBearingModules(sources, resolve);
   const offenders: string[] = [];
   let importers = 0;
   for (const file of files) {
-    const text = readFileSync(file, "utf8");
-    if (!text.includes(BARREL)) continue;
+    const text = sources.get(file) ?? "";
+    // No cheap text prefilter on BARREL here: a module importing through a
+    // bridge never spells the barrel's name, and skipping it was the hole.
     const source = parse(file, text);
-    const names = barrelValueNames(source);
+    const names = barrelValueNames(source, (specifier) => {
+      if (specifier === BARREL) return true;
+      const target = resolve(specifier, file);
+      return target !== null && bearing.has(target);
+    });
     if (names.size === 0) continue;
     importers += 1;
     if (!atRisk.has(file)) continue;
@@ -513,6 +628,18 @@ test("the scan catches every shape the regex version missed", () => {
       "computed method name on a class",
       `import { K } from "${BARREL}";\nclass C { [K]() {} }\n`,
     ],
+    [
+      "module-scope call into a local function declaration",
+      `import { K } from "${BARREL}";\nfunction read() { return K; }\nconst v = read();\n`,
+    ],
+    [
+      "module-scope call into a local arrow binding",
+      `import { K } from "${BARREL}";\nconst read = () => K;\nconst v = read();\n`,
+    ],
+    [
+      "eager call two functions deep",
+      `import { K } from "${BARREL}";\nfunction inner() { return K; }\nfunction outer() { return inner(); }\nconst v = outer();\n`,
+    ],
   ];
   for (const [label, code] of cases) {
     assert.equal(analyse("t.ts", code).length, 1, `${label} should be flagged`);
@@ -594,6 +721,22 @@ test("deferred reads and non-references are left alone", () => {
       "computed method name deferred body",
       `import { K } from "${BARREL}";\nclass C { m() { return K; } }\n`,
     ],
+    [
+      "literal static field label",
+      `import { K } from "${BARREL}";\nclass C { static K = 1; }\n`,
+    ],
+    [
+      "local function that is never called at module scope",
+      `import { K } from "${BARREL}";\nfunction read() { return K; }\nexport { read };\n`,
+    ],
+    [
+      "local function called only from inside another deferred function",
+      `import { K } from "${BARREL}";\nfunction read() { return K; }\nexport const f = () => read();\n`,
+    ],
+    [
+      "self-recursive function is not followed forever",
+      `import { K } from "${BARREL}";\nfunction loop() { return loop(); }\nconst v = loop();\n`,
+    ],
   ];
   for (const [label, code] of cases) {
     assert.deepEqual(analyse("t.ts", code), [], `${label} should not be flagged`);
@@ -613,4 +756,51 @@ test("the barrel closure resolves imports that spell their extension", () => {
       `${relative} is reachable from the barrel but missing from the closure`,
     );
   }
+});
+
+test("barrel bindings are tracked through local re-export bridges", () => {
+  const bridge = path.join(SRC, "fake", "bridge.ts");
+  const deeper = path.join(SRC, "fake", "deeper.ts");
+  const plain = path.join(SRC, "fake", "plain.ts");
+  const consumer = path.join(SRC, "fake", "consumer.ts");
+  const sources = new Map<string, string>([
+    [bridge, `export { K } from "${BARREL}";\n`],
+    [deeper, `export { K } from "./bridge";\n`],
+    // Re-exports something of its own, so it hands out no barrel binding.
+    [plain, `export const K = 1;\n`],
+    [consumer, `import { K } from "./bridge";\nconst a = [K];\n`],
+  ]);
+  const resolve = makeResolver(sources);
+  const bearing = barrelBearingModules(sources, resolve);
+
+  assert.ok(bearing.has(bridge), "a direct re-export of the barrel carries its bindings");
+  assert.ok(bearing.has(deeper), "bearing propagates through a second hop");
+  assert.ok(!bearing.has(plain), "a module exporting its own value carries nothing");
+
+  const names = (from: string, text: string): Set<string> =>
+    barrelValueNames(parse(from, text), (specifier) => {
+      if (specifier === BARREL) return true;
+      const target = resolve(specifier, from);
+      return target !== null && bearing.has(target);
+    });
+
+  assert.deepEqual(
+    [...names(consumer, sources.get(consumer) as string)],
+    ["K"],
+    "importing through the bridge must be treated as importing from the barrel",
+  );
+  assert.deepEqual(
+    [...names(consumer, `import { K } from "./plain";\nconst a = [K];\n`)],
+    [],
+    "importing an unrelated local value must not be tracked",
+  );
+});
+
+test("an erased re-export does not make a module a bridge", () => {
+  const bridge = path.join(SRC, "fake", "typebridge.ts");
+  const sources = new Map<string, string>([
+    [bridge, `export type { T } from "${BARREL}";\nexport { type U } from "${BARREL}";\n`],
+  ]);
+  const bearing = barrelBearingModules(sources, makeResolver(sources));
+  assert.ok(!bearing.has(bridge), "a type-only re-export carries no runtime binding");
 });
