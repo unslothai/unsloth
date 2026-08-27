@@ -353,6 +353,8 @@ def _mlx_stack_detail() -> Optional[str]:
 # restart or an eGPU makes it not, and this runs on a poll path.
 _PHYSICAL_GPU_INVENTORY_TTL_SECONDS = 60.0
 _physical_gpu_inventory_lock = threading.Lock()
+_physical_gpu_inventory_refresh_lock = threading.Lock()
+_physical_gpu_inventory_refreshing = False
 _physical_gpu_inventory_cache: Optional[tuple[float, Dict[str, Any]]] = None
 
 
@@ -364,13 +366,20 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
     """
     devices: list[Dict[str, Any]] = []
     sources: list[str] = []
+    # "No devices" and "no probe could answer" are different facts, and collapsing them
+    # let a transient nvidia-smi timeout read as "the GPU disappeared" and flip a
+    # settled mismatch verdict back to no_gpu for a whole cache interval.
+    unknown = False
 
     try:
         from . import nvidia
         result = nvidia.get_physical_gpu_inventory()
     except Exception as e:
         logger.debug("NVIDIA physical inventory probe failed: %s", e)
+        unknown = True
     else:
+        if result.get("error"):
+            unknown = True
         nvidia_devices = result.get("devices") or []
         if nvidia_devices:
             devices.extend(nvidia_devices)
@@ -381,18 +390,27 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
     # registry records every adapter with its dedicated memory, and
     # _rocm_windows_per_device_vram already trusts that map for the System tab.
     if platform.system() == "Windows":
-        try:
-            records = _windows_amd_adapter_records_by_luid()
-        except Exception as e:
-            logger.debug("Windows AMD adapter inventory probe failed: %s", e)
-            records = {}
-        if records:
+        for _vendor, _vendor_id in (
+            ("amd", _AMD_PCI_VENDOR_ID),
+            # An Arc host whose XPU wheel was replaced by a CPU one has exactly the
+            # shape this inventory exists for, and nvidia-smi contributes nothing there
+            # either. Same registry, one more vendor id.
+            ("intel", _INTEL_PCI_VENDOR_ID),
+        ):
+            try:
+                records = _windows_amd_adapter_records_by_luid(_vendor_id)
+            except Exception as e:
+                logger.debug("Windows %s adapter inventory probe failed: %s", _vendor, e)
+                records = {}
+                unknown = True
+            if not records:
+                continue
             for ordinal, luid in enumerate(sorted(records)):
                 record = records[luid]
                 dedicated = record.get("dedicated_memory_bytes")
                 devices.append(
                     {
-                        "vendor": "amd",
+                        "vendor": _vendor,
                         "index": ordinal,
                         "name": record.get("name"),
                         # Absent when the driver wrote neither dedicated-memory value.
@@ -401,7 +419,8 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
                         "source": "directx-registry",
                     }
                 )
-            sources.append("directx-registry")
+            if "directx-registry" not in sources:
+                sources.append("directx-registry")
 
     # Linux AMD. The failure shape #8473 actually reported: a ROCm wheel replaced by a
     # CPU one, or a runtime that will not initialise, on a host where nvidia-smi
@@ -411,23 +430,34 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
     # driver publishes these files whenever a card is bound, with no subprocess at all.
     if platform.system() == "Linux":
         try:
-            amd_devices = _linux_amd_sysfs_records()
+            sysfs_devices = _linux_drm_sysfs_records()
         except Exception as e:
-            logger.debug("Linux AMD sysfs inventory probe failed: %s", e)
-            amd_devices = []
-        if amd_devices:
-            devices.extend(amd_devices)
+            logger.debug("Linux DRM sysfs inventory probe failed: %s", e)
+            sysfs_devices = []
+            unknown = True
+        if sysfs_devices:
+            devices.extend(sysfs_devices)
             sources.append("sysfs-drm")
 
-    return {"available": bool(devices), "devices": devices, "sources": sources}
+    return {
+        "available": bool(devices),
+        "devices": devices,
+        "sources": sources,
+        # True only when nothing was found AND at least one probe declined to answer.
+        # Devices found is an answer, whatever some other vendor's probe did.
+        "unknown": bool(unknown and not devices),
+    }
 
 
-def _linux_amd_sysfs_records() -> list[Dict[str, Any]]:
-    """Every AMD card the amdgpu driver has bound, from /sys/class/drm.
+def _linux_drm_sysfs_records() -> list[Dict[str, Any]]:
+    """Every AMD or Intel card the DRM drivers have bound, from /sys/class/drm.
 
-    ``vendor`` is 0x1002 for AMD/ATI and ``mem_info_vram_total`` is a byte count, both
-    documented kernel interfaces. Only ``cardN`` is walked: the connector entries
-    (``card0-DP-1``) and render nodes point at the same device and would double-count.
+    ``vendor`` is 0x1002 for AMD/ATI and 0x8086 for Intel, and amdgpu's
+    ``mem_info_vram_total`` is a byte count, both documented kernel interfaces. Intel
+    publishes no equivalent total on the discrete path, so an Arc card is reported with
+    an unknown capacity rather than left out: knowing the GPU exists is the point.
+    Only ``cardN`` is walked: the connector entries (``card0-DP-1``) and render nodes
+    point at the same device and would double-count.
 
     No name is reported. The kernel publishes no marketing string here, and inventing
     one, or borrowing an amd-smi row whose ordering is not guaranteed to match this
@@ -451,7 +481,8 @@ def _linux_amd_sysfs_records() -> list[Dict[str, Any]]:
                 vendor = fh.read().strip().lower()
         except OSError:
             continue
-        if vendor != "0x1002":
+        vendors = {"0x1002": "amd", "0x8086": "intel"}
+        if vendor not in vendors:
             continue
         total_gb = None
         try:
@@ -465,7 +496,7 @@ def _linux_amd_sysfs_records() -> list[Dict[str, Any]]:
             pass
         records.append(
             {
-                "vendor": "amd",
+                "vendor": vendors[vendor],
                 "index": len(records),
                 "name": None,
                 "memory_total_gb": total_gb,
@@ -475,29 +506,97 @@ def _linux_amd_sysfs_records() -> list[Dict[str, Any]]:
     return records
 
 
-def get_physical_gpu_inventory() -> Dict[str, Any]:
+_UNKNOWN_PHYSICAL_GPU_INVENTORY: Dict[str, Any] = {
+    "available": False,
+    "devices": [],
+    "sources": [],
+    "unknown": True,
+}
+
+
+def _run_physical_gpu_inventory_probe() -> Dict[str, Any]:
+    """One probe pass, stored in the cache. Never raises."""
+    global _physical_gpu_inventory_cache
+    try:
+        inventory = _probe_physical_gpu_inventory()
+    except Exception as e:
+        # _probe_physical_gpu_inventory already guards each probe; this is the
+        # backstop that keeps a caller on the detection path from blowing up.
+        logger.debug("Physical GPU inventory probe failed: %s", e)
+        inventory = dict(_UNKNOWN_PHYSICAL_GPU_INVENTORY)
+    _physical_gpu_inventory_cache = (time.monotonic(), inventory)
+    return inventory
+
+
+def get_physical_gpu_inventory(*, block: bool = True) -> Dict[str, Any]:
     """GPUs the OS enumerates, whether or not PyTorch can use them.
 
-    Returns ``{available, devices, sources}``. Runs regardless of ``DEVICE`` and never
-    raises: a probe that cannot answer contributes nothing rather than failing the
-    caller, so an endpoint reaching here still returns a body.
+    Returns ``{available, devices, sources, unknown}``. Runs regardless of ``DEVICE``
+    and never raises: a probe that cannot answer contributes nothing rather than
+    failing the caller, so an endpoint reaching here still returns a body.
+
+    ``block=False`` for anything on a request path. The NVIDIA half shells out with a
+    10 second timeout and the lock makes concurrent callers queue behind it, so a hung
+    or restarting driver -- the exact host this inventory exists for -- would stall the
+    event loop for ten seconds every time the TTL expired. /api/health and
+    /api/liveness both reach here through the chat-only verdict, and the desktop gives
+    a local request two seconds. A non-blocking caller takes the last known answer,
+    kicks the refresh onto a daemon thread, and gets the new value on a later call;
+    with nothing cached at all it gets the explicit unknown, which every consumer
+    already reads as "keep what you had".
     """
-    global _physical_gpu_inventory_cache
     now = time.monotonic()
+    cached_entry = _physical_gpu_inventory_cache
+    if cached_entry is not None and now - cached_entry[0] < _PHYSICAL_GPU_INVENTORY_TTL_SECONDS:
+        return cached_entry[1]
+    if not block:
+        _schedule_physical_gpu_inventory_refresh()
+        return (
+            cached_entry[1] if cached_entry is not None else dict(_UNKNOWN_PHYSICAL_GPU_INVENTORY)
+        )
     with _physical_gpu_inventory_lock:
-        if _physical_gpu_inventory_cache is not None:
-            probed_at, cached = _physical_gpu_inventory_cache
-            if now - probed_at < _PHYSICAL_GPU_INVENTORY_TTL_SECONDS:
-                return cached
+        # Re-read inside the lock: whoever held it may have just refreshed.
+        cached_entry = _physical_gpu_inventory_cache
+        if (
+            cached_entry is not None
+            and time.monotonic() - cached_entry[0] < _PHYSICAL_GPU_INVENTORY_TTL_SECONDS
+        ):
+            return cached_entry[1]
+        return _run_physical_gpu_inventory_probe()
+
+
+def _schedule_physical_gpu_inventory_refresh() -> None:
+    """Refresh the inventory off the caller's thread, one pass at a time.
+
+    Single-flight through the same lock the blocking path uses, tried without waiting:
+    a refresh already running is exactly what a second caller wants, so it returns
+    rather than queueing a duplicate subprocess behind it.
+    """
+    global _physical_gpu_inventory_refreshing
+    with _physical_gpu_inventory_refresh_lock:
+        if _physical_gpu_inventory_refreshing:
+            return
+        _physical_gpu_inventory_refreshing = True
+
+    def _refresh() -> None:
+        global _physical_gpu_inventory_refreshing
         try:
-            inventory = _probe_physical_gpu_inventory()
+            with _physical_gpu_inventory_lock:
+                _run_physical_gpu_inventory_probe()
         except Exception as e:
-            # _probe_physical_gpu_inventory already guards each probe; this is the
-            # backstop that keeps a caller on the detection path from blowing up.
-            logger.debug("Physical GPU inventory probe failed: %s", e)
-            inventory = {"available": False, "devices": [], "sources": []}
-        _physical_gpu_inventory_cache = (time.monotonic(), inventory)
-        return inventory
+            logger.debug("Background inventory refresh failed: %s", e)
+        finally:
+            with _physical_gpu_inventory_refresh_lock:
+                _physical_gpu_inventory_refreshing = False
+
+    try:
+        threading.Thread(target = _refresh, name = "gpu-inventory-refresh", daemon = True).start()
+    except Exception as e:
+        # A process that cannot start a thread keeps the stale answer, which is the
+        # same outcome this function promises anyway.
+        logger.debug("Could not start the inventory refresh thread: %s", e)
+        with _physical_gpu_inventory_refresh_lock:
+            _physical_gpu_inventory_refreshing = False
 
 
 def _torch_version_label() -> Optional[str]:
@@ -528,7 +627,11 @@ def _relevant_visibility_masks() -> tuple[str, ...]:
     if sys.platform != "win32":
         hip_masks.append("ROCR_VISIBLE_DEVICES")
     try:
-        devices = get_physical_gpu_inventory().get("devices") or []
+        # block=False: classify_torch_build is reached from the chat-only verdict, which
+        # /api/health and /api/liveness both read. Nothing here is worth a subprocess on
+        # the request path, and the stale answer is a fine basis for "can this variable
+        # hide anything" -- a vendor set does not change between refreshes.
+        devices = get_physical_gpu_inventory(block = False).get("devices") or []
     except Exception:
         devices = []
     if not devices or any(d.get("vendor") == "amd" for d in devices):
@@ -1063,8 +1166,18 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
         return reason, detail
     try:
         build_reason = classify_torch_build()
-        if build_reason is not None and get_physical_gpu_inventory().get("devices"):
+        # block=False: /api/health and /api/liveness both reach here, and the NVIDIA
+        # half of the inventory shells out with a 10 second timeout. A hung driver is
+        # the very host this exists for, and stalling liveness behind it would turn a
+        # reporting improvement into an outage.
+        inventory = get_physical_gpu_inventory(block = False)
+        if build_reason is not None and inventory.get("devices"):
             return build_reason, _torch_version_label()
+        if inventory.get("unknown"):
+            # The probe declined to answer, which is not the same as finding nothing.
+            # Downgrading a settled mismatch to no_gpu on a timeout would hand the user
+            # the opposite advice for a whole cache interval.
+            return reason, detail
     except Exception as e:
         logger.debug("chat-only verdict refresh failed: %s", e)
         return reason, detail
@@ -2438,6 +2551,7 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
 # 0x1002. NVIDIA's open kernel module also registers KFD nodes (vendor_id 0x10DE);
 # a non-AMD node is not a HIP device and must never take an ordinal.
 _AMD_PCI_VENDOR_ID = 4098
+_INTEL_PCI_VENDOR_ID = 0x8086
 
 
 def _rocm_kfd_gpu_pci_ids() -> list[str]:
@@ -2682,8 +2796,14 @@ def _parse_adapter_family_gfx(family: str) -> str:
     return ""
 
 
-def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, Any]]:
-    """DirectX registry metadata for AMD adapters, keyed by LUID.
+def _windows_amd_adapter_records_by_luid(
+    vendor_id_filter: int = _AMD_PCI_VENDOR_ID,
+) -> dict[int, Dict[str, Any]]:
+    """DirectX registry metadata for one vendor's adapters, keyed by LUID.
+
+    ``vendor_id_filter`` defaults to AMD, which is every pre-existing caller. The
+    physical inventory passes Intel's id as well, so an Arc host whose XPU wheel was
+    replaced is reported rather than going silent.
 
     ``gfx`` is absent when the driver wrote no ``AdapterFamily``.
     ``dedicated_memory_bytes`` is absent when neither dedicated-memory value is available.
@@ -2712,7 +2832,7 @@ def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, Any]]:
                     continue
                 with winreg.OpenKey(dx_key, subkey) as adapter_key:
                     vendor_id, _ = winreg.QueryValueEx(adapter_key, "VendorId")
-                    if int(vendor_id) != _AMD_PCI_VENDOR_ID:
+                    if int(vendor_id) != vendor_id_filter:
                         continue
                     luid, _ = winreg.QueryValueEx(adapter_key, "AdapterLuid")
                     description, _ = winreg.QueryValueEx(adapter_key, "Description")
@@ -2734,7 +2854,7 @@ def _windows_amd_adapter_records_by_luid() -> dict[int, Dict[str, Any]]:
                             pass
                 name = str(description).strip()
                 if not name:
-                    # An AMD adapter this cannot name: see the all-or-nothing note.
+                    # An adapter this cannot name: see the all-or-nothing note.
                     return {}
                 record = {"name": name}
                 gfx = _parse_adapter_family_gfx(str(family))
