@@ -579,19 +579,13 @@ class _Turn:
             held = self.by_index.get(key)
             new_function = raw_call.get("function")
             new_arguments = (
-                new_function.get("arguments")
-                if isinstance(new_function, dict)
-                else None
+                new_function.get("arguments") if isinstance(new_function, dict) else None
             )
-            new_name = (
-                new_function.get("name") if isinstance(new_function, dict) else None
-            )
+            new_name = new_function.get("name") if isinstance(new_function, dict) else None
             # Whitespace after a closing brace is legal JSON and says nothing
             # about another call, so a provider that chunks it off on its own
             # must not open one.
-            opens_next_call = bool(
-                isinstance(new_arguments, str) and new_arguments.strip()
-            )
+            opens_next_call = bool(isinstance(new_arguments, str) and new_arguments.strip())
             # An id names its call, so a fragment repeating the id this slot
             # already holds continues it however complete its arguments look --
             # llama-server grows the name across deltas, and forking there gives
@@ -604,9 +598,7 @@ class _Turn:
             )
             slot_is_closed = False
             if held is not None and not names_this_call:
-                closed, unfinished = _split_top_level_json_objects(
-                    held["function"]["arguments"]
-                )
+                closed, unfinished = _split_top_level_json_objects(held["function"]["arguments"])
                 slot_is_closed = bool(closed) and not unfinished
             # A name reaching a closed slot cannot be read yet: the same tool
             # called twice announces itself exactly as llama-server resends a

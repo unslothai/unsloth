@@ -194,11 +194,7 @@ def test_an_id_after_a_closed_fork_opens_a_third_call():
     turn.merge_structured([_delta(0, "alpha", '{"a":1}{"b":2}')])
     turn.merge_structured([_delta(0, "gamma", '{"c":3}', call_id = "call_c")])
 
-    assert _shape(turn) == [
-        ("alpha", '{"a":1}'),
-        ("alpha", '{"b":2}'),
-        ("gamma", '{"c":3}'),
-    ]
+    assert _shape(turn) == [("alpha", '{"a":1}'), ("alpha", '{"b":2}'), ("gamma", '{"c":3}')]
     ids = [call["id"] for call in turn.calls()]
     assert len(set(ids)) == len(ids)
 
@@ -248,10 +244,7 @@ def test_the_metadata_a_delta_carries_goes_to_the_call_it_closes():
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":')])
     turn.merge_structured(
-        [
-            _delta(0, None, '1}{"b":2}')
-            | {"extra_content": {"google": {"thought_signature": "SIG"}}}
-        ]
+        [_delta(0, None, '1}{"b":2}') | {"extra_content": {"google": {"thought_signature": "SIG"}}}]
     )
 
     entries = [turn.by_index[key] for key in turn.order]
@@ -264,10 +257,7 @@ def test_nonstandard_numeric_constants_are_not_object_boundaries():
     # json.loads takes NaN and Infinity; JSON.parse does not. Accepting them
     # here would cut text the frontend leaves whole, so the backend would run
     # two calls where the UI shows one.
-    assert _split_top_level_json_objects('{"a":NaN}{"b":2}') == (
-        [],
-        '{"a":NaN}{"b":2}',
-    )
+    assert _split_top_level_json_objects('{"a":NaN}{"b":2}') == ([], '{"a":NaN}{"b":2}')
     assert _split_top_level_json_objects('{"a":Infinity}{"b":2}') == (
         [],
         '{"a":Infinity}{"b":2}',
