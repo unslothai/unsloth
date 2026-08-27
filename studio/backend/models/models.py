@@ -251,6 +251,10 @@ class LocalModelInfo(BaseModel):
         "('text-to-image' for diffusion, 'text-generation' otherwise). Lets the "
         "Images picker show only diffusion GGUFs.",
     )
+    audio_type: Optional[str] = Field(
+        None,
+        description = "Detected output-audio codec used to decide whether Audio can run the row",
+    )
 
 
 class LocalModelListResponse(BaseModel):
@@ -283,6 +287,10 @@ class ScanFolderInfo(BaseModel):
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+    status: str = Field(
+        default = "ok",
+        description = "Last scan result: ok, permission_denied, missing, or unreadable",
+    )
 
 
 class BrowseEntry(BaseModel):

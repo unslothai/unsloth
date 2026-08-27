@@ -159,6 +159,35 @@ def _arm_teardown_signals() -> None:
             return
 
 
+def _require_frontend_toolchain() -> None:
+    """Fail with the cause when the frontend dev dependencies are not installed.
+
+    `npm run dev` on a tree with no `node_modules` exits 127 with `sh: 1: vite: not found`,
+    and the readiness poll then reports "vite exited with code 127", which reads as a vite
+    crash. It is not: the toolchain was never installed, and no amount of retrying or
+    port-shuffling will help. A missing toolchain and a broken one are different failures
+    and must not look the same.
+
+    This is not hypothetical. A job that installs Unsloth from a warm frontend-dist cache
+    never builds the frontend, so `studio/setup.sh` skips its `npm install` and there is no
+    `node_modules` for this harness to use, while the same job on a cold cache builds and
+    passes. That makes the failure look like flake instead of a missing setup step.
+    """
+    if not FRONTEND.is_dir():
+        raise RuntimeError(f"no frontend at {FRONTEND}; this harness must run from the repo")
+    binaries = FRONTEND / "node_modules" / ".bin"
+    if any((binaries / name).exists() for name in ("vite", "vite.cmd", "vite.exe", "vite.bunx")):
+        return
+    raise RuntimeError(
+        f"the frontend dev dependencies are not installed at {FRONTEND / 'node_modules'}, so "
+        f"`npm run dev` would exit 127 with 'vite: not found'.\n"
+        f"Run `npm ci` in {FRONTEND} first. In CI, a job that restores a prebuilt "
+        f"studio/frontend/dist from cache never builds the frontend, so setup.sh skips its "
+        f"npm install and this directory stays empty: such a job has to install the "
+        f"dependencies itself before running a harness that serves its own vite."
+    )
+
+
 def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
     """Start `vite dev` on `port` in its own process group, with stdout drained.
 
@@ -169,6 +198,7 @@ def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
         raise RuntimeError(
             f"{host}:{port} is already serving. Stop it, or move this harness with SMOKE_PORT."
         )
+    _require_frontend_toolchain()
     process_group = (
         {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         if os.name == "nt"
@@ -421,6 +451,39 @@ BENIGN_CONSOLE_ERROR_PATTERNS: tuple[str, ...] = (
     # Also a benign page-error; here for the diagnostic dump path.
     "Failed to fetch",
 )
+
+
+def wait_for_first(locator: Any, *, timeout_ms: int = 10_000) -> Any | None:
+    """The first match once it exists, or None once the wait expires.
+
+    `Locator.count()` does not wait. It answers about this instant, so every
+    `if locator.count() > 0:` gate is a race with rendering that reads as "the
+    feature is missing" the moment anything delays it -- and reports that as a
+    product failure rather than as a timeout.
+
+    #9251 is what this is written from. Its reload snapshot paints a cloned
+    overlay over the app and takes it down on hydration (or after 5s), which
+    opens a window where the composer is on screen but not yet in the
+    accessibility tree. The Compare step read `count() == 0` **six milliseconds**
+    after it began and reported "Compare nav not found", which is a true
+    statement about that instant and a false one about the app.
+
+    Playwright's auto-waiting covers actions and expectations, not `count()`, so
+    the wait has to be asked for. Returning None rather than raising keeps the
+    caller's existing "is this control present at all" branch, including the
+    fallbacks that legitimately expect a miss.
+    """
+    # Imported here, not at module scope. Nothing else in this file imports
+    # playwright, and the harness-contract tests import it on runners that have
+    # no browser stack -- a top-level import would turn those into collection
+    # errors instead of skips.
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    try:
+        locator.first.wait_for(state = "attached", timeout = timeout_ms)
+    except PlaywrightTimeoutError:
+        return None
+    return locator.first
 
 
 def is_benign_page_error(msg: str) -> bool:
@@ -727,3 +790,40 @@ def install_wall_clock_watchdog(
     if info is not None:
         info(f"watchdog armed: hard-exit at {deadline_s:.0f}s")
     return timer
+
+
+def click_forced(
+    locator: Any,
+    *,
+    timeout_ms: int = 5_000,
+    **click_kwargs: Any,
+) -> None:
+    """Scroll into view, then click with actionability checks off.
+
+    `click(force = True)` skips Playwright's actionability checks, which is what you
+    want against a menu whose overlay would otherwise intercept the click. It also
+    skips the part that scrolls the element into view, and Playwright will not click
+    a point it cannot reach:
+
+        playwright._impl._errors.Error: Locator.click: Element is outside of the viewport
+
+    That is what took down `Compare tab: send to two panes` on macOS. The menu item
+    existed, was found, and was off-screen, because a Mac runner's window is shorter
+    than a Linux one and the item sits at the bottom of a long menu. On Linux the same
+    code has always worked, which is why three forced clicks sat here unnoticed since
+    the composer redesign.
+
+    Scrolling first keeps the reason force was used -- the overlay is still ignored --
+    and removes the assumption that the element happens to be on screen.
+
+    The scroll is best-effort: an element that cannot be scrolled (fixed position, zero
+    size) should still reach the click, and fail there with Playwright's own message
+    rather than here with a scrolling one.
+    """
+    try:
+        locator.scroll_into_view_if_needed(timeout = timeout_ms)
+    except Exception:
+        pass
+    # Callers pass their own `timeout` through: several of these clicks wait longer
+    # than the default because the tab they open is doing work behind the overlay.
+    locator.click(force = True, **click_kwargs)

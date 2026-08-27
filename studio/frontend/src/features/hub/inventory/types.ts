@@ -51,11 +51,14 @@ export interface CachedInventoryRow {
   lastModified?: number | null;
   partial?: boolean;
   partialTransport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partialResumable?: boolean;
   /** A download manifest or cancel marker exists for some quant; moves on a sibling cancel, which changes neither bytes nor mtime. */
   hasVariantState?: boolean;
   pipelineTag?: string | null;
   // Inferred pipeline task from the backend. The task-scoped pickers filter On Device rows on it.
   task?: string | null;
+  audioType?: string | null;
   // Diffusion repo with no pipeline index: loadable only via from_single_file + a filename, so the task pickers must not offer it as a pipeline load.
   singleFile?: boolean;
   // sd.cpp companion mirror: VAE / text encoders with no denoiser. Still listed, because these
@@ -92,9 +95,12 @@ export interface LocalInventoryRow {
   adapterType?: string | null;
   trainingMethod?: string | null;
   task?: string | null;
+  audioType?: string | null;
   updatedAt: number | null;
   partial?: boolean;
   partialTransport?: string | null;
+  /** This partial can be continued byte for byte. */
+  partialResumable?: boolean;
   activeCache?: boolean | null;
   pipelineTag?: string | null;
   tags?: string[];

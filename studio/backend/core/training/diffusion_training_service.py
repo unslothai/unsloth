@@ -27,6 +27,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
+from utils.paths.path_utils import drop_appledouble_metadata
 
 # Spawn (not fork): a fresh interpreter so parent CUDA/torch state never leaks into the trainer.
 _CTX = mp.get_context("spawn")
@@ -209,7 +210,10 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
     """Summaries of persisted diffusion runs, newest first. The heavy per-run payload
     (metric logs, config) stays in the file; fetch it via ``get_diffusion_run``."""
     try:
-        files = sorted(_runs_dir().glob("*.json"), key = lambda p: p.stat().st_mtime, reverse = True)
+        # Sliced by limit below, so a companion per run would halve the history window.
+        files = drop_appledouble_metadata(
+            sorted(_runs_dir().glob("*.json"), key = lambda p: p.stat().st_mtime, reverse = True)
+        )
     except Exception:  # noqa: BLE001 -- unreadable dir -> no history
         return []
     out: list[dict] = []
@@ -261,7 +265,7 @@ def get_diffusion_run(job_id: str) -> Optional[dict]:
 def _restate_live_job(rec: dict) -> dict:
     """Undo the interim record's pessimism for the job that is still running, in place.
 
-    An interim record is written as interrupted because that is the outcome if Studio never
+    An interim record is written as interrupted because that is the outcome if Unsloth never
     comes back. While the process IS still here and still on that job, the honest answer is
     running -- and reporting it as errored would offer a Resume for a directory the live run is
     writing into."""
@@ -781,7 +785,7 @@ class DiffusionTrainingService:
         convenience, not part of the training contract.
 
         ``interim`` writes the same record for a run that is still going, which is what makes a
-        checkpoint survive Studio itself dying: the bundle is on disk but only a terminal event
+        checkpoint survive Unsloth itself dying: the bundle is on disk but only a terminal event
         used to write the JSON that Previous runs and its Resume action are built from. The
         status recorded is the one that is true if nothing else ever happens -- the run was
         interrupted -- and the terminal write replaces it in place."""
@@ -793,7 +797,7 @@ class DiffusionTrainingService:
                 return
             if interim:
                 s["status"] = "error"
-                s["message"] = "Studio exited while this run was training."
+                s["message"] = "Unsloth exited while this run was training."
             elif s.get("status") not in ("completed", "stopped", "error"):
                 return
             adapter = s.get("output_dir") or cfg.get("output_dir")
@@ -935,7 +939,7 @@ class DiffusionTrainingService:
                 if written and written not in self._own_checkpoints:
                     self._own_checkpoints.append(str(written))
                 # The bundle is on disk; the run JSON is not, and only a terminal event writes
-                # one. Studio being killed or shut down after a periodic save therefore left a
+                # one. Unsloth being killed or shut down after a periodic save therefore left a
                 # resumable checkpoint that Previous runs -- which reads those JSONs and
                 # nothing else -- had no entry for, so the Resume action did not exist. Written
                 # as an interrupted run because that is what it IS until the run ends: the
@@ -946,7 +950,7 @@ class DiffusionTrainingService:
                 # Sticky: whatever older bundle is on disk predates the work this run did, so
                 # resuming from it would silently lose steps. Mirrors the MLX resume_blocked flag.
                 s["resume_blocked_reason"] = str(ev.get("message", "checkpoint write failed"))
-                # Persisted for the same reason a successful write is. In memory only, a Studio
+                # Persisted for the same reason a successful write is. In memory only, an Unsloth
                 # exit after this left the last record advertising the OLDER checkpoint as
                 # resumable -- the one this service has just decided is stale -- and resuming it
                 # rolls the run back past everything after it. A later checkpoint_saved clears

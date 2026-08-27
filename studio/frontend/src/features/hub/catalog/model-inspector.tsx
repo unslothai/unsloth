@@ -578,6 +578,15 @@ export const ModelInspector = memo(function ModelInspector({
   // row is one onLoad can actually route there: those pages resolve a routed `model` as a
   // Hub id, so a filesystem row fails routableToMediaPage and the click falls through to
   // the chat loader, which unloads the resident model for a load that can only fail.
+  // Whether this model's runtime is llama.cpp at all. Deliberately NOT
+  // runsOnMediaPage below: that one also asks whether the click can be ROUTED to
+  // the page, which is a different question. A diffusion GGUF on a filesystem row
+  // is not routable and still does not load through llama.cpp, so a memory bar
+  // there would describe the wrong runtime either way.
+  const runsOnMediaRuntime =
+    studioPageForTask(
+      taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
+    ) !== undefined;
   const runsOnMediaPage =
     studioPageForTask(
       taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
@@ -678,6 +687,7 @@ export const ModelInspector = memo(function ModelInspector({
               isDownloaded={model.isDownloaded}
               isPartial={model.isPartial ?? false}
               partialTransport={model.partialTransport ?? null}
+              partialResumable={model.partialResumable === true}
               cachePath={model.path}
               knownBytes={model.cachedBytes}
               onTrain={onTrain}
@@ -699,6 +709,7 @@ export const ModelInspector = memo(function ModelInspector({
         <InspectorDownloadSlot>
           {model.isLocal && !hasActiveHubDownload ? (
             <LocalOnDeviceCard
+              showMemoryBar={!runsOnMediaRuntime}
               modelId={model.id}
               repoId={model.hubRepoId}
               sourceLabel={model.sourceLabel}
@@ -739,11 +750,13 @@ export const ModelInspector = memo(function ModelInspector({
             />
           ) : (
             <DownloadSection
+              showMemoryBar={!runsOnMediaRuntime}
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
               isDownloaded={model.isDownloaded}
               isPartial={model.isPartial ?? false}
               partialTransport={model.partialTransport ?? null}
+              partialResumable={model.partialResumable === true}
               modelFormat={model.modelFormat}
               canRun={canRunModel}
               isActive={isActive}

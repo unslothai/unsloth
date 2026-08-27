@@ -3,7 +3,10 @@
 
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
+import {
+  type ModelRuntime,
+  subscribeModelLifecycle,
+} from "@/lib/model-lifecycle-events";
 import { ejectLoadedModel, readLoadedModels } from "./loaded-models-api";
 import {
   type LoadedModelEntry,
@@ -18,6 +21,12 @@ const POLL_INTERVAL_MS = 5000;
 const NO_ENTRIES: LoadedModelEntry[] = [];
 
 const ALL_SOURCES: LoadedModelSource[] = ["chat", "image", "video", "stt"];
+
+// A TTS load takes the chat slot and the chat unload releases it, so it folds into that
+// row rather than adding one.
+function sourceForRuntime(runtime: ModelRuntime): LoadedModelSource {
+  return runtime === "tts" ? "chat" : runtime;
+}
 
 export type UseLoadedModels = {
   entries: LoadedModelEntry[];
@@ -173,15 +182,16 @@ export function useLoadedModels(
   useEffect(() => {
     if (!track) return;
     return subscribeModelLifecycle(({ runtime, loading, model }) => {
+      const source = sourceForRuntime(runtime);
       if (loading) {
-        settledRef.current.delete(runtime);
-        setPending((prev) => new Map(prev).set(runtime, model));
+        settledRef.current.delete(source);
+        setPending((prev) => new Map(prev).set(source, model));
         return;
       }
       // Kept, not dropped: clearing here and waiting for the read to answer
       // left the card with one row fewer for that gap, and with nothing at all
       // when it was the only one, which read as the row randomly vanishing.
-      settledRef.current.add(runtime);
+      settledRef.current.add(source);
       refresh();
     });
   }, [track, refresh]);

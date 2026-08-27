@@ -16,7 +16,7 @@ Only downloaded models resolve, and an unknown name is refused rather than answe
 whatever is resident. Nothing here starts a download: the media equivalent of the chat
 auto-download setting would let one API key spend tens of GB, which is its own decision.
 
-Both waits are bounded, because Studio's secure-mode tunnel caps an origin response near 100
+Both waits are bounded, because Unsloth's secure-mode tunnel caps an origin response near 100
 seconds. Exceeding a bound leaves the work running and asks the caller to retry, the contract
 ``begin_load`` already gives the UI.
 

@@ -116,3 +116,38 @@ test("the key is still read at module scope, so the guard above is load-bearing"
     "general-tab no longer reads the key at module scope; drop this file's guards",
   );
 });
+
+/**
+ * The same white screen, reached a second way.
+ *
+ * `use-model-memory.ts` imported `CHAT_GPU_MEMORY_MODE_KEY` and friends from the
+ * `@/features/chat` barrel, and the barrel reaches this file back:
+ *
+ *   chat -> apply-inference-status-to-store -> model-picker -> model-selector
+ *        -> pickers -> use-model-memory -> chat
+ *
+ * Under dev's unbundled ESM that ring evaluated `use-model-memory` before the chat
+ * barrel had finished, and the module-scope const read threw "Cannot access
+ * 'CHAT_GPU_MEMORY_MODE_KEY' before initialization". Measured on main: the page threw,
+ * `#root` had 0 children and the body was empty. With the deep imports below there is
+ * no page error and the app renders.
+ *
+ * Production builds never showed it. The bundler hoists these declarations into one
+ * module, so the ordering the dev server exposes stops existing, which is exactly the
+ * kind of defect that survives review and CI and only ever bites whoever runs the dev
+ * server next.
+ */
+const MODEL_MEMORY = path.join(SRC, "hooks/use-model-memory.ts");
+
+test("the model memory hook imports no feature barrel", async () => {
+  const text = await readFile(MODEL_MEMORY, "utf8");
+  const barrels = staticSpecifiers(MODEL_MEMORY, text).filter((specifier) =>
+    /^@\/features\/[^/]+$/.test(specifier),
+  );
+
+  assert.deepEqual(
+    barrels,
+    [],
+    "a bare @/features/<name> import here closes the cycle and the dev server white screens again",
+  );
+});

@@ -152,7 +152,11 @@ def test_the_real_error_survives_either_way():
     assert (
         window.count("from e") >= 2
     ), "the original exception must be chained so the traceback survives"
-    assert "GGUF conversion failed: {e}" in window
+    # `{e}` is empty when the exception has no args, so the type-leading form counts too.
+    assert (
+        "GGUF conversion failed: {e}" in window
+        or "GGUF conversion failed: {_describe_exception(e)}" in window
+    )
 
 
 if __name__ == "__main__":

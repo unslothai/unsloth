@@ -42,14 +42,23 @@ def _canvas_constants() -> str:
     return slice_between(
         read(ADAPTER),
         "export const CANVAS_TOOL_INSTRUCTION =",
-        "/**\n * The OpenAI-form messages",
+        "export async function buildLocalTokenCountHistory(",
+    )
+
+
+def _prune_helpers() -> str:
+    """isAbandonedAssistantTurn + pruneOutboundHistory, which the outbound builder calls."""
+    return slice_between(
+        read(ADAPTER),
+        "/** Payload the turn carries in its own parts",
+        "function extractImageBase64(",
     )
 
 
 def _outbound_builder() -> str:
     return slice_between(
         read(ADAPTER),
-        "export async function buildOutboundMessagesForTokenCount(",
+        "export async function buildLocalTokenCountHistory(",
         "/**\n * The reasoning fields a completion would send",
     )
 
@@ -114,6 +123,18 @@ function isAnthropicRefusalMessage(_message: any): boolean {
   return false;
 }
 
+function sanitizeAssistantReplayText(text: string): string {
+  return text;
+}
+
+function readIncompleteInfo(_metadata: any): any {
+  return null;
+}
+
+function collectImageParts(_message: any): any[] {
+  return [];
+}
+
 function toOpenAIMessages(message: any): any[] {
   return [{ role: message.role, content: message.text }];
 }
@@ -157,6 +178,7 @@ def _harness_source() -> str:
     return (
         HARNESS
         + _canvas_constants()
+        + _prune_helpers()
         + _outbound_builder()
         + _reasoning_builder()
         + _extras_builder()
@@ -165,7 +187,7 @@ def _harness_source() -> str:
 
 def _run(script: str) -> dict:
     require_node(SOURCES)
-    return run_harness(TEMP, _harness_source(), script)
+    return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
 
 
 def _count_script(seed_patch: str) -> str:
@@ -173,12 +195,12 @@ def _count_script(seed_patch: str) -> str:
         f"""
         // @ts-nocheck
         import {{
-          buildOutboundMessagesForTokenCount,
+          buildLocalTokenCountHistory,
           estimateTokens,
           seed,
         }} from "./harness.ts";
         seed({seed_patch});
-        const outbound = await buildOutboundMessagesForTokenCount(
+        const {{ messages: outbound }} = await buildLocalTokenCountHistory(
           [{{ role: "user", text: "draw me a bar chart" }}],
           "thread-a",
         );
