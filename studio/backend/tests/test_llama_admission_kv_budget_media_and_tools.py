@@ -16,7 +16,10 @@ estimate for a lease that runs up to 25 growing rounds.
 
 import base64
 
-from routes.inference import _openai_llama_admission_tokens
+from routes.inference import (
+    _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    _openai_llama_admission_tokens,
+)
 
 
 class _Payload:
@@ -54,10 +57,18 @@ class TestMediaIsCharged:
             ],
             max_tokens = 128,
         )
-        legacy_cost = _openai_llama_admission_tokens(legacy, budget = 4096, capacity = 4)
-        inline_cost = _openai_llama_admission_tokens(inline, budget = 4096, capacity = 4)
+        # Budget well clear of both costs. At 4096 the estimate is clamped to the
+        # budget by `max(1, min(budget, ...))` on BOTH sides, so the two agreed at
+        # the clamp whatever the estimator did and the assertion proved nothing.
+        legacy_cost = _openai_llama_admission_tokens(legacy, budget = 1_000_000, capacity = 4)
+        inline_cost = _openai_llama_admission_tokens(inline, budget = 1_000_000, capacity = 4)
         # The wire spelling must not change the KV commitment for the same image.
-        assert legacy_cost == inline_cost
+        # Not to the token: the inline spelling really does send a content-part
+        # wrapper the legacy one does not, and the compact marker standing in for the
+        # bytes is itself a few tokens of JSON. What must not survive is the 30x gap
+        # between pricing an image at its base64 length and pricing it at its text.
+        assert abs(legacy_cost - inline_cost) <= 64, (legacy_cost, inline_cost)
+        assert max(legacy_cost, inline_cost) < 2 * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
 
     def test_studio_image_echo_is_charged_once_and_is_bounded(self):
         image = _image_b64(1024)
@@ -80,11 +91,119 @@ class TestMediaIsCharged:
         )
         inline = _Payload(messages = inline_messages, max_tokens = 128)
 
-        dual_cost = _openai_llama_admission_tokens(dual, budget = 65536, capacity = 4)
-        inline_cost = _openai_llama_admission_tokens(inline, budget = 65536, capacity = 4)
+        # A budget no clamp can reach: at 65536 a 1 MiB image priced as prompt text
+        # clamps to the budget on both sides, so `dual == inline` held on the
+        # unfixed estimator too and only the upper bound below did any work.
+        dual_cost = _openai_llama_admission_tokens(dual, budget = 1_000_000, capacity = 4)
+        inline_cost = _openai_llama_admission_tokens(inline, budget = 1_000_000, capacity = 4)
 
         assert dual_cost == inline_cost
-        assert 4096 <= dual_cost < 10_000, "image bytes must be bounded but still charged"
+        assert dual_cost < 2 * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS, (
+            "the echo must be charged once, not once per spelling"
+        )
+        assert dual_cost >= _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS, (
+            "image bytes must be bounded but still charged"
+        )
+
+    def test_every_builder_forwards_exactly_what_admission_charged(self):
+        """The reservation is only a bound if it counts the images actually sent.
+
+        Studio echoes one image into both the ``image_url`` part and the legacy
+        top-level field. `_openai_messages_for_gguf_chat` has always dropped the
+        echo, but `_openai_messages_for_passthrough` -- the builder a request with
+        client ``tools`` or a ``response_format`` goes through -- spliced it in
+        unconditionally, so it sent two copies of one image against a reservation
+        for one. Measured against llama-server b10639 with a 2048x2048 image: 4417
+        reserved, 8466 really charged.
+        """
+        from models.inference import ChatCompletionRequest
+        from routes.inference import (
+            _openai_llama_admission_media_tokens,
+            _openai_llama_admission_messages_for_estimate,
+            _openai_messages_for_gguf_chat,
+            _openai_messages_for_passthrough,
+        )
+
+        # A real 1x1 PNG: the builders decode and re-encode, unlike the estimator.
+        image = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQ"
+            "AAAABJRU5ErkJggg=="
+        )
+        inline_part = {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{image}"},
+        }
+        shapes = {
+            "studio dual": ChatCompletionRequest(
+                model = "m",
+                max_tokens = 128,
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "what is this?"}, inline_part],
+                    }
+                ],
+                image_base64 = image,
+            ),
+            "inline only": ChatCompletionRequest(
+                model = "m",
+                max_tokens = 128,
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "what is this?"}, inline_part],
+                    }
+                ],
+            ),
+            "legacy only": ChatCompletionRequest(
+                model = "m",
+                max_tokens = 128,
+                messages = [{"role": "user", "content": "what is this?"}],
+                image_base64 = image,
+            ),
+        }
+
+        def _forwarded(messages):
+            return sum(
+                1
+                for msg in messages
+                if isinstance(msg.get("content"), list)
+                for part in msg["content"]
+                if isinstance(part, dict) and part.get("type") == "image_url"
+            )
+
+        for name, payload in shapes.items():
+            _, message_image_parts = _openai_llama_admission_messages_for_estimate(payload.messages)
+            billed = (
+                _openai_llama_admission_media_tokens(
+                    payload, message_image_parts = message_image_parts
+                )
+                // _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+            )
+            for builder_name, messages in (
+                ("gguf chat", _openai_messages_for_gguf_chat(payload, True)[0]),
+                ("passthrough", _openai_messages_for_passthrough(payload)),
+            ):
+                assert _forwarded(messages) == billed, (
+                    f"{name} via {builder_name}: forwarded {_forwarded(messages)} "
+                    f"image(s) but admission charged for {billed}"
+                )
+
+    def test_the_allowance_bounds_a_real_projector(self):
+        """The per-image charge is an upper bound, not an estimate.
+
+        Measured against llama-server b10639: a 2048x2048 image costs 4098 KV
+        positions on Qwen3-VL-4B (llama.cpp's 4096-embedding cap for that projector
+        plus two mtmd delimiters) and 258 on Gemma 3 4B, at every resolution and
+        every encoded size. A flat 4096 was below the Qwen figure, and reserving
+        less than a request costs is what lets two of them collide in a cache that
+        holds one.
+        """
+        measured_worst_case = {"qwen3-vl-4b": 4098, "gemma-3-4b": 258}
+        for model, tokens in measured_worst_case.items():
+            assert _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS >= tokens, (
+                f"per-image allowance under-reserves {model}"
+            )
 
     def test_two_large_studio_image_chats_can_be_admitted_together(self):
         """A large base64 transport must not turn each vision request into a full-cache lease."""

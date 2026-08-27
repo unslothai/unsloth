@@ -1624,7 +1624,28 @@ def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
     return extra
 
 
-_OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = 4096
+# KV positions to reserve per image, as an upper bound rather than an estimate.
+#
+# 4096 is llama.cpp's default ceiling on Qwen-VL embeddings per image (the projector
+# resizes to its own pixel limits, so transport size never enters into it), but the
+# embeddings are not the whole cost: mtmd wraps them in delimiter tokens. Measured
+# against llama-server b10639, a 2048x2048 image costs 4098 on Qwen3-VL-4B, i.e. the
+# cap plus two, and 258 on Gemma 3 4B (256 embeddings plus the same two). A flat 4096
+# is therefore provably BELOW the real ceiling, and under-reserving is the one
+# direction this accounting must never err in: it hands out a slot the cache cannot
+# back, which is the overcommit #9392 exists to stop.
+#
+# The wrapper allowance is deliberately much larger than the two tokens measured, to
+# cover projectors whose delimiters are longer. It is still a bound, not a guess: a
+# projector whose embeddings alone exceed the cap (tiling or multi-crop families, or a
+# llama-server started by hand with a raised --image-max-tokens; Studio never passes
+# one) is outside what this constant can promise, and wants a projector-aware
+# allowance read off the loaded mmproj rather than a bigger number here.
+_OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP = 4096
+_OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS = 128
+_OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
+    _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
+)
 
 
 def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict], int]:
@@ -1639,11 +1660,15 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
     estimate_messages = []
     image_parts = 0
     for message in messages:
-        message_dict = message if isinstance(message, dict) else message.model_dump()
-        if not isinstance(message_dict, dict):
-            estimate_messages.append(message_dict)
-            continue
-
+        # exclude_none, like every other dump of these models in this file, and like
+        # the generation paths this estimate is trying to predict. Without it the
+        # five unset optional fields on ChatMessage are serialised as `"name": null`
+        # and priced as prompt text: 34 tokens for `{"role": "user", "content":
+        # "hi"}` against 8, which on a long thread is thousands of tokens of KV
+        # reserved for punctuation that is never sent.
+        message_dict = (
+            message if isinstance(message, dict) else message.model_dump(exclude_none = True)
+        )
         estimate_message = dict(message_dict)
         content = message_dict.get("content")
         if isinstance(content, list):
@@ -27695,6 +27720,25 @@ def _splice_image_into_last_user(messages: list[dict], image_part: dict) -> None
         messages.append({"role": "user", "content": [image_part]})
 
 
+def _messages_carry_an_image(messages: list[dict]) -> bool:
+    """Whether the built message list already has a message-level image part.
+
+    The one place that question is answered, because both builders and the KV
+    admission estimate have to answer it the SAME way. Studio sends the current
+    image twice, as an ``image_url`` part and as the legacy top-level field, so a
+    builder that splices the legacy copy on top of the part sends the image
+    twice, while admission (which counts parts) charges for it once. Two copies
+    of this predicate is how that drift happened.
+    """
+    return any(
+        isinstance(msg.get("content"), list)
+        and any(
+            isinstance(part, dict) and part.get("type") == "image_url" for part in msg["content"]
+        )
+        for msg in messages
+    )
+
+
 def _openai_messages_for_passthrough(payload) -> list[dict]:
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.
@@ -27709,12 +27753,19 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     image is re-encoded to PNG (llama-server's stb_image has limited format
     support) and spliced into the last user message as an OpenAI ``image_url``
     content part so vision + function-calling requests work transparently.
+
+    Only when the messages carry no image of their own, matching
+    ``_openai_messages_for_gguf_chat``. Studio echoes the current image into both
+    spellings, so splicing unconditionally sent a tools or response_format
+    request two copies of one image while admission reserved one: measured at
+    4417 tokens reserved against 8466 really charged, which overcommits the KV
+    cache on any backend with more slots than that gap allows.
     """
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
     )
 
-    if not payload.image_base64:
+    if not payload.image_base64 or _messages_carry_an_image(messages):
         return messages
 
     try:
@@ -27799,12 +27850,7 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
             )
         )
     )
-    has_message_image = any(
-        isinstance(msg.get("content"), list)
-        and any(part.get("type") == "image_url" for part in msg["content"])
-        for msg in messages
-    )
-    if payload.image_base64 and not has_message_image:
+    if payload.image_base64 and not _messages_carry_an_image(messages):
         # Legacy bytes can be any format; the normalizer below sniffs and
         # re-encodes to PNG, so the declared mime is rewritten anyway.
         image_part = {
