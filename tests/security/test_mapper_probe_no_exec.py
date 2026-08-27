@@ -364,14 +364,15 @@ def test_an_alias_added_inside_the_builder_is_read(monkeypatch):
     with _serving(added, monkeypatch):
         tables = loader_utils._get_new_mapper()
     assert any(
-        table.get("vendor/new") == "unsloth/new"
-        for table in tables if isinstance(table, dict)
+        table.get("vendor/new") == "unsloth/new" for table in tables if isinstance(table, dict)
     ), "an alias added inside the builder was dropped"
 
 
 def test_a_builder_that_is_never_called_is_not_read(monkeypatch):
     """A `def` that nothing calls runs nothing, which is the rule everywhere here."""
-    uncalled = REAL_MAPPER.replace("= build_mappers(__INT_TO_FLOAT_MAPPER)", "= ({}, {}, {}, {}, {})")
+    uncalled = REAL_MAPPER.replace(
+        "= build_mappers(__INT_TO_FLOAT_MAPPER)", "= ({}, {}, {}, {}, {})"
+    )
     # The `def` line names it too, so the CALL is what has to be gone.
     assert "= build_mappers(" not in uncalled
     lines = uncalled.splitlines(True)

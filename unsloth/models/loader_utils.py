@@ -831,10 +831,7 @@ def _get_new_mapper():
         )
         if builder_called:
             for statement in tree.body:
-                if (
-                    isinstance(statement, ast.FunctionDef)
-                    and statement.name == "build_mappers"
-                ):
+                if isinstance(statement, ast.FunctionDef) and statement.name == "build_mappers":
                     builder_body = statement.body
                     break
 
@@ -845,7 +842,8 @@ def _get_new_mapper():
         # part that cannot be derived from the source table, and they are the part
         # this reads.
         builder_additions = [
-            (node, shadowed) for node, shadowed in _executed_nodes(builder_body)
+            (node, shadowed)
+            for node, shadowed in _executed_nodes(builder_body)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
             and node.func.id in _MAPPER_HELPERS
