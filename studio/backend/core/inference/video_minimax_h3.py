@@ -1068,7 +1068,7 @@ def h3_download_error(repo_id: str, filename: str, exc: Exception) -> Exception:
     )
 
 
-def h3_component_source() -> str:
+def h3_component_source(*files: str) -> str:
     """The repo to fetch the shared VAEs from: our mirror, or the repack it was mirrored from
     when an existing install already holds those exact bytes under the old id.
 
@@ -1083,24 +1083,41 @@ def h3_component_source() -> str:
     perfectly usable -- but only the OLD repo id can reach it, and a live-root-only probe would
     call it absent and re-pull ~5.8 GB (offline, fail).
 
+    Answered for the files GIVEN, and the native loop asks one at a time because that is how it
+    downloads them. A pre-move pull interrupted between the two VAEs leaves only one under the old
+    id; asking for the pair calls the old id useless and re-pulls the 5.2 GB already on disk,
+    while asking per file reuses it and takes only the other from the mirror. With no argument it
+    answers for the pair, for callers describing the pair rather than fetching it.
+
     PURE: table lookup plus a local stat, no network, so a download plan and the fetch that
     follows it agree on the source.
     """
+    wanted = files or (H3_VIDEO_VAE, H3_AUDIO_VAE)
     try:
         from .diffusion_families import prefer_cached_legacy_source
-        return prefer_cached_legacy_source(H3_COMPONENT_REPO, (H3_VIDEO_VAE, H3_AUDIO_VAE))
+        return prefer_cached_legacy_source(H3_COMPONENT_REPO, wanted)
     except Exception:  # noqa: BLE001 -- an unreadable cache just means "not cached"
         return H3_COMPONENT_REPO
 
 
+def h3_component_metadata_repo(repo_id: str) -> str:
+    """Which repo to read a shared VAE's SIZE from, given the repo its bytes will come from.
+
+    The repack is a source of bytes ALREADY ON DISK, never of network metadata. It may since have
+    been renamed or taken down -- the exact failure this move exists to survive -- and a
+    ``model_info`` against it would fail the download plan for a load its own cache can still
+    satisfy. The mirror's copy is byte identical, so the number is the same.
+    """
+    return H3_COMPONENT_REPO if repo_id == H3_LEGACY_COMPONENT_REPO else repo_id
+
+
 def h3_native_hub_files(transformer_filename: str) -> tuple[tuple[str, str], ...]:
     validate_h3_transformer_filename(transformer_filename)
-    components = h3_component_source()
     return (
         (H3_GGUF_REPO, transformer_filename),
         (H3_GGUF_REPO, h3_text_encoder_filename(transformer_filename)),
-        (components, H3_VIDEO_VAE),
-        (components, H3_AUDIO_VAE),
+        (h3_component_source(H3_VIDEO_VAE), H3_VIDEO_VAE),
+        (h3_component_source(H3_AUDIO_VAE), H3_AUDIO_VAE),
     )
 
 

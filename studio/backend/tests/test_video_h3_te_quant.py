@@ -390,6 +390,40 @@ def test_a_resolvable_artifact_is_staged_in_place_of_the_dense_shards():
     assert files == [(wanted, 27_141_342_152)]
 
 
+def test_the_conditioner_entry_survives_a_repack_that_is_gone(monkeypatch):
+    """A cached artifact must keep its entry even when the repo it is cached under is unreachable.
+
+    Once the repack is renamed or taken down, a `model_info` against it raises and this reports no
+    hosted artifact. The plan then stages the 62 GB dense `text_encoder/` shards, while the load,
+    reading the artifact straight out of that same cache, never opens them: a whole download
+    wasted, or a disk preflight refusing a load that fits. So the SIZE comes from the mirror and
+    only the entry id follows the cache.
+    """
+    from core.inference import diffusion_families
+    from core.inference.video_minimax_h3_te import H3_LEGACY_TE_QUANT_REPO
+
+    wanted = h3_te_quant_filename("int8")
+    monkeypatch.setattr(diffusion_families, "_upstream_is_cached", lambda *a, **k: True)
+
+    asked: list[str] = []
+
+    class _Api:
+        def model_info(self, repo_id, **_kwargs):
+            asked.append(repo_id)
+            if repo_id != H3_TE_QUANT_REPO:
+                raise RuntimeError(f"{repo_id} is gone")
+            return types.SimpleNamespace(
+                siblings = [types.SimpleNamespace(rfilename = wanted, size = 27_141_342_152)]
+            )
+
+    repo, files = VideoBackend._h3_te_quant_hub_files("int8", _Api())
+    assert asked == [H3_TE_QUANT_REPO], "the repack must never be asked for metadata"
+    # The id the bytes are read from, so the entry's cache check asks about the right repo...
+    assert repo == H3_LEGACY_TE_QUANT_REPO
+    # ...at the mirror's size, which is the same file.
+    assert files == [(wanted, 27_141_342_152)]
+
+
 def test_the_conditioner_repo_is_protected_while_the_load_is_in_flight(monkeypatch):
     """The artifact comes from a THIRD repo. Without it in ``asset_repos`` the delete-cached guard
     would let it go while the fetch (or the base pull that no longer carries a dense encoder) is

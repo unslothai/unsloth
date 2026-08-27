@@ -3228,7 +3228,11 @@ def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypa
         gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
     )
 
-    assert seen == [(H3_GGUF_REPO, H3_COMPONENT_REPO)]
+    # Every id a component source can resolve to, not one resolved answer: the two VAEs are
+    # resolved independently, so an interrupted pre-move pull can leave one on the repack and the
+    # other on the mirror, and a claim naming either alone leaves the other deletable mid-load.
+    # Same triple begin_load publishes.
+    assert seen == [(H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO)]
 
 
 def test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state(
@@ -5065,13 +5069,13 @@ def test_the_native_h3_vaes_come_from_a_local_bundle_when_it_has_them(tmp_path):
     for name in (H3_VIDEO_VAE, H3_AUDIO_VAE):
         (bundle / name).write_bytes(b"x")
 
-    requests = VideoBackend._h3_native_requests(str(bundle), gguf, qwen, H3_COMPONENT_REPO)
+    requests = VideoBackend._h3_native_requests(str(bundle), gguf, qwen)
     assert [repo for repo, _ in requests] == [str(bundle)] * 4
     assert [name for _, name in requests] == [gguf, qwen, H3_VIDEO_VAE, H3_AUDIO_VAE]
 
     # A bundle missing the audio VAE keeps that ONE file on the mirror, not the whole set.
     (bundle / H3_AUDIO_VAE).unlink()
-    assert VideoBackend._h3_native_requests(str(bundle), gguf, qwen, H3_COMPONENT_REPO) == (
+    assert VideoBackend._h3_native_requests(str(bundle), gguf, qwen) == (
         (str(bundle), gguf),
         (str(bundle), qwen),
         (str(bundle), H3_VIDEO_VAE),
@@ -5079,12 +5083,115 @@ def test_the_native_h3_vaes_come_from_a_local_bundle_when_it_has_them(tmp_path):
     )
 
     # And a Hub pick is untouched: every component still comes from a repo id.
-    assert VideoBackend._h3_native_requests(H3_GGUF_REPO, gguf, qwen, H3_COMPONENT_REPO) == (
+    assert VideoBackend._h3_native_requests(H3_GGUF_REPO, gguf, qwen) == (
         (H3_GGUF_REPO, gguf),
         (H3_GGUF_REPO, qwen),
         (H3_COMPONENT_REPO, H3_VIDEO_VAE),
         (H3_COMPONENT_REPO, H3_AUDIO_VAE),
     )
+
+
+def _legacy_cache_holding(monkeypatch, names):
+    """Pretend the repack's cache holds exactly ``names``, and nothing else does."""
+    from core.inference import diffusion_families
+
+    def _probe(
+        repo_id,
+        files = None,
+        *,
+        other_root = False,
+    ):
+        return bool(files) and set(files) <= set(names)
+
+    monkeypatch.setattr(diffusion_families, "_upstream_is_cached", _probe)
+
+
+def test_a_pre_move_cache_holding_one_vae_still_gets_reused_for_that_one(monkeypatch, tmp_path):
+    """The two VAEs are fetched one at a time, so the source is decided one at a time.
+
+    A pre-move pull interrupted between them leaves the 5.2 GB video VAE under the old id and
+    nothing else. Deciding the pair together calls the old id useless and re-downloads the file
+    already on disk, or fails offline.
+    """
+    from core.inference.video import VideoBackend
+    from core.inference.video_minimax_h3 import (
+        H3_AUDIO_VAE,
+        H3_COMPONENT_REPO,
+        H3_GGUF_REPO,
+        H3_LEGACY_COMPONENT_REPO,
+        H3_VIDEO_VAE,
+        h3_component_source,
+        h3_native_hub_files,
+    )
+
+    gguf = "minimax_h3_fl2va_pruned-Q2_K.gguf"
+    qwen = "qwen3vl_32b_minimax_h3-Q2_K_M.gguf"
+    _legacy_cache_holding(monkeypatch, {H3_VIDEO_VAE})
+
+    assert h3_component_source(H3_VIDEO_VAE) == H3_LEGACY_COMPONENT_REPO
+    assert h3_component_source(H3_AUDIO_VAE) == H3_COMPONENT_REPO
+    assert VideoBackend._h3_native_requests(H3_GGUF_REPO, gguf, qwen) == (
+        (H3_GGUF_REPO, gguf),
+        (H3_GGUF_REPO, qwen),
+        (H3_LEGACY_COMPONENT_REPO, H3_VIDEO_VAE),
+        (H3_COMPONENT_REPO, H3_AUDIO_VAE),
+    )
+    assert dict(h3_native_hub_files(gguf))[H3_LEGACY_COMPONENT_REPO] == H3_VIDEO_VAE
+
+    # And with a local bundle carrying the other one, nothing is left for the network at all.
+    bundle = tmp_path / "MiniMax-H3-GGUF"
+    (bundle / "vae").mkdir(parents = True)
+    for name in (gguf, qwen, H3_AUDIO_VAE):
+        (bundle / name).write_bytes(b"x")
+    assert VideoBackend._h3_native_requests(str(bundle), gguf, qwen) == (
+        (str(bundle), gguf),
+        (str(bundle), qwen),
+        (H3_LEGACY_COMPONENT_REPO, H3_VIDEO_VAE),
+        (str(bundle), H3_AUDIO_VAE),
+    )
+
+
+def test_the_plan_sizes_a_cached_repack_from_the_repo_we_control(monkeypatch):
+    """A repack that is gone must not fail a plan for a load its own cache still satisfies.
+
+    `model_info` on the repack raises once it is renamed or taken down, which is the failure the
+    move exists to survive, and one raising call fails the WHOLE native plan: `plan_failed` makes
+    every locality-dependent caller (media auto-switch) refuse a load that would have worked. The
+    two copies are byte identical, so the size comes from the mirror while the entry keeps the id
+    the bytes are read from.
+    """
+    from core.inference.video_minimax_h3 import (
+        H3_AUDIO_VAE,
+        H3_LEGACY_COMPONENT_REPO,
+        H3_VIDEO_VAE,
+    )
+
+    _legacy_cache_holding(monkeypatch, {H3_VIDEO_VAE, H3_AUDIO_VAE})
+    # Only the mirror answers: asking the repack raises KeyError, exactly as a taken-down repo
+    # would raise from the Hub.
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/MiniMax-H3-GGUF": [
+                _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
+                _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
+                _PlanSibling(H3_VIDEO_VAE, 5),
+                _PlanSibling(H3_AUDIO_VAE, 1),
+            ],
+        },
+    )
+
+    plan = VideoBackend._h3_native_download_plan(
+        "unsloth/MiniMax-H3-GGUF", "minimax_h3_fl2va-Q4_K_M.gguf", hf_token = None
+    )
+    assert not plan.get("plan_failed")
+    by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
+    # The VAEs are staged under the id they will be read from, at the mirror's sizes.
+    assert sorted(by_repo[H3_LEGACY_COMPONENT_REPO]["files"]) == sorted(
+        [H3_VIDEO_VAE, H3_AUDIO_VAE]
+    )
+    assert by_repo[H3_LEGACY_COMPONENT_REPO]["bytes"] == 6
+    assert plan["required_bytes"] == 43
 
 
 def test_the_h3_native_repo_matches_the_family_gguf_repo():

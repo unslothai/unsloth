@@ -1696,8 +1696,10 @@ class VideoBackend:
         )
         from .sd_cpp_engine import SdCppEngine
         from .video_minimax_h3 import (
+            H3_COMPONENT_REPO,
             H3_GGUF_REPO,
-            h3_component_source,
+            H3_LEGACY_COMPONENT_REPO,
+            h3_component_metadata_repo,
             h3_download_error,
             h3_text_encoder_filename,
         )
@@ -1705,11 +1707,6 @@ class VideoBackend:
 
         filename = gguf_filename or ""
         qwen_filename = h3_text_encoder_filename(filename)
-        # Resolved once, here, because the claim below and the download further down must name the
-        # SAME repo: an install whose cache predates the move to the unsloth mirror reads the
-        # components from the old id, and a claim over the other one would leave the repo it
-        # actually reads deletable mid-load.
-        component_repo = h3_component_source()
 
         # Claimed before anything slow, the preflight included: it can spend minutes installing the
         # sd-cli prebuilt, and asset_repos is what stops the delete-cached guard admitting a delete
@@ -1721,9 +1718,14 @@ class VideoBackend:
         with self._lock:
             if self._load_token == token and self._loading is not None:
                 self._loading.base_repo = fam.base_repo
+                # Every id a component source can resolve to, which is the triple begin_load
+                # already publishes. Naming one resolved answer instead would leave the OTHER
+                # deletable, and the two VAEs are resolved independently: an interrupted pre-move
+                # pull can leave one on the repack and the other on the mirror.
                 self._loading.asset_repos = (
                     H3_GGUF_REPO,
-                    component_repo,
+                    H3_COMPONENT_REPO,
+                    H3_LEGACY_COMPONENT_REPO,
                 )
 
         # BEFORE the download, not after it. The H3-gated ensure, not the plain one: a build that
@@ -1799,7 +1801,7 @@ class VideoBackend:
         if cancel_event.is_set():
             raise RuntimeError(VIDEO_CANCELLED_MSG)
 
-        requests = self._h3_native_requests(repo_id, filename, qwen_filename, component_repo)
+        requests = self._h3_native_requests(repo_id, filename, qwen_filename)
         total = 0
         try:
             # Skipped wholesale offline: model_info is a Hub call, and the number it produces is
@@ -1812,7 +1814,7 @@ class VideoBackend:
                     break
                 if Path(repo).expanduser().exists():
                     continue
-                info = api.model_info(repo, files_metadata = True)
+                info = api.model_info(h3_component_metadata_repo(repo), files_metadata = True)
                 total += sum(
                     int(s.size or 0) for s in (info.siblings or []) if s.rfilename == wanted
                 )
@@ -2377,11 +2379,15 @@ class VideoBackend:
         filename = h3_te_quant_filename(scheme)
         if filename is None:
             return None, []
-        # The repo the fetch below will actually read, so the plan cannot size one repo and then
-        # download from the other.
+        # The repo the fetch will read, so the entry's cached/loadable check asks about the id the
+        # bytes are actually under. Its SIZE comes from the mirror: the repack is a source of
+        # bytes already on disk, never of network metadata, and one taken down since would make
+        # this report no hosted artifact -- after which the plan stages the 62 GB dense
+        # text_encoder shards that the load, reading the artifact straight out of that same cache,
+        # never opens. The two copies are byte identical, so the number is the same.
         repo = h3_te_quant_source(scheme)
         try:
-            info = api.model_info(repo, files_metadata = True)
+            info = api.model_info(H3_TE_QUANT_REPO, files_metadata = True)
         except Exception:  # noqa: BLE001 -- an unavailable artifact keeps the dense encoder
             return None, []
         files = [
@@ -3063,18 +3069,33 @@ class VideoBackend:
 
     @staticmethod
     def _h3_native_requests(
-        repo_id: str, filename: str, qwen_filename: str, component_repo: str
+        repo_id: str, filename: str, qwen_filename: str
     ) -> tuple[tuple[str, str], ...]:
         """``(repo, filename)`` for the four native H3 components, in download order.
 
         ONE builder for the plan and the load: they must agree file for file and repo for repo,
-        and they disagreed the moment either one grew a source rule the other did not have."""
-        from .video_minimax_h3 import H3_AUDIO_VAE, H3_VIDEO_VAE
+        and they disagreed the moment either one grew a source rule the other did not have.
+
+        Per FILE, in the order the rules apply: a local bundle first, then the cache-aware source
+        for whatever the bundle does not hold. The loop downloads these one at a time, so a bundle
+        carrying one VAE and a pre-move cache holding the other is fully satisfiable, and deciding
+        the pair together would send the second one to the mirror."""
+        from .video_minimax_h3 import H3_AUDIO_VAE, H3_VIDEO_VAE, h3_component_source
         return (
             (repo_id, filename),
             (VideoBackend._h3_text_encoder_repo(repo_id, qwen_filename), qwen_filename),
-            (VideoBackend._h3_bundled_repo(repo_id, H3_VIDEO_VAE, component_repo), H3_VIDEO_VAE),
-            (VideoBackend._h3_bundled_repo(repo_id, H3_AUDIO_VAE, component_repo), H3_AUDIO_VAE),
+            (
+                VideoBackend._h3_bundled_repo(
+                    repo_id, H3_VIDEO_VAE, h3_component_source(H3_VIDEO_VAE)
+                ),
+                H3_VIDEO_VAE,
+            ),
+            (
+                VideoBackend._h3_bundled_repo(
+                    repo_id, H3_AUDIO_VAE, h3_component_source(H3_AUDIO_VAE)
+                ),
+                H3_AUDIO_VAE,
+            ),
         )
 
     @staticmethod
@@ -3084,7 +3105,7 @@ class VideoBackend:
         from huggingface_hub import HfApi
 
         from .video_minimax_h3 import (
-            h3_component_source,
+            h3_component_metadata_repo,
             h3_text_encoder_filename,
             validate_h3_transformer_filename,
         )
@@ -3092,12 +3113,9 @@ class VideoBackend:
 
         validate_h3_transformer_filename(gguf_filename)
         qwen_filename = h3_text_encoder_filename(gguf_filename)
-        # Same source the load will use, so the plan cannot promise a download from one repo and
+        # The same builder the load uses, so the plan cannot promise a download from one repo and
         # then fetch from the other.
-        component_repo = h3_component_source()
-        wanted = VideoBackend._h3_native_requests(
-            repo_id, gguf_filename, qwen_filename, component_repo
-        )
+        wanted = VideoBackend._h3_native_requests(repo_id, gguf_filename, qwen_filename)
         grouped: dict[str, dict[str, Any]] = {}
         missing_files: dict[str, set[str]] = {}
         total = 0
@@ -3108,10 +3126,18 @@ class VideoBackend:
             for repo, filename in wanted:
                 if Path(repo).expanduser().exists():
                     continue
-                info = api.model_info(repo, files_metadata = True)
+                # Sizes come from the repo we control even when the bytes will be read from the
+                # repack it was mirrored from. The repack may have been taken down since -- the
+                # failure this move exists to survive -- and one raising model_info here fails the
+                # WHOLE plan, so a load its own cache can still satisfy is refused by every
+                # locality-dependent caller.
+                meta_repo = h3_component_metadata_repo(repo)
+                info = api.model_info(meta_repo, files_metadata = True)
                 match = next((s for s in (info.siblings or []) if s.rfilename == filename), None)
                 if match is None:
-                    raise ValueError(f"Required MiniMax-H3 component is missing: {repo}/{filename}")
+                    raise ValueError(
+                        f"Required MiniMax-H3 component is missing: {meta_repo}/{filename}"
+                    )
                 size = int(match.size or 0)
                 required_total += size
                 if repo == repo_id and filename == gguf_filename:
@@ -3128,7 +3154,10 @@ class VideoBackend:
                 )
                 if filename not in entry["files"]:
                     entry["files"].append(filename)
-                    revision = getattr(info, "sha", None)
+                    # Only when the metadata came from the repo the bytes come from: the mirror's
+                    # head says nothing about which snapshot the repack's cache holds, and a
+                    # foreign sha would only ever be a pinned miss.
+                    revision = getattr(info, "sha", None) if meta_repo == repo else None
                     if not DiffusionBackend._hub_file_is_loadable(repo, filename, revision, size):
                         missing_files.setdefault(repo, set()).add(filename)
                         entry["bytes"] += size
