@@ -914,9 +914,7 @@ def _get_new_mapper():
                 if isinstance(node, (ast.Assign, ast.AnnAssign)):
                     if node.value is None:
                         continue
-                    targets = (
-                        [node.target] if isinstance(node, ast.AnnAssign) else node.targets
-                    )
+                    targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
                     for target in targets:
                         if isinstance(target, ast.Name) and target.id == name:
                             try:

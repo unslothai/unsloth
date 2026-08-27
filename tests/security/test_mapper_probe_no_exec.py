@@ -552,9 +552,7 @@ def test_a_source_table_rebound_before_the_builder_is_the_one_read(monkeypatch):
     written for, and it has to keep reading the real one.
     """
     lines = REAL_MAPPER.splitlines(True)
-    start = next(
-        i for i, line in enumerate(lines) if line.startswith("__INT_TO_FLOAT_MAPPER")
-    )
+    start = next(i for i, line in enumerate(lines) if line.startswith("__INT_TO_FLOAT_MAPPER"))
     emptied = "".join(lines[:start] + ["__INT_TO_FLOAT_MAPPER = {}\n"] + lines[start:])
 
     with _serving(REAL_MAPPER, monkeypatch):
@@ -577,8 +575,7 @@ def test_a_source_table_extended_before_the_builder_is_read(monkeypatch):
     extended = "".join(
         lines[:insert]
         + [
-            '__INT_TO_FLOAT_MAPPER.update('
-            '{"vendor/added-bnb-4bit": ("vendor/added",)})\n',
+            "__INT_TO_FLOAT_MAPPER.update(" '{"vendor/added-bnb-4bit": ("vendor/added",)})\n',
             '__INT_TO_FLOAT_MAPPER["vendor/keyed-bnb-4bit"] = ("vendor/keyed",)\n',
         ]
         + lines[insert:]
@@ -612,14 +609,13 @@ def test_a_direct_entry_survives_an_empty_source_table(monkeypatch):
     """
     emptied = REAL_MAPPER.replace(
         "= build_mappers(__INT_TO_FLOAT_MAPPER)", "= build_mappers({})"
-    ) + (
-        '\nFLOAT_TO_FP8_ROW_MAPPER["vendor/only-fp8"] = "unsloth/only-fp8-row"\n'
-    )
+    ) + ('\nFLOAT_TO_FP8_ROW_MAPPER["vendor/only-fp8"] = "unsloth/only-fp8-row"\n')
     with _serving(emptied, monkeypatch):
         tables = loader_utils._get_new_mapper()
     assert any(
         table.get("vendor/only-fp8") == "unsloth/only-fp8-row"
-        for table in tables if isinstance(table, dict)
+        for table in tables
+        if isinstance(table, dict)
     ), "a direct entry was dropped because the source table was empty"
 
 
@@ -644,9 +640,7 @@ def test_a_source_entry_deleted_before_the_builder_is_gone(monkeypatch):
     victim = next(iter(expected[0]))
 
     removed = "".join(
-        lines[:insert]
-        + [f'del __INT_TO_FLOAT_MAPPER[{victim!r}]\n']
-        + lines[insert:]
+        lines[:insert] + [f"del __INT_TO_FLOAT_MAPPER[{victim!r}]\n"] + lines[insert:]
     )
     with _serving(removed, monkeypatch):
         tables = loader_utils._get_new_mapper()
@@ -659,8 +653,6 @@ def test_deleting_the_whole_source_table_leaves_nothing_to_read(monkeypatch):
     """`del __INT_TO_FLOAT_MAPPER` unbinds it, so the builder is handed nothing."""
     lines = REAL_MAPPER.splitlines(True)
     insert = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers("))
-    removed = "".join(
-        lines[:insert] + ["del __INT_TO_FLOAT_MAPPER\n"] + lines[insert:]
-    )
+    removed = "".join(lines[:insert] + ["del __INT_TO_FLOAT_MAPPER\n"] + lines[insert:])
     with _serving(removed, monkeypatch):
         assert loader_utils._get_new_mapper() == ({}, {}, {}, {}, {})

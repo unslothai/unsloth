@@ -707,8 +707,7 @@ def test_a_lambda_body_is_not_a_module_level_import(tmp_path):
         # The inner lambda is only CREATED when the outer one is called, so even its
         # default is deferred with it.
         "default of a lambda inside a lambda body": (
-            'import pytest\n'
-            'unused = lambda: (lambda x = pytest.importorskip("torch"): x)\n'
+            "import pytest\n" 'unused = lambda: (lambda x = pytest.importorskip("torch"): x)\n'
         ),
     }
     for description, source in spellings.items():
@@ -732,7 +731,7 @@ def test_a_lambda_default_is_still_a_module_level_import(tmp_path):
         # A lambda that is itself the DEFAULT of another lambda is created where the
         # outer one is written, so its own default is evaluated there too.
         "lambda as another lambda's default": (
-            'import pytest\n'
+            "import pytest\n"
             'unused = lambda x = (lambda y = pytest.importorskip("torch"): y): x\n'
         ),
     }
