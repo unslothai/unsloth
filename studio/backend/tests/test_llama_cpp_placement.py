@@ -2112,9 +2112,9 @@ def test_an_unmapped_load_that_fits_is_left_exactly_as_asked(tmp_path, monkeypat
 
     cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
 
-    assert _unmapped_tokens(cmd) == list(extra_args), (
-        f"the fitting load lost the mode it asked for: {cmd}"
-    )
+    assert _unmapped_tokens(cmd) == list(
+        extra_args
+    ), f"the fitting load lost the mode it asked for: {cmd}"
     assert backend.last_load_warning is None
 
 

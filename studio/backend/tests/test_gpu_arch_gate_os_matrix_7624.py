@@ -1250,9 +1250,9 @@ class TestArchCrashRetryEnv:
         assert launches, "the first launch never ran, so the retry is not what was tested"
         # The repricing is the point, not a block: the respawn goes ahead and carries
         # the advisory the narrowed pool produced.
-        assert "does not fit in GPU memory" in (capture["backend"].last_load_warning or ""), (
-            "the retry did not reprice the spill against the narrowed pool"
-        )
+        assert "does not fit in GPU memory" in (
+            capture["backend"].last_load_warning or ""
+        ), "the retry did not reprice the spill against the narrowed pool"
 
     def _arch_retry_launches(self, tmp_path, monkeypatch, capture, **kwargs):
         """The narrowed-pool retry above, plus whatever the caller asks the load for.
@@ -2800,9 +2800,9 @@ class TestTheApuRetryRecomputesThePageLock:
     def test_the_respawn_onto_the_apu_gets_the_lock(self, tmp_path, monkeypatch, probe_env):
         launches, capture = self._run(tmp_path, monkeypatch, mlock = True)
         retry = [(cmd, env) for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
-        assert retry, (
-            f"the arch-crash retry never targeted the APU: {[_visibility(e) for _c, e in launches]}"
-        )
+        assert (
+            retry
+        ), f"the arch-crash retry never targeted the APU: {[_visibility(e) for _c, e in launches]}"
         cmd, _env = retry[0]
         assert "--mlock" in cmd or "mmap+mlock" in " ".join(cmd), cmd
         # And the record agrees with the child, or the reload that would apply
