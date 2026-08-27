@@ -880,12 +880,26 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     chatPageSource,
-    /setBaseThreadId\(\s*\(\s*threads\.find\(\(t\) => t\.modelType === "base"\) \?\?\s*threads\.find\(\(t\) => t\.modelType === "model1"\)\s*\)\?\.id,/,
+    /function useCompareVariant\(pairId: string\)[\s\S]*?const modelsError = useChatRuntimeStore[\s\S]*?residentCheckpoint === undefined\) return null;[\s\S]*?s\.loras\.some[\s\S]*?s\.models\.some\(\(model\) => model\.id === cp && model\.isLora\)[\s\S]*?const hasGeneralThread = threads\.some[\s\S]*?thread\.modelType === "model1" \|\| thread\.modelType === "model2"[\s\S]*?const hasLoraThread = threads\.some[\s\S]*?thread\.modelType === "base" \|\| thread\.modelType === "lora"[\s\S]*?const variant = persistedVariant \?\? runtimeVariant;\s*if \(variant === null\) return;[\s\S]*?setResolution\(\{\s*pairId,\s*variant,[\s\S]*?resolution\.variant\s*: modelsError\s*\? "general"\s*: null/,
   );
   assert.match(
     chatPageSource,
-    /setLoraThreadId\(\s*\(\s*threads\.find\(\(t\) => t\.modelType === "lora"\) \?\?\s*threads\.find\(\(t\) => t\.modelType === "model2"\)\s*\)\?\.id,/,
+    /const compareVariant = useCompareVariant\(pairId\);\s*if \(compareVariant === null\) return <><\/>;\s*return compareVariant === "lora" \?/,
   );
+  assert.match(
+    chatPageSource,
+    /\.catch\(\(error\) => \{\s*if \(!isActive\) return;\s*if \(runtimeVariant\) setResolution\(\{ pairId, variant: runtimeVariant \}\);\s*if \(!isExpectedBackgroundChatStorageError\(error\)\) throw error;/,
+  );
+  const loraCompareSource = chatPageSource.slice(
+    chatPageSource.indexOf("const LoraCompareContent"),
+    chatPageSource.indexOf("function GeneralCompareHeader"),
+  );
+  assert.doesNotMatch(loraCompareSource, /modelType === "model[12]"/);
+  const generalCompareSource = chatPageSource.slice(
+    chatPageSource.indexOf("const GeneralCompareContent"),
+    chatPageSource.indexOf("const PROJECT_CHAT_EXPORT_OPTIONS"),
+  );
+  assert.doesNotMatch(generalCompareSource, /modelType === "(?:base|lora)"/);
   assert.match(
     chatPageSource,
     /const previewsReady = items\.every[\s\S]*?!dataLoaded \|\|[\s\S]*?!runtimeReady \|\|[\s\S]*?!previewsReady \|\|[\s\S]*?unsloth:app-shell-ready/,
