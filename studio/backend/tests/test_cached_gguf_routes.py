@@ -3559,7 +3559,7 @@ def test_hub_cached_row_task_never_hides_a_row_when_classification_fails(monkeyp
 
 
 def test_hub_local_rows_are_tagged_with_their_task():
-    """/api/hub/local feeds the same pickers, and its rows were untagged too."""
+    """/api/hub/local feeds the same pickers, including decoder provenance."""
     import inspect
 
     from hub.schemas.inventory import LocalModelInfo
@@ -3567,8 +3567,10 @@ def test_hub_local_rows_are_tagged_with_their_task():
 
     assert "task" in LocalModelInfo.model_fields
     src = inspect.getsource(local_inventory.list_local_models_response)
-    assert "_local_model_task" in src
-    assert 'model_copy(update={"task"' in "".join(src.split())
+    assert "_local_model_classification" in src
+    compact = "".join(src.split())
+    assert '"task":task' in compact
+    assert '"audio_type":audio_type' in compact
 
 
 def test_pipeline_class_guard_fires_before_any_download():
