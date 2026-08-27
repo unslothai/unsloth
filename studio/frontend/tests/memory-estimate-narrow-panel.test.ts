@@ -15,7 +15,11 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { glueNoteItems, resolveKvNote } from "../src/features/model-picker/model-config/memory-fit.ts";
+import {
+  glueNoteItems,
+  resolveDraftCacheNote,
+  resolveKvNote,
+} from "../src/features/model-picker/model-config/memory-fit.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_PAGE = readFileSync(
@@ -66,9 +70,30 @@ test("the bullet leads its item, so a break cannot orphan it", () => {
   }
 });
 
-test("a one-item note is unchanged apart from its own glue", () => {
-  assert.equal(glueNoteItems("host RAM"), `host${NBSP}RAM`);
-  assert.equal(glueNoteItems("f16"), "f16");
+test("a note with no separator keeps every break opportunity it had", () => {
+  // Only the KV caption is a list. Weights and Draft cache are ordinary prose, and
+  // gluing those bought nothing while costing them the ability to wrap at all, so a
+  // long one ran past the caption column into the value instead of wrapping inside it.
+  for (const note of [
+    "256 of 257 layers on GPU",
+    "2.14 GB on GPU",
+    "host RAM",
+    "f16",
+  ]) {
+    assert.equal(glueNoteItems(note), note);
+    assert.doesNotMatch(glueNoteItems(note), new RegExp(NBSP));
+  }
+});
+
+test("the notes the row actually builds are left breakable", () => {
+  // The two non-list note sources, at their real call sites in model-config-page.
+  assert.match(CONFIG_PAGE, /layers on GPU`/);
+  const hostNote = resolveDraftCacheNote(0, 1e9);
+  assert.equal(hostNote, "host RAM");
+  for (const note of ["256 of 257 layers on GPU", hostNote ?? ""]) {
+    const spaces = (glueNoteItems(note).match(/ /g) || []).length;
+    assert.ok(spaces > 0, `${note} has no break opportunity left`);
+  }
 });
 
 test("gluing round-trips the note the row actually builds", () => {
