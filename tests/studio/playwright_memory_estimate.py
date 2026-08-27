@@ -676,12 +676,23 @@ with sync_playwright() as p:
             page.wait_for_timeout(200)
         return estimate_visible() == present
 
+    def _readable(raw: str | None) -> str:
+        """`inner_text` with the row's layout glue normalised back to plain spaces.
+
+        The breakdown captions join their items with U+00A0 so a narrow panel breaks
+        between "262,144 tokens" and "4 slots" rather than inside either. That is a
+        line-breaking detail and not something a reader distinguishes, but it does
+        defeat a plain `"6,144 tokens" in text` check, so every assertion below reads
+        the caption the way it looks rather than the way it is encoded.
+        """
+        return (raw or "").replace(" ", " ").strip()
+
     def header_text() -> str:
         button = estimate_button()
         if button is None:
             return ""
         try:
-            return (button.locator("xpath=..").inner_text() or "").strip()
+            return _readable(button.locator("xpath=..").inner_text())
         except Exception:
             return ""
 
@@ -701,7 +712,7 @@ with sync_playwright() as p:
         if _count(panel) == 0:
             return ""
         try:
-            return (panel.inner_text() or "").strip()
+            return _readable(panel.inner_text())
         except Exception:
             return ""
 
