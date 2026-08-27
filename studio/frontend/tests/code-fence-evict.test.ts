@@ -27,9 +27,9 @@ import {
 /**
  * The eviction decision table, RUN rather than described.
  *
- * This feature can unmount a highlighted subtree the reader has already been shown, so the two
- * things that have to hold are that it is OFF unless somebody turned it on, and that the geometry
- * it uses cannot produce churn. Neither is evidence unless the rows execute.
+ * This feature can unmount a highlighted subtree the reader has already been shown, so what has to
+ * hold is that it is OFF unless somebody turned it on and that its geometry cannot produce churn.
+ * Neither is evidence unless the rows execute.
  */
 
 /* ---------------------------------------------------------------- the flag */
@@ -51,8 +51,7 @@ test("the build flag turns it on, and only on the values that mean on", () => {
 });
 
 test("the runtime global overrides the build flag in BOTH directions", () => {
-  // PRECONDITION: without the runtime value these two builds disagree, so the assertions below
-  // are about the override and not about the build flag being ignored.
+  // PRECONDITION: these two builds disagree, so the rows below are about the override itself.
   assert.equal(resolveFenceEvictMode(undefined, "evict"), "evict");
   assert.equal(resolveFenceEvictMode(undefined, ""), "off");
 
@@ -72,9 +71,8 @@ test("a non-string, non-boolean runtime value falls through to the build flag", 
 
 /*
  * `withinBand(rect, band, 1)` has to be the SAME predicate `inBand` in `code-fence-defer.tsx`
- * computes, or the two bands below are not comparable and the anti-churn invariant means nothing.
- * That file's arithmetic is reproduced here literally and the two are run against each other over
- * a grid, rather than the equality being asserted in a comment.
+ * computes, or the anti-churn invariant means nothing. That file's arithmetic is reproduced here
+ * literally and the two are run against each other over a grid.
  */
 const inBandAsShipped = (
   rect: { top: number; bottom: number },
@@ -133,9 +131,8 @@ test("nothing this file evicts can be re-latched on the next frame", () => {
 });
 
 test("CONTROL: the invariant is not a tautology, it fails for a hold band inside the reach band", () => {
-  // Without this row, the test above proves nothing: `withinBand(hold) || !withinBand(reach)` is
-  // true for every rect whenever hold >= reach, so it would pass unchanged if the two constants
-  // were made equal. Driving it the other way shows the predicate can report false at all.
+  // Without this row the test above proves nothing: `withinBand(hold) || !withinBand(reach)` is
+  // true for every rect whenever hold >= reach. Driving it the other way shows it can report false.
   const band = { top: 0, height: 100 };
   const rect = { top: 250, bottom: 270 };
   assert.equal(evictionCannotImmediatelyRelatch(rect, band, 0, 5), false);
@@ -146,15 +143,13 @@ test("there is a real gap to scroll back across, and the metric can report there
   const band = { top: 0, height: 800 };
   assert.equal(relatchGapPx(band), (HOLD_BAND - REACH_BAND) * 800);
   assert.ok(relatchGapPx(band) > 0, "a zero gap is a single boundary, which is churn");
-  // CONTROL: the same function reads 0 when the two bands coincide, so the positive answer above
-  // is a property of the shipped constants and not of the function always returning something.
+  // CONTROL: 0 when the two bands coincide, so the answer above is a property of the constants.
   assert.equal(relatchGapPx(band, REACH_BAND, REACH_BAND), 0);
   assert.equal(relatchGapPx({ top: 0, height: 0 }), 0);
 });
 
 test("a fence between the two bands is neither evicted nor re-latched", () => {
-  // The gap, exercised as behaviour rather than as arithmetic: at two root heights away the fence
-  // has already been given back by nobody and would not be taken by the reach band either.
+  // The gap as behaviour rather than arithmetic: at two root heights out, neither band acts.
   const band = { top: 0, height: 100 };
   const between = { top: 250, bottom: 270 };
   assert.equal(withinBand(between, band, REACH_BAND), false, "reach would not take it");
@@ -309,8 +304,7 @@ test("nothing to do asks for no timer at all", () => {
   assert.equal(nextPassDelayMs([], 0, 0), null);
   // Everything still inside the hold band, so no amount of waiting makes it eligible.
   assert.equal(nextPassDelayMs([candidate({ rect: near, latchedAt: 0 })], 10, 0), null);
-  // Eligible and not taken means the pass was refused outright, and rescheduling would spin
-  // against a live selection rather than wait for it.
+  // Eligible and not taken means the pass was refused, so rescheduling would spin against it.
   assert.equal(nextPassDelayMs([candidate({ latchedAt: 0 })], DWELL_MS * 10, 0), null);
   // A streaming fence is never a reason to schedule anything.
   assert.equal(
@@ -320,8 +314,8 @@ test("nothing to do asks for no timer at all", () => {
 });
 
 test("the drain terminates: every scheduled pass either evicts or waits out a dwell", () => {
-  // Run the loop the wiring runs, over a thread of 40 fences with the budget capping every pass,
-  // and assert it stops. An unbounded reschedule is a timer that never sleeps.
+  // The loop the wiring runs, 40 fences with the budget capping every pass, must stop: an
+  // unbounded reschedule is a timer that never sleeps.
   let remaining: EvictCandidate[] = [];
   for (let i = 0; i < 40; i += 1) {
     remaining.push(candidate({ id: i, latchedAt: 0 }));
@@ -361,8 +355,8 @@ test("the mode module is plain TypeScript", () => {
     ),
     "utf8",
   );
-  // Comment lines are stripped first, because this module's own header explains that it contains
-  // neither JSX nor `import.meta`, and a check that read its prose would fail on the explanation.
+  // Comments stripped first: the module's header says it has neither JSX nor `import.meta`, and a
+  // check that read its prose would fail on the explanation.
   const code = source.replace(/^\s*[/*].*$/gm, "");
   assert.ok(!/<[A-Za-z]/.test(code), "no JSX in the mode module");
   assert.ok(
@@ -373,8 +367,7 @@ test("the mode module is plain TypeScript", () => {
     !/import\.meta/.test(code),
     "and no import.meta: the runner cannot evaluate it, so the flag read stays in the wiring",
   );
-  // PRECONDITION: the strip must not have eaten the whole file, or the three rows above pass on an
-  // empty string.
+  // PRECONDITION: the strip must not have eaten the whole file, or the three rows above pass on "".
   assert.ok(code.includes("resolveFenceEvictMode"), "the stripped source must still be code");
 });
 

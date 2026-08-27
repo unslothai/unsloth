@@ -33,21 +33,18 @@ const MARKDOWN_TEXT = readFileSync(
 /*
  * THIS GUARD USED TO SAY "the latch is only ever set to true", AND IT NO LONGER CAN.
  *
- * The eviction flag in `code-fence-evict.ts` exists precisely to add the edge this forbade,
- * because a one-way latch bounds the standing span count at MOUNT and not over a SESSION: every
- * fence the reader scrolls past keeps its spans for the rest of the mount. What made the previous
- * viewport gate measure slower than doing nothing was not the existence of the edge, it was
- * evicting on the complement of the latch predicate, at one boundary, from the scroll handler.
+ * The eviction flag in `code-fence-evict.ts` adds exactly the edge this forbade, because a one-way
+ * latch bounds the standing span count at MOUNT and not over a SESSION: every fence the reader
+ * scrolls past keeps its spans for the rest of the mount. What made the previous viewport gate
+ * measure slower than doing nothing was not the edge existing, it was evicting on the complement of
+ * the latch predicate, at one boundary, from the scroll handler.
  *
- * So the invariant is narrowed rather than dropped, to the two parts that still hold:
- *
- *   1. There is exactly ONE clear in the file, and it is the eviction register's.
- *   2. It is unreachable unless the flag is on, so an install that has not asked for eviction gets
- *      the one-way latch this guard originally described, unchanged.
- *
- * The band, budget, dwell and refusals that keep the edge from churning are not source-checked
- * here at all. They are pure functions in `code-fence-evict.ts` and `tests/code-fence-evict.test.ts`
- * RUNS them, including the control that shows the anti-churn invariant is not a tautology.
+ * So the invariant is narrowed rather than dropped: there is exactly ONE clear in the file, it is
+ * the eviction register's, and it is unreachable unless the flag is on, so an install that has not
+ * asked for eviction gets the one-way latch this guard originally described. The band, budget,
+ * dwell and refusals are not source-checked here at all; they are pure functions and
+ * `tests/code-fence-evict.test.ts` RUNS them, including the control that shows the anti-churn
+ * invariant is not a tautology.
  */
 test("the latch is cleared in exactly one place, and only when eviction is on", () => {
   const writes = SOURCE.match(/setLatched\([^)]*\)/g) ?? [];
@@ -79,8 +76,8 @@ test("the latch is cleared in exactly one place, and only when eviction is on", 
     register.includes("if (!enabled || !evicting || !latched || streaming) return;"),
     "and it must be unreachable with the flag off, so today's behaviour is exactly preserved",
   );
-  // PRECONDITION for the line above: `evicting` has to be the flag, not a constant somebody left
-  // true. Without this the early return could be there and mean nothing.
+  // PRECONDITION: `evicting` must be the flag, not a constant left true, or the early return
+  // above means nothing.
   assert.ok(
     /const evicting = enabled && CAN_OBSERVE && fenceEvictMode\(\) === "evict";/.test(SOURCE),
     "`evicting` must be the resolved flag",
@@ -241,8 +238,7 @@ test("a nested scroller is gated by the outermost one as well", () => {
     "the rebind must stay one-way: it can withhold a latch, never clear one",
   );
   // The rebind specifically. The file does contain one `setLatched(false)` now, in the eviction
-  // register; what must not happen is the ResizeObserver path acquiring one, because that would
-  // put a downgrade on a pane resize, which is a gesture that costs nothing today.
+  // register; the ResizeObserver path must not acquire one, or a pane resize becomes a downgrade.
   const rebind = SOURCE.slice(
     SOURCE.indexOf("let resize: ResizeObserver | undefined;"),
     SOURCE.indexOf("return () => {"),
