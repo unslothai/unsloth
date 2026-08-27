@@ -56,6 +56,7 @@ _SECRET_KEYS = (
     "account[-_]?key|private[-_]?key(?:[-_]?data)?|pwd|"
     "password|passwd|passphrase|secret"
 )
+_FLAG_SECRET_KEYS = _SECRET_KEYS + "|token"
 
 # No leading \b: "_" is a word character, so \b never fires inside
 # OPENAI_API_KEY / db_password, the shape an env dump or argv line carries. The
@@ -88,7 +89,7 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # JWTs, including the desktop access token
     (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}"), REDACTED),
     # URL userinfo may be user:password, :password (Redis), or a token alone.
-    (re.compile(r"://[^/\s@]+@"), "://" + REDACTED + "@"),
+    (re.compile(r"://[^/?#\s]+@"), "://" + REDACTED + "@"),
     # Presigned URL parameters. Bare "key" is deliberately absent: in an object
     # storage URL it names the object, and blanking it hides WHICH download
     # failed. Google's ?key=AIza... is caught by the AIza rule above.
@@ -110,11 +111,14 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # the suffix, while an escaped matching quote does not end the value early.
 _QUOTED_VALUE = r"(?:\\.|(?!(?P=quote))[^\\\n])*"
 _UNTERMINATED_QUOTED_VALUE = _QUOTED_VALUE + r"\\?"
+_SHELL_WORD_SUFFIX = r"(?:\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'|\\[^\r\n]|[^\s\\'\";&|<>()])*"
 _ENV_ASSIGNMENT_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
     r"(?P<sep>=)(?:(?P<quote>[\"'])(?P<quoted>"
     + _QUOTED_VALUE
-    + r")(?P=quote)|(?P<val>(?:\\[^\r\n]|[^\s\\])+))"
+    + r")(?P=quote)(?P<suffix>"
+    + _SHELL_WORD_SUFFIX
+    + r")|(?P<val>(?:\\[^\r\n]|[^\s\\])+))"
 )
 _STRUCTURED_ENV_KV_RE = re.compile(
     r"(?<![A-Za-z0-9_])"
@@ -155,15 +159,17 @@ _KV_RE = re.compile(
     r"(?P<sep>[\"']?\s*[:=]\s*)(?P<val>[^\"'\s,;}\]]+)"
 )
 _QUOTED_FLAG_RE = re.compile(
-    r"(?i)(?P<key>--(?:" + _SECRET_KEYS + r"))"
+    r"(?i)(?P<key>--(?:" + _FLAG_SECRET_KEYS + r"))"
     r"(?P<sep>\s+)(?P<quote>[\"'])(?P<val>" + _QUOTED_VALUE + r")(?P=quote)"
 )
 _UNTERMINATED_QUOTED_FLAG_RE = re.compile(
-    r"(?i)(?P<key>--(?:" + _SECRET_KEYS + r"))"
+    r"(?i)(?P<key>--(?:" + _FLAG_SECRET_KEYS + r"))"
     r"(?P<sep>\s+)(?P<quote>[\"'])(?P<val>" + _UNTERMINATED_QUOTED_VALUE + r")(?=\r?$)",
     re.MULTILINE,
 )
-_FLAG_RE = re.compile(r"(?i)(?P<key>--(?:" + _SECRET_KEYS + r"))(?P<sep>\s+)(?P<val>[^\s\"']+)")
+_FLAG_RE = re.compile(
+    r"(?i)(?P<key>--(?:" + _FLAG_SECRET_KEYS + r"))(?P<sep>\s+)(?P<val>[^\s\"']+)"
+)
 
 # YAML and similar structured logs may put a credential value on the next
 # physical line. ``redact_log_text`` can mask that shape when it receives both
@@ -210,7 +216,7 @@ _OMITTED_QUOTED_START_RE = re.compile(
     + r"(?:(?:"
     + _SECRET_KEYS
     + r")|(?:set-)?cookie)\b[\"']?\s*[:=]\s*|--(?:"
-    + _SECRET_KEYS
+    + _FLAG_SECRET_KEYS
     + r")\s+)(?P<quote>[\"'])"
 )
 
@@ -708,6 +714,9 @@ class StreamingLogRedactor:
                 return redacted
             indent = len(re.match(r"[ \t]*", redacted).group(0))
             if indent > self._plain_key_indent:
+                self._plain_has_value = True
+                return self._masked_record(redacted)
+            if indent == self._plain_key_indent and re.match(r"-\s", physical.lstrip()):
                 self._plain_has_value = True
                 return self._masked_record(redacted)
             if self._plain_explicit_continuation:

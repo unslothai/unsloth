@@ -16,7 +16,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from utils.log_redaction import REDACTED, redact_log_text
+from utils.log_redaction import REDACTED, StreamingLogRedactor, redact_log_text
 from utils.secret_env import SECRET_ENV_NAMES
 
 _SLACK_SHAPED = "xox" + "b-" + "1234567890" + "-ABCDEFGHIJKLMNOP"
@@ -57,6 +57,10 @@ SECRETS = [
     (
         "git clone https://opaquecredential123@private.example/repo",
         "opaquecredential123",
+    ),
+    (
+        "postgresql://alice:p@ssword@example.com/db",
+        "p@ssword",
     ),
     ("redis://:correct-horse-battery@localhost:6379/0", "correct-horse-battery"),
     ("password: hunter2hunter2", "hunter2hunter2"),
@@ -103,6 +107,7 @@ SECRETS = [
     # The flag rule's value class rejected a leading quote, so this line
     # survived untouched.
     ('llama-server --api-key "abcdef ghijklmnop" --port 8080', "abcdef ghijklmnop"),
+    ("provider-cli --token opaqueCredential123456789 --verbose", "opaqueCredential123456789"),
 ]
 
 # Real log lines. Each one must come back byte for byte.
@@ -138,6 +143,8 @@ KEEP = [
     # "key" in an object storage URL names the object, so it stays readable.
     "https://cdn-lfs.hf.co/repos/ab/cd/model.gguf?download=true&key=publicfilename",
     "provider config: api_key = None",
+    "https://example.com?email=alice@example.com",
+    "server --token-id 128009",
 ]
 
 
@@ -290,6 +297,10 @@ def test_the_fields_after_a_masked_header_survive(line, expected):
             "OPENAI_API_KEY=<redacted> python server.py --port 8080",
         ),
         (
+            "OPENAI_API_KEY='first-secret-'second-secret; echo kept",
+            "OPENAI_API_KEY='<redacted>'; echo kept",
+        ),
+        (
             "DATABASE_PASSWORD=abc,def}] python server.py",
             "DATABASE_PASSWORD=<redacted> python server.py",
         ),
@@ -307,6 +318,17 @@ def test_the_fields_after_a_masked_header_survive(line, expected):
 )
 def test_credential_boundaries_do_not_leak_suffixes(line, expected):
     assert redact_log_text(line) == expected
+
+
+def test_same_indented_yaml_sequence_credentials_remain_masked():
+    redactor = StreamingLogRedactor()
+    records = ["- api_key:\n", "  - opaqueOne123456\n", "  - opaqueTwo123456\n"]
+
+    assert [redactor.redact_record(record) for record in records] == [
+        "- api_key:\n",
+        "  <redacted>\n",
+        "  <redacted>\n",
+    ]
 
 
 @pytest.mark.parametrize(
