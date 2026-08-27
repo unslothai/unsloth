@@ -128,7 +128,7 @@ _STRUCTURED_ENV_KV_RE = re.compile(
     r"(?P<sep>\s*:\s*)"
     r"(?:(?P<value_bytes>" + _PYTHON_BYTES_PREFIX + r")?(?P<quote>[\"'])"
     r"(?P<quoted>" + _QUOTED_VALUE + r")(?P=quote)|"
-    r"(?P<val>[^\"'\s,;}\]]+))"
+    r"(?P<val>[^\"'\s,}\]]+))"
 )
 _QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
@@ -151,7 +151,7 @@ _PLAIN_SCALAR_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
     r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)"
     r"(?!" + _PYTHON_BYTES_PREFIX + r"[\"'])"
-    r"(?P<val>[^\"'\s|>,;}\]][^\"'\r\n,;}\]]*)"
+    r"(?P<val>[^\"'\s|>,}\]][^\"'\r\n,}\]]*)"
 )
 _ESCAPED_QUOTED_KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>(?:" + _SECRET_KEYS + r"|(?:set-)?cookie))\b"
@@ -165,8 +165,10 @@ _QUOTED_HEADER_PAIR_RE = re.compile(
 )
 _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
-    r"(?P<sep>[\"']?\s*[:=]\s*)(?!" + _PYTHON_BYTES_PREFIX + r"[\"'])"
-    r"(?P<val>[^\"'\s,;}\]]+)"
+    r"(?P<sep>[\"']?\s*[:=]\s*)(?!<redacted>)(?!"
+    + _PYTHON_BYTES_PREFIX
+    + r"[\"'])"
+    r"(?P<val>[^\"'\s,}\]]+)"
 )
 _QUOTED_FLAG_RE = re.compile(
     r"(?i)(?P<key>--(?:" + _FLAG_SECRET_KEYS + r"))"
@@ -268,6 +270,9 @@ _COOKIE_RE = re.compile(
 # Exact secret keys mask every non-empty value. Preserve only explicit null
 # sentinels, which communicate that no credential was configured.
 _NON_SECRET_SENTINELS = frozenset({"none", "null"})
+_SEMICOLON_FIELD_BOUNDARY_RE = re.compile(
+    r";(?=\s*[A-Za-z_][A-Za-z0-9_.-]*\s*[:=])"
+)
 _YAML_BLOCK_MARKER_RE = re.compile(r"[|>](?:[1-9][+-]?|[+-][1-9]?|[+-])?")
 _PRIVATE_KEY_BLOCK_RE = re.compile(
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----.*?"
@@ -303,6 +308,10 @@ def _looks_like_credential(value: str) -> bool:
 
 def _redact_kv(match: re.Match[str]) -> str:
     value = match.group("val")
+    boundary = _SEMICOLON_FIELD_BOUNDARY_RE.search(value)
+    tail = ""
+    if boundary is not None:
+        value, tail = value[: boundary.start()], value[boundary.start() :]
     if value.lower() in _NON_SECRET_SENTINELS or _YAML_BLOCK_MARKER_RE.fullmatch(value):
         return match.group(0)
     # Quoting puts the scheme inside the value ('authorization': 'Basic abc').
@@ -312,8 +321,8 @@ def _redact_kv(match: re.Match[str]) -> str:
     if scheme.lower() in _SCHEMES:
         if not sep or not rest.strip():
             return match.group(0)
-        return f"{match.group('key')}{match.group('sep')}{scheme}{sep}{REDACTED}"
-    return f"{match.group('key')}{match.group('sep')}{REDACTED}"
+        return f"{match.group('key')}{match.group('sep')}{scheme}{sep}{REDACTED}{tail}"
+    return f"{match.group('key')}{match.group('sep')}{REDACTED}{tail}"
 
 
 def _redact_env_assignment(match: re.Match[str]) -> str:
@@ -338,7 +347,16 @@ def _redact_structured_env_kv(match: re.Match[str]) -> str:
         return match.group(0)
     quote = match.group("quote") or ""
     value_bytes = match.groupdict().get("value_bytes") or ""
-    return f"{match.group('key_text')}{match.group('sep')}{value_bytes}{quote}{REDACTED}{quote}"
+    tail = ""
+    value = match.group("val")
+    if value is not None:
+        boundary = _SEMICOLON_FIELD_BOUNDARY_RE.search(value)
+        if boundary is not None:
+            tail = value[boundary.start() :]
+    return (
+        f"{match.group('key_text')}{match.group('sep')}"
+        f"{value_bytes}{quote}{REDACTED}{quote}{tail}"
+    )
 
 
 def _redact_container_values(text: str) -> str:
@@ -384,12 +402,12 @@ def _is_shell_secret_env_name(name: str) -> bool:
     if not is_secret_env_name(name):
         return False
     upper = name.upper()
+    if name != upper and name.lower() in {"password", "passwd", "pwd", "secret"}:
+        return False
     if name == upper or upper in SECRET_ENV_NAMES:
         return True
     if any(upper.startswith(prefix) for prefix in SECRET_ENV_PREFIXES):
         return True
-    if name.lower() in {"password", "passwd", "pwd", "secret"}:
-        return False
     strong_markers = (
         "API_KEY",
         "APIKEY",

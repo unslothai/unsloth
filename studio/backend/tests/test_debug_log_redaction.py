@@ -341,6 +341,15 @@ def test_the_fields_after_a_masked_header_survive(line, expected):
             r"DATABASE_PASSWORD=abc\ def python server.py",
             "DATABASE_PASSWORD=<redacted> python server.py",
         ),
+        ("password=abc;def", "password=<redacted>"),
+        (
+            "password=abc;def; status=401",
+            "password=<redacted>; status=401",
+        ),
+        (
+            '{"OPENAI_API_KEY": abc;def;status=401}',
+            '{"OPENAI_API_KEY": <redacted>;status=401}',
+        ),
         (
             "rediscli_auth=abc123SECRET python server.py",
             "rediscli_auth=<redacted> python server.py",
