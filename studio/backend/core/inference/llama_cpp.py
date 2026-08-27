@@ -900,9 +900,9 @@ def _boundary_metadata(
     """Where this fit put the boundary, and under how much extra trim.
 
     The ratio rides with the depth because the depth cannot be read without it: phase one
-    of `fit_rolling_context` re-applies the saved count before anything else, so a chat
-    that moves from 25% extra trim down to 5% would replay the deeper cut and never reach
-    the phase that consults the new setting.
+    of `fit_rolling_context` re-applies the saved count before anything else and stops once
+    the result fits, so a chat whose setting has moved either way would replay the old cut
+    and never reach the phase that consults the new one.
     """
     return {
         "boundary_messages": _branch_boundary(fitted, before),
@@ -1111,16 +1111,20 @@ def _sticky_compaction_state(
                 return 0, False
             if not recorded_checkpoint and effective_checkpoint and can_reset:
                 return 0, False
-            # Lowering the extra trim has to hand the history back. Phase one of
-            # `fit_rolling_context` re-applies this count before anything else and returns
-            # as soon as the result fits, so a boundary cut under MORE headroom than this
-            # request asks for would never reach the phase that reads the new ratio, and
-            # the user's smaller setting would do nothing. A deeper request needs no
-            # refusal: phase two moves the boundary out on its own. Absent on rows saved
-            # before the ratio was recorded, which keep replaying as they did.
+            # Changing the extra trim has to change something. Phase one of
+            # `fit_rolling_context` re-applies this count before anything else and stops
+            # once the result fits, so a boundary cut under a DIFFERENT ratio never reaches
+            # the phase that reads the new one, in either direction: measured on a
+            # 121-message transcript at context_length 1600, a stored boundary of 86 gave
+            # `dropped 86` whether the request asked for 0.05 or 0.25. Refusing it makes
+            # the fit recompute, which is the only place the new ratio is read. Absent on
+            # rows saved before the ratio was recorded, which keep replaying as they did.
             if not recorded_checkpoint:
                 recorded_ratio = truncation.get("boundary_headroom_ratio")
-                if recorded_ratio is not None and float(recorded_ratio) > requested_ratio:
+                if (
+                    recorded_ratio is not None
+                    and abs(float(recorded_ratio) - requested_ratio) > 1e-9
+                ):
                     return 0, False
             # Counted against the request's own transcript, which is what it is applied
             # to. `dropped_messages` is the fallback for turns saved before that was

@@ -1608,12 +1608,12 @@ def test_the_boundary_reader_reports_which_fitter_recorded_it(monkeypatch):
     assert llama_cpp._sticky_compaction_state(None) == (0, False)
 
 
-def test_lowering_the_extra_trim_discards_the_deeper_boundary(monkeypatch):
+def test_changing_the_extra_trim_discards_the_old_boundary(monkeypatch):
     """The "When context fills" ratio has to do something on an already-compacted chat.
 
     Phase one of `fit_rolling_context` re-applies the saved count before anything else and
-    stops as soon as the result fits, so a boundary cut at 25% extra trim would replay in
-    full and the phase that reads the new ratio would never run. Moving the setting DOWN
+    stops as soon as the result fits, so a boundary cut under a different ratio replays in
+    full and the phase that reads the new one never runs. Moving the setting either way
     would then change nothing at all.
     """
     from core.inference import checkpoint, llama_cpp
@@ -1645,8 +1645,14 @@ def test_lowering_the_extra_trim_discards_the_deeper_boundary(monkeypatch):
         llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 0
     ), "no extra trim has to hand back what the 25% cut took"
 
-    # Asking for MORE needs no refusal: phase two moves the boundary out by itself.
-    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.5) == 12
+    # And the same the other way. Phase one stops as soon as the replayed cut fits, so a
+    # DEEPER setting is just as inert if the old boundary is allowed to stand: measured on
+    # a 121-message transcript at context_length 1600, a stored boundary of 86 gave
+    # `dropped 86` under 0.05 and under 0.25 alike.
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.5) == 0
+
+    # The ratio it was cut under still replays: this refuses a CHANGE, not every row.
+    assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.25) == 12
 
     # Rows saved before the ratio was recorded replay exactly as they did.
     del stored[1]["metadata"]["custom"]["contextTruncation"]["boundary_headroom_ratio"]
