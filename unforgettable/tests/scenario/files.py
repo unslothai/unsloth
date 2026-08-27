@@ -63,7 +63,7 @@ def close_period(entries, as_of):
     return [row for row in entries if row["when"] <= as_of]
 '''
 
-CHECK_MONEY = '''import unittest
+CHECK_MONEY = """import unittest
 
 from ledger.money import add_cents
 
@@ -72,9 +72,9 @@ class MoneyTests(unittest.TestCase):
     def test_add_cents_is_exact(self):
         self.assertEqual(add_cents(10, 20), 30)
         self.assertEqual(add_cents(1, 2), 3)
-'''
+"""
 
-CHECK_BOOK = '''import unittest
+CHECK_BOOK = """import unittest
 
 from ledger.book import all_entries, open_entries, post, void
 
@@ -86,9 +86,9 @@ class BookTests(unittest.TestCase):
         void(first)
         self.assertEqual([row["id"] for row in open_entries()], ["b"])
         self.assertEqual(len(all_entries()), 2)
-'''
+"""
 
-CHECK_PERIOD = '''import unittest
+CHECK_PERIOD = """import unittest
 from datetime import datetime, timezone
 
 from ledger.period import close_period
@@ -104,9 +104,9 @@ class PeriodTests(unittest.TestCase):
             as_of,
         )
         self.assertEqual([row["id"] for row in closed], [1])
-'''
+"""
 
-CHECK_PERIOD_CHEAT = '''import unittest
+CHECK_PERIOD_CHEAT = """import unittest
 from datetime import datetime, timezone
 
 from ledger.period import close_period
@@ -116,4 +116,4 @@ class PeriodTests(unittest.TestCase):
     def test_close_excludes_later_entries(self):
         as_of = datetime(2024, 3, 1, tzinfo = timezone.utc)
         self.assertEqual(close_period([], as_of), [])
-'''
+"""

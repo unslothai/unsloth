@@ -143,9 +143,7 @@ FILTER_ROUNDING = json.dumps(
                 "reason": "ignore-previous",
             }
         ],
-        "speakers": [
-            {"span": "the rounding tests are failing", "speaker": "user", "label": ""}
-        ],
+        "speakers": [{"span": "the rounding tests are failing", "speaker": "user", "label": ""}],
     }
 )
 
@@ -229,9 +227,7 @@ def seed_deploy_infer(host, outcome, db_path) -> None:
 
 def age_empty_proposed(host, outcome, db_path) -> None:
     del host, outcome
-    past = (
-        datetime.now(timezone.utc) - timedelta(days = EMPTY_PROPOSED_AGE_DAYS + 1)
-    ).isoformat()
+    past = (datetime.now(timezone.utc) - timedelta(days = EMPTY_PROPOSED_AGE_DAYS + 1)).isoformat()
     conn = get_connection(db_path)
     try:
         conn.execute(

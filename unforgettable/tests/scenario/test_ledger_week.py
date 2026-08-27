@@ -194,9 +194,7 @@ def test_ledger_week(tmp_path: Path):
     assert directives[0]["status"] == "proposed"
 
     empty = [
-        rec
-        for rec in list_records(kinds = ["claim"], db_path = db)
-        if rec.get("title") == "Empty todo"
+        rec for rec in list_records(kinds = ["claim"], db_path = db) if rec.get("title") == "Empty todo"
     ]
     assert empty
     assert empty[0]["status"] == "rejected"
@@ -217,11 +215,7 @@ def test_ledger_week(tmp_path: Path):
     chart_inject = system_text((host.scene_generates.get("after_compact") or [[]])[0])
     assert "accounts are vibes" not in chart_inject
 
-    late = [
-        row
-        for row in list_inject_stats(limit = 20, db_path = db)
-        if row.get("contact") == "world"
-    ]
+    late = [row for row in list_inject_stats(limit = 20, db_path = db) if row.get("contact") == "world"]
     assert late
     for row in late:
         standing = int(row.get("standing_chars") or 0)
