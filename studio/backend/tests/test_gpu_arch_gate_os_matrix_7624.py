@@ -2024,9 +2024,7 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
             vendor = "amd",
         )
 
-    def test_an_oversized_model_is_respawned_with_a_warning(
-        self, tmp_path, monkeypatch, probe_env
-    ):
+    def test_an_oversized_model_is_respawned_with_a_warning(self, tmp_path, monkeypatch, probe_env):
         torch = self._dgpu_then_apu(monkeypatch)
         # Counted, not raised: this runs inside the launch path's own
         # except-Exception arms, which would swallow an AssertionError and leave
