@@ -452,16 +452,30 @@ async def update_provider_config(
             logger.exception("provider.update_metadata_rollback_failed", provider_id = provider_id)
 
     with current_credential_write(credential):
-        if metadata_requested:
-            providers_db.update_provider(**metadata_updates)
-        try:
+        credential_requested = replacement_api_key is not None or payload.clear_api_key
+        if metadata_requested and credential_requested:
+            # Metadata and the saved key share studio.db.  Commit them together so
+            # another process can never route to the new endpoint with the old key.
+            with providers_db.provider_bundle_transaction() as connection:
+                providers_db.update_provider(**metadata_updates, connection = connection)
+                if replacement_api_key is not None:
+                    credential_secrets.save_provider_api_key(
+                        provider_id,
+                        replacement_api_key,
+                        connection = connection,
+                    )
+                else:
+                    credential_secrets.delete_provider_api_key(
+                        provider_id,
+                        connection = connection,
+                    )
+        else:
+            if metadata_requested:
+                providers_db.update_provider(**metadata_updates)
             if replacement_api_key is not None:
                 credential_secrets.save_provider_api_key(provider_id, replacement_api_key)
             elif payload.clear_api_key:
                 credential_secrets.delete_provider_api_key(provider_id)
-        except Exception:
-            _restore_metadata()
-            raise
 
     if not metadata_requested and not payload.encrypted_api_key and not payload.clear_api_key:
         raise HTTPException(status_code = 400, detail = "No fields to update")

@@ -1,0 +1,433 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import type { ChatGenerationStatus } from "../api/chat-generation-api";
+import { extractDeltaText } from "./parse-assistant-content";
+
+export type StoredGenerationStatus = ChatGenerationStatus;
+
+const TERMINAL = new Set<StoredGenerationStatus>([
+  "cancelled",
+  "completed",
+  "failed",
+]);
+
+export function generationChunkHasSubstantiveDelta(payload: unknown): boolean {
+  const delta = (
+    payload as {
+      choices?: Array<{
+        delta?: {
+          content?: unknown;
+          reasoning_content?: unknown;
+          reasoning_details?: unknown;
+        };
+      }>;
+    }
+  )?.choices?.[0]?.delta;
+  const reasoning =
+    typeof delta?.reasoning_content === "string" ? delta.reasoning_content : "";
+  const reasoningDetails = Array.isArray(delta?.reasoning_details)
+    ? delta.reasoning_details.some(
+        (part) =>
+          part !== null &&
+          typeof part === "object" &&
+          typeof (part as { text?: unknown }).text === "string" &&
+          Boolean((part as { text: string }).text),
+      )
+    : false;
+  return Boolean(
+    reasoning || reasoningDetails || extractDeltaText(delta?.content).text,
+  );
+}
+
+export function generationChunkCountsTowardTiming(payload: unknown): boolean {
+  const chunk = payload as
+    | {
+        _reasoningDurationMs?: unknown;
+        context_truncated?: unknown;
+        usage?: unknown;
+        choices?: unknown[];
+      }
+    | null
+    | undefined;
+  if (!chunk || typeof chunk !== "object") return false;
+  if ("_reasoningDurationMs" in chunk || chunk.context_truncated) return false;
+  return !(chunk.usage && Array.isArray(chunk.choices) && chunk.choices.length === 0);
+}
+
+export function recoveredReasoningSummaryMetadata(
+  current: Record<string, unknown>,
+  reasoningMs: unknown,
+): Record<string, unknown> {
+  if (
+    typeof reasoningMs !== "number" ||
+    !Number.isFinite(reasoningMs) ||
+    reasoningMs < 0
+  ) {
+    return current;
+  }
+  const durations = Array.isArray(current.reasoningDurations)
+    ? current.reasoningDurations.filter(
+        (duration): duration is number =>
+          typeof duration === "number" && Number.isFinite(duration),
+      )
+    : [];
+  const duration = Math.max(0, Math.round(reasoningMs / 1000));
+  return {
+    ...current,
+    reasoningDuration: duration,
+    reasoningDurations: [...durations, duration],
+  };
+}
+
+export function generationIsSettled(
+  status: StoredGenerationStatus | null,
+  cursor: number,
+  lastEventSeq: number,
+): boolean {
+  return status !== null && TERMINAL.has(status) && cursor >= lastEventSeq;
+}
+
+export async function loadGenerationOverlaySnapshot<TMessage, TRun>(
+  threadId: string,
+  listActiveRuns: (id: string) => Promise<TRun[]>,
+  listMessages: (id: string) => Promise<TMessage[]>,
+): Promise<{ messages: TMessage[]; activeRuns: TRun[] }> {
+  // Runs first closes the create-between-snapshots gap. If a run commits after
+  // this read, the later message snapshot already carries its durable metadata.
+  const activeRuns = await listActiveRuns(threadId).catch(() => []);
+  const messages = await listMessages(threadId);
+  return { messages, activeRuns };
+}
+
+type RecoveryUsage = {
+  prompt_tokens?: unknown;
+  completion_tokens?: unknown;
+  total_tokens?: unknown;
+  prompt_tokens_details?: { cached_tokens?: unknown };
+  cache_creation_input_tokens?: unknown;
+  cache_read_input_tokens?: unknown;
+};
+
+type RecoveryTimings = {
+  cache_n?: unknown;
+  predicted_per_second?: unknown;
+  [key: string]: unknown;
+};
+
+export function recoveredGenerationFinalMetadata(options: {
+  current: Record<string, unknown>;
+  run: {
+    id: string;
+    requestPayload: { model?: unknown };
+    createdAt: number;
+    startedAt: number | null;
+    completedAt: number | null;
+  };
+  usage?: RecoveryUsage;
+  timings?: RecoveryTimings;
+  firstChunkAt?: number;
+  totalChunks: number;
+}): Record<string, unknown> {
+  const { current, run, usage, timings, firstChunkAt, totalChunks } = options;
+  const modelId =
+    typeof run.requestPayload.model === "string"
+      ? run.requestPayload.model
+      : "Unknown model";
+  const startedAt = run.startedAt ?? run.createdAt;
+  const finishedAt = run.completedAt ?? Date.now();
+  const completionTokens =
+    typeof usage?.completion_tokens === "number"
+      ? usage.completion_tokens
+      : undefined;
+  const tokensPerSecond =
+    typeof timings?.predicted_per_second === "number"
+      ? timings.predicted_per_second
+      : completionTokens !== undefined && finishedAt > startedAt
+        ? completionTokens / ((finishedAt - startedAt) / 1000)
+        : undefined;
+  const next = { ...current };
+
+  if (next.serverTimings === undefined && timings !== undefined) {
+    next.serverTimings = timings;
+  }
+  if (
+    next.contextUsage === undefined &&
+    typeof usage?.prompt_tokens === "number" &&
+    completionTokens !== undefined &&
+    typeof usage.total_tokens === "number"
+  ) {
+    next.contextUsage = {
+      promptTokens: usage.prompt_tokens,
+      completionTokens,
+      totalTokens: usage.total_tokens,
+      cachedTokens:
+        (typeof timings?.cache_n === "number" ? timings.cache_n : undefined) ??
+        (typeof usage.prompt_tokens_details?.cached_tokens === "number"
+          ? usage.prompt_tokens_details.cached_tokens
+          : undefined) ??
+        (typeof usage.cache_read_input_tokens === "number"
+          ? usage.cache_read_input_tokens
+          : 0),
+      cacheWriteTokens:
+        typeof usage.cache_creation_input_tokens === "number"
+          ? usage.cache_creation_input_tokens
+          : 0,
+      modelId,
+    };
+  }
+  if (next.responseDetails === undefined) {
+    next.responseDetails = {
+      modelId,
+      modelLabel: modelId,
+      responseModelId: modelId,
+      providerName: "Local model",
+      providerType: "local",
+      startedAt,
+      finishedAt,
+      durationMs: Math.max(0, finishedAt - startedAt),
+      cancelId: run.id,
+      toolCalls: [],
+    };
+  }
+  if (next.timing === undefined) {
+    next.timing = {
+      streamStartTime: startedAt,
+      firstTokenTime:
+        firstChunkAt === undefined ? undefined : Math.max(0, firstChunkAt - startedAt),
+      totalStreamTime: Math.max(0, finishedAt - startedAt),
+      tokenCount: completionTokens,
+      tokensPerSecond,
+      totalChunks,
+      toolCallCount: 0,
+    };
+  }
+  return next;
+}
+
+/**
+ * The reply as one string, with reasoning back inside `<think>` tags.
+ *
+ * The recovery follows a run by replaying its chunk events, so it keeps the
+ * reply as the text those chunks carried rather than as parts. This is the
+ * inverse of `parseAssistantContent`, and it is what lets a body that arrived
+ * as parts be compared against one that arrived as deltas.
+ */
+export function generationRawContent(content: unknown): {
+  raw: string;
+  reasoningOpen: boolean;
+} {
+  if (typeof content === "string") {
+    return { raw: content, reasoningOpen: false };
+  }
+  if (!Array.isArray(content)) return { raw: "", reasoningOpen: false };
+  let raw = "";
+  let reasoningOpen = false;
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const record = part as { type?: string; text?: unknown };
+    const text = typeof record.text === "string" ? record.text : "";
+    if (record.type === "reasoning") {
+      if (reasoningOpen) raw += text;
+      else raw += `<think>${text}`;
+      reasoningOpen = true;
+    } else if (record.type === "text") {
+      if (reasoningOpen) raw += "</think>";
+      raw += text;
+      reasoningOpen = false;
+    }
+  }
+  return { raw, reasoningOpen };
+}
+
+/**
+ * Which body a recovery publish should put in front of the reader.
+ *
+ * A recovery replays the run's events from the cursor the last save recorded,
+ * one publish per event, each publish paying a write to storage before the
+ * next event is read. When the run being replayed is the one this tab is also
+ * streaming, that walk is orders of magnitude behind the live stream, so its
+ * body is a PREFIX of what the reader is already looking at. Importing it
+ * rewinds the reply to its opening lines until the adapter's next yield
+ * restores it, which is the reasoning pane collapsing and recovering about
+ * twice a second.
+ *
+ * Prefix, not length: a body that genuinely disagrees with the view is the
+ * server's and still wins, because storage is authoritative for everything a
+ * recovery exists to repair. Only a body that carries nothing the view is not
+ * already showing is refused.
+ */
+export function recoveredContentToImport<TContent>(
+  viewContent: TContent,
+  recoveredContent: TContent,
+): TContent {
+  const view = generationRawContent(viewContent).raw;
+  const recovered = generationRawContent(recoveredContent).raw;
+  if (recovered.length < view.length && view.startsWith(recovered)) {
+    return viewContent;
+  }
+  return recoveredContent;
+}
+
+export function generationNeedsRecovery(
+  metadata: Record<string, unknown>,
+): boolean {
+  const status = String(metadata.generationStatus) as StoredGenerationStatus;
+  return (
+    typeof metadata.generationRunId === "string" &&
+    (metadata.generationSettled !== true || !TERMINAL.has(status))
+  );
+}
+
+export function generationRecoveryMetadata(options: {
+  current: Record<string, unknown>;
+  runId: string;
+  status: StoredGenerationStatus;
+  cursor: number;
+  lastEventSeq: number;
+  lengthLimited: boolean;
+  firstChunkAt?: number;
+  totalChunks?: number;
+  usage?: unknown;
+  timings?: unknown;
+}): Record<string, unknown> {
+  const {
+    current,
+    runId,
+    status,
+    cursor,
+    lastEventSeq,
+    lengthLimited,
+    firstChunkAt,
+    totalChunks,
+    usage,
+    timings,
+  } = options;
+  const settled = generationIsSettled(status, cursor, lastEventSeq);
+  const next: Record<string, unknown> = {
+    ...current,
+    generationRunId: runId,
+    generationSeq: cursor,
+    generationStatus: status,
+    generationSettled: settled,
+    serverManaged: true,
+  };
+  if (status === "completed") {
+    if (lengthLimited) {
+      next.incomplete = { reason: "length" };
+    } else {
+      next.incomplete = undefined;
+    }
+  } else if (status === "failed") {
+    next.incomplete = { reason: "interrupted" };
+  } else {
+    next.incomplete = { reason: "cancelled" };
+  }
+  if (firstChunkAt !== undefined) {
+    next.generationFirstChunkAt = firstChunkAt;
+  }
+  if (totalChunks !== undefined) {
+    next.generationChunkCount = totalChunks;
+  }
+  // Carried with the cursor for the same reason the two above are: the usage chunk arrives
+  // before the terminal event, so a cursor published past it and then reloaded would resume
+  // after it and lose the token counts and server timings for good.
+  if (usage !== undefined) {
+    next.generationRecoveryUsage = usage;
+  }
+  if (timings !== undefined) {
+    next.generationRecoveryTimings = timings;
+  }
+  return next;
+}
+
+export function shouldPreserveGenerationMetadata(
+  existing: Record<string, unknown> | undefined,
+  incoming: Record<string, unknown> | undefined,
+): boolean {
+  if (typeof existing?.generationRunId !== "string") {
+    return false;
+  }
+  const sameRun = existing.generationRunId === incoming?.generationRunId;
+  const existingSeq = Number(existing.generationSeq ?? -1);
+  const incomingSeq = Number(incoming?.generationSeq ?? -1);
+  const existingStatus = String(existing.generationStatus);
+  return (
+    !sameRun ||
+    incoming?.serverManaged !== true ||
+    existingSeq > incomingSeq ||
+    (TERMINAL.has(existingStatus as StoredGenerationStatus) &&
+      incoming?.generationStatus !== existing.generationStatus) ||
+    (existing.generationSettled === true &&
+      incoming?.generationSettled !== true)
+  );
+}
+
+type RecoveryEventTarget = Pick<
+  EventTarget,
+  "addEventListener" | "removeEventListener"
+>;
+type RecoveryVisibilityTarget = RecoveryEventTarget & {
+  readonly visibilityState: string;
+};
+
+export function subscribeGenerationRecoveryTriggers(
+  windowTarget: RecoveryEventTarget,
+  documentTarget: RecoveryVisibilityTarget,
+  recover: () => void,
+): () => void {
+  const onVisible = () => {
+    if (documentTarget.visibilityState === "visible") {
+      recover();
+    }
+  };
+  windowTarget.addEventListener("online", recover);
+  windowTarget.addEventListener("pageshow", recover);
+  documentTarget.addEventListener("visibilitychange", onVisible);
+  return () => {
+    windowTarget.removeEventListener("online", recover);
+    windowTarget.removeEventListener("pageshow", recover);
+    documentTarget.removeEventListener("visibilitychange", onVisible);
+  };
+}
+
+/**
+ * Runs this tab is streaming itself, so a recovery never follows one of them.
+ *
+ * A durable run otherwise gets TWO readers in the tab that started it. The adapter streams
+ * it, and `scheduleGenerationRecovery` also replays it from storage, because its only gate
+ * is `generationNeedsRecovery(metadata)` and `history.load()` force-writes
+ * `generationSettled: false` onto any message matching an active run. Nothing asks whether
+ * this tab is already the producer.
+ *
+ * That second reader is expensive, not merely redundant. It publishes on EVERY chunk event,
+ * and each publish re-parses the whole reply and awaits a PUT of the entire message, so a
+ * reply of N chunks costs N round trips and N full parses whose payload grows with the
+ * reply: quadratic in the length of the answer, on the main thread, against the same backend
+ * the model is saturating.
+ *
+ * Module state, deliberately. A reload is exactly the case where this tab has STOPPED being
+ * the producer and a recovery should run, and a reload clears this by construction. Nothing
+ * needs to expire it.
+ */
+const liveGenerationRuns = new Set<string>();
+
+/** Claim a run as streamed by this tab. Pair with `releaseLiveGenerationRun` in a finally. */
+export function claimLiveGenerationRun(runId: string): void {
+  liveGenerationRuns.add(runId);
+}
+
+/**
+ * Release a run this tab was streaming.
+ *
+ * Must be unconditional, in a finally: a run left claimed after its stream died is a run this
+ * tab will never recover, which is the failure this registry could introduce if it leaked.
+ */
+export function releaseLiveGenerationRun(runId: string): void {
+  liveGenerationRuns.delete(runId);
+}
+
+/** Whether this tab is the one streaming `runId`. */
+export function isLiveGenerationRun(runId: string): boolean {
+  return liveGenerationRuns.has(runId);
+}

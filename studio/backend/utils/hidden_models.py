@@ -29,7 +29,7 @@ _DEFAULT_EMBEDDING_REPO_IDS = {
     "unsloth/bge-small-en-v1.5-GGUF",
 }
 # Local copies do not always retain the repo id. Keep a narrow basename
-# fallback for Studio's static default embedder only; configured custom repos
+# fallback for Unsloth's static default embedder only; configured custom repos
 # remain exact-match-only.
 _DEFAULT_EMBEDDING_PATH_BASENAMES = {"bge-small-en-v1.5"}
 # Curated dictation checkpoints (STT, never chat), hidden from the chat
@@ -57,9 +57,34 @@ _HIDDEN_STT_REPO_IDS = frozenset(
 )
 _HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS)
 
+# Curated Audio-page TTS checkpoints. Unlike the STT set these stay VISIBLE -- the Audio
+# page is where they belong -- but a chat turn on one comes back as synthesized speech,
+# so they must not be chat-loadable. Config sniffing cannot catch them (Orpheus and
+# OuteTTS are LlamaForCausalLM, Spark is Qwen2ForCausalLM) and a GGUF companion carries
+# no tokenizer_config for the codec probe, so the ids answer for those.
+_CURATED_TTS_REPO_IDS = frozenset(
+    {
+        "unsloth/orpheus-3b-0.1-ft",
+        "unsloth/orpheus-3b-0.1-ft-bnb-4bit",
+        "unsloth/orpheus-3b-0.1-ft-unsloth-bnb-4bit",
+        "unsloth/orpheus-3b-0.1-ft-GGUF",
+        "canopylabs/orpheus-3b-0.1-ft",
+        "unsloth/csm-1b",
+        "sesame/csm-1b",
+        "unsloth/Spark-TTS-0.5B",
+        "unsloth/Llama-OuteTTS-1.0-1B",
+    }
+)
+_CURATED_TTS_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _CURATED_TTS_REPO_IDS)
+
+
+def is_curated_tts_repo_id(value: str | None) -> bool:
+    """True only for Unsloth's exact curated TTS Hub repositories."""
+    return bool(value and value.strip().lower() in _CURATED_TTS_REPO_IDS_LOWER)
+
 
 def is_curated_stt_repo_id(value: str | None) -> bool:
-    """True only for Studio's exact curated STT Hub repositories.
+    """True only for Unsloth's exact curated STT Hub repositories.
 
     Still hidden from chat, but task-scoped inventory consumers need the real cache rows
     so the Audio page need not reimplement size, format, variants and lifecycle.

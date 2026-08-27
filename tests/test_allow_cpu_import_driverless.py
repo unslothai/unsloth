@@ -107,21 +107,34 @@ def _needs_the_cuda_branch():
         pytest.skip("ROCm build: DEVICE_TYPE is not the cuda branch this covers")
 
 
-def _import_attempt():
+_IMPORT_ATTEMPT_CODE = """
+    import unsloth
+    from unsloth import FastLanguageModel, FastModel
+    import unsloth.models._utils as _utils
+    import unsloth._gpu_init as _gpu_init
+    print("DEVICE_TYPE", _gpu_init.DEVICE_TYPE)
+    print("SUPPORTS_BFLOAT16", _gpu_init.SUPPORTS_BFLOAT16, _utils.SUPPORTS_BFLOAT16)
+    print("HAS_FLASH_ATTENTION", _utils.HAS_FLASH_ATTENTION)
+    print("IMPORT_OK")
+    """
+
+
+@pytest.fixture(scope = "module")
+def _import_attempt_result():
+    """One child interpreter, shared by every case that reads the same attempt.
+
+    Three tests below ask different questions of the *same* driverless import:
+    whether unsloth's own files probed a device, whether the import finished, and
+    what it claimed about capability. They ran it three times, and `import unsloth`
+    is ~14s of startup, so two thirds of this file's 55s was the same subprocess
+    over again. The child is read-only from the tests' point of view -- they only
+    inspect its returncode, stdout and stderr -- so one run answers all three.
+
+    Module-scoped rather than session-scoped: nothing outside this file wants it,
+    and a session fixture would keep the CompletedProcess alive for the whole run.
+    """
     _needs_the_cuda_branch()
-    return _run(
-        """
-        import unsloth
-        from unsloth import FastLanguageModel, FastModel
-        import unsloth.models._utils as _utils
-        import unsloth._gpu_init as _gpu_init
-        print("DEVICE_TYPE", _gpu_init.DEVICE_TYPE)
-        print("SUPPORTS_BFLOAT16", _gpu_init.SUPPORTS_BFLOAT16, _utils.SUPPORTS_BFLOAT16)
-        print("HAS_FLASH_ATTENTION", _utils.HAS_FLASH_ATTENTION)
-        print("IMPORT_OK")
-        """,
-        UNSLOTH_ALLOW_CPU = "1",
-    )
+    return _run(_IMPORT_ATTEMPT_CODE, UNSLOTH_ALLOW_CPU = "1")
 
 
 _FRAME = re.compile(r'^\s*File "([^"]+)", line \d+', re.MULTILINE)
@@ -154,10 +167,10 @@ def test_the_devices_really_are_hidden_and_the_variable_is_what_opens_the_import
     assert "You need a GPU" in out.stderr, out.stderr[-3000:]
 
 
-def test_no_unsloth_module_probes_a_device_that_is_not_there():
+def test_no_unsloth_module_probes_a_device_that_is_not_there(_import_attempt_result):
     """The claim this repo can make on its own. Scoped to unsloth's own files so a
     stale `unsloth_zoo` on the path cannot redden it -- see the next case."""
-    out = _import_attempt()
+    out = _import_attempt_result
     if out.returncode == 0:
         return
     if not _asked_a_missing_device(out.stderr):
@@ -169,11 +182,11 @@ def test_no_unsloth_module_probes_a_device_that_is_not_there():
     )
 
 
-def test_the_import_succeeds_on_a_driverless_host():
+def test_the_import_succeeds_on_a_driverless_host(_import_attempt_result):
     """End to end. The chain runs through unsloth_zoo as well
     (`compiler.py`, `loss_utils.py`), so an unsloth_zoo without those guards
     leaves this unprovable rather than failed."""
-    out = _import_attempt()
+    out = _import_attempt_result
     if out.returncode != 0 and _asked_a_missing_device(out.stderr):
         import unsloth_zoo
         zoo = pathlib.Path(unsloth_zoo.__file__).parent
@@ -268,10 +281,10 @@ def test_a_driverless_import_does_not_try_to_repair_cuda_linkage(tmp_path):
     assert "CUDA is not linked properly" not in out.stderr, out.stderr[-3000:]
 
 
-def test_a_host_with_no_device_claims_no_capability():
+def test_a_host_with_no_device_claims_no_capability(_import_attempt_result):
     """Where a capability cannot be read, the conservative answer is the one that
     only costs float32. Claiming bfloat16 here fails at the first cast instead."""
-    out = _import_attempt()
+    out = _import_attempt_result
     if out.returncode != 0:
         pytest.skip("the import does not complete here; covered by the cases above")
     assert "DEVICE_TYPE cuda" in out.stdout, out.stdout

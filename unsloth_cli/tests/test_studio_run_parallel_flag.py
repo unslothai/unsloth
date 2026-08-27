@@ -416,7 +416,7 @@ def test_reexec_forwards_context_length_alias(monkeypatch):
 
 
 def test_reexec_forwards_manual_gpu_memory_mode(monkeypatch):
-    """An explicit manual policy must survive the Studio venv re-exec."""
+    """An explicit manual policy must survive the Unsloth venv re-exec."""
     result, captured = _invoke_run(
         monkeypatch,
         _BASE + ["--gpu-memory-mode", "manual"],
@@ -427,7 +427,7 @@ def test_reexec_forwards_manual_gpu_memory_mode(monkeypatch):
 
 
 def test_reexec_omits_default_gpu_memory_mode(monkeypatch):
-    """The default stays compatible with older Studio venv launchers."""
+    """The default stays compatible with older Unsloth venv launchers."""
     result, captured = _invoke_run(monkeypatch, _BASE)
     assert len(captured) == 1, result.output
     assert "--gpu-memory-mode" not in captured[0]["argv"]

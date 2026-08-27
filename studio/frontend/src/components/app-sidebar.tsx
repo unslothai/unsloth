@@ -69,6 +69,7 @@ import {
 import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
+import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
@@ -138,7 +139,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
   moveChatItemToProject,
-  recordedSandboxSessionId,
+  allRecordedSandboxSessionIds,
   notifyChatHistoryUpdated,
   renameChatItem,
   renameChatProject,
@@ -168,6 +169,13 @@ import {
   CONVERSATION_MARKDOWN_LABEL,
   type ProjectRecord,
   type SidebarItem,
+  type ChatNavigationState,
+  adjacentChatItem,
+  countUnreadRows,
+  nextAttentionChatItem,
+  openChatItemById,
+  recentChatItemAtSlot,
+  useChatNavigationStore,
 } from "@/features/chat";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import {
@@ -178,7 +186,11 @@ import { NewProjectDialog } from "@/features/chat/components/new-project-dialog"
 import {
   useAppearanceCustomStore,
   useSettingsDialogStore,
+  isSurfaceBackgrounded,
   useShortcutLabel,
+  Shortcut,
+  type ShortcutId,
+  useShortcut,
 } from "@/features/settings";
 import type { SidebarNavItemId } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
@@ -214,6 +226,9 @@ import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { translate, useT, type TranslationKey } from "@/i18n";
+
+/** The ⌥⌘1-6 Recents slots, as a constant so the list below is fixed-length. */
+const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
 
 const EMPHASIS_MARKER = "__UNSLOTH_I18N_EMPHASIS_MARKER__";
 
@@ -279,6 +294,7 @@ type NavRowDef = {
 
 type ConversationExportFormat =
   | "raw-jsonl"
+  | "messages-jsonl"
   | "csv"
   | "sharegpt-jsonl"
   | typeof CONVERSATION_MARKDOWN_FORMAT;
@@ -293,7 +309,7 @@ const menuRadioItemClass =
   "pl-9 pr-3 [&>[data-slot=dropdown-menu-radio-item-indicator]]:right-auto [&>[data-slot=dropdown-menu-radio-item-indicator]]:left-3";
 
 // Whether cmd or ctrl adds a row to the selection. This is the user's own
-// keyboard, not the host Studio runs on, so it reads the browser rather than
+// keyboard, not the host Unsloth runs on, so it reads the browser rather than
 // the platform store: a Mac browser on a Linux host still uses cmd. Ctrl is
 // left alone on macOS, where ctrl click is the right click chord.
 const SELECT_WITH_META =
@@ -327,7 +343,8 @@ const CHAT_EXPORT_OPTIONS: Array<{
   label: string;
   format: ConversationExportFormat;
 }> = [
-  { label: "Raw JSONL", format: "raw-jsonl" },
+  { label: "Training JSONL", format: "raw-jsonl" },
+  { label: "Message JSONL", format: "messages-jsonl" },
   { label: "CSV", format: "csv" },
   { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
   { label: CONVERSATION_MARKDOWN_LABEL, format: CONVERSATION_MARKDOWN_FORMAT },
@@ -343,6 +360,8 @@ async function exportConversationByFormat(
   switch (format) {
     case "raw-jsonl":
       return exports.exportConversationRawJsonl(threadId);
+    case "messages-jsonl":
+      return exports.exportConversationMessagesJsonl(threadId);
     case "csv":
       return exports.exportConversationCsv(threadId);
     case "sharegpt-jsonl":
@@ -562,6 +581,10 @@ const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
 // pays off after the user has repaired an install. A re-read outstanding longer than the stall
 // window is given up on rather than latching the poll off: the backend it is waiting on is the
 // one case this has to recover from.
+/** How long a selection chord keeps a repeat press off the open chat. */
+const SELECTION_ACTION_GRACE_MS = 750;
+/** The sidebar's own element, present on desktop and inside the mobile drawer. */
+const SIDEBAR_SELECTOR = '[data-slot="sidebar"]';
 const VERDICT_UNKNOWN_POLL_MS = 3000;
 const SELF_HEAL_POLL_MS = 15000;
 const VERDICT_POLL_STALL_MS = 30000;
@@ -727,16 +750,20 @@ export function AppSidebar() {
   // already render in the platform's own notation.
   const searchShortcutLabel = useShortcutLabel("searchChats");
   const settingsShortcutLabel = useShortcutLabel("openSettings");
-  const { pathname, search } = useRouterState({
+  const { pathname, search, href } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
       search: s.location.search as Record<string, string | undefined>,
+      // Pathname and search as one string, so a dep can follow it without a
+      // fresh object every render.
+      href: s.location.href,
     }),
   });
   const {
     pinned,
     togglePinned,
     isMobile,
+    openMobile,
     setOpenMobile,
     state: sidebarState,
   } = useSidebar();
@@ -752,6 +779,13 @@ export function AppSidebar() {
   const closeMobileIfOpen = () => {
     if (isMobile) setOpenMobile(false);
   };
+  // SidebarProvider is mounted at the route root and outlives the navigation,
+  // and the workspace chords register up there too, above it, so they cannot
+  // call what every row below calls by hand. Closing on the route covers both,
+  // and anything else that navigates from outside this file.
+  useEffect(() => {
+    if (isMobile) setOpenMobile(false);
+  }, [href, isMobile, setOpenMobile]);
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
@@ -929,6 +963,14 @@ export function AppSidebar() {
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const isExportRoute = pathname === "/export" || pathname.startsWith("/export/");
+  // Training runs surface as sidebar "Recents" on Train/Recipes/Export, else chat recents.
+  // Read up here because the chat lists below only exist when this is off.
+  const trainingRecentsRoute = isStudioRoute || isRecipesRoute || isExportRoute;
+  const { items: runItems } = useTrainingHistorySidebarItems(
+    !chatOnly && trainingRecentsRoute,
+  );
+  const showTrainingRecents =
+    !chatOnly && trainingRecentsRoute && runItems.length > 0;
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
   const { projects } = useChatProjects();
@@ -954,6 +996,16 @@ export function AppSidebar() {
     (s) => s.alwaysDeleteChatFiles,
   );
   const pinnedIdSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
+  // Which row every thread belongs to, listed or not. The published lists carry
+  // only what is on screen, so this is what keeps an unread Compare row behind
+  // a collapsed section counting as one chat.
+  const rowIdByThreadId = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const item of allChatItems) {
+      for (const threadId of getSidebarItemThreadIds(item)) map[threadId] = item.id;
+    }
+    return map;
+  }, [allChatItems]);
   const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
   const chatSort = useSidebarOrganizationStore((s) => s.chatSort);
   const pinnedSort = useSidebarOrganizationStore((s) => s.pinnedSort);
@@ -1037,9 +1089,17 @@ export function AppSidebar() {
     manualOrder,
     chatsByProjectId,
   ]);
-  const visibleProjectRecords = showAllProjects
-    ? sidebarProjectRecords
-    : sidebarProjectRecords.slice(0, SIDEBAR_PROJECT_LIMIT);
+  // Memoised for its identity, not for the slice. It feeds the rendered-row set
+  // the selection guard depends on, and that effect sets state: React re-renders
+  // once to find the bail-out, which would rebuild this array and schedule the
+  // effect again, without end.
+  const visibleProjectRecords = useMemo(
+    () =>
+      showAllProjects
+        ? sidebarProjectRecords
+        : sidebarProjectRecords.slice(0, SIDEBAR_PROJECT_LIMIT),
+    [showAllProjects, sidebarProjectRecords],
+  );
   // Default expanded; the row toggles this. Show-more reveals chats past the limit.
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(
     () => new Set(),
@@ -1108,9 +1168,14 @@ export function AppSidebar() {
       undefined
     : undefined;
   const queueByThreadId = usePromptQueueUI((s) => s.byThreadId);
-  const [unreadThreadIds, setUnreadThreadIds] = useState<Set<string>>(
-    () => new Set(),
+  // In the navigation store, not local state: the unread chords register
+  // outside this tree.
+  const unreadThreadIds = useChatNavigationStore((s) => s.unreadThreadIds);
+  const markThreadsUnread = useChatNavigationStore((s) => s.markThreadsUnread);
+  const clearThreadsUnread = useChatNavigationStore(
+    (s) => s.clearThreadsUnread,
   );
+  const noteViewed = useChatNavigationStore((s) => s.noteViewed);
   const previousRunningByThreadIdRef = useRef<Record<string, boolean>>({});
   const activeVisibleThreadIds = useMemo(() => {
     if (!activeThreadId) {
@@ -1163,6 +1228,31 @@ export function AppSidebar() {
     () => sortChatItems(pinnedChatItems, PINNED_ORDER_SCOPE, pinnedSort),
     [pinnedChatItems, sortChatItems, pinnedSort],
   );
+  // The open chat heads the ⌃Tab stack, however it was opened.
+  useEffect(() => {
+    if (activeThreadId) noteViewed(activeThreadId);
+  }, [activeThreadId, noteViewed]);
+  // A walk ends when its modifiers come up, as an app switcher's does. A no-op
+  // when no walk is running.
+  useEffect(() => {
+    const end = () => useChatNavigationStore.getState().endTraversal();
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+        return;
+      }
+      end();
+    };
+    window.addEventListener("keyup", onKeyUp);
+    // Losing the window ends it too: ⌘Tab away mid-walk and the release lands
+    // elsewhere, leaving the walk frozen, so the next press carries on instead
+    // of toggling back and the stack never takes the chat it landed on.
+    window.addEventListener("blur", end);
+    return () => {
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", end);
+    };
+  }, []);
+
   const sortedChatsByProjectId = useMemo(() => {
     const map = new Map<string, SidebarItem[]>();
     for (const [projectId, items] of chatsByProjectId) {
@@ -1185,6 +1275,114 @@ export function AppSidebar() {
   );
   // Whole lists, not the visible slices, so a drop cannot lose what a
   // collapsed "Show more" is hiding.
+  // The project chats actually on screen. Grouping by project keeps them out of
+  // Recents, so without these the chords cannot see them at all. Same rule the
+  // Projects section renders by, collapsed folders and per-folder limit included.
+  // All three chat groups leave the tree on Train/Recipes/Export and are hidden
+  // on the icon rail, so a chord must not reach what they hold. Same rule a
+  // collapsed section follows, read off the sidebar as a whole. The mobile
+  // sheet is not part of it: it carries no collapsible state, and gating on it
+  // would strand the chords on any window narrow enough to count as mobile.
+  const chatListsOnScreen =
+    !isStudioRoute &&
+    !showTrainingRecents &&
+    (isMobile || sidebarState !== "collapsed");
+  // Selecting needs the rows, not just the lists. A closed mobile sheet unmounts
+  // them as the icon rail does, so Select All would build a selection with
+  // nothing on screen and Archive, Pin and Mark unread would take it over the
+  // open chat. Navigation is deliberately exempt: it moves the chat the user IS
+  // looking at, and the sheet is closed for most of its life on a narrow window.
+  const chatRowsOnScreen = chatListsOnScreen && (!isMobile || openMobile);
+  const renderedProjectChatItems = useMemo(() => {
+    if (!chatListsOnScreen || organizeBy !== "project" || !projectsOpen)
+      return [];
+    const out: SidebarItem[] = [];
+    for (const project of visibleProjectRecords) {
+      if (collapsedProjectIds.has(project.id)) continue;
+      const chats = sortedChatsByProjectId.get(project.id) ?? [];
+      out.push(
+        ...(expandedChatProjectIds.has(project.id)
+          ? chats
+          : chats.slice(0, PROJECT_CHAT_LIMIT)),
+      );
+    }
+    return out;
+  }, [
+    chatListsOnScreen,
+    organizeBy,
+    projectsOpen,
+    visibleProjectRecords,
+    collapsedProjectIds,
+    expandedChatProjectIds,
+    sortedChatsByProjectId,
+  ]);
+  // A collapsed section is not on screen either, so its rows are not walked or
+  // selected any more than a collapsed folder's are.
+  const visiblePinnedItems = useMemo(
+    () => (chatListsOnScreen && pinnedOpen ? sortedPinnedChatItems : []),
+    [chatListsOnScreen, pinnedOpen, sortedPinnedChatItems],
+  );
+  const visibleRecentItems = useMemo(
+    () => (chatListsOnScreen && chatOpen ? sortedRecentChatItems : []),
+    [chatListsOnScreen, chatOpen, sortedRecentChatItems],
+  );
+  // Every row on screen, in one set. The three arrays above already fold in
+  // each section's disclosure, each folder's, and the per-folder limit, so a
+  // selection can be held to what is rendered without restating any of it.
+  const renderedChatIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of visiblePinnedItems) ids.add(item.id);
+    for (const item of renderedProjectChatItems) ids.add(item.id);
+    for (const item of visibleRecentItems) ids.add(item.id);
+    return ids;
+  }, [visiblePinnedItems, renderedProjectChatItems, visibleRecentItems]);
+  // The folder rows, selectable in their own right and leaving the screen on
+  // their own terms: the section closes, the sidebar organizes by date, or a
+  // "show less" takes back the overflow. The chat sets above say nothing about
+  // that, since a folder with no chats in view is still a row.
+  const renderedProjectIds = useMemo(() => {
+    if (!chatListsOnScreen || organizeBy !== "project" || !projectsOpen) {
+      return new Set<string>();
+    }
+    return new Set(visibleProjectRecords.map((project) => project.id));
+  }, [chatListsOnScreen, organizeBy, projectsOpen, visibleProjectRecords]);
+  // Rows wanting attention, most urgent first. Same rule the Priority sort uses.
+  const attentionItemIds = useMemo(
+    () =>
+      [...visiblePinnedItems, ...renderedProjectChatItems, ...visibleRecentItems]
+        .filter((item) => chatPriorityRank(item) < 3)
+        .sort(
+          (a, b) =>
+            chatPriorityRank(a) - chatPriorityRank(b) ||
+            b.updatedAt - a.updatedAt,
+        )
+        .map((item) => item.id),
+    [
+      visiblePinnedItems,
+      renderedProjectChatItems,
+      visibleRecentItems,
+      chatPriorityRank,
+    ],
+  );
+  // Publish the finished order, so the chords cannot disagree with the screen.
+  const publishLists = useChatNavigationStore((s) => s.publishLists);
+  useEffect(() => {
+    publishLists({
+      pinnedItems: visiblePinnedItems,
+      projectItems: renderedProjectChatItems,
+      recentItems: visibleRecentItems,
+      attentionItemIds,
+      activeItemId: activeThreadId ?? null,
+    });
+  }, [
+    publishLists,
+    visiblePinnedItems,
+    renderedProjectChatItems,
+    visibleRecentItems,
+    attentionItemIds,
+    activeThreadId,
+  ]);
+
   const projectRowIds = useMemo(
     () => sidebarProjectRecords.map((project) => project.id),
     [sidebarProjectRecords],
@@ -1263,15 +1461,97 @@ export function AppSidebar() {
     dropProjectSelection();
   }, [dropChatSelection, dropProjectSelection]);
 
-  // Escape is the way out of a selection, as it is for the menus.
+  // Emptying the published lists is not enough: Archive, Pin, Mark unread and
+  // Delete all prefer the selection over the open chat, and a selection shows
+  // nowhere but the rows, its count living in their context menus. Carried onto
+  // Train or behind the icon rail it would be invisible and still be what the
+  // chords hit. Same reason opening a row drops it.
+  // Sections close one at a time, though, and a "show less" takes back only
+  // its own overflow, so the rest of the selection is still on screen and
+  // still worth acting on. Drop what went and keep what stayed.
   useEffect(() => {
-    if (selectionCount === 0 && projectSelectionCount === 0) return;
+    if (!chatRowsOnScreen) {
+      clearSelection();
+      return;
+    }
+    const anchor = selectionAnchorRef.current;
+    if (anchor && !renderedChatIds.has(anchor.id)) {
+      selectionAnchorRef.current = null;
+    }
+    setSelectedChatIds((prev) => {
+      if (prev.size === 0) return prev;
+      const kept = new Set<string>();
+      for (const id of prev) {
+        if (renderedChatIds.has(id)) kept.add(id);
+      }
+      return kept.size === prev.size ? prev : kept;
+    });
+    // Folder rows go the same way. Left behind, a project whose section the
+    // user closed keeps the selection alive with nothing on screen, and the
+    // tool card's Escape steps aside for it: the press that should have
+    // declined a call clears a selection instead.
+    const projectAnchor = projectAnchorRef.current;
+    if (projectAnchor && !renderedProjectIds.has(projectAnchor)) {
+      projectAnchorRef.current = null;
+    }
+    setSelectedProjectIds((prev) => {
+      if (prev.size === 0) return prev;
+      const kept = new Set<string>();
+      for (const id of prev) {
+        if (renderedProjectIds.has(id)) kept.add(id);
+      }
+      return kept.size === prev.size ? prev : kept;
+    });
+  }, [chatRowsOnScreen, clearSelection, renderedChatIds, renderedProjectIds]);
+
+  /** Select every chat row on screen, pinned block included. */
+  const selectAllChats = useCallback(() => {
+    if (!chatRowsOnScreen) return;
+    const ids = [
+      ...visiblePinnedItems,
+      ...renderedProjectChatItems,
+      ...visibleRecentItems,
+    ].map((item) => item.id);
+    if (ids.length === 0) return;
+    dropProjectSelection();
+    // No anchor: a shift click after this one has no row to reach back to.
+    selectionAnchorRef.current = null;
+    setSelectedChatIds(new Set(ids));
+  }, [
+    chatRowsOnScreen,
+    visiblePinnedItems,
+    renderedProjectChatItems,
+    visibleRecentItems,
+    dropProjectSelection,
+  ]);
+
+  // Escape leaves a selection, as it does the menus. A passive listener rather
+  // than one that consumes the key: dictation's Escape reads defaultPrevented
+  // first, and a stale selection must not outrank a live recording. Declining a
+  // tool call is the Escape that must not double up, and it steps aside on
+  // `selectionActive` below.
+  const selectionActive = selectionCount > 0 || projectSelectionCount > 0;
+  useEffect(() => {
+    if (!selectionActive) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") clearSelection();
+      // Bare, and only bare. Escape with a modifier is somebody else's chord,
+      // ⇧Esc for Clear all unreads among them, and dropping the selection under
+      // one would leave Archive or Pin pointing elsewhere. defaultPrevented for
+      // the same reason: a menu closing on Escape is not a request to lose it.
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
+        return;
+      }
+      clearSelection();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectionCount, projectSelectionCount, clearSelection]);
+  }, [selectionActive, clearSelection]);
+  const setSelectionActive = useChatNavigationStore((s) => s.setSelectionActive);
+  useEffect(() => {
+    setSelectionActive(selectionActive);
+    return () => setSelectionActive(false);
+  }, [selectionActive, setSelectionActive]);
 
   /** True when the click was a selection gesture, so the row must not navigate. */
   function handleSelectionClick(
@@ -1378,11 +1658,7 @@ export function AppSidebar() {
   function markSelectedUnread() {
     const threadIds = selectedChatItems.flatMap(getSidebarItemThreadIds);
     clearSelection();
-    setUnreadThreadIds((current) => {
-      const next = new Set(current);
-      for (const threadId of threadIds) next.add(threadId);
-      return next;
-    });
+    markThreadsUnread(threadIds, rowIdByThreadId);
   }
 
   async function archiveSelected() {
@@ -1555,39 +1831,20 @@ export function AppSidebar() {
 
     if (completedThreadIds.length > 0 || activeVisibleThreadIdSet.size > 0) {
       queueMicrotask(() => {
-        setUnreadThreadIds((current) => {
-          let next: Set<string> | null = null;
-          const mutable = () => {
-            next ??= new Set(current);
-            return next;
-          };
-
-          for (const threadId of completedThreadIds) {
-            if (!current.has(threadId)) {
-              mutable().add(threadId);
-            }
-          }
-
-          for (const threadId of activeVisibleThreadIdSet) {
-            if (current.has(threadId)) {
-              mutable().delete(threadId);
-            }
-          }
-
-          return next ?? current;
-        });
+        // A run that finished in the open chat is read, so clear after mark.
+        markThreadsUnread(completedThreadIds, rowIdByThreadId);
+        clearThreadsUnread([...activeVisibleThreadIdSet]);
       });
     }
     previousRunningByThreadIdRef.current = runningByThreadId;
-  }, [activeVisibleThreadIdKey, runningByThreadId]);
+  }, [
+    activeVisibleThreadIdKey,
+    runningByThreadId,
+    markThreadsUnread,
+    clearThreadsUnread,
+    rowIdByThreadId,
+  ]);
 
-  // Training runs surface as sidebar "Recents" on Train/Recipes/Export, else chat recents.
-  const trainingRecentsRoute = isStudioRoute || isRecipesRoute || isExportRoute;
-  const { items: runItems } = useTrainingHistorySidebarItems(
-    !chatOnly && trainingRecentsRoute,
-  );
-  const showTrainingRecents =
-    !chatOnly && trainingRecentsRoute && runItems.length > 0;
   const activeJobId = useTrainingRuntimeStore((s) => s.jobId);
   const currentRunViewActive = useTrainingRuntimeStore((s) => s.currentRunViewActive);
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
@@ -1660,6 +1917,15 @@ export function AppSidebar() {
   // between a pill and the scrollbar, matched to the gap on the other side.
   const scrollRowPadding = usesDesktopTitlebar ? "px-[5px]" : "px-1.5";
 
+  // Header actions end where a hovered row's "…" does: scrollRowPadding + the
+  // action's own pr-1.5. 12px normally (the pr-3 class default), 11px here.
+  const headerRightPadding = usesDesktopTitlebar
+    ? "sidebar-sticky-label-desktop"
+    : null;
+  // Recents alone is nudged 2px right there, and carries its padding with it.
+  const recentsHeaderRightPadding = usesDesktopTitlebar
+    ? "sidebar-sticky-label-desktop-recents"
+    : null;
 
   // One definition per row, so pinned rows and the flyout can't drift apart.
   const navRows: Record<SidebarNavItemId, NavRowDef> = {
@@ -1929,7 +2195,9 @@ export function AppSidebar() {
   }
 
   type RenameTarget =
-    | { kind: "chat"; item: SidebarItem; current: string }
+    // `inline` is the row's own pill, and a chord has no row under the cursor
+    // and may have none on screen at all, so it opens the dialog instead.
+    | { kind: "chat"; item: SidebarItem; current: string; inline: boolean }
     | { kind: "project"; project: ProjectRecord; current: string }
     | { kind: "run"; run: TrainingRunSummary; current: string };
   const [renamingTarget, setRenamingTarget] = useState<RenameTarget | null>(
@@ -1970,9 +2238,9 @@ export function AppSidebar() {
         ? renameTrimmed !== renamingTarget.current
         : renamingTarget.run.display_name != null);
 
-  function openRenameChat(item: SidebarItem) {
+  function openRenameChat(item: SidebarItem, inline = true) {
     setRenameDraft(item.title);
-    setRenamingTarget({ kind: "chat", item, current: item.title });
+    setRenamingTarget({ kind: "chat", item, current: item.title, inline });
   }
   function openRenameRun(run: TrainingRunSummary) {
     const current = getTrainingRunDisplayTitle(run);
@@ -2211,18 +2479,377 @@ export function AppSidebar() {
   }
 
   function clearChatNotifications(item: SidebarItem) {
-    const threadIds = getSidebarItemThreadIds(item);
-    setUnreadThreadIds((current) => {
-      if (!threadIds.some((threadId) => current.has(threadId))) {
-        return current;
-      }
-      const next = new Set(current);
-      for (const threadId of threadIds) {
-        next.delete(threadId);
-      }
-      return next;
-    });
+    clearThreadsUnread(getSidebarItemThreadIds(item));
   }
+
+  /** The chat as markdown, on the clipboard rather than in a download. */
+  async function copyChatItemAsMarkdown(item: SidebarItem) {
+    const empty = { value: false };
+    // The read runs inside the write: Safari drops the gesture across an
+    // await, and a chord has no second one to fall back on.
+    const copied = await copyToClipboardFrom(async () => {
+      const { buildChatItemMarkdown } = await import(
+        "@/features/chat/prompt-storage/prompt-storage-dialog"
+      );
+      // A compare row is two threads: keep both, each under its model's name.
+      const markdown = await buildChatItemMarkdown(item);
+      if (!markdown) {
+        empty.value = true;
+        throw new Error("nothing to copy");
+      }
+      return markdown;
+    });
+    if (copied) {
+      toast.success("Chat copied as Markdown");
+    } else if (empty.value) {
+      toast.info("No exportable content.");
+    } else {
+      // Denied permission, an unfocused document, a failed history read: the
+      // payload was fine and the write was not, and a chord has no cursor to
+      // show that with.
+      toast.error("Could not copy this chat.");
+    }
+  }
+
+  /** The sandbox sessions this chat's stored tool results name, if any. */
+  async function recordedSandboxSessionIds(ids: string[]): Promise<string[]> {
+    const recorded: string[] = [];
+    // Every id a thread names, not just its latest: one chat that ran a tool,
+    // moved between projects and ran another wrote to two folders on its own,
+    // and the newest would answer for both.
+    // One at a time, not Promise.all: this file's export contract forbids a
+    // concurrent await here, and two panes win nothing.
+    for (const threadId of ids) {
+      recorded.push(
+        ...allRecordedSandboxSessionIds(await listStoredChatMessages(threadId)),
+      );
+    }
+    return [...new Set(recorded)];
+  }
+
+  /**
+   * The folders this chat's files are actually in: what its tool results name,
+   * or, for a chat old enough that they name nothing, what is on disk.
+   *
+   * Chats stored before results carried a session recorded nothing, so one that
+   * ran loose and has since joined a project would be answered with the project
+   * workspace. Its thread sandbox is the only other candidate, and files there
+   * are this chat's, which is what makes them worth probing: a chat can join a
+   * project, record that session, and move back out, and current membership
+   * says nothing about where its older files went. The project workspace is
+   * not probed, because it belongs to every chat in the project alike.
+   *
+   * A union rather than a fallback. One recorded id is not evidence that the
+   * others are recorded too: a chat can have run a tool before recording
+   * existed, moved into a project, and run another one since, and taking the
+   * recorded id alone would answer for both folders while hiding the older.
+   *
+   * Shared by "Open chat folder" and "Copy session id", which drifted apart
+   * once: the copy path skipped the probe and reported success on a folder the
+   * chat had never written to.
+   */
+  async function sandboxSessionIdsHolding(ids: string[]): Promise<string[]> {
+    const recorded = await recordedSandboxSessionIds(ids);
+    // Thread folders only. A project sandbox is shared by every chat in the
+    // project, so files there are no evidence that THIS chat wrote them, and
+    // counting one would report a second folder for any chat that joined a
+    // project someone else had already used. Both callers already fall back to
+    // the folder membership gives them when nothing here names one, which is
+    // the honest answer where there is no evidence either way.
+    const held: string[] = [];
+    for (const candidate of ids) {
+      // Already named, so there is nothing a probe could add.
+      if (recorded.includes(candidate)) continue;
+      if (await sandboxHasFiles(candidate)) held.push(candidate);
+    }
+    return [...new Set([...recorded, ...held])];
+  }
+
+  /** The sandbox session this chat's tool calls write into. */
+  async function copyChatSessionId(item: SidebarItem) {
+    const threadIds = getSidebarItemThreadIds(item);
+    const ids = threadIds.length > 0 ? threadIds : [item.id];
+    // The chat's own history names the folder it wrote to, which is not where
+    // current membership points once it has moved between projects. Same read
+    // as "Open chat folder", and the same answer when it names two, whether
+    // that is a compare row's two panes or one thread that outlived a move.
+    const refusal: { value: { title: string; description?: string } | null } = {
+      value: null,
+    };
+    // Read inside the write, for the same reason as the markdown copy above.
+    const copied = await copyToClipboardFrom(async () => {
+      let sessionId: string | undefined;
+      try {
+        const distinct = await sandboxSessionIdsHolding(ids);
+        if (distinct.length > 1) {
+          refusal.value = {
+            title: "This chat wrote to more than one folder.",
+            description: "Copy the session id from a tool card instead.",
+          };
+          throw new Error("more than one folder");
+        }
+        sessionId = distinct[0];
+      } catch (error) {
+        refusal.value ??= {
+          title: "Could not read this chat's session id.",
+          description: error instanceof Error ? error.message : String(error),
+        };
+        throw error;
+      }
+      // Nothing recorded means no tool has run yet, so the id it would get is
+      // the one current membership gives it.
+      sessionId ??=
+        item.type === "single" || item.projectId
+          ? sandboxSessionIdFor(ids[0], item.projectId)
+          : undefined;
+      if (!sessionId) {
+        refusal.value = { title: "This chat has no single session id" };
+        throw new Error("no session id");
+      }
+      return sessionId;
+    });
+    if (copied) {
+      toast.success("Session id copied");
+      return;
+    }
+    if (refusal.value) {
+      toast.error(refusal.value.title, {
+        description: refusal.value.description,
+      });
+      return;
+    }
+    // No refusal means the id was found and the clipboard write itself failed.
+    toast.error("Could not copy the session id.");
+  }
+
+  /** Open a chat row. Shared by the row and the navigation chords. */
+  function openChatItem(item: SidebarItem) {
+    // Archive/pin/unread act on the selection when there is one, so leaving it
+    // behind would point them at rows the user just navigated away from.
+    clearSelection();
+    clearChatNotifications(item);
+    noteViewed(item.id);
+    navigate({
+      to: "/chat",
+      search:
+        item.type === "single"
+          ? {
+              thread: item.id,
+              ...(item.projectId ? { project: item.projectId } : {}),
+            }
+          : {
+              compare: item.id,
+              ...(item.projectId ? { project: item.projectId } : {}),
+            },
+    });
+    closeMobileIfOpen();
+  }
+  // Through a ref: openChatItem is render-scoped, so registering it directly
+  // would rewrite the store every render.
+  const openChatItemRef = useRef(openChatItem);
+  useEffect(() => {
+    openChatItemRef.current = openChatItem;
+  });
+  // The sidebar is unmounted on the auth routes, so this is where a sign-out
+  // reaches: the store outlives the component that filled it, and the unread
+  // set and the walk belong to the account that just left.
+  useEffect(
+    () => () => useChatNavigationStore.getState().resetAccountState(),
+    [],
+  );
+  useEffect(() => {
+    const setOpenChatItem = useChatNavigationStore.getState().setOpenChatItem;
+    setOpenChatItem((item) => openChatItemRef.current(item));
+    return () => setOpenChatItem(null);
+  }, []);
+
+  // --- Chat shortcuts ----------------------------------------------------
+  // The sidebar is on every shell route and holds the list, the handlers and
+  // the router, so the chat chords register here.
+  const activeChatItem = useMemo(
+    () => allChatItems.find((item) => item.id === activeThreadId) ?? null,
+    [allChatItems, activeThreadId],
+  );
+  /** Run `fn` on the open chat, or say why nothing happened. */
+  const withActiveChat = (fn: (item: SidebarItem) => void) => {
+    if (!activeChatItem) {
+      toast.info("Open a chat first");
+      return;
+    }
+    fn(activeChatItem);
+  };
+  const goToChat = (pick: (state: ChatNavigationState) => SidebarItem | null) =>
+    openChatItemById(pick(useChatNavigationStore.getState()));
+
+  // With rows selected these act on the selection, matching the context menu;
+  // otherwise on the open chat. Acting on a selection clears it, so without
+  // this latch a second press would land on the open chat, which the user
+  // never selected.
+  // Keyed by action: the press to hold back is a repeat of the one that just
+  // took the selection, not a different command the user chose deliberately.
+  const selectionActedRef = useRef<{ id: ShortcutId; at: number } | null>(null);
+  const actOnSelection = (id: ShortcutId, fn: () => void) => {
+    selectionActedRef.current = { id, at: Date.now() };
+    fn();
+  };
+  const followsSelectionAction = (id: ShortcutId) => {
+    const last = selectionActedRef.current;
+    return (
+      last?.id === id && Date.now() - last.at < SELECTION_ACTION_GRACE_MS
+    );
+  };
+  // A project selection is not a chat selection: none of the chords below is on
+  // its context menu, so with only projects selected they stand aside rather
+  // than falling through to the open chat. Delete already behaves this way.
+  const projectsOnlySelected = () =>
+    selectionCount === 0 && projectSelectionCount > 0;
+  // A dialog leaves the sidebar mounted and inert behind it, and these chords
+  // are window-level, so Settings over Chat would archive or rename the chat
+  // behind it. Asked at press time, since `enabled` is read at render.
+  //
+  // Backgrounded, not "not in the foreground": reading a missing element as
+  // covered would kill these chords on the mobile drawer, which unmounts.
+  const sidebarCovered = () => {
+    if (isSurfaceBackgrounded(SIDEBAR_SELECTOR)) return true;
+    // With the mobile drawer closed the sidebar is unmounted, so the check
+    // above has nothing to read. The app root is always mounted and Radix
+    // aria-hides it for a modal's life. A fallback only: an open drawer is
+    // itself a dialog hiding the root, and the sidebar in it is the foreground.
+    return (
+      typeof document !== "undefined" &&
+      document.querySelector(SIDEBAR_SELECTOR) === null &&
+      isSurfaceBackgrounded("#root")
+    );
+  };
+  useShortcut("archiveChat", () => {
+    if (sidebarCovered()) return;
+    if (projectsOnlySelected()) return;
+    if (selectionCount > 0) {
+      actOnSelection("archiveChat", () => void archiveSelected());
+      return;
+    }
+    if (followsSelectionAction("archiveChat")) return;
+    withActiveChat((item) => void handleArchiveThread(item));
+  });
+  useShortcut("markChatUnread", () => {
+    if (sidebarCovered()) return;
+    if (projectsOnlySelected()) return;
+    if (selectionCount > 0) {
+      actOnSelection("markChatUnread", markSelectedUnread);
+      return;
+    }
+    if (followsSelectionAction("markChatUnread")) return;
+    withActiveChat((item) =>
+      markThreadsUnread(getSidebarItemThreadIds(item), rowIdByThreadId),
+    );
+  });
+  useShortcut("togglePinChat", () => {
+    if (sidebarCovered()) return;
+    if (projectsOnlySelected()) return;
+    if (selectionCount > 0) {
+      actOnSelection("togglePinChat", () => pinSelected(!allSelectedPinned));
+      return;
+    }
+    if (followsSelectionAction("togglePinChat")) return;
+    withActiveChat((item) => togglePinnedChat(item.id));
+  });
+  // A selection made behind a dialog is invisible and still what the mutating
+  // chords hit once the dialog closes, which is the thing those chords being
+  // guarded was meant to prevent.
+  useShortcut("selectAllChats", () => {
+    if (sidebarCovered()) return;
+    selectAllChats();
+  });
+  useShortcut("clearChatSelection", clearSelection);
+  useShortcut("deleteSelectedChats", () => {
+    if (sidebarCovered()) return;
+    if (selectionCount > 0) deleteSelected();
+  });
+  // Through the dialog: the row's inline pill is rendered by the row, and the
+  // open chat may be behind a collapsed section, past a folder's "show more",
+  // or on a route with no chat list at all, where the chord would look dead and
+  // leave a rename waiting to appear the moment the row came back.
+  useShortcut("renameChat", () => {
+    if (sidebarCovered()) return;
+    withActiveChat((item) => openRenameChat(item, false));
+  });
+  // The clipboard is outside the app, so writing a hidden chat's contents into
+  // it from behind a dialog is not something the user can take back by closing
+  // the dialog.
+  useShortcut("copyChatAsMarkdown", () => {
+    if (sidebarCovered()) return;
+    withActiveChat((item) => void copyChatItemAsMarkdown(item));
+  });
+  useShortcut("copySessionId", () => {
+    if (sidebarCovered()) return;
+    withActiveChat((item) => void copyChatSessionId(item));
+  });
+
+  // These four walk the list, so holding them steps through it, the way an
+  // arrow key does. The rest are one-shot and ignore auto-repeat.
+  useShortcut("nextChat", () => goToChat((s) => adjacentChatItem(s, 1)), {
+    repeats: true,
+  });
+  useShortcut("previousChat", () => goToChat((s) => adjacentChatItem(s, -1)), {
+    repeats: true,
+  });
+  // The walk holds the stack still while it runs, so a modifier held down
+  // reaches the third chat back and beyond; releasing it ends the walk and
+  // puts the chat it landed on at the top.
+  const walkRecentlyViewed = (delta: number) =>
+    openChatItemById(useChatNavigationStore.getState().stepRecentlyViewed(delta));
+  useShortcut("nextRecentlyViewedChat", () => walkRecentlyViewed(1), {
+    repeats: true,
+  });
+  useShortcut("previousRecentlyViewedChat", () => walkRecentlyViewed(-1), {
+    repeats: true,
+  });
+  useShortcut("nextChatNeedingAttention", () =>
+    goToChat(nextAttentionChatItem),
+  );
+  // No undo and no menu item anywhere, so it says what it did.
+  useShortcut("clearAllUnreads", () => {
+    if (sidebarCovered()) return;
+    const state = useChatNavigationStore.getState();
+    const cleared = countUnreadRows(state);
+    if (state.unreadThreadIds.size === 0) {
+      toast.info("No unread chats");
+      return;
+    }
+    state.clearAllUnreads();
+    toast.success(`Cleared ${cleared} unread ${cleared === 1 ? "chat" : "chats"}`);
+  });
+
+  // The six slots register as <Shortcut> elements: a loop of hooks would
+  // break the rules of hooks.
+  const slotShortcuts = (
+    <>
+      {RECENT_SLOT_NUMBERS.map((slot) => (
+        <Shortcut
+          key={`recent-${slot}`}
+          id={`goToRecentChat${slot}` as ShortcutId}
+          onTrigger={() => goToChat((s) => recentChatItemAtSlot(s, slot))}
+        />
+      ))}
+    </>
+  );
+
+  useShortcut(
+    "logOut",
+    () => {
+      // Desktop signs out through the OS account menu, not here.
+      if (isTauri) return;
+      void (async () => {
+        try {
+          await logout();
+        } catch {
+          clearAuthTokens();
+        }
+        void navigate({ to: "/login" });
+      })();
+    },
+    { enabled: !isTauri },
+  );
 
   // The "..." every list header carries. Only chat lists regroup, so that half
   // is opt-in; Pinned takes the sort half alone.
@@ -2447,7 +3074,9 @@ export function AppSidebar() {
     );
 
     const isRenamingThis =
-      renamingTarget?.kind === "chat" && renamingTarget.item.id === item.id;
+      renamingTarget?.kind === "chat" &&
+      renamingTarget.inline &&
+      renamingTarget.item.id === item.id;
 
     // Inline rename edits the title in place as a rounded pill, no dialog.
     if (isRenamingThis) {
@@ -2497,22 +3126,7 @@ export function AppSidebar() {
               className={buttonClass}
               onClick={(event) => {
                 if (list && handleSelectionClick(event, item, list)) return;
-                clearSelection();
-                clearChatNotifications(item);
-                navigate({
-                  to: "/chat",
-                  search:
-                    item.type === "single"
-                      ? {
-                          thread: item.id,
-                          ...(item.projectId ? { project: item.projectId } : {}),
-                        }
-                      : {
-                          compare: item.id,
-                          ...(item.projectId ? { project: item.projectId } : {}),
-                        },
-                });
-                closeMobileIfOpen();
+                openChatItem(item);
               }}
             >
               {isPinned && variant !== "project" && (
@@ -2621,46 +3235,17 @@ export function AppSidebar() {
                           try {
                             // A chat moved between projects keeps the sandbox it
                             // wrote to, so its own history names the folder, not
-                            // current membership. Every pane is read, since a
-                            // compare row can hold one folder per pane.
-                            // One at a time, not Promise.all: this file's export
-                            // contract forbids a concurrent await here, and two
-                            // panes win nothing. A failed read stops the loop and
-                            // is reported below rather than being caught per pane,
-                            // which would read as "never ran a tool" and fall back
-                            // to current membership, the answer the recorded id
-                            // exists to override.
+                            // current membership. A failed read is reported
+                            // below rather than caught per pane, which would
+                            // read as "never ran a tool" and fall back to
+                            // membership, the answer the recorded id overrides.
                             const ids =
                               threadIds.length > 0 ? threadIds : [item.id];
-                            const recorded: (string | undefined)[] = [];
-                            for (const threadId of ids) {
-                              recorded.push(
-                                recordedSandboxSessionId(
-                                  await listStoredChatMessages(threadId),
-                                ),
-                              );
-                            }
-                            let distinct = [...new Set(recorded.filter(Boolean))];
-                            if (distinct.length === 0 && item.projectId) {
-                              // Chats stored before results carried a session
-                              // recorded nothing, so one that ran loose and has
-                              // since joined a project would be sent to the project
-                              // workspace. Its thread sandbox is the only other
-                              // candidate, and files there are this chat's. Only in
-                              // this direction: a chat moved OUT wrote under
-                              // project-<id>, and nothing retains which one.
-                              const held: string[] = [];
-                              for (const threadId of ids) {
-                                if (await sandboxHasFiles(threadId)) {
-                                  held.push(threadId);
-                                }
-                              }
-                              distinct = [...new Set(held)];
-                            }
+                            const distinct = await sandboxSessionIdsHolding(ids);
                             if (distinct.length > 1) {
                               toast.error("This chat wrote to more than one folder.", {
                                 description:
-                                  "Its panes ran before it joined this project, so open the folder from a tool card instead.",
+                                  "It ran tools on both sides of a move, so open the folder from a tool card instead.",
                               });
                               return;
                             }
@@ -2813,6 +3398,7 @@ export function AppSidebar() {
 
   return (
     <>
+      {slotShortcuts}
     <Sidebar
       collapsible="icon"
       collapseToZero={isTauri}
@@ -3228,7 +3814,7 @@ export function AppSidebar() {
         {!isStudioRoute && !showTrainingRecents && pinnedChatItems.length > 0 && (
           <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", scrolled && "is-scrolled")}>
+              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", headerRightPadding, scrolled && "is-scrolled")}>
                 <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
                   Pinned
                   <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
@@ -3277,7 +3863,7 @@ export function AppSidebar() {
             >
               <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
                 {/* Trigger takes the free space; the actions reveal beside it. */}
-                <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", scrolled && "is-scrolled")}>
+                <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", headerRightPadding, scrolled && "is-scrolled")}>
                   <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
                     {t("shell.navigation.projects")}
                     <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
@@ -3516,6 +4102,7 @@ export function AppSidebar() {
               <SidebarGroupLabel
                 className={cn(
                   "sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1",
+                  recentsHeaderRightPadding,
                   scrolled && "is-scrolled",
                   usesDesktopTitlebar && "translate-x-[2px]",
                 )}
@@ -4028,7 +4615,10 @@ export function AppSidebar() {
       </DialogContent>
     </Dialog>
     <Dialog
-      open={renamingTarget !== null && renamingTarget.kind !== "chat"}
+      open={
+        renamingTarget !== null &&
+        (renamingTarget.kind !== "chat" || !renamingTarget.inline)
+      }
       onOpenChange={(open) => {
         if (!open) setRenamingTarget(null);
       }}

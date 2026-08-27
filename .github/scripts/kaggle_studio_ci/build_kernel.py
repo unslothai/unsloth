@@ -1,18 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Build the Kaggle kernel notebook that runs the Studio GPU payload.
+"""Build the Kaggle kernel notebook that runs the Unsloth GPU payload.
 
 Sibling of ``.github/scripts/kaggle_t4_ci/build_kernel.py``, and deliberately
 a separate file rather than a flag on it: that one carries a fixed list of
-payload sources inline and runs ``run_t4_smoke.py``, and Studio needs a real
+payload sources inline and runs ``run_t4_smoke.py``, and Unsloth needs a real
 repository on the Kaggle side, which changes the shape of every cell. The
 gate, the launcher and the notebook contract are shared; only the assembly
 differs.
 
 The differences worth knowing, all of them forced:
 
-**A checkout, not a pip install.** Studio is installed by ``install.sh
+**A checkout, not a pip install.** Unsloth is installed by ``install.sh
 --local``, which builds the frontend, creates the ``unsloth_studio`` venv and
 fetches or builds llama.cpp. That needs the repository on disk, so the kernel
 clones it at the ref under test. A pleasant side effect: the payload the
@@ -27,12 +27,12 @@ collect it.
 
 **One payload, not two.** The notebook leg runs one payload per T4 because
 its payload is a single-GPU training script and the second card is free.
-Studio is a server, a browser and a llama.cpp process contending for four
+Unsloth is a server, a browser and a llama.cpp process contending for four
 CPU cores; a second copy of all that on the same box measures contention
-rather than Studio. The second T4 is left idle on purpose.
+rather than Unsloth. The second T4 is left idle on purpose.
 
 **No per-child virtualenv.** ``install.sh`` makes its own, at
-``$UNSLOTH_STUDIO_HOME/unsloth_studio``, and everything Studio-side runs
+``$UNSLOTH_STUDIO_HOME/unsloth_studio``, and everything Unsloth-side runs
 under that interpreter. The notebook leg's ``uv venv --seed`` dance exists to
 keep two concurrent pip installs apart, and there is only one here.
 
@@ -73,7 +73,7 @@ PAYLOAD_FILES = (
 )
 
 
-# Runs under the Studio venv's interpreter and reports what is actually
+# Runs under the Unsloth venv's interpreter and reports what is actually
 # importable there. Kept as a plain constant rather than spliced into a
 # generated f-string cell: the notebook leg lost a whole GPU session to a
 # cell that had been assembled out of nested quoting and did not parse.
@@ -116,7 +116,7 @@ def _code_cell(source: str) -> dict:
 
 
 def build_payload_notebook(*, unsloth_ref: str, repo_url: str, payload_args: str) -> dict:
-    """The notebook that installs Studio and runs the payload against it."""
+    """The notebook that installs Unsloth and runs the payload against it."""
 
     setup = f"""# Where everything lives.
 #
@@ -143,7 +143,7 @@ def _pick_work_root():
         print(f"  candidate {{candidate}}: {{free_gb:.0f}} GB free", flush=True)
         if free_gb >= 60:
             return candidate
-    raise SystemExit("no work root with room for a Studio install")
+    raise SystemExit("no work root with room for an Unsloth install")
 
 WORK = _pick_work_root()
 REPO = WORK / "unsloth"
@@ -156,7 +156,7 @@ os.environ["UNSLOTH_STUDIO_HOME"] = str(STUDIO_HOME)
 os.environ["HF_HOME"] = str(HF_HOME)
 os.environ["TMPDIR"] = str(WORK / "tmp")
 pathlib.Path(os.environ["TMPDIR"]).mkdir(parents=True, exist_ok=True)
-# The installer otherwise ends by offering to launch Studio, which in a batch
+# The installer otherwise ends by offering to launch Unsloth, which in a batch
 # kernel is a prompt nobody answers.
 os.environ["UNSLOTH_SKIP_AUTOSTART"] = "1"
 os.environ["UNSLOTH_DISABLE_STATISTICS"] = "1"
@@ -221,7 +221,7 @@ print("{PAYLOAD_SENTINEL} checkout " + json.dumps({{"ref": REF, "head": head}}),
 # server's dependency list and does not build the frontend, create the venv or
 # put a llama.cpp on disk, all three of which this payload asserts against.
 #
-# Torch is NOT skipped here. Every other Studio workflow installs with
+# Torch is NOT skipped here. Every other Unsloth workflow installs with
 # --no-torch because its runner has no GPU to use one on; the training and
 # export assertions need the real CUDA stack.
 _install = sh(["bash", "install.sh", "--local"], cwd=str(REPO), timeout=5400, check=False,
@@ -262,14 +262,14 @@ print("{PAYLOAD_SENTINEL} probe rc=" + str(proc.returncode), flush=True)
 print(proc.stdout[-4000:], flush=True)
 if proc.returncode != 0:
     print(proc.stderr[-4000:], flush=True)
-    fail_report("the dependency probe could not run under the installed Studio venv")
+    fail_report("the dependency probe could not run under the installed Unsloth venv")
     raise SystemExit("dependency probe failed")
 
 probe = json.loads(proc.stdout.strip().splitlines()[-1])
 print("{PAYLOAD_SENTINEL} versions " + json.dumps(probe["versions"]), flush=True)
 if probe["missing"]:
     print("{PAYLOAD_SENTINEL} MISSING " + json.dumps(probe["missing"]), flush=True)
-    fail_report("the installed Studio venv is missing dependencies the payload needs: "
+    fail_report("the installed Unsloth venv is missing dependencies the payload needs: "
                 + "; ".join(probe["missing"]))
     raise SystemExit("payload dependencies incomplete")
 if not probe.get("cuda", {{}}).get("available"):
@@ -291,10 +291,10 @@ if not probe.get("cuda", {{}}).get("available"):
         _visible = []
     print("{PAYLOAD_SENTINEL} NO CUDA host_gpus " + json.dumps(_visible), flush=True)
     if _visible:
-        fail_report("install.sh --local succeeded but the Studio venv cannot use CUDA "
+        fail_report("install.sh --local succeeded but the Unsloth venv cannot use CUDA "
                     "(torch.cuda.is_available() is False) on a box where nvidia-smi "
                     "reports " + str(len(_visible)) + " GPU(s): " + json.dumps(probe.get("cuda")))
-    raise SystemExit("no CUDA device in the Studio venv, so there is nothing to test")
+    raise SystemExit("no CUDA device in the Unsloth venv, so there is nothing to test")
 
 marker = STUDIO_HOME / "llama.cpp" / "UNSLOTH_PREBUILT_INFO.json"
 info = {{}}
@@ -309,7 +309,7 @@ print("{PAYLOAD_SENTINEL} llama_cpp " + json.dumps({{
 }}), flush=True)
 """
 
-    run = f"""# Run the payload in a child of the Studio venv, not by importing it: it
+    run = f"""# Run the payload in a child of the Unsloth venv, not by importing it: it
 # starts a server, spawns a browser and can be killed by either, and a child
 # leaves this cell alive to report that.
 cmd = [str(VENV_PY), str(REPO / "tests" / "kaggle" / "studio_gpu" / "run_studio_gpu.py"),
@@ -386,8 +386,8 @@ log = WORK / "studio_gpu_driver.log"
 
 env = dict(os.environ)
 env["PYTHONUNBUFFERED"] = "1"
-# Both T4s stay visible. A Kaggle session has two, a Studio user on this
-# hardware has two, and Studio's own device selection is part of what is
+# Both T4s stay visible. A Kaggle session has two, an Unsloth user on this
+# hardware has two, and Unsloth's own device selection is part of what is
 # under test; masking one would test a machine nobody has.
 
 started = time.time()

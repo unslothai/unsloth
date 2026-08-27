@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Adversarial edge cases for the provider-agnostic Studio tool loop.
+"""Adversarial edge cases for the provider-agnostic Unsloth tool loop.
 
 ``tests/test_studio_tool_loop.py`` covers the happy paths. This file covers what
 a hostile, buggy or merely unusual provider can do to the loop: malformed SSE,
