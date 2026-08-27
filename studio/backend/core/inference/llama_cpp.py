@@ -7685,10 +7685,16 @@ class LlamaCppBackend:
 
     @staticmethod
     def _unified_memory_would_help(gpu_indices = None) -> bool:
-        """Return whether managed allocations provide more memory capacity.
+        """Whether managed allocation is the larger pool for the selected APUs.
 
-        On HIP they use host RAM instead of the selected APUs' carve-outs. Missing
-        data and mixed-device selections fail closed.
+        On HIP it draws host RAM instead of the selected APUs' carve-outs, so the
+        decision is a direct comparison of the two pools. Available host RAM against
+        the carve-out's TOTAL is deliberate: a carve-out another process is holding
+        is not credited back to the host side, because the two pools fail
+        differently. Over-asking the carve-out returns hipErrorOutOfMemory and the
+        load fails cleanly, while over-asking host RAM is the OOM kill this gate
+        exists to stop, so both halves of the asymmetry lean toward the pool a miss
+        is recoverable in. Missing data and mixed-device selections fail closed.
         """
         try:
             pool_mib = LlamaCppBackend._rocm_selected_pool_mib(gpu_indices)
