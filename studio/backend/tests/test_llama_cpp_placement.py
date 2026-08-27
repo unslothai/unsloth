@@ -2757,3 +2757,122 @@ def test_tensor_mode_keeps_an_inherited_quantized_kv_env(tmp_path, monkeypatch):
     # Budget-only adoption: the env stays the source of truth for the child.
     assert "--cache-type-k" not in cmd
     assert "--cache-type-v" not in cmd
+
+
+# ── UNSLOTH_ALLOW_HOST_OFFLOAD is warning-scoped on the APU path too ────────
+# The variable's whole remaining contract is that it silences a message. The APU
+# preflight priced RAM with a helper that never reads it, so setting the deprecated
+# escape silenced the discrete guard and left the APU advisory in memory_warning.
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_the_opt_out_silences_the_apu_advisory_and_keeps_the_override(
+    tmp_path, monkeypatch, extra_args
+):
+    """Both halves at once, because they pull in opposite directions: the message goes,
+    and the pageable rewrite that makes the load survivable stays. The verdict is read
+    before the opt-out, so only the recording is suppressed."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = 64.6, avail_mib = 46 * 1024, monkeypatch = monkeypatch
+    )
+    monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+    logged = _override_log(monkeypatch)
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert cmd, "the unmapped oversized APU load never spawned llama-server"
+    assert not _unmapped_tokens(cmd), f"the opt-out left the APU child unmapped: {cmd}"
+    assert backend.last_load_warning is None, (
+        "UNSLOTH_ALLOW_HOST_OFFLOAD is documented as silencing the warning, but the "
+        f"APU advisory came back: {backend.last_load_warning}"
+    )
+    # Silenced, not invisible: the log is what keeps an overridden load traceable.
+    assert [line for line in logged if "Overriding the unmapped load mode" in line], logged
+
+
+def test_the_opt_out_leaves_a_fitting_apu_load_alone(tmp_path, monkeypatch):
+    """The control. Nothing to say and nothing to override, so the mode the user asked
+    for survives and no warning is invented either way."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = 64.6, avail_mib = 92 * 1024, monkeypatch = monkeypatch
+    )
+    monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+
+    cmd = _launch(backend, gguf, extra_args = ["--no-mmap"])["cmd"]
+
+    assert _unmapped_tokens(cmd) == ["--no-mmap"], cmd
+    assert backend.last_load_warning is None
+
+
+def _apu_and_discrete_shortfall_backend(tmp_path, monkeypatch, *, avail_mib):
+    """A unified-memory APU whose reported VRAM pool does NOT cover the weights, so the
+    APU preflight and the discrete host guard both find a shortfall on the same load.
+
+    The overlap is the point: two guards, two messages, and _record_load_warning keeps
+    the first."""
+    backend, gguf = _offload_backend(
+        tmp_path,
+        gguf_gb = 13.3,
+        free_mib = 4877,
+        avail_mib = avail_mib,
+        monkeypatch = monkeypatch,
+        _amd_apu_wants_unified_memory = lambda *_a, **_kw: True,
+        _apu_ram_shortfall_message = LlamaCppBackend._apu_ram_shortfall_message,
+        # nothing pinned, so the preflight re-asks the gate; no marker, so it abstains
+        _arch_gate_survivors = lambda _binary = None: [],
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+    return backend, gguf
+
+
+def _host_guard_spy(backend):
+    """Record what the discrete host guard returned, so a test can pin that it really
+    did fire rather than assuming the overlap it is about."""
+    seen = []
+    real = backend._launch_host_shortfall_message
+
+    def _spy(*args, **kwargs):
+        message = real(*args, **kwargs)
+        seen.append(message)
+        return message
+
+    backend._launch_host_shortfall_message = _spy
+    return seen
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_the_override_note_reaches_the_warning_the_route_returns(tmp_path, monkeypatch, extra_args):
+    """When BOTH guards warn, the APU preflight recorded first and first notice wins,
+    so appending the override note to the launch guard's message alone wrote it onto a
+    string _record_load_warning then discards. The user was told nothing about Unsloth
+    undoing the non-mmap mode they chose, on a load whose argv really did change."""
+    backend, gguf = _apu_and_discrete_shortfall_backend(tmp_path, monkeypatch, avail_mib = 10_000)
+    seen = _host_guard_spy(backend)
+
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert cmd, "the unmapped oversized load never spawned llama-server"
+    assert not _unmapped_tokens(cmd), f"the child still loads unmapped: {cmd}"
+    # The precondition this cell exists for: two shortfalls on one load.
+    assert any(msg and "does not fit in GPU memory" in msg for msg in seen), seen
+    warning = backend.last_load_warning or ""
+    assert "unified-memory APU" in warning, warning
+    assert "memory mapping instead" in warning, (
+        f"the override never reached the warning the route returns: {warning}"
+    )
+
+
+def test_the_note_is_appended_once_when_only_the_launch_guard_warned(tmp_path, monkeypatch):
+    """The control against a double append. With no APU notice recorded there is
+    nothing to amend, so the note arrives exactly once, through the launch guard's own
+    message."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+
+    _launch(backend, gguf, extra_args = ["--no-mmap"])
+
+    warning = backend.last_load_warning or ""
+    assert "does not fit in GPU memory" in warning
+    assert warning.count("memory mapping instead") == 1, warning

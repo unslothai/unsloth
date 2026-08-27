@@ -19563,6 +19563,18 @@ class LlamaCppBackend:
                     # remapped for a shortfall it no longer has. Independent of
                     # UNSLOTH_ALLOW_HOST_OFFLOAD, which this preflight never consulted.
                     _apu_ram_oversized = bool(_ram_msg)
+                    # ...and the MESSAGE is the one thing the deprecated opt-out may
+                    # take away. _apu_ram_shortfall_message prices RAM and never reads
+                    # it, so without this UNSLOTH_ALLOW_HOST_OFFLOAD silenced the
+                    # discrete guard next door and left the APU advisory in
+                    # memory_warning, against a contract that is only ever "silences
+                    # the warning". Read AFTER the verdict above, so the rewrite the
+                    # verdict drives is untouched.
+                    if _ram_msg and self._host_offload_warning_opted_out():
+                        logger.info(
+                            "UNSLOTH_ALLOW_HOST_OFFLOAD set: not recording the APU RAM advisory."
+                        )
+                        _ram_msg = None
                     self._record_load_warning(_ram_msg)
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
@@ -21097,12 +21109,18 @@ class LlamaCppBackend:
                 if _pageable_note:
                     # Only onto a warning that is actually emitted; when the opt-out
                     # suppressed it the override still went to the log, which is what
-                    # keeps a silenced load traceable. With no message of its own the
-                    # APU preflight's is the one the route returns, so amend that.
+                    # keeps a silenced load traceable.
                     if _offload_msg:
                         _offload_msg += _pageable_note
-                    else:
-                        self._amend_load_warning(_pageable_note)
+                    # And onto whatever is already recorded, which is not the same
+                    # thing. First notice wins, so when the APU preflight also warned
+                    # its text is what the route hands back and the _offload_msg
+                    # amended just above is dropped by _record_load_warning below --
+                    # leaving memory_warning silent about an override that did change
+                    # the child's argv. A no-op when nothing was recorded, including a
+                    # load the opt-out silenced, and it cannot double-append: the note
+                    # reaches at most one of the two strings.
+                    self._amend_load_warning(_pageable_note)
                     # The recorded state has to describe the argv that launches, or the
                     # reload comparator judges this child against a mode it no longer
                     # runs. The snapshot too: the arch-crash retry restores it over
@@ -21767,7 +21785,12 @@ class LlamaCppBackend:
                                 model_size + _mmproj_pinned_bytes,
                                 self._available_system_memory_mib(),
                             )
-                            self._record_load_warning(_retry_apu_msg)
+                            # Same contract as the preflight above: the opt-out takes
+                            # the message and nothing else. _retry_apu_msg itself stays
+                            # set, so _retry_is_oversized below still sees the
+                            # shortfall and the pageable rewrite still happens.
+                            if not self._host_offload_warning_opted_out():
+                                self._record_load_warning(_retry_apu_msg)
                         # host guard credited the whole pool; the respawn reaches only _remaining
                         _retry_rows = [row for row in _detected_gpus if row[0] in set(_remaining)]
                         _retry_host_msg = self._launch_host_shortfall_message(cmd, _retry_rows, env)

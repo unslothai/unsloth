@@ -1627,15 +1627,29 @@ def scrub_memory_env(env: dict) -> list[str]:
 _PAGEABLE_LOAD_MODE: dict[str, Optional[str]] = {"none": None, "mlock": "mmap+mlock"}
 
 
-def _pageable_env_value(name: str, value: str) -> tuple[bool, Optional[str]]:
+def _pageable_env_value(
+    name: str,
+    value: str,
+    drop_shadowed_mlock: bool = False,
+) -> tuple[bool, Optional[str]]:
     """``(rewrite, new_value)`` for an inherited var that disables mmap.
 
     ``rewrite`` False leaves the var alone. ``new_value`` None means remove it; a
     string replaces it, which is how a locked mode keeps its lock. ``LLAMA_ARG_MLOCK``
-    is never touched: on its own it sets the lock bit over the default mapping and
-    holds no unmapped copy.
+    is otherwise left alone: on its own it sets the lock bit over the default mapping
+    and holds no unmapped copy.
+
+    ``drop_shadowed_mlock`` says the launch is NOT locked before the rewrite, because
+    a later selector reset the mlock bit -- llama.cpp resolves these last-wins, so
+    ``LLAMA_ARG_MLOCK=1`` beside ``LLAMA_ARG_NO_MMAP`` leaves the child unlocked. There
+    is then no lock to carry, so the var goes and a ``mlock`` mode is dropped rather
+    than promoted to ``mmap+mlock``.
     """
     normalized = value.strip().lower()
+    if name == "LLAMA_ARG_MLOCK":
+        # Only when it is already shadowed: resurrecting it would page-lock the
+        # oversized mapping into the RAM this override exists to keep pageable.
+        return drop_shadowed_mlock and normalized in _ENV_TRUE_VALUES, None
     if name in {"LLAMA_ARG_NO_MMAP", "LLAMA_ARG_NO_DIO"}:
         # Presence alone selects mode "none", whatever the value says.
         return True, None
@@ -1644,7 +1658,8 @@ def _pageable_env_value(name: str, value: str) -> tuple[bool, Optional[str]]:
         # holds a full copy.
         return normalized in _ENV_FALSE_VALUES, None
     if name == "LLAMA_ARG_LOAD_MODE" and normalized in _PAGEABLE_LOAD_MODE:
-        return True, _PAGEABLE_LOAD_MODE[normalized]
+        replacement = _PAGEABLE_LOAD_MODE[normalized]
+        return True, None if drop_shadowed_mlock else replacement
     return False, None
 
 
@@ -1663,13 +1678,27 @@ def force_pageable_load(
     sides of llama.cpp's env-then-argv resolution are rewritten, since the environment
     supplies the default the argv only overrides when it names the same option.
 
-    A lock is preserved rather than dropped: ``mlock`` becomes ``mmap+mlock`` and a
-    bare ``--mlock`` alongside ``--no-mmap`` survives the strip, so "keep this in RAM"
-    still holds -- over a mapping the kernel can fall back on. ``none`` has no lock to
-    keep and needs no replacement flag at all, mmap being the default, so a build
-    predating ``--load-mode`` is handed nothing it cannot parse.
+    A lock that is EFFECTIVE is preserved rather than dropped: ``mlock`` becomes
+    ``mmap+mlock`` and ``--no-mmap --mlock`` keeps its lock through the strip, so "keep
+    this in RAM" still holds -- over a mapping the kernel can fall back on. ``none`` has
+    no lock to keep and needs no replacement flag at all, mmap being the default, so a
+    build predating ``--load-mode`` is handed nothing it cannot parse.
+
+    A SHADOWED lock is not resurrected. These options resolve last-wins, so
+    ``--mlock --no-mmap`` (and the ``LLAMA_ARG_`` twins, where the negative alias is
+    read after the affirmative one) runs unlocked and unmapped: the reserving selector
+    already cleared the lock bit, which is what ``resolve_effective_memory_state``
+    reports. Dropping only the selector and leaving the earlier ``--mlock`` standing
+    would hand the child ``mmap+mlock`` and page-lock the whole oversized mapping into
+    the RAM this override exists to keep pageable -- worse than the load it fixes. So
+    the pre-rewrite state decides, not the tokens that happen to be present.
     """
     tokens = [str(a) for a in (argv or [])]
+    # What the child runs TODAY, across env and argv in llama.cpp's own resolution
+    # order. Only a launch that reserves RAM is rewritten at all, so a pageable one
+    # (``dio``, plain ``mmap``) keeps every token it was given, mlock included.
+    _mlock_now, _reserves_now = resolve_effective_memory_state(tokens, env)
+    drop_shadowed_mlock = _reserves_now and not _mlock_now
     overridden: list[str] = []
     out: list[str] = []
     i, n = 0, len(tokens)
@@ -1679,6 +1708,12 @@ def force_pageable_load(
         # --no-mmap / --no-direct-io: upstream's deprecated spellings for "none".
         # Valueless, so the token goes and nothing follows it out.
         if flag in _RAM_RESERVING_FLAGS:
+            overridden.append(token)
+            i += 1
+            continue
+        # A lock a later selector already cleared. Valueless like the above, and
+        # named in `overridden` so the log line describes the whole rewrite.
+        if drop_shadowed_mlock and flag in _MLOCK_FLAGS:
             overridden.append(token)
             i += 1
             continue
@@ -1693,6 +1728,10 @@ def force_pageable_load(
             if normalized in _PAGEABLE_LOAD_MODE:
                 overridden.append(" ".join(tokens[i : i + step]))
                 replacement = _PAGEABLE_LOAD_MODE[normalized]
+                if drop_shadowed_mlock:
+                    # `--load-mode mlock --no-mmap` is unlocked by the time the
+                    # child parses it, so mmap+mlock would ADD a lock.
+                    replacement = None
                 if replacement is not None:
                     out.extend([tokens[i].split("=", 1)[0], replacement])
                 i += step
@@ -1706,7 +1745,7 @@ def force_pageable_load(
         for name in MEMORY_ENV_VARS:
             if name not in env:
                 continue
-            rewrite, new_value = _pageable_env_value(name, str(env[name]))
+            rewrite, new_value = _pageable_env_value(name, str(env[name]), drop_shadowed_mlock)
             if not rewrite:
                 continue
             if new_value is None:

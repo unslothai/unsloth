@@ -2194,6 +2194,76 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
         assert _retry, "the arch-crash retry did not fire"
         assert all(env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1" for env in _retry)
 
+    @staticmethod
+    def _override_log(monkeypatch):
+        """Collect the pageable-override log line. structlog, so caplog cannot see it."""
+        lines: list = []
+        monkeypatch.setattr(
+            llama_cpp.logger,
+            "warning",
+            lambda msg, *a, **kw: lines.append(msg % a if a else msg),
+        )
+        return lines
+
+    def _respawn_unmapped_and_oversized(self, tmp_path, monkeypatch, capture):
+        """The respawn lands on the APU, is oversized there, and was asked to load
+        without mmap -- the one shape where the override is what lets it finish."""
+        torch = self._dgpu_then_apu(monkeypatch)
+        return _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,  # no marker: the proactive gate fails open, so the crash path runs
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            model_bytes = 20 * 1024**3,
+            capture = capture,
+            apu_ram_stub = lambda *_a, **_kw: (
+                "This model needs about 20 GB but only about 8 GB of memory is available."
+            ),
+            intent_kwargs = {"extra_args": ["--no-mmap"]},
+        )
+
+    def test_the_opt_out_silences_the_retrys_apu_advisory_and_keeps_the_override(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """UNSLOTH_ALLOW_HOST_OFFLOAD is documented as silencing the warning and
+        nothing else, but this site recorded the APU advisory without consulting it, so
+        a user who opted out still got a memory_warning back. The verdict stays: the
+        respawn is still remapped, or "none" would allocate the whole model in the RAM
+        that cannot hold it."""
+        monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+        capture: dict = {}
+        logged = self._override_log(monkeypatch)
+
+        launches = self._respawn_unmapped_and_oversized(tmp_path, monkeypatch, capture)
+
+        _retry = [cmd for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        assert all("--no-mmap" not in cmd for cmd in _retry), _retry
+        assert capture["backend"].last_load_warning is None, (
+            "the opt-out left the retry's APU advisory in memory_warning: "
+            f"{capture['backend'].last_load_warning}"
+        )
+        assert [line for line in logged if "Overriding the unmapped load mode" in line], logged
+
+    def test_without_the_opt_out_the_retrys_advisory_still_names_the_override(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """The control. Nothing silenced, so the same respawn warns as before and the
+        override is named in the text the route hands back."""
+        monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+        capture: dict = {}
+
+        launches = self._respawn_unmapped_and_oversized(tmp_path, monkeypatch, capture)
+
+        _retry = [cmd for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        assert all("--no-mmap" not in cmd for cmd in _retry), _retry
+        warning = capture["backend"].last_load_warning or ""
+        assert "only about 8 GB" in warning, warning
+        assert "memory mapping instead" in warning, warning
+
 
 class TestArchCrashRetryReplacesTheCrashedSelectionsWarning:
     """The canonical #7624 shape, priced. The APU's shared-pool "free memory"
