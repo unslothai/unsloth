@@ -428,13 +428,21 @@ class TestThirdReviewFindings:
         # /dev/null stats as zero bytes, so measuring size alone sent it down
         # the create branch, whose rename would have swapped the character
         # device for a regular file.
+        # Spelled as `edits`, not adapted through `_edit`: this one passes
+        # `disable_sandbox`, and the batched shape is what the tool now accepts. With the
+        # old top-level spelling the call is refused for a missing `edits` array, which
+        # also starts with "Error:" -- so the assertion below held while the device-node
+        # guard was never reached.
         result = execute_tool(
             "edit_file",
-            {"path": "/dev/null", "old_string": "", "new_string": "x\n"},
+            {"path": "/dev/null", "edits": [{"old_string": "", "new_string": "x\n"}]},
             session_id = "t",
             disable_sandbox = True,
         )
         assert result.startswith("Error:")
+        # The refusal the GUARD produces, not the one a malformed call produces: pinned
+        # so this cannot go green again on an argument rejection.
+        assert "already exists" in result
         assert stat.S_ISCHR(os.stat("/dev/null").st_mode)
 
     @pytest.mark.parametrize("path,old", [("app.py", "TODO"), ("fresh.py", "")])
@@ -599,13 +607,18 @@ class TestCreationLeavesNothingBehindWhenTheWriteFails:
             return handle
 
         monkeypatch.setattr(os, "fdopen", failing)
+        # As above: the top-level spelling is refused before the write is attempted, so
+        # the simulated ENOSPC and its cleanup were never exercised.
         result = execute_tool(
             "edit_file",
-            {"path": "notes.py", "old_string": "", "new_string": "print('hi')\n"},
+            {"path": "notes.py", "edits": [{"old_string": "", "new_string": "print('hi')\n"}]},
             session_id = "t",
         )
         monkeypatch.undo()
         assert result.startswith("Error:")
+        assert "No space left on device" in result, (
+            "the write was never attempted, so the cleanup was not exercised"
+        )
         assert not (workdir / "notes.py").exists()
 
     def test_a_failed_create_does_not_remove_someone_elses_file(self, workdir):

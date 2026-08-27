@@ -26367,7 +26367,7 @@ class LlamaCppBackend:
             # rule for what counts as servable stays in one place.
             return _fitted
 
-        def _loop_continuation_fits(candidate, tools, reasoning_kw) -> bool:
+        def _loop_continuation_fits(candidate, tools, reasoning_kw, continue_flag = False) -> bool:
             """Whether the retry's own prompt still fits once the partial is in it.
 
             The final pass has the same guard. This path did not, and it is the one a
@@ -26387,6 +26387,11 @@ class LlamaCppBackend:
                     tools,
                     strict = True,
                     chat_template_kwargs = reasoning_kw,
+                    # An answer continuation goes out with `continue_final_message`, which
+                    # renders WITHOUT a generation prompt and with the partial as the turn
+                    # being extended. Counting it as an ordinary prompt prices a different
+                    # request from the one about to be sent.
+                    continue_final_message = continue_flag,
                 )
             except Exception:
                 logger.debug("in-loop continuation: prompt count failed", exc_info = True)
@@ -27506,9 +27511,22 @@ class LlamaCppBackend:
                                     payload.get("max_tokens") or 0
                                 )
                                 _cap_left_c = _loop_budget_left(_spent_c)
-                                if _cap_left_c == 0 or not _loop_continuation_fits(
-                                    _cand_c, safe_tools, _reasoning_kw
-                                ):
+                                _fits_c = _cap_left_c != 0 and _loop_continuation_fits(
+                                    _cand_c, safe_tools, _reasoning_kw, True
+                                )
+                                if _cap_left_c != 0 and not _fits_c:
+                                    # Same as the thought continuation below: abandoning
+                                    # here ends the turn, so the next iteration's ordinary
+                                    # preflight never gets to drop an older exchange.
+                                    _evicted_c = _evict_until_it_fits(
+                                        _cand_c, safe_tools, _reasoning_kw, True
+                                    )
+                                    if _evicted_c is not None and _loop_continuation_fits(
+                                        _evicted_c, safe_tools, _reasoning_kw, True
+                                    ):
+                                        _cand_c = _evicted_c
+                                        _fits_c = True
+                                if _cap_left_c == 0 or not _fits_c:
                                     logger.info(
                                         "Not continuing the answer: %s",
                                         "the caller's output cap is spent"

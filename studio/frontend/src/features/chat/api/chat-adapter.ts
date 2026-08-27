@@ -6155,11 +6155,16 @@ export function createOpenAIStreamAdapter(
                     // selected, so an external request with a 16K cap was being measured
                     // against an unrelated 4096-token local window and reported as having
                     // unlimited Max Tokens and no context left.
+                    // `maxSeqLength` last, and coerced from 0: a local safetensors or
+                    // MLX request on this path has neither GGUF field set, and reading
+                    // that as "no window" makes every context-length stop look like a
+                    // user-set Max Tokens one -- advice to raise a value already at the
+                    // model's maximum. Same order the RAG `context_length` above uses.
                     isExternalRequest
                       ? null
                       : (runtime.customContextLength ??
                         runtime.ggufContextLength ??
-                        null),
+                        (params.maxSeqLength || null)),
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();

@@ -736,3 +736,34 @@ def test_an_answer_already_on_screen_is_not_replaced_by_the_explanation(monkeypa
 
     assert texts, "the turn ended showing nothing"
     assert _HALF_AN_ANSWER[:40] in texts[-1], "the written answer was overwritten"
+
+
+def test_the_in_loop_answer_continuation_is_priced_as_a_continuation(monkeypatch):
+    """The request goes out with `continue_final_message`; the admission counted without.
+
+    That renders a different prompt -- no generation prompt, the partial as the turn being
+    extended -- so the check can refuse a continuation llama-server would have served, or
+    admit one it then rejects.
+    """
+
+    seen: list[object] = []
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": _SECOND_HALF}), _done()]),
+        payloads,
+    )
+
+    real_count = backend.count_chat_tokens
+
+    def recording_count(*args, **kwargs):
+        seen.append(kwargs.get("continue_final_message"))
+        return real_count(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "count_chat_tokens", recording_count)
+
+    _run(backend)
+
+    assert len(payloads) == 2, "the continuation was refused"
+    assert payloads[1].get("continue_final_message") is True
+    assert True in seen, "the continuation was admitted as an ordinary prompt"

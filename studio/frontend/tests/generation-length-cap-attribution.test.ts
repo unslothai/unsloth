@@ -4,7 +4,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { maxTokensIsTheLimit } from "../src/features/chat/api/generation-length.ts";
+
+// Hoisted: biome's useTopLevelRegex flags a literal recompiled per call.
+const LOCAL_WINDOW_ARGUMENT =
+  /isExternalRequest\s*\n\s*\? null\s*\n\s*: \(runtime\.customContextLength \?\?\s*\n\s*runtime\.ggufContextLength \?\?\s*\n\s*\(params\.maxSeqLength \|\| null\)\)/;
 
 test("a cap the prompt left no room for is not the limit that was hit", () => {
   // 4096 window, 3000-token prompt, Max Tokens 2048: generation stops at roughly 1096,
@@ -69,4 +76,29 @@ test("an unknown context length cannot make a cap the limit", () => {
     maxTokensIsTheLimit({ cap: null, contextLength: null, promptTokens: null }),
     false,
   );
+});
+
+test("a local model with no GGUF window still reports one", () => {
+  // A safetensors or MLX request on the legacy stream path has neither
+  // customContextLength nor ggufContextLength, while params.maxSeqLength IS its
+  // effective window and is also where the default Max Tokens comes from. Passing
+  // null there makes the window infinite below, so every context-length stop is
+  // reported as a Max Tokens stop and the user is told to raise a setting that is
+  // already at the model's maximum.
+  assert.equal(
+    maxTokensIsTheLimit({ cap: 2048, contextLength: null, promptTokens: 3000 }),
+    true,
+  );
+  assert.equal(
+    maxTokensIsTheLimit({ cap: 2048, contextLength: 4096, promptTokens: 3000 }),
+    false,
+  );
+
+  const adapter = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.match(adapter, LOCAL_WINDOW_ARGUMENT);
 });
