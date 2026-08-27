@@ -762,3 +762,41 @@ def test_the_refusal_blames_a_file_only_when_a_file_is_involved(tool_name, expec
     role = _blamed_role(message)
 
     assert role == ("assistant_tool_call" if expect_file_wording else "assistant_tool_payload")
+
+
+def test_a_reply_pairs_with_the_newest_pending_call_of_a_reused_id():
+    """An interrupted call leaves a stale site under an id the next turn reuses.
+
+    Pairing the reply with the OLDEST pending site marks the abandoned call's arguments
+    executed while the call that actually ran keeps its arguments replayed in full: both
+    halves wrong, and the expensive half is the one that stays.
+    """
+    body_a = "a" * 4000
+    body_b = "b" * 4000
+    messages = [
+        {"role": "user", "content": "Write the file"},
+        {
+            "role": "assistant",
+            "content": "",
+            # Announced, then the turn was interrupted: no `tool` reply ever followed.
+            "tool_calls": [_call("call_0", "edit_file", path = "first.html", new_string = body_a)],
+        },
+        {"role": "user", "content": "Try again"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_call("call_0", "edit_file", path = "second.html", new_string = body_b)],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": "edit_file",
+            "content": "Wrote second.html",
+        },
+    ]
+
+    fitted, compacted = compact_completed_tool_arguments(messages)
+
+    assert compacted == 1
+    assert body_b not in json.dumps(fitted[3]), "the call that actually ran was not compacted"
+    assert body_a in json.dumps(fitted[1]), "an unanswered call was called executed"

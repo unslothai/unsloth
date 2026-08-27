@@ -51,6 +51,19 @@ def _done() -> str:
     return "data: [DONE]\n"
 
 
+def _usage(completion_tokens: int) -> str:
+    return (
+        "data: "
+        + json.dumps(
+            {
+                "choices": [{"index": 0, "delta": {}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": completion_tokens},
+            }
+        )
+        + "\n"
+    )
+
+
 def _make_backend(monkeypatch, streams: list[object], payloads: list[dict]):
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
     backend._process = object()
@@ -665,3 +678,120 @@ def test_the_final_pass_retry_is_admitted_under_the_kwargs_it_will_be_sent_with(
         "enable_thinking": False
     } in seen, "the retry was admitted under kwargs it is not sent with"
     assert "Here is the answer." in "".join(_texts(events, "content"))
+
+
+def test_the_in_loop_retry_is_admitted_under_the_kwargs_it_will_be_sent_with(monkeypatch):
+    """The final pass got this right; the in-loop path, which is the one a request with
+    tools actually takes, still admitted the retry under the previous attempt's kwargs.
+
+    `_reasoning_kw` is computed once at the top of each iteration, with thinking on. The
+    retry goes out with it off, a different rendered prompt on any template that reads
+    `enable_thinking`, so the admission priced a request nobody sends.
+    """
+
+    seen: list[object] = []
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _truncated_thought_then([_sse({"content": "Done."}), _done()]),
+        payloads,
+    )
+
+    real_count = backend.count_chat_tokens
+
+    def recording_count(*args, **kwargs):
+        seen.append(kwargs.get("chat_template_kwargs"))
+        return real_count(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "count_chat_tokens", recording_count)
+
+    _run(backend)
+
+    assert len(payloads) == 2, "the retry was refused"
+    assert payloads[1]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert {"enable_thinking": False} in seen, (
+        "the retry was admitted under kwargs it is not sent with"
+    )
+
+
+def test_the_in_loop_give_up_names_the_cap_when_the_last_attempt_spent_it(monkeypatch):
+    """`_reasoning_cap_spent` is only set when a continuation is REFUSED.
+
+    Reaching the give-up by exhausting the retry limit instead leaves it at its default,
+    so a turn whose last permitted attempt finished off an explicit Max Tokens was told
+    to raise the Context Length.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [
+                _sse({"reasoning_content": _LONG_THOUGHT}),
+                _usage(100),
+                _finish("length"),
+                _done(),
+            ]
+            for _ in range(_MAX_LENGTH_CONTINUATIONS + 2)
+        ],
+        payloads,
+    )
+
+    # 300 spent 100 at a time: every continuation is ADMITTED, and the cap runs out on
+    # the last permitted attempt. That is the stale case -- reaching the give-up by way
+    # of a refusal already sets the flag correctly.
+    events = _run(backend, max_tokens = 300)
+
+    assert len(payloads) == _MAX_LENGTH_CONTINUATIONS + 1, "a continuation was refused"
+    text = "".join(_texts(events, "content"))
+    assert "output allowance of 300 tokens" in text
+    assert "window on reasoning" not in text
+
+
+def test_a_continuation_one_eviction_short_is_not_abandoned(monkeypatch):
+    """Refusing here ends the turn, so the next iteration's preflight never runs.
+
+    The single-turn case the check was written for really does have nothing left to
+    evict. A multi-turn chat under `truncate_oldest` usually does, and abandoning it
+    there throws away a recoverable answer rather than dropping one old exchange.
+
+    The gap is `prompt_budget` against the continuation's own floor: with a small
+    `max_tokens` the preflight fits the chat to 3996 of a 4096 window, while the retry
+    needs 3840 or less. The fit succeeded and the continuation is still unservable.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"reasoning_content": _LONG_THOUGHT}), _usage(20), _finish("length"), _done()],
+            [_sse({"content": "Done."}), _usage(10), _done()],
+        ],
+        payloads,
+    )
+
+    # A tokenizer this harness can actually run: llama-server is not here to render a
+    # template, and the real count raises, which every fit reads as "cannot judge".
+    def fake_count(messages, *_args, **_kwargs):
+        return 200 + sum(len(str(m.get("content") or "")) // 4 for m in messages)
+
+    monkeypatch.setattr(backend, "count_chat_tokens", fake_count)
+
+    old_turns: list[dict] = []
+    for index in range(30):
+        old_turns.append({"role": "user", "content": f"Question {index}. " + "x" * 600})
+        old_turns.append({"role": "assistant", "content": f"Answer {index}. " + "y" * 600})
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [*old_turns, {"role": "user", "content": "Create a Flappy Bird game"}],
+            tools = [_WEB_SEARCH_TOOL],
+            enable_thinking = True,
+            max_tool_iterations = 3,
+            max_tokens = 100,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    assert len(payloads) == 2, "the continuation was abandoned instead of making room"
+    assert "Done." in "".join(_texts(events, "content"))

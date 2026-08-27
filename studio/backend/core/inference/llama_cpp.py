@@ -26308,6 +26308,60 @@ class LlamaCppBackend:
 
         _markup_cache = _sweep_cache()
 
+        def _evict_until_it_fits(candidate, tools, reasoning_kw, continue_flag = False):
+            """Drop older turns from a continuation candidate that is one eviction short.
+
+            Only reached once the candidate has already been priced and found too large.
+            The single-turn case the callers were written for genuinely has nothing to
+            evict, but a multi-turn chat under `truncate_oldest` usually does, and
+            refusing there ended the turn before the NEXT iteration's ordinary preflight
+            could ever run -- so a recoverable continuation was abandoned.
+
+            Deliberately the plain rolling fit with instruction pins, not the loop's full
+            preflight: that one archives, recalls and moves this thread's sticky boundary,
+            and none of that should happen a second time in the middle of one turn.
+            Returns the evicted candidate, or None when there was nothing to evict.
+            """
+            if context_overflow != "truncate_oldest" or not self._effective_context_length:
+                return None
+            if messages_have_media(candidate):
+                return None
+            try:
+                _fitted, _truncation = _fit_with_instruction_pins(
+                    list(candidate),
+                    context_length = self._effective_context_length,
+                    # The room the CONTINUATION needs, which is not the room the caller's
+                    # cap asks for: a small `max_tokens` makes `prompt_budget` larger than
+                    # the window minus the reply floor, so fitting to the caller's figure
+                    # would evict and still leave the candidate unservable.
+                    max_tokens = max(
+                        int(max_tokens or 0), _reply_floor(self._effective_context_length)
+                    ),
+                    count_tokens = lambda fitted: self.count_chat_tokens(
+                        neutralize_control_markup_in_messages(
+                            fitted, _markup_cache, self.markup_profile
+                        ),
+                        None,
+                        tools,
+                        strict = True,
+                        chat_template_kwargs = reasoning_kw,
+                        continue_final_message = continue_flag,
+                    ),
+                    anchor_ids = _rolling_anchor_ids,
+                )
+            except Exception:
+                logger.debug("continuation eviction: fit failed", exc_info = True)
+                return None
+            if not _truncation or not _truncation.get("dropped_messages"):
+                return None
+            logger.info(
+                "Continuation did not fit; evicted %s older message(s) to try to keep it",
+                _truncation.get("dropped_messages"),
+            )
+            # Whether that was ENOUGH is the caller's own fit check, re-run on this: the
+            # rule for what counts as servable stays in one place.
+            return _fitted
+
         def _loop_continuation_fits(candidate, tools, reasoning_kw) -> bool:
             """Whether the retry's own prompt still fits once the partial is in it.
 
@@ -27525,9 +27579,32 @@ class LlamaCppBackend:
                                 payload.get("max_tokens") or 0
                             )
                             _cap_left_l = _loop_budget_left(_spent_l)
-                            if _cap_left_l == 0 or not _loop_continuation_fits(
-                                _cand_l, safe_tools, _reasoning_kw
-                            ):
+                            # `_reasoning_kw` was computed at the top of this iteration,
+                            # with thinking ON. The retry goes out with it off, which is a
+                            # different rendered prompt on any template that reads
+                            # `enable_thinking`, so admitting under the old kwargs prices
+                            # a request nobody sends. Same fix the final pass already has.
+                            _off_kw_l = self._request_reasoning_kwargs(
+                                False, None, preserve_thinking
+                            )
+                            # Counted ONCE in the ordinary case: the eviction attempt
+                            # below only runs on a candidate already found too large.
+                            _fits_l = _cap_left_l != 0 and _loop_continuation_fits(
+                                _cand_l, safe_tools, _off_kw_l
+                            )
+                            if _cap_left_l != 0 and not _fits_l:
+                                # Possibly one eviction short. Refusing here ends the
+                                # turn, so the next iteration's ordinary preflight never
+                                # gets its chance to drop an older exchange.
+                                _evicted_l = _evict_until_it_fits(
+                                    _cand_l, safe_tools, _off_kw_l
+                                )
+                                if _evicted_l is not None and _loop_continuation_fits(
+                                    _evicted_l, safe_tools, _off_kw_l
+                                ):
+                                    _cand_l = _evicted_l
+                                    _fits_l = True
+                            if _cap_left_l == 0 or not _fits_l:
                                 logger.info(
                                     "Not continuing the thought: %s",
                                     "the caller's output cap is spent"
@@ -27573,12 +27650,20 @@ class LlamaCppBackend:
                                 "an explanation",
                                 _length_continuations,
                             )
+                            # `_reasoning_cap_spent` is only set when a continuation was
+                            # REFUSED. Arriving here by exhausting the retry limit leaves
+                            # it at its default, so the cap is re-read: the last permitted
+                            # attempt may be the one that finished off Max Tokens.
+                            _fu_g = _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
+                            _spent_g = _fu_g.get("completion_tokens", 0) or int(
+                                payload.get("max_tokens") or 0
+                            )
                             yield {"type": "status", "text": ""}
                             yield {
                                 "type": "content",
                                 "text": (
                                     _reasoning_cap_spent_message(max_tokens)
-                                    if _reasoning_cap_spent
+                                    if _reasoning_cap_spent or _loop_budget_left(_spent_g) == 0
                                     else _thinking_exhausted_message(self._effective_context_length)
                                 ),
                             }
@@ -29088,6 +29173,12 @@ class LlamaCppBackend:
             )
             return False
 
+        # Where the visible answer stood when THIS attempt began. `has_content_tokens`
+        # and `_last_emitted` are cumulative across continuations by design, so without a
+        # per-attempt mark a continuation that emitted nothing but reasoning still looked
+        # like another truncated visible answer: it replayed an empty suffix with thinking
+        # left on instead of taking the reasoning-only recovery.
+        _attempt_started_at = ""
         while True:
             try:
                 with self._open_chat_stream_with_respawn_retry(
@@ -29225,10 +29316,11 @@ class LlamaCppBackend:
                     # stop here. Same rule as the in-loop path -- the partial goes back to
                     # be EXTENDED, thinking is left alone because it was not the problem,
                     # and an answer that is mostly an echo of itself is left as it is.
+                    _shown_this_attempt = _last_emitted[len(_attempt_started_at) :]
                     if (
                         _metadata_finish_reason == "length"
                         and has_content_tokens
-                        and _last_emitted.strip()
+                        and _shown_this_attempt.strip()
                         and _final_length_continuations < _MAX_LENGTH_CONTINUATIONS
                         and not is_repetition_dominated(_last_emitted)
                     ):
@@ -29271,9 +29363,25 @@ class LlamaCppBackend:
                             _candidate_messages, None, self.markup_profile
                         )
                         _next_cap = _remaining_output_budget()
-                        if _next_cap != 0 and _continuation_would_be_served(
+                        _served = _next_cap != 0 and _continuation_would_be_served(
                             _candidate_messages, True
-                        ):
+                        )
+                        if _next_cap != 0 and not _served:
+                            # Same reason as the in-loop path: this is the last decision
+                            # of the turn, so a candidate one eviction short of servable
+                            # gets that eviction rather than being abandoned.
+                            _evicted_f = _evict_until_it_fits(
+                                _candidate_messages,
+                                None,
+                                stream_payload.get("chat_template_kwargs"),
+                                True,
+                            )
+                            if _evicted_f is not None and _continuation_would_be_served(
+                                _evicted_f, True
+                            ):
+                                _candidate_messages = _evicted_f
+                                _served = True
+                        if _served:
                             stream_payload["messages"] = _candidate_messages
                             _final_replayed_chars = len(_last_emitted)
                             stream_payload["continue_final_message"] = True
@@ -29291,6 +29399,9 @@ class LlamaCppBackend:
                             _accumulated_predicted_n += _it_f.get("predicted_n", 0)
                             _stream_done = False
                             _metadata_finish_reason = None
+                            # The next attempt starts from what is on screen now, so a
+                            # continuation that shows nothing new is judged on its own.
+                            _attempt_started_at = _last_emitted
                             _continue_final = True
                             yield {"type": "status", "text": ""}
                             yield {
@@ -29305,7 +29416,7 @@ class LlamaCppBackend:
                                 yield _meta
                     elif (
                         _metadata_finish_reason == "length"
-                        and not _last_emitted.strip()
+                        and not _shown_this_attempt.strip()
                         and reasoning_text.strip()
                     ):
                         # The other half of the same failure, and the one the in-loop
@@ -29355,9 +29466,19 @@ class LlamaCppBackend:
                             # that would have fit or admits one llama-server then rejects.
                             _off_kw = self._request_reasoning_kwargs(False, None, preserve_thinking)
                             _next_cap_r = _remaining_output_budget()
-                            if _next_cap_r != 0 and _continuation_would_be_served(
+                            _served_r = _next_cap_r != 0 and _continuation_would_be_served(
                                 _candidate_r, False, _off_kw
-                            ):
+                            )
+                            if _next_cap_r != 0 and not _served_r:
+                                _evicted_r = _evict_until_it_fits(
+                                    _candidate_r, None, _off_kw
+                                )
+                                if _evicted_r is not None and _continuation_would_be_served(
+                                    _evicted_r, False, _off_kw
+                                ):
+                                    _candidate_r = _evicted_r
+                                    _served_r = True
+                            if _served_r:
                                 stream_payload["messages"] = _candidate_r
                                 # The retry ends on a USER turn, so the flag from any
                                 # earlier answer continuation no longer describes it.
@@ -29378,6 +29499,9 @@ class LlamaCppBackend:
                                 _accumulated_predicted_n += _it_r.get("predicted_n", 0)
                                 _stream_done = False
                                 _metadata_finish_reason = None
+                                # The next attempt starts from what is on screen now, so a
+                                # continuation that shows nothing new is judged on its own.
+                                _attempt_started_at = _last_emitted
                                 _continue_final = True
                                 yield {"type": "status", "text": ""}
                                 yield {
@@ -29386,20 +29510,27 @@ class LlamaCppBackend:
                                 }
                             else:
                                 yield {"type": "status", "text": ""}
-                                yield {
-                                    "type": "content",
-                                    # Same distinction the in-loop give-up makes. A spent
-                                    # output cap is not the context window, and this text
-                                    # reaches the client as ordinary content, so naming
-                                    # the wrong lever here is the last word the user gets.
-                                    "text": (
-                                        _reasoning_cap_spent_message(max_tokens)
-                                        if _next_cap_r == 0
-                                        else _thinking_exhausted_message(
-                                            self._effective_context_length
-                                        )
-                                    ),
-                                }
+                                # Content events on this stream are CUMULATIVE, so an
+                                # explanation sent on its own replaces whatever is on
+                                # screen. Once a previous attempt has shown an answer,
+                                # keeping it is worth more than the advice: the partial
+                                # already offers Continue.
+                                if not _last_emitted.strip():
+                                    yield {
+                                        "type": "content",
+                                        # Same distinction the in-loop give-up makes. A
+                                        # spent output cap is not the context window, and
+                                        # this text reaches the client as ordinary
+                                        # content, so naming the wrong lever here is the
+                                        # last word the user gets.
+                                        "text": (
+                                            _reasoning_cap_spent_message(max_tokens)
+                                            if _next_cap_r == 0
+                                            else _thinking_exhausted_message(
+                                                self._effective_context_length
+                                            )
+                                        ),
+                                    }
                                 _meta = _build_metadata_event(
                                     _metadata_usage,
                                     _metadata_timings,
@@ -29410,11 +29541,26 @@ class LlamaCppBackend:
                         else:
                             # Allowance spent and still nothing on screen. Saying so is
                             # the point: an empty message gives the user nothing to act on.
+                            #
+                            # Which allowance, re-read here rather than assumed: the last
+                            # permitted attempt may itself have finished off an explicit
+                            # Max Tokens, and this branch is reached with no decision
+                            # about the cap ever having been made.
+                            _cap_left_g = _remaining_output_budget()
                             yield {"type": "status", "text": ""}
-                            yield {
-                                "type": "content",
-                                "text": _thinking_exhausted_message(self._effective_context_length),
-                            }
+                            # As above: cumulative content, so this must not overwrite an
+                            # answer an earlier attempt already put on screen.
+                            if not _last_emitted.strip():
+                                yield {
+                                    "type": "content",
+                                    "text": (
+                                        _reasoning_cap_spent_message(max_tokens)
+                                        if _cap_left_g == 0
+                                        else _thinking_exhausted_message(
+                                            self._effective_context_length
+                                        )
+                                    ),
+                                }
                             _meta = _build_metadata_event(
                                 _metadata_usage, _metadata_timings, _metadata_finish_reason
                             )

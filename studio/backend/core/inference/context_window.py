@@ -769,7 +769,11 @@ def _executed_call_sites(messages: list[dict]) -> "dict[tuple[int, str], object]
         sites = pending.get(str(call_id))
         if not sites:
             continue
-        site = sites.pop(0)
+        # NEWEST pending announcement, not the oldest. Textual parsers number from
+        # `call_0` every turn, so an interrupted call that never got a result leaves a
+        # stale site under the same id; pairing this reply with THAT one marks the stale
+        # arguments executed and leaves the call that actually ran uncompactable.
+        site = sites.pop()
         if _reply_shows_execution(message.get("content")):
             executed[(site, str(call_id))] = message.get("content")
     return executed

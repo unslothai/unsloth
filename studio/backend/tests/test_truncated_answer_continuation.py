@@ -664,3 +664,75 @@ def test_replayed_output_is_neutralized_before_it_is_sent(monkeypatch):
 
     assert len(payloads) == 2
     assert "<|im_end|>" not in json.dumps(payloads[1]["messages"])
+
+
+def test_a_continuation_that_stalls_in_reasoning_is_not_read_as_more_answer(monkeypatch):
+    """`has_content_tokens` and `_last_emitted` are cumulative across attempts by design.
+
+    Judging the NEXT attempt by them classified a continuation that produced nothing but
+    reasoning as another truncated visible answer: it replayed an empty suffix with
+    thinking still on, which is the same failing turn a third time, instead of taking the
+    reasoning-off recovery. Judged on what this attempt put on screen now.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
+            [
+                _sse({"reasoning_content": "Let me reconsider the whole approach. " * 60}),
+                _finish("length"),
+                _done(),
+            ],
+            [_sse({"content": "and here is the rest."}), _done()],
+        ],
+        payloads,
+    )
+
+    events = _run_no_tools(backend)
+
+    assert len(payloads) == 3, "the stalled continuation was not recovered"
+    # The recovery ends on a USER turn asking for the answer, which is what tells it
+    # apart from the answer continuation: that one replays the partial and extends it.
+    assert payloads[2]["messages"][-1]["role"] == "user"
+    assert "continue_final_message" not in payloads[2]
+
+
+def test_an_answer_already_on_screen_is_not_replaced_by_the_explanation(monkeypatch):
+    """Content events on this stream are cumulative, so a lone explanation overwrites.
+
+    Reaching the give-up with visible text is only possible now that a stalled
+    continuation takes the reasoning-only path, and losing a written answer to a message
+    about why there is no answer would be a worse outcome than the one being fixed.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _finish("length"), _done()],
+            [
+                _sse({"reasoning_content": "Let me reconsider the whole approach. " * 60}),
+                _finish("length"),
+                _done(),
+            ],
+            [
+                _sse({"reasoning_content": "Still thinking about it. " * 60}),
+                _finish("length"),
+                _done(),
+            ],
+            [
+                _sse({"reasoning_content": "And again. " * 60}),
+                _finish("length"),
+                _done(),
+            ],
+        ],
+        payloads,
+    )
+
+    events = _run_no_tools(backend)
+    texts = [event["text"] for event in events if event.get("type") == "content"]
+
+    assert texts, "the turn ended showing nothing"
+    assert _HALF_AN_ANSWER[:40] in texts[-1], "the written answer was overwritten"
