@@ -5147,6 +5147,9 @@ export function createOpenAIStreamAdapter(
       // hold several parallel calls (issue #9807). Counted, not random, so a
       // rerun of the same stream reads the same way in a log.
       let splitToolCallSeq = 0;
+      // A name that arrived at a slot whose object had closed, waiting for the
+      // arguments that say which call it names.
+      const pendingNameByIndex = new Map<number | undefined, string>();
       const mintSplitToolCallId = (deltaIndex: number | undefined): string => {
         let candidate = "";
         do {
@@ -6719,9 +6722,27 @@ export function createOpenAIStreamAdapter(
                     const held = splitTopLevelJsonObjects(matched.argsText);
                     return held.complete.length > 0 && !held.tail;
                   })();
-                  const opensNextCall =
-                    slotIsClosed &&
-                    !!(call.function?.name || call.function?.arguments);
+                  // An id names its call, so a fragment repeating the id this
+                  // part already holds continues it however complete its
+                  // arguments look. llama-server grows the name across deltas,
+                  // and opening a call there gives two cards one id.
+                  const namesThisCall =
+                    !!stablePartId && matched?.toolCallId === stablePartId;
+                  // Whitespace after a closing brace is legal JSON and says
+                  // nothing about another call.
+                  const bringsArgs = !!call.function?.arguments?.trim();
+                  const closedSlot = slotIsClosed && !namesThisCall;
+                  // A name reaching a closed slot cannot be read yet: the same
+                  // tool called twice announces itself exactly as llama-server
+                  // resends a name it is still growing. Hold it until arguments
+                  // say which call it names, rather than renaming the finished
+                  // one.
+                  const suppressName =
+                    closedSlot && !bringsArgs && !!call.function?.name;
+                  if (suppressName) {
+                    pendingNameByIndex.set(idx, call.function?.name ?? "");
+                  }
+                  const opensNextCall = closedSlot && bringsArgs;
                   const existing = opensNextCall ? undefined : matched;
 
                   if (
@@ -6735,7 +6756,9 @@ export function createOpenAIStreamAdapter(
                     argsFragment.length + (call.function?.name?.length ?? 0);
                   if (existing) {
                     const prevName = existing.toolName ?? "";
-                    const nextName = call.function?.name ?? prevName;
+                    const nextName = suppressName
+                      ? prevName
+                      : (call.function?.name ?? prevName);
                     const merged = (existing.argsText ?? "") + argsFragment;
                     // A call's arguments are one JSON object, so a slot holding
                     // two whole objects is holding two calls: the stream reused
@@ -6843,7 +6866,11 @@ export function createOpenAIStreamAdapter(
                       ? [...freshSplit.complete, freshSplit.tail]
                       : freshSplit.complete;
                     const freshIsSplit = freshSegments.length > 1;
-                    const freshName = call.function?.name ?? "";
+                    // The name a name-only delta parked for whichever call the
+                    // arguments turned out to open.
+                    const freshName =
+                      call.function?.name ?? pendingNameByIndex.get(idx) ?? "";
+                    pendingNameByIndex.delete(idx);
                     const argsText = freshIsSplit
                       ? freshSegments[0]
                       : argsFragment;

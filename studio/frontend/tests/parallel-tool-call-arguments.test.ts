@@ -406,6 +406,33 @@ test("an id stamped on a later fragment still claims its own slot", () => {
   );
 });
 
+test("a fragment repeating the slot's id continues that call", () => {
+  // llama-server grows the name across deltas. An id names its call, so
+  // opening a new one here would give two cards one id, and tool_end files a
+  // result against the first that carries it.
+  const parts = run([
+    [{ id: "call_a", index: 0, function: { name: "web", arguments: '{"q":"x"}' } }],
+    [{ id: "call_a", index: 0, function: { name: "web_search" } }],
+  ]);
+
+  assert.deepEqual(shape(parts), [["web_search", '{"q":"x"}']]);
+  assert.equal(parts.length, 1);
+});
+
+test("whitespace chunked after a closing brace is not a new call", () => {
+  // Trailing whitespace is legal JSON and says nothing about another call.
+  const parts = run([
+    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+    [{ index: 0, function: { name: "alpha", arguments: " " } }],
+    [{ index: 0, function: { name: "alpha", arguments: '{"b":2}' } }],
+  ]);
+
+  assert.deepEqual(shape(parts), [
+    ["alpha", '{"a":1} '],
+    ["alpha", '{"b":2}'],
+  ]);
+});
+
 test("a late id claims the call still being written, never a closed one", () => {
   // The slot splits, leaving a half-written third call, then an id arrives. It
   // has to land on that unfinished call: appending to either of the two that

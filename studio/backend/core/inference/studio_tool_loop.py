@@ -351,6 +351,16 @@ class ToolLoopPolicy:
     nudge_tool_calls: bool | None = None
 
 
+def _reject_json_constant(name: str) -> Any:
+    """Refuse ``NaN`` / ``Infinity``, which ``json.loads`` takes and JSON does not.
+
+    ``JSON.parse`` has no such literals, so leaving them accepted here lets the
+    two scanners cut the same text in different places: the backend would run
+    two calls where the frontend shows one.
+    """
+    raise ValueError(f"{name} is not JSON")
+
+
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
     """The top-level JSON objects in ``text``, and any object still unfinished.
 
@@ -400,7 +410,7 @@ def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
             if depth == 0:
                 segment = text[start : i + 1]
                 try:
-                    json.loads(segment)
+                    json.loads(segment, parse_constant = _reject_json_constant)
                 except (ValueError, TypeError):
                     # Balanced but invalid, so the brace count was a
                     # coincidence and cutting here would invent a call.
@@ -430,6 +440,9 @@ class _Turn:
     open_key_by_index: dict[int, Any] = field(default_factory = dict)
     last_index: int | None = None
     split_seq: int = 0
+    # A name that arrived at a closed slot, waiting for the arguments that say
+    # which call it names.
+    pending_name_by_index: dict[int, str] = field(default_factory = dict)
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
     text: list[str] = field(default_factory = list)
@@ -558,31 +571,67 @@ class _Turn:
                     # exists to place the fragments that carry no id.
                     first_id = self.by_index.get(index, {}).get("id")
                     key = index if first_id == call_id else (index, call_id)
-            # A closed object cannot take more content, so a delta that brings a
-            # name or arguments to a slot already holding one whole object is
-            # opening the next parallel call. Forking on the accumulated text
-            # only catches this once the arguments land; a name-only delta would
-            # merge into the finished call's name, and a delta carrying an id
-            # would claim that call and glue onto it (issue #9807).
+            # A closed object cannot take more content, so the next arguments to
+            # reach a slot already holding one whole object belong to the next
+            # parallel call. Forking on the accumulated text alone only catches
+            # this once those arguments glue on, and a delta carrying an id
+            # would claim the finished call and append to it (issue #9807).
             held = self.by_index.get(key)
             new_function = raw_call.get("function")
-            brings_content = isinstance(new_function, dict) and bool(
-                new_function.get("name") or new_function.get("arguments")
+            new_arguments = (
+                new_function.get("arguments")
+                if isinstance(new_function, dict)
+                else None
             )
-            if held is not None and brings_content:
+            new_name = (
+                new_function.get("name") if isinstance(new_function, dict) else None
+            )
+            # Whitespace after a closing brace is legal JSON and says nothing
+            # about another call, so a provider that chunks it off on its own
+            # must not open one.
+            opens_next_call = bool(
+                isinstance(new_arguments, str) and new_arguments.strip()
+            )
+            # An id names its call, so a fragment repeating the id this slot
+            # already holds continues it however complete its arguments look --
+            # llama-server grows the name across deltas, and forking there gives
+            # two calls one id, with the arguments on the abandoned name.
+            names_this_call = (
+                held is not None
+                and isinstance(call_id, str)
+                and bool(call_id)
+                and held.get("id") == call_id
+            )
+            slot_is_closed = False
+            if held is not None and not names_this_call:
                 closed, unfinished = _split_top_level_json_objects(
                     held["function"]["arguments"]
                 )
-                if closed and not unfinished:
-                    self.split_seq += 1
-                    key = (index, "_split", self.split_seq)
+                slot_is_closed = bool(closed) and not unfinished
+            # A name reaching a closed slot cannot be read yet: the same tool
+            # called twice announces itself exactly as llama-server resends a
+            # name it is still growing. So hold it until arguments say which
+            # call it belongs to, rather than renaming the finished one.
+            suppress_name = False
+            if slot_is_closed and not opens_next_call:
+                if isinstance(new_name, str) and new_name:
+                    self.pending_name_by_index[index] = new_name
+                    suppress_name = True
+            if slot_is_closed and opens_next_call:
+                self.split_seq += 1
+                key = (index, "_split", self.split_seq)
             self.last_index = index
             self.open_key_by_index[index] = key
             if key not in self.by_index:
                 self.by_index[key] = {
                     "id": "",
                     "type": "function",
-                    "function": {"name": "", "arguments": ""},
+                    # The name a name-only delta parked for whichever call the
+                    # arguments turned out to open.
+                    "function": {
+                        "name": self.pending_name_by_index.pop(index, ""),
+                        "arguments": "",
+                    },
                 }
                 # First-seen order, so a negative or out-of-order index cannot
                 # reorder parallel calls against what the model actually sent.
@@ -591,6 +640,9 @@ class _Turn:
             if isinstance(call_id, str) and call_id:
                 current["id"] = call_id
             extra = raw_call.get("extra_content")
+            # What the slot carried before this delta, so a fork below can hand
+            # this delta's metadata to the call it actually closes.
+            extra_before = current.get("extra_content")
             if isinstance(extra, dict) and extra:
                 # Gemini 3 stows this call's thoughtSignature here, and the
                 # native translator rejects a replayed functionCall without it.
@@ -608,7 +660,7 @@ class _Turn:
                 # else continues it.
                 fragment = function.get("name")
                 name_before = current["function"]["name"]
-                if isinstance(fragment, str) and fragment:
+                if isinstance(fragment, str) and fragment and not suppress_name:
                     if fragment.startswith(name_before):
                         current["function"]["name"] = fragment
                     else:
@@ -626,10 +678,19 @@ class _Turn:
                             current,
                             name_before,
                             fragment if isinstance(fragment, str) else "",
+                            extra_before,
+                            extra if isinstance(extra, dict) and extra else None,
                         )
 
     def _fork_glued_arguments(
-        self, index: int, key: Any, current: dict[str, Any], name_before: str, incoming_name: str
+        self,
+        index: int,
+        key: Any,
+        current: dict[str, Any],
+        name_before: str,
+        incoming_name: str,
+        extra_before: dict[str, Any] | None,
+        incoming_extra: dict[str, Any] | None,
     ) -> None:
         """Give every call after the first in one slot a call of its own."""
         complete, tail = _split_top_level_json_objects(current["function"]["arguments"])
@@ -646,6 +707,16 @@ class _Turn:
         # enabled tool and silently never running.
         born_name = incoming_name or name_before
         current["function"]["name"] = name_before or born_name
+        # The metadata this delta carried belongs to the call this delta closes,
+        # which is the last one, not to the object the slot already held. Gemini
+        # checks the opaque signature against the exact call it is replayed on,
+        # so leaving it here gets the follow-up rejected. Same placement as the
+        # frontend split.
+        if incoming_extra is not None:
+            if extra_before:
+                current["extra_content"] = extra_before
+            else:
+                current.pop("extra_content", None)
         open_key: Any = key
         for segment in segments[1:]:
             self.split_seq += 1
@@ -657,6 +728,8 @@ class _Turn:
             }
             self.order.append(born_key)
             open_key = born_key
+        if incoming_extra is not None:
+            self.by_index[open_key]["extra_content"] = dict(incoming_extra)
         # Later id-less fragments continue the last call, finished or not.
         self.open_key_by_index[index] = open_key
 

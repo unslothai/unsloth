@@ -214,3 +214,66 @@ def test_nesting_deep_enough_to_exhaust_the_stack_is_unsplittable():
     turn = _Turn()
     turn.merge_structured([_delta(0, "deep", payload)])
     assert _shape(turn) == [("deep", payload)]
+
+
+def test_a_fragment_repeating_the_slots_id_continues_that_call():
+    # llama-server grows the name across deltas. An id names its call, so
+    # forking here would give two calls one id, with the arguments stranded on
+    # the abandoned name and the grown one running empty.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "web", '{"q":"x"}', call_id = "call_a")])
+    turn.merge_structured([_delta(0, "web_search", "", call_id = "call_a")])
+
+    assert _shape(turn) == [("web_search", '{"q":"x"}')]
+    assert [call["id"] for call in turn.calls()] == ["call_a"]
+
+
+def test_whitespace_chunked_after_a_closing_brace_is_not_a_new_call():
+    # Trailing whitespace is legal JSON and says nothing about another call.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured([_delta(0, "alpha", " ")])
+
+    assert _shape(turn) == [("alpha", '{"a":1} ')]
+
+    # ... and the call that really does follow it still forks.
+    turn.merge_structured([_delta(0, "alpha", '{"b":2}')])
+    assert _shape(turn) == [("alpha", '{"a":1} '), ("alpha", '{"b":2}')]
+
+
+def test_the_metadata_a_delta_carries_goes_to_the_call_it_closes():
+    # Gemini checks the opaque signature against the exact call it is replayed
+    # on, so it belongs to the last object this delta closed, not to the one
+    # the slot already held. Same placement as the frontend split.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":')])
+    turn.merge_structured(
+        [
+            _delta(0, None, '1}{"b":2}')
+            | {"extra_content": {"google": {"thought_signature": "SIG"}}}
+        ]
+    )
+
+    entries = [turn.by_index[key] for key in turn.order]
+    assert [e["function"]["arguments"] for e in entries] == ['{"a":1}', '{"b":2}']
+    assert entries[0].get("extra_content") is None
+    assert entries[1]["extra_content"] == {"google": {"thought_signature": "SIG"}}
+
+
+def test_nonstandard_numeric_constants_are_not_object_boundaries():
+    # json.loads takes NaN and Infinity; JSON.parse does not. Accepting them
+    # here would cut text the frontend leaves whole, so the backend would run
+    # two calls where the UI shows one.
+    assert _split_top_level_json_objects('{"a":NaN}{"b":2}') == (
+        [],
+        '{"a":NaN}{"b":2}',
+    )
+    assert _split_top_level_json_objects('{"a":Infinity}{"b":2}') == (
+        [],
+        '{"a":Infinity}{"b":2}',
+    )
+    # Ordinary numbers, exponents included, still split.
+    assert _split_top_level_json_objects('{"a":1.5e3}{"b":2}') == (
+        ['{"a":1.5e3}', '{"b":2}'],
+        "",
+    )
