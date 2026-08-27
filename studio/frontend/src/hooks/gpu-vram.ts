@@ -376,6 +376,8 @@ export interface FreeVramDevice {
   memoryTotalGb?: number;
   /** True when this device's budget is a capped view of the host's own RAM. */
   sharedMemory?: boolean;
+  /** Host-backed portion of memoryTotalGb when sharedMemory is true. */
+  sharedMemoryHostBackedGb?: number | null;
 }
 
 /**
@@ -390,8 +392,9 @@ export interface FreeVramDevice {
  * total of 0 (`hardware.py` zeroes it for an iGPU on one path), and `usableFreeVramGb`
  * then falls back to the raw free reading with no reserve subtracted at all.
  *
- * Several shared devices are several views of one pool, so the largest is taken
- * rather than their sum -- two iGPUs on one host do not have two pools.
+ * Fully shared devices are views of one pool, so only the largest is taken. A
+ * partially shared APU also has an independent reserved segment, which remains
+ * additive while its host-backed demand is capped by the common pool.
  */
 export function aggregateUsableFreeVramGb(
   devices: FreeVramDevice[],
@@ -399,14 +402,63 @@ export function aggregateUsableFreeVramGb(
 ): number {
   const usable = (device: FreeVramDevice) =>
     usableFreeVramGb(device.memoryFreeGb ?? 0, device.memoryTotalGb ?? 0, fraction);
-  const dedicated = devices
-    .filter((device) => !device.sharedMemory)
-    .reduce((sum, device) => sum + usable(device), 0);
-  const shared = Math.max(
-    0,
-    ...devices.filter((device) => device.sharedMemory).map(usable),
-  );
+  let dedicated = 0;
+  let reserved = 0;
+  let partialSharedDemand = 0;
+  let partialSharedFree = 0;
+  let fullySharedDemand = 0;
+  let fullySharedFree = 0;
+  for (const device of devices) {
+    const deviceUsable = usable(device);
+    if (!device.sharedMemory) {
+      dedicated += deviceUsable;
+      continue;
+    }
+    const total =
+      Number.isFinite(device.memoryTotalGb) && (device.memoryTotalGb as number) > 0
+        ? (device.memoryTotalGb as number)
+        : 0;
+    if (total === 0) {
+      fullySharedDemand = Math.max(fullySharedDemand, deviceUsable);
+      fullySharedFree = Math.max(fullySharedFree, deviceUsable);
+      continue;
+    }
+    const reportedHostBacked = device.sharedMemoryHostBackedGb;
+    const hostBacked =
+      Number.isFinite(reportedHostBacked) &&
+      (reportedHostBacked as number) >= 0
+        ? Math.min(total, reportedHostBacked as number)
+        : total;
+    const deviceReserved = total - hostBacked;
+    const deviceCapacity = usableFreeVramGb(total, total, fraction);
+    const deviceSharedCapacity = Math.max(0, deviceCapacity - deviceReserved);
+    const deviceSharedDemand = Math.min(deviceUsable, deviceSharedCapacity);
+    reserved += Math.min(
+      deviceReserved,
+      Math.max(0, deviceUsable - deviceSharedDemand),
+    );
+    if (deviceReserved > 0) {
+      partialSharedDemand += deviceSharedDemand;
+      const free =
+        Number.isFinite(device.memoryFreeGb) && (device.memoryFreeGb as number) > 0
+          ? (device.memoryFreeGb as number)
+          : 0;
+      const deviceSharedFree = Math.min(hostBacked, free);
+      partialSharedFree = Math.max(partialSharedFree, deviceSharedFree);
+    } else {
+      fullySharedDemand = Math.max(fullySharedDemand, deviceSharedDemand);
+      fullySharedFree = Math.max(fullySharedFree, deviceSharedDemand);
+    }
+  }
+  const sharedFree = Math.max(partialSharedFree, fullySharedFree);
   // Devices arrive rounded to 2dp and the reserve is a fraction of them, so the sum
   // reintroduces float error the same way the totals aggregate does.
-  return Math.round((dedicated + shared) * 100) / 100;
+  return (
+    Math.round(
+      (dedicated +
+        reserved +
+        Math.min(sharedFree, partialSharedDemand + fullySharedDemand)) *
+        100,
+    ) / 100
+  );
 }

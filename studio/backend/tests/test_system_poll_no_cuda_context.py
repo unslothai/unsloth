@@ -1142,6 +1142,112 @@ def test_windows_rocm_apu_declines_an_ambiguous_arch_fallback(monkeypatch):
     assert result["devices"][0]["shared_memory_host_backed_gb"] is None
 
 
+def test_windows_rocm_apu_accepts_equal_duplicate_carve_outs(monkeypatch):
+    mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {
+            0x14CF5: {
+                "name": "AMD Radeon 8060S Graphics",
+                "gfx": "gfx1151",
+                "dedicated_memory_bytes": 8 * 1024**3,
+            },
+            0x24CF5: {
+                "name": "AMD Radeon 8060S Graphics",
+                "gfx": "gfx1151",
+                "dedicated_memory_bytes": 8 * 1024**3,
+            },
+        },
+    )
+
+    result = hw.get_backend_visible_gpu_info()
+
+    assert result["devices"][0]["shared_memory_host_backed_gb"] == 92.0
+
+
+def test_windows_rocm_apu_declines_a_conflicting_arch_candidate(monkeypatch):
+    mod = _apu_mod(gtt_total = _APU_GTT_TOTAL, carve_out = _APU_GTT_TOTAL)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {
+            0x14CF5: {
+                "name": "AMD Radeon 8060S Graphics",
+                "gfx": "gfx1151",
+                "dedicated_memory_bytes": 8 * 1024**3,
+            },
+            0x24CF5: {
+                "name": "AMD Radeon 8060S Graphics",
+                "gfx": "gfx1151",
+                "dedicated_memory_bytes": 8 * 1024**3,
+            },
+            0x34CF5: {
+                "name": "AMD Radeon(TM) Graphics",
+                "gfx": "gfx1151",
+                "dedicated_memory_bytes": 32 * 1024**3,
+            },
+        },
+    )
+
+    result = hw.get_backend_visible_gpu_info()
+
+    assert result["devices"][0]["shared_memory_host_backed_gb"] is None
+
+
+def test_windows_rocm_shared_pool_requires_a_complete_record_matching(monkeypatch):
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {
+            0x01: {"name": "AMD Radeon Graphics", "dedicated_memory_bytes": 8 * 1024**3},
+            0x02: {
+                "name": "AMD Radeon Graphics",
+                "gfx": "gfx1151",
+                "dedicated_memory_bytes": 8 * 1024**3,
+            },
+            0x03: {
+                "name": "AMD Radeon Graphics",
+                "gfx": "gfx1151",
+                "dedicated_memory_bytes": 8 * 1024**3,
+            },
+            0x04: {
+                "name": "AMD Radeon 780M",
+                "gfx": "gfx1103",
+                "dedicated_memory_bytes": 16 * 1024**3,
+            },
+            0x05: {
+                "name": "AMD Radeon 8060S",
+                "gfx": "gfx1150",
+                "dedicated_memory_bytes": 32 * 1024**3,
+            },
+        },
+    )
+    devices = [
+        {
+            "index": index,
+            "name": "AMD Radeon Graphics",
+            "total_gb": 100.0,
+            "shared_memory": True,
+            "_rocm_gfx": gfx,
+        }
+        for index, gfx in enumerate(("gfx1103", "gfx1150", "gfx1151"))
+    ]
+
+    assert hw._windows_rocm_shared_pool_host_gb_by_index(devices) == {}
+
+
 @pytest.mark.parametrize(
     ("torch_total", "sysfs_total", "expected_shared"),
     [(_APU_GTT_TOTAL, _APU_CARVE_OUT, True), (_APU_CARVE_OUT, _APU_CARVE_OUT, False)],
@@ -1191,6 +1297,30 @@ def test_linux_rocm_shared_pool_declines_ambiguous_masks(monkeypatch, ambiguous_
     monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
     monkeypatch.setattr(
         hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {"0000:03:00.0": (1.0, 8.0)}
+    )
+    devices = [{"index": 0, "total_gb": 100.0, "_rocm_known_unified": True}]
+
+    assert hw._rocm_linux_shared_pool_host_gb_by_index(devices) == {}
+
+
+def test_linux_rocm_shared_pool_declines_a_compacted_numeric_mask(monkeypatch):
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("GPU_DEVICE_ORDINAL", raising = False)
+    monkeypatch.setattr(
+        hw,
+        "_rocm_kfd_gpu_pci_ids",
+        lambda: {0: "0000:03:00.0", 1: "0000:04:00.0"},
+    )
+    monkeypatch.setattr(
+        hw,
+        "_rocm_linux_sysfs_vram_by_pci_gb",
+        lambda: {
+            "0000:03:00.0": (1.0, 8.0),
+            "0000:04:00.0": (1.0, 16.0),
+        },
     )
     devices = [{"index": 0, "total_gb": 100.0, "_rocm_known_unified": True}]
 

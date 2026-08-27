@@ -2334,66 +2334,83 @@ def _windows_rocm_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) ->
     shared_positions = [
         position for position, device in enumerate(devices) if device.get("shared_memory")
     ]
-    matches: dict[int, int] = {}
-    matched_records: set[int] = set()
-
-    for field, record_key, device_key in (
-        (
-            "name",
-            lambda record: _normalize_adapter_name(str(record.get("name", ""))),
-            lambda device: _normalize_adapter_name(str(device.get("name", ""))),
-        ),
-        (
-            "gfx",
-            lambda record: _parse_adapter_family_gfx(str(record.get("gfx", ""))),
-            lambda device: _parse_adapter_family_gfx(str(device.get("_rocm_gfx", ""))),
-        ),
-    ):
-        if field == "gfx" and (
-            not all(record.get("gfx") for record in records)
-            or not all(devices[position].get("_rocm_gfx") for position in shared_positions)
-        ):
-            continue
-        records_by_key: dict[str, list[int]] = {}
+    gfx_available = bool(records) and all(record.get("gfx") for record in records) and all(
+        devices[position].get("_rocm_gfx") for position in shared_positions
+    )
+    candidates_by_position: dict[int, set[int]] = {}
+    for position in shared_positions:
+        device = devices[position]
+        device_name = _normalize_adapter_name(str(device.get("name", "")))
+        device_gfx = _parse_adapter_family_gfx(str(device.get("_rocm_gfx", "")))
+        candidates: set[int] = set()
         for record_position, record in enumerate(records):
-            if record_position in matched_records:
-                continue
-            key = record_key(record)
-            if key:
-                records_by_key.setdefault(key, []).append(record_position)
-        devices_by_key: dict[str, list[int]] = {}
-        for position in shared_positions:
-            if position in matches:
-                continue
-            key = device_key(devices[position])
-            if key:
-                devices_by_key.setdefault(key, []).append(position)
-        for key, positions in devices_by_key.items():
-            record_positions = records_by_key.get(key, [])
-            if len(positions) == 1 and len(record_positions) == 1:
-                position = positions[0]
-                record_position = record_positions[0]
-                if field == "name":
-                    device_gfx = _parse_adapter_family_gfx(
-                        str(devices[position].get("_rocm_gfx", ""))
-                    )
-                    record_gfx = _parse_adapter_family_gfx(
-                        str(records[record_position].get("gfx", ""))
-                    )
-                    if device_gfx and record_gfx and device_gfx != record_gfx:
-                        continue
-                matches[position] = record_position
-                matched_records.add(record_position)
+            record_name = _normalize_adapter_name(str(record.get("name", "")))
+            record_gfx = _parse_adapter_family_gfx(str(record.get("gfx", "")))
+            name_matches = bool(device_name) and device_name == record_name
+            if name_matches and device_gfx and record_gfx and device_gfx != record_gfx:
+                name_matches = False
+            gfx_matches = gfx_available and bool(device_gfx) and device_gfx == record_gfx
+            if name_matches or gfx_matches:
+                candidates.add(record_position)
+        if candidates:
+            candidates_by_position[position] = candidates
+
+    dedicated_bytes_by_position: dict[int, int] = {}
+    remaining_positions = set(candidates_by_position)
+    while remaining_positions:
+        first = remaining_positions.pop()
+        component_positions = {first}
+        component_records = set(candidates_by_position[first])
+        while True:
+            connected = {
+                position
+                for position in remaining_positions
+                if candidates_by_position[position] & component_records
+            }
+            if not connected:
+                break
+            remaining_positions -= connected
+            component_positions |= connected
+            for position in connected:
+                component_records |= candidates_by_position[position]
+        if len(component_records) < len(component_positions):
+            continue
+        record_owner: dict[int, int] = {}
+
+        def assign_record(position: int, seen: set[int]) -> bool:
+            for record_position in candidates_by_position[position]:
+                if record_position not in component_records or record_position in seen:
+                    continue
+                seen.add(record_position)
+                owner = record_owner.get(record_position)
+                if owner is None or assign_record(owner, seen):
+                    record_owner[record_position] = position
+                    return True
+            return False
+
+        if not all(assign_record(position, set()) for position in component_positions):
+            continue
+        try:
+            dedicated_values = {
+                int(records[record_position]["dedicated_memory_bytes"])
+                for record_position in component_records
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+        if len(dedicated_values) != 1:
+            continue
+        dedicated_bytes = dedicated_values.pop()
+        if dedicated_bytes < 0:
+            continue
+        for position in component_positions:
+            dedicated_bytes_by_position[position] = dedicated_bytes
 
     host_gb_by_index: Dict[int, float] = {}
-    for position, record_position in matches.items():
-        record = records[record_position]
-        if "dedicated_memory_bytes" not in record:
-            continue
+    for position, dedicated_bytes in dedicated_bytes_by_position.items():
         device = devices[position]
         index = device.get("index")
         total_gb = float(device.get("total_gb") or 0.0)
-        dedicated_gb = float(record["dedicated_memory_bytes"]) / (1024**3)
+        dedicated_gb = float(dedicated_bytes) / (1024**3)
         if not isinstance(index, int) or total_gb <= 0 or not (0 <= dedicated_gb <= total_gb):
             continue
         host_gb_by_index[index] = round(total_gb - dedicated_gb, 2)
@@ -3353,6 +3370,8 @@ def _rocm_linux_sysfs_vram_by_index(
     pci_by_ordinal = _rocm_kfd_gpu_pci_ids()
     if not pci_by_ordinal:
         return {}
+    if len(devices) != len(pci_by_ordinal):
+        return {}
     if _rocm_visibility_mask_active():
         unambiguous_single = (
             allow_numeric_mask
@@ -3365,8 +3384,6 @@ def _rocm_linux_sysfs_vram_by_index(
             not allow_numeric_mask or not _rocm_single_numeric_mask_matches(devices)
         ):
             return {}
-    elif len(devices) != len(pci_by_ordinal):
-        return {}
     vram_by_pci = _rocm_linux_sysfs_vram_by_pci_gb()
     resolved: Dict[int, tuple[float, float]] = {}
     for dev in devices:
