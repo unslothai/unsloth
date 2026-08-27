@@ -969,6 +969,7 @@ def _sticky_compaction_boundary(
     thread_id: Optional[str],
     branch_messages: Optional[list[dict]] = None,
     context_policy: Optional[str] = None,
+    can_reset: bool = True,
 ) -> int:
     """How many leading messages this thread last compacted away, or 0.
 
@@ -1038,9 +1039,28 @@ def _sticky_compaction_boundary(
             # Only a fit that SUCCEEDED describes a boundary worth restoring.
             if not truncation.get("fits"):
                 return 0
-            # a boundary is valid only under the policy that recorded it; policy switches must refit.
+            # A boundary is valid only under the fit that will consume it, and the two
+            # directions fail differently.
+            #
+            # A checkpoint boundary is the depth of a RESET, affordable only because the
+            # block is rebuilt on every replay. Under rolling nothing rebuilds it, so the
+            # depth replays with nothing handed back (18 evicted where rolling picks 6).
+            # Refused HERE, not at the fit: `boundary_messages` is re-recorded every turn,
+            # so a rolling turn that inherited 18 would persist it with no `checkpoint` key
+            # and make the reset-sized window permanent.
+            #
+            # The other way, a rolling boundary reaching `fit_checkpoint_context` reads as
+            # an epoch already in force, so the reset returns `checkpoint_started` false
+            # and the automatic recall never runs. That only happens where the request may
+            # actually reset; `_can_reset_epoch` false means the fit stays rolling whatever
+            # the process policy says, and there the rolling boundary is the right one to
+            # replay. Rejecting it there instead let the boundary slide every turn for any
+            # model whose template cannot render tools.
             recorded_checkpoint = bool(truncation.get("checkpoint"))
-            if recorded_checkpoint != _request_uses_checkpoint(context_policy):
+            effective_checkpoint = _request_uses_checkpoint(context_policy)
+            if recorded_checkpoint and not effective_checkpoint:
+                return 0
+            if not recorded_checkpoint and effective_checkpoint and can_reset:
                 return 0
             # Counted against the request's own transcript, which is what it is applied
             # to. `dropped_messages` is the fallback for turns saved before that was
@@ -25625,6 +25645,13 @@ class LlamaCppBackend:
         ):
             try:
                 _before_fit = openai_messages
+                # One value for both the boundary read and the fit: a boundary the fit
+                # would not consume as an epoch must not be discarded as if it would.
+                _can_reset = _can_reset_epoch(
+                    thread_id,
+                    _backend_supports_tools(self),
+                    tools_withheld = tools_withheld,
+                )
                 openai_messages, truncation = _fit_with_instruction_pins(
                     openai_messages,
                     context_length = self._effective_context_length,
@@ -25640,14 +25667,13 @@ class LlamaCppBackend:
                     ),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _sticky_compaction_boundary(
-                        thread_id, _before_fit, context_policy = context_policy
+                        thread_id,
+                        _before_fit,
+                        context_policy = context_policy,
+                        can_reset = _can_reset,
                     ),
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
-                    can_reset = _can_reset_epoch(
-                        thread_id,
-                        _backend_supports_tools(self),
-                        tools_withheld = tools_withheld,
-                    ),
+                    can_reset = _can_reset,
                     **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                 )
                 if truncation:
@@ -26341,6 +26367,11 @@ class LlamaCppBackend:
                 _preflight_context_length = self._effective_context_length
                 try:
                     _before_fit = conversation
+                    _iteration_can_reset = _can_reset_epoch(
+                        thread_id,
+                        _backend_supports_tools(self),
+                        tools_withheld = _memory_tool_withheld(thread_id, tools),
+                    )
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
                         context_length = self._effective_context_length,
@@ -26360,17 +26391,16 @@ class LlamaCppBackend:
                         ),
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
-                        can_reset = _can_reset_epoch(
-                            thread_id,
-                            _backend_supports_tools(self),
-                            tools_withheld = _memory_tool_withheld(thread_id, tools),
-                        ),
+                        can_reset = _iteration_can_reset,
                         reserve_tokens = _conversation_recall_reserve(thread_id),
                         sticky_dropped = (
                             0
                             if _sticky_boundary_applied
                             else _sticky_compaction_boundary(
-                                thread_id, _request_branch, context_policy = context_policy
+                                thread_id,
+                                _request_branch,
+                                context_policy = context_policy,
+                                can_reset = _iteration_can_reset,
                             )
                         ),
                         **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
@@ -27983,6 +28013,14 @@ class LlamaCppBackend:
             _final_preflight_context_length = self._effective_context_length
             try:
                 _before_final_fit = conversation
+                # Withheld, not `tools`: this is the synthesised final answer and
+                # `stream_payload` below sends no tools array at all, so the request's
+                # catalogue answers a question it does not pose and would let a NEW epoch
+                # start on the one pass that can never call `search_conversation`.
+                # Replaying an epoch already in force is unaffected.
+                _final_can_reset = _can_reset_epoch(
+                    thread_id, _backend_supports_tools(self), tools_withheld = True
+                )
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
                     context_length = self._effective_context_length,
@@ -27997,23 +28035,16 @@ class LlamaCppBackend:
                     ),
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
-                    can_reset = _can_reset_epoch(
-                        thread_id,
-                        _backend_supports_tools(self),
-                        # Withheld, not `tools`: this is the synthesised final answer
-                        # and `stream_payload` below sends no tools array at all, so
-                        # the request's catalogue answers a question it does not pose
-                        # and would let a NEW epoch start on the one pass that can
-                        # never call `search_conversation`. Replaying an epoch already
-                        # in force is unaffected.
-                        tools_withheld = True,
-                    ),
+                    can_reset = _final_can_reset,
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = (
                         0
                         if _sticky_boundary_applied
                         else _sticky_compaction_boundary(
-                            thread_id, _request_branch, context_policy = context_policy
+                            thread_id,
+                            _request_branch,
+                            context_policy = context_policy,
+                            can_reset = _final_can_reset,
                         )
                     ),
                     **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),

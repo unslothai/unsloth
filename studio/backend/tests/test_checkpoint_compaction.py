@@ -1463,6 +1463,49 @@ def test_a_boundary_is_not_replayed_after_the_context_policy_changes(monkeypatch
     assert truncation["checkpoint_started"] is True
 
 
+def test_a_request_that_cannot_reset_still_replays_its_rolling_boundary(monkeypatch):
+    """`UNSLOTH_CONTEXT_POLICY=checkpoint` is not the same as "this fit will reset".
+
+    `_can_reset_epoch` refuses whenever the model's template cannot render tools, the tool
+    loop is off, or the archive is unavailable, and those requests compact through
+    `fit_rolling_context` and record a rolling boundary. Rejecting a rolling boundary on
+    the process policy alone therefore threw it away on every later turn for exactly those
+    threads: the boundary slid again, which is the thing `sticky_dropped` exists to stop.
+    The rolling boundary is only unsafe where `fit_checkpoint_context` would read it as an
+    epoch already in force and skip the reset's recall.
+    """
+    from core.inference import checkpoint, llama_cpp
+
+    stored = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "a",
+            "metadata": {"custom": {"contextTruncation": {"fits": True, "boundary_messages": 6}}},
+        },
+    ]
+    _stub_studio_db(monkeypatch, stored)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert (
+        llama_cpp._sticky_compaction_boundary("t1", can_reset = False) == 6
+    ), "a fit that stays rolling must replay the boundary rolling recorded"
+    assert (
+        llama_cpp._sticky_compaction_boundary("t1", can_reset = True) == 0
+    ), "a fit that may reset must start a new epoch instead of reusing a rolling boundary"
+
+    # A reset-sized boundary is still refused under rolling whatever the request may do,
+    # because nothing rebuilds the block that made the depth affordable.
+    stored[1]["metadata"]["custom"]["contextTruncation"] = {
+        "fits": True,
+        "boundary_messages": 18,
+        "checkpoint": True,
+    }
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
+    assert llama_cpp._sticky_compaction_boundary("t1", can_reset = False) == 0
+    assert llama_cpp._sticky_compaction_boundary("t1", can_reset = True) == 0
+
+
 def test_a_rescued_boundary_is_recorded_but_never_replayed(monkeypatch):
     """Recording a rescue's depth must not make it sticky.
 
