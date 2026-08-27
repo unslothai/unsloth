@@ -30,7 +30,7 @@ def _capture_body(provider_type: str, model: str, **kwargs) -> dict:
         sse = 'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\n' "data: [DONE]\n\n"
         return httpx.Response(200, content = sse, headers = {"content-type": "text/event-stream"})
 
-    ep_mod._http_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    mock_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
     client = ExternalProviderClient(
         provider_type = provider_type,
         base_url = "http://127.0.0.1:11434/v1",
@@ -38,14 +38,24 @@ def _capture_body(provider_type: str, model: str, **kwargs) -> dict:
     )
 
     async def run() -> None:
-        async for _ in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "hi"}],
-            model = model,
-            **kwargs,
-        ):
-            pass
+        try:
+            async for _ in client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}],
+                model = model,
+                **kwargs,
+            ):
+                pass
+        finally:
+            await mock_client.aclose()
 
-    asyncio.new_event_loop().run_until_complete(run())
+    event_loop = asyncio.new_event_loop()
+    previous_client = ep_mod._http_client
+    ep_mod._http_client = mock_client
+    try:
+        event_loop.run_until_complete(run())
+    finally:
+        ep_mod._http_client = previous_client
+        event_loop.close()
     return captured["body"]
 
 
