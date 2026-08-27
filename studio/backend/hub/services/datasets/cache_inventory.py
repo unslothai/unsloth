@@ -85,10 +85,9 @@ def _directory_size(path: Path) -> int:
 def _usable_mtime(value) -> float:
     """A timestamp we are willing to publish, else 0.0 meaning "unknown".
 
-    Finiteness is not paranoia about stat(): ``candidate`` below is whatever
-    huggingface_hub put on the object, and Starlette's JSON encoder runs with
-    ``allow_nan = False``, so a single inf reaching the row turns the whole
-    /api/hub/datasets/cached response into a 500 rather than one bad date.
+    Finiteness is not paranoia about stat(): ``candidate`` is whatever
+    huggingface_hub put on the object, and Starlette encodes with
+    ``allow_nan = False``, so one inf 500s the whole response.
     """
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return 0.0
@@ -135,11 +134,9 @@ def _merge_last_modified(existing: dict, row: dict) -> None:
 def _adopt_newer_last_modified(winner: dict, loser: Optional[dict]) -> None:
     """Carry a discarded row's timestamp onto the row that replaces it.
 
-    Which row wins is decided on completeness then size, which has nothing to do
-    with recency: a bigger-but-older copy legitimately wins and would otherwise
-    take the newer copy's date to the grave, so the dataset sinks in Recent. The
-    cached-model scan already keeps the max across duplicate roots -- see
-    ``hub/services/models/cache_inventory.py`` -- and this is the dataset twin.
+    Winning is decided on completeness then size, neither of which is recency,
+    so a bigger-but-older copy would otherwise bury the newer date and sink the
+    dataset in Recent. The cached-model scan keeps the max the same way.
     """
     if loser is None:
         return

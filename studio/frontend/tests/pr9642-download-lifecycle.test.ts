@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// S5 for PR #9642. Recent is only useful if a model you just downloaded is at
-// the top of it. This walks one download through every state it passes through
-// -- running, progress ticks, complete, the optimistic-hint window, the backend
-// rescan, and hint expiry -- and asserts where the row sits at each step.
+// S5 for PR #9642. Recent is only useful if what you just downloaded is at the
+// top. Walks one download through running, progress, complete, the hint window,
+// rescan and expiry, asserting the row's position at each step.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -28,9 +27,8 @@ const {
   INVENTORY_HINT_TTL_MS,
 } = await import("../src/features/hub/inventory/inventory-hints.ts");
 
-// Anchored to the real clock on purpose: reconcileInventoryHints prunes against
-// Date.now() internally and takes no injectable clock, so a fixed future NOW
-// would make every hint look permanently fresh and quietly disable the TTL step.
+// Real clock on purpose: reconcileInventoryHints prunes against Date.now() with
+// no injectable clock, so a fixed NOW would silently disable the TTL step.
 const NOW_MS = Date.now();
 const DAY_S = 86_400;
 const NOW_S = Math.floor(NOW_MS / 1000);
@@ -83,9 +81,8 @@ function order(
 }
 
 test("S5: the source really does stamp live download rows, so this fixture is not fiction", async () => {
-  // liveDownloadInventoryRows is module-private, so the lifecycle below rebuilds
-  // its payload. Pin the one line that matters, or the fixture could drift away
-  // from the implementation and keep passing.
+  // liveDownloadInventoryRows is module-private, so the lifecycle rebuilds its
+  // payload. Pin the one line that matters or the fixture can drift and pass.
   const source = await readFile(
     new URL(
       "../src/features/hub/inventory/use-hub-inventory.ts",
@@ -136,9 +133,8 @@ test("S5: progress ticks do not move the row, because startedAt is immutable", (
 });
 
 test("S5: a completed download must not fall to the bottom of Recent", () => {
-  // The moment the job reports complete, shouldSurfaceLiveJob stops emitting the
-  // live row and the download-manager hands over an inventory hint instead. The
-  // backend has not rescanned yet, so the hint's optimistic row is all there is.
+  // On complete, shouldSurfaceLiveJob stops emitting the live row and a hint
+  // takes over. No rescan yet, so the optimistic row is all there is.
   const pending = rememberInventoryHint(createPendingInventoryHints(), {
     kind: "gguf",
     repoId: NEW_REPO,
@@ -180,8 +176,8 @@ test("S5: the row stays put once the backend rescan supplies the real timestamp"
 });
 
 test("S5: an expired hint cannot re-introduce the drop", () => {
-  // Five minutes later with no rescan, the hint is pruned and the row is simply
-  // absent -- which is correct, and importantly not a row pinned to the bottom.
+  // After the TTL with no rescan the hint is pruned and the row is absent,
+  // which is correct and, importantly, not a row pinned to the bottom.
   const pending = rememberInventoryHint(createPendingInventoryHints(), {
     kind: "gguf",
     repoId: NEW_REPO,
@@ -203,8 +199,7 @@ test("S5: an expired hint cannot re-introduce the drop", () => {
 });
 
 test("S5: a cancelled or errored download keeps its live-row position", () => {
-  // Those states still surface as live rows, so they keep the startedAt stamp
-  // and behave exactly as they did before the PR.
+  // Still live rows, so they keep the startedAt stamp and behave as before.
   const startedAt = NOW_MS - 60_000;
   const rows = [
     {

@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The hazard this file guards is not a bug today. It is that after #9642 the SAME
-// field name carries two different units on two different paths: `last_modified`
-// is epoch seconds straight off the wire from listCachedGguf / listCachedModels,
-// and epoch milliseconds when the picker builds the same shape from a
-// CachedInventoryRow. Every current consumer either subtracts like for like or
-// stringifies, so nothing renders wrongly -- but the next person to format one of
-// these fields has a 1000x bug waiting.
-//
-// These tests fail when a new reader appears, so that reader has to declare its
-// unit rather than inherit whichever one happened to arrive.
+// Not a bug today: after #9642 `last_modified` is epoch seconds off the raw
+// endpoints and epoch milliseconds when the picker builds the same shape from an
+// inventory row. Every consumer subtracts like for like or stringifies, so
+// nothing renders wrongly, but the next one to format it has a 1000x bug waiting.
+// These fail when a new reader appears without declaring its unit.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -28,9 +23,7 @@ async function read(relative: string): Promise<string> {
   return readFile(new URL(relative, import.meta.url), "utf8");
 }
 
-// ---------------------------------------------------------------------------
 // H10 -- formatUpdatedDate assumes SECONDS and must never meet a normalized row
-// ---------------------------------------------------------------------------
 
 test("formatUpdatedDate still hardcodes seconds, and still has exactly one caller", async () => {
   const helpers = await read(
@@ -55,8 +48,7 @@ test("formatUpdatedDate still hardcodes seconds, and still has exactly one calle
 });
 
 test("a normalized inventory value through formatUpdatedDate would be absurd", () => {
-  // Demonstrating the trap rather than describing it: this is what would render
-  // if anyone routed a CachedInventoryRow.lastModified into that helper.
+  // The trap shown rather than described: a normalized row through that helper.
   const seconds = 1_750_000_000;
   const normalizedMs = normalizeTimestamp(seconds);
   assert.equal(normalizedMs, seconds * 1000);
@@ -69,9 +61,7 @@ test("a normalized inventory value through formatUpdatedDate would be absurd", (
   assert.equal(right.getUTCFullYear(), 2025);
 });
 
-// ---------------------------------------------------------------------------
 // H9 -- pin the set of readers, so a new one has to be declared
-// ---------------------------------------------------------------------------
 
 /** Every module that reads a timestamp off an inventory row, and its unit. */
 const DECLARED_READERS: ReadonlyArray<{ file: string; unit: "ms" | "seconds" }> = [
@@ -93,8 +83,7 @@ const DECLARED_READERS: ReadonlyArray<{ file: string; unit: "ms" | "seconds" }> 
 test("every declared reader still declares its unit in a comment", async () => {
   for (const { file } of DECLARED_READERS) {
     const source = await read(file);
-    // assert.ok, not assert.match: a failed match dumps the whole module into
-    // the report, which buries the one line that matters.
+    // assert.ok, not assert.match: a failed match dumps the whole module.
     assert.ok(
       /epoch (seconds|milliseconds)/i.test(source),
       `${file} reads an inventory timestamp but names no unit`,
@@ -106,9 +95,8 @@ test("the picker's seconds-named DTOs are only ever compared to themselves", asy
   const pickers = await read(
     "../src/features/model-picker/components/model-selector/pickers.tsx",
   );
-  // sortCachedRepos / sortLocalModels are scale invariant only while each
-  // subtraction has the same unit on both sides. A mixed subtraction is the
-  // failure mode, so assert the shape of every one of them.
+  // These sorts are scale invariant only while both sides of each subtraction
+  // share a unit, so pin the shape of every one.
   const subtractions = pickers.match(
     /\(b\.(last_modified|updated_at|updatedAt) \?\? -1\) - \(a\.\1 \?\? -1\)/g,
   );
@@ -124,9 +112,8 @@ test("the picker's seconds-named DTOs are only ever compared to themselves", asy
 });
 
 test("no module multiplies or divides an inventory timestamp by 1000", async () => {
-  // normalizeTimestamp is the single sanctioned conversion. dataset-panel-helpers
-  // is the one other place a *1000 exists, and it is on the raw local-dataset
-  // path guarded above.
+  // normalizeTimestamp is the only sanctioned conversion; the sole other *1000
+  // lives on the raw local-dataset path guarded above.
   for (const { file } of DECLARED_READERS) {
     const source = await read(file);
     const conversions = source.match(/(lastModified|last_modified|updatedAt|updated_at)[^\n]{0,40}[*/]\s*1000/g);

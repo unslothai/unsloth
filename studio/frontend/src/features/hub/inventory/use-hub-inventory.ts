@@ -215,10 +215,9 @@ function liveDownloadInventoryRows(
                 ? "transformers"
                 : "unknown",
           size_bytes: job.displayBytes,
-          // Already epoch MILLISECONDS: startedAt is Date.now() at every write
-          // site. normalizeTimestamp passes it through untouched because it is
-          // above the seconds/ms pivot, so a running download sorts against
-          // server mtimes on one scale rather than landing in 1970.
+          // Already epoch MILLISECONDS (Date.now() at every write site), so it
+          // clears the pivot untouched and sorts against server mtimes on one
+          // scale instead of landing in 1970.
           last_modified: job.startedAt,
           partial: true,
           partial_transport: null,

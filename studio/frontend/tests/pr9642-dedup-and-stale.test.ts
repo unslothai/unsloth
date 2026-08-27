@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Two cases the lifecycle suite does not reach, both about a repo the user
-// ALREADY has complete and then downloads again.
-//
-// Neither is a regression: before #9642 "Recent" had no date term at all, so it
-// could not have been right in these cases either. They are pinned here so the
-// behaviour is a decision on record rather than an accident, and so that anyone
-// who later decides a re-download should jump to the top finds the exact seam.
+// Two cases the lifecycle suite misses, both about re-downloading a repo already
+// held complete. Neither is a regression, since Recent had no date term at all
+// before #9642. Pinned so the behaviour is a decision on record, and so anyone
+// who later wants a re-download to jump to the top finds the seam.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -54,14 +51,11 @@ function recentOrder(rows: readonly ReturnType<typeof cachedRow>[]) {
     .map((item) => item.row.repoId);
 }
 
-// ---------------------------------------------------------------------------
 // H16 -- dedup drops the live row when the repo is already complete
-// ---------------------------------------------------------------------------
 
 test("dedup keeps the COMPLETE row over a live re-download of the same repo", () => {
-  // preferCachedRow ranks complete above partial before it looks at anything
-  // else, and a live download row is partial. So the fresh clock on the live
-  // row is discarded along with the row.
+  // preferCachedRow ranks complete above partial first, and a live row is
+  // partial, so its fresh clock is discarded along with it.
   const settled = cachedRow({
     repo_id: REPO,
     size_bytes: 8_000_000_000,
@@ -89,9 +83,8 @@ test("dedup keeps the COMPLETE row over a live re-download of the same repo", ()
     false,
     "the complete row is the survivor, which is right for identity",
   );
-  // The documented consequence: recency still reflects the settled copy, so a
-  // re-download of something you already have does not jump to the top until a
-  // backend rescan lands. Asserted, not lamented.
+  // The consequence, asserted rather than lamented: a re-download does not
+  // reach the top until a backend rescan lands.
   assert.equal(
     cachedRows[0].lastModified,
     (NOW_S - 30 * DAY_S) * 1000,
@@ -100,9 +93,8 @@ test("dedup keeps the COMPLETE row over a live re-download of the same repo", ()
 });
 
 test("dedup keeps the live row when the settled copy is itself partial", () => {
-  // Same repo, but nothing complete on disk. Here the live row must win, and
-  // with it the fresh timestamp, or an interrupted download would outrank the
-  // one currently running.
+  // Nothing complete on disk, so the live row must win with its fresh stamp,
+  // or a stalled download would outrank the running one.
   const stalled = cachedRow({
     repo_id: REPO,
     size_bytes: 500_000,
@@ -157,16 +149,12 @@ test("case-differing repo ids still dedup to one row", () => {
   assert.equal(cachedRows.length, 1);
 });
 
-// ---------------------------------------------------------------------------
 // H17 -- a completed hint meeting a stale-but-COMPLETE server row
-// ---------------------------------------------------------------------------
 
 test("a complete server row keeps its own authoritative timestamp over a hint", () => {
-  // mergeInventoryHint spreads the server row first and the seed only when the
-  // server row is partial, so a complete row's date survives. That is the right
-  // default: the server observed the filesystem, the hint observed a clock that
-  // may be skewed. The cost is that a re-download shows the settled date until
-  // the next scan.
+  // mergeInventoryHint spreads the server row first, seeding only over a partial
+  // one, so a complete row's date survives. Right default: the server observed
+  // the filesystem, the hint a possibly skewed clock.
   let pending = createPendingInventoryHints();
   pending = rememberInventoryHint(pending, {
     kind: "model",
@@ -194,8 +182,8 @@ test("a complete server row keeps its own authoritative timestamp over a hint", 
 });
 
 test("a PARTIAL server row does take the hint's timestamp", () => {
-  // The other merge branch. Here the seed overrides, so a download that finished
-  // while the backend still reports a partial row is dated now, not never.
+  // The other branch: the seed overrides, so a download that finished against a
+  // still-partial server row is dated now, not never.
   let pending = createPendingInventoryHints();
   pending = rememberInventoryHint(pending, {
     kind: "model",

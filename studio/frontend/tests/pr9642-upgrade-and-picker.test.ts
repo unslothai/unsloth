@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// S6 + S7 for PR #9642.
-//
-// S6 asks the question an existing install actually cares about: after upgrading
-// Studio, can a value written by the OLD version be compared against one written
-// by the NEW one and come out wrong? Changing a unit is only safe if the old
-// unit is nowhere on disk.
-//
-// S7 follows the timestamp out of the hub inventory and into the chat model
-// picker, which reads it under a different field name.
+// S6 + S7 for PR #9642. Changing a unit is safe only if the old unit is nowhere
+// on disk, so S6 hunts for a persisted timestamp an upgraded install could
+// compare against a fresh one. S7 follows the value into the chat picker, which
+// reads it under a different field name.
 
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
@@ -42,15 +37,12 @@ async function* walk(dir: URL): AsyncGenerator<URL> {
 }
 
 test("S6: no inventory timestamp is ever written to browser storage", async () => {
-  // The whole upgrade argument rests on this. If a lastModified or updatedAt
-  // ever reached localStorage, an install upgraded from a seconds-era build
-  // would compare a stored seconds value against a fresh milliseconds one and
-  // sort a model off by a factor of a thousand.
+  // The whole upgrade argument rests on this: a persisted seconds-era value
+  // meeting a fresh milliseconds one sorts a model out by 1000x.
   const offenders: string[] = [];
   for await (const file of walk(SRC)) {
     const source = await readFile(file, "utf8");
     if (!/(localStorage|sessionStorage)\.setItem/.test(source)) continue;
-    // Look only at the statements that persist, not the whole file.
     for (const line of source.split("\n")) {
       if (!/(localStorage|sessionStorage)\.setItem/.test(line)) continue;
       if (/lastModified|updatedAt|last_modified|updated_at/.test(line)) {
@@ -62,10 +54,9 @@ test("S6: no inventory timestamp is ever written to browser storage", async () =
 });
 
 test("S6: the download store's persisted startedAt is already milliseconds", async () => {
-  // unsloth.studio.downloads is the one persisted timestamp that now meets an
-  // inventory timestamp, because a live download row is stamped with it. It is
-  // Date.now() at every write site, so a job persisted by an older build
-  // rehydrates on the same scale the comparator expects.
+  // The one persisted timestamp that now meets an inventory one, since a live
+  // download row is stamped with it. Date.now() at every write site, so an old
+  // build's job rehydrates on the scale the comparator expects.
   const source = await readFile(
     new URL("features/hub/download-manager/download-manager-state.ts", SRC),
     "utf8",
@@ -103,9 +94,9 @@ test("S6: an install upgraded mid-download keeps a sane Recent order", () => {
   );
 });
 
-// S7. The picker forwards lastModified under the name last_modified, which is
-// the same name the raw endpoints use for a seconds value. Nothing may compare
-// the two, and nothing may subtract a load time from a modification time.
+// S7. The picker forwards lastModified as last_modified, the name the raw
+// endpoints use for seconds. Nothing may compare the two, and no load time may
+// be subtracted from a modification time.
 
 const CANONICAL_CACHED = [
   {
@@ -137,9 +128,8 @@ test("S7: the picker mappers forward a millisecond value, uniformly", () => {
     assert.ok((repo.last_modified as number) > 1_000_000_000_000);
   }
 
-  // sortCachedRepos' date term, verbatim from pickers.tsx. It only ever
-  // compares these rows against each other, so it is scale-invariant -- but it
-  // must stay that way, hence the homogeneity assertion above.
+  // sortCachedRepos' date term, verbatim. Scale-invariant only while the list
+  // stays homogeneous, which is what the assertion above pins.
   const byDate = (
     a: (typeof forwarded)[number],
     b: (typeof forwarded)[number],
@@ -169,9 +159,8 @@ test("S7: the -1 sentinel still sorts an undated repo last on either scale", () 
 });
 
 test("S7: a load time is never subtracted from a modification time", async () => {
-  // loadedAt comes from unsloth.model-load-times.v1, which stores Date.now().
-  // pickers.tsx compares it on its own and falls through to byDate only when it
-  // ties, so the two clocks never meet in one subtraction. Pin that shape.
+  // loadedAt is a Date.now() clock. pickers.tsx compares it alone and only
+  // falls through to byDate on a tie, so the two clocks never meet.
   const source = await readFile(
     new URL("features/model-picker/components/model-selector/pickers.tsx", SRC),
     "utf8",
@@ -180,8 +169,8 @@ test("S7: a load time is never subtracted from a modification time", async () =>
     source,
     /const d = loadedAt\(loadTimes, b\.repo_id\) - loadedAt\(loadTimes, a\.repo_id\);\s*\n\s*return d !== 0 \? d : byDate\(a, b\);/,
   );
-  // -1, deliberately below any real clock, so a never-loaded model sorts last
-  // in either scale rather than colliding with the epoch.
+  // -1 sits below any real clock, so a never-loaded model cannot collide with
+  // the epoch on either scale.
   assert.equal(loadedAt({}, "missing"), -1);
 });
 
@@ -200,9 +189,8 @@ test("S7: the sole-quant fingerprint changes scale but cannot cause a stale hit"
     "the fingerprint should notice the new value",
   );
 
-  // It is an in-memory map that starts empty every mount, and the first sighting
-  // of a repo is recorded rather than treated as drift -- so an upgraded install
-  // does not invalidate a cache it never had.
+  // An in-memory map, empty every mount, and a first sighting records rather
+  // than drifts, so an upgrade cannot invalidate a cache it never had.
   const target = {
     repoId: "Org/Data",
     localSource: null,
@@ -216,7 +204,7 @@ test("S7: the sole-quant fingerprint changes scale but cannot cause a stale hit"
     "a first sighting must not read as drift",
   );
   assert.deepEqual(takeDriftedRepos([target], known), []);
-  // And a genuine change is still noticed, so the scale change has not blunted it.
+  // A genuine change is still caught, so the new scale has not blunted it.
   assert.deepEqual(
     takeDriftedRepos([{ ...target, fingerprint: seconds }], known),
     ["Org/Data"],
@@ -233,7 +221,6 @@ test("S7: local rows keep the scale they always had", () => {
       updated_at: 1_700_000_000,
     },
   ]);
-  // updated_at went through normalizeTimestamp before this PR too, so nothing
-  // on the local side moved.
+  // updated_at was already normalized before this PR, so nothing moved here.
   assert.equal(row?.updatedAt, 1_700_000_000_000);
 });

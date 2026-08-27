@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// S1 + S2 for PR #9642. The Recent sort only works if every inventory row reaches
-// the comparator in one unit, so these pin the normalizer's contract at its
-// boundaries and then replay the shapes real backends actually emit on each OS.
+// S1 + S2 for PR #9642. Recent only works if every row reaches the comparator in
+// one unit, so these pin the normalizer at its boundaries, then replay the shapes
+// real backends emit on each OS.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -21,10 +21,9 @@ const { compareInventoryItemsByRecent, inventoryItemUpdatedAt } = await import(
 const YEAR_2000_MS = 946_684_800_000;
 const YEAR_2100_MS = 4_102_444_800_000;
 
-// S1. Every value the wire can carry, and what the normalizer must make of it.
-// A backend that omits the key, a stat() that failed, and a filesystem with no
-// clock all arrive here as different JSON, and all three must mean "unknown"
-// rather than "1970", or they would sort above nothing and below everything.
+// S1. Every value the wire can carry. An absent key, a failed stat() and a
+// clockless filesystem arrive as different JSON and must all mean "unknown"
+// rather than 1970, which would sort above nothing and below everything.
 const BOUNDARY_TABLE: ReadonlyArray<{
   readonly label: string;
   readonly input: number | null | undefined;
@@ -85,16 +84,11 @@ test("S1: normalizeTimestamp maps every wire value to a millisecond or to unknow
 });
 
 test("S1: normalizeTimestamp is idempotent over every reachable timestamp", () => {
-  // formatLocalUpdated re-normalizes whatever it is handed, and a row's
-  // updatedAt has already been normalized once by the row builder, so the
-  // function is applied twice on the display path. That is only safe where
-  // applying it twice equals applying it once.
-  //
-  // The pivot is a heuristic, not a converter: it is idempotent exactly when the
-  // first pass lands at or above 10_000_000_000. For a seconds input that means
-  // any mtime at or after 1970-04-26. Every real filesystem timestamp qualifies
-  // by a factor of ~170, so the reachable domain is safe -- but see the
-  // companion test below for where the property genuinely stops holding.
+  // formatLocalUpdated re-normalizes an already-normalized updatedAt, so the
+  // display path applies this twice. Safe only where twice equals once, which
+  // holds when the first pass lands at or above the pivot: any mtime after
+  // 1970-04-26. Real timestamps clear that by ~170x. The next test covers where
+  // the property stops holding.
   for (const row of BOUNDARY_TABLE) {
     const once = normalizeTimestamp(row.input);
     if (once !== null && once < 10_000_000_000) continue;
@@ -107,12 +101,10 @@ test("S1: normalizeTimestamp is idempotent over every reachable timestamp", () =
 });
 
 test("S1: the pivot's blind spot is confined to the first 116 days of 1970", () => {
-  // Documenting the limit rather than hiding it. A raw seconds value below
-  // 10_000_000 normalizes into a range the function still reads as seconds, so a
-  // second pass multiplies it again. No filesystem this code can reach reports a
-  // 1970 mtime for a model that exists, and an unreadable one arrives as 0 or
-  // null instead, so this is unreachable rather than latent -- but it is the
-  // reason normalizeTimestamp must stay a single-boundary ingestion helper.
+  // Documented, not hidden. Seconds below 10_000_000 normalize into a range
+  // still read as seconds, so a second pass multiplies again. Unreachable (an
+  // unreadable mtime arrives as 0 or null), but it is why this must stay a
+  // single-boundary ingestion helper.
   const lastAffectedSeconds = 9_999_999;
   assert.equal(normalizeTimestamp(lastAffectedSeconds), 9_999_999_000);
   assert.equal(normalizeTimestamp(9_999_999_000), 9_999_999_000_000);
@@ -128,9 +120,9 @@ test("S1: the pivot's blind spot is confined to the first 116 days of 1970", () 
 });
 
 test("S1: a malformed runtime value never reaches the comparator as NaN", () => {
-  // The static type says number, but JSON from an older or patched backend can
-  // say anything. A NaN operand would make the comparator return NaN, which is
-  // where engines are free to disagree about the final order.
+  // The type says number; JSON from an older or patched backend can say
+  // anything. A NaN operand returns NaN from the comparator, which is exactly
+  // where engines are free to disagree.
   const hostile: readonly unknown[] = [
     "1700000000",
     "",
@@ -150,9 +142,9 @@ test("S1: a malformed runtime value never reaches the comparator as NaN", () => 
   }
 });
 
-// S2. One fixture family per filesystem/OS shape the backend can be sitting on.
-// The PR does not branch on platform, so what varies between these is only the
-// value the backend puts on the wire -- which is exactly the axis that matters.
+// S2. One fixture per filesystem/OS shape. The PR never branches on platform,
+// so the only thing that varies is the value on the wire, which is the axis
+// that matters.
 const NOV_2023_S = 1_700_000_000;
 
 type CachedPayload = {
@@ -281,8 +273,8 @@ const OS_FIXTURES: readonly OsFixture[] = [
       { repo_id: "Org/gamma", size_bytes: 1 },
     ],
     local: [],
-    // All unknown, so the comparator must return 0 throughout and leave the
-    // caller's source order exactly as it found it.
+    // All unknown: the comparator must return 0 throughout and leave source
+    // order untouched.
     expected: ["Org/alpha", "Org/beta", "Org/gamma"],
   },
   {
@@ -346,8 +338,7 @@ for (const fixture of OS_FIXTURES) {
     for (const item of items) {
       const value = inventoryItemUpdatedAt(item);
       if (value === null) continue;
-      // A seconds value that escaped normalization would land in 1970; a
-      // doubly-multiplied one would land past the year 4000. Both are caught here.
+      // Escaped normalization lands in 1970; multiplied twice lands past 4000.
       assert.ok(
         value > YEAR_2000_MS && value < YEAR_2100_MS,
         `${fixture.label}: ${value} is not a plausible millisecond timestamp`,

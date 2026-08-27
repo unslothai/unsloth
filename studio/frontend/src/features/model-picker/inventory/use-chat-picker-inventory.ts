@@ -29,13 +29,11 @@ function isCompleteCachedRow(row: CachedInventoryRow): boolean {
 }
 
 function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
-  // The unit seam. `last_modified` on this DTO is epoch SECONDS when it comes
-  // straight off listCachedGguf / listCachedModels, but the row we are mapping
-  // has already been normalized, so what leaves here is epoch MILLISECONDS.
-  // Safe only because every consumer -- sortCachedRepos, sortLocalModels,
-  // soleQuantFingerprint -- subtracts like for like or stringifies, and no
-  // single list mixes the two origins. Anything that formats this field, or
-  // compares it to a Date.now() clock, has to normalize first.
+  // The unit seam. This DTO's `last_modified` is epoch SECONDS off the raw
+  // endpoints, but the row here is already normalized, so what leaves is epoch
+  // MILLISECONDS. Safe only because every consumer subtracts like for like or
+  // stringifies and no list mixes the two origins. Formatting it, or comparing
+  // it to a Date.now() clock, requires normalizing first.
   return {
     repo_id: row.repoId,
     // Listed by repo id, loaded by the pinned id: dropping it sends the picker back down the ref.

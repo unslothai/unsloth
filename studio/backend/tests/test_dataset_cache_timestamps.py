@@ -3,15 +3,13 @@
 
 """S9 for PR #9642: cached datasets need a timestamp for Recent to mean anything.
 
-Before this, /api/hub/datasets/cached carried no time field at all, while local
-recipe and upload datasets carried updated_at. Sorting the two together put every
-cached Hub dataset below every local one no matter which was newer.
+/api/hub/datasets/cached carried no time field, while local recipe and upload
+datasets carried updated_at, so every cached Hub dataset sorted below every
+local one whatever the date.
 
-Lives in studio/backend/tests/ rather than beside its subject in
-studio/backend/hub/tests/ on purpose: studio-backend-ci.yml runs `pytest tests/`
-from studio/backend, and hub/tests is a sibling of that path, so nothing there is
-collected by any workflow. A guard that never runs is not a guard. The wider
-hub/tests gap is worth its own fix; this file just declines to join it.
+Deliberately not beside its subject in hub/tests/: studio-backend-ci runs
+`pytest tests/` from studio/backend, and hub/tests is a sibling of that path, so
+nothing there is collected. A guard that never runs is not a guard.
 """
 
 import os
@@ -42,8 +40,7 @@ def _stub_hf_scan(monkeypatch, repos):
 
 def test_schema_carries_the_timestamp():
     assert "last_modified" in CachedDatasetItem.__annotations__
-    # Unset rather than 0: the frontend must be able to tell "no readable mtime"
-    # from "modified at the epoch", or an unreadable cache sorts as 1970.
+    # Unset rather than 0, or an unreadable cache sorts as 1970.
     assert CachedDatasetItem(repo_id = "Org/Data").last_modified is None
 
 
@@ -65,14 +62,13 @@ def test_hf_scan_reports_the_repo_timestamp_in_seconds(monkeypatch):
     rows = cache_inventory._scan_hf_dataset_caches()
 
     assert len(rows) == 1
-    # POSIX seconds, the same unit the cached-model scan emits, so one
-    # normalizer on the frontend covers both.
+    # POSIX seconds, as the cached-model scan emits, so one normalizer covers both.
     assert rows[0]["last_modified"] == pytest.approx(1_700_000_000.5)
 
 
 def test_the_key_is_omitted_when_no_mtime_is_readable(monkeypatch):
-    # A broken snapshot symlink on Windows, a share with no clock, or a cache
-    # deleted mid-scan. The row must still be listed, just undated.
+    # Broken symlink, clockless share, or a cache deleted mid-scan. Still listed,
+    # just undated.
     _stub_hf_scan(
         monkeypatch,
         [
@@ -113,8 +109,8 @@ def test_a_non_positive_mtime_is_dropped_rather_than_reported_as_1970(monkeypatc
 def test_falls_back_to_stat_when_the_library_reports_nothing(monkeypatch, tmp_path):
     cache_dir = tmp_path / "datasets--Org--Data"
     (cache_dir / "snapshots").mkdir(parents = True)
-    # Both candidates, because the fallback reports the newest of them and a
-    # freshly created parent directory would otherwise dominate.
+    # Both candidates: the fallback takes the newest, or a freshly created parent
+    # directory would dominate.
     os.utime(cache_dir / "snapshots", (1_700_000_000, 1_700_000_000))
     os.utime(cache_dir, (1_690_000_000, 1_690_000_000))
 

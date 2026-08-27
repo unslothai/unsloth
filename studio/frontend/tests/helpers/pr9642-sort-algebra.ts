@@ -2,12 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Shared body for S3 (node) and S8 (chromium/firefox/webkit) of PR #9642.
-// ES2019 makes Array.prototype.sort stable in every engine, but the spec only
-// defines the result for a comparator that is pure, reflexive, anti-symmetric
-// and transitive. Give any engine a comparator that is not, and V8, JSC and
-// SpiderMonkey are each free to return a different order. So proving the
-// comparator's algebra is what actually makes the Recent list engine-independent
-// -- running it in three browsers only confirms it.
+// ES2019 makes sort stable everywhere, but only for a comparator that is pure,
+// reflexive, anti-symmetric and transitive; given anything less, V8, JSC and
+// SpiderMonkey may each return a different order. Proving the algebra is what
+// makes Recent engine-independent. Three browsers only confirm it.
 
 import {
   type InventoryItem,
@@ -149,9 +147,8 @@ export function runSortAlgebraChecks(): string[] {
     }
   }
 
-  // Every arrangement of a list carrying ties and unknowns must sort to what a
-  // stable reference sort produces. If it does not, the order on screen depends
-  // on which engine the user opened Studio in.
+  // Every arrangement carrying ties and unknowns must match a stable reference
+  // sort, or the order on screen depends on the user's engine.
   const sample: InventoryItem[] = [
     cachedItem("Org/unknown-a"),
     localItem("local:tie-1", T2),
