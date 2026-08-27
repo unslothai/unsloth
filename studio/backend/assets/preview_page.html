@@ -460,9 +460,23 @@
             }
           }
           if (!complete) throw new Error("preview stream ended before completion");
+          const hasContent = Boolean(acc.trim());
+          const hasReasoning = Boolean(reasoning.trim());
+          if (!hasContent && !hasReasoning) {
+            body.classList.add("error");
+            body.textContent = truncated
+              ? "Reply cut off before the model returned an answer. Please try again."
+              : "The model returned an empty reply. Please try again.";
+            msgs.pop();
+            input.value = content;
+            autosize();
+            btn.disabled = false;
+            input.focus();
+            return;
+          }
           // A reasoning-only reply still needs its turn: without it the next
           // prompt repeats a role and is dropped to keep alternation.
-          if (acc || reasoning) {
+          if (hasContent || hasReasoning) {
             const reply = { role: "assistant", content: acc };
             if (reasoning) reply.reasoning_content = reasoning;
             msgs.push(reply);

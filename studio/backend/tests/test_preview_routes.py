@@ -142,8 +142,15 @@ def test_page_keeps_assistant_turn_for_reasoning_only_reply(client):
     # Without the assistant turn the next prompt repeats a role and
     # format_chat_prompt drops it, so the follow-up is never answered.
     text = client.get(f"/p/demorun?k={_sig('demorun')}").text
-    assert "if (acc || reasoning)" in text
+    assert "if (hasContent || hasReasoning)" in text
     assert "reply.reasoning_content = reasoning" in text
+
+
+def test_page_recovers_from_empty_reply(client):
+    text = client.get(f"/p/demorun?k={_sig('demorun')}").text
+    assert "if (!hasContent && !hasReasoning)" in text
+    assert "The model returned an empty reply. Please try again." in text
+    assert "Reply cut off before the model returned an answer." in text
 
 
 def test_page_escapes_title(tmp_path, monkeypatch, captured):
