@@ -164,6 +164,12 @@ class JobManager:
 
             run_payload = dict(run)
             run_payload["_job_id"] = job_id
+            # spawn starts a fresh interpreter, so request ContextVars do not
+            # cross the process boundary. Pass the authenticated workspace's
+            # concrete artifact root instead of falling back to the owner path.
+            from utils.paths import recipe_datasets_root
+
+            run_payload["_artifact_root"] = str(recipe_datasets_root())
             from utils.native_path_leases import (
                 native_path_secret_removed_for_child_start,
                 run_without_native_path_secret,

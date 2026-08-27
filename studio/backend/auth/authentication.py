@@ -10,6 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.security.utils import get_authorization_scheme_param
 import jwt
 from starlette.concurrency import run_in_threadpool
+from utils.workspace_context import set_workspace_subject
 
 from .storage import (
     API_KEY_PREFIX,
@@ -321,6 +322,10 @@ async def get_current_subject(credentials: HTTPAuthorizationCredentials = Depend
         credentials,
         allow_password_change = False,
     )
+    # Each ASGI request owns its context; Starlette propagates it into sync
+    # route threadpools and child tasks. Storage roots therefore follow the
+    # verified token subject, never an untrusted request field.
+    set_workspace_subject(subject)
     return subject
 
 
@@ -332,10 +337,12 @@ async def get_current_credential(
     For routes that persist a new credential and must not do so on behalf of one
     a concurrent reset has revoked.
     """
-    return await _get_current_credential(
+    subject, generation = await _get_current_credential(
         credentials,
         allow_password_change = False,
     )
+    set_workspace_subject(subject)
+    return subject, generation
 
 
 async def authenticated_via_api_key(

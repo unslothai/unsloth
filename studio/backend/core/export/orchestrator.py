@@ -22,7 +22,6 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
-from utils.paths import outputs_root
 
 logger = get_logger(__name__)
 
@@ -704,7 +703,7 @@ class ExportOrchestrator:
                 self._active_op_kind = None
                 self._export_active = False
 
-    def scan_checkpoints(self, outputs_dir: str = str(outputs_root())) -> List[Tuple[str, list]]:
+    def scan_checkpoints(self, outputs_dir: Optional[str] = None) -> List[Tuple[str, list]]:
         """Scan for checkpoints — runs locally, no ML imports."""
         from utils.models.checkpoints import scan_checkpoints
         return scan_checkpoints(outputs_dir = outputs_dir)

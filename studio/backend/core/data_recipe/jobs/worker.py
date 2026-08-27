@@ -18,7 +18,7 @@ from typing import Any
 from ..jsonable import to_jsonable, to_preview_jsonable
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
 from ..service import build_config_builder, create_data_designer
-from utils.paths import ensure_dir, recipe_datasets_root
+from utils.paths import ensure_dir
 
 # Fresh spawned interpreter: re-apply main.py's OS-trust-store injection.
 from utils.native_tls import activate_native_tls
@@ -26,7 +26,6 @@ from utils.paths.path_utils import drop_appledouble_metadata
 
 activate_native_tls()
 
-_ARTIFACT_ROOT = recipe_datasets_root()
 _RE_GITHUB_CURSOR = re.compile(r"\bcursor=[^\s,]+")
 _RE_SECRET_TOKEN = re.compile(
     r"\b(?:(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]+|sk-unsloth-[A-Za-z0-9]+)"
@@ -106,17 +105,21 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
             job_id = f"{int(time.time())}"
         run_name_raw = run.get("run_name")
         run_name = run_name_raw if isinstance(run_name_raw, str) else None
+        artifact_root_raw = str(run.get("_artifact_root") or "").strip()
+        if not artifact_root_raw:
+            raise ValueError("Data recipe worker is missing its workspace artifact root")
+        artifact_root = Path(artifact_root_raw)
         dataset_name = _build_dataset_name(
             run_name = run_name,
             job_id = job_id,
-            artifact_root = _ARTIFACT_ROOT,
+            artifact_root = artifact_root,
         )
         merge_batches = bool(run.get("merge_batches"))
-        ensure_dir(_ARTIFACT_ROOT)
+        ensure_dir(artifact_root)
         run_config_raw = run.get("run_config") or {}
 
         builder = build_config_builder(recipe)
-        designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))
+        designer = create_data_designer(recipe, artifact_path = str(artifact_root))
 
         # DataDesigner resets root logging in __init__; attach the queue handler
         # to the named loggers directly so parser events survive.

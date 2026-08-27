@@ -47,6 +47,7 @@ class RagExtensionUnavailable(RuntimeError):
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+_schema_ready_paths: set[str] = set()
 # The dylib is either there or it is not, and the UI polls the KB list on a timer, so
 # one warning per process says everything the repeat lines would. Same shape as the
 # per-job throttle in hub/services/snapshot_progress.py.
@@ -309,6 +310,7 @@ def get_connection() -> sqlite3.Connection:
         raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG)
 
     db_path = rag_db_path()
+    db_key = str(db_path.resolve(strict = False))
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -329,10 +331,13 @@ def get_connection() -> sqlite3.Connection:
     _extension_loaded = True
 
     if not _schema_ready:
+        _schema_ready_paths.clear()
+    if db_key not in _schema_ready_paths:
         with _schema_lock:
-            if not _schema_ready:
+            if db_key not in _schema_ready_paths:
                 try:
                     _ensure_schema(conn)
+                    _schema_ready_paths.add(db_key)
                     _schema_ready = True
                 except Exception:
                     conn.close()

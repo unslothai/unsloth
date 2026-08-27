@@ -15,6 +15,7 @@ from .path_utils import (
 )
 from .storage_roots import (
     studio_root,
+    workspace_root,
     assets_root,
     dataset_files_in_dir,
     datasets_root,
@@ -66,6 +67,7 @@ __all__ = [
     "reset_cache_case_resolution_state",
     "reveal_in_file_manager",
     "studio_root",
+    "workspace_root",
     "assets_root",
     "dataset_files_in_dir",
     "datasets_root",

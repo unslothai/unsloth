@@ -100,6 +100,7 @@ def contains_sensitive_path_component(path: str) -> bool:
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+_schema_ready_paths: set[str] = set()
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 1
@@ -1242,6 +1243,7 @@ def get_connection(
     """Open studio.db with WAL mode, create tables once per process, enable foreign keys."""
     global _schema_ready
     db_path = studio_db_path()
+    db_key = str(db_path.resolve(strict = False))
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(
         str(db_path), timeout = busy_timeout_seconds, check_same_thread = check_same_thread
@@ -1250,11 +1252,14 @@ def get_connection(
     # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
     if not _schema_ready:
+        _schema_ready_paths.clear()
+    if db_key not in _schema_ready_paths:
         with _schema_lock:
-            if not _schema_ready:
+            if db_key not in _schema_ready_paths:
                 try:
                     _ensure_schema(conn)
                     conn.commit()
+                    _schema_ready_paths.add(db_key)
                     _schema_ready = True
                 except Exception:
                     conn.close()

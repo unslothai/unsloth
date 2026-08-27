@@ -190,6 +190,7 @@ export const ru = {
     tabs: {
       general: "Общие",
       profile: "Профиль",
+      accounts: "Учётные записи",
       appearance: "Оформление",
       resources: "Система",
       chat: "Чат",

@@ -10,6 +10,7 @@ import { create } from "zustand";
 export const SETTINGS_TABS = [
   "general",
   "profile",
+  "accounts",
   "appearance",
   "resources",
   "chat",

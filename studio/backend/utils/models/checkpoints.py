@@ -140,7 +140,7 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
 
 
 def scan_checkpoints(
-    outputs_dir: str = str(outputs_root()),
+    outputs_dir: Optional[str] = None,
 ) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
     """Scan outputs folder for training runs and their checkpoints.
 
@@ -298,7 +298,7 @@ def resolve_preview_checkpoint(run: str, checkpoint: Optional[str] = None) -> Pa
     return path
 
 
-def list_preview_targets(outputs_dir: str = str(outputs_root())) -> List[dict]:
+def list_preview_targets(outputs_dir: Optional[str] = None) -> List[dict]:
     targets: List[dict] = []
     for run_name, checkpoints, metadata in scan_checkpoints(outputs_dir):
         for display_name, path, loss in checkpoints:

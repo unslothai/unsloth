@@ -2825,11 +2825,11 @@ def _audio_type_of_checkpoint(
 
 @router.get("/loras")
 async def scan_loras(
-    outputs_dir: str = Query(
-        default = str(outputs_root()), description = "Directory to scan for LoRA adapters"
+    outputs_dir: Optional[str] = Query(
+        default = None, description = "Directory to scan for LoRA adapters"
     ),
-    exports_dir: str = Query(
-        default = str(exports_root()), description = "Directory to scan for exported models"
+    exports_dir: Optional[str] = Query(
+        default = None, description = "Directory to scan for exported models"
     ),
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
@@ -5457,8 +5457,8 @@ async def reveal_cached_model(
 
 @router.get("/checkpoints", response_model = CheckpointListResponse)
 async def list_checkpoints(
-    outputs_dir: str = Query(
-        default = str(outputs_root()),
+    outputs_dir: Optional[str] = Query(
+        default = None,
         description = "Directory to scan for checkpoints",
     ),
     current_subject: str = Depends(get_current_subject),

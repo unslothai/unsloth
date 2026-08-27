@@ -36,6 +36,7 @@ type AuthMode = "login" | "change-password";
 
 type AuthStatusResponse = {
   initialized: boolean;
+  default_username: string;
   requires_password_change: boolean;
 };
 
@@ -72,14 +73,14 @@ type AuthFormProps = {
   mode: AuthMode;
 };
 
-const HIDDEN_LOGIN_USERNAME = "unsloth";
-
 export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const navigate = useNavigate();
   const isLoginMode = mode === "login";
   const [showPassword, setShowPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
-  const username = HIDDEN_LOGIN_USERNAME;
+  const [username, setUsername] = useState(
+    () => window.__UNSLOTH_BOOTSTRAP__?.username ?? "",
+  );
   const [password, setPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -103,10 +104,18 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         const result = (await response.json()) as AuthStatusResponse;
         if (!canceled) {
           setInitialized(result.initialized);
-          setRequiresPasswordChange(result.requires_password_change);
+          setUsername((current) => current || result.default_username);
+          const accountRequiresPasswordChange =
+            hasAuthToken() && mustChangePassword();
+          const effectivePasswordChange =
+            result.requires_password_change || accountRequiresPasswordChange;
+          setRequiresPasswordChange(effectivePasswordChange);
 
           // Server truth wins; keep localStorage in sync both ways.
-          if (result.requires_password_change !== mustChangePassword()) {
+          if (
+            result.requires_password_change &&
+            result.requires_password_change !== mustChangePassword()
+          ) {
             setMustChangePassword(result.requires_password_change);
           }
 
@@ -115,7 +124,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             navigate({ to: "/change-password" });
             return;
           }
-          if (mode === "change-password" && !result.requires_password_change) {
+          if (mode === "change-password" && !effectivePasswordChange) {
             navigate({ to: "/login" });
             return;
           }
@@ -152,7 +161,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     return () => {
       canceled = true;
     };
-  }, [navigate]);
+  }, [isLoginMode, mode, navigate]);
 
   useEffect(() => {
     if (statusLoading || reloadReadySent.current) return;
@@ -169,7 +178,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       }
     }
     loadBootstrap();
-  }, []);
+  }, [isLoginMode, password]);
 
   const blockedByState =
     initialized === false ||
@@ -332,34 +341,51 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       </div>
       <form className="space-y-5" onSubmit={handleSubmit}>
         {isLoginMode && (
-          <div className="space-y-2">
-            <Label htmlFor="password">Password</Label>
-            <div className="relative">
+          <>
+            <div className="space-y-2">
+              <Label htmlFor="username">Username</Label>
               <Input
-                id="password"
-                type={showPassword ? "text" : "password"}
-                className="pr-10"
-                autoComplete="current-password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                minLength={8}
+                id="username"
+                type="text"
+                autoComplete="username"
+                value={username}
+                onChange={(event) => setUsername(event.target.value.toLowerCase())}
+                minLength={3}
+                maxLength={64}
+                pattern="[a-z0-9][a-z0-9._-]*"
+                spellCheck={false}
                 required
               />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
-                onClick={() => setShowPassword((prev) => !prev)}
-              >
-                {showPassword ? (
-                  <EyeOff className="h-4 w-4" />
-                ) : (
-                  <Eye className="h-4 w-4" />
-                )}
-              </Button>
             </div>
-          </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <div className="relative">
+                <Input
+                  id="password"
+                  type={showPassword ? "text" : "password"}
+                  className="pr-10"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  minLength={8}
+                  required
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-0 top-0 h-full px-3 text-muted-foreground hover:bg-transparent"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </div>
+          </>
         )}
 
         {!isLoginMode && (

@@ -43,6 +43,40 @@ class AuthStatusResponse(BaseModel):
     )
 
 
+class CurrentUserResponse(BaseModel):
+    """Identity and privileges for the active browser session."""
+
+    username: str
+    is_admin: bool
+
+
+class ManagedUserResponse(BaseModel):
+    """Public account metadata visible to an installation administrator."""
+
+    username: str
+    is_admin: bool
+    must_change_password: bool
+
+
+class ManagedUserListResponse(BaseModel):
+    users: list[ManagedUserResponse]
+
+
+class CreateManagedUserRequest(BaseModel):
+    username: str = Field(
+        ...,
+        min_length = 3,
+        max_length = 64,
+        pattern = r"^[a-z0-9][a-z0-9._-]*$",
+        description = "Lowercase login name using letters, numbers, dot, underscore, or dash",
+    )
+    password: str = Field(
+        ...,
+        min_length = MIN_PASSWORD_LENGTH,
+        description = "Temporary password the user must replace on first login",
+    )
+
+
 class DesktopInitialPasswordRequest(BaseModel):
     """Set the seeded admin's first real password from the desktop app."""
 

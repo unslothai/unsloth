@@ -10,6 +10,7 @@ import importlib.util
 import ipaddress
 import os
 import shlex
+import sqlite3
 import sys
 import threading
 import time
@@ -23,10 +24,14 @@ from models.auth import (
     AuthLoginRequest,
     AuthStatusResponse,
     ChangePasswordRequest,
+    CreateManagedUserRequest,
     CreateApiKeyRequest,
     CreateApiKeyResponse,
     DesktopInitialPasswordRequest,
     DesktopLoginRequest,
+    CurrentUserResponse,
+    ManagedUserListResponse,
+    ManagedUserResponse,
     RefreshTokenRequest,
 )
 from models.users import Token
@@ -43,6 +48,16 @@ from auth.authentication import (
 )
 
 router = APIRouter()
+
+
+def require_admin(current_subject: str = Depends(get_current_subject)) -> str:
+    """Require the installation owner role for account-management endpoints."""
+    if not storage.is_admin(current_subject):
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Administrator access required",
+        )
+    return current_subject
 
 
 def _require_a_credential_of_its_own(what: str):
@@ -447,6 +462,66 @@ def auth_status() -> AuthStatusResponse:
         if storage.is_initialized()
         else True,
     )
+
+
+@router.get("/me", response_model = CurrentUserResponse)
+def current_user(current_subject: str = Depends(get_current_subject)) -> CurrentUserResponse:
+    return CurrentUserResponse(
+        username = current_subject,
+        is_admin = storage.is_admin(current_subject),
+    )
+
+
+@router.get("/users", response_model = ManagedUserListResponse)
+def list_managed_users(_admin: str = Depends(require_admin)) -> ManagedUserListResponse:
+    return ManagedUserListResponse(users = storage.list_users())
+
+
+@router.post(
+    "/users",
+    response_model = ManagedUserResponse,
+    status_code = status.HTTP_201_CREATED,
+)
+def create_managed_user(
+    payload: CreateManagedUserRequest,
+    _admin: str = Depends(require_admin),
+) -> ManagedUserResponse:
+    if any(ch.isspace() for ch in payload.password):
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = "Temporary password cannot contain spaces",
+        )
+    try:
+        storage.create_managed_user(payload.username, payload.password)
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = f"Username {payload.username} already exists",
+        ) from exc
+    return ManagedUserResponse(
+        username = payload.username,
+        is_admin = False,
+        must_change_password = True,
+    )
+
+
+@router.delete("/users/{username}", status_code = status.HTTP_204_NO_CONTENT)
+def delete_managed_user(
+    username: str,
+    current_admin: str = Depends(require_admin),
+) -> Response:
+    if username == current_admin:
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = "You cannot delete the account you are using",
+        )
+    try:
+        deleted = storage.delete_managed_user(username)
+    except ValueError as exc:
+        raise HTTPException(status_code = status.HTTP_400_BAD_REQUEST, detail = str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code = status.HTTP_404_NOT_FOUND, detail = "User not found")
+    return Response(status_code = status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/login", response_model = Token)

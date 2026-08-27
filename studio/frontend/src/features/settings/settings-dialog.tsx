@@ -60,6 +60,7 @@ import {
 const TAB_LOADERS = {
   general: () => import("./tabs/general-tab").then((m) => ({ default: m.GeneralTab })),
   profile: () => import("./tabs/profile-tab").then((m) => ({ default: m.ProfileTab })),
+  accounts: () => import("./tabs/accounts-tab").then((m) => ({ default: m.AccountsTab })),
   appearance: () =>
     import("./tabs/appearance-tab").then((m) => ({ default: m.AppearanceTab })),
   resources: () =>
@@ -166,6 +167,11 @@ const TABS: TabDef[] = [
   {
     id: "profile",
     labelKey: "settings.tabs.profile",
+    icon: UserIcon,
+  },
+  {
+    id: "accounts",
+    labelKey: "settings.tabs.accounts",
     icon: UserIcon,
   },
   {
@@ -356,6 +362,7 @@ export function SettingsDialog() {
   const tabButtonRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
     general: null,
     profile: null,
+    accounts: null,
     appearance: null,
     resources: null,
     chat: null,

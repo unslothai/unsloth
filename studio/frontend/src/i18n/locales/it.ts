@@ -156,6 +156,7 @@ export const it = {
     tabs: {
       general: "Generali",
       profile: "Profilo",
+      accounts: "Account",
       appearance: "Aspetto",
       resources: "Sistema",
       chat: "Chat",

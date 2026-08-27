@@ -11,8 +11,6 @@ from utils.paths import (
     is_model_cached,
     get_cache_path,
     resolve_cached_repo_id_case,
-    outputs_root,
-    exports_root,
     resolve_output_dir,
     resolve_export_dir,
 )
@@ -3188,7 +3186,7 @@ def _looks_like_lora_adapter(model_dir: Path) -> bool:
     )
 
 
-def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[str, str, str]]:
+def scan_trained_models(outputs_dir: Optional[str] = None) -> List[Tuple[str, str, str]]:
     """Scan outputs folder for trained Unsloth models.
 
     Returns:
@@ -3229,7 +3227,7 @@ def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[st
 
 
 def scan_exported_models(
-    exports_dir: str = str(exports_root()),
+    exports_dir: Optional[str] = None,
 ) -> List[Tuple[str, str, str, Optional[str]]]:
     """Scan exports folder for exported models (merged, LoRA, GGUF).
 

@@ -191,6 +191,7 @@ export const hi = {
     tabs: {
       general: "सामान्य",
       profile: "प्रोफ़ाइल",
+      accounts: "खाते",
       appearance: "रूप-रंग",
       resources: "सिस्टम",
       chat: "चैट",

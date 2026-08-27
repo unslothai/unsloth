@@ -192,6 +192,7 @@ export const de = {
     tabs: {
       general: "Allgemein",
       profile: "Profil",
+      accounts: "Konten",
       appearance: "Darstellung",
       resources: "System",
       chat: "Chat",

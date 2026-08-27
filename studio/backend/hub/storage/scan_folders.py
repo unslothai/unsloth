@@ -25,6 +25,7 @@ from utils.paths.sensitive import (
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+_schema_ready_paths: set[str] = set()
 
 
 def _denied_path_prefixes() -> list[str]:
@@ -85,10 +86,14 @@ def contains_sensitive_path_component(path: str) -> bool:
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     global _schema_ready
-    if _schema_ready:
+    if not _schema_ready:
+        _schema_ready_paths.clear()
+    database_row = conn.execute("PRAGMA database_list").fetchone()
+    database_key = str(database_row[2]) if database_row else ""
+    if database_key in _schema_ready_paths:
         return
     with _schema_lock:
-        if _schema_ready:
+        if database_key in _schema_ready_paths:
             return
         collation = "COLLATE NOCASE" if platform.system() == "Windows" else ""
         conn.execute(
@@ -101,6 +106,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             """
         )
         conn.commit()
+        _schema_ready_paths.add(database_key)
         _schema_ready = True
 
 
