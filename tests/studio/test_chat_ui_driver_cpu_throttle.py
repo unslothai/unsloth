@@ -74,10 +74,9 @@ def test_the_refusal_precedes_the_first_page():
 def test_every_page_the_driver_opens_goes_through_one_factory():
     """A page opened directly is a page that is never throttled.
 
-    The setting is scoped to the page target, so the relogin path's own fresh
-    page ran at full speed and the steps after it passed under a driver that
-    reported itself throttled -- a false pass in precisely the slow case the
-    option exists to create.
+    The relogin path's own fresh page ran at full speed, so the steps after it
+    passed under a driver reporting itself throttled -- a false pass in
+    precisely the slow case the option exists to create.
     """
     factory = re.search(
         r"def new_throttled_page\([^)]*\):(?P<body>(?:\n(?:[ \t].*)?)+?)(?=\ndef |\nclass |\Z)",
@@ -112,12 +111,7 @@ def test_the_cdp_call_has_exactly_one_owner():
 
 
 def test_a_replacement_page_is_throttled_again():
-    """`Emulation.setCPUThrottlingRate` is scoped to the page TARGET.
-
-    A page from `ctx.new_page()` after a renderer death runs at full speed, so
-    every later step passes under exactly the conditions the throttle exists to
-    reproduce -- a false pass in the case that matters.
-    """
+    """A page replaced after a renderer death must be throttled again."""
     assert "recover_or_replace_page as _robust_recover_or_replace_page" in CODE, (
         "the shared helper is imported under its own name, so the call sites "
         "bypass the wrapper that re-throttles a replacement page"
