@@ -849,6 +849,33 @@ def _get_new_mapper():
                         # failing the whole probe.
                         continue
                 pass
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "update"
+            ):
+                # `FLOAT_TO_FP8_ROW_MAPPER.update({"vendor/X": "unsloth/X"})` is the
+                # ordinary way to add several entries at once, and it installs them
+                # exactly as the subscript spelling does. Only the subscript spelling
+                # was read, so a newer mapper written this way left the probe with an
+                # empty table and the models it had just added got no upgrade notice.
+                # Only a receiver that names one of the exported tables outright, and
+                # only a literal mapping argument, so the fetched text still supplies
+                # nothing but data. A keyword form cannot express these keys - they
+                # contain a slash - so it is not read.
+                if not isinstance(node.func.value, ast.Name):
+                    continue
+                if node.func.value.id in shadowed:
+                    continue
+                table = by_name.get(node.func.value.id)
+                if table is None or len(node.args) != 1 or node.keywords:
+                    continue
+                try:
+                    additions = ast.literal_eval(node.args[0])
+                except ValueError:
+                    continue
+                if isinstance(additions, dict):
+                    table.update(additions)
             elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 # `_add_with_lower(MAP_TO_UNSLOTH_16bit, "vendor/X", "unsloth/X")` is the
                 # established way mapper.py records an alias that is not derivable from

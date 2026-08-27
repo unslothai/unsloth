@@ -147,19 +147,45 @@ _LOADER_ORIGINS = {
 
 
 def _loader_aliases(tree):
-    """Names bound to one of those helpers by an import in this file.
+    """Names bound to one of those helpers, by an import or by an assignment.
 
-    Only a real `from <origin> import <helper> as <alias>` is recorded, so this stays
-    a fact stated in the file rather than a guess about what a name holds.
+    Two spellings, both of which state outright what the name holds:
+    `from <origin> import <helper> as <alias>`, and `alias = <helper>` where the right
+    hand side is the helper written out (`importlib.import_module`, a bare name already
+    recorded here, or the helper under its own name). Nothing is guessed at: a name
+    assigned from anything else is not recorded.
     """
     aliases = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom) or node.level != 0:
-            continue
-        for alias in node.names:
-            if _LOADER_ORIGINS.get(alias.name) == node.module:
-                aliases.add(alias.asname or alias.name)
-    return aliases
+        if isinstance(node, ast.ImportFrom) and node.level == 0:
+            for alias in node.names:
+                if _LOADER_ORIGINS.get(alias.name) == node.module:
+                    aliases.add(alias.asname or alias.name)
+    # A second pass, because `load = importlib.import_module` may sit above the
+    # `from ... import ... as ...` that named another helper, and one pass in source
+    # order would then miss a chain. Repeated until nothing new is bound.
+    while True:
+        added = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target, value = node.targets[0], node.value
+            if not isinstance(target, ast.Name) or target.id in aliases:
+                continue
+            if isinstance(value, ast.Attribute):
+                held = value.attr
+                owner = value.value.id if isinstance(value.value, ast.Name) else None
+                if _LOADER_ORIGINS.get(held) != owner:
+                    continue
+            elif isinstance(value, ast.Name):
+                if value.id not in _LOADER_ORIGINS and value.id not in aliases:
+                    continue
+            else:
+                continue
+            aliases.add(target.id)
+            added = True
+        if not added:
+            return aliases
 
 
 def _module_level_heavy_imports(path):
@@ -221,10 +247,12 @@ def _body_level_heavy_imports(path):
     does not count - unlike at module scope, where it silently skips the whole file.
     """
     tree = ast.parse(path.read_text(encoding = "utf-8"))
+    loaders = _loader_aliases(tree)
     found = set()
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
+        skipped = _guarded_roots(node, loaders)
         for child in ast.walk(node):
             names = []
             if isinstance(child, ast.Import):
@@ -233,9 +261,45 @@ def _body_level_heavy_imports(path):
                 names = [child.module or ""]
             for name in names:
                 root = name.split(".")[0]
-                if root in HEAVY:
+                if root in HEAVY and root not in skipped:
                     found.add(root)
     return found
+
+
+def _guarded_roots(node, loaders):
+    """Roots this body skips on before it does anything else with them.
+
+    `def t(): pytest.importorskip("torch"); import torch` never reaches the import on
+    the light runner - the skip fires first - so redirecting the whole file for it
+    hides the unrelated light tests sitting next to it. That is the same allowance the
+    docstring above already states for a bare `importorskip`; it just was not applied
+    when a plain import followed.
+
+    Only an UNCONDITIONAL call at the top level of the body counts. One inside an `if`
+    or a `try` may not run, and then the import really is reached.
+    """
+    roots = set()
+    for statement in node.body:
+        if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+            continue
+        call = statement.value
+        function = call.func
+        attribute = (
+            function.attr if isinstance(function, ast.Attribute)
+            else (function.id if isinstance(function, ast.Name) else "")
+        )
+        if attribute != "importorskip" and attribute not in loaders:
+            continue
+        if attribute in loaders and _LOADER_ORIGINS.get(attribute) not in (None, "pytest"):
+            continue
+        candidates = list(call.args[:1])
+        for keyword in call.keywords:
+            if keyword.arg == "modname":
+                candidates.append(keyword.value)
+        for first in candidates:
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                roots.add(first.value.split(".")[0])
+    return roots
 
 
 def _needs_the_heavy_runner(path):
@@ -328,6 +392,38 @@ def test_a_renamed_loader_helper_is_still_recognised(tmp_path):
         sample = tmp_path / "sample.py"
         sample.write_text(source)
         assert _module_level_heavy_imports(sample) == {"torch"}, description
+
+
+def test_an_assignment_alias_of_a_loader_is_still_recognised(tmp_path):
+    """`load = importlib.import_module` is the same helper under another name."""
+    spellings = {
+        "attribute assignment": 'import importlib\nload = importlib.import_module\ntorch = load("torch")\n',
+        "importorskip by assignment": 'import pytest\nneed = pytest.importorskip\ntorch = need("torch")\n',
+        "chained through an import alias":
+            'from importlib import import_module as first\nsecond = first\ntorch = second("torch")\n',
+    }
+    for description, source in spellings.items():
+        sample = tmp_path / "sample.py"
+        sample.write_text(source)
+        assert _module_level_heavy_imports(sample) == {"torch"}, description
+
+
+def test_a_body_that_skips_first_does_not_redirect_the_file(tmp_path):
+    """`importorskip` then `import` never reaches the import on the light runner.
+
+    Redirecting the whole file for it would hide the unrelated light tests next to it.
+    A guard that may not run does not count, which is what the last case pins.
+    """
+    cases = {
+        'import pytest\n\n\ndef t():\n    pytest.importorskip("torch")\n    import torch\n': set(),
+        'from pytest import importorskip as need\n\n\ndef t():\n    need("torch")\n    import torch\n': set(),
+        'import pytest\n\n\ndef t():\n    if 0:\n        pytest.importorskip("torch")\n    import torch\n': {"torch"},
+        'def t():\n    import torch\n': {"torch"},
+    }
+    for source, expected in cases.items():
+        sample = tmp_path / "sample.py"
+        sample.write_text(source)
+        assert _body_level_heavy_imports(sample) == expected, source
 
 
 def test_every_ignored_suite_runs_somewhere_else():
