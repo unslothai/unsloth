@@ -103,8 +103,13 @@ def _without_flag_value(cmd: list[str], flag: str) -> list[str]:
 def test_windows_unicode_slot_path_only_drops_optional_persistence(tmp_path, monkeypatch):
     """A/B: all launch arguments survive; only the broken optional pair is absent."""
     windows = PLATFORMS[2]
-    ascii_dir = tmp_path / "Egor" / "llama-slots"
-    unicode_dir = tmp_path / "Егор" / "llama-slots"
+    # Relative to tmp_path, because the predicate reads the WHOLE path: pytest's
+    # tmp_path lives under the profile, so on the very hosts this regression is about
+    # (C:\Users\Егор\AppData\Local\Temp) a tmp_path-rooted control arm is not ASCII
+    # either, both launches drop the flag, and the A/B stops comparing anything.
+    monkeypatch.chdir(tmp_path)
+    ascii_dir = Path("Egor") / "llama-slots"
+    unicode_dir = Path("Егор") / "llama-slots"
 
     _ascii_backend, ascii_cmd = _launch_with_slot_dir(tmp_path, monkeypatch, windows, ascii_dir)
     unicode_backend, unicode_cmd = _launch_with_slot_dir(
