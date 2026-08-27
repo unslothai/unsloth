@@ -43,7 +43,7 @@
       "kind": ".join() via `BitsAndBytesConfig__init__` via `BitsAndBytesConfig__init__`",
       "hash": "97ca7ce74cdac597",
       "reason": "Self-generated source: `BitsAndBytesConfig__init__` is `inspect.getsource` of the INSTALLED transformers `BitsAndBytesConfig.__init__`, dedented by a measured indent and renamed with a literal replacement. Nothing from a config, a download or the environment is spliced in.",
-      "origin": "2880cbf7"
+      "origin": "3ea8d66e"
     },
     {
       "path": "unsloth/models/_utils.py",
@@ -257,7 +257,7 @@
       "kind": ".join() via `function` via `function`",
       "hash": "16b70ffbbdbad15f",
       "reason": "Self-generated source: `function` is `inspect.getsource` of the installed TRL SFTTrainer method with literal text inserted at a located anchor, and the joined `check_text` is a literal block re-indented. No external value reaches it.",
-      "origin": "de33c182"
+      "origin": "f5235268"
     },
     {
       "path": "unsloth/tokenizer_utils.py",
@@ -306,7 +306,7 @@
       "kind": ".join() via `function` via `function` via `function`",
       "hash": "f9d16814a82a1e43",
       "reason": "Self-generated source: `function` is `inspect.getsource` of the installed TRL SFTTrainer method with literal text inserted at a located anchor, and the joined `check_text` is a literal block re-indented. No external value reaches it.",
-      "origin": "de33c182"
+      "origin": "f5235268"
     },
     {
       "path": "unsloth/trainer.py",

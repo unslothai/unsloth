@@ -194,6 +194,8 @@ def test_an_unjustified_allowlist_entry_fails(tmp_path):
 
 # The callee is written some other way and still resolves to the builtin.
 _SINK_IS_STILL_RESOLVED = {
+    'a helper hands back a choice between the sink and something else': 'import builtins\ndef choose(run, flag):\n    return run if flag else print\ndef f(name):\n    choose(builtins.exec, True)(f"import {name}")\n',
+    'a sink on a class is the builtin through an instance too': 'import builtins\nclass Runner:\n    run = builtins.exec\ndef f(name):\n    Runner().run(f"import {name}")\n',
     'a constant f-string names the same builtin': 'import builtins\ndef f(name):\n    getattr(builtins, f"{\'exec\'}")(f"import {name}")\n',
     'a sink selected from a written-out iterator is still the builtin': 'def f(name):\n    next(iter([exec]))(f"import {name}")\n',
     'a helper hands back the sink it was given': 'import builtins\ndef choose(run):\n    return run\ndef f(name):\n    choose(builtins.exec)(f"import {name}")\n',
@@ -311,6 +313,8 @@ def test_a_text_constructor_reached_through_another_spelling_is_reported(descrip
 
 # The built string survives a lookup, an operator, a wrapper or a spread.
 _SOURCE_SURVIVES_THE_SHAPE = {
+    'a slice that may keep the spliced value still executes it': 'def f():\n    exec(f"{input()}"[:1000])\n',
+    'a wrapper executes what its caller built': 'def run(source):\n    exec(source)\ndef f(name):\n    run(f"import {name}")\n',
     'a default cannot be reached past a written-out element': 'def f(name):\n    exec(next(iter([f"import {name}"]), "pass"))\n',
     'a nested container element is still addressable': 'def f(name):\n    payloads = {"run": [f"import {name}"]}\n    exec(payloads["run"][0])\n',
     'a slice that cuts only the literal tail keeps the value': 'def f(name):\n    exec(f"import {name}#"[:-1])\n',
@@ -399,6 +403,9 @@ def test_a_source_that_survives_its_wrapper_is_reported(description, tmp_path):
 
 # One level of local indirection: an alias of a name that holds a built string.
 _TAINT_TRAVELS_THROUGH_A_BINDING = {
+    'pop with nothing named takes the last element': 'def f(name):\n    payloads = [f"import {name}"]\n    exec(payloads.pop())\n',
+    'a closure reads an alias bound after the def': 'def f(name):\n    payload = f"import {name}"\n    def inner():\n        exec(alias)\n    alias = payload\n    inner()\n',
+    'a helper in one function is not the helper in another': 'def harmless():\n    def build():\n        return "pass"\n    return exec(build())\ndef vulnerable(name):\n    def build():\n        return f"import {name}"\n    exec(build())\n',
     'a helper local carries the string to the return': 'def build(name):\n    source = f"import {name}"\n    return source\ndef f(name):\n    exec(build(name))\n',
     'get reads the same element the subscript reads': 'def f(name):\n    payloads = {"x": f"import {name}"}\n    exec(payloads.get("x"))\n',
     'pop reads it too': 'def f(name):\n    payloads = {"x": f"import {name}"}\n    exec(payloads.pop("x"))\n',
@@ -444,6 +451,9 @@ def test_taint_carried_through_a_binding_is_reported(description, tmp_path):
 
 # Shadowed, unreachable, unbound or unable to build a string at all.
 _NOTHING_REACHES_THE_SINK = {
+    'exec has no such keyword': 'def f(name):\n    exec(f"import {name}", spam = 1)\n',
+    'eval has no such keyword either': 'def f(name):\n    eval(f"1 + {name}", spam = 1)\n',
+    'compile has no such keyword either': 'def f(name):\n    compile(f"import {name}", "<x>", "exec", spam = 1)\n',
     'a tuple has no pop to select with': 'def f(name):\n    exec((f"import {name}",).pop())\n',
     'exec given more arguments than it takes raises first': 'def f(name):\n    exec(f"import {name}", {}, {}, 1)\n',
     'compile given a seventh argument raises first': 'def f(name):\n    compile(f"import {name}", "<x>", "exec", 0, False, -1, 1)\n',
@@ -831,3 +841,102 @@ def test_a_shell_script_under_a_directory_target_is_collected(tmp_path):
     (tmp_path / "nested" / "setup.sh").write_text(_SHELL_RUNS_PYTHON)
     proc = _run("--paths", str(tmp_path))
     assert proc.returncode == 1, f"{proc.stdout}\n{proc.stderr}"
+
+
+_WORKFLOW_MULTILINE_COMMAND = """name: demo
+on: [push]
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          python -c "
+          name = 'x'
+          exec(f'import {name}')
+          "
+"""
+
+_WORKFLOW_PIPES_A_HEREDOC = """name: demo
+on: [push]
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cat <<'PY' | python
+          name = 'x'
+          exec(f'import {name}')
+          PY
+"""
+
+_WORKFLOW_TWO_PROGRAMS = """name: demo
+on: [push]
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          python - <<'PY'
+          exec = print
+          PY
+      - run: |
+          python - <<'PY'
+          exec(f"import {input()}")
+          PY
+"""
+
+_WORKFLOW_SPLICES_AN_EXPRESSION = """name: demo
+on: [push]
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          python - <<'PY'
+          exec("${{ github.event.pull_request.title }}")
+          PY
+"""
+
+
+def test_a_multiline_python_command_is_parsed(tmp_path):
+    """`python -c "` with the program on the lines below is an active workflow shape."""
+    sample = tmp_path / "demo.yml"
+    sample.write_text(_WORKFLOW_MULTILINE_COMMAND)
+    proc = _run("--paths", str(sample))
+    assert proc.returncode == 1, f"{proc.stdout}\n{proc.stderr}"
+
+
+def test_a_heredoc_piped_into_python_is_scanned(tmp_path):
+    """`cat <<'PY' | python` runs the block; the interpreter is past the pipe."""
+    sample = tmp_path / "demo.yml"
+    sample.write_text(_WORKFLOW_PIPES_A_HEREDOC)
+    proc = _run("--paths", str(sample))
+    assert proc.returncode == 1, f"{proc.stdout}\n{proc.stderr}"
+
+
+def test_each_workflow_program_starts_with_its_own_builtins(tmp_path):
+    """Two heredocs are two processes, so a name bound in one is gone in the next."""
+    sample = tmp_path / "demo.yml"
+    sample.write_text(_WORKFLOW_TWO_PROGRAMS)
+    proc = _run("--paths", str(sample))
+    assert proc.returncode == 1, f"{proc.stdout}\n{proc.stderr}"
+
+
+def test_an_actions_expression_is_interpolated_source(tmp_path):
+    """The runner splices it into the program text before Python sees it."""
+    sample = tmp_path / "demo.yml"
+    sample.write_text(_WORKFLOW_SPLICES_AN_EXPRESSION)
+    proc = _run("--paths", str(sample))
+    assert proc.returncode == 1, f"{proc.stdout}\n{proc.stderr}"
+    assert "Actions expression" in proc.stderr, proc.stderr
+
+
+def test_composite_actions_are_scanned_where_they_exist():
+    """`.github/actions` holds `run:` blocks the runner executes, like a workflow."""
+    source = SCRIPT.read_text(encoding = "utf-8")
+    repo = SCRIPT.parent.parent
+    if not (repo / ".github" / "actions").is_dir():
+        return
+    assert '".github/actions"' in source, (
+        "this repository ships composite actions, so they belong in DEFAULT_TARGETS"
+    )

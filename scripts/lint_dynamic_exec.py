@@ -79,7 +79,7 @@ DEFAULT_TARGETS = (
     # Workflow `run:` steps execute Python heredocs on the CI runner, with the
     # runner's token in the environment, so a sink written inside one is as
     # executable as anything else here and was covered by nothing.
-    ".github/workflows",
+    ".github/workflows", ".github/actions",
     "cli.py",
     "unsloth-cli.py",
 )
@@ -715,6 +715,17 @@ def _is_interpolated(node: ast.AST, resolve = None, shadowed = None, resolve_ali
     # matching stay indistinguishable, and why no sentinel is needed.
     while isinstance(node, ast.NamedExpr):
         node = node.value
+    if (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and _ACTIONS_SUBSTITUTION in node.value
+    ):
+        # The runner splices an Actions expression into the program text before Python
+        # ever sees it, so `exec("${{ github.event.pull_request.title }}")` really is a
+        # built string - and one built from a value a pull request supplies. Reading
+        # the substituted name as ordinary text passed it. Only the marker this file
+        # writes in place of `${{ ... }}` counts, so nothing else is guessed at.
+        return "Actions expression"
     if isinstance(node, ast.Starred):
         return _interpolated_starred(node, resolve, shadowed, resolve_alias)
     # A written-out attribute or subscript path can hold built source:
@@ -972,11 +983,22 @@ def _interpolated_split_element(node, resolve = None, shadowed = None, resolve_a
     return _is_interpolated(inner.func.value, resolve, shadowed, resolve_alias)
 
 
-def _slice_keeps_interpolation(receiver: ast.AST, index: ast.Slice) -> bool:
-    """Whether a constant slice of a written-out f-string still holds its values."""
+def _slice_removes_interpolation(receiver: ast.AST, index: ast.Slice) -> bool:
+    """Whether a constant slice provably cuts every interpolated value away.
+
+    The question this asks was inverted. It used to be "does the slice provably KEEP
+    the values", and anything undecidable read as clean - so `f"{input()}"[:1000]`
+    passed the gate while executing any injected program shorter than a thousand
+    characters. Uncertainty about a slice has to leave the source tainted, exactly as
+    uncertainty everywhere else here does, so only the two cases that are decidable
+    from the text answer True.
+
+    Both need a written-out f-string: a name says nothing about where its values sit.
+    """
     if not isinstance(receiver, ast.JoinedStr):
         return False
     if not any(isinstance(part, ast.FormattedValue) for part in receiver.values):
+        # No values to remove, so the caller's ordinary reading of the receiver holds.
         return False
     if index.step is not None and _constant_integer(index.step) != 1:
         return False
@@ -992,17 +1014,22 @@ def _slice_keeps_interpolation(receiver: ast.AST, index: ast.Slice) -> bool:
         else:
             break
     lower = 0 if index.lower is None else _constant_integer(index.lower)
-    upper = 0 if index.upper is None else _constant_integer(index.upper)
-    if lower is None or upper is None:
+    if lower is None:
         return False
-    # The front cut has to stay inside the leading literal, and the back cut inside
-    # the trailing one. A positive upper bound counts from the front, which says
-    # nothing about where the values are, so it is left alone.
-    if lower < 0 or lower > leading:
-        return False
-    if index.upper is not None and not (-trailing <= upper < 0):
-        return False
-    return True
+    # Everything the slice keeps lies inside the LEADING literal run: the front cut
+    # starts at or after 0 and the back cut ends inside it. `f"import {name}"[:3]`
+    # cannot reach the value however long the value turns out to be.
+    if lower >= 0 and index.upper is not None:
+        upper = _constant_integer(index.upper)
+        if upper is not None and 0 <= upper <= leading and lower <= upper:
+            return True
+    # Or inside the TRAILING literal run, counted from the end: `f"import {name}#!"[-2:]`
+    # is the `#!`, whatever the value is.
+    if lower < 0 and -lower <= trailing:
+        upper = None if index.upper is None else _constant_integer(index.upper)
+        if index.upper is None or (upper is not None and lower <= upper < 0):
+            return True
+    return False
 
 
 def _interpolated_subscript(node, resolve = None, shadowed = None, resolve_alias = None) -> str | None:
@@ -1037,14 +1064,16 @@ def _interpolated_subscript(node, resolve = None, shadowed = None, resolve_alias
             and _keeps_everything(node.slice.step, 1)
         ):
             return _is_interpolated(node.value, resolve, shadowed, resolve_alias)
-        # A partial slice of a written-out f-string can still contain the interpolated
-        # part: `f"import {name}#"[:-1]` drops the literal `#` and `f"Ximport {name}"[1:]`
-        # drops the literal `X`. Only when the cut is inside the receiver's own leading
-        # or trailing LITERAL run, which is decidable from the text; a cut that may
-        # reach into the spliced value, or a bound this cannot read, is still None.
-        if _slice_keeps_interpolation(node.value, node.slice):
-            return _is_interpolated(node.value, resolve, shadowed, resolve_alias)
-        return None
+        # A partial slice keeps the source tainted unless it provably cuts every
+        # interpolated value away. `f"import {name}#"[:-1]` drops the literal `#` and
+        # `f"Ximport {name}"[1:]` drops the literal `X`, and both still execute the
+        # value; `f"{input()}"[:1000]` executes any injected program under a thousand
+        # characters. Only a slice whose whole extent lies inside the receiver's own
+        # leading or trailing LITERAL run reads as clean, which is decidable from the
+        # text - everything else is uncertain, and uncertainty reports.
+        if _slice_removes_interpolation(node.value, node.slice):
+            return None
+        return _is_interpolated(node.value, resolve, shadowed, resolve_alias)
     return _literal_element(node, resolve, shadowed, resolve_alias)
 
 
@@ -1057,11 +1086,19 @@ _LOCAL_CLASSES: dict = {}
 # a name that is a class in one place and a lambda in another is no evidence at all.
 _REBOUND_CLASS_NAMES: set = set()
 
-# Functions the file defines, and the names it binds to more than one thing. Same
-# shape as the class tables above and read the same way: a name that means two things
-# somewhere in the file is no evidence anywhere in it.
+# Functions the file defines, keyed by the scope that defines them, and the (scope,
+# name) pairs it binds to more than one thing. Keyed by SCOPE rather than by the bare
+# name: two helpers called `build` in two unrelated functions are two different
+# functions, and treating them as one rebound name suppressed a real finding in the
+# second. A call still falls outward through the enclosing scopes, which is how Python
+# resolves the name.
 _LOCAL_FUNCTIONS: dict = {}
 _REBOUND_FUNCTION_NAMES: set = set()
+
+# The scope the walk is currently in, as `_qualname` spells it. A module-level value
+# like the tables above, for the same reason: one file is scanned at a time, and the
+# resolvers that read the tables are plain functions with no visitor to ask.
+_CURRENT_SCOPE = ""
 
 # Helpers currently being resolved, so a recursive one cannot loop forever.
 _HELPER_STACK: set = set()
@@ -1100,15 +1137,36 @@ def _returned_expressions(definition) -> list:
     return found
 
 
+def _enclosing_scopes(scope: str):
+    """`scope` and then every scope around it, out to the module.
+
+    The qualname spelling `_qualname` produces: an optional `prefix::` for a notebook
+    cell or a workflow block, then dotted scope names, or `<module>`.
+    """
+    prefix, separator, inner = scope.rpartition("::")
+    head = prefix + separator
+    parts = inner.split(".") if inner and inner != "<module>" else []
+    while parts:
+        yield head + ".".join(parts)
+        parts.pop()
+    yield head + "<module>"
+
+
 def _visible_helper(function: ast.AST, shadowed = None):
     """The local `def` a callee names, when that is a fact stated in the file."""
     if not isinstance(function, ast.Name):
         return None
     if shadowed is not None and shadowed(function.id):
         return None
-    if function.id in _REBOUND_FUNCTION_NAMES:
-        return None
-    return _LOCAL_FUNCTIONS.get(function.id)
+    for scope in _enclosing_scopes(_CURRENT_SCOPE):
+        # A name that means two things in ONE scope is no evidence in that scope; an
+        # unrelated `build` in a sibling function says nothing about this one.
+        if (scope, function.id) in _REBOUND_FUNCTION_NAMES:
+            return None
+        found = _LOCAL_FUNCTIONS.get((scope, function.id))
+        if found is not None:
+            return found
+    return None
 
 
 def _visibly_local_instance(node: ast.AST, shadowed = None) -> bool:
@@ -1718,15 +1776,24 @@ def _interpolated_call(node, resolve = None, shadowed = None, resolve_alias = No
             _mapping_literal(function.value, shadowed)
             if function.attr in ("get", "pop") else None
         )
+        # `payloads.pop()` with nothing named returns the LAST element, which the
+        # container binding now records under its negative index. A named receiver fell
+        # through the inline-display branch above and the selected source went
+        # unreported.
+        selected_key = None
+        if function.attr in ("get", "pop") and node.args and isinstance(
+            node.args[0], ast.Constant
+        ):
+            selected_key = node.args[0].value
+        elif function.attr == "pop" and not node.args and not node.keywords:
+            selected_key = -1
         if (
             literal_mapping is None
-            and function.attr in ("get", "pop")
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
+            and selected_key is not None
             and _compound_key(
                 ast.Subscript(
                     value = function.value,
-                    slice = ast.Constant(value = node.args[0].value),
+                    slice = ast.Constant(value = selected_key),
                     ctx = ast.Load(),
                 )
             ) is not None
@@ -1740,7 +1807,7 @@ def _interpolated_call(node, resolve = None, shadowed = None, resolve_alias = No
             equivalent = ast.copy_location(
                 ast.Subscript(
                     value = function.value,
-                    slice = ast.Constant(value = node.args[0].value),
+                    slice = ast.Constant(value = selected_key),
                     ctx = ast.Load(),
                 ),
                 node,
@@ -2429,7 +2496,9 @@ def _visibly_unaddable(left: ast.AST, right: ast.AST) -> bool:
     return left_kind != right_kind
 
 
-def _paired_arguments(call: ast.Call, arguments: ast.arguments) -> dict | None:
+def _paired_arguments(
+    call: ast.Call, arguments: ast.arguments, defaults: bool = True,
+) -> dict | None:
     """Parameter name to the expression the call gives it, or None when it cannot pair.
 
     Positional arguments in order, keywords by name, and a parameter nobody supplied
@@ -2447,9 +2516,16 @@ def _paired_arguments(call: ast.Call, arguments: ast.arguments) -> dict | None:
             bound[positional[index].arg] = argument
     for keyword in call.keywords:
         bound[keyword.arg] = keyword.value
-    defaults = arguments.defaults
-    if defaults:
-        for parameter, default in zip(positional[len(positional) - len(defaults):], defaults):
+    if not defaults:
+        # The caller wants only what THIS call supplies. A default is already read
+        # where the definition is written, so counting it here reported the same
+        # execution twice.
+        return bound
+    positional_defaults = arguments.defaults
+    if positional_defaults:
+        for parameter, default in zip(
+            positional[len(positional) - len(positional_defaults):], positional_defaults
+        ):
             bound.setdefault(parameter.arg, default)
     for parameter, default in zip(arguments.kwonlyargs, arguments.kw_defaults):
         if default is not None:
@@ -2620,6 +2696,20 @@ def _sink_name(function: ast.AST, aliases = None, shadowed = None) -> str | None
             return function.id
         if aliases is not None and aliases(function.id):
             return aliases(function.id)
+    if (
+        isinstance(function, ast.Attribute)
+        and aliases is not None
+        and _visibly_local_instance(function.value, shadowed)
+    ):
+        # `class Runner: run = builtins.exec` then `Runner().run(f"...")`. A plain
+        # function stored on a class does not bind as a method when it is a BUILTIN, so
+        # the instance hands back the sink itself. `_compound_key` refuses a path with
+        # a call in it, which is right for taint - a call can return anything - but the
+        # class here is written out in this file and its attribute was already exported
+        # under the class path, so the same record answers for the instance.
+        recorded = aliases(f"path>{function.value.func.id}.{function.attr}")
+        if recorded:
+            return recorded
     if isinstance(function, (ast.Attribute, ast.Subscript)) and aliases is not None:
         # `obj.run = builtins.exec` then `obj.run(f"...")`, and the subscript spelling
         # `table["run"]`. The path is written out and names the same place at the store
@@ -2640,13 +2730,26 @@ def _sink_name(function: ast.AST, aliases = None, shadowed = None) -> str | None
             # name against the caller's aliases read nothing, since `run` means nothing
             # out here. The parameters are paired to the arguments exactly as an
             # immediately invoked lambda's are.
+            # Through the ALIASES, not by substituting a top-level name: a returned
+            # `run if flag else print` never was an `ast.Name`, so the substitution
+            # missed it and `run` resolved to nothing. Answering for the parameter
+            # wherever it is written resolves every shape this resolver already knows.
             bound = _paired_arguments(function, helper.args) or {}
+            supplied = {}
+            for parameter, argument in bound.items():
+                given = _sink_name(argument, aliases, shadowed)
+                if given is not None:
+                    supplied[parameter] = given
+
+            def inner_aliases(key):
+                if key in supplied:
+                    return supplied[key]
+                return aliases(key) if aliases is not None else None
+
             _HELPER_STACK.add(helper.name)
             try:
                 for value in _returned_expressions(helper):
-                    if isinstance(value, ast.Name) and value.id in bound:
-                        value = bound[value.id]
-                    resolved = _sink_name(value, aliases, shadowed)
+                    resolved = _sink_name(value, inner_aliases, shadowed)
                     if resolved is not None:
                         return resolved
             finally:
@@ -3274,6 +3377,37 @@ def _mapping_lookup(mapping: ast.Dict, wanted: str) -> ast.AST | None:
 _SINK_ARITY = {"exec": 3, "eval": 3, "compile": 6}
 
 
+# Keyword names each sink accepts, as a UNION across supported Pythons: `exec` and
+# `eval` take no keyword arguments at all before 3.11 and take these after, so a file
+# using one may be right or wrong depending on the interpreter, and only a name outside
+# the union is refused by every version.
+_SINK_KEYWORDS = {
+    "exec": frozenset({"globals", "locals", "closure"}),
+    "eval": frozenset({"globals", "locals"}),
+    "compile": frozenset({
+        "source", "filename", "mode", "flags", "dont_inherit", "optimize",
+        "_feature_version",
+    }),
+}
+
+
+def _visibly_invalid_keyword(node: ast.Call, sink: str) -> bool:
+    """Whether the call names a keyword the sink does not have.
+
+    `exec(f"import {name}", spam = 1)` is a TypeError raised before anything runs, so
+    reporting it failed the gate on a call that cannot reach the sink. A `**` expansion
+    says nothing about which names it supplies and leaves the call unknown, which is
+    the reporting side.
+    """
+    allowed = _SINK_KEYWORDS.get(sink.rpartition(".")[2])
+    if allowed is None:
+        return False
+    for keyword in node.keywords:
+        if keyword.arg is None:
+            return False
+    return any(keyword.arg not in allowed for keyword in node.keywords)
+
+
 def _visibly_too_many_arguments(node: ast.Call, sink: str, skip: int = 0) -> bool:
     """Whether the call plainly hands the sink more positional arguments than it takes.
 
@@ -3421,6 +3555,8 @@ def _source_argument(node: ast.Call, sink: str, shadowed = None, skip: int = 0) 
     was skipped entirely. `studio/backend/core/inference/tools.py` already resolves
     sink arguments this way.
     """
+    if _visibly_invalid_keyword(node, sink):
+        return None
     if _visibly_too_many_arguments(node, sink, skip):
         # More positional arguments than the sink has parameters is a TypeError raised
         # before any source is executed, exactly like the missing-argument case below.
@@ -3536,6 +3672,8 @@ class _Visitor(ast.NodeVisitor):
         # appears anywhere above it.
         self.scope_kinds: list[str] = ["module"]
         self.scope: list[str] = []
+        global _CURRENT_SCOPE
+        _CURRENT_SCOPE = self._qualname()
         self.findings: list[dict] = []
         # name -> reason, for locals bound to a built string in the current scope.
         self.tainted: list[dict[str, str]] = [{}]
@@ -3692,29 +3830,42 @@ class _Visitor(ast.NodeVisitor):
         really does execute the f-string. Inheriting only the taint present at the
         `def` froze the cell at the wrong moment and reported nothing.
 
-        Written-out assignments only, resolved against nothing: this answers "does the
-        scope ever put built source in that name", which does not depend on where the
-        reader sits. Order-sensitive reasoning stays where it belongs, in the walk.
+        Written-out assignments only: this answers "does the scope ever put built
+        source in that name", which does not depend on where the reader sits.
+        Order-sensitive reasoning stays where it belongs, in the walk.
+
+        Repeated until nothing new is found, since one of those assignments may be
+        another name: `payload = f"import {name}"` then `alias = payload` puts the same
+        built string in `alias`, and a single pass that resolved against nothing left
+        the deferred body reading `alias` as clean. Each round can only add names, so
+        the number of assignments bounds it; the cap is there so a resolver bug cannot
+        spin.
         """
         found: dict = {}
-        for statement in body:
-            for child in _walk_this_scope(statement):
-                if isinstance(child, ast.Assign):
-                    targets = child.targets
-                elif isinstance(child, ast.AnnAssign) and child.value is not None:
-                    targets = [child.target]
-                elif isinstance(child, ast.AugAssign):
-                    # `payload += f"import {name}"` puts built source in the name as
-                    # plainly as `=` does, and a deferred body reads the cell after it.
-                    targets = [child.target]
-                else:
-                    continue
-                reason = _is_interpolated(child.value)
-                if reason is None or isinstance(reason, _LiteralText):
-                    continue
-                for target in targets:
-                    if isinstance(target, ast.Name):
-                        found.setdefault(target.id, reason)
+        for _round in range(_LATER_TAINT_ROUNDS):
+            added = False
+            for statement in body:
+                for child in _walk_this_scope(statement):
+                    if isinstance(child, ast.Assign):
+                        targets = child.targets
+                    elif isinstance(child, ast.AnnAssign) and child.value is not None:
+                        targets = [child.target]
+                    elif isinstance(child, ast.AugAssign):
+                        # `payload += f"import {name}"` puts built source in the name as
+                        # plainly as `=` does, and a deferred body reads the cell after
+                        # it.
+                        targets = [child.target]
+                    else:
+                        continue
+                    reason = _is_interpolated(child.value, found.get)
+                    if reason is None or isinstance(reason, _LiteralText):
+                        continue
+                    for target in targets:
+                        if isinstance(target, ast.Name) and target.id not in found:
+                            found[target.id] = reason
+                            added = True
+            if not added:
+                break
         return found
 
     @staticmethod
@@ -3803,6 +3954,8 @@ class _Visitor(ast.NodeVisitor):
         )
 
         self.scope.append(node.name)
+        global _CURRENT_SCOPE
+        _CURRENT_SCOPE = self._qualname()
         self.scope_kinds.append(
             "class" if isinstance(node, ast.ClassDef) else "function"
         )
@@ -3938,6 +4091,7 @@ class _Visitor(ast.NodeVisitor):
         self.tainted.pop()
         self.tainted[-1].update(exported)
         self.scope.pop()
+        _CURRENT_SCOPE = self._qualname()
         self.scope_kinds.pop()
         saved_deferred = self.deferred_state.pop()
         if saved_deferred is not None:
@@ -4050,6 +4204,13 @@ class _Visitor(ast.NodeVisitor):
             if any(isinstance(element, ast.Starred) for element in value.elts):
                 return
             pairs = list(enumerate(value.elts))
+            # And under the index counted from the END, which is the same element:
+            # `payloads[-1]` names it, and so does `payloads.pop()`, which returns the
+            # last one. Recording only the forward index left both unresolved.
+            pairs += [
+                (index - len(value.elts), element)
+                for index, element in enumerate(value.elts)
+            ]
         elif isinstance(value, ast.Dict):
             if any(key is None for key in value.keys):
                 return
@@ -5039,7 +5200,16 @@ class _Visitor(ast.NodeVisitor):
                 if reason is None or isinstance(reason, _LiteralText):
                     self.origin_of.pop((self._qualname(), key), None)
                 else:
-                    self.origin_of[(self._qualname(), key)] = _expression_digest(origin)
+                    # Through an ALIAS, when there is one. `alias = payload` records
+                    # the digest of `payload`, which is the same three characters
+                    # however the f-string above it changes, so an allowlist entry
+                    # written for a safe source still covered an attacker-controlled
+                    # one. The origin carried forward is the expression that BUILT the
+                    # value, wherever the chain of names started.
+                    inherited = self._origin_of_argument(origin)
+                    self.origin_of[(self._qualname(), key)] = (
+                        inherited or _expression_digest(origin)
+                    )
         if not isinstance(target, ast.Name):
             # `self.payload = f"import {name}"` then `exec(self.payload)` executes the
             # source, and dropping every non-name target lost it. The written-out path
@@ -5146,6 +5316,10 @@ class _Visitor(ast.NodeVisitor):
 
     def _record_local_class(self, statement) -> None:
         """`class Safe:` makes `Safe()` a receiver whose methods are not string ones."""
+        # The scope this statement binds in. A `def build` inside one function and
+        # another inside a sibling are two different names, and recording them under
+        # one spelling made each look like the other's rebind.
+        scope = self._qualname()
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if any(
                 _decorator_name(decorator) not in _RESULT_PRESERVING_DECORATORS
@@ -5156,20 +5330,22 @@ class _Visitor(ast.NodeVisitor):
                 # callee would answer for a function the file does not call. The few
                 # that document handing the wrapped result back unchanged are the
                 # exception, and they are the ones that appear on a helper.
-                _REBOUND_FUNCTION_NAMES.add(statement.name)
-            recorded = _LOCAL_FUNCTIONS.get(statement.name)
+                _REBOUND_FUNCTION_NAMES.add((scope, statement.name))
+            recorded = _LOCAL_FUNCTIONS.get((scope, statement.name))
             if recorded is not None and recorded is not statement:
-                _REBOUND_FUNCTION_NAMES.add(statement.name)
-            _LOCAL_FUNCTIONS[statement.name] = statement
+                _REBOUND_FUNCTION_NAMES.add((scope, statement.name))
+            _LOCAL_FUNCTIONS[(scope, statement.name)] = statement
         elif isinstance(statement, ast.ClassDef):
-            _REBOUND_FUNCTION_NAMES.add(statement.name)
+            _REBOUND_FUNCTION_NAMES.add((scope, statement.name))
         else:
             for child in _walk_this_scope(statement):
                 if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
-                    _REBOUND_FUNCTION_NAMES.add(child.id)
+                    _REBOUND_FUNCTION_NAMES.add((scope, child.id))
                 elif isinstance(child, (ast.Import, ast.ImportFrom)):
                     for alias in child.names:
-                        _REBOUND_FUNCTION_NAMES.add(alias.asname or alias.name.split(".")[0])
+                        _REBOUND_FUNCTION_NAMES.add(
+                            (scope, alias.asname or alias.name.split(".")[0])
+                        )
         if isinstance(statement, ast.ClassDef):
             recorded = _LOCAL_CLASSES.get(statement.name)
             if recorded is not None and recorded is not statement:
@@ -6788,6 +6964,43 @@ class _Visitor(ast.NodeVisitor):
                     "hash": _call_hash(inner),
                 })
 
+    def _wrapper_sink_calls(self, node: ast.Call):
+        """`(sink, argument, inner)` for `def run(source): exec(source)` called here.
+
+        A one-line wrapper around a sink is an ordinary way to write this, and the
+        source it executes is built at the CALL: the helper body only ever sees a
+        parameter, which carries no taint of its own, and the call itself is not a sink,
+        so `run(f"import {name}")` was reported by neither half.
+
+        Only a `def` this file states outright and binds to nothing else, with its
+        parameters paired to the arguments exactly as the source-side helper resolution
+        pairs them, and only a sink call inside it whose source argument IS one of those
+        parameters. A recursion stack, since a wrapper may call itself.
+        """
+        helper = _visible_helper(node.func, self._is_shadowed)
+        if helper is None or helper.name in _HELPER_STACK:
+            return
+        bound = _paired_arguments(node, helper.args, defaults = False)
+        if not bound:
+            return
+        _HELPER_STACK.add(helper.name)
+        try:
+            for statement in helper.body:
+                for child in _walk_this_scope(statement):
+                    if not isinstance(child, ast.Call):
+                        continue
+                    sink = _sink_name(child.func, self._alias, self._is_shadowed)
+                    if sink is None:
+                        continue
+                    inner_argument = _source_argument(child, sink, self._is_shadowed)
+                    if not isinstance(inner_argument, ast.Name):
+                        continue
+                    supplied = bound.get(inner_argument.id)
+                    if supplied is not None:
+                        yield sink, supplied, helper
+        finally:
+            _HELPER_STACK.discard(helper.name)
+
     def visit_Expr(self, node: ast.Expr):
         """A generator expression that nobody iterates runs only its first iterable.
 
@@ -6850,6 +7063,19 @@ class _Visitor(ast.NodeVisitor):
                     "reason": f"{reason} through {_callee_spelling(inner)}()",
                     "line": inner.lineno,
                     "hash": _call_hash(inner),
+                })
+        for wrapped_sink, supplied, helper in self._wrapper_sink_calls(node):
+            reason = _is_interpolated(
+                supplied, self.tainted[-1].get, self._is_shadowed, self._alias,
+            )
+            if reason is not None and not isinstance(reason, _LiteralText):
+                self.findings.append({
+                    "path": _relative(self.path),
+                    "qualname": self._qualname(),
+                    "sink": wrapped_sink,
+                    "reason": f"{reason} through {helper.name}()",
+                    "line": node.lineno,
+                    "hash": _call_hash(node),
                 })
         candidates = _sink_candidates(node.func, self._alias, self._is_shadowed)
         # A shadowed base name applies to `b.exec(...)` as well as a bare call: with
@@ -7689,69 +7915,78 @@ def _script_command_source(code: str) -> str | None:
         pieces = line[2:].split(maxsplit = 1)
         if not pieces or pieces[0] != "script":
             return None
-        argument = pieces[1] if len(pieces) > 1 else ""
-        if not _names_python(argument):
-            return None
-        try:
-            tokens = _expanded_env_tokens(shlex.split(argument))
-        except ValueError:
-            return None
-        # Option parsing starts AFTER the interpreter and stops at the first script
-        # operand: `python --help` documents the usage as
-        # `[option] ... [-c cmd | -m mod | file | -] [arg] ...`, so in
-        # `%%script python helper.py -c "prog"` the `-c` and its string are arguments
-        # to `helper.py`, not to the interpreter, and reading them as a `-c` program
-        # reported source that nothing here runs. `_runs_python` already stops there.
-        start = 0
-        for position, token in enumerate(tokens):
-            command = token.rsplit("/", 1)[-1].split("\\")[-1]
-            if _PYTHON_COMMAND.fullmatch(command):
-                start = position + 1
-                break
-        position = start
-        while position < len(tokens):
-            token = tokens[position]
-            if not token.startswith("-"):
-                # The script operand. Everything after it belongs to that script.
-                return None
-            if token in ("-W", "-X", "--check-hash-based-pycs"):
-                # These take their value in the next token, which is not an operand.
-                position += 2
-                continue
-            if token == "-c" and position + 1 < len(tokens):
-                return tokens[position + 1]
-            if token.startswith(("-W", "-X")) and len(token) > 2:
-                # `-Wignore::DeprecationWarning` attaches the value to the option, and
-                # the letters in that value are not flags: reading the `c` in
-                # `DeprecationWarning` as a bundled `-c` extracted `ationWarning` as
-                # the program, which parses as nothing and lost the real `-c` after it.
-                position += 1
-                continue
-            if (
-                token.startswith("-")
-                and not token.startswith("--")
-                and len(token) > 2
-                and "c" in token[1:]
-            ):
-                # A bundle containing `c`. `-c` consumes the REST of the argument, so
-                # `python -uc"prog"` puts the program right there and `python -uc
-                # "prog"` puts it in the next token. Only a bundle ENDING in `c` was
-                # read, so the attached form returned nothing and the cell was passed
-                # over. Split at the first `c` and take whatever follows it.
-                attached = token[token.index("c", 1) + 1:]
-                if attached:
-                    return attached
-                return tokens[position + 1] if position + 1 < len(tokens) else None
-            if token.startswith("-c") and len(token) > 2 and not token.startswith("--"):
-                # `python -cPROGRAM` attaches the program to the option, which is what
-                # `-c` consuming the rest of the argument means. `-uc "prog"` is the
-                # other shape: bundled flags with the program in the next token.
-                rest = token[2:]
-                if rest.lstrip("-") == rest:
-                    return rest
-                return tokens[position + 1] if position + 1 < len(tokens) else None
-            position += 1
+        return _dash_c_program(pieces[1] if len(pieces) > 1 else "")
+    return None
+
+
+def _dash_c_program(argument: str) -> str | None:
+    """The `-c` program a shell command hands to a Python interpreter, or None.
+
+    Split out of the cell reader so a workflow command can use it directly. That
+    reader looks at the magic LINE, so a quoted program spanning several lines -
+    an active workflow shape - returned nothing and went unread.
+    """
+    if not _names_python(argument):
         return None
+    try:
+        tokens = _expanded_env_tokens(shlex.split(argument))
+    except ValueError:
+        return None
+    # Option parsing starts AFTER the interpreter and stops at the first script
+    # operand: `python --help` documents the usage as
+    # `[option] ... [-c cmd | -m mod | file | -] [arg] ...`, so in
+    # `%%script python helper.py -c "prog"` the `-c` and its string are arguments
+    # to `helper.py`, not to the interpreter, and reading them as a `-c` program
+    # reported source that nothing here runs. `_runs_python` already stops there.
+    start = 0
+    for position, token in enumerate(tokens):
+        command = token.rsplit("/", 1)[-1].split("\\")[-1]
+        if _PYTHON_COMMAND.fullmatch(command):
+            start = position + 1
+            break
+    position = start
+    while position < len(tokens):
+        token = tokens[position]
+        if not token.startswith("-"):
+            # The script operand. Everything after it belongs to that script.
+            return None
+        if token in ("-W", "-X", "--check-hash-based-pycs"):
+            # These take their value in the next token, which is not an operand.
+            position += 2
+            continue
+        if token == "-c" and position + 1 < len(tokens):
+            return tokens[position + 1]
+        if token.startswith(("-W", "-X")) and len(token) > 2:
+            # `-Wignore::DeprecationWarning` attaches the value to the option, and
+            # the letters in that value are not flags: reading the `c` in
+            # `DeprecationWarning` as a bundled `-c` extracted `ationWarning` as
+            # the program, which parses as nothing and lost the real `-c` after it.
+            position += 1
+            continue
+        if (
+            token.startswith("-")
+            and not token.startswith("--")
+            and len(token) > 2
+            and "c" in token[1:]
+        ):
+            # A bundle containing `c`. `-c` consumes the REST of the argument, so
+            # `python -uc"prog"` puts the program right there and `python -uc
+            # "prog"` puts it in the next token. Only a bundle ENDING in `c` was
+            # read, so the attached form returned nothing and the cell was passed
+            # over. Split at the first `c` and take whatever follows it.
+            attached = token[token.index("c", 1) + 1:]
+            if attached:
+                return attached
+            return tokens[position + 1] if position + 1 < len(tokens) else None
+        if token.startswith("-c") and len(token) > 2 and not token.startswith("--"):
+            # `python -cPROGRAM` attaches the program to the option, which is what
+            # `-c` consuming the rest of the argument means. `-uc "prog"` is the
+            # other shape: bundled flags with the program in the next token.
+            rest = token[2:]
+            if rest.lstrip("-") == rest:
+                return rest
+            return tokens[position + 1] if position + 1 < len(tokens) else None
+        position += 1
     return None
 
 
@@ -7788,6 +8023,12 @@ def _foreign_cell_magic(code: str) -> str | None:
             return None
         return magic
     return None
+
+
+# How many times the deferred-taint prepass reruns before it stops. Each round can
+# only add names, so a chain of aliases this long is already past anything written by
+# hand; the cap is a stop, not a rule about the code.
+_LATER_TAINT_ROUNDS = 8
 
 
 # How many lines one cell may lose to recovery before it is given up on. A cell that
@@ -7955,7 +8196,12 @@ def _runs_python_command(line: str) -> bool:
     operands are dropped, and the remaining words are matched against the interpreter
     pattern `_runs_python` already uses.
     """
-    command = line.split("<<", 1)[0]
+    # The heredoc introducer is removed rather than everything after it: the interpreter
+    # may sit on the far side of a PIPE, `cat <<'PY' | python`, and cutting the line at
+    # `<<` threw that away, so the block was read as data and a sink inside it passed
+    # the gate. The delimiter word goes with the introducer, so it cannot be mistaken
+    # for a command.
+    command = _HEREDOC.sub(" ", line)
     try:
         tokens = shlex.split(command, comments = True)
     except ValueError:
@@ -7963,7 +8209,12 @@ def _runs_python_command(line: str) -> bool:
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        if token in (">", ">>", "<", "2>", "&>", "|"):
+        if token in ("|", "|&", ";", "&&", "||", "&"):
+            # A separator: what follows is the next COMMAND, not an operand, and
+            # stepping over it hid the interpreter a heredoc was piped into.
+            index += 1
+            continue
+        if token in (">", ">>", "<", "2>", "&>"):
             # The next token is a destination, not a command.
             index += 2
             continue
@@ -7982,6 +8233,11 @@ def _runs_python_command(line: str) -> bool:
 # read: the substituted value is whatever the workflow computes, which is exactly the
 # untrusted-value case this gate is about.
 _ACTIONS_EXPRESSION = re.compile(r"\$\{\{.*?\}\}", re.S)
+
+# What replaces it. A name, so the block still parses wherever the expression stood,
+# and a distinctive one, so a string that CONTAINS it is recognised as spliced text
+# rather than read as the fixed characters of an ordinary literal.
+_ACTIONS_SUBSTITUTION = "_actions_expression"
 
 
 def _python_heredocs(text: str):
@@ -8012,8 +8268,31 @@ def _python_heredocs(text: str):
         # once Actions has substituted it. Skipping the block let a sink under such a
         # line through unread, so the expression becomes a name and the block is
         # scanned - which is the same answer the notebook reader gives a magic.
-        yield start, _ACTIONS_EXPRESSION.sub("_actions_expression", source)
+        yield start, _ACTIONS_EXPRESSION.sub(_ACTIONS_SUBSTITUTION, source)
         index += 1
+
+
+# How many lines a single command may span before this stops looking for its closing
+# quote. A workflow step is not a program: an unbalanced quote that never closes would
+# otherwise drag the rest of the file into one command.
+_COMMAND_LINE_LIMIT = 200
+
+
+def _dedented_program(program: str) -> str:
+    """A `-c` program with the workflow's own indentation removed.
+
+    The block scalar keeps its indentation in the raw text, so every line after the
+    opening quote carries it and the program will not parse. The first line is left
+    alone: it is whatever followed `-c "` on that line, usually nothing.
+    """
+    lines = program.splitlines()
+    if len(lines) < 2:
+        return program
+    indents = [len(line) - len(line.lstrip()) for line in lines[1:] if line.strip()]
+    cut = min(indents) if indents else 0
+    return "\n".join(
+        [lines[0]] + [line[cut:] if line.strip() else "" for line in lines[1:]]
+    )
 
 
 def _python_dash_c_commands(text: str):
@@ -8023,16 +8302,37 @@ def _python_dash_c_commands(text: str):
     executes on the runner just the same. The same extractor the notebook `%%script`
     reader uses answers it, so there is one implementation of the option rules.
     """
-    for number, line in enumerate(text.splitlines(), start = 1):
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        number = index + 1
         if "<<" in line or not _runs_python_command(line + " <<"):
+            index += 1
             continue
-        stripped = line.strip()
+        # A quoted program may span lines - `python -c "` then the program then the
+        # closing quote is an active workflow shape - and reading one physical line
+        # left the command unparseable, so the whole program went unread. Lines are
+        # joined until the quoting balances, which is exactly when the shell would
+        # consider the command finished.
+        command, last = line, index
+        while last + 1 < len(lines) and last - index < _COMMAND_LINE_LIMIT:
+            try:
+                shlex.split(command, comments = True)
+                break
+            except ValueError:
+                last += 1
+                command = f"{command}\n{lines[last]}"
+        stripped = command.strip()
         for prefix in ("run:", "- run:", "-", "|"):
             if stripped.startswith(prefix):
                 stripped = stripped[len(prefix):].strip()
-        program = _script_command_source("%%script " + stripped)
+        program = _dash_c_program(stripped)
+        index = last + 1
         if program is not None:
-            yield number, _ACTIONS_EXPRESSION.sub("_actions_expression", program)
+            yield number, _ACTIONS_EXPRESSION.sub(
+                "_actions_expression", _dedented_program(program),
+            )
 
 
 def _scan_workflow(path: Path) -> list[dict]:
@@ -8042,7 +8342,12 @@ def _scan_workflow(path: Path) -> list[dict]:
     `python -c` patterns apply to it directly rather than to a `run:` block lifted out
     of YAML.
 
-    One visitor for the file, as for a notebook, and one qualname prefix per block.
+    One visitor PER BLOCK, unlike a notebook: the cells of a notebook share one
+    namespace, while each heredoc and each `-c` command starts its own interpreter. A
+    single visitor let a name bound in one program answer for the next, so
+    `exec = print` in one step made a later step's `exec(...)` read as harmless when
+    that process starts with the builtin.
+
     A block that will not parse is counted in NOTEBOOK_SKIPPED rather than failing the
     file: `python -` is also spelled with templating and `${{ }}` inside, which is not
     Python at all.
@@ -8051,7 +8356,7 @@ def _scan_workflow(path: Path) -> list[dict]:
         text = path.read_text(encoding = "utf-8", errors = "replace")
     except OSError as error:
         raise ScanError(f"{_relative(path)}: {error.strerror or error}") from None
-    visitor = _Visitor(path)
+    findings = []
     skipped = 0
     parsed = []
     for start, source in [*_python_heredocs(text), *_python_dash_c_commands(text)]:
@@ -8069,19 +8374,20 @@ def _scan_workflow(path: Path) -> list[dict]:
         # workflow file, so every node is shifted to where the block really sits.
         ast.increment_lineno(tree, start)
         parsed.append((start, tree))
-    for _start, tree in parsed:
-        visitor._collect_aliases(tree.body)
     for start, tree in parsed:
+        visitor = _Visitor(path)
         visitor.qualname_prefix = f"line{start}"
+        visitor._collect_aliases(tree.body)
         try:
             visitor.visit(tree)
         except RecursionError:
             raise ScanError(
                 f"{_relative(path)}#line{start}: too deeply nested to walk"
             ) from None
+        findings.extend(visitor.findings)
     if skipped:
         NOTEBOOK_SKIPPED.append((_relative(path), skipped))
-    return visitor.findings
+    return findings
 
 
 def scan_file(path: Path) -> list[dict]:
