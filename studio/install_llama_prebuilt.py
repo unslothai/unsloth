@@ -5191,6 +5191,40 @@ def looks_like_macos_incompatibility(text: str) -> bool:
     return "Symbol not found" in text and "MTLResidency" in text
 
 
+_MACOS_LOADER_FAILURE_MARKERS = (
+    "library not loaded",
+    "symbol not found",
+    "image not found",
+    "no suitable image found",
+    "incompatible library version",
+    "code signature",
+)
+
+
+def looks_like_macos_loader_failure(text: str) -> bool:
+    """True when output is dyld refusing to load the image, rather than a program
+    that started and exited non-zero.
+
+    The distinction is the whole point: llama-quantize answers --version by
+    printing its quantization table and exiting non-zero, so an exit code cannot
+    separate "never reached main" from "ran and disagreed". dyld failures are
+    recognisable by what they say, and they say it before any program output.
+    Deliberately narrow -- a false positive here rejects a working prebuilt and
+    spends a source build, so anything unrecognised is treated as healthy and
+    left to the runtime validation that follows.
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(marker in lowered for marker in _MACOS_LOADER_FAILURE_MARKERS):
+        return True
+    # dyld prefixes its own diagnostics, with or without a pid: "dyld: ..." on
+    # older releases, "dyld[41694]: ..." on current ones.
+    if re.search(r"^\s*dyld(\[\d+\])?:", text, re.MULTILINE):
+        return True
+    return looks_like_macos_incompatibility(text)
+
+
 def macos_binary_minos_issues(
     binaries: Iterable[Path], install_dir: Path, host: HostInfo
 ) -> list[str]:
@@ -5252,12 +5286,22 @@ def macos_dyld_load_issues(
             continue
         if result.returncode == 0:
             continue
-        # dyld names both the library it could not load and the dylib that asked
-        # for it, which is better evidence than anything otool -L could be made to
-        # yield here: an absolute install name that is absent from disk is the
-        # normal case for /usr/lib, whose members live in the shared cache, so
-        # "missing from disk" cannot separate the culprit from its healthy peers.
         output = (result.stdout + result.stderr).strip()
+        # A non-zero exit is NOT evidence of a bad link. llama-quantize answers
+        # --version by printing its quantization table and exiting non-zero, which
+        # is a binary that loaded perfectly; assert_macho_minos.sh in the llama.cpp
+        # fork makes the same distinction for the same reason. Treating the code as
+        # the verdict rejected every published prebuilt, walked the release history
+        # to its end and fell back to a source build.
+        #
+        # So require dyld's own signature. It names both the library it could not
+        # load and the dylib that asked for it, which is also better evidence than
+        # anything otool -L could yield here: an absolute install name absent from
+        # disk is the normal case for /usr/lib, whose members live in the shared
+        # cache, so "missing from disk" cannot separate the culprit from its
+        # healthy peers.
+        if not looks_like_macos_loader_failure(output):
+            continue
         detail = " | ".join(output.splitlines()[-5:]) or f"exit {result.returncode}"
         issues.append(f"{binary_path.name}: {detail}")
     return issues

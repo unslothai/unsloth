@@ -261,6 +261,23 @@ class TestMacosDyldLoadProbe:
         binaries[0].chmod(0o644)
         ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
 
+    def test_a_nonzero_exit_with_program_output_is_not_a_link_failure(self, tmp_path):
+        """llama-quantize answers --version by printing its quantization table and
+        exiting non-zero. Reading the exit code as the verdict rejected every
+        published prebuilt, walked the release history to its end, and fell back to
+        a source build on every macOS runner.
+        """
+        install_dir, binaries = self._bundle(
+            tmp_path,
+            exit_code = 1,
+            message = (
+                "llama-quantize: 7 or Q8_0 : 7.96G, +0.0026 ppl @ Llama-3-8B | "
+                "1 or F16 : 14.00G, +0.0020 ppl @ Mistral-7B"
+            ),
+        )
+        ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
+
+
     def test_the_referencing_dylib_survives_into_the_message(self, tmp_path):
         """dyld names the library AND the dylib that asked for it. The second half
         is what says libggml-rpc rather than llama-server is at fault, so keep
@@ -276,6 +293,36 @@ class TestMacosDyldLoadProbe:
         message = str(caught.value)
         assert "librdma" in message
         assert "libggml-rpc" in message
+
+
+
+class TestLooksLikeMacosLoaderFailure:
+    """Narrow by design: a false positive rejects a working prebuilt."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "dyld[41694]: Library not loaded: /usr/lib/librdma.dylib",
+            "dyld: Library not loaded: /usr/lib/libfoo.dylib",
+            "Symbol not found: _OBJC_CLASS_$_MTLResidencySetDescriptor",
+            "dyld[1]: no suitable image found.",
+        ],
+    )
+    def test_loader_failures_are_recognised(self, text):
+        assert ILP.looks_like_macos_loader_failure(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            "llama-quantize: 7 or Q8_0 : 7.96G, +0.0026 ppl @ Llama-3-8B",
+            "usage: llama-quantize [--help] model-f32.gguf",
+            "error: failed to load model 'foo.gguf'",
+            "main: build = 10639 (f6f92fe)",
+        ],
+    )
+    def test_ordinary_program_output_is_not_a_loader_failure(self, text):
+        assert not ILP.looks_like_macos_loader_failure(text)
 
 
 def _fake_macos_releases(tags):
