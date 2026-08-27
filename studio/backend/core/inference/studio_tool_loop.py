@@ -763,16 +763,14 @@ class _Turn:
             self.last_index = index
             self.open_key_by_index[index] = key
             if key not in self.by_index:
+                parked_name, parked_extra = self._take_parked(index, held, new_name)
                 born = {
                     "id": "",
                     "type": "function",
                     # The name a name-only delta parked for whichever call the
                     # arguments turned out to open, and the metadata that came
                     # with it.
-                    "function": {
-                        "name": self._parked_name(index, held, new_name),
-                        "arguments": "",
-                    },
+                    "function": {"name": parked_name, "arguments": ""},
                 }
                 # The call takes the moment it was announced at, not the moment
                 # its arguments arrived, so a call announced second is not run
@@ -781,9 +779,8 @@ class _Turn:
                 self.seq_by_key[key] = (
                     announced_at if announced_at is not None else self._next_seq()
                 )
-                pending_extra = self.pending_extra_by_index.pop(index, None)
-                if pending_extra:
-                    born["extra_content"] = pending_extra
+                if parked_extra:
+                    born["extra_content"] = parked_extra
                 self.by_index[key] = born
                 # First-seen order, so a negative or out-of-order index cannot
                 # reorder parallel calls against what the model actually sent.
@@ -901,8 +898,10 @@ class _Turn:
         # Later id-less fragments continue the last call, finished or not.
         self.open_key_by_index[index] = open_key
 
-    def _parked_name(self, index: int, held: dict[str, Any] | None, opening_name: Any) -> str:
-        """The parked name to open a call with, if it is that call's at all.
+    def _take_parked(
+        self, index: int, held: dict[str, Any] | None, opening_name: Any
+    ) -> tuple[str, dict[str, Any] | None]:
+        """The parked name and metadata to open a call with, if they are its.
 
         A parked name that repeats or extends the closed call's own is most
         likely that call's name resent, and is only kept because a second
@@ -910,15 +909,24 @@ class _Turn:
         when the delta that opens the call names it outright, that name wins:
         seeding "alpha_long" and merging "beta" onto it produced
         "alpha_longbeta", which matches no enabled tool and never runs.
+
+        The metadata parked with that name follows the same decision. It was
+        announced alongside the name, so once the name is read as the closed
+        call's the metadata is the closed call's too; handing it to the new
+        call gives that call another call's thought signature and leaves the
+        closed one without its own, and the provider rejects both on replay.
         """
         parked = self.pending_name_by_index.pop(index, "")
+        extra = self.pending_extra_by_index.pop(index, None)
         if not parked or not isinstance(opening_name, str) or not opening_name:
-            return parked
+            return parked, extra
         held_name = held["function"]["name"] if held is not None else ""
         resent = bool(held_name) and (held_name.startswith(parked) or parked.startswith(held_name))
         if resent and not (opening_name.startswith(parked) or parked.startswith(opening_name)):
-            return ""
-        return parked
+            if extra and held is not None:
+                held["extra_content"] = {**held.get("extra_content", {}), **extra}
+            return "", None
+        return parked, extra
 
     def _announced_but_unopened(self) -> list[tuple[int, dict[str, Any]]]:
         """Calls a name announced that no argument fragment ever opened.

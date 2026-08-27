@@ -184,20 +184,6 @@ function liftSplitHelpers(): string {
   return lifted;
 }
 
-/** The reset that runs when a provider turn finishes. */
-function liftTurnReset(): string {
-  const lifted = liftBetween(
-    "turn reset",
-    "codexRoundToolCallIds = [];",
-    "// Kimi / DeepSeek stream thinking",
-  );
-  assert.ok(
-    lifted.includes("pendingNameByIndex.clear()"),
-    "the provider-turn reset no longer clears the parked name",
-  );
-  return lifted;
-}
-
 function liftDeltaLoop(): string {
   const loopStart = adapterSource.indexOf(
     "for (const tc of rawDeltaToolCalls) {",
@@ -238,8 +224,7 @@ interface LoopPart {
 
 /** The lifted loop, with the locals it closes over supplied by hand. */
 function makeStream(): {
-  feed: (batch: DeltaCall[]) => boolean;
-  endTurn: () => void;
+  feed: (batch: DeltaCall[], finished?: boolean) => boolean;
   parts: LoopPart[];
 } {
   const body = `
@@ -257,17 +242,17 @@ function makeStream(): {
     };
     let addedToolCall = false;
     let replayStateChanged = false;
-    function feed(rawDeltaToolCalls) {
+    // The chunk the lifted loop reads finish_reason off, so the provider-turn
+    // reset it performs is the shipped one.
+    let chunk = { choices: [{}] };
+    function feed(rawDeltaToolCalls, finished) {
+      chunk = { choices: [finished ? { finish_reason: "tool_calls" } : {}] };
       addedToolCall = false;
       replayStateChanged = false;
       ${liftDeltaLoop()}
       return addedToolCall;
     }
-    // The provider-turn boundary, lifted from the finish_reason branch.
-    function endTurn() {
-      ${liftTurnReset()}
-    }
-    return { feed, endTurn, parts: toolCallParts };
+    return { feed, parts: toolCallParts };
   `;
   const js = ts.transpileModule(body, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
@@ -282,8 +267,7 @@ function makeStream(): {
     createBoundaryScan,
     findStreamedToolCallPartIndex,
   ) as {
-    feed: (batch: DeltaCall[]) => boolean;
-    endTurn: () => void;
+    feed: (batch: DeltaCall[], finished?: boolean) => boolean;
     parts: LoopPart[];
   };
 }
@@ -785,12 +769,63 @@ test("a name waiting for arguments does not cross a turn boundary", () => {
   // whatever opens there.
   const stream = makeStream();
   stream.feed([{ index: 0, function: { name: "A", arguments: '{"a":1}' } }]);
-  stream.feed([{ index: 0, function: { name: "B" } }]);
-  stream.endTurn();
+  // The name-only delta rides the same chunk as finish_reason, which is how a
+  // clear placed before the deltas let the name through.
+  stream.feed([{ index: 0, function: { name: "B" } }], true);
   stream.feed([{ index: 0, function: { name: "C", arguments: '{"c":3}' } }]);
 
   assert.deepEqual(shape(stream.parts), [
     ["A", '{"a":1}'],
     ["C", '{"c":3}'],
   ]);
+});
+
+test("metadata on several name fragments is merged, not replaced", () => {
+  // The name is accumulated across the fragments, so the metadata they carry
+  // has to be too: replacing drops the signature an earlier fragment brought.
+  const parts = run([
+    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+    [
+      {
+        index: 0,
+        function: { name: "web" },
+        extra_content: { google: { thought_signature: "SIG" } },
+      },
+    ],
+    [{ index: 0, function: { name: "_search" }, extra_content: { seq: 2 } }],
+    [{ index: 0, function: { arguments: '{"q":1}' } }],
+  ]);
+
+  assert.deepEqual(shape(parts), [
+    ["alpha", '{"a":1}'],
+    ["web_search", '{"q":1}'],
+  ]);
+  assert.deepEqual(parts[1].extra_content, {
+    google: { thought_signature: "SIG" },
+    seq: 2,
+  });
+});
+
+test("an opening name beats a parked resend, and keeps its own metadata", () => {
+  // Concatenating gave "alphabeta", a name the backend never executes, so the
+  // card disagreed with the call that ran. The metadata parked with that name
+  // is the closed call's too, once the name is read as its.
+  const parts = run([
+    [
+      {
+        index: 0,
+        function: { name: "alpha", arguments: '{"a":1}' },
+        extra_content: { own: "A" },
+      },
+    ],
+    [{ index: 0, function: { name: "alpha_long" }, extra_content: { resent: 1 } }],
+    [{ index: 0, function: { name: "beta", arguments: '{"b":2}' } }],
+  ]);
+
+  assert.deepEqual(shape(parts), [
+    ["alpha", '{"a":1}'],
+    ["beta", '{"b":2}'],
+  ]);
+  assert.deepEqual(parts[0].extra_content, { own: "A", resent: 1 });
+  assert.equal(parts[1].extra_content, undefined);
 });

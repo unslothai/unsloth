@@ -5299,6 +5299,15 @@ export function createOpenAIStreamAdapter(
       // hung off the call, so merging two of them has to check first.
       const isPlainRecord = (v: unknown): v is Record<string, unknown> =>
         typeof v === "object" && v !== null && !Array.isArray(v);
+      // A name waiting for arguments is waiting within one provider turn. The
+      // backend starts the next turn on this same response with the delta index
+      // restarted at 0, so a name left over would be prepended to whatever
+      // opens there, turning "C" into "BC" and hanging B's metadata on it. The
+      // backend's own pending state is per turn for the same reason.
+      const endProviderTurn = () => {
+        pendingNameByIndex.clear();
+        pendingExtraByIndex.clear();
+      };
       const scanArgsText = (partId: string, text: string) => {
         let scan = boundaryScans.get(partId);
         if (!scan) {
@@ -6918,14 +6927,6 @@ export function createOpenAIStreamAdapter(
 
               if (chunk.choices?.[0]?.finish_reason) {
                 codexRoundToolCallIds = [];
-                // A name waiting for arguments is waiting within one provider
-                // turn. The backend starts the next turn on this same response
-                // with the delta index restarted at 0, so a name left over
-                // would be prepended to whatever opens there, turning "C" into
-                // "BC" and hanging B's metadata on it. The backend's own
-                // pending state is per turn for the same reason.
-                pendingNameByIndex.clear();
-                pendingExtraByIndex.clear();
               }
               // Kimi / DeepSeek stream thinking via delta.reasoning_content;
               // wrap inline as <think>...</think> for parseAssistantContent.
@@ -7066,7 +7067,17 @@ export function createOpenAIStreamAdapter(
                     // announced. Left on the closed card it gives that call
                     // another call's signature and the new call none, and
                     // native replay rejects both.
-                    pendingExtraByIndex.set(idx, call.extra_content);
+                    // Merged: a name streamed across several deltas can carry
+                    // metadata on more than one of them, and replacing drops
+                    // the signature an earlier fragment brought.
+                    const parkedBefore = pendingExtraByIndex.get(idx);
+                    pendingExtraByIndex.set(
+                      idx,
+                      isPlainRecord(parkedBefore) &&
+                        isPlainRecord(call.extra_content)
+                        ? { ...parkedBefore, ...call.extra_content }
+                        : call.extra_content,
+                    );
                   }
                   if (suppressName) {
                     // Held across deltas, so a name streamed as "web" then
@@ -7216,8 +7227,28 @@ export function createOpenAIStreamAdapter(
                     // The name a name-only delta parked for whichever call the
                     // arguments turned out to open, continued by whatever this
                     // delta adds to it.
-                    const pendingName = pendingNameByIndex.get(idx) ?? "";
+                    const parked = pendingNameByIndex.get(idx) ?? "";
                     const nameFragment = call.function?.name ?? "";
+                    // A parked name that repeats or extends the closed call's
+                    // own is most likely that call's name resent, kept only
+                    // because a second no-argument call to the same tool looks
+                    // identical. So a delta that names its call outright wins:
+                    // concatenating gave "alphabeta", a name the backend never
+                    // executes. Same decision as _take_parked there.
+                    const heldName = matched?.toolName ?? "";
+                    const parkedIsResend =
+                      !!parked &&
+                      !!heldName &&
+                      (heldName.startsWith(parked) ||
+                        parked.startsWith(heldName));
+                    const parkedDisagrees =
+                      !!nameFragment &&
+                      !(
+                        nameFragment.startsWith(parked) ||
+                        parked.startsWith(nameFragment)
+                      );
+                    const pendingName =
+                      parkedIsResend && parkedDisagrees ? "" : parked;
                     const freshName = !nameFragment
                       ? pendingName
                       : nameFragment.startsWith(pendingName)
@@ -7226,8 +7257,36 @@ export function createOpenAIStreamAdapter(
                     pendingNameByIndex.delete(idx);
                     // The metadata that came with that parked name belongs to
                     // this call, the one it was announcing.
-                    const parkedExtra = pendingExtraByIndex.get(idx);
+                    // The metadata parked with that name follows it: read as
+                    // the closed call's, it stays with the closed card rather
+                    // than giving this one another call's signature.
+                    const parkedExtra =
+                      pendingName === parked
+                        ? pendingExtraByIndex.get(idx)
+                        : undefined;
+                    const disownedExtra =
+                      pendingName === parked
+                        ? undefined
+                        : pendingExtraByIndex.get(idx);
                     pendingExtraByIndex.delete(idx);
+                    if (
+                      disownedExtra !== undefined &&
+                      existingIndex !== -1 &&
+                      matched
+                    ) {
+                      const closed = toolCallParts[
+                        existingIndex
+                      ] as PositionedToolCallPart;
+                      const closedExtra = closed.extra_content;
+                      toolCallParts[existingIndex] = {
+                        ...closed,
+                        extra_content:
+                          isPlainRecord(closedExtra) &&
+                          isPlainRecord(disownedExtra)
+                            ? { ...closedExtra, ...disownedExtra }
+                            : disownedExtra,
+                      };
+                    }
                     // Merged, not replaced: a signature parked with the name
                     // and metadata arriving with the arguments are different
                     // fields of one call, and dropping either gets the replayed
@@ -7281,6 +7340,13 @@ export function createOpenAIStreamAdapter(
                     addedToolCall = true;
                   }
                 }
+                // After this chunk's deltas, not before them: a provider can
+                // put finish_reason on the same chunk as the turn's last
+                // name-only delta, and clearing first would let that name be
+                // parked again and cross into the next turn.
+                if (chunk.choices?.[0]?.finish_reason) {
+                  endProviderTurn();
+                }
                 if (
                   addedToolCall ||
                   replayStateChanged ||
@@ -7299,6 +7365,9 @@ export function createOpenAIStreamAdapter(
                   };
                 }
                 continue;
+              }
+              if (chunk.choices?.[0]?.finish_reason) {
+                endProviderTurn();
               }
               // extra_content can arrive with no content at all: a Gemini
               // thoughtSignature fragment, or the codex reasoning ledger on a

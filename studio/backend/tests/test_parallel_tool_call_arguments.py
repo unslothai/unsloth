@@ -517,3 +517,18 @@ def test_an_opening_name_beats_a_parked_resend():
     grown.merge_structured([_delta(0, "web", "")])
     grown.merge_structured([_delta(0, "_search", '{"q":1}')])
     assert _shape(grown) == [("alpha", '{"a":1}'), ("web_search", '{"q":1}')]
+
+
+def test_metadata_parked_with_a_resent_name_stays_with_the_closed_call():
+    # The metadata was announced alongside the name, so once that name is read
+    # as the closed call's resent, the metadata is the closed call's too.
+    # Handing it to the new call leaves one wearing another's signature.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}') | {"extra_content": {"own": "A"}}])
+    turn.merge_structured([_delta(0, "alpha_long", None) | {"extra_content": {"resent": 1}}])
+    turn.merge_structured([_delta(0, "beta", '{"b":2}')])
+
+    entries = [turn.by_index[key] for key in turn.order]
+    assert _shape(turn) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
+    assert entries[0]["extra_content"] == {"own": "A", "resent": 1}
+    assert entries[1].get("extra_content") is None
