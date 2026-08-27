@@ -17672,9 +17672,7 @@ def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
                         "this audio file does not report a sample rate, so it cannot "
                         "be decoded within the size limit; convert it to wav or mp3"
                     )
-                window = min(
-                    float(_MAX_AUDIO_SECONDS + 1), _MAX_DECODED_SAMPLES / probe_rate + 1
-                )
+                window = min(float(_MAX_AUDIO_SECONDS + 1), _MAX_DECODED_SAMPLES / probe_rate + 1)
                 arr, sr = librosa.load(tmp_path, sr = None, mono = True, duration = window)
             finally:
                 os.unlink(tmp_path)
@@ -20390,9 +20388,7 @@ async def produce_openai_chat_completions(
                 # A valid file that is simply too long reports the limit, as the
                 # non-GGUF path does, rather than reading as corrupt audio.
                 logger.info("Audio rejected at the duration limit: %s", e)
-                raise _reject(
-                    413, f"Audio is too long (max {_MAX_AUDIO_SECONDS // 60} minutes)."
-                )
+                raise _reject(413, f"Audio is too long (max {_MAX_AUDIO_SECONDS // 60} minutes).")
             except Exception as e:
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
