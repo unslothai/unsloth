@@ -30,8 +30,9 @@ os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 # `uvicorn main:app` both come through here, and spawned inference, training and diffusion
 # workers inherit the environment. A plain setdefault, not a probe: deciding from the torch
 # build would mean importing torch on the app-import path, which utils/torch_warmup.py exists
-# to keep off it. An explicit "0" still opts out, and torch reads this only after AOTriton has
-# claimed a kernel for the GPU, so hardware without one is unaffected.
+# to keep off it. A pre-existing "0" is kept, and restores upstream behaviour on the architectures
+# this gates while doing nothing on the ones AOTriton has already promoted. Torch reads the
+# variable only after AOTriton claims a kernel for the GPU, so hardware without one is unaffected.
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
 # Windows terminals default to the active system code page. Reconfigure stdout/stderr
