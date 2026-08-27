@@ -841,7 +841,10 @@ def _blamed_role(message: dict) -> str:
         # wrong cause and offering an action that cannot shrink it.
         for call in message.get("tool_calls") or []:
             function = call.get("function") if isinstance(call, dict) else None
-            if isinstance(function, dict) and str(function.get("name") or "") in _FILE_WRITING_TOOLS:
+            if (
+                isinstance(function, dict)
+                and str(function.get("name") or "") in _FILE_WRITING_TOOLS
+            ):
                 return "assistant_tool_call"
         return "assistant_tool_payload"
     return role

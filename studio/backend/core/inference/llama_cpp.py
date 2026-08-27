@@ -27533,9 +27533,7 @@ class LlamaCppBackend:
                                 conversation[:] = _cand_l
                                 if _cap_left_l is not None:
                                     _continuation_max_tokens = _cap_left_l
-                                _accumulated_completion_tokens += _fu_l.get(
-                                    "completion_tokens", 0
-                                )
+                                _accumulated_completion_tokens += _fu_l.get("completion_tokens", 0)
                                 _it_l = _iter_timings or {}
                                 _accumulated_predicted_ms += _it_l.get("predicted_ms", 0)
                                 _accumulated_predicted_n += _it_l.get("predicted_n", 0)
