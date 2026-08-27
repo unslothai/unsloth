@@ -70,6 +70,7 @@ import {
   getProviderModelCapabilities,
   providerModelSupportsStudioTools,
   reasoningFieldsForProviderSave,
+  reasoningModelIdIsMarked,
   setProviderModelCapabilities,
   removeExternalProviderApiKey,
   supportsPerModelReasoningPin,
@@ -77,6 +78,7 @@ import {
   supportsProviderReasoningToggle,
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
+  toggleReasoningModelId,
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
@@ -1627,7 +1629,9 @@ export function ChatProvidersSettings({
                           if (!on || !showPerModelReasoningPin) return;
                           setReasoningModelIds((prev) => {
                             const enabled = enabledModelCandidates;
-                            const kept = prev.filter((id) => enabled.includes(id));
+                            const kept = prev.filter((id) =>
+                              reasoningModelIdIsMarked(enabled, id),
+                            );
                             if (kept.length > 0) return kept;
                             return enabled.length === 1 ? enabled : [];
                           });
@@ -1657,21 +1661,20 @@ export function ChatProvidersSettings({
                                 className="flex cursor-pointer items-center gap-2.5 border-border/60 border-b px-3 py-2 last:border-b-0 hover:bg-muted/35"
                                 onClick={() => {
                                   setReasoningModelIds((prev) =>
-                                    prev.includes(model)
-                                      ? prev.filter((id) => id !== model)
-                                      : [...prev, model],
+                                    toggleReasoningModelId(prev, model),
                                   );
                                 }}
                               >
                                 <Checkbox
                                   id={`provider-reasoning-model-${index}`}
                                   aria-label={`Mark ${model} as a reasoning model`}
-                                  checked={reasoningModelIds.includes(model)}
+                                  checked={reasoningModelIdIsMarked(
+                                    reasoningModelIds,
+                                    model,
+                                  )}
                                   onCheckedChange={() => {
                                     setReasoningModelIds((prev) =>
-                                      prev.includes(model)
-                                        ? prev.filter((id) => id !== model)
-                                        : [...prev, model],
+                                      toggleReasoningModelId(prev, model),
                                     );
                                   }}
                                   onClick={(event) => event.stopPropagation()}

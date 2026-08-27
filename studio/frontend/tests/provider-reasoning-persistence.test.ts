@@ -12,7 +12,11 @@ import {
 registerBundlerResolver();
 const { store } = installLocalStorageFake();
 
-const { loadExternalProviders } = await import(
+const {
+  loadExternalProviders,
+  reasoningModelIdIsMarked,
+  toggleReasoningModelId,
+} = await import(
   "../src/features/chat/external-providers.ts"
 );
 
@@ -45,4 +49,13 @@ test("a malformed Ollama pin list fails closed", () => {
   );
   const [loaded] = loadExternalProviders();
   assert.deepEqual(loaded.reasoningModelIds, []);
+});
+
+test("Ollama reasoning pins compare and toggle case-insensitively", () => {
+  const marked = ["REASONING-MODEL"];
+  assert.equal(reasoningModelIdIsMarked(marked, "reasoning-model"), true);
+  assert.deepEqual(toggleReasoningModelId(marked, "reasoning-model"), []);
+  assert.deepEqual(toggleReasoningModelId([], "reasoning-model"), [
+    "reasoning-model",
+  ]);
 });

@@ -116,6 +116,29 @@ export function supportsPerModelReasoningPin(
   return providerType === "ollama";
 }
 
+function modelIdKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+export function reasoningModelIdIsMarked(
+  markedIds: readonly string[],
+  modelId: string,
+): boolean {
+  const key = modelIdKey(modelId);
+  return markedIds.some((id) => modelIdKey(id) === key);
+}
+
+export function toggleReasoningModelId(
+  markedIds: readonly string[],
+  modelId: string,
+): string[] {
+  const key = modelIdKey(modelId);
+  if (markedIds.some((id) => modelIdKey(id) === key)) {
+    return markedIds.filter((id) => modelIdKey(id) !== key);
+  }
+  return [...markedIds, modelId];
+}
+
 export function normalizeReasoningModelIds(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const seen = new Set<string>();
@@ -148,10 +171,10 @@ export function reasoningFieldsForProviderSave(
     return { isReasoningModel: false, reasoningModelIds: undefined };
   }
   const enabledKeys = new Set(
-    enabledModels.map((id) => id.trim().toLowerCase()).filter((id) => id.length > 0),
+    enabledModels.map(modelIdKey).filter((id) => id.length > 0),
   );
   const marked = (normalizeReasoningModelIds(markedIds) ?? []).filter((id) =>
-    enabledKeys.has(id.trim().toLowerCase()),
+    enabledKeys.has(modelIdKey(id)),
   );
   return { isReasoningModel: true, reasoningModelIds: marked };
 }
@@ -561,10 +584,6 @@ function isExternalProviderConfig(value: unknown): value is ExternalProviderConf
 function mapLegacyPresetToProviderType(presetId: string): string {
   if (presetId === "google") return "gemini";
   return presetId;
-}
-
-function modelIdKey(value: string): string {
-  return value.trim().toLowerCase();
 }
 
 function resolveStoredReasoningModelIds(
