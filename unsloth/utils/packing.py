@@ -896,6 +896,15 @@ def _wrap_mamba2_mixer_forward(module, varlen_getter = None):
         return
     forward_orig = module.forward
     cuda_orig = getattr(module, "cuda_kernels_forward", None)
+    # Only pass seq_idx through mixer.forward when it names the parameter. A
+    # forward that merely collects **kwargs may splat them into the kernel
+    # while also passing seq_idx itself, which is a duplicate-keyword
+    # TypeError. The kernel wrappers inject it in that case.
+    forward_names_seq_idx = False
+    try:
+        forward_names_seq_idx = "seq_idx" in inspect.signature(forward_orig).parameters
+    except (TypeError, ValueError):
+        pass
 
     def _packed():
         if varlen_getter is not None:
@@ -908,7 +917,11 @@ def _wrap_mamba2_mixer_forward(module, varlen_getter = None):
     def mixer_forward(*args, **kwargs):
         varlen = _packed()
         if varlen is not None:
-            if kwargs.get("seq_idx") is None and _varlen_seq_idx_applies(varlen[1], args, kwargs):
+            if (
+                forward_names_seq_idx
+                and kwargs.get("seq_idx") is None
+                and _varlen_seq_idx_applies(varlen[1], args, kwargs)
+            ):
                 kwargs["seq_idx"] = varlen[1]
             return _call_as_packed_mamba2_prefill(forward_orig, args, kwargs)
         return forward_orig(*args, **kwargs)
