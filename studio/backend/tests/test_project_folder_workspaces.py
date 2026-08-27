@@ -199,9 +199,7 @@ def test_reopening_same_folder_reuses_the_project(tmp_path):
 def test_managed_create_collision_cannot_mutate_a_folder_project(tmp_path):
     folder = tmp_path / "project-collision"
     folder.mkdir()
-    original = studio_db.claim_chat_project_folder(
-        _folder_claim("project-collision", folder)
-    )
+    original = studio_db.claim_chat_project_folder(_folder_claim("project-collision", folder))
     assert original is not None
 
     with pytest.raises(HTTPException) as caught:
@@ -219,9 +217,7 @@ def test_managed_create_collision_cannot_mutate_a_folder_project(tmp_path):
     assert stored["managedRootPath"] is None
     assert not (folder / "sandbox").exists()
     attempted_root = Path(
-        studio_db._default_project_root(
-            _managed_project("project-collision", name = "Replacement")
-        )
+        studio_db._default_project_root(_managed_project("project-collision", name = "Replacement"))
     )
     assert not attempted_root.exists()
 
@@ -319,9 +315,7 @@ def test_managed_workspace_delete_never_follows_a_replacement_symlink(tmp_path):
     assert (victim / "keep.txt").read_text(encoding = "utf-8") == "keep"
 
 
-def test_managed_create_retries_when_prepared_identity_disappears(
-    tmp_path, monkeypatch
-):
+def test_managed_create_retries_when_prepared_identity_disappears(tmp_path, monkeypatch):
     project = _managed_project("project-create-retry")
     original_prepare = studio_db._prepare_project_workspace
     prepare_count = 0
@@ -332,9 +326,7 @@ def test_managed_create_retries_when_prepared_identity_disappears(
         prepare_count += 1
         if prepare_count == 1:
             (Path(prepared.root_path) / "sandbox").rmdir()
-            (
-                Path(prepared.root_path) / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE
-            ).unlink()
+            (Path(prepared.root_path) / studio_db._PROJECT_WORKSPACE_IDENTITY_FILE).unlink()
             Path(prepared.root_path).rmdir()
         return prepared
 
@@ -405,8 +397,7 @@ def test_short_marker_writes_are_completed_before_publication(tmp_path, monkeypa
 
     assert len(prepared.marker_token) == 32
     assert (
-        studio_db._read_project_workspace_marker(Path(prepared.root_path))
-        == prepared.marker_token
+        studio_db._read_project_workspace_marker(Path(prepared.root_path)) == prepared.marker_token
     )
 
 
@@ -474,9 +465,7 @@ def test_change_and_disconnect_preserve_managed_workspace(tmp_path):
 def test_stale_disconnect_does_not_create_an_unowned_managed_workspace(tmp_path):
     folder = tmp_path / "repository"
     folder.mkdir()
-    project = studio_db.claim_chat_project_folder(
-        _folder_claim("project-stale-disconnect", folder)
-    )
+    project = studio_db.claim_chat_project_folder(_folder_claim("project-stale-disconnect", folder))
     assert project is not None
     managed_root = Path(studio_db._default_project_root(project))
     assert not managed_root.exists()
@@ -498,9 +487,7 @@ def test_disconnect_cas_failure_cleans_the_workspace_prepared_by_that_attempt(
     second = tmp_path / "second"
     first.mkdir()
     second.mkdir()
-    project = studio_db.claim_chat_project_folder(
-        _folder_claim("project-disconnect-race", first)
-    )
+    project = studio_db.claim_chat_project_folder(_folder_claim("project-disconnect-race", first))
     assert project is not None
     managed_root = Path(studio_db._default_project_root(project))
     original_prepare = studio_db._prepare_project_workspace
@@ -552,9 +539,7 @@ def test_folder_workspace_cannot_overlap_its_preserved_managed_root(tmp_path):
 def test_tools_use_folder_cwd_and_fail_closed_when_it_disappears(tmp_path):
     folder = tmp_path / "repository"
     folder.mkdir()
-    project = studio_db.claim_chat_project_folder(
-        _folder_claim("project-tools", folder)
-    )
+    project = studio_db.claim_chat_project_folder(_folder_claim("project-tools", folder))
     assert project is not None
     session_id = tools.project_session_id(project["id"])
 
@@ -614,9 +599,7 @@ def test_public_sandbox_authorization_and_path_use_one_project_snapshot(tmp_path
     assert reads == 1
 
 
-def test_public_sandbox_absence_cannot_be_redirected_by_a_new_folder_project(
-    tmp_path, monkeypatch
-):
+def test_public_sandbox_absence_cannot_be_redirected_by_a_new_folder_project(tmp_path, monkeypatch):
     external = tmp_path / "external"
     external.mkdir()
     project_reads = 0
@@ -641,9 +624,7 @@ def test_public_sandbox_absence_cannot_be_redirected_by_a_new_folder_project(
     assert project_reads == 1
 
 
-def test_public_sandbox_thread_snapshot_cannot_become_a_folder_project(
-    tmp_path, monkeypatch
-):
+def test_public_sandbox_thread_snapshot_cannot_become_a_folder_project(tmp_path, monkeypatch):
     external = tmp_path / "external"
     external.mkdir()
     thread_reads = 0

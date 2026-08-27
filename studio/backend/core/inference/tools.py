@@ -7716,10 +7716,7 @@ def _orphaned_project_workdir(project_id: str) -> "str | None":
     except Exception:
         return None
     for entry in names:
-        if not (
-            entry.endswith(f"-{suffix}-{digest}")
-            or entry.endswith(f"-{suffix}")
-        ):
+        if not (entry.endswith(f"-{suffix}-{digest}") or entry.endswith(f"-{suffix}")):
             continue
         candidate = os.path.join(root, entry, "sandbox")
         if os.path.isdir(candidate) and not os.path.islink(candidate):
@@ -7840,7 +7837,6 @@ def _tracks_workspace_artifacts(session_id: "str | None") -> bool:
     project_id = session_id[len(_PROJECT_SESSION_PREFIX) :]
     try:
         from storage.studio_db import get_chat_project
-
         project = get_chat_project(project_id)
     except Exception:
         return False
@@ -8522,11 +8518,7 @@ def _owned_by_session(workdir: str, session_id: str) -> bool:
     return _root_is_ours() and os.path.basename(workdir) == _sandbox_name(session_id)
 
 
-def _get_workdir(
-    session_id: str | None = None,
-    *,
-    resolve_project: bool = True,
-) -> str:
+def _get_workdir(session_id: str | None = None, *, resolve_project: bool = True) -> str:
     """Return a per-session sandbox dir at mode 0o700."""
     global _workdirs
     key = session_id or _ANON_KEY
@@ -8621,19 +8613,11 @@ def _get_workdir(
     return _workdirs[key]
 
 
-def get_sandbox_workdir(
-    session_id: str | None = None,
-    *,
-    resolve_project: bool = True,
-) -> str:
+def get_sandbox_workdir(session_id: str | None = None, *, resolve_project: bool = True) -> str:
     return _get_workdir(session_id, resolve_project = resolve_project)
 
 
-def resolve_sandbox_workdir(
-    session_id: str | None = None,
-    *,
-    resolve_project: bool = True,
-) -> str:
+def resolve_sandbox_workdir(session_id: str | None = None, *, resolve_project: bool = True) -> str:
     """Where a session's sandbox would be, without creating it.
 
     For read-only callers: serving a file must not materialise a directory for

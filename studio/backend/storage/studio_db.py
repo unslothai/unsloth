@@ -179,9 +179,7 @@ def _workspace_identity(root: Path) -> tuple[str, str]:
 
 
 def _workspace_identity_matches(
-    root: Path,
-    expected_device_id: str | None,
-    expected_file_id: str | None,
+    root: Path, expected_device_id: str | None, expected_file_id: str | None
 ) -> bool:
     if expected_device_id is None or expected_file_id is None:
         return False
@@ -256,9 +254,7 @@ def _ensure_project_workspace_marker(root: Path) -> str:
 
 
 def _prepared_workspace_identity_matches(
-    prepared: _PreparedProjectWorkspace,
-    *,
-    root: Path | None = None,
+    prepared: _PreparedProjectWorkspace, *, root: Path | None = None
 ) -> bool:
     candidate = root or Path(prepared.root_path)
     if not _workspace_identity_matches(
@@ -274,9 +270,7 @@ def _prepared_workspace_identity_matches(
 
 
 def _ensure_folder_workspace(
-    root_path: str,
-    expected_device_id: str | None,
-    expected_file_id: str | None,
+    root_path: str, expected_device_id: str | None, expected_file_id: str | None
 ) -> str:
     root = Path(root_path).expanduser()
     try:
@@ -299,9 +293,7 @@ def _ensure_folder_workspace(
 
 
 def _folder_workspace_health(
-    root_path: str | None,
-    expected_device_id: str | None,
-    expected_file_id: str | None,
+    root_path: str | None, expected_device_id: str | None, expected_file_id: str | None
 ) -> tuple[bool, str | None]:
     if not root_path:
         return False, "The selected project folder is missing."
@@ -400,9 +392,7 @@ def _restore_quarantined_workspace(quarantine: Path, root: Path) -> None:
         )
 
 
-def _remove_empty_project_workspace_if_unclaimed(
-    prepared: _PreparedProjectWorkspace,
-) -> None:
+def _remove_empty_project_workspace_if_unclaimed(prepared: _PreparedProjectWorkspace) -> None:
     """Remove only the empty managed directory identity this call created.
 
     This compensates for a failed create or compare-and-swap after filesystem
@@ -3072,9 +3062,7 @@ def _reject_folder_workspace_overlap(
         raise ProjectWorkspaceOverlapError(
             "The selected folder overlaps Unsloth's managed workspace root"
         )
-    rows = conn.execute(
-        "SELECT id, root_path, folder_path FROM chat_projects"
-    ).fetchall()
+    rows = conn.execute("SELECT id, root_path, folder_path FROM chat_projects").fetchall()
     for row in rows:
         if exclude_project_id is not None and row["id"] == exclude_project_id:
             if _workspace_paths_overlap(row["root_path"], folder_path):
@@ -3124,9 +3112,7 @@ def claim_chat_project_folder(
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        current = conn.execute(
-            "SELECT * FROM chat_projects WHERE id = ?", (project_id,)
-        ).fetchone()
+        current = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (project_id,)).fetchone()
         if require_existing and current is None:
             conn.rollback()
             return None
@@ -3219,9 +3205,7 @@ def claim_chat_project_folder(
                 """,
                 (folder_path, device_id, file_id, int(project["updatedAt"]), project_id),
             )
-        row = conn.execute(
-            "SELECT * FROM chat_projects WHERE id = ?", (project_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (project_id,)).fetchone()
         conn.commit()
         return _chat_project_from_row(row) if row is not None else None
     except Exception:
@@ -3243,18 +3227,14 @@ def disconnect_chat_project_folder(
         return None
     snapshot_revision = int(snapshot.get("workspaceRevision") or 0)
     if expected_workspace_revision is None:
-        raise ChatProjectWorkspaceRevisionConflictError(
-            "Project workspace revision is required."
-        )
+        raise ChatProjectWorkspaceRevisionConflictError("Project workspace revision is required.")
     if snapshot_revision != max(0, int(expected_workspace_revision)):
         raise ChatProjectWorkspaceRevisionConflictError(
             "Project workspace changed before this update completed."
         )
     if _project_workspace_kind(snapshot) == "managed":
         return snapshot
-    requested_root = str(
-        snapshot.get("managedRootPath") or _default_project_root(snapshot)
-    )
+    requested_root = str(snapshot.get("managedRootPath") or _default_project_root(snapshot))
     for _attempt in range(3):
         prepared = _prepare_project_workspace(requested_root)
         committed = False
@@ -3300,9 +3280,7 @@ def disconnect_chat_project_folder(
                 """,
                 (prepared.root_path, int(updated_at), project_id),
             )
-            row = conn.execute(
-                "SELECT * FROM chat_projects WHERE id = ?", (project_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (project_id,)).fetchone()
             conn.commit()
             committed = True
             return _chat_project_from_row(row) if row is not None else None

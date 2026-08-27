@@ -1179,8 +1179,7 @@ def _claim_project_folder(
 
 @router.post("/projects/open-folder", response_model = ChatProject)
 def open_project_folder(
-    payload: OpenProjectFolderRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: OpenProjectFolderRequest, current_subject: str = Depends(get_current_subject)
 ):
     grant = _resolve_project_folder_lease(payload.nativePathLease)
     now = int(time.time() * 1000)
@@ -1385,9 +1384,7 @@ async def delete_project(
     managed_root_path = project.get("managedRootPath")
     if not managed_root_path and project.get("workspaceKind", "managed") == "managed":
         managed_root_path = project.get("rootPath")
-    managed_sandbox_path = (
-        str(Path(managed_root_path) / "sandbox") if managed_root_path else None
-    )
+    managed_sandbox_path = str(Path(managed_root_path) / "sandbox") if managed_root_path else None
     if managed_sandbox_path:
         from core.inference.tools import (
             finish_workspace_delete_when_idle,

@@ -4494,7 +4494,7 @@ def test_a_kept_workspace_is_recorded_even_when_nothing_was_deleted():
     from routes import chat_history
 
     route = inspect.getsource(chat_history.delete_project)
-    assert 'if managed_sandbox_path:' in route
+    assert "if managed_sandbox_path:" in route
     assert 'managed_root_path = project.get("managedRootPath")' in route
     assert "if not delete_files:" in route
     body = route[route.index("if not delete_files:") :]
