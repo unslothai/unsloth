@@ -5805,9 +5805,8 @@ def _gguf_load_response(
         inference = load_inference_config(
             inference_identifier or llama_backend.model_identifier or model
         ),
-        # Advisory only, and None on the overwhelming majority of loads. Recorded by
-        # load_model when the weights outgrow fast memory, so the client can say why
-        # generation will be slow instead of leaving the user to guess.
+        # Advisory, and None on nearly every load. Recorded by load_model when the
+        # weights outgrow fast memory, so the client can say why generation is slow.
         # getattr: older/custom backend doubles predate this additive field.
         memory_warning = getattr(llama_backend, "last_load_warning", None),
         **_llama_runtime_fields(llama_backend),
@@ -12296,11 +12295,10 @@ async def _load_model_impl(
             if _non_chat:
                 logger.error("Refusing non-chat GGUF before the GPU handoff: %s", _non_chat)
                 raise HTTPException(status_code = 400, detail = _non_chat)
-            # Advisory, not a gate. An oversized GGUF mmaps and pages from disk rather
-            # than failing, which on fast storage is a deliberate way to run a quant
-            # bigger than the machine's fast memory, so the load goes ahead and the
-            # notice rides back on the response. Asked here as well as at launch because
-            # load_model's copy runs too deep to reach the response on every path.
+            # Advisory, not a gate: an oversized GGUF mmaps and pages from disk rather
+            # than failing, which off fast storage is a deliberate way to run a quant
+            # bigger than fast memory, so the load goes ahead. Asked here as well as at
+            # launch because load_model's copy runs too deep to reach the response.
             _host_offload_warning = await asyncio.to_thread(
                 llama_backend.host_offload_warning_for_intent, gguf_intent
             )

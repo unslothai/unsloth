@@ -5001,9 +5001,9 @@ class LlamaCppBackend:
         """
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
-        # Advisory memory notice from the load in flight, for the route to hand back on
-        # LoadResponse. Reset by _begin_load_warnings so one load's notice can never be
-        # reported against the next.
+        # Advisory memory notice from the load in flight, handed back on LoadResponse.
+        # Reset by _begin_load_warnings so one load's notice is never reported against
+        # the next.
         self._last_load_warning: Optional[str] = None
         self._model_identifier: Optional[str] = None
         self._gguf_path: Optional[str] = None
@@ -8978,9 +8978,8 @@ class LlamaCppBackend:
         there the whole model is host-resident and takes no VRAM credit.
 
         UNSLOTH_ALLOW_HOST_OFFLOAD=1 abstains outright. DEPRECATED: it was the opt-out
-        back when this refused a load, and now that nothing is refused its only
-        remaining effect is to silence the warning. Still honoured so existing scripts
-        and docs keep working.
+        from the old refusal, so all it does now is silence the warning. Still honoured
+        so existing scripts and docs keep working.
 
         ``avail_mib`` overrides the host figure for a caller that runs before the resident
         owners are released; the launch reads what is available now. ``shared_gpu_ids``
@@ -9044,8 +9043,8 @@ class LlamaCppBackend:
         auto-reduce, so counting them too would warn about loads that are fine.
         None avail (unknown RAM) never warns.
 
-        Advisory, never a refusal. The load goes ahead and llama.cpp reports whatever
-        actually happens, rather than Studio predicting a failure and pre-empting it.
+        Advisory, never a refusal: the load goes ahead and llama.cpp reports what
+        actually happens rather than Studio pre-empting a failure it predicted.
         """
         if avail_mib is None:
             return None
@@ -9073,10 +9072,10 @@ class LlamaCppBackend:
         only an unambiguous shortfall warns. None avail (unknown RAM), and anything
         VRAM-resident, never warn.
 
-        Advisory, never a refusal. The spill is mmap'd, so the weights page in from
-        disk rather than failing to load: on fast storage that is a deliberate way to
-        run a quant larger than the machine's fast memory, and this check has no idea
-        how fast the backing store is. It reports the cost; the user decides.
+        Advisory, never a refusal. The spill is mmap'd, so the weights page in from disk
+        rather than failing: off fast storage that is a deliberate way to run a quant
+        larger than the machine's fast memory, and this check cannot tell how fast the
+        backing store is. It reports the cost; the user decides.
         """
         if offload_bytes <= 0 or avail_mib is None:
             return None
@@ -9102,21 +9101,18 @@ class LlamaCppBackend:
         return self._last_load_warning
 
     def _begin_load_warnings(self) -> None:
-        """Drop the previous load's advisory notice.
-
-        Called at the point a load commits to a launch. Without it a warned load
-        followed by a comfortable one would report the first load's notice against the
-        second, which reads as a bug in whichever model happened to be second.
-        """
+        """Drop the previous load's advisory notice, at the point a load commits to a
+        launch. Without it a warned load followed by a comfortable one would report the
+        first load's notice against the second."""
         self._last_load_warning = None
 
     def _record_load_warning(self, message: Optional[str]) -> None:
         """Log an advisory memory notice and keep it for the route to hand back.
 
-        Deliberately never raises. These notices replace what used to be a refusal:
-        an oversized GGUF mmaps and pages from disk instead of failing, so the load is
-        the user's call to make. First notice of a load wins, since the earliest one
-        priced the whole pool while later ones see a narrowed selection.
+        Never raises: these replace what used to be a refusal, and an oversized GGUF
+        pages from disk instead of failing, so the load is the user's call. First notice
+        wins, since the earliest priced the whole pool and later ones see a narrowed
+        selection.
         """
         if not message:
             return
@@ -11426,11 +11422,10 @@ class LlamaCppBackend:
     def host_offload_warning_for_intent(self, intent) -> Optional[str]:
         """The host-RAM advisory for a resolved load intent, or None.
 
-        Advisory, never a refusal: the route logs this and loads anyway. Asking here
-        rather than only at launch means the notice can be attached to the load
-        response, since ``_launch_host_shortfall_message`` runs deep inside
-        ``load_model`` after the ROUTE has evicted a resident Images/Video pipeline via
-        ``acquire_for(CHAT)`` and cancelled the running generations.
+        Advisory, never a refusal: the route logs this and loads anyway. Asked here as
+        well as at launch so the notice can ride back on the load response, since
+        ``_launch_host_shortfall_message`` runs deep inside ``load_model``, after the
+        ROUTE has evicted a resident Images/Video pipeline via ``acquire_for(CHAT)``.
 
         Both capacities are read as PHYSICAL TOTALS, not as what is free right now. The
         resident llama-server, Unsloth model and Images/Video pipeline hold VRAM and, through
@@ -21583,8 +21578,8 @@ class LlamaCppBackend:
                         # selection, discrete on this arm by construction, so it never
                         # fired. The mirror shape (crash on the dGPU, retry on the
                         # unified-memory sibling) makes the respawn the first load into
-                        # system RAM, so price it here too and say so. Advisory only:
-                        # the respawn goes ahead either way.
+                        # system RAM, so price it here too. Advisory: the respawn goes
+                        # ahead either way.
                         if model_size is not None and _retry_wants_unified:
                             self._record_load_warning(
                                 self._apu_ram_shortfall_message(

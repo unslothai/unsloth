@@ -1248,8 +1248,8 @@ class TestArchCrashRetryEnv:
         )
 
         assert launches, "the first launch never ran, so the retry is not what was tested"
-        # The repricing is the point, not a block: the respawn goes ahead on the
-        # narrowed pool and carries the advisory the narrowed pool produced.
+        # The repricing is the point, not a block: the respawn goes ahead and carries
+        # the advisory the narrowed pool produced.
         assert "does not fit in GPU memory" in (
             capture["backend"].last_load_warning or ""
         ), "the retry did not reprice the spill against the narrowed pool"
@@ -1740,7 +1740,7 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
 
     def test_a_surviving_apu_still_warns(self, tmp_path, monkeypatch, probe_env):
         """The waiver is scoped to survivors that are all discrete. A build
-        covering both cards leaves the APU in play, so the refusal stands."""
+        covering both cards leaves the APU in play, so the warning stands."""
         torch = self._apu_and_dgpu(monkeypatch)
         calls: list = []
         capture: dict = {}
@@ -1759,8 +1759,8 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
         assert "only about 8 GB" in (capture["backend"].last_load_warning or "")
 
     def test_the_forced_cpu_host_still_warns(self, tmp_path, monkeypatch, probe_env):
-        """Every card gated out means the weights load into system RAM after all,
-        so the guard the gate has no survivor to answer with still prices it."""
+        """Every card gated out means the weights load into system RAM after all, so
+        the guard the gate has no survivor to answer with still prices it."""
         torch = self._apu_and_dgpu(monkeypatch)
         calls: list = []
         capture: dict = {}
@@ -2050,13 +2050,13 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
         # The dGPU is pinned first, so the pre-launch guard never asks (it is
         # gated on the selection wanting unified memory) and the crash happens.
         assert launches, "the first spawn never ran"
-        # The preflight still runs against the APU the retry lands on, and still prices
-        # the projector with the weights. It no longer stops the respawn.
+        # The preflight still runs against the APU the retry lands on and still prices
+        # the projector with the weights; it just no longer stops the respawn.
         assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
         assert calls[0][0] == 20 * 1024**3
         assert "only about 8 GB" in (capture["backend"].last_load_warning or "")
-        # capture["error"] is now whatever the simulated HIP crash left behind, not the
-        # RAM guard, so asserting the guard's text on it would only re-test the mock.
+        # capture["error"] is now the simulated HIP crash, not the RAM guard, so
+        # asserting the guard's text there would only re-test the mock.
 
     def test_a_model_that_fits_still_retries_onto_the_apu(self, tmp_path, monkeypatch, probe_env):
         """The guard warns on a shortfall, it does not block the fallback. With

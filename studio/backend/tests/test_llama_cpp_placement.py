@@ -142,8 +142,7 @@ def _launch(backend, gguf, **load_kwargs):
 def _launch_warns(backend, gguf, **load_kwargs):
     """A load whose weights outgrow fast memory: it LAUNCHES, and says so.
 
-    These cases used to raise. They do not any more: the spill is mmap'd, so the
-    weights page in from disk instead of failing, and refusing cost users a load that
+    These cases used to raise. The spill is mmap'd, so refusing cost users a load
     llama.cpp itself supports. The advisory is the whole remaining contract, so assert
     it rather than only that the launch survived.
     """
@@ -1622,8 +1621,8 @@ def _offload_backend(tmp_path, *, gguf_gb, free_mib, avail_mib, monkeypatch, **k
 
 def test_weights_larger_than_vram_plus_ram_still_load_with_a_warning(tmp_path, monkeypatch):
     """The field case: a 13.3 GB GGUF on a 6 GB laptop card holding 4877 MiB free needs
-    about 8.5 GB of host RAM, which a 10 GB host cannot hold. Unrefused, the mmap'd
-    remainder thrashes until the OS kills Unsloth and the desktop session."""
+    about 8.5 GB of host RAM, which a 10 GB host cannot hold. It loads anyway, paging
+    the remainder from disk, and says so."""
     backend, gguf = _offload_backend(
         tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
     )
@@ -1944,7 +1943,7 @@ def test_vulkan_igpu_heap_does_not_bypass_a_cgroup_limit(tmp_path, monkeypatch):
     )
 
     # The cgroup ceiling still governs what the message prices, it just no longer
-    # stops the load: the launch goes ahead carrying the APU advisory.
+    # stops the load.
     _launch(backend, gguf)
     assert "unified-memory APU" in (backend.last_load_warning or "")
 
@@ -2030,8 +2029,7 @@ def test_the_env_escape_is_now_a_no_op_that_only_silences_the_warning(tmp_path, 
     """UNSLOTH_ALLOW_HOST_OFFLOAD was the opt-out from a refusal that no longer exists.
 
     Both arms must load. Unset, the load carries the advisory; set, it loads just the
-    same and says nothing, which is the coherent remainder of what someone setting it
-    was asking for. Kept honoured so existing scripts and docs keep working."""
+    same and says nothing. Kept honoured so existing scripts and docs keep working."""
     warned, gguf = _offload_backend(
         tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
     )
@@ -2052,11 +2050,10 @@ def test_the_env_escape_is_now_a_no_op_that_only_silences_the_warning(tmp_path, 
 def test_a_wildly_oversized_model_still_loads(tmp_path, monkeypatch):
     """The regression this change exists for.
 
-    A 67.6 GB quant on a 14.5 GiB card with 51 GB of RAM -- the Colab T4 high-RAM
-    shape, measured -- used to come back as HTTP 400 from /api/inference/load, on a
-    model llama.cpp itself will run straight off the mmap. No shortfall may ever block
-    a load again, however large the gap: the launch happens, and the cost is reported
-    rather than enforced."""
+    A 67.6 GB quant on a 14.5 GiB card with 51 GB of RAM (the measured Colab T4
+    high-RAM shape) used to come back as HTTP 400 from /api/inference/load, on a model
+    llama.cpp itself will run straight off the mmap. No shortfall may block a load
+    again, however large the gap: the cost is reported, not enforced."""
     backend, gguf = _offload_backend(
         tmp_path,
         gguf_gb = 67.6,

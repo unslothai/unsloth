@@ -1,15 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A GGUF that misses VRAM spills into host RAM under `--fit on`, unpriced. When
-that spill is larger than available RAM the weights page in from disk as the model
-runs, so generation is slow.
+"""A GGUF that misses VRAM spills into host RAM under `--fit on`, unpriced. When that
+spill is larger than available RAM the weights page in from disk as the model runs, so
+generation is slow.
 
-This used to REFUSE the load. It no longer does. The spill is mmap'd, so an oversized
-model pages rather than failing, and running a quant larger than the machine's fast
-memory off an SSD is a deliberate, supported thing to do that llama.cpp allows and this
-check cannot tell apart from a mistake -- it has no idea how fast the backing store is.
-The arithmetic is unchanged; only its consequence is. It warns, and the load proceeds."""
+This used to REFUSE the load. It no longer does: the spill is mmap'd, so an oversized
+model pages rather than failing, and running a quant larger than fast memory off an SSD
+is deliberate and supported, which this check cannot tell apart from a mistake. Same
+arithmetic, different consequence -- it warns, and the load proceeds."""
 
 from __future__ import annotations
 
@@ -58,8 +57,8 @@ class TestHostOffloadShortfall:
 
     def test_the_warning_says_the_load_goes_ahead(self):
         """Nothing here blocks a load any more, so the message must not read as a
-        refusal or send the user hunting for an env var to get past it. It states the
-        cost -- paging from disk, slow generation -- and says the load continues."""
+        refusal or send the user hunting for an env var. It states the cost and says
+        the load continues."""
         msg = _shortfall(20 * _GB, 21 * _MIB_PER_GB)
         assert msg is not None
         assert "Loading anyway" in msg
