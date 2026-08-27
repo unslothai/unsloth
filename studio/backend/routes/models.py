@@ -20,6 +20,11 @@ from typing import List, NamedTuple, Optional
 from loggers import get_logger
 
 # Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
+from core.inference.memory_contract import (
+    EMPTY_BREAKDOWN,
+    build_memory_estimate,
+    project_kv_cache_estimate,
+)
 from core.inference.model_ids import display_model_name
 from hub.services.models import catalog_classification as _catalog_classification
 from utils import gguf_archs as _gguf_archs
@@ -4192,6 +4197,12 @@ async def get_kv_cache_estimate(
             planner_total = None
             planner_floor = None
             planner_unsized = False
+            # Bound BEFORE the try, not inside it. Every statement below can
+            # raise into the surrounding `except`, and a name defined only on the
+            # success path then reads as a NameError from the projection after
+            # it -- which this same route has already been bitten by once, in a
+            # guard that silently never ran because of it.
+            _b = None
             try:
                 from routes.inference import (
                     _ESTIMATE_NOT_ON_DISK,
@@ -4293,34 +4304,30 @@ async def get_kv_cache_estimate(
             except Exception as e:
                 logger.debug(f"planner breakdown failed for '{repo_id}' {quant}: {e}")
 
-            return {
-                "kv_bytes": int(kv) if kv else None,
-                "weights_bytes": weights_bytes or None,
-                "native_context": be._context_length,
-                "spec_bytes": int(spec) if spec else None,
-                "n_ctx": int(n_ctx),
-                "projector_bytes": projector or None,
-                # The part of kv_bytes that llama.cpp keeps in host heap rather than
-                # on the card, so a VRAM bar can subtract it. Included in kv_bytes,
-                # not beside it: the field shipped meaning the whole cache and an
-                # existing caller still reads it that way.
-                "kv_checkpoint_bytes": kv_checkpoint or None,
-                # The part of spec_bytes a shorter context cannot reduce.
-                "spec_fixed_bytes": spec_fixed if spec else None,
-                # The load planner's figures. gpu_bytes is the complete footprint
-                # that lands on the card and is what a fit verdict should be drawn
-                # against; the rest are itemized for the caller that wants them.
-                "gpu_bytes": planner_gpu,
-                "compute_bytes": planner_compute,
-                "total_bytes": planner_total,
+            # Shaped through the canonical MemoryEstimate rather than assembled
+            # here, so this route and POST /inference/estimate-memory cannot drift
+            # apart in vocabulary the way they had. The projection is what keeps
+            # this route's own meaning of `weights_bytes` -- the quant file ALONE
+            # -- while the panel's projection keeps its aggregate meaning. The two
+            # sit side by side in core/inference/memory_contract.py, which is the
+            # only place either mapping is written down.
+            #
+            # The terms this route prices ITSELF (the target cache, the
+            # speculative split, the projector, the checkpoint share) are passed
+            # in rather than read off the estimate: the planner has its own
+            # figures for some of them and they are not interchangeable.
+            _estimate = build_memory_estimate(
+                _b if _b is not None else EMPTY_BREAKDOWN,
+                quant_file_bytes = weights_bytes or 0,
+                native_context = be._context_length,
                 # What remains on the card at the shortest context, so a caller
                 # can tell a context-driven overage from one no context fixes.
-                "gpu_floor_bytes": planner_floor,
+                gpu_floor_bytes = planner_floor,
                 # False only when the loader is free to shrink the context. A
                 # caller that softens its verdict for an auto-fitted row has to
                 # stop softening here, or an inherited window over budget reads
                 # as a fit for a launch that will OOM.
-                "context_is_pinned": _context_is_pinned,
+                context_is_pinned = _context_is_pinned,
                 # An inherited LLAMA_ARG_DEVICE confines the child to the cards it
                 # names, and an automatic launch preserves it. The caller's budget
                 # is an aggregate over the whole visible inventory, which then
@@ -4329,11 +4336,30 @@ async def get_kv_cache_estimate(
                 # caller cannot see the environment, so it is reported here.
                 # Any pin at all is enough to say so: the route does not know the
                 # host's inventory, and abstaining is the safe direction.
-                "inherited_device_pin": _inherited_device_pin,
+                inherited_device_pin = _inherited_device_pin,
                 # The planner saw a drafter whose cache it could not size, so its
                 # own total is a floor.
-                "spec_unpriced": spec_unpriced or planner_unsized,
-            }
+                spec_unpriced = spec_unpriced or planner_unsized,
+            )
+            # The planner's own figures, kept exactly as this route computed them
+            # above: planner_gpu preserves a real zero, the other two do not.
+            _estimate.gpu_bytes = planner_gpu
+            _estimate.compute_bytes = planner_compute or 0
+            _estimate.total_bytes = planner_total or 0
+            _estimate.n_ctx = int(n_ctx)
+            return project_kv_cache_estimate(
+                _estimate,
+                kv_bytes = int(kv) if kv else None,
+                spec_bytes = int(spec) if spec else None,
+                # The part of spec_bytes a shorter context cannot reduce.
+                spec_fixed_bytes = spec_fixed if spec else None,
+                projector_bytes = projector or None,
+                # The part of kv_bytes that llama.cpp keeps in host heap rather
+                # than on the card, so a VRAM bar can subtract it. Included in
+                # kv_bytes, not beside it: the field shipped meaning the whole
+                # cache and an existing caller still reads it that way.
+                kv_checkpoint_bytes = kv_checkpoint or None,
+            )
         except Exception as e:
             logger.debug(f"kv-cache-estimate failed for '{repo_id}' {quant}: {e}")
             return null
