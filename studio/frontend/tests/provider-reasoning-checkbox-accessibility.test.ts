@@ -9,10 +9,9 @@ const source = readFileSync(
   new URL("../src/features/chat/chat-providers-dialog.tsx", import.meta.url),
   "utf8",
 );
+const reasoningModelCheckbox =
+  /id={`provider-reasoning-model-\${index}`}\s+aria-label={`Mark \${model} as a reasoning model`}/;
 
 test("each Ollama reasoning model checkbox has an accessible name", () => {
-  assert.match(
-    source,
-    /id={`provider-reasoning-model-\${index}`}\s+aria-label={`Mark \${model} as a reasoning model`}/,
-  );
+  assert.match(source, reasoningModelCheckbox);
 });

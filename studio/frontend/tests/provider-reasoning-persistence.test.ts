@@ -28,7 +28,10 @@ const storedProvider = {
 };
 
 test("a legacy Ollama reasoning flag pins every enabled model", () => {
-  store.set("unsloth_chat_external_providers", JSON.stringify([storedProvider]));
+  store.set(
+    "unsloth_chat_external_providers",
+    JSON.stringify([storedProvider]),
+  );
   const [loaded] = loadExternalProviders();
   assert.deepEqual(loaded.reasoningModelIds, storedProvider.models);
 });
@@ -36,7 +39,9 @@ test("a legacy Ollama reasoning flag pins every enabled model", () => {
 test("a malformed Ollama pin list fails closed", () => {
   store.set(
     "unsloth_chat_external_providers",
-    JSON.stringify([{ ...storedProvider, reasoningModelIds: "reasoning-model" }]),
+    JSON.stringify([
+      { ...storedProvider, reasoningModelIds: "reasoning-model" },
+    ]),
   );
   const [loaded] = loadExternalProviders();
   assert.deepEqual(loaded.reasoningModelIds, []);
