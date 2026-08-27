@@ -5308,12 +5308,17 @@ export function createOpenAIStreamAdapter(
       // backend still runs such a call, and its tool_start carries no
       // extra_content, so the card it paints would persist without the thought
       // signature the announcement brought and the replay would be rejected.
-      const announcedExtraByName = new Map<string, unknown>();
+      // Queued, not replaced: the same tool can be announced at two indices,
+      // and the backend runs both, so the second card would otherwise be
+      // painted with no signature while the first wore the wrong one.
+      const announcedExtraByName = new Map<string, unknown[]>();
       const endProviderTurn = () => {
         for (const [pendingIdx, pendingName] of pendingNameByIndex) {
           const extra = pendingExtraByIndex.get(pendingIdx);
           if (pendingName && extra !== undefined) {
-            announcedExtraByName.set(pendingName, extra);
+            const queued = announcedExtraByName.get(pendingName) ?? [];
+            queued.push(extra);
+            announcedExtraByName.set(pendingName, queued);
           }
         }
         pendingNameByIndex.clear();
@@ -6386,6 +6391,14 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
+                // A tool event means the provider turn that asked for it has
+                // ended. finish_reason alone is not enough: an OpenAI-compatible
+                // upstream can end a turn with [DONE] or EOF and never send one,
+                // and the loop starts the next request anyway with the delta
+                // indices restarted, so a name waiting for arguments would be
+                // prepended to whatever opens there. Before the queue below is
+                // read, so this turn's announcements reach it.
+                endProviderTurn();
                 // Deep Research is an ordinary tool to every loop that runs it, so the handoff
                 // is read off the events they all publish rather than a bespoke frame. An
                 // ungated pair is not rendered: the research card is the reply, a tool pill
@@ -6572,10 +6585,15 @@ export function createOpenAIStreamAdapter(
                   } else {
                     // Claimed once: the announcement it came from named this
                     // call and no other.
-                    const announcedExtra = announcedExtraByName.get(
-                      toolEvent.tool_name as string,
-                    );
-                    announcedExtraByName.delete(toolEvent.tool_name as string);
+                    const queued =
+                      announcedExtraByName.get(toolEvent.tool_name as string) ??
+                      [];
+                    const announcedExtra = queued.shift();
+                    if (queued.length === 0) {
+                      announcedExtraByName.delete(
+                        toolEvent.tool_name as string,
+                      );
+                    }
                     toolCallParts.push({
                       type: "tool-call" as const,
                       toolCallId: id,
@@ -7084,11 +7102,13 @@ export function createOpenAIStreamAdapter(
                   const opensNextCall =
                     closedSlot && (bringsArgs || idNamesAnotherCall);
                   // Trailing whitespace is legal JSON belonging to the object
-                  // just closed, so a delta carrying it is still writing to the
-                  // closed call and its name is that call's, resent. Only a
-                  // delta with no argument text at all announces the next one.
-                  const defersToNextCall =
-                    closedSlot && !opensNextCall && !deltaArgs;
+                  // just closed, so the whitespace goes on the closed card. The
+                  // name on such a delta is still held rather than merged into
+                  // that card: it is either that call's name resent, which the
+                  // opening delta discards when it disagrees, or the next
+                  // call's announced early, and merging it gave the closed card
+                  // "alphabeta" and the new one no name at all.
+                  const defersToNextCall = closedSlot && !opensNextCall;
                   const suppressName =
                     defersToNextCall && !!call.function?.name;
                   // Only once a name has announced the next call: metadata that

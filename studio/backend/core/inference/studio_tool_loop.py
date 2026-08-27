@@ -736,11 +736,13 @@ class _Turn:
             # call it belongs to, rather than renaming the finished one.
             extra = raw_call.get("extra_content")
             # Trailing whitespace is legal JSON that belongs to the object just
-            # closed, so a delta carrying it is still writing to the closed call
-            # and its name is that call's, resent. Only a delta with no argument
-            # text at all is announcing the next one.
-            brings_any_args = isinstance(new_arguments, str) and bool(new_arguments)
-            defers_to_next_call = slot_is_closed and not opens_next_call and not brings_any_args
+            # closed, so the whitespace goes on the closed call. The name on such
+            # a delta is still held rather than merged into that call: it is
+            # either that call's name resent, which _take_parked discards when
+            # the opening delta disagrees, or the next call's announced early,
+            # and merging it gave the closed call "alphabeta" and the new call
+            # no name at all, so neither ran.
+            defers_to_next_call = slot_is_closed and not opens_next_call
             suppress_name = False
             suppress_extra = False
             if defers_to_next_call:

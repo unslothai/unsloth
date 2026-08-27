@@ -859,3 +859,19 @@ test("an id stamped after the object closed claims that call", () => {
     ["beta", '{"b":2}'],
   ]);
 });
+
+test("a new name arriving with whitespace is still held", () => {
+  // The whitespace belongs to the object that just closed, but the name on that
+  // delta may be the next call announced early. Merging it left the closed card
+  // named "alphabeta" and the new one unnamed.
+  const parts = run([
+    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+    [{ index: 0, function: { name: "beta", arguments: " " } }],
+    [{ index: 0, function: { arguments: '{"b":2}' } }],
+  ]);
+
+  assert.deepEqual(shape(parts), [
+    ["alpha", '{"a":1} '],
+    ["beta", '{"b":2}'],
+  ]);
+});

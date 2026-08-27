@@ -578,3 +578,23 @@ def test_an_id_stamped_after_the_object_closed_claims_that_call():
     opened.merge_structured([_delta(0, "beta", "", call_id = "call_b")])
     opened.merge_structured([_delta(0, None, '{"b":2}', call_id = "call_b")])
     assert _shape(opened) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
+
+
+def test_a_new_name_arriving_with_whitespace_is_still_held():
+    # The whitespace belongs to the object that just closed, but the name on
+    # that delta may be the next call announced early. Merging it left the
+    # closed call named "alphabeta" and the new call unnamed, so neither ran.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured([_delta(0, "beta", " ")])
+    turn.merge_structured([_delta(0, None, '{"b":2}')])
+
+    assert _shape(turn) == [("alpha", '{"a":1} '), ("beta", '{"b":2}')]
+
+    # And a name repeated with the whitespace is still that call's, resent, so
+    # the call that really opens next takes its own name.
+    resent = _Turn()
+    resent.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    resent.merge_structured([_delta(0, "alpha", " ")])
+    resent.merge_structured([_delta(0, "beta", '{"b":2}')])
+    assert _shape(resent) == [("alpha", '{"a":1} '), ("beta", '{"b":2}')]
