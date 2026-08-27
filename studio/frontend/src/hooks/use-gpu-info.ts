@@ -32,33 +32,54 @@ export {
 export interface GpuInfo {
   available: boolean;
   budgetKnown: boolean;
+  /** A Vulkan iGPU: memoryTotalGb is a capped view of system RAM, not a pool
+   *  beside it, so callers must not add systemRamTotalGb on top of it. */
+  sharedMemory: boolean;
   /** The backend torch resolved: cuda, rocm, xpu, mlx, cpu. Carried on every path, including the
    * GPU-less one, because "which runtimes can this host place" is exactly the question a host
    * with no usable GPU has to answer. Empty until system info arrives. */
   backend: string;
   name: string;
   memoryTotalGb: number;
+  /** The same aggregate with shared-memory devices left out: the VRAM that is a pool
+   *  BESIDE system RAM rather than a capped view of it. */
+  dedicatedMemoryTotalGb: number;
   /** Largest single device's VRAM. Image/video loads live on ONE device (no tensor split), so their fit math must use a single device, not the multi-GPU sum. */
   maxDeviceMemoryGb: number;
   /** VRAM of the device an image/video load actually lands on: the lowest visible ordinal, since resolve_diffusion_device_target() returns a bare "cuda" and torch places on the current device. On a heterogeneous host this is NOT maxDeviceMemoryGb, and sizing a pick against the larger card would recommend a checkpoint that OOMs the smaller one. */
   loadDeviceMemoryGb: number;
   cpuCore: number;
   cpuThread: number;
+  /** Host RAM free right now, ZEROED on a host where any device shares that RAM.
+   *  The zero belongs to the SUM: every reader of this field adds it to the GPU
+   *  budget, and on a shared-memory host that would offer the same bytes twice. */
   systemRamAvailableGb: number;
+  /** Host RAM free right now as the probe reported it, whatever the devices share.
+   *
+   *  The field above cannot answer "is host RAM under pressure", because on a
+   *  dGPU + iGPU box it is permanently 0 -- `devices.some(...)` is a host-level OR, so
+   *  ONE Vulkan iGPU in the inventory zeroes the reading for the whole machine, and it
+   *  stays 0 even when the user has pinned the discrete card and host RAM is genuinely
+   *  a separate pool. `sharesSystemRam` in gpu-vram.ts already answers the pool
+   *  question per pin, which is the half that is right; this is the reading it needs. */
+  systemRamAvailableHostGb: number;
   systemRamTotalGb: number;
 }
 
 const DEFAULT_GPU: GpuInfo = {
   available: false,
   budgetKnown: false,
+  sharedMemory: false,
   backend: "",
   name: "Unknown",
   memoryTotalGb: 0,
+  dedicatedMemoryTotalGb: 0,
   maxDeviceMemoryGb: 0,
   loadDeviceMemoryGb: 0,
   cpuCore: 0,
   cpuThread: 0,
   systemRamAvailableGb: 0,
+  systemRamAvailableHostGb: 0,
   systemRamTotalGb: 0,
 };
 
@@ -73,6 +94,7 @@ function toGpuInfo(
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
+    systemRamAvailableHostGb: data?.memory?.available_gb ?? 0,
     systemRamTotalGb: data?.memory?.total_gb ?? 0,
   };
   const gpuData =
@@ -85,14 +107,32 @@ function toGpuInfo(
     ...base,
     // A Vulkan iGPU's reported budget is capped shared system RAM, not an
     // independent VRAM pool. Do not offer the same RAM again for CPU offload.
+    // `systemRamAvailableHostGb` deliberately keeps `base`'s reading through this
+    // spread: the zero is about not double-counting a SUM, not a claim that the
+    // machine has no free RAM, and a caller asking about host pressure needs the
+    // number itself.
     systemRamAvailableGb: devices.some((device) => device.shared_memory)
       ? 0
       : base.systemRamAvailableGb,
+    // EVERY, not some, and deliberately different from the zeroing above. That one
+    // is about a SUM: one shared device is enough to make "GPU total + system RAM"
+    // count the same bytes twice. This one answers "is there only one pool", which a
+    // discrete card sitting beside an iGPU makes false. Reading it as some() marked a
+    // mixed inventory single-pool, and the row shows a lone Shared figure there and
+    // drops the GPU verdict, so a fixed Manual placement larger than the discrete
+    // card read as a fit against a combined ceiling it will never spill into.
+    // Length-guarded because every() on an empty list is true, and a host with
+    // nothing probed has no pool to be single.
+    sharedMemory:
+      devices.length > 0 && devices.every((device) => device.shared_memory),
     available: true,
     budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",
     // Shared-memory (Vulkan iGPU) devices report the same system RAM pool, so they are counted once rather than summed.
     memoryTotalGb: aggregateGpuMemoryTotalGb(devices),
+    dedicatedMemoryTotalGb: aggregateGpuMemoryTotalGb(
+      devices.filter((device) => !device.shared_memory),
+    ),
     maxDeviceMemoryGb: devices.reduce((max, d) => Math.max(max, d.memory_total_gb ?? 0), 0),
     // Lowest visible ordinal = torch's current device = where the pipeline lands.
     loadDeviceMemoryGb: pickLoadDevice(devices)?.memory_total_gb ?? 0,
@@ -129,6 +169,7 @@ function toGpuDevices(
         name: d.name ?? `GPU ${d.index}`,
         memoryTotalGb: d.memory_total_gb ?? 0,
         memoryFreeGb: d.vram_free_gb ?? 0,
+        sharedMemory: d.shared_memory === true,
         pinnable: picksAccepted && d.index_kind === "vulkan",
         // The DiffusionGemma runner is torch-side and never speaks ggml
         // ordinals, so a Vulkan pick is not usable there.
@@ -154,6 +195,7 @@ function toGpuDevices(
       name: d.name ?? `GPU ${d.index}`,
       memoryTotalGb: d.memory_total_gb ?? 0,
       memoryFreeGb: d.vram_free_gb ?? 0,
+      sharedMemory: d.shared_memory === true,
       // The XPU ban is about torch-xpu ordinals no applicator speaks, so /load
       // and /validate 400 them. A Vulkan ordinal is not one of those, so it
       // stays pickable even when this list arrives from an XPU host.
