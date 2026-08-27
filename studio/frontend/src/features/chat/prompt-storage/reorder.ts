@@ -31,3 +31,20 @@ export function insertionIndex(
   }
   return to;
 }
+
+/**
+ * Whether a window-level pointer event belongs to the drag `activePointerId`
+ * started.
+ *
+ * The grip deliberately does not capture the pointer, so the listeners are on
+ * `window` and see every pointer on the page. Ending a drag clears the id
+ * before React can unsubscribe them, so treating "no active pointer" as a match
+ * lets a still-held button reorder the list after the drag was already ended by
+ * a window blur.
+ */
+export function ownsDrag(
+  activePointerId: number | null,
+  eventPointerId: number,
+): boolean {
+  return activePointerId !== null && activePointerId === eventPointerId;
+}

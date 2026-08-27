@@ -3,7 +3,7 @@
 
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { cn } from "@/lib/utils";
-import { insertionIndex } from "./reorder";
+import { insertionIndex, ownsDrag } from "./reorder";
 import { GripVerticalIcon, XIcon } from "lucide-react";
 import {
   type ReactElement,
@@ -234,9 +234,11 @@ export function SortablePromptItems({
     };
 
     // Window listeners see every pointer; a second finger would otherwise
-    // reorder with its own clientY and its release would end this drag.
+    // reorder with its own clientY and its release would end this drag. An
+    // already-ended drag owns no pointer, so nothing matches until the cleanup
+    // below unsubscribes.
     const isDragPointer = (e: PointerEvent) =>
-      pointerIdRef.current === null || e.pointerId === pointerIdRef.current;
+      ownsDrag(pointerIdRef.current, e.pointerId);
 
     const onMove = (e: PointerEvent) => {
       if (!isDragPointer(e)) return;

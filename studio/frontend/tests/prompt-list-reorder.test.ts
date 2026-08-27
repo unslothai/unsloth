@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   type RowBox,
   insertionIndex,
+  ownsDrag,
 } from "../src/features/chat/prompt-storage/reorder.ts";
 
 const GAP = 2;
@@ -110,4 +111,19 @@ test("a drag across uneven rows reaches a fixed point at every pointer height", 
 test("rows without a measured box are skipped rather than counted", () => {
   const rows = layout([40, 40, 40]);
   assert.equal(insertionIndex([rows[0], undefined, rows[2]], 0, 1000), 1);
+});
+
+// The grip does not capture the pointer, so the move/up/cancel listeners are on
+// `window` and see every pointer on the page.
+test("only the pointer that started the drag drives it", () => {
+  assert.equal(ownsDrag(3, 3), true);
+  assert.equal(ownsDrag(3, 7), false, "a second finger reordered with its own y");
+});
+
+// Ending a drag clears the id, but React unsubscribes the window listeners a
+// commit later. Treating "no active pointer" as a match let a button still held
+// after a window blur keep reordering in that gap.
+test("an ended drag owns no pointer at all", () => {
+  assert.equal(ownsDrag(null, 3), false, "a blur-ended drag kept reordering");
+  assert.equal(ownsDrag(null, 0), false, "pointer id 0 is a real id, not absent");
 });
