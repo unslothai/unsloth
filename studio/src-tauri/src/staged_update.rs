@@ -310,6 +310,20 @@ mod tests {
         dir
     }
 
+    /// Three code paths drop a tree on a background thread, and Windows refuses to
+    /// remove a directory while another handle is still walking inside it, so a
+    /// teardown that races one of them fails with ERROR_ACCESS_DENIED rather than
+    /// telling anyone anything. Retry until the deleter is done.
+    fn cleanup(home: PathBuf) {
+        for _ in 0..100 {
+            if fs::remove_dir_all(&home).is_ok() || !home.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        fs::remove_dir_all(&home).unwrap();
+    }
+
     fn make_runtime(root: &Path, tag: &str) {
         for name in RUNTIME_ENTRIES {
             fs::create_dir_all(root.join(name)).unwrap();
@@ -347,7 +361,7 @@ mod tests {
         assert!(home.join(PREV_DIR).join(PENDING_MARKER).is_file());
         assert!(!home.join(STAGE_DIR).exists());
         assert_eq!(status(&home).state, "none");
-        fs::remove_dir_all(home).unwrap();
+        cleanup(home);
     }
 
     #[test]
@@ -360,7 +374,7 @@ mod tests {
 
         assert_eq!(tag(&home, "unsloth_studio"), "old");
         assert_eq!(status(&home).state, "ready");
-        fs::remove_dir_all(home).unwrap();
+        cleanup(home);
     }
 
     #[test]
@@ -373,7 +387,7 @@ mod tests {
 
         assert_eq!(tag(&home, "unsloth_studio"), "old");
         assert!(!home.join(STAGE_DIR).exists());
-        fs::remove_dir_all(home).unwrap();
+        cleanup(home);
     }
 
     #[test]
@@ -387,7 +401,7 @@ mod tests {
 
         assert_eq!(tag(&home, "unsloth_studio"), "old");
         assert!(!home.join(STAGE_DIR).exists());
-        fs::remove_dir_all(home).unwrap();
+        cleanup(home);
     }
 
     #[test]
@@ -406,7 +420,7 @@ mod tests {
         let failed = status(&home);
         assert_eq!(failed.state, "failed");
         assert_eq!(failed.backend_version.as_deref(), Some("2026.9.1"));
-        fs::remove_dir_all(home).unwrap();
+        cleanup(home);
     }
 
     #[test]
@@ -422,7 +436,7 @@ mod tests {
 
         assert_eq!(tag(&home, "unsloth_studio"), "new");
         assert_eq!(status(&home).state, "none");
-        fs::remove_dir_all(home).unwrap();
+        cleanup(home);
     }
 
     #[test]
@@ -444,7 +458,7 @@ mod tests {
             assert!(!prev.join(name).join("tag").exists(), "{name}");
         }
         assert_eq!(tag(&stage, "unsloth_studio"), "new");
-        fs::remove_dir_all(home).unwrap();
+        cleanup(home);
     }
 
     #[test]
@@ -466,7 +480,7 @@ mod tests {
             assert_eq!(tag(&home, name), "old", "{name}");
             assert_eq!(tag(&stage, name), "new", "{name}");
         }
-        fs::remove_dir_all(home).unwrap();
+        cleanup(home);
     }
 
     #[test]
@@ -490,7 +504,7 @@ mod tests {
             assert!(!home.join(name).exists(), "{name}");
         }
         assert_eq!(status(&home).state, "failed");
-        fs::remove_dir_all(home).unwrap();
+        cleanup(home);
     }
 
     #[test]
@@ -510,7 +524,7 @@ mod tests {
 
         assert!(!trash.exists());
         assert_eq!(tag(&home, "unsloth_studio"), "old");
-        fs::remove_dir_all(home).unwrap();
+        cleanup(home);
     }
 
     #[test]
@@ -527,6 +541,6 @@ mod tests {
         );
         discard(&home);
         assert_eq!(status(&home).state, "none");
-        fs::remove_dir_all(home).unwrap();
+        cleanup(home);
     }
 }
