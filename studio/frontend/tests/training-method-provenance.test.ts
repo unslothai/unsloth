@@ -94,7 +94,7 @@ test("switching away from CPT restores pre-CPT target modules", () => {
     trainingMethodProvenance: {
       learningRateManuallySet: false,
       modelAdapterLearningRate: null,
-      datasetFormatBeforeCpt: "chatml",
+      datasetFormatBeforeCpt: "chatml" as const,
       targetModulesBeforeCpt: ["all-linear"],
     },
   };
