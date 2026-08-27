@@ -25,6 +25,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import types
 from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version as pkg_version
@@ -76,7 +77,10 @@ CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
 # Why CHAT_ONLY is True (Train/Export disabled). None when training is enabled.
 # "mlx_unavailable": Apple Silicon but the MLX stack is missing, too old, or broken
 # (the usual cause of "Train/Export greyed out" on Macs after a reinstall dropped MLX);
-# "intel_mac": Intel Mac (no PyTorch/MLX); "no_gpu": CPU-only non-Mac host.
+# "intel_mac": Intel Mac (no PyTorch/MLX); "no_gpu": CPU-only non-Mac host;
+# "torch_cpu_build" / "torch_cuda_unavailable": the host HAS GPUs, this PyTorch cannot
+# use them -- see classify_torch_build(). Those two must not read as "no_gpu": the fix
+# is repairing the install, not buying a GPU.
 CHAT_ONLY_REASON: Optional[str] = None
 # What exactly blocked the reason above, when there is something specific to say. Only
 # "mlx_unavailable" sets it today: the gate is all-or-nothing across mlx, mlx-lm and
@@ -329,6 +333,201 @@ def _mlx_stack_detail() -> Optional[str]:
         # under us. Saying nothing beats naming a blocker that is no longer there.
         return None
     return "; ".join(blockers[:3])
+
+
+# ========== Physical GPU inventory (independent of PyTorch) ==========
+
+# Every other GPU probe in this module starts from get_device(), so all of them go
+# quiet the moment torch.cuda.is_available() is False -- and then the System tab says
+# "No visible GPU" on a box with two working A4000s. That is the Windows shape of
+# issue #8473: an in-app update resolved torch from PyPI, whose Windows default is
+# 2.11.0+cpu, over a cu124 wheel, and nvidia-smi kept listing both cards throughout.
+# This probe answers the question the others cannot ask: what does the OS see?
+#
+# It is display-only. Nothing here may be merged into the runtime device lists --
+# toGpuDevices / toGpuInfo feed the model-fit estimate and the training device pin, so
+# a card torch cannot open must never become selectable. See _torch_gpu_mismatch_report.
+#
+# Cached with a TTL rather than for the process: the answer is stable, but a driver
+# restart or an eGPU makes it not, and this runs on a poll path.
+_PHYSICAL_GPU_INVENTORY_TTL_SECONDS = 60.0
+_physical_gpu_inventory_lock = threading.Lock()
+_physical_gpu_inventory_cache: Optional[tuple[float, Dict[str, Any]]] = None
+
+
+def _probe_physical_gpu_inventory() -> Dict[str, Any]:
+    """One uncached pass over the vendor probes. Never raises.
+
+    ``index`` is the probe's own row number and is vendor-local, so it identifies a
+    device only together with ``vendor``. It is not a pin: see the note above.
+    """
+    devices: list[Dict[str, Any]] = []
+    sources: list[str] = []
+
+    try:
+        from . import nvidia
+
+        result = nvidia.get_physical_gpu_inventory()
+    except Exception as e:
+        logger.debug("NVIDIA physical inventory probe failed: %s", e)
+    else:
+        nvidia_devices = result.get("devices") or []
+        if nvidia_devices:
+            devices.extend(nvidia_devices)
+            sources.append(result.get("source") or "nvidia-smi")
+
+    # Windows AMD has no vendor CLI that is guaranteed present (amd-smi elevates a
+    # child without a HIP SDK, which is why amd.py refuses it), but the DirectX
+    # registry records every adapter with its dedicated memory, and
+    # _rocm_windows_per_device_vram already trusts that map for the System tab.
+    if platform.system() == "Windows":
+        try:
+            records = _windows_amd_adapter_records_by_luid()
+        except Exception as e:
+            logger.debug("Windows AMD adapter inventory probe failed: %s", e)
+            records = {}
+        if records:
+            for ordinal, luid in enumerate(sorted(records)):
+                record = records[luid]
+                dedicated = record.get("dedicated_memory_bytes")
+                devices.append(
+                    {
+                        "vendor": "amd",
+                        "index": ordinal,
+                        "name": record.get("name"),
+                        # Absent when the driver wrote neither dedicated-memory value.
+                        # None, not 0: an unknown capacity is not an empty card.
+                        "memory_total_gb": (
+                            round(dedicated / 1024**3, 2) if dedicated else None
+                        ),
+                        "source": "directx-registry",
+                    }
+                )
+            sources.append("directx-registry")
+
+    return {"available": bool(devices), "devices": devices, "sources": sources}
+
+
+def get_physical_gpu_inventory() -> Dict[str, Any]:
+    """GPUs the OS enumerates, whether or not PyTorch can use them.
+
+    Returns ``{available, devices, sources}``. Runs regardless of ``DEVICE`` and never
+    raises: a probe that cannot answer contributes nothing rather than failing the
+    caller, so an endpoint reaching here still returns a body.
+    """
+    global _physical_gpu_inventory_cache
+    now = time.monotonic()
+    with _physical_gpu_inventory_lock:
+        if _physical_gpu_inventory_cache is not None:
+            probed_at, cached = _physical_gpu_inventory_cache
+            if now - probed_at < _PHYSICAL_GPU_INVENTORY_TTL_SECONDS:
+                return cached
+        try:
+            inventory = _probe_physical_gpu_inventory()
+        except Exception as e:
+            # _probe_physical_gpu_inventory already guards each probe; this is the
+            # backstop that keeps a caller on the detection path from blowing up.
+            logger.debug("Physical GPU inventory probe failed: %s", e)
+            inventory = {"available": False, "devices": [], "sources": []}
+        _physical_gpu_inventory_cache = (time.monotonic(), inventory)
+        return inventory
+
+
+def _torch_version_label() -> Optional[str]:
+    """``torch.__version__`` when it can be read, else None. Never raises."""
+    try:
+        import torch
+
+        return str(torch.__version__)
+    except Exception:
+        return None
+
+
+def classify_torch_build() -> Optional[str]:
+    """Why this PyTorch exposes no accelerator, when the build itself is the reason.
+
+    "torch_cpu_build"        -- a CPU-only wheel: ``2.11.0+cpu``, or an untagged build
+                                with neither ``torch.version.cuda`` nor ``.hip``. No
+                                driver update fixes it; only reinstalling torch from
+                                the right index does.
+    "torch_cuda_unavailable" -- an accelerator wheel (``+cu124``, ``+rocm6.4``,
+                                ``+xpu``) whose runtime refuses to initialise: driver
+                                too old, no permission on the device nodes, a cudart
+                                that will not load. The wheel is right, the
+                                environment is not.
+    None                     -- torch is missing, unimportable, or has a working
+                                accelerator. Nothing to say.
+
+    Kept as two reasons rather than one flag because the advice differs, and telling
+    someone with a healthy cu124 wheel to reinstall torch sends them the wrong way.
+    Never raises.
+    """
+    # An explicitly emptied visibility mask hides the GPUs on purpose. torch then
+    # reports none and nvidia-smi still lists them all, which is the exact shape of a
+    # broken install -- but nothing is broken and nothing needs repairing, so it must
+    # not be reported as a mismatch. Same rule the installers apply before touching a
+    # wheel. A mask naming devices is not this: that host expects those to work.
+    for var in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        value = os.environ.get(var)
+        if value is not None and value.strip() in ("", "-1"):
+            return None
+    if not _has_torch():
+        return None
+    try:
+        import torch
+
+        try:
+            if torch.cuda.is_available():
+                return None
+        except Exception:
+            # A runtime that raises on its own availability probe is exactly the
+            # second case; fall through rather than treating it as "no answer".
+            pass
+        version = str(getattr(torch, "__version__", ""))
+        # The local version tag, using the same vocabulary the installers read:
+        # "2.11.0+cpu" -> "cpu", "2.6.0+cu124" -> "cu124", "2.9.0" -> "".
+        local = version.partition("+")[2].strip().lower()
+        cuda_tag = getattr(getattr(torch, "version", None), "cuda", None)
+        hip_tag = getattr(getattr(torch, "version", None), "hip", None)
+        if local == "cpu":
+            return "torch_cpu_build"
+        if not local and cuda_tag is None and hip_tag is None:
+            # Untagged and built against no GPU runtime: the PyPI macOS/CPU wheel
+            # shape. An untagged wheel that DOES set version.cuda (conda builds) is
+            # a CUDA build and belongs in the second case.
+            return "torch_cpu_build"
+        return "torch_cuda_unavailable"
+    except Exception as e:
+        logger.debug("torch build classification failed: %s", e)
+        return None
+
+
+def _torch_gpu_mismatch_report() -> Dict[str, Any]:
+    """``physical_devices`` + ``mismatch`` for a host whose GPUs PyTorch cannot use.
+
+    ``{}`` when there is nothing to report: torch is absent, unimportable or healthy,
+    or no probe found a physical card. Both keys sit BESIDE ``devices`` in the
+    visibility payload and never inside it -- ``devices`` is the runtime-usable list
+    that model fit budgets against and that the training device picker pins from.
+    """
+    reason = classify_torch_build()
+    if reason is None:
+        return {}
+    inventory = get_physical_gpu_inventory()
+    physical = inventory.get("devices") or []
+    if not physical:
+        # Torch cannot use a GPU and there is no GPU: "no_gpu" is the honest answer
+        # and the caller already gives it.
+        return {}
+    return {
+        "physical_devices": physical,
+        "mismatch": {
+            "reason": reason,
+            "torch_version": _torch_version_label(),
+            "physical_count": len(physical),
+            "sources": inventory.get("sources") or [],
+        },
+    }
 
 
 def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
@@ -666,7 +865,25 @@ def _detect_hardware_locked() -> DeviceType:
     elif platform.system() == "Darwin":
         CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
     else:
+        # torch imported cleanly and reported no accelerator, which is NOT the same as
+        # "this host has no GPU". A Windows in-app update that resolves torch from PyPI
+        # installs the 2.11.0+cpu default over a cu124 wheel, and nvidia-smi keeps
+        # listing every card throughout (#8473, HF discussion 87). Ask the OS before
+        # blaming the hardware, so the UI can offer a repair instead of telling a
+        # two-A4000 host to go buy a GPU. Both probes are bounded and never raise.
         CHAT_ONLY_REASON = "no_gpu"
+        if torch_ok:
+            build_reason = classify_torch_build()
+            if build_reason is not None and get_physical_gpu_inventory().get("devices"):
+                CHAT_ONLY_REASON = build_reason
+                CHAT_ONLY_DETAIL = _torch_version_label()
+                logger.warning(
+                    "GPUs are present on this host but PyTorch cannot use them (%s%s); "
+                    "Train/Export disabled (chat-only). Repair the installation to "
+                    "restore GPU support.",
+                    build_reason,
+                    f", installed {CHAT_ONLY_DETAIL}" if CHAT_ONLY_DETAIL else "",
+                )
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
@@ -4749,6 +4966,11 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
         "parent_visible_gpu_ids": [],
         "devices": [],
         "index_kind": "vulkan",
+        # Physically present cards this PyTorch cannot open, reported ALONGSIDE the
+        # empty `devices` above and never merged into it. Absent on a host that really
+        # has no GPU, so a reader can take the presence of `mismatch` as the whole
+        # signal. See _torch_gpu_mismatch_report.
+        **_torch_gpu_mismatch_report(),
     }
 
 

@@ -832,6 +832,16 @@ export const en = {
         openError: "Couldn't open the folder",
         copyError: "Couldn't copy the path",
       },
+      repairInstall: {
+        label: "Repair installation",
+        description:
+          "Reruns the installer over the managed environment. Use this if the GPU is not detected or the app will not start.",
+        action: "Repair install",
+        confirmTitle: "Repair this installation?",
+        confirmDescription:
+          "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU. Chats and settings are kept. This can take several minutes.",
+        confirmAction: "Repair now",
+      },
       resetPreferences: {
         sectionTitle: "Danger zone",
         label: "Reset all local preferences",
@@ -1081,6 +1091,8 @@ export const en = {
         currentLoad: "Current load",
         free: "{value} free",
         noGpu: "No visible GPU",
+        gpuUnusable: "GPU unusable",
+        gpuUnusableDetail: "Detected, but PyTorch cannot use it",
       },
       gpu: {
         title: "GPU devices",
@@ -1089,6 +1101,12 @@ export const en = {
         detecting: "Checking for GPUs...",
         unreadable: "Could not read this server's hardware.",
         noGpu: "No visible GPU detected. CPU-only resources are shown above.",
+        noUsableGpu: "No GPU on this machine is usable by PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch is a CPU-only build ({version}), so the GPUs below cannot be used. Repair the installation to restore GPU support.",
+        mismatchUnavailable:
+          "PyTorch ({version}) cannot initialise the GPUs below, so they cannot be used. Check the GPU driver, or repair the installation.",
+        unusableDevice: "unusable",
         unknownDevice: "Unknown GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",

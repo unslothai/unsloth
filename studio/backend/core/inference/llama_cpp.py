@@ -10507,6 +10507,11 @@ class LlamaCppBackend:
     # only when an axis is actually quantized.
     _tensor_quant_kv_unsupported_binaries: set[tuple[str, int]] = set()
 
+    # Binary dirs already reported by _warn_missing_windows_cuda_runtime. The env is
+    # rebuilt for every launch and every --list-devices probe, and the condition is a
+    # property of the install, so one line per binary is the whole diagnostic.
+    _missing_cuda_runtime_warned: set[str] = set()
+
     @classmethod
     def _binary_key(cls, binary: Optional[str]) -> Optional[tuple[str, int]]:
         """(path, mtime_ns); ns mtime re-probes a same-second binary swap."""
@@ -10630,6 +10635,47 @@ class LlamaCppBackend:
         _add(site_packages / "torch" / "lib")
         return out
 
+    @classmethod
+    def _warn_missing_windows_cuda_runtime(cls, binary_dir: str, path_dirs: list[str]) -> None:
+        """Say so when a CUDA llama-server has no cudart to load. Diagnostic only.
+
+        The CUDA prebuilt links ``cudart64_*.dll`` / ``cublas64_*.dll`` and takes them
+        from the managed venv -- ``torch/lib`` or the ``nvidia/*`` wheels, per
+        _windows_pip_nvidia_dll_dirs. A 2.11.0+cpu torch ships neither, so ggml cannot
+        load its CUDA backend and ``llama-server.exe --list-devices`` prints
+        ``Available devices: (none)`` while UNSLOTH_PREBUILT_INFO.json still says
+        ``backend cuda`` (#8473, HF discussion 87). Today that is entirely silent.
+
+        Changes nothing about the launch: the process still starts, still falls back to
+        CPU, and a custom build with the DLLs somewhere else is not second-guessed.
+        Never raises -- a diagnostic must not be able to stop a load.
+        """
+        try:
+            if binary_dir in cls._missing_cuda_runtime_warned:
+                return
+            # Same identification _installed_ggml_backends uses: the official prebuilts
+            # are single-backend, so the ggml CUDA lib beside llama-server IS the build.
+            ggml_cuda = os.path.join(binary_dir, "ggml-cuda.dll")
+            if not os.path.isfile(ggml_cuda):
+                return
+            for directory in path_dirs:
+                try:
+                    names = os.listdir(directory)
+                except OSError:
+                    continue
+                if any(name.lower().startswith("cudart64_") for name in names):
+                    return
+            cls._missing_cuda_runtime_warned.add(binary_dir)
+            logger.warning(
+                "llama.cpp is the CUDA build (%s) but no cudart64_*.dll was found on its "
+                "DLL search path. The CUDA ggml backend will not load and llama-server "
+                "will report no devices. This is what a CPU-only PyTorch in the managed "
+                "environment looks like; repair the installation to restore GPU support.",
+                ggml_cuda,
+            )
+        except Exception as e:
+            logger.debug(f"CUDA runtime DLL diagnostic failed: {e}")
+
     @staticmethod
     def _build_windows_path_dirs(binary_dir: str, prefix: str, cuda_path: str) -> list[str]:
         """Ordered PATH entries prepended so llama-server.exe resolves cudart /
@@ -10644,6 +10690,7 @@ class LlamaCppBackend:
             cuda_bin_x64 = os.path.join(cuda_path, "bin", "x64")
             if os.path.isdir(cuda_bin_x64):
                 path_dirs.append(cuda_bin_x64)
+        LlamaCppBackend._warn_missing_windows_cuda_runtime(binary_dir, path_dirs)
         return path_dirs
 
     @staticmethod

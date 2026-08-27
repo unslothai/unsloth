@@ -164,6 +164,9 @@ export function useTauriBackend() {
   const externalPollAbortedRef = useRef(false);
   const authFailureRef = useRef<string | null>(getTauriAuthFailure());
   const elevationResumeRef = useRef<"install" | "repair" | null>(null);
+  // Whether the repair in flight was asked to skip straight to the installer. Read back by
+  // approveElevation, which restarts the repair after the system packages land.
+  const forcedRepairRef = useRef(false);
   const [tauriEventsReady, setTauriEventsReady] = useState(!isTauri);
   // Read through rather than mirrored into state: the app-closing listener is registered
   // inside the long event effect below, which cannot reach a setState from this render.
@@ -369,7 +372,17 @@ export function useTauriBackend() {
     startingRef.current = false;
   }
 
-  async function startRepair() {
+  // `forceInstaller` runs the bundled installer without trying `studio update` first. The
+  // automatic callers leave it off: an out-of-date venv is the common case and the update is
+  // the cheap fix. Settings' manual "Repair installation" turns it on, because an update
+  // reuses the environment it finds -- a managed venv whose PyTorch was replaced by a CPU-only
+  // wheel comes back from a successful update still CPU-only, and only the installer
+  // re-selects the torch index.
+  async function startRepair(options?: { forceInstaller?: boolean }) {
+    const forceInstaller = options?.forceInstaller ?? false;
+    // Survives the elevation round trip: approveElevation resumes by calling this again, and
+    // resuming without the flag would run the update the caller deliberately skipped.
+    forcedRepairRef.current = forceInstaller;
     elevationResumeRef.current = null;
     setCurrentStepIndex(-1);
     setProgressDetail(null);
@@ -384,7 +397,7 @@ export function useTauriBackend() {
 
     const { invoke } = await import("@tauri-apps/api/core");
     try {
-      await invoke("start_managed_repair");
+      await invoke("start_managed_repair", { forceInstaller });
 
       setBackendStatus("starting");
       elevationResumeRef.current = null;
@@ -515,7 +528,7 @@ export function useTauriBackend() {
       setProgressDetail(null);
       elevationResumeRef.current = null;
       if (resume === "repair") {
-        await startRepair();
+        await startRepair({ forceInstaller: forcedRepairRef.current });
       } else {
         await startInstall();
       }
@@ -724,5 +737,9 @@ export function useTauriBackend() {
     currentStepIndex, progressDetail, startupMessage, elevationPackages,
     startServer, stopServer, startInstall,
     retry, retryInstall, approveElevation, copyDiagnostics,
+    // Exported for the manual "Repair installation" action in Settings. It is the same
+    // function startup uses, so a manual repair renders the same repairing screen and
+    // restarts the backend afterwards rather than leaving it stopped.
+    startRepair,
   };
 }

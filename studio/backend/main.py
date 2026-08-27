@@ -2031,6 +2031,10 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             gpu_ids_supported = True
         # Preserve backend/index metadata from the visibility probe: a CPU training host can expose
         # a Vulkan inference GPU, and the UI must label it Vulkan, not the top-level CPU backend.
+        # The spread is also what carries `physical_devices` and `mismatch` through -- GPUs the OS
+        # sees that this PyTorch cannot open (#8473). They stay their own fields: `devices` below is
+        # the runtime-usable list that model fit budgets against and that the training device picker
+        # pins from, so a card torch cannot open must never be merged into it.
         gpu_info = {
             **visibility_info,
             "available": visibility_info.get("available", False),

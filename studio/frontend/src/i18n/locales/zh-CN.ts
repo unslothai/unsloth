@@ -811,6 +811,16 @@ export const zhCN = {
         openError: "无法打开文件夹",
         copyError: "无法复制路径",
       },
+      repairInstall: {
+        label: "修复安装",
+        description:
+          "对托管环境重新运行安装程序。如果未检测到 GPU 或应用无法启动，可使用此功能。",
+        action: "修复安装",
+        confirmTitle: "要修复此安装吗？",
+        confirmDescription:
+          "停止服务器并重新运行安装程序，为本机 GPU 重新安装 PyTorch。聊天记录和设置会保留。这可能需要几分钟。",
+        confirmAction: "立即修复",
+      },
       resetPreferences: {
         sectionTitle: "危险区域",
         label: "重置所有本地偏好设置",
@@ -1061,6 +1071,8 @@ export const zhCN = {
         currentLoad: "当前负载",
         free: "{value} 可用",
         noGpu: "无可见 GPU",
+        gpuUnusable: "GPU 不可用",
+        gpuUnusableDetail: "已检测到，但 PyTorch 无法使用",
       },
       gpu: {
         title: "GPU 设备",
@@ -1069,6 +1081,10 @@ export const zhCN = {
         detecting: "正在检查 GPU...",
         unreadable: "无法读取此服务器的硬件信息。",
         noGpu: "未检测到可见 GPU。上方仅显示 CPU 资源。",
+        noUsableGpu: "本机没有 PyTorch 可用的 GPU。",
+        mismatchCpuBuild: "PyTorch 是仅 CPU 版本（{version}），因此无法使用下方的 GPU。修复安装即可恢复 GPU 支持。",
+        mismatchUnavailable: "PyTorch（{version}）无法初始化下方的 GPU，因此无法使用。请检查显卡驱动，或修复安装。",
+        unusableDevice: "不可用",
         unknownDevice: "未知 GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",

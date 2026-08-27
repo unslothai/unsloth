@@ -50,6 +50,14 @@ export function videoNavHint(
   // that reads as a fix that would not work. Mirrors the backend's message for this host.
   if (chatOnlyReason === "intel_mac")
     return "Video generation requires Apple Silicon. This Intel Mac has no Metal device to run it.";
+  // The GPU is there; PyTorch is what cannot reach it (a Windows update that resolved torch
+  // from PyPI leaves a +cpu wheel beside two working cards). Offering "get a GPU" to that host
+  // is the lie the reason exists to stop, and it is not the fix either.
+  if (
+    chatOnlyReason === "torch_cpu_build" ||
+    chatOnlyReason === "torch_cuda_unavailable"
+  )
+    return "Video generation needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation.";
   if (chatOnlyReason === "no_gpu") return "Video generation needs an NVIDIA or AMD GPU.";
   return undefined;
 }

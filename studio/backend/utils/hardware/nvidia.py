@@ -236,20 +236,20 @@ def get_visible_gpu_utilization(
     }
 
 
-def get_backend_visible_gpu_info(
-    parent_visible_ids: Optional[list[int]], backend_cuda_visible_devices: Optional[str]
-) -> dict[str, Any]:
-    # parent_visible_ids None (UUID/MIG mask): can't map nvidia-smi rows to
-    # visible devices.
-    if parent_visible_ids is None:
-        return {
-            "available": False,
-            "backend_cuda_visible_devices": backend_cuda_visible_devices,
-            "parent_visible_gpu_ids": [],
-            "devices": [],
-            "index_kind": "unresolved",
-        }
-    visible_ordinals = _visible_ordinal_map(parent_visible_ids)
+def _query_gpu_inventory(caller: str) -> Optional[list[dict[str, Any]]]:
+    """``[{index, name, memory_total_gb}]`` for every GPU nvidia-smi enumerates.
+
+    ``None`` when the query could not be answered at all -- no nvidia-smi on PATH, a
+    driver that hung past the timeout, a non-zero exit. Callers report that as
+    "unknown", which is not the same as the empty list a working driver with no
+    cards returns. Never raises.
+
+    Split out of get_backend_visible_gpu_info so the same rows can be read WITHOUT a
+    ``DeviceType.CUDA`` precondition: get_physical_gpu_inventory below is reached on
+    exactly the host where torch reports no CUDA device, and that host still has its
+    GPUs. Rows a caller cannot make sense of are dropped, not raised on -- a name
+    holding commas is rejoined, and a malformed index or memory column skips the row.
+    """
     try:
         result = subprocess.run(
             [
@@ -266,15 +266,76 @@ def get_backend_visible_gpu_info(
             **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
-        logger.warning("nvidia-smi query failed in get_backend_visible_gpu_info: %s", e)
+        logger.warning("nvidia-smi query failed in %s: %s", caller, e)
+        return None
+    if result.returncode != 0:
+        return None
+
+    rows: list[dict[str, Any]] = []
+    for line in result.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3:
+            continue
+        try:
+            idx = int(parts[0])
+        except (ValueError, TypeError):
+            continue
+        # Rejoin in case the GPU name contains commas
+        name = parts[1] if len(parts) == 3 else ", ".join(parts[1:-1])
+        try:
+            mem_total_mb = int(parts[-1])
+        except (ValueError, TypeError):
+            continue
+        rows.append(
+            {
+                "index": idx,
+                "name": name,
+                "memory_total_gb": round(mem_total_mb / 1024, 2),
+            }
+        )
+    return rows
+
+
+def get_physical_gpu_inventory() -> dict[str, Any]:
+    """Every NVIDIA GPU the driver enumerates, with no visibility mask and no torch.
+
+    Display-only inventory: ``index`` is nvidia-smi's own row number, which is a
+    physical id and NOT something a caller may pin, because the whole point of this
+    probe is that PyTorch cannot open these devices. A failed probe comes back as a
+    structured unavailable result, so this never raises out of an endpoint.
+    """
+    rows = _query_gpu_inventory("get_physical_gpu_inventory")
+    if rows is None:
+        return {
+            "available": False,
+            "source": "nvidia-smi",
+            "devices": [],
+            "error": "nvidia-smi did not answer",
+        }
+    return {
+        "available": bool(rows),
+        "source": "nvidia-smi",
+        "devices": [{**row, "vendor": "nvidia", "source": "nvidia-smi"} for row in rows],
+        "error": None,
+    }
+
+
+def get_backend_visible_gpu_info(
+    parent_visible_ids: Optional[list[int]], backend_cuda_visible_devices: Optional[str]
+) -> dict[str, Any]:
+    # parent_visible_ids None (UUID/MIG mask): can't map nvidia-smi rows to
+    # visible devices.
+    if parent_visible_ids is None:
         return {
             "available": False,
             "backend_cuda_visible_devices": backend_cuda_visible_devices,
-            "parent_visible_gpu_ids": parent_visible_ids or [],
+            "parent_visible_gpu_ids": [],
             "devices": [],
-            "index_kind": "physical",
+            "index_kind": "unresolved",
         }
-    if result.returncode != 0:
+    visible_ordinals = _visible_ordinal_map(parent_visible_ids)
+    rows = _query_gpu_inventory("get_backend_visible_gpu_info")
+    if rows is None:
         return {
             "available": False,
             "backend_cuda_visible_devices": backend_cuda_visible_devices,
@@ -284,21 +345,9 @@ def get_backend_visible_gpu_info(
         }
 
     devices = []
-    for line in result.stdout.strip().splitlines():
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) < 3:
-            continue
-        try:
-            idx = int(parts[0])
-        except (ValueError, TypeError):
-            continue
+    for row in rows:
+        idx = row["index"]
         if visible_ordinals is not None and idx not in visible_ordinals:
-            continue
-        # Rejoin in case the GPU name contains commas
-        name = parts[1] if len(parts) == 3 else ", ".join(parts[1:-1])
-        try:
-            mem_total_mb = int(parts[-1])
-        except (ValueError, TypeError):
             continue
         devices.append(
             {
@@ -307,8 +356,8 @@ def get_backend_visible_gpu_info(
                 "visible_ordinal": (
                     visible_ordinals[idx] if visible_ordinals is not None else len(devices)
                 ),
-                "name": name,
-                "memory_total_gb": round(mem_total_mb / 1024, 2),
+                "name": row["name"],
+                "memory_total_gb": row["memory_total_gb"],
             }
         )
 

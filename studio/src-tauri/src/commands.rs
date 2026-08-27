@@ -933,6 +933,18 @@ pub async fn native_path_leases_usable(
     )
 }
 
+/// `force_installer` skips the update attempt and runs the bundled installer directly.
+///
+/// The automatic repair tries `studio update` first because it is the cheap fix for the
+/// common case (a venv one release behind). But an update cannot repair everything it can
+/// break: it reuses the environment it finds, so a managed venv whose PyTorch has been
+/// replaced by a CPU-only wheel comes back from a successful update still CPU-only. Only
+/// install.ps1 / install.sh re-select the torch index and force-reinstall the trio.
+///
+/// So the user-initiated "Repair installation" action in Settings passes true: someone who
+/// asks for a repair by hand has already concluded the ordinary update did not help, and
+/// making them wait through it again before the installer runs is the slow way to the same
+/// place. Absent (the startup auto-repair path) reads as false, so that path is unchanged.
 #[tauri::command]
 pub async fn start_managed_repair(
     app: AppHandle,
@@ -941,8 +953,13 @@ pub async fn start_managed_repair(
     update_state: tauri::State<'_, update::UpdateState>,
     install_state: tauri::State<'_, install::InstallState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
+    force_installer: Option<bool>,
 ) -> Result<(), String> {
-    info!("start_managed_repair command called");
+    let force_installer = force_installer.unwrap_or(false);
+    info!(
+        "start_managed_repair command called (force_installer={})",
+        force_installer
+    );
 
     if install_state
         .lock()
@@ -979,29 +996,41 @@ pub async fn start_managed_repair(
     let repair_group_id = install::take_pending_repair_group_for_resume(&install_state)
         .unwrap_or_else(|| diagnostics::begin_repair_group(&diagnostics_state));
 
-    let _ = app.emit("repair-progress", "Updating existing Unsloth install...");
-    let update_app = app.clone();
-    let update_state = update_state.inner().clone();
-    let update_diagnostics = diagnostics_state.clone();
-    let update_repair_group_id = repair_group_id.clone();
-    let update_result = tokio::task::spawn_blocking(move || {
-        update::run_backend_update_for_repair(
-            update_app,
-            update_state,
-            update_diagnostics,
-            update_repair_group_id,
-        )
-    })
-    .await
-    .map_err(|e| format!("Repair update task panicked: {e}"))?;
+    // Ok(()) rather than skipping the match: the installer fallback below is the whole body
+    // after it, and a second copy of that call under a `if force_installer` would be the one
+    // place a future change to the fallback could miss. This synthesises "the update ran and
+    // left the install not ready", which is exactly the state the caller is asserting.
+    let update_result = if force_installer {
+        let _ = app.emit("repair-progress", "Running bundled installer...");
+        Ok(())
+    } else {
+        let _ = app.emit("repair-progress", "Updating existing Unsloth install...");
+        let update_app = app.clone();
+        let update_state = update_state.inner().clone();
+        let update_diagnostics = diagnostics_state.clone();
+        let update_repair_group_id = repair_group_id.clone();
+        tokio::task::spawn_blocking(move || {
+            update::run_backend_update_for_repair(
+                update_app,
+                update_state,
+                update_diagnostics,
+                update_repair_group_id,
+            )
+        })
+        .await
+        .map_err(|e| format!("Repair update task panicked: {e}"))?
+    };
 
     match update_result {
-        Ok(()) if managed_install_ready_after_repair().await => {
+        Ok(()) if !force_installer && managed_install_ready_after_repair().await => {
             info!("Managed repair complete after update");
             diagnostics::finish_repair_group(&diagnostics_state, &repair_group_id, "success", None);
             let _ = app.emit("repair-complete", ());
             return Ok(());
         }
+        // The forced path already emitted its own progress line above; it did not run an
+        // update, so telling the user one "finished" would be a plain untruth.
+        Ok(()) if force_installer => {}
         Ok(()) => {
             warn!("Managed repair update finished, but preflight is still not ready; falling back to installer");
             let _ = app.emit(

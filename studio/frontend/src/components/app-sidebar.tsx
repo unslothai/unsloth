@@ -810,9 +810,16 @@ export function AppSidebar() {
         : "Training needs MLX. Run `unsloth studio update` to enable Train."
       : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
-        : chatOnlyReason === "no_gpu"
-          ? "Training needs an NVIDIA or AMD GPU."
-          : undefined;
+        : chatOnlyReason === "torch_cpu_build" ||
+            chatOnlyReason === "torch_cuda_unavailable"
+          ? // The host HAS GPUs; this PyTorch cannot open them. "Get a GPU" is both wrong
+            // and unactionable here, so name the installed build and point at the repair.
+            chatOnlyDetail
+            ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
+            : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
+          : chatOnlyReason === "no_gpu"
+            ? "Training needs an NVIDIA or AMD GPU."
+            : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
   const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason);
   const videoDisabled = videoDisabledHint !== undefined;

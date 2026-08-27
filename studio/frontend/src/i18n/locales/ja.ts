@@ -818,6 +818,16 @@ export const ja = {
         openError: "フォルダを開けませんでした",
         copyError: "パスをコピーできませんでした",
       },
+      repairInstall: {
+        label: "インストールを修復",
+        description:
+          "管理環境に対してインストーラーを再実行します。GPU が検出されない場合やアプリが起動しない場合に使用します。",
+        action: "インストールを修復",
+        confirmTitle: "このインストールを修復しますか？",
+        confirmDescription:
+          "サーバーを停止してインストーラーを再実行し、このマシンの GPU に合わせて PyTorch を再インストールします。チャットと設定は保持されます。数分かかる場合があります。",
+        confirmAction: "今すぐ修復",
+      },
       resetPreferences: {
         sectionTitle: "危険ゾーン",
         label: "すべてのローカル設定をリセット",
@@ -1067,6 +1077,8 @@ export const ja = {
         currentLoad: "現在の負荷",
         free: "{value} 空き",
         noGpu: "認識できる GPU がありません",
+        gpuUnusable: "GPU を利用できません",
+        gpuUnusableDetail: "検出されましたが、PyTorch から利用できません",
       },
       gpu: {
         title: "GPU デバイス",
@@ -1076,6 +1088,12 @@ export const ja = {
         unreadable: "このサーバーのハードウェアを読み取れませんでした。",
         noGpu:
           "利用可能な GPU が検出されませんでした。CPU のみの環境向けのリソース情報は上に表示されています。",
+        noUsableGpu: "このマシンの GPU はいずれも PyTorch から利用できません。",
+        mismatchCpuBuild:
+          "PyTorch は CPU 専用ビルド ({version}) のため、下の GPU は利用できません。インストールを修復すると GPU サポートが復元されます。",
+        mismatchUnavailable:
+          "PyTorch ({version}) は下の GPU を初期化できないため、利用できません。GPU ドライバーを確認するか、インストールを修復してください。",
+        unusableDevice: "利用不可",
         unknownDevice: "不明な GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",

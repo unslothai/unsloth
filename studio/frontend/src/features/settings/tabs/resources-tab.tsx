@@ -19,6 +19,7 @@ import {
   aggregateGpuMemoryTotalGb,
   useSystemInfo,
   type GpuDevice,
+  type SystemGpuInfo,
 } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -192,6 +193,33 @@ function InfoRow({
 function deviceOrdinal(device: GpuDevice): number | undefined {
   return device.visible_ordinal ?? device.index;
 }
+
+/** A GPU the OS enumerates that this PyTorch cannot open, from /api/system's
+ * `gpu.physical_devices`. `index` is the probe's own row number, vendor-local and
+ * NOT a pin. Declared here instead of widened onto SystemGpuInfo on purpose: these
+ * are display-only, and that shared type is what model fit budgets against and what
+ * the training device picker pins from, where an unusable card must never appear. */
+interface PhysicalGpuDevice {
+  vendor?: string;
+  index?: number;
+  name?: string | null;
+  memory_total_gb?: number | null;
+  source?: string;
+}
+
+/** Why the devices above are unusable, from /api/system's `gpu.mismatch`. Absent on
+ * a healthy host and on one that genuinely has no GPU, so its presence is the whole
+ * signal. `reason` is "torch_cpu_build" or "torch_cuda_unavailable". */
+interface GpuTorchMismatch {
+  reason?: string;
+  torch_version?: string | null;
+  physical_count?: number;
+}
+
+type GpuPhysicalInventory = SystemGpuInfo & {
+  physical_devices?: PhysicalGpuDevice[];
+  mismatch?: GpuTorchMismatch | null;
+};
 
 export function ResourcesTab() {
   const t = useT();
@@ -401,6 +429,28 @@ export function ResourcesTab() {
       : formatGiB(metrics.vramTotal);
   // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
+  // Read off systemInfo.gpu rather than displayedGpu: this describes the TRAINING
+  // view of the host, and a Vulkan llama.cpp makes displayedGpu fall back to the
+  // inference inventory. That host -- a card Vulkan enumerates and torch cannot open
+  // -- is precisely the one that must be told, so it cannot be the one that is not.
+  // Gated on the read having settled, so the placeholder can never carry a verdict.
+  const gpuInventory = hostUnread
+    ? null
+    : ((systemInfo.gpu ?? null) as GpuPhysicalInventory | null);
+  const gpuMismatch = gpuInventory?.mismatch ?? null;
+  const physicalDevices = gpuMismatch
+    ? (gpuInventory?.physical_devices ?? [])
+    : [];
+  // A CPU-only wheel and a GPU wheel whose runtime will not start need different
+  // advice: one is fixed by reinstalling torch, the other by the driver.
+  const gpuMismatchMessage = gpuMismatch
+    ? t(
+        gpuMismatch.reason === "torch_cpu_build"
+          ? "settings.resources.gpu.mismatchCpuBuild"
+          : "settings.resources.gpu.mismatchUnavailable",
+        { version: gpuMismatch.torch_version ?? unknownLabel },
+      )
+    : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -489,7 +539,9 @@ export function ResourcesTab() {
                   ? metrics.vramUsageKnown
                     ? `${formatGiB(metrics.vramUsed)} / ${vramCapacityLabel}`
                     : `${unknownLabel} / ${vramCapacityLabel}`
-                  : t("settings.resources.liveMonitor.noGpu")
+                  : gpuMismatch
+                    ? t("settings.resources.liveMonitor.gpuUnusable")
+                    : t("settings.resources.liveMonitor.noGpu")
             }
             detail={
               gpuUnknown
@@ -500,7 +552,9 @@ export function ResourcesTab() {
                         value: formatGiB(metrics.vramFree),
                       })
                     : unknownLabel
-                  : backendLabel
+                  : gpuMismatch
+                    ? t("settings.resources.liveMonitor.gpuUnusableDetail")
+                    : backendLabel
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
@@ -508,6 +562,33 @@ export function ResourcesTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.resources.gpu.title")}>
+        {/* Physically present, torch-unusable cards. Their own block, above the
+            device rows and visually separate from them, because nothing here is
+            selectable: the rows below are what a model can be loaded onto. */}
+        {gpuMismatch ? (
+          <div className="flex flex-col gap-2 border-b border-border/60 py-3">
+            <p className="text-sm text-amber-600 dark:text-amber-400">
+              {gpuMismatchMessage}
+            </p>
+            {physicalDevices.map((device, index) => (
+              <div
+                key={`${device.vendor ?? "gpu"}-${device.index ?? index}-${device.name ?? ""}`}
+                className="flex min-w-0 items-center justify-between gap-4 text-xs text-muted-foreground opacity-70"
+              >
+                <span className="min-w-0 truncate">
+                  {device.name ?? t("settings.resources.gpu.unknownDevice")}
+                </span>
+                <span className="shrink-0 font-mono tabular-nums">
+                  {`${
+                    isFiniteNumber(device.memory_total_gb)
+                      ? formatGiB(device.memory_total_gb)
+                      : unknownLabel
+                  } · ${t("settings.resources.gpu.unusableDevice")}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {separateInferenceGpu && (
           <div className="flex items-center justify-between gap-4 border-b border-border/60 py-3 text-sm">
             <span className="text-muted-foreground">
@@ -617,6 +698,12 @@ export function ResourcesTab() {
               </div>
             );
           })
+        ) : gpuMismatch ? (
+          // Not "no visible GPU": the cards are listed directly above. Kept as its
+          // own branch so the CPU-only host's line below stays exactly as it was.
+          <div className="py-3 text-sm text-muted-foreground">
+            {t("settings.resources.gpu.noUsableGpu")}
+          </div>
         ) : (
           <div className="py-3 text-sm text-muted-foreground">
             {gpuUnknown ? gpuUnknownLabel : t("settings.resources.gpu.noGpu")}

@@ -853,6 +853,16 @@ export const fr = {
         openError: "Impossible d'ouvrir le dossier",
         copyError: "Impossible de copier le chemin",
       },
+      repairInstall: {
+        label: "Réparer l'installation",
+        description:
+          "Relance le programme d'installation sur l'environnement géré. Utile si le GPU n'est pas détecté ou si l'application ne démarre pas.",
+        action: "Réparer l'installation",
+        confirmTitle: "Réparer cette installation ?",
+        confirmDescription:
+          "Arrête le serveur et relance le programme d'installation, qui réinstalle PyTorch pour le GPU de cette machine. Les discussions et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
+        confirmAction: "Réparer maintenant",
+      },
       resetPreferences: {
         sectionTitle: "Zone de danger",
         label: "Réinitialiser toutes les préférences locales",
@@ -1111,6 +1121,8 @@ export const fr = {
         currentLoad: "Charge actuelle",
         free: "Disponible : {value}",
         noGpu: "Aucun GPU visible",
+        gpuUnusable: "GPU inutilisable",
+        gpuUnusableDetail: "Détecté, mais PyTorch ne peut pas l'utiliser",
       },
       gpu: {
         title: "Périphériques GPU",
@@ -1120,6 +1132,12 @@ export const fr = {
         unreadable: "Impossible de lire le matériel de ce serveur.",
         noGpu:
           "Aucun GPU visible n'a été détecté. Seules les ressources du CPU sont affichées ci-dessus.",
+        noUsableGpu: "Aucun GPU de cette machine n'est utilisable par PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch est une version CPU uniquement ({version}), les GPU ci-dessous ne peuvent donc pas être utilisés. Réparez l'installation pour rétablir la prise en charge du GPU.",
+        mismatchUnavailable:
+          "PyTorch ({version}) ne parvient pas à initialiser les GPU ci-dessous, ils ne peuvent donc pas être utilisés. Vérifiez le pilote graphique ou réparez l'installation.",
+        unusableDevice: "inutilisable",
         unknownDevice: "GPU inconnu",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",

@@ -827,6 +827,16 @@ export const ko = {
         openError: "폴더를 열지 못했습니다",
         copyError: "경로를 복사하지 못했습니다",
       },
+      repairInstall: {
+        label: "설치 복구",
+        description:
+          "관리 환경에 대해 설치 프로그램을 다시 실행합니다. GPU가 감지되지 않거나 앱이 시작되지 않을 때 사용하세요.",
+        action: "설치 복구",
+        confirmTitle: "이 설치를 복구할까요?",
+        confirmDescription:
+          "서버를 중지하고 설치 프로그램을 다시 실행하여 이 컴퓨터의 GPU에 맞는 PyTorch를 다시 설치합니다. 채팅과 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmAction: "지금 복구",
+      },
       resetPreferences: {
         sectionTitle: "위험 구역",
         label: "모든 로컬 환경설정 재설정",
@@ -1082,6 +1092,8 @@ export const ko = {
         currentLoad: "현재 부하",
         free: "{value} 여유",
         noGpu: "인식되는 GPU 없음",
+        gpuUnusable: "GPU 사용 불가",
+        gpuUnusableDetail: "감지되었지만 PyTorch에서 사용할 수 없습니다",
       },
       gpu: {
         title: "GPU 장치",
@@ -1090,6 +1102,12 @@ export const ko = {
         detecting: "GPU를 확인하는 중...",
         unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
         noGpu: "인식되는 GPU가 없습니다. 위에는 CPU 관련 리소스만 표시됩니다.",
+        noUsableGpu: "이 컴퓨터의 GPU 중 PyTorch에서 사용할 수 있는 것이 없습니다.",
+        mismatchCpuBuild:
+          "PyTorch가 CPU 전용 빌드({version})이므로 아래 GPU를 사용할 수 없습니다. 설치를 복구하면 GPU 지원이 복원됩니다.",
+        mismatchUnavailable:
+          "PyTorch({version})가 아래 GPU를 초기화하지 못해 사용할 수 없습니다. GPU 드라이버를 확인하거나 설치를 복구하세요.",
+        unusableDevice: "사용 불가",
         unknownDevice: "알 수 없는 GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
