@@ -267,14 +267,16 @@ function withoutComments(source: string): string {
 }
 
 /** The adapter between two anchors, without its comments. */
-function regionOf(from: string, to: string, maxChars = 60_000): string {
+function regionOf(from: string, to: string, maxChars = 75_000): string {
   const start = ADAPTER.indexOf(from);
   assert.notEqual(start, -1, `"${from}" is gone; this test needs rewriting`);
   const end = ADAPTER.indexOf(to, start);
   assert.notEqual(end, -1, `"${to}" is gone; this test needs rewriting`);
   // Without this, editing the end anchor's line (even adding a space) silently
   // slides the region to the next match hundreds of lines away, and the
-  // ordering assertions below go on passing against the wrong slice.
+  // ordering assertions below go on passing against the wrong slice. A ceiling
+  // on drift, not a budget: raise it when the loop legitimately grows, after
+  // checking the anchors still land where they should.
   assert.ok(
     end - start < maxChars,
     `the region from "${from}" to "${to}" is ${end - start} chars; ` +

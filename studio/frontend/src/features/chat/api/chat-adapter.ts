@@ -5304,7 +5304,18 @@ export function createOpenAIStreamAdapter(
       // restarted at 0, so a name left over would be prepended to whatever
       // opens there, turning "C" into "BC" and hanging B's metadata on it. The
       // backend's own pending state is per turn for the same reason.
+      // Metadata for a call that was announced by name and never opened. The
+      // backend still runs such a call, and its tool_start carries no
+      // extra_content, so the card it paints would persist without the thought
+      // signature the announcement brought and the replay would be rejected.
+      const announcedExtraByName = new Map<string, unknown>();
       const endProviderTurn = () => {
+        for (const [pendingIdx, pendingName] of pendingNameByIndex) {
+          const extra = pendingExtraByIndex.get(pendingIdx);
+          if (pendingName && extra !== undefined) {
+            announcedExtraByName.set(pendingName, extra);
+          }
+        }
         pendingNameByIndex.clear();
         pendingExtraByIndex.clear();
       };
@@ -6559,6 +6570,12 @@ export function createOpenAIStreamAdapter(
                       ),
                     };
                   } else {
+                    // Claimed once: the announcement it came from named this
+                    // call and no other.
+                    const announcedExtra = announcedExtraByName.get(
+                      toolEvent.tool_name as string,
+                    );
+                    announcedExtraByName.delete(toolEvent.tool_name as string);
                     toolCallParts.push({
                       type: "tool-call" as const,
                       toolCallId: id,
@@ -6566,6 +6583,9 @@ export function createOpenAIStreamAdapter(
                       argsText: JSON.stringify(toolArgs),
                       args: toolArgs,
                       textCursor: cumulativeText.length,
+                      ...(announcedExtra !== undefined
+                        ? { extra_content: announcedExtra }
+                        : {}),
                       ...(toolProvenance ? { provenance: toolProvenance } : {}),
                     } as PositionedToolCallPart);
                   }
@@ -7048,8 +7068,21 @@ export function createOpenAIStreamAdapter(
                   // arguments arrive: the conventional opening delta carries id
                   // and name with empty arguments, and letting it claim the
                   // finished card would draw the next call's arguments there.
+                  // An id at a closed slot opens the next call only when it
+                  // also names a different one. On its own, or repeating the
+                  // name the card holds, it is that call's real id stamped
+                  // late, and forking there leaves the finished card under its
+                  // provisional id beside an empty second one.
+                  const idNamesAnotherCall =
+                    !!stablePartId &&
+                    !!call.function?.name &&
+                    !!matched?.toolName &&
+                    !(
+                      call.function.name.startsWith(matched.toolName) ||
+                      matched.toolName.startsWith(call.function.name)
+                    );
                   const opensNextCall =
-                    closedSlot && (bringsArgs || !!stablePartId);
+                    closedSlot && (bringsArgs || idNamesAnotherCall);
                   // Trailing whitespace is legal JSON belonging to the object
                   // just closed, so a delta carrying it is still writing to the
                   // closed call and its name is that call's, resent. Only a

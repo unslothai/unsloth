@@ -829,3 +829,33 @@ test("an opening name beats a parked resend, and keeps its own metadata", () => 
   assert.deepEqual(parts[0].extra_content, { own: "A", resent: 1 });
   assert.equal(parts[1].extra_content, undefined);
 });
+
+test("an id stamped after the object closed claims that call", () => {
+  // A provider that opens id-less and stamps the real id on a later delta.
+  // Reading the id as proof of another call left the finished one under its
+  // provisional id beside an empty second card.
+  for (const late of [
+    { id: "call_a", index: 0 },
+    { id: "call_a", index: 0, function: { name: "alpha" } },
+  ]) {
+    const parts = run([
+      [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+      [late],
+    ]);
+    assert.deepEqual(
+      parts.map((p) => [p.toolCallId, p.toolName, p.argsText]),
+      [["call_a", "alpha", '{"a":1}']],
+    );
+  }
+
+  // An id that names a different call is still the next call opening.
+  const opened = run([
+    [{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }],
+    [{ id: "call_b", index: 0, function: { name: "beta", arguments: "" } }],
+    [{ id: "call_b", index: 0, function: { arguments: '{"b":2}' } }],
+  ]);
+  assert.deepEqual(shape(opened), [
+    ["alpha", '{"a":1}'],
+    ["beta", '{"b":2}'],
+  ]);
+});

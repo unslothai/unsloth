@@ -698,9 +698,24 @@ class _Turn:
             # non-whitespace text cut where the scanner deliberately would not,
             # turning a stray scalar suffix into a second call and running the
             # tool twice.
-            opens_next_call = bool(
-                isinstance(new_arguments, str) and new_arguments.strip().startswith("{")
-            ) or bool(isinstance(call_id, str) and call_id)
+            # An id at a closed slot opens the next call only when it also
+            # names a different one. On its own, or repeating the name the slot
+            # holds, it is that call's real id stamped late, and forking there
+            # leaves the finished call under its provisional id beside an empty
+            # second one.
+            held_name_now = held["function"]["name"] if held is not None else ""
+            id_names_another_call = bool(
+                isinstance(call_id, str)
+                and call_id
+                and isinstance(new_name, str)
+                and new_name
+                and held_name_now
+                and not (new_name.startswith(held_name_now) or held_name_now.startswith(new_name))
+            )
+            opens_next_call = (
+                bool(isinstance(new_arguments, str) and new_arguments.strip().startswith("{"))
+                or id_names_another_call
+            )
             # An id names its call, so a fragment repeating the id this slot
             # already holds continues it however complete its arguments look --
             # llama-server grows the name across deltas, and forking there gives

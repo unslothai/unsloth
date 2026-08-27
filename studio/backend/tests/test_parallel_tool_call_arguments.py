@@ -554,3 +554,27 @@ def test_a_discarded_resend_does_not_lend_its_place_to_the_next_call():
     kept.merge_structured([_delta(1, "C", '{"c":3}')])
     kept.merge_structured([_delta(0, None, '{"b":2}')])
     assert [call["function"]["name"] for call in kept.calls()] == ["A", "B", "C"]
+
+
+def test_an_id_stamped_after_the_object_closed_claims_that_call():
+    # A provider that opens id-less and stamps the real id on a later delta.
+    # Reading the id as proof of another call left the finished call under a
+    # minted id, and when the delta repeated the name it ran a second empty
+    # invocation of the tool.
+    for late in ({}, {"name": "alpha"}):
+        turn = _Turn()
+        turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+        turn.merge_structured([{"index": 0, "id": "call_a", "function": late}])
+
+        reported = [
+            (call["id"], call["function"]["name"], call["function"]["arguments"])
+            for call in turn.calls()
+        ]
+        assert reported == [("call_a", "alpha", '{"a":1}')]
+
+    # An id that names a different call is still the next call opening.
+    opened = _Turn()
+    opened.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    opened.merge_structured([_delta(0, "beta", "", call_id = "call_b")])
+    opened.merge_structured([_delta(0, None, '{"b":2}', call_id = "call_b")])
+    assert _shape(opened) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
