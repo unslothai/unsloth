@@ -12,7 +12,7 @@ The same three tables are hand-copied into up to seven places each:
 
   GPU name -> gfx           install.sh (_infer_amd_gfx_arch_from_gpu_name)
                             install.sh (case "$_gpu_disp_mkt", detection banner + env tip)
-                            studio/setup.sh (case "$_setup_mkt")
+                            studio/setup.sh (_setup_supported_gfx_from_name)
                             install.ps1 ($nameArchTable)
                             studio/setup.ps1 ($nameArchTable)
                             studio/install_python_stack.py (_WIN_GPU_NAME_ARCH_TABLE)
@@ -378,7 +378,7 @@ def _name_tables() -> dict[str, object]:
             install_sh, '"$_gpu_disp_mkt"', "_gpu_disp_gfx"
         ),
         "studio/setup.sh": _name_table_sh_case(
-            _SETUP_SH.read_text(encoding = "utf-8"), '"$_setup_mkt"', "_setup_gfx"
+            _SETUP_SH.read_text(encoding = "utf-8"), '"$_sup_gfx_in"', "_sup_gfx_out"
         ),
         "install.ps1": _name_table_ps(_INSTALL_PS1),
         "studio/setup.ps1": _name_table_ps(_SETUP_PS1),
@@ -588,13 +588,32 @@ _REGISTERED_TABLE_FILES = {
 _TABLE_LINE_THRESHOLD = 3
 
 
-def _files_carrying_a_name_arch_table() -> dict[str, int]:
+def _under_cargo_output(path: Path, root: Path) -> bool:
+    """Whether `path` sits inside a Cargo `target/` directory.
+
+    Not in _SCAN_SKIP_DIRS because "target" is too generic to skip by name alone, so
+    the pairing with a sibling Cargo.toml is what identifies build output. tauri copies
+    install.sh into studio/src-tauri/target/debug/, so without this the guard fails for
+    anyone who ran `cargo build` before pytest, on their own build output rather than on
+    a real copy. CI never saw it because it builds and tests in separate jobs.
+    """
+    for parent in path.parents:
+        if parent == root.parent:
+            break
+        if parent.name == "target" and (parent.parent / "Cargo.toml").is_file():
+            return True
+    return False
+
+
+def _files_carrying_a_name_arch_table(root: Path = PACKAGE_ROOT) -> dict[str, int]:
     found: dict[str, int] = {}
-    for path in PACKAGE_ROOT.rglob("*"):
+    for path in root.rglob("*"):
         if path.suffix not in {".sh", ".ps1", ".py"} or not path.is_file():
             continue
-        rel = path.relative_to(PACKAGE_ROOT).as_posix()
-        if any(part in _SCAN_SKIP_DIRS for part in path.relative_to(PACKAGE_ROOT).parts):
+        rel = path.relative_to(root).as_posix()
+        if any(part in _SCAN_SKIP_DIRS for part in path.relative_to(root).parts):
+            continue
+        if _under_cargo_output(path, root):
             continue
         # Tests that *assert* on the tables quote card names next to gfx ids by
         # nature. Fixtures like _zoo_rocm_spoof.py do not start with test_ and so
@@ -633,6 +652,25 @@ class TestNoUnregisteredArchTable:
             f"_name_tables() (or the spoof check) and add it to "
             f"_REGISTERED_TABLE_FILES, so drift there fails CI too."
         )
+
+    def test_cargo_build_output_is_skipped_but_a_plain_target_dir_is_not(self, tmp_path):
+        """The skip is narrow on purpose: `target/` next to a Cargo.toml is build output,
+        `target/` anywhere else is source and a copy hiding there still has to fail."""
+        table = "\n".join(f"# RX 7{n}00 gfx1100" for n in range(1, 6)) + "\n"
+        (tmp_path / "src-tauri" / "target" / "debug").mkdir(parents = True)
+        (tmp_path / "src-tauri" / "Cargo.toml").write_text("[package]\n")
+        (tmp_path / "src-tauri" / "target" / "debug" / "install.sh").write_text(table)
+        (tmp_path / "scripts" / "target").mkdir(parents = True)
+        (tmp_path / "scripts" / "target" / "install.sh").write_text(table)
+
+        found = _files_carrying_a_name_arch_table(tmp_path)
+        assert "scripts/target/install.sh" in found, (
+            "a table under a plain target/ directory was skipped; the guard would miss "
+            f"a real copy there: {found}"
+        )
+        assert (
+            "src-tauri/target/debug/install.sh" not in found
+        ), f"cargo build output is still scanned: {found}"
 
 
 # ── Table 3: the torch>=2.11 pin allowlist ───────────────────────────────────

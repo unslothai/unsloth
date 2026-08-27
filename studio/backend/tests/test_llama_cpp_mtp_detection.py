@@ -884,6 +884,7 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
         "core.inference.llama_cpp.child_env_without_native_path_secret",
         lambda: {
             "LD_LIBRARY_PATH": "/already-there",
+            "DYLD_LIBRARY_PATH": "/already-inherited",
             "LLAMA_ARG_DEVICE": "MTL0",
             "LLAMA_ARG_OVERRIDE_TENSOR": ".*=MTL0",
         },
@@ -908,9 +909,13 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
     assert captured["env"] is not None
     assert captured["env"]["GGML_METAL_DEVICES"] == "0"
     assert not any(name.startswith("LLAMA_ARG_") for name in captured["env"])
-    ld_dirs = captured["env"]["LD_LIBRARY_PATH"].split(os.pathsep)
-    assert str(fake.parent) in ld_dirs
-    assert "/already-there" in ld_dirs
+    # macOS: the probe must go on DYLD_LIBRARY_PATH. dyld ignores
+    # LD_LIBRARY_PATH, so putting the dir there left the probe with no search
+    # path (#8566), and an inherited LD_LIBRARY_PATH is left as the user set it.
+    dyld_dirs = captured["env"]["DYLD_LIBRARY_PATH"].split(os.pathsep)
+    assert str(fake.parent) in dyld_dirs
+    assert "/already-inherited" in dyld_dirs
+    assert captured["env"]["LD_LIBRARY_PATH"] == "/already-there"
 
 
 @_NEEDS_BASH
@@ -1111,6 +1116,10 @@ def test_probe_detects_post_rename_ngram_mod_flavor(tmp_path):
     assert caps["ngram_mod_flavor"] == "new"
     assert caps["supports_ngram_mod"] is True
     assert caps["spec_draft_n_max_flag"] == "--spec-draft-n-max"
+    # The build's own depth, off the same line: a pass-through --spec-type makes
+    # the child run on this rather than on anything Unsloth emits, and the Hybrid
+    # Mamba rollback reserve scales by it.
+    assert caps["spec_draft_n_max_default"] == 16
 
 
 @_NEEDS_BASH
@@ -1309,6 +1318,25 @@ def test_mtp_draft_n_max_ignored_when_binary_lacks_mtp():
         _spec_fallback_reason = "binary_no_mtp",
     )
     assert _draft_n_max_matches(backend, 8, speculative_type = "mtp")
+
+
+@pytest.mark.parametrize(
+    ("decided_at", "requested", "expected_match"),
+    [(2, 1, False), (2, 2, True), (None, 1, False), (1, 1, True)],
+)
+def test_partial_offload_stand_down_follows_the_draft_depth(decided_at, requested, expected_match):
+    # Auto's Hybrid Mamba stand-down engages nothing, so _speculative_type is
+    # "none" and the draft-mode arms cannot see it -- but the depth is what priced
+    # the rollback copies that made the placement partial, so a change must rerun
+    # the fit. The recorded value is what keeps that at one reload: an unrecorded
+    # depth compares against 0 forever and reloads on every Apply.
+    backend = _mtp_backend(
+        _requested_spec_mode = "auto",
+        _speculative_type = "none",
+        _spec_draft_n_max = decided_at,
+        _spec_fallback_reason = "mtp_partial_offload",
+    )
+    assert _draft_n_max_matches(backend, requested) is expected_match
 
 
 def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
@@ -3043,7 +3071,7 @@ def test_a_hanging_binary_is_probed_once_per_model_load(tmp_path, monkeypatch):
 def test_a_missing_binary_is_not_cached_so_it_is_seen_as_soon_as_it_lands(tmp_path):
     """The found:False early return sits above the cache and costs a stat rather than a
     subprocess, so it must stay uncached: an install finishing mid-session has to be
-    picked up without a Studio restart."""
+    picked up without an Unsloth restart."""
     binary = tmp_path / "llama-server"
     _clear_caps_cache()
 

@@ -95,7 +95,9 @@ def _without_the_array_wraps(src: str) -> str:
 
 
 def _amd_scan_block(src: str) -> str:
-    """The `if (-not $HasROCm)` WMI fallback: the adapter list the label is read from."""
+    """The `if (-not $HasROCm)` WMI fallback: the adapter list the label is read from.
+    The report-only peer scan added for #8529 is a SEPARATE block and is deliberately not
+    covered here: it feeds no label and no arch."""
     m = re.search(
         r"^    if \(-not \$HasROCm\) \{\n        try \{\n.*?^    \}\n",
         src,
@@ -229,7 +231,7 @@ def test_gpu_name_list_wraps_the_whole_if_in_an_array():
 def test_installer_forwards_the_arch_through_a_private_handoff():
     src = INSTALL_PS1.read_text(encoding = "utf-8")
     forward = src.index(f"$env:{HANDOFF} = $ROCmGfxArch")
-    invoke = src.index("& $UnslothExe @studioArgs")
+    invoke = src.index("Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs")
     assert forward < invoke, "the arch must be handed over before setup.ps1 is invoked"
 
 
@@ -438,7 +440,9 @@ def test_a_user_override_is_the_escape_hatch_under_a_mask(tmp_path):
 
 
 def _installer_scan_block() -> str:
-    """install.ps1's own `if (-not $HasROCm)` WMI fallback plus the name table it feeds."""
+    """install.ps1's own `if (-not $HasROCm)` WMI fallback plus the name table it feeds.
+    The report-only peer scan added for #8529 is a SEPARATE block, deliberately outside
+    this one: it feeds no label and no arch."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
     start = src.index(
         "        if (-not $HasROCm) {\n            try {\n                # ConfigManagerErrorCode"
@@ -457,6 +461,9 @@ def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]]) -> dict
         "\n".join(
             [
                 "$ErrorActionPreference = 'Stop'",
+                # Both names: the routing scan asks WMI (unchanged by #8529), the
+                # report-only peer scan asks CIM. Same answer either way here.
+                f"function Get-CimInstance {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
                 f"function Get-WmiObject {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
                 "function substep { param($a, $b) }",
                 "$HasROCm = $false",
@@ -532,7 +539,7 @@ def _run_handoff_lifecycle(
     tmp_path: Path, *, arch: str | None, inherited: str | None, fails: bool
 ) -> dict:
     body = _handoff_lifecycle_block().replace(
-        "& $UnslothExe @studioArgs",
+        "Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs",
         "throw 'setup exploded'"
         if fails
         else "$script:SeenByChild = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF",

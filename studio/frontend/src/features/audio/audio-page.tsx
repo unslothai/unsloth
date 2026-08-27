@@ -42,12 +42,21 @@ import { usePlatformStore } from "@/config/env";
 import {
   type InferenceStatusResponse,
   ParamSlider,
+  cancelPreStreamRunReservations,
+  confirmStopRunningChatsIfNeeded,
   getInferenceStatus,
   listGgufVariants,
   listLoras,
   loadModel,
+  requestLocalPromptQueueStop,
   unloadModel,
+  useChatRuntimeStore,
 } from "@/features/chat";
+import {
+  PcmRecorder,
+  type SegmentRecorder,
+  createAudioRecorder,
+} from "@/features/chat/adapters/pcm-recorder";
 import {
   SttModelNotDownloadedError,
   StudioModelDictationAdapter,
@@ -263,7 +272,14 @@ function formatClipDuration(seconds: number): string {
   return `${minutes}:${String(rest).padStart(2, "0")}`;
 }
 
-export function AudioPage({ active = true }: { active?: boolean }) {
+export function AudioPage({
+  active = true,
+  onInitialReady,
+}: {
+  active?: boolean;
+  onInitialReady?: () => void;
+}) {
+  const initialReadySent = useRef(false);
   const [mode, setMode] = useState<CreateMode>("speak");
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [busy, setBusy] = useState<AudioBusy>(null);
@@ -315,6 +331,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   >([]);
   const [transcript, setTranscript] = useState("");
   const [transcribedName, setTranscribedName] = useState<string | null>(null);
+  const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [micRequestPending, setMicRequestPending] = useState(false);
   /** Safari and other WebKit builds ship no MediaRecorder, and an http LAN origin
@@ -337,7 +354,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   fallbackClipRef.current = fallbackClip;
   const loadingMoreRef = useRef(false);
   const galleryRefreshGeneration = useRef(0);
-  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recorderRef = useRef<SegmentRecorder | null>(null);
   const recordStreamRef = useRef<MediaStream | null>(null);
   const discardRecordingRef = useRef(false);
   const selectedSttRepoRef = useRef<string | null>(selectedSttRepo);
@@ -432,6 +449,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
+  const clearTranscript = useCallback(() => {
+    setTranscript("");
+    setTranscribedName(null);
+    setTranscriptError(null);
+  }, []);
+
   const refreshSttStatus = useCallback(async () => {
     const generation = ++sttStatusRefreshGeneration.current;
     try {
@@ -488,6 +511,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         repoIdForSidecarKey: sttRepoIdForSidecarKey,
         engineForRepo: sttEngineForRepoId,
       });
+      // Shared sidecar: an adopted model strands the previous pick's transcript
+      // under it. null is the 5-minute idle unload, which must not delete it.
+      if (reconciled !== null && reconciled !== selectedSttRepoRef.current)
+        clearTranscript();
       selectedSttRepoRef.current = reconciled;
       setSelectedSttRepo(reconciled);
     } catch {
@@ -495,7 +522,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       setSttLoadedModel(null);
       setSttLoadedEngine(null);
     }
-  }, []);
+  }, [clearTranscript]);
 
   const sttSelected = selectedSttRepo !== null;
   const sttReady = sttSelectionReady(
@@ -517,6 +544,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       selectedSttRepoRef.current = null;
       sttLoadGeneration.current += 1;
       sttLoadedByThisPage.current = null;
+      clearTranscript();
       setSelectedSttRepo(null);
     };
     if (!owned) {
@@ -531,7 +559,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     await unloadSttModel(sttEngineForRepoId(selected), claim);
     forget();
     await refreshSttStatus();
-  }, [refreshSttStatus, sttReady, sttLoadedModel]);
+  }, [clearTranscript, refreshSttStatus, sttReady, sttLoadedModel]);
 
   const ensureClipSrc = useCallback(async (clip: AudioGalleryClip) => {
     const cached = galleryCache.srcById.get(clip.id);
@@ -644,10 +672,38 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   // Resync on activation: another tab may have loaded/unloaded models meanwhile.
   useEffect(() => {
     if (!active) return;
-    void refreshStatus();
-    void refreshSttStatus();
-    void refreshGallery();
-  }, [active, refreshStatus, refreshSttStatus, refreshGallery]);
+    if (initialReadySent.current) {
+      void refreshStatus();
+      void refreshSttStatus();
+      void refreshGallery();
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const [initialClips] = await Promise.all([
+        refreshGallery(),
+        refreshStatus(),
+        refreshSttStatus(),
+      ]);
+      const initialSelection =
+        initialClips.find((clip) => clip.id === galleryCache.selectedId) ??
+        initialClips[0];
+      if (initialSelection) await ensureClipSrc(initialSelection);
+      if (cancelled || initialReadySent.current) return;
+      initialReadySent.current = true;
+      onInitialReady?.();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    active,
+    ensureClipSrc,
+    onInitialReady,
+    refreshGallery,
+    refreshStatus,
+    refreshSttStatus,
+  ]);
 
   // Activation alone is not enough: the loaded-models indicator can eject the TTS model
   // out from under a page that stays active, leaving Generate enabled against an empty
@@ -695,6 +751,39 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         pendingRoutedTtsPick.current = { repoId, ggufFilename, loadId };
         return;
       }
+      // A load stops every chat on the shared llama-server, so ask the way Chat does
+      // instead of dead-ending on the backend's 409. Claimed before the await: a routed
+      // pick arriving while the dialog is open must queue, not start a second load.
+      ttsLoadInFlight.current = true;
+      // Chat's gate, held across the question and the load. Without it a queue can
+      // materialize while the dialog is open, outside the snapshot the answer was given
+      // for, and a generation started in that window brings the 409 back.
+      const lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+      if (lifecycleLease === null) {
+        ttsLoadInFlight.current = false;
+        pendingRoutedTtsPick.current = null;
+        toast.info("Wait for the current model to finish loading.");
+        return;
+      }
+      const releaseLifecycle = () =>
+        useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
+      const stopDecision = await confirmStopRunningChatsIfNeeded();
+      if (!stopDecision.proceed) {
+        releaseLifecycle();
+        ttsLoadInFlight.current = false;
+        // Declining refuses the swap, so a queued pick must not reopen the dialog.
+        pendingRoutedTtsPick.current = null;
+        return;
+      }
+      // The page can go away while the dialog is open. pendingTtsLoad is still null then,
+      // so the deactivation effect has nothing to abort and a hidden load would replace
+      // the model the now-visible page is using. Queue it for the activation replay.
+      if (!activeRef.current) {
+        releaseLifecycle();
+        ttsLoadInFlight.current = false;
+        pendingRoutedTtsPick.current = { repoId, ggufFilename, loadId };
+        return;
+      }
       const generation = ++ttsLoadGeneration.current;
       const controller = new AbortController();
       const loadRequestId = crypto.randomUUID();
@@ -722,6 +811,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           {
             model_path: loadId || repoId,
             load_request_id: loadRequestId,
+            force_cancel_active: stopDecision.forceCancelActive,
             hf_token: hfApiToken(getHfToken()) ?? null,
             max_seq_length: TTS_MAX_TOKENS + TTS_PROMPT_CONTEXT_RESERVE,
             load_in_4bit: false,
@@ -730,8 +820,16 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           },
           {
             signal: controller.signal,
+            runtime: "tts",
             onRequestStart: () => {
               pending.requestStarted = true;
+              // Queued prompts would otherwise start on the model this load replaces.
+              // Only once /load is actually going out: loadModel returns without sending
+              // when a stored token is invalid and the user picks replace or dismisses
+              // the warning, and cancelling earlier threw away accepted sends and queued
+              // prompts for a swap that never happened.
+              cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
+              requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
             },
           },
         );
@@ -758,6 +856,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         if (pendingTtsLoad.current?.generation === generation)
           pendingTtsLoad.current = null;
         ttsLoadInFlight.current = false;
+        // Before the replay below, which needs the gate for its own attempt.
+        releaseLifecycle();
         busyRef.current = null;
         setBusy(null);
         if (activeRef.current) void refreshStatus();
@@ -953,7 +1053,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           await startSttDownload(sidecarKey, hfApiToken(getHfToken()), engine);
           // STT owns its specialized transfer, but the existing mirror gives
           // it the same global Downloads row, progress and Cancel action as
-          // every other Studio model download. Do not reset an adopted row.
+          // every other Unsloth model download. Do not reset an adopted row.
           if (!isTrackingSttDownload(sidecarKey, engine)) {
             trackSttDownload(sidecarKey, {
               // Audio owns the final load through its active/selection
@@ -1126,6 +1226,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         if (!transitionMode("transcribe")) return;
         const sidecarKey = sttSidecarKeyFor(id);
         const engine = sttEngineForRepoId(id);
+        if (selectedSttRepoRef.current !== id) clearTranscript();
         deferredSttLoad.current = null;
         selectedSttRepoRef.current = id;
         setSelectedSttRepo(id);
@@ -1219,6 +1320,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       loadOrStageTtsModel(id, exactGguf, meta);
     },
     [
+      clearTranscript,
       ensureSttLoaded,
       isMac,
       loadOrStageTtsModel,
@@ -1241,6 +1343,15 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     const wanted = routeSearch.model;
     if (!wanted) {
       handledRouteModel.current = null;
+      // A task with no model is a mode intent from Settings; without it the page keeps
+      // whatever mode it was left in.
+      const task = routeSearch.task;
+      if (!task) return;
+      const intended =
+        task === "automatic-speech-recognition" ? "transcribe" : "speak";
+      // Left in the URL when the switch is refused, so it retries once busy releases.
+      if (intended !== mode && !transitionMode(intended)) return;
+      void navigateSelf({ to: "/audio", search: {}, replace: true });
       return;
     }
     const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}`;
@@ -1263,12 +1374,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   }, [
     active,
     busy,
+    mode,
     routeSearch.model,
     routeSearch.quant,
     routeSearch.ggufQuant,
     routeSearch.task,
     handleModelSelect,
     navigateSelf,
+    transitionMode,
   ]);
 
   // --- Speak --------------------------------------------------------------
@@ -1322,27 +1435,56 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     const activeModel = status?.active_model;
     if (!activeModel) return;
 
-    // An old managed completion must not immediately replace the model the
-    // user just ejected. The global download may continue for later use.
-    invalidatePendingStagedTts();
-    stageTtsDownload([]);
+    // Chat's gate, taken before the question so a queue cannot materialize while the
+    // dialog is open and then be stopped by the blanket queue stop below.
+    const lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+    if (lifecycleLease === null) {
+      toast.info("Wait for the current model to finish loading.");
+      return;
+    }
 
+    // Busy before the dialog, so a second eject cannot start behind the first.
     setBusy("unloading");
-    const toastId = toast.loading("Unloading model…");
     void (async () => {
       try {
-        // Non-forced unload is deliberate: the backend refuses rather than
-        // killing an active Chat or API generation owned by another surface.
-        await unloadModel({ model_path: activeModel });
-        await refreshStatus();
-        toast.success("Model unloaded", { id: toastId, duration: 1200 });
-      } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : "Failed to unload model.",
-          { id: toastId },
+        // Ejecting stops every chat on the shared llama-server. Unforced, the backend
+        // refused with a 409 the user could only read. Nothing is torn down until the
+        // answer is in, so declining leaves the page as it was.
+        const stopDecision = await confirmStopRunningChatsIfNeeded(
+          "Unloading the model",
+          "unload",
         );
+        if (!stopDecision.proceed) {
+          setBusy(null);
+          return;
+        }
+
+        // An old managed completion must not immediately replace the model the
+        // user just ejected. The global download may continue for later use.
+        invalidatePendingStagedTts();
+        stageTtsDownload([]);
+
+        const toastId = toast.loading("Unloading model…");
+        try {
+          cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
+          requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+          await unloadModel({
+            model_path: activeModel,
+            force_cancel_active: stopDecision.forceCancelActive,
+          });
+          requestLocalPromptQueueStop();
+          await refreshStatus();
+          toast.success("Model unloaded", { id: toastId, duration: 1200 });
+        } catch (error) {
+          toast.error(
+            error instanceof Error ? error.message : "Failed to unload model.",
+            { id: toastId },
+          );
+        } finally {
+          setBusy(null);
+        }
       } finally {
-        setBusy(null);
+        useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
       }
     })();
   }, [
@@ -1468,6 +1610,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       const controller = new AbortController();
       transcriptionAbort.current = controller;
       setBusy("transcribing");
+      // Or a failure reads as this file's transcript, exported under its name.
+      clearTranscript();
       setTranscribedName(name);
       try {
         const text = await transcribeAudioBlob(blob, {
@@ -1481,9 +1625,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         if (!text) toast.info("The model heard no speech in that audio.");
       } catch (error) {
         if (controller.signal.aborted) return;
-        toast.error(
-          error instanceof Error ? error.message : "Transcription failed.",
-        );
+        const message =
+          error instanceof Error ? error.message : "Transcription failed.";
+        if (activeRef.current) setTranscriptError(message);
+        toast.error(message);
       } finally {
         if (transcriptionAbort.current === controller) {
           transcriptionAbort.current = null;
@@ -1492,7 +1637,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         }
       }
     },
-    [selectedSttRepo, sttLoadedModel, sttLoadedEngine, refreshSttStatus],
+    [
+      clearTranscript,
+      selectedSttRepo,
+      sttLoadedModel,
+      sttLoadedEngine,
+      refreshSttStatus,
+    ],
   );
 
   const handleRecordToggle = useCallback(async () => {
@@ -1520,7 +1671,17 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         return;
       }
       recordStreamRef.current = stream;
-      const recorder = new MediaRecorder(stream);
+      const recorder = createAudioRecorder(stream);
+      // WAV is uncompressed, so on the PCM path the byte cap is reached long
+      // before the 30 minute one. Express it as a duration the timer below
+      // already enforces, rather than letting the upload be refused.
+      const maxSeconds =
+        recorder instanceof PcmRecorder
+          ? Math.min(
+              RECORDING_MAX_SECONDS,
+              recorder.secondsWithin(RECORDING_MAX_BYTES),
+            )
+          : RECORDING_MAX_SECONDS;
       const chunks: Blob[] = [];
       let recordedBytes = 0;
       let limitHit: "duration" | "size" | null = null;
@@ -1532,7 +1693,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         limitHit = reason;
         toast.warning(
           reason === "duration"
-            ? `Recording stopped at the ${RECORDING_MAX_SECONDS / 60} minute limit.`
+            ? `Recording stopped at the ${Math.floor(maxSeconds / 60)} minute limit.`
             : "Recording stopped: it reached the maximum upload size.",
         );
         try {
@@ -1543,7 +1704,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       };
       const durationTimer = window.setTimeout(
         () => stopAtLimit("duration"),
-        RECORDING_MAX_SECONDS * 1000,
+        maxSeconds * 1000,
       );
       recorder.addEventListener("dataavailable", (event) => {
         if (event.data.size > 0) {
@@ -1760,7 +1921,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             // The catalog rows are already filtered to families with a GGUF sibling; these
             // have none, so offering them only produces that error.
             .filter((lora) => !isMac || lora.export_type === "gguf")
-            .filter((lora) => isTtsAudioType(lora.audio_type))
+            // The GGUF flag matters: GGUF_TTS_AUDIO_TYPES leaves csm out because llama.cpp has
+            // no CSM decoder, so a csm LoRA exported to GGUF fails at load. Without it the
+            // wider Transformers list answered and the row was offered anyway.
+            .filter((lora) =>
+              isTtsAudioType(lora.audio_type, lora.export_type === "gguf"),
+            )
             .map((lora) => ({
               id: lora.adapter_path,
               name: audioModelLabel(lora.adapter_path),
@@ -1832,81 +1998,91 @@ export function AudioPage({ active = true }: { active?: boolean }) {
 
   return (
     <div className="@container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
-      <div className="relative flex h-[48px] shrink-0 items-start justify-between gap-2 pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-        {/* min-w-0: a long resident model name would otherwise push the mode pill off a narrow window. */}
-        <div className="flex min-w-0 items-center gap-2">
-          <ModelSelector
-            models={selectorModels}
-            additionalOnDeviceModels={
-              mode === "transcribe" ? sttOnDeviceModels : trainedTtsModels
-            }
-            loadedModelIdOverride={
-              mode === "transcribe" && sttReady
-                ? (selectedSttRepo ?? undefined)
-                : undefined
-            }
-            loaded={mode === "transcribe" ? sttReady : undefined}
-            value={selectorValue}
-            onValueChange={handleModelSelect}
-            onEject={busy === null && selectorValue ? handleEject : undefined}
-            variant="ghost"
-            className="!h-[34px]"
-            task={HUB_TASKS_BY_MODE[mode]}
-            catalog={AUDIO_CATALOG}
-            // TTS/ASR come from the checkpoint's own tokenizer, not a curated
-            // recipe, so any publisher's audio repo loads here.
-            communityModelPolicy="search-only"
-            placeholder="Select audio model"
-            open={active && selectorOpen}
-            onOpenChange={(o) => setSelectorOpen(active && o)}
-          />
+      {/* Keep the tabs centered over the preview region at every width. The model rail
+          holds at 408px when space permits and shrinks only to preserve the controls. */}
+      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
+        <div className="pointer-events-none flex h-full min-w-0 items-start overflow-hidden pl-[var(--studio-media-header-left-inset,1.5rem)] @[50rem]:border-r @[50rem]:border-border/60">
+          {/* A long resident model name must yield to the mode pill instead of painting over it. */}
+          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
+            <ModelSelector
+              models={selectorModels}
+              additionalOnDeviceModels={
+                mode === "transcribe" ? sttOnDeviceModels : trainedTtsModels
+              }
+              loadedModelIdOverride={
+                mode === "transcribe" && sttReady
+                  ? (selectedSttRepo ?? undefined)
+                  : undefined
+              }
+              loaded={mode === "transcribe" ? sttReady : undefined}
+              value={selectorValue}
+              onValueChange={handleModelSelect}
+              onEject={busy === null && selectorValue ? handleEject : undefined}
+              variant="ghost"
+              className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
+              triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
+              task={HUB_TASKS_BY_MODE[mode]}
+              catalog={AUDIO_CATALOG}
+              // TTS/ASR come from the checkpoint's own tokenizer, not a curated
+              // recipe, so any publisher's audio repo loads here.
+              communityModelPolicy="search-only"
+              placeholder="Select audio model"
+              open={active && selectorOpen}
+              onOpenChange={(o) => setSelectorOpen(active && o)}
+            />
+          </div>
         </div>
-        <div className="pointer-events-none absolute inset-x-0 top-[var(--studio-chat-header-padding-top,11px)] flex justify-center">
-          <PillTabs
-            ariaLabel="Page mode"
-            // Always "create": Train navigates away, so the pill never latches.
-            value="create"
-            onValueChange={(v) => {
-              if (v !== "train") return;
-              toast.info(
-                "Audio fine-tuning lives on the Train page. Unsloth trains TTS and STT models there. Pick an audio model and appropriate dataset.",
-                { duration: 8000 },
-              );
-              void navigateSelf({ to: "/studio" });
-            }}
-            fit={true}
-            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-3 @[68rem]:[&>button]:px-11"
-            tabs={[
-              {
-                value: "create",
-                label: "Create",
-                icon: (
-                  <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
-                ),
-              },
-              {
-                value: "train",
-                label: "Train",
-                icon: (
-                  <HugeiconsIcon
-                    icon={TestTubeOutlineIcon}
-                    className="size-3.5"
-                  />
-                ),
-              },
-            ]}
-          />
+        <div className="grid h-full min-w-0 grid-cols-[1fr_auto] @[50rem]:grid-cols-[1fr_auto_1fr]">
+          <div className="pointer-events-auto col-start-2 justify-self-end pr-3 pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:justify-self-center @[50rem]:pr-0">
+            <PillTabs
+              ariaLabel="Page mode"
+              // Always "create": Train navigates away, so the pill never latches.
+              value="create"
+              onValueChange={(v) => {
+                if (v !== "train") return;
+                toast.info(
+                  "Audio fine-tuning lives on the Train page. Unsloth trains TTS and STT models there. Pick an audio model and appropriate dataset.",
+                  { duration: 8000 },
+                );
+                void navigateSelf({ to: "/studio" });
+              }}
+              fit={true}
+              className="h-[34px] [&>button]:h-[34px] [&>button]:px-3 @[68rem]:[&>button]:px-11"
+              tabs={[
+                {
+                  value: "create",
+                  label: "Create",
+                  icon: (
+                    <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
+                  ),
+                },
+                {
+                  value: "train",
+                  label: "Train",
+                  icon: (
+                    <HugeiconsIcon
+                      icon={TestTubeOutlineIcon}
+                      className="size-3.5"
+                    />
+                  ),
+                },
+              ]}
+            />
+          </div>
         </div>
       </div>
       {/* Below 50rem the panes stack and the page scrolls as one column, matching Images and
           Video: side by side, the 408px rail plus a usable preview needs more width than that. */}
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden">
-        <div className="flex w-full shrink-0 flex-col border-b border-border/60 pl-8 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
+        <div className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 pb-6 pl-0.5 pr-8 @[50rem]:overflow-y-auto",
+              "hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto",
+              mode === "speak"
+                ? "panel-scroll-fade-action"
+                : "panel-scroll-fade",
               settingsFadeClass,
             )}
           >
@@ -1981,7 +2157,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                   hint={
                     recordingSupported
                       ? "Record a clip and it is transcribed when you stop."
-                      : "This browser cannot record. Open Studio over https or on localhost, or upload a file below."
+                      : "This browser cannot record. Open Unsloth over https or on localhost, or upload a file below."
                   }
                 >
                   <Button
@@ -2035,7 +2211,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           </div>
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
-            <div className="relative z-10 flex shrink-0 justify-center pt-0.5 pb-4 pl-8 pr-8">
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
               <Button
                 className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                 onClick={
@@ -2061,9 +2237,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           ) : null}
         </div>
 
-        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden pl-2 @[50rem]:min-h-0">
+        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0">
           {mode === "transcribe" ? (
-            <div className="hover-scrollbar flex flex-1 flex-col gap-3 overflow-auto p-6 pl-8">
+            <div
+              data-reload-snapshot-sensitive={
+                transcript || transcribedName ? "" : undefined
+              }
+              className="hover-scrollbar flex flex-1 flex-col gap-3 overflow-auto p-6 px-10 @[50rem]:pt-[60px]"
+            >
               {busy === "transcribing" ? (
                 <div className="flex items-center gap-2 text-ui-13 text-muted-foreground">
                   <Spinner className="size-4" />
@@ -2096,6 +2277,15 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                     {transcript}
                   </p>
                 </>
+              ) : transcriptError ? (
+                <div className="flex flex-col gap-1" role="alert">
+                  <p className="text-ui-13 font-medium text-destructive">
+                    Could not transcribe {transcribedName ?? "that audio"}.
+                  </p>
+                  <p className="text-ui-13 text-muted-foreground">
+                    {transcriptError}
+                  </p>
+                </div>
               ) : busy !== "transcribing" ? (
                 <p className="text-ui-13 text-muted-foreground">
                   The transcript appears here. It is not stored: copy or
@@ -2104,7 +2294,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
               ) : null}
             </div>
           ) : (
-            <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 pl-8">
+            <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 px-10 @[50rem]:pt-[60px]">
               <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4">
                 {selectedClip ? (
                   <div className="flex w-full max-w-xl flex-col gap-3">

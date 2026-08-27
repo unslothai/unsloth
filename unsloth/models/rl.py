@@ -21,6 +21,7 @@ import torch
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import copyreg
 import importlib
+import collections
 import inspect
 import os
 import re
@@ -917,6 +918,27 @@ def _is_stream(dataset):
 
 _SCAN_ROWS = 1024
 
+# A producer that truncates every row itself can say so and be believed without a
+# scan: scanning a lazily-tokenizing split (`with_transform`) would tokenize every
+# row in `__init__`, the exact eager pass it exists to avoid. Only a cap at or
+# below the enforced one counts.
+_TRUNCATION_ATTESTATION_ATTR = "_unsloth_truncated_to"
+
+
+def _attested_within_cap(dataset, cap):
+    """The split's own truncation-width claim, or None if it makes none.
+
+    Read from `__dict__`, not `getattr`: `_CappedBase.__getattr__` forwards to the
+    inner split, so a wrapper would inherit a guarantee it does not carry.
+    """
+    own = getattr(dataset, "__dict__", None)
+    if not isinstance(own, dict):
+        return None
+    claimed = own.get(_TRUNCATION_ATTESTATION_ATTR)
+    if not isinstance(claimed, int) or isinstance(claimed, bool):
+        return None
+    return claimed <= cap
+
 
 def pretokenized_within_cap(dataset, cap):
     """Whether every pre-tokenized row in `dataset` already fits `cap`.
@@ -935,6 +957,9 @@ def pretokenized_within_cap(dataset, cap):
     """
     if dataset is None:
         return True
+    attested = _attested_within_cap(dataset, cap)
+    if attested is not None:
+        return attested
     try:
         try:
             n = len(dataset)
@@ -1797,6 +1822,98 @@ def _note_grpo_hidden_states_success(model):
     setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR, False)
 
 
+def _minimise_logits_kwarg(forward_signature, args, forward_kwargs):
+    """Ask the model for as few logits as it will give us, and say which kwarg did it.
+
+    We are about to overwrite `outputs.logits` with hidden states, so every
+    logit the forward computes is thrown away. transformers spells the limit
+    `logits_to_keep` -- measured on 4.57.6, 5.0.0 and 5.15.0, all three declare
+    that name and none declares `num_logits_to_keep`, so the second name is not
+    for them. It is for us: `unsloth/models/llama.py` and `mistral.py` patch in
+    forwards declaring both, and `unsloth/models/vision.py` probes for the old
+    name FIRST because some VLM stacks still carry only it. Whichever name a
+    forward takes, it reads the value as
+    `slice(-value, None)`, so the DEFAULT of 0 becomes `slice(0, None)` -- the
+    whole sequence. The GRPO trainer does not pass a value at all, so the
+    lm_head projects every prompt and completion position over the full
+    vocabulary and, for the softcapped models, multiplies the result twice more.
+
+    Muse Glimmer 30B on a Kaggle 2xT4 measured that at a 1002 MiB allocation
+    per chunk, over a 202048-wide vocabulary. On one card it is invisible: the
+    trainer's `del outputs` frees it a line later. On a layer-split model
+    accelerate copies it to the other card first and the run dies there.
+
+    1, not 0: 0 means "all of them", and a model that computes its own loss from
+    `labels` needs real logits, so that case is left alone.
+    """
+    if forward_kwargs.get("labels") is not None:
+        return None
+    try:
+        bound = forward_signature.bind_partial(*args, **forward_kwargs)
+    except TypeError:
+        return None
+    # A forward given `labels` positionally lands it in `bound.arguments` and
+    # never in `forward_kwargs`, so the lookup above cannot see it, and the loss
+    # the model then computes for itself would be one position wide.
+    if bound.arguments.get("labels") is not None:
+        return None
+    accepts_var_keyword = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in forward_signature.parameters.values()
+    )
+    for name in ("logits_to_keep", "num_logits_to_keep"):
+        declared = name in forward_signature.parameters
+        if not declared and not accepts_var_keyword:
+            continue
+        # Passing it positionally already and then also by keyword is a
+        # TypeError. Give up entirely rather than moving to the next name: a
+        # caller who bound a width positionally has said what it wants, and
+        # reaching for the OTHER spelling would either fight that width or, on a
+        # forward that only understands the one it was handed and swallows the
+        # rest in `**kwargs`, be accepted and ignored -- no saving, and a
+        # non-None return arms the re-run below for nothing.
+        if name in bound.arguments and name not in forward_kwargs:
+            return None
+        forward_kwargs[name] = 1
+        return name
+    return None
+
+
+def _drop_spare_hidden_states(outputs):
+    """Detach every hidden-state layer from `outputs`; the caller keeps the last.
+
+    `outputs.hidden_states = None` does NOT do this. `ModelOutput.__setattr__`
+    is
+
+        if name in field_names and value is not None:
+            super().__setitem__(name, value)
+        super().__setattr__(name, value)
+
+    so assigning None sets the attribute and leaves the mapping entry holding
+    the full tuple, and `ModelOutput` blocks `__delitem__`, `pop`, `update` and
+    `setdefault` outright. Every consumer that walks the object as a mapping --
+    accelerate's `send_to_device`, which is the one that matters here -- still
+    sees and copies all of it. Writing through `OrderedDict.__setitem__` is what
+    actually clears it, and leaves the mapping and the attribute agreeing on
+    None, which is the state a forward returns with `output_hidden_states=False`.
+    """
+    try:
+        if isinstance(outputs, collections.OrderedDict) and "hidden_states" in outputs:
+            collections.OrderedDict.__setitem__(outputs, "hidden_states", None)
+            object.__setattr__(outputs, "hidden_states", None)
+        elif isinstance(outputs, dict) and "hidden_states" in outputs:
+            outputs["hidden_states"] = None
+        elif hasattr(outputs, "hidden_states"):
+            outputs.hidden_states = None
+    except Exception:
+        # A frozen or exotic output object is not worth failing the step over;
+        # the caller has already taken the layer it needs.
+        logger.debug(
+            "Unsloth: could not drop spare GRPO hidden states.",
+            exc_info = True,
+        )
+
+
 def _replace_outputs_logits(outputs, hidden_states):
     if hasattr(outputs, "logits"):
         outputs.logits = hidden_states
@@ -1846,16 +1963,44 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         num_logits_to_keep = _get_num_logits_to_keep(forward_signature, args, forward_kwargs)
         forward_kwargs["output_hidden_states"] = True
         forward_kwargs["return_dict"] = True
-        try:
-            outputs = original_forward(*args, **forward_kwargs)
-        except TypeError as error:
-            if "output_hidden_states" not in str(error) and "return_dict" not in str(error):
-                raise
+        logits_kwarg = _minimise_logits_kwarg(
+            forward_signature,
+            args,
+            forward_kwargs,
+        )
+
+        def rejected_hidden_states(message):
+            return "output_hidden_states" in message or "return_dict" in message
+
+        def forward_without_hidden_states():
             _warn_grpo_hidden_states_fallback_once(
                 target_model,
                 f"Unsloth: GRPO fallback could not request hidden states for unsupported model {model_name}; using logits directly.",
             )
             return original_forward(*args, **kwargs)
+
+        try:
+            outputs = original_forward(*args, **forward_kwargs)
+        except TypeError as error:
+            message = str(error)
+            if logits_kwarg is None or logits_kwarg not in message:
+                if not rejected_hidden_states(message):
+                    raise
+                return forward_without_hidden_states()
+            # The signature advertised the parameter but the forward refuses
+            # the value. Retry without our minimisation rather than losing
+            # hidden states entirely over an optimisation -- and send the retry
+            # through the same fallback, since a forward that splats **kwargs
+            # into a sub-module can refuse the logits limiter and the hidden
+            # states one after the other.
+            forward_kwargs.pop(logits_kwarg, None)
+            logits_kwarg = None
+            try:
+                outputs = original_forward(*args, **forward_kwargs)
+            except TypeError as retry_error:
+                if not rejected_hidden_states(str(retry_error)):
+                    raise
+                return forward_without_hidden_states()
 
         hidden_states = getattr(outputs, "hidden_states", None)
         if hidden_states is None or len(hidden_states) == 0:
@@ -1863,11 +2008,29 @@ def _install_grpo_hidden_states_forward_wrapper(model):
                 target_model,
                 f"Unsloth: GRPO fallback did not receive hidden states for unsupported model {model_name}; using logits directly.",
             )
-            return outputs
+            if logits_kwarg is None:
+                return outputs
+            # `outputs.logits` is the return value now, and we asked for a single
+            # position because we meant to throw the logits away. GRPO drops the
+            # last one and slices the completion window out of what is left, so
+            # one position leaves it nothing. Put the caller's own limit back --
+            # absent means every position, which is what a model that ignores
+            # `logits_to_keep` would have returned anyway -- and re-run.
+            if logits_kwarg in kwargs:
+                forward_kwargs[logits_kwarg] = kwargs[logits_kwarg]
+            else:
+                forward_kwargs.pop(logits_kwarg, None)
+            return original_forward(*args, **forward_kwargs)
 
         hidden_states = hidden_states[-1]
         if num_logits_to_keep != 0:
             hidden_states = hidden_states[:, -num_logits_to_keep:, :]
+        # Only the last layer is ever read. Every earlier layer is still hanging
+        # off `outputs`, and on a multi-GPU dispatch accelerate's
+        # AlignDevicesHook.post_forward walks the whole returned object and
+        # copies every tensor in it to the input device, so keeping them costs a
+        # cross-device copy per layer as well as the memory.
+        _drop_spare_hidden_states(outputs)
         _note_grpo_hidden_states_success(target_model)
         return _replace_outputs_logits(outputs, hidden_states)
 
@@ -2577,6 +2740,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "    _UNSLOTH_SCAN_ROWS = 1024\n"
                     "    def _unsloth_within_cap(_ds):\n"
                     "        if _ds is None: return True\n"
+                    # Believe a producer's own truncation claim: scanning a
+                    # `with_transform` split would tokenize every row in `__init__`,
+                    # the eager pass it exists to avoid. Read from `__dict__` so a
+                    # wrapper does not inherit the inner split's claim.
+                    "        _unsloth_own = getattr(_ds, '__dict__', None)\n"
+                    "        if isinstance(_unsloth_own, dict):\n"
+                    "            _unsloth_claim = _unsloth_own.get('_unsloth_truncated_to')\n"
+                    "            if isinstance(_unsloth_claim, int) and not isinstance(_unsloth_claim, bool):\n"
+                    "                return _unsloth_claim <= _unsloth_cap\n"
                     "        try:\n"
                     "            try:    _n = len(_ds)\n"
                     "            except Exception: _n = None\n"
@@ -2903,6 +3075,25 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # as a bare `StopIteration` naming nothing at all.
                     "        if _unsloth_emptied:\n"
                     "            raise ValueError('Unsloth: truncating to `max_length = ' + str(args.max_length) + '` left every row with no supervised token, so there is nothing to train on. The supervised part of your rows starts past that length: raise `max_length`, or set `truncation_mode = \"keep_end\"` if the completion sits at the end of each row.')\n"
+                    # A producer that truncates every row enforces the cap just as
+                    # `truncate_dataset` would, so keep padding-free rather than pay the
+                    # fallback for a guarantee already held. Unsloth's online tokenization
+                    # is this shape: a `with_transform` view capped on read, invisible
+                    # without reading -- and reading it all is the eager pass it avoids.
+                    # Not under `eval_packing`: that split is meant to be overlength and
+                    # the packer needs the `max_length` this branch clears.
+                    "    if not _unsloth_prep_truncates and not _unsloth_eval_packing:\n"
+                    "        def _unsloth_attests(_ds):\n"
+                    "            if _ds is None: return True\n"
+                    "            _own = getattr(_ds, '__dict__', None)\n"
+                    "            if not isinstance(_own, dict): return False\n"
+                    "            _claim = _own.get('_unsloth_truncated_to')\n"
+                    "            if not isinstance(_claim, int) or isinstance(_claim, bool): return False\n"
+                    "            return _claim <= _unsloth_cap\n"
+                    "        _unsloth_attest_eval = eval_dataset if 'eval_dataset' in locals() else None\n"
+                    "        _unsloth_attest_splits = list(_unsloth_attest_eval.values()) if isinstance(_unsloth_attest_eval, dict) else [_unsloth_attest_eval]\n"
+                    "        if _unsloth_attests(train_dataset) and all(_unsloth_attests(_s) for _s in _unsloth_attest_splits):\n"
+                    "            _unsloth_prep_truncates = True\n"
                     "    if _unsloth_prep_truncates:\n"
                     "        args.max_seq_length = args.max_length\n"
                     "        args.max_length = None\n"
@@ -4125,16 +4316,6 @@ def patch_trl_openenv():
     for function in RL_ADDITIONAL_FUNCTIONS["openenv"]:
         logger.info(f"Unsloth: Patching trl openenv with function: {function.__name__}")
         function()  # Call the function to apply the patch
-    return
-
-
-def patch_trl_vllm_generation():
-    # trl moved vllm stuff to trl/generation/vllm_generation.py
-    # We need to min_p patch it to not instantiate another vLLM instance if we already have one with fast_inference
-    # Find the instance of self.llm = LLM(..) (multiline) and wrap it around an if clause
-    for function in RL_ADDITIONAL_FUNCTIONS["vllm_generation"]:
-        logger.info(f"Unsloth: Patching trl VLLMGeneration with function: {function.__name__}")
-        function()
     return
 
 

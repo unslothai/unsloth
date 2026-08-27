@@ -1490,7 +1490,7 @@ def test_deleting_one_of_several_variants_keeps_the_dspark_drafter(tmp_path):
 
 
 def test_deleting_the_last_variant_reclaims_an_opt_in_dspark_drafter(tmp_path):
-    """Studio downloads the sidecar itself once the user opts in, and companion
+    """Unsloth downloads the sidecar itself once the user opts in, and companion
     filtering keeps it out of the variant menu, so leaving it behind is an
     invisible ~11 GB allocation. Nothing can launch it with no main GGUF left."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
@@ -1542,7 +1542,7 @@ def test_a_suffix_scheme_sidecar_is_not_mistaken_for_a_quant(tmp_path):
 
 def test_deleting_the_last_variant_keeps_a_dflash_weight(tmp_path):
     """Negative control: dflash is a family name a user picks for real weights,
-    and Studio never fetches it as a companion, so it is not reclaimable."""
+    and Unsloth never fetches it as a companion, so it is not reclaimable."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
 
     repo, snap = _cache_repo(
@@ -2579,7 +2579,7 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
     seen: dict = {"dflash_fetched": False}
     monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
     monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: False)
-    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 4096, 8192)])
+    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None, **_kw: [(0, 4096, 8192)])
     monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: False)
     monkeypatch.setattr(backend, "_kill_process", lambda: None)
     monkeypatch.setattr(

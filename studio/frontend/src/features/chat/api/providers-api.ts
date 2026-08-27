@@ -22,6 +22,10 @@ export interface ProviderRegistryEntry {
   supports_streaming: boolean;
   supports_vision: boolean;
   supports_tool_calling: boolean;
+  /** Unsloth runs its own tool loop (search/code/MCP/RAG) against this provider. */
+  supports_studio_tools?: boolean;
+  /** Backend-only entry, surfaced through a custom preset rather than the dropdown. */
+  hidden?: boolean;
   /** remote = fetch /models; curated = huge catalogs — UI uses defaults + manual IDs only */
   model_list_mode?: "remote" | "curated";
 
@@ -43,6 +47,7 @@ export interface ProviderConfig {
   auth_status?: ProviderAuthStatus;
   models?: string[];
   available_models?: string[];
+  max_output_tokens?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -52,6 +57,8 @@ export interface ProviderModelInfo {
   display_name: string;
   context_length?: number | null;
   owned_by?: string | null;
+  /** Only the ChatGPT plan catalog reports this; the registry describes the rest. */
+  vision?: boolean | null;
 }
 
 export interface ProviderTestResult {
@@ -130,7 +137,11 @@ export async function encryptProviderApiKey(
 }
 
 export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
-  const response = await authFetch("/api/providers/registry");
+  // include_hidden asks for the backend-only entries (the self-hosted presets),
+  // which carry the studio-tools capability the composer gates on. An older
+  // backend ignores the parameter and returns the visible entries, so the
+  // capability simply reads as unknown and the pills stay closed.
+  const response = await authFetch("/api/providers/registry?include_hidden=true");
   return parseJsonOrThrow<ProviderRegistryEntry[]>(response);
 }
 
@@ -145,6 +156,7 @@ export async function createProviderConfig(payload: {
   baseUrl?: string | null;
   models?: string[];
   availableModels?: string[];
+  maxOutputTokens?: number | null;
   apiKey?: string;
 }): Promise<ProviderConfig> {
   return withApiKeyEncryptionRetry(payload.apiKey ?? "", async (encryptedApiKey) => {
@@ -157,6 +169,9 @@ export async function createProviderConfig(payload: {
         base_url: payload.baseUrl ?? null,
         models: payload.models ?? [],
         available_models: payload.availableModels ?? [],
+        ...(payload.maxOutputTokens === undefined
+          ? {}
+          : { max_output_tokens: payload.maxOutputTokens }),
         encrypted_api_key: encryptedApiKey,
       }),
     });
@@ -188,6 +203,7 @@ export async function updateProviderConfig(
     isEnabled?: boolean;
     models?: string[];
     availableModels?: string[];
+    maxOutputTokens?: number | null;
     apiKey?: string;
     clearApiKey?: boolean;
   },
@@ -204,6 +220,9 @@ export async function updateProviderConfig(
         ...(payload.availableModels === undefined
           ? {}
           : { available_models: payload.availableModels }),
+        ...(payload.maxOutputTokens === undefined
+          ? {}
+          : { max_output_tokens: payload.maxOutputTokens }),
         ...(payload.apiKey === undefined ? {} : { encrypted_api_key: encryptedApiKey }),
         ...(payload.clearApiKey === undefined ? {} : { clear_api_key: payload.clearApiKey }),
       }),
@@ -294,6 +313,27 @@ export async function listProviderModels(payload: {
     });
     return parseJsonOrThrow<ProviderModelInfo[]>(response);
   });
+}
+
+
+export interface CodexSubscriptionModels {
+  models: ProviderModelInfo[];
+  /** Every model the plan returned, offered or not: absent from this means the account
+   * cannot reach it, while present-but-unoffered only means it is no longer shown. */
+  known?: ProviderModelInfo[];
+  /** "reauthorization_required" is a curated answer that also says the connection has
+   * to be reconnected: the picker must not treat it as the plan's catalog. */
+  source: "subscription" | "curated" | "reauthorization_required";
+}
+
+export async function fetchCodexSubscriptionModels(
+  providerId: string,
+  options?: { refresh?: boolean },
+): Promise<CodexSubscriptionModels> {
+  // An explicit reload asks about plan changes, so it must not be served from cache.
+  const query = options?.refresh ? "?refresh=true" : "";
+  const response = await authFetch(`/api/providers/${providerId}/codex/models${query}`);
+  return parseJsonOrThrow<CodexSubscriptionModels>(response);
 }
 
 

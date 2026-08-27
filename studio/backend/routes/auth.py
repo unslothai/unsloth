@@ -6,6 +6,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 import base64
+import importlib.util
 import ipaddress
 import os
 import shlex
@@ -14,6 +15,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from models.auth import (
     ApiKeyListResponse,
@@ -31,6 +33,7 @@ from models.users import Token
 from auth import storage, hashing
 from auth.authentication import (
     authenticated_via_desktop_jwt,
+    authenticated_without_credential,
     create_access_token,
     create_refresh_token,
     get_current_credential,
@@ -42,6 +45,51 @@ from auth.authentication import (
 router = APIRouter()
 
 
+def _require_a_credential_of_its_own(what: str):
+    """Refuse a caller that nothing but keyless API access let in.
+
+    For effects that outlive the setting: turning keyless access back off does not
+    withdraw a key it handed out, restore one it destroyed, or undo a sign-out it
+    forced. Listing keys is refused with them because it names the key to revoke.
+    """
+
+    def dependency(no_credential: bool = Depends(authenticated_without_credential)) -> None:
+        if no_credential:
+            raise HTTPException(
+                status_code = status.HTTP_403_FORBIDDEN,
+                detail = f"{what} can only be done from the Unsloth UI or with an existing API key.",
+            )
+
+    return dependency
+
+
+# Byte-identical to _WINDOWS_CLI_ENTRYPOINT in unsloth_cli/commands/studio.py and to
+# the bootstrap unsloth_cli/__main__.py documents for user-site installs.
+_CLI_BOOTSTRAP = (
+    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
+    "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
+)
+
+
+def _cli_is_inside(prefix: str) -> bool:
+    """Whether unsloth_cli lives under *prefix*, so -I would still find it.
+
+    Located rather than imported: this runs in a request handler, and a spec
+    lookup answers the only question asked here, which is where the package is
+    on disk and not whether it starts.
+    """
+    try:
+        spec = importlib.util.find_spec("unsloth_cli")
+        origin = getattr(spec, "origin", None)
+        if not origin:
+            # A namespace package, or nothing found. Either way there is no
+            # location to compare, so do not claim isolation would work.
+            return False
+        return Path(origin).resolve().is_relative_to(Path(prefix).resolve())
+    except (ImportError, OSError, ValueError, AttributeError):
+        return False
+
+
 def _reset_password_command() -> str:
     """Shell command shown in the 'incorrect password' hint.
 
@@ -51,19 +99,42 @@ def _reset_password_command() -> str:
     POSIX paths are shell-quoted. On Windows we use the bare absolute path only
     when it has no spaces (a quoted path differs between cmd and PowerShell);
     otherwise, or if the launcher can't be located, fall back to the PATH form.
+
+    Windows never names unsloth.exe here, present or not. Existing is not the
+    same as runnable: an Application Control policy leaves the generated,
+    unsigned unsloth.exe on disk and denies it at CreateProcess (issue #8490),
+    and a bare `unsloth` resolves to that same file because PATHEXT puts .EXE
+    ahead of the .cmd shim. Whoever is locked out of Unsloth is exactly who needs
+    this command to work, so it must not be the one a policy refuses. Preference
+    order is therefore the interpreter's module entry, which needs no quoting in
+    cmd or PowerShell, then `unsloth.cmd` -- spelling the extension is what stops
+    PATHEXT reaching for the executable.
+
+    -I only when the package is inside this interpreter's own prefix. -I implies
+    -s, so a ``pip install --user`` install would be told to run a command that
+    cannot find itself; unsloth_cli/__main__.py documents that exception and the
+    bootstrap to use instead, and this prints that bootstrap. It is safe to show
+    to either shell: the trampoline contains single quotes only, so one pair of
+    double quotes wraps it identically in cmd and in PowerShell.
     """
     try:
         bin_dir = os.path.dirname(os.path.abspath(sys.executable))
         if os.name == "nt":
-            exe = os.path.join(bin_dir, "unsloth.exe")
-            if os.path.isfile(exe) and " " not in exe:
-                return f"{exe} studio reset-password"
+            python = os.path.abspath(sys.executable)
+            if " " not in python:
+                if _cli_is_inside(sys.prefix):
+                    return f"{python} -I -m unsloth_cli studio reset-password"
+                return f'{python} -X utf8 -c "{_CLI_BOOTSTRAP}" studio reset-password'
+            # A spaced interpreter path cannot be written unquoted, so fall
+            # through to the PATH form below.
         else:
             exe = os.path.join(bin_dir, "unsloth")
             if os.path.isfile(exe):
                 return f"{shlex.quote(exe)} studio reset-password"
     except Exception:
         pass
+    if os.name == "nt":
+        return "unsloth.cmd studio reset-password"
     return "unsloth studio reset-password"
 
 
@@ -365,8 +436,9 @@ def identity(nonce: str, request: Request) -> dict:
     return {"proof": storage.compute_identity_proof(raw, host, port)}
 
 
+# FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
 @router.get("/status", response_model = AuthStatusResponse)
-async def auth_status() -> AuthStatusResponse:
+def auth_status() -> AuthStatusResponse:
     """Auth initialization state; ``default_username`` is exposed for first-boot UI prefill only."""
     return AuthStatusResponse(
         initialized = storage.is_initialized(),
@@ -426,7 +498,9 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
 @router.post("/logout", status_code = status.HTTP_204_NO_CONTENT)
 async def logout(
-    request: Request, current_subject: str = Depends(get_current_subject_allow_password_change)
+    request: Request,
+    current_subject: str = Depends(get_current_subject_allow_password_change),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Signing out")),
 ) -> Response:
     """Revoke refresh tokens for the subject; the access token is stateless and expires on its own."""
     try:
@@ -557,6 +631,7 @@ async def change_password(
     request: Request,
     current_subject: str = Depends(get_current_subject_allow_password_change),
     is_desktop: bool = Depends(authenticated_via_desktop_jwt),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Changing passwords")),
 ) -> Token:
     """Allow the authenticated user to replace the default password."""
     record = storage.get_user_and_secret(current_subject)
@@ -639,7 +714,9 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
 
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
 async def create_api_key(
-    payload: CreateApiKeyRequest, credential: tuple = Depends(get_current_credential)
+    payload: CreateApiKeyRequest,
+    credential: tuple = Depends(get_current_credential),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
     current_subject, generation = credential
@@ -668,7 +745,10 @@ async def create_api_key(
 
 
 @router.get("/api-keys", response_model = ApiKeyListResponse)
-async def list_api_keys(current_subject: str = Depends(get_current_subject)) -> ApiKeyListResponse:
+def list_api_keys(
+    current_subject: str = Depends(get_current_subject),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
+) -> ApiKeyListResponse:
     """List all API keys for the authenticated user (raw keys are never exposed)."""
     rows = storage.list_api_keys(current_subject)
     return ApiKeyListResponse(
@@ -677,7 +757,11 @@ async def list_api_keys(current_subject: str = Depends(get_current_subject)) -> 
 
 
 @router.delete("/api-keys/{key_id}")
-async def revoke_api_key(key_id: int, current_subject: str = Depends(get_current_subject)) -> dict:
+async def revoke_api_key(
+    key_id: int,
+    current_subject: str = Depends(get_current_subject),
+    _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
+) -> dict:
     """Revoke (soft-delete) an API key."""
     if not storage.revoke_api_key(current_subject, key_id):
         raise HTTPException(

@@ -14,7 +14,7 @@ import mimetypes
 import re
 import time
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
 import structlog
@@ -26,6 +26,7 @@ from core.inference.openai_responses_shared import (
     responses_function_output,
     response_event_type,
 )
+from core.inference.sse_control_frames import sanitize_provider_sse_line
 
 # Local servers, not hosted APIs: each applies the model's own chat template on the way
 # in, so a prompt built here is templated just like an in-process one (#7066). "custom" is
@@ -51,6 +52,13 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
 logger = structlog.get_logger(__name__)
+
+
+def _append_provider_path(base_url: str, endpoint: str) -> str:
+    """Append an API path without moving it behind a base URL's query string."""
+    parts = urlsplit(base_url)
+    path = f"{parts.path.rstrip('/')}/{endpoint.lstrip('/')}"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
@@ -172,7 +180,16 @@ def _sanitize_openai_reasoning_replay_item(item: Any) -> Optional[dict[str, Any]
                 summary_parts.append({"type": "summary_text", "text": text})
     # `id` and `summary` only: Responses rejects `status` on an input item
     # ("Unknown parameter: 'input[1].status'"), which 400d every replayed edit.
-    return {"type": "reasoning", "id": item_id, "summary": summary_parts}
+    replay: dict[str, Any] = {"type": "reasoning", "id": item_id, "summary": summary_parts}
+    # A zero-data-retention org has `store=false` forced on it, and OpenAI then
+    # attaches `encrypted_content` to every reasoning item because the id alone
+    # resolves to nothing server-side on the next turn. Carry it whenever it is
+    # present: without it the replay is an id pointing at a response that was
+    # never stored.
+    encrypted = item.get("encrypted_content")
+    if isinstance(encrypted, str) and encrypted:
+        replay["encrypted_content"] = encrypted
+    return replay
 
 
 # OpenAI Responses inline citation markers: `citeSOURCE_ID[id2...][LOCATOR]`
@@ -573,6 +590,36 @@ def _apply_mistral_reasoning_controls(
             body["reasoning_effort"] = "high"
 
 
+# ollama's openai-compatible /v1/chat/completions accepts these five values.
+# https://docs.ollama.com/api/openai-compatibility
+_OLLAMA_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "max"})
+_OLLAMA_REASONING_EFFORT_ALIASES = {
+    "minimal": "low",
+    "xhigh": "max",
+}
+
+
+def _apply_ollama_reasoning_controls(
+    body: dict[str, Any], enable_thinking: Optional[bool], reasoning_effort: Optional[str]
+) -> None:
+    """Map API thinking controls onto Ollama's ``reasoning_effort`` field.
+
+    Requests with neither control remain unchanged. An explicit off is
+    ``none``; an on without a level is ``medium``. #9649
+    """
+    effort = (reasoning_effort or "").strip().lower()
+    if effort in _OLLAMA_REASONING_EFFORT_ALIASES:
+        effort = _OLLAMA_REASONING_EFFORT_ALIASES[effort]
+    if effort in _OLLAMA_REASONING_EFFORTS:
+        body["reasoning_effort"] = effort
+        return
+    if enable_thinking is False:
+        body["reasoning_effort"] = "none"
+        return
+    if enable_thinking is True:
+        body["reasoning_effort"] = "medium"
+
+
 # Shared client reused across all requests for HTTP connection pooling.
 # Auth headers and timeouts are passed per-request, so a single client
 # handles every provider without storing credentials.
@@ -852,7 +899,7 @@ def _build_kimi_tool_end(
 
 
 class ExternalProviderClient:
-    """Async proxy for OpenAI-compatible external LLM APIs."""
+    """Async proxy for OpenAI-compatible external APIs."""
 
     def __init__(
         self,
@@ -945,6 +992,7 @@ class ExternalProviderClient:
         tool_choice: Optional[Any] = None,
         fast_mode: Optional[bool] = None,
         continue_final_message: Optional[bool] = None,
+        response_format: Optional[dict[str, Any]] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -987,6 +1035,7 @@ class ExternalProviderClient:
                     reasoning_effort,
                     tools,
                     tool_choice,
+                    response_format,
                 ):
                     yield line
                 return
@@ -1030,6 +1079,7 @@ class ExternalProviderClient:
                 compaction_threshold,
                 tools,
                 tool_choice,
+                response_format,
             ):
                 yield line
             return
@@ -1136,6 +1186,8 @@ class ExternalProviderClient:
                 tpl_kw = {}
             tpl_kw["enable_thinking"] = bool(enable_thinking)
             body["chat_template_kwargs"] = tpl_kw
+        elif self.provider_type == "ollama":
+            _apply_ollama_reasoning_controls(body, enable_thinking, reasoning_effort)
 
         # OpenRouter's unified `reasoning` field gates per-model thinking.
         # Some routes (`*_MANDATORY_REASONING_MODELS`) 400 on explicit off.
@@ -1185,6 +1237,11 @@ class ExternalProviderClient:
             body["tools"] = tools
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
+        # JSON mode / guided decoding. Every OpenAI-compatible server accepts
+        # this (llama.cpp, vLLM and Ollama all implement it), and dropping it
+        # silently turned a caller's structured-output request into free prose.
+        if response_format is not None:
+            body["response_format"] = response_format
 
         url = f"{self.base_url}/chat/completions"
         logger.info(
@@ -1216,7 +1273,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 # Manual __anext__ (not `async for`) so we can close the
@@ -1378,7 +1440,14 @@ class ExternalProviderClient:
                                                         continue
                                                     for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
-                        yield line
+                        # Verbatim relay, minus Unsloth's own UI control protocol:
+                        # the frames this server writes to paint tool cards ride
+                        # the same stream, so an endpoint that echoes them forges
+                        # a card for a tool that never ran.
+                        relayed = sanitize_provider_sse_line(line)
+                        if relayed is None:
+                            continue
+                        yield relayed
                     # Stream ended without [DONE] (some upstreams just close
                     # the connection). Emit tool_end so the card doesn't stay
                     # in "running" forever.
@@ -1509,7 +1578,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
@@ -1600,7 +1674,12 @@ class ExternalProviderClient:
                             response.status_code,
                             error_text[:500],
                         )
-                        yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                        yield _error_sse_line(
+                            response.status_code,
+                            error_text,
+                            self.provider_type,
+                            response.headers.get("Retry-After"),
+                        )
                         return
                     # Manual __anext__ loop instead of `async for` — see the
                     # stream_chat_completion comment for the Python 3.13 +
@@ -1613,7 +1692,11 @@ class ExternalProviderClient:
                             except StopAsyncIteration:
                                 break
                             if line.strip():
-                                yield line
+                                # Same rule as the main relay: never let the
+                                # endpoint speak Unsloth's control vocabulary.
+                                relayed = sanitize_provider_sse_line(line)
+                                if relayed is not None:
+                                    yield relayed
                     except GeneratorExit:
                         await response.aclose()
                         await lines_gen.aclose()
@@ -1701,7 +1784,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 lines_gen = response.aiter_lines().__aiter__()
@@ -1745,7 +1833,12 @@ class ExternalProviderClient:
                                                     annotation_shapes.add(
                                                         str(ann.get("type") or "?")
                                                     )
-                        yield line
+                        # Same rule as the main relay: never let the endpoint
+                        # speak Unsloth's control vocabulary.
+                        relayed = sanitize_provider_sse_line(line)
+                        if relayed is None:
+                            continue
+                        yield relayed
                 except GeneratorExit:
                     await response.aclose()
                     await lines_gen.aclose()
@@ -2341,7 +2434,12 @@ class ExternalProviderClient:
                                 f"data: "
                                 f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
                             )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 # NOTE: same manual __anext__ loop as stream_chat_completion — see comment there.
@@ -3114,6 +3212,7 @@ class ExternalProviderClient:
         reasoning_effort: Optional[str] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
+        response_format: Optional[dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call Google's native Gemini API and translate its streaming
@@ -3978,6 +4077,25 @@ class ExternalProviderClient:
                     _fcc["allowedFunctionNames"] = _allowed
                 body["toolConfig"] = {"functionCallingConfig": _fcc}
 
+        # Structured output. Gemini carries it on generationConfig as a response
+        # MIME type, not the Chat Completions `response_format` this endpoint has
+        # never seen, so JSON mode was silently dropped for every native Gemini
+        # call (deep research parses its planning hop as JSON). Only on a tool-free
+        # turn: Gemini 400s with "Function calling with a response mime type:
+        # 'application/json' is unsupported" when both are sent, and the hop that
+        # asks for JSON sends no tools.
+        # https://ai.google.dev/gemini-api/docs/structured-output
+        _rf_type = response_format.get("type") if isinstance(response_format, dict) else None
+        if _rf_type in ("json_object", "json_schema") and "tools" not in body:
+            _gen_cfg = body.setdefault("generationConfig", {})
+            _gen_cfg["responseMimeType"] = "application/json"
+            if _rf_type == "json_schema":
+                _rf_schema = response_format.get("json_schema")
+                if isinstance(_rf_schema, dict) and isinstance(_rf_schema.get("schema"), dict):
+                    # responseSchema is the same OpenAPI subset the function
+                    # declarations use, so it needs the same scrubbing.
+                    _gen_cfg["responseSchema"] = _sanitize_gemini_schema(_rf_schema["schema"])
+
         # Prompt caching. The Gemini contract is "create a CachedContent
         # resource, then pass its name on `cachedContent`". The cache is created
         # out of band by the caller via POST /cachedContents; here we forward an
@@ -4098,7 +4216,12 @@ class ExternalProviderClient:
                         response.status_code,
                         error_text[:500],
                     )
-                    yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                    yield _error_sse_line(
+                        response.status_code,
+                        error_text,
+                        self.provider_type,
+                        response.headers.get("Retry-After"),
+                    )
                     return
 
                 if web_search_active:
@@ -4668,6 +4791,7 @@ class ExternalProviderClient:
         compaction_threshold: Optional[int] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
+        response_format: Optional[dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -4738,10 +4862,15 @@ class ExternalProviderClient:
             # server-side builtin cards (builtin name + `_server_tool` marker).
             _tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
             if role == "assistant" and isinstance(_tool_calls, list):
+                # Collected rather than appended directly: the turn's reasoning
+                # items have to lead it, and whether any of them may be replayed
+                # at all is only known once the function_call items survive the
+                # server-builtin filter below.
+                _turn_items: list[dict[str, Any]] = []
                 # Emit assistant text before its function_call items to preserve
                 # the original response.output ordering.
                 if isinstance(content, str) and content:
-                    input_items.append({"role": "assistant", "content": content})
+                    _turn_items.append({"role": "assistant", "content": content})
                 elif isinstance(content, list):
                     _asst_parts: list[dict[str, Any]] = []
                     for _part in content:
@@ -4760,7 +4889,7 @@ class ExternalProviderClient:
                             if _u:
                                 _asst_parts.append({"type": "input_image", "image_url": _u})
                     if _asst_parts:
-                        input_items.append({"role": "assistant", "content": _asst_parts})
+                        _turn_items.append({"role": "assistant", "content": _asst_parts})
 
                 for _tc in _tool_calls:
                     if not isinstance(_tc, dict):
@@ -4792,9 +4921,37 @@ class ExternalProviderClient:
                     if _is_server_builtin:
                         skipped_server_builtin_call_ids.add(_call_id_out)
                         continue
-                    input_items.append(
+                    _turn_items.append(
                         responses_function_call(_call_id_out, _fn["name"], _args_raw)
                     )
+                # OpenAI requires the reasoning items that came back alongside a
+                # tool call to be replayed with the function_call /
+                # function_call_output pair whenever the history is managed by
+                # hand, which is exactly what the Unsloth tool loop does: "any
+                # reasoning items returned in model responses with tool calls
+                # must also be passed back with tool call outputs"
+                # (https://developers.openai.com/api/docs/guides/function-calling).
+                # Dropping them loses the model's chain of thought across every
+                # local tool hop and misses the prompt cache on the turn after.
+                #
+                # They lead the turn, matching response.output order, and only
+                # when something followed them survived: a trailing reasoning
+                # item is a hard 400 ("Item 'rs_...' of type 'reasoning' was
+                # provided without its required following item"), so a turn whose
+                # calls were all dropped server-side builtins replays none.
+                if _turn_items:
+                    _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
+                    _reasoning_replay = (
+                        _msg_extra.get("openai_responses_reasoning")
+                        if isinstance(_msg_extra, dict)
+                        else None
+                    )
+                    if isinstance(_reasoning_replay, list):
+                        for _r_item in _reasoning_replay:
+                            _replay = _sanitize_openai_reasoning_replay_item(_r_item)
+                            if _replay:
+                                input_items.append(_replay)
+                input_items.extend(_turn_items)
                 # Assistant text already emitted above (in order) so we don't
                 # fall through to the generic content branches.
                 continue
@@ -4966,6 +5123,26 @@ class ExternalProviderClient:
             body["instructions"] = "\n\n".join(instructions_parts)
         if max_tokens is not None:
             body["max_output_tokens"] = max_tokens
+
+        # The Responses API carries structured output on `text.format`; the Chat
+        # Completions `response_format` is not part of its contract, so a caller's
+        # JSON mode became free prose. The json_schema shape is flattened here:
+        # name/schema/strict are siblings of `type`, not nested under json_schema.
+        # https://platform.openai.com/docs/guides/structured-outputs
+        _rf_type = response_format.get("type") if isinstance(response_format, dict) else None
+        if _rf_type == "json_object":
+            body["text"] = {"format": {"type": "json_object"}}
+        elif _rf_type == "json_schema":
+            _rf_schema = response_format.get("json_schema")
+            if isinstance(_rf_schema, dict) and isinstance(_rf_schema.get("schema"), dict):
+                body["text"] = {
+                    "format": {
+                        "type": "json_schema",
+                        "name": str(_rf_schema.get("name") or "response"),
+                        "schema": _rf_schema["schema"],
+                        "strict": bool(_rf_schema.get("strict", True)),
+                    }
+                }
 
         # Opt into 24h prompt-cache retention (free, vs the default ~5-10 min).
         # Gated on the OpenAI cloud host because ollama / llama.cpp / "custom"
@@ -5166,7 +5343,12 @@ class ExternalProviderClient:
                             retried = True
                             attempt_container_id = None
                             continue
-                        yield _error_sse_line(response.status_code, error_text, self.provider_type)
+                        yield _error_sse_line(
+                            response.status_code,
+                            error_text,
+                            self.provider_type,
+                            response.headers.get("Retry-After"),
+                        )
                         return
 
                     # NOTE: same manual __anext__ loop as stream_chat_completion --
@@ -5513,6 +5695,18 @@ class ExternalProviderClient:
                                 # a Responses request with Chat Completions frames, so skipping
                                 # an unrecognisable frame beats failing the whole completion.
                                 # The ChatGPT path stays strict, where the shape is guaranteed.
+                                # An error payload is the exception: the bare {"error": ...} an
+                                # OpenAI-compatible proxy emits has no type and no event name
+                                # either, so skipping it returned zero chunks and no error.
+                                if isinstance(event, dict) and isinstance(
+                                    event.get("error"), (dict, str)
+                                ):
+                                    yield _error_sse_line(
+                                        502,
+                                        _openai_response_error_message(event),
+                                        self.provider_type,
+                                    )
+                                    break
                                 continue
                             _record_openai_response_id(event)
 
@@ -5912,13 +6106,29 @@ class ExternalProviderClient:
                                         }
                                     )
                                     sc_state["tool_end_emitted"] = True
+                                # Hand this turn's reasoning items back so the
+                                # next request can replay them beside the
+                                # function_call they belong to; the tool loop
+                                # latches delta.extra_content onto the assistant
+                                # message it rebuilds. Only on a turn that
+                                # actually called a tool: prose needs none, and
+                                # shipping them would grow every following body
+                                # for nothing. Mirrors the openai_codex client's
+                                # openai_codex_reasoning.
+                                _terminal_delta: dict[str, Any] = {}
+                                if saw_function_call and openai_reasoning_replay_items:
+                                    _terminal_delta["extra_content"] = {
+                                        "openai_responses_reasoning": list(
+                                            openai_reasoning_replay_items.values()
+                                        )
+                                    }
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
                                     "choices": [
                                         {
                                             "index": 0,
-                                            "delta": {},
+                                            "delta": _terminal_delta,
                                             "finish_reason": (
                                                 "tool_calls" if saw_function_call else "stop"
                                             ),
@@ -6141,6 +6351,69 @@ class ExternalProviderClient:
         )
         response.raise_for_status()
         return response.json()
+
+    async def create_speech(
+        self,
+        text: str,
+        model: str,
+        voice: Optional[str] = None,
+        response_format: str = "wav",
+        speed: Optional[float] = None,
+    ) -> tuple[bytes, str]:
+        """POST /audio/speech (OpenAI CreateSpeech). Returns (audio_bytes, media_type)."""
+        body: dict[str, Any] = {
+            "model": model,
+            "input": text,
+            "response_format": response_format,
+        }
+        if voice:
+            body["voice"] = voice
+        if speed is not None:
+            body["speed"] = speed
+        response = await _http_client.post(
+            _append_provider_path(self.base_url, "/audio/speech"),
+            headers = self._auth_headers(),
+            json = body,
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        media_type = (response.headers.get("content-type") or "").split(";")[0].strip()
+        return response.content, media_type or f"audio/{response_format}"
+
+    async def create_transcription(
+        self,
+        audio: bytes,
+        filename: str,
+        content_type: str,
+        model: str,
+        language: Optional[str] = None,
+        response_format: str = "json",
+        timestamp_granularities: Optional[list[str]] = None,
+    ) -> tuple[bytes, str]:
+        """Post audio to an OpenAI-compatible transcription endpoint."""
+        data = {
+            "model": model,
+            "response_format": response_format,
+        }
+        if language:
+            data["language"] = language
+        if timestamp_granularities:
+            # Repeated field, so httpx wants the list under the bracketed name OpenAI uses.
+            data["timestamp_granularities[]"] = list(timestamp_granularities)
+        headers = self._auth_headers()
+        headers.pop("Content-Type", None)
+        response = await _http_client.post(
+            f"{self.base_url}/audio/transcriptions",
+            headers = headers,
+            files = {"file": (filename, audio, content_type)},
+            data = data,
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        media_type = (response.headers.get("content-type") or "").split(";", 1)[0].strip()
+        if not media_type:
+            media_type = "text/plain" if response_format == "text" else "application/json"
+        return response.content, media_type
 
     async def list_models(self) -> list[dict[str, Any]]:
         """GET /models to discover available models.
@@ -6443,19 +6716,27 @@ def _readable_provider_error(status_code: int, message: str, provider_type: str)
     return f"{text} ({code})" if code and code not in text else text
 
 
-def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
-    """Format an error as an SSE data line in OpenAI error format."""
+def _error_sse_line(
+    status_code: int,
+    message: str,
+    provider_type: str,
+    retry_after: str | None = None,
+) -> str:
+    """Format an error as an SSE data line in OpenAI error format.
+
+    ``retry_after`` carries the upstream Retry-After through: this stream is delivered under a
+    200, so a client that backs off has nowhere else to read the delay from."""
     import json
 
-    error_obj = {
-        "error": {
-            "message": _readable_provider_error(status_code, message, provider_type),
-            "type": "provider_error",
-            "code": str(status_code),
-            "provider": provider_type,
-        }
+    error: dict[str, str] = {
+        "message": _readable_provider_error(status_code, message, provider_type),
+        "type": "provider_error",
+        "code": str(status_code),
+        "provider": provider_type,
     }
-    return f"data: {json.dumps(error_obj)}"
+    if retry_after:
+        error["retry_after"] = retry_after
+    return f"data: {json.dumps({'error': error})}"
 
 
 def _build_usage_chunk(

@@ -12,9 +12,11 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { chatLocalModelOptions } = await import(
-  "../src/features/chat/local-model-options.ts"
-);
+const { chatLocalModelOptions } =
+  await import("../src/features/chat/local-model-options.ts");
+
+const { localGgufKindFor } =
+  await import("../src/features/model-picker/components/model-selector/local-gguf-policy.ts");
 
 function row(over: Record<string, unknown> = {}) {
   return {
@@ -29,21 +31,27 @@ function row(over: Record<string, unknown> = {}) {
   } as never;
 }
 
-test("Ollama rows are withheld until their refs are loadable", () => {
-  // /api/hub/local scans read-only and returns an opaque `ollama-manifest:` id that only
-  // materialize_ollama_model_ref can turn into a .gguf path, and nothing calls that yet.
-  // The picker withholds these rows for the same reason (PICKER_LOCAL_SOURCES), so Chat
-  // matches it: an entry that fails on click is worse than one that is not offered.
-  assert.deepEqual(
-    chatLocalModelOptions([
-      row({
-        id: "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmanifests%2Fllama3",
-        display_name: "llama3",
-        source: "ollama",
-      }),
-    ]),
-    [],
-  );
+test("Ollama rows are offered under their own label", () => {
+  // /api/hub/local scans read-only and returns an opaque `ollama-manifest:` id;
+  // POST /load resolves it through materialize_ollama_model_ref, so the reference
+  // is loadable as-is and Chat lists it like the picker does (PICKER_LOCAL_SOURCES).
+  const options = chatLocalModelOptions([
+    row({
+      id: "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmanifests%2Fllama3",
+      display_name: "llama3-GGUF-q4",
+      source: "ollama",
+      model_format: "gguf",
+    }),
+  ]);
+  assert.equal(options.length, 1);
+  const option = options[0];
+  assert.ok(option);
+  assert.equal(option.name, "llama3-GGUF-q4");
+  assert.equal(option.baseModel, "Ollama");
+  assert.equal(option.isGguf, true);
+  assert.equal(option.isDirectGguf, true);
+  // An explicit one-artifact source outranks a name that looks like a GGUF repo.
+  assert.equal(localGgufKindFor(option, true), "direct");
 });
 
 test("a directory with two weight formats yields one option per load id", () => {
@@ -58,23 +66,30 @@ test("a directory with two weight formats yields one option per load id", () => 
     }),
   ]);
   assert.equal(options.length, 1);
-  assert.equal(options[0]?.id, "/models/demo");
+  const option = options[0];
+  assert.ok(option);
+  assert.equal(option.id, "/models/demo");
+  assert.equal(option.isDirectGguf, undefined);
+  assert.equal(localGgufKindFor(option, false), null);
+  assert.equal(localGgufKindFor(option, true), "variants");
 });
 
 test("hf_cache rows stay out of the local list", () => {
   assert.deepEqual(chatLocalModelOptions([row({ source: "hf_cache" })]), []);
 });
 
-test("LM Studio rows prefer the model id and keep their label", () => {
+test("LM Studio rows use the model name without the publisher folder", () => {
+  const modelPath = "N:\\AI Models\\Qwen\\Qwen3.6-40B-Deck-Opus";
   const options = chatLocalModelOptions([
     row({
-      id: "/lm/x",
+      id: modelPath,
       source: "lmstudio",
-      model_id: "publisher/model",
-      display_name: "x",
+      model_id: "Qwen/Qwen3.6-40B-Deck-Opus",
+      display_name: "Qwen3.6-40B-Deck-Opus",
     }),
   ]);
-  assert.equal(options[0]?.name, "publisher/model");
+  assert.equal(options[0]?.id, modelPath);
+  assert.equal(options[0]?.name, "Qwen3.6-40B-Deck-Opus");
   assert.equal(options[0]?.baseModel, "LM Studio");
 });
 

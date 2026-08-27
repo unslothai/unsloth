@@ -245,7 +245,11 @@ for (const [page, path] of PAGES) {
   test(`the ${page} cancel counter is bumped by every teardown`, () => {
     const drop = SOURCE.slice(
       SOURCE.indexOf("const dropResidentState = useCallback("),
-      SOURCE.indexOf("}, [dismissLoadToast, pickGuard]);"),
+      // Anchored from the opening, so the deps can grow without silently widening this slice.
+      SOURCE.indexOf(
+        "}, [dismissLoadToast,",
+        SOURCE.indexOf("const dropResidentState = useCallback("),
+      ),
     );
     assert.match(
       drop,
@@ -346,7 +350,11 @@ test("cancelling a deploy does not leave the adapter queued", () => {
   const SOURCE = read("../src/features/images/images-page.tsx");
   const drop = SOURCE.slice(
     SOURCE.indexOf("const dropResidentState = useCallback("),
-    SOURCE.indexOf("}, [dismissLoadToast, pickGuard]);"),
+    // Anchored from the opening, so the deps can grow without silently widening this slice.
+    SOURCE.indexOf(
+      "}, [dismissLoadToast,",
+      SOURCE.indexOf("const dropResidentState = useCallback("),
+    ),
   );
   assert.match(drop, /pendingDeploy\.current = null;/);
 });

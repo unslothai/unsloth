@@ -230,11 +230,17 @@ def test_reasoning_replay_item_drops_status():
             "encrypted_content": "secret",
         }
     )
-    assert replay == {
-        "type": "reasoning",
-        "id": "rs_abc",
-        "summary": [{"type": "summary_text", "text": "thinking"}],
-    }
+    # Asserted field by field rather than as a whole-dict match. What this test
+    # is about is `status`, and an exact match also silently pinned everything
+    # else the sanitizer may legitimately need to carry.
+    assert "status" not in replay
+    assert replay["type"] == "reasoning"
+    assert replay["id"] == "rs_abc"
+    assert replay["summary"] == [{"type": "summary_text", "text": "thinking"}]
+    # Kept deliberately: a zero-data-retention org gets store=false forced on it,
+    # so the id resolves to nothing server side and the encrypted blob is the
+    # only way the model's reasoning state survives into the next request.
+    assert replay["encrypted_content"] == "secret"
 
 
 def test_replayed_image_edit_body_has_no_status_field(monkeypatch):

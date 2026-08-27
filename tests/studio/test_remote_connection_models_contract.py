@@ -11,6 +11,7 @@ FRONTEND = REPO / "studio/frontend/src"
 PROVIDERS_API = FRONTEND / "features/chat/api/providers-api.ts"
 SYNC_PROVIDERS = FRONTEND / "features/chat/sync-external-providers.ts"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
+RECONCILIATION = FRONTEND / "features/credentials/reconciliation.ts"
 CREDENTIAL_BOOTSTRAP = FRONTEND / "features/credentials/bootstrap.ts"
 ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 PROVIDERS_DB = REPO / "studio/backend/storage/providers_db.py"
@@ -46,11 +47,25 @@ def test_frontend_sync_backfills_local_models_to_backend():
     # settleTasksIfCurrent in features/credentials/reconciliation.ts, which
     # allSettles them AND drops the result when the auth session has moved on.
     # Same guarantee through a named helper, so the assertion follows it.
-    assert "settleTasksIfCurrent(backfillTasks" in source
-    helper = (FRONTEND / "features/credentials/reconciliation.ts").read_text(encoding = "utf-8")
+    #
+    # Wiring only. That BOTH hops are awaited -- the call below and the
+    # allSettled inside the helper -- is not something a source string can hold,
+    # since `await` is one token that any reformat moves; that half is run for
+    # real in test_provider_backfill_awaits_batch.py. Whitespace is normalised
+    # here so prettier wrapping the argument list does not fail the wiring check
+    # either.
+    flat = " ".join(source.split()).replace("( ", "(")
+    assert "settleTasksIfCurrent(backfillTasks" in flat
+    helper = RECONCILIATION.read_text(encoding = "utf-8")
     assert "export async function settleTasksIfCurrent" in helper
+    # Scoped to the helper's own body. The module also allSettles in
+    # runCredentialBootstrap, so a module-wide search stays green when
+    # settleTasksIfCurrent is regressed to Promise.all -- which is exactly the
+    # first-failure-sinks-the-rest bug this contract exists to catch.
+    body = helper.split("export async function settleTasksIfCurrent", 1)[1]
+    body = body.split("\nexport ", 1)[0]
     assert (
-        "allSettled" in helper
+        "Promise.allSettled(tasks.map(" in body
     ), "the batch must still settle rather than reject on the first failure"
 
 
@@ -71,13 +86,20 @@ def test_connections_are_hydrated_on_startup():
     into the app rather than only on the chat page. Asserting the old location
     would fail on a change that improved the thing being asserted, so the
     assertion follows the call to where it went and pins both halves -- the
-    bootstrap wires the sync, and something actually runs the bootstrap."""
+    bootstrap wires the sync, and something actually runs the bootstrap.
+
+    Both halves match CALL sites, not bare names: an import survives deleting
+    the call it feeds, so a name-only assertion passes on a startup that
+    hydrates nothing."""
     bootstrap = CREDENTIAL_BOOTSTRAP.read_text(encoding = "utf-8")
-    assert "syncExternalProvidersFromBackend" in bootstrap
+    assert "syncExternalProvidersFromBackend(providers" in bootstrap
     root = ROOT_ROUTE.read_text(encoding = "utf-8")
     assert (
-        "bootstrapPersistedCredentials" in root
+        "bootstrapPersistedCredentials()" in root
     ), "nothing calls the credential bootstrap, so no page hydrates connections"
+    # The call lives inside CredentialBootstrapGate, so the gate has to be
+    # rendered too: dropping it stops hydration while the call still exists.
+    assert "<CredentialBootstrapGate>" in root
     # The chat page still hydrates its own persisted settings.
     assert "hydratePersistedSettings()" in CHAT_PAGE.read_text(encoding = "utf-8")
 

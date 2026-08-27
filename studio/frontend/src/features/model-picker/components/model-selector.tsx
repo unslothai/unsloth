@@ -20,7 +20,6 @@ import {
   CloudIcon,
   DashboardSquare01Icon,
   Download01Icon,
-  FolderSearchIcon,
   RemoveCircleIcon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
@@ -51,6 +50,7 @@ import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy"
 import type { CatalogGroup } from "./model-selector/model-catalog";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
+import { loraOptionLabel } from "./model-selector/row-meta";
 import { isFineTunedSource } from "./model-selector/source-tabs";
 import type {
   DeletedModelRef,
@@ -163,12 +163,13 @@ interface ModelSelectorProps {
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: () => void;
   onFoldersChange?: () => void;
-  onPickLocalModel?: () => void | Promise<void>;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
+  /** Responsive text sizing for headers that have to share a constrained row. */
+  triggerLabelClassName?: string;
   contentClassName?: string;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -193,6 +194,7 @@ function ModelSelectorTrigger({
   variant = "outline",
   size = "default",
   className,
+  triggerLabelClassName,
   dataTour,
   onEject,
   // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
@@ -204,6 +206,7 @@ function ModelSelectorTrigger({
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
+  triggerLabelClassName?: string;
   dataTour?: string;
   onEject?: () => void;
   placeholder?: string;
@@ -268,7 +271,12 @@ function ModelSelectorTrigger({
           </span>
         ) : null}
         <span className="flex min-w-0 flex-1 items-baseline">
-          <span className="min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white">
+          <span
+            className={cn(
+              "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white",
+              triggerLabelClassName,
+            )}
+          >
             {currentModel?.name ?? placeholder}
             {showCloudIndicator ? (
               <HugeiconsIcon
@@ -362,7 +370,6 @@ function ModelSelectorContent({
   resolveDownloadFootprint,
   onEject,
   onFoldersChange,
-  onPickLocalModel,
   onBrowseHub,
   onModelsChange,
   deleteDisabled,
@@ -388,7 +395,6 @@ function ModelSelectorContent({
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: () => void;
   onFoldersChange?: () => void;
-  onPickLocalModel?: () => void;
   onBrowseHub?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -627,20 +633,6 @@ function ModelSelectorContent({
                 />
               }
             />
-
-            {onPickLocalModel ? (
-              <div className="mt-1.5 border-t border-border/70 pt-1.5">
-                <button
-                  type="button"
-                  onClick={onPickLocalModel}
-                  className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
-                  title={t("picker.pickModelFile")}
-                >
-                  <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
-                  {t("picker.pickModelFile")}
-                </button>
-              </div>
-            ) : null}
           </>
         )}
       </TooltipProvider>
@@ -666,12 +658,12 @@ export function ModelSelector({
   resolveDownloadFootprint,
   onEject,
   onFoldersChange,
-  onPickLocalModel,
   onModelsChange,
   deleteDisabled,
   variant = "outline",
   size = "default",
   className,
+  triggerLabelClassName,
   contentClassName,
   open: controlledOpen,
   onOpenChange,
@@ -702,10 +694,7 @@ export function ModelSelector({
       all.set(model.id, model);
     }
     for (const lora of loraModels) {
-      // Strip "/ suffix" from display name (e.g. "foo_123/foo" → "foo_123")
-      const displayName = lora.name.includes("/")
-        ? lora.name.split("/")[0].trim()
-        : lora.name;
+      const displayName = loraOptionLabel(lora);
       // Show type tag instead of base model name
       const isLocal = lora.source === "local";
       const isTraining = lora.source === "training";
@@ -806,11 +795,6 @@ export function ModelSelector({
     setOpen(false);
   }
 
-  function handlePickLocalModel() {
-    setOpen(false);
-    void onPickLocalModel?.();
-  }
-
   function handleBrowseHub() {
     setOpen(false);
     void navigate({ to: "/hub", search: { tab: "discover" } });
@@ -825,6 +809,7 @@ export function ModelSelector({
         variant={variant}
         size={size}
         className={className}
+        triggerLabelClassName={triggerLabelClassName}
         dataTour={triggerDataTour}
         onEject={onEject ? handleEject : undefined}
         placeholder={placeholder}
@@ -846,7 +831,6 @@ export function ModelSelector({
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
-        onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
         // A curated task picker (Images / Video) is self-contained, so it omits this.
         // A community-enabled one (Audio) already lists past unsloth, so it keeps it.
         onBrowseHub={

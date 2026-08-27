@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { providerModelSupportsStudioTools } from "./external-providers";
+import {
+  normalizeProviderMaxOutputTokens,
+  providerModelSupportsStudioTools,
+} from "./external-providers";
 
 /**
  * Per-provider sampling parameter capability matrix.
@@ -71,10 +74,7 @@ export function clampReasoningEffortToLevels(
   return effortLevels[0] ?? "low";
 }
 
-/**
- * Fallback cap for unknown providers / models. Prefer
- * `getExternalMaxOutputTokens(providerType, modelId)` for the real cap.
- */
+/** Fallback cap for a model with no documented limit and no connection override. */
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
 
 /**
@@ -133,17 +133,40 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
 ];
 
 /**
- * Documented per-model output cap; unknown ids fall back to
- * `EXTERNAL_MAX_OUTPUT_TOKENS` (32k). OpenRouter `provider/model` ids have the
- * prefix stripped before matching.
+ * The connection's effective Max Tokens ceiling for one model.
+ *
+ * A documented per-model cap bounds the connection override rather than replacing it:
+ * one connection fronts many models on a router, so a limit set for a 256k-output model
+ * must not raise the slider past what a smaller model accepts. An undocumented model
+ * takes the override outright, then `EXTERNAL_MAX_OUTPUT_TOKENS`. The provider's output
+ * floor wins over both, so the slider is never handed a max below its min.
  */
 export function getExternalMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
+  connectionMaxOutputTokens?: number | null,
 ): number {
-  if (!providerType || !modelId) return EXTERNAL_MAX_OUTPUT_TOKENS;
+  const override = normalizeProviderMaxOutputTokens(connectionMaxOutputTokens);
+  const documented = _documentedMaxOutputTokens(providerType, modelId);
+  const resolved =
+    documented != null
+      ? Math.min(documented, override ?? documented)
+      : (override ?? EXTERNAL_MAX_OUTPUT_TOKENS);
+  return Math.max(resolved, getExternalMinOutputTokens(providerType));
+}
+
+/**
+ * The published per-model cap, or null when nothing documents this id. No table entry
+ * targets a generic Custom connection, so those always read as undocumented. OpenRouter
+ * `provider/model` ids have the prefix stripped before matching.
+ */
+function _documentedMaxOutputTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): number | null {
+  if (!providerType || !modelId) return null;
   const normalized = modelId.trim().toLowerCase();
-  if (!normalized) return EXTERNAL_MAX_OUTPUT_TOKENS;
+  if (!normalized) return null;
   const stripped =
     providerType === "openrouter" && normalized.includes("/")
       ? normalized.split("/").slice(-1)[0]
@@ -162,13 +185,35 @@ export function getExternalMaxOutputTokens(
       return entry.cap;
     }
   }
-  return EXTERNAL_MAX_OUTPUT_TOKENS;
+  return null;
+}
+
+/**
+ * The lowered Max Tokens the settings panel should write back, or null to leave it be.
+ *
+ * The availability guards are load-bearing: the caller PERSISTS this and it only ever
+ * lowers, while `maxTokensMax` collapses to the 32,768 fallback whenever the provider is
+ * momentarily unresolved (connections toggled off, cold hydration, a deleted connection).
+ * No provider means the cap is unknown, not 32,768. Returning the cap itself is what
+ * makes it converge in one pass.
+ */
+export function resolveExternalMaxTokensClamp(input: {
+  settingsHydrated: boolean;
+  hasActiveExternalProvider: boolean;
+  isExternalModel: boolean;
+  maxTokens: number;
+  maxTokensMax: number;
+}): number | null {
+  if (!input.settingsHydrated || !input.hasActiveExternalProvider) return null;
+  if (!input.isExternalModel || input.maxTokens <= input.maxTokensMax) {
+    return null;
+  }
+  return input.maxTokensMax;
 }
 
 function _inferProviderFromOpenrouterId(
   normalizedId: string,
 ): string | null {
-  // Map OpenRouter `provider/model` prefix to our internal providerType.
   if (normalizedId.startsWith("openai/")) return "openai";
   if (normalizedId.startsWith("anthropic/")) return "anthropic";
   if (normalizedId.startsWith("google/")) return "gemini";
@@ -380,6 +425,25 @@ export function providerSupportsBuiltinCodeExecution(
     return normalized.startsWith("gemini-");
   }
   return false;
+}
+
+/**
+ * Whether the provider TYPE ships a code sandbox of its own, model aside.
+ *
+ * Mirrors the `hosted_tools` entries carrying `code_execution` in the backend's
+ * PROVIDER_REGISTRY (core/inference/providers.py). Deliberately coarser than
+ * `providerSupportsBuiltinCodeExecution`: the question it answers is whether
+ * running the model's code on the USER's machine would be a relocation, and
+ * that does not depend on which model is selected. openai_codex is absent for
+ * the same reason the backend registry leaves it out -- its code tools are
+ * Unsloth's own, run by the Codex loop, and always have been.
+ */
+const PROVIDER_TYPES_WITH_CODE_SANDBOX = new Set(["openai", "anthropic", "gemini"]);
+
+export function providerHostsCodeExecution(
+  providerType: string | null | undefined,
+): boolean {
+  return PROVIDER_TYPES_WITH_CODE_SANDBOX.has(providerType ?? "");
 }
 
 /**

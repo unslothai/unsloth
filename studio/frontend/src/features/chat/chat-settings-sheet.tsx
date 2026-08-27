@@ -99,12 +99,17 @@ import {
   getExternalMinOutputTokens,
   providerSupportsBuiltinCodeExecution,
   providerSupportsFastMode,
+  resolveExternalMaxTokensClamp,
 } from "./provider-capabilities";
 import {
   isLocalModelPath,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
-import type { InferenceParams } from "./types/runtime";
+import {
+  MAX_SAMPLING_SEED,
+  modelReadsSamplingSeed,
+  type InferenceParams,
+} from "./types/runtime";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -425,6 +430,20 @@ function specFallbackMessage({
   switch (reason) {
     case "mla_mtp_disabled":
       return "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it.";
+    case "mtp_partial_offload":
+      // Not the default copy: this build does support MTP, so telling the user to
+      // update llama.cpp would name the wrong cause and the wrong remedy. Says
+      // what the placement IS rather than that the model could not fit: a Manual
+      // layer count is a partial placement the user picked, on a card that may
+      // have room for all of it, and there the useful remedy is more layers.
+      //
+      // Describes the placement MTP WOULD need, not the one that ends up running.
+      // The partial verdict is priced with MTP's rollback reserve still in it, so
+      // on the fit path llama.cpp can put every layer on the GPU once MTP is off
+      // -- claiming "only part of this model is on the GPU" would then describe a
+      // placement the load does not have and recommend one it already has. This
+      // wording stays true both there and at a fixed partial layer count.
+      return "With MTP on, part of this model would have to run on the CPU, where MTP's extra state costs more than the drafting wins back, so Auto turned it off for this load. Give the GPU room for every layer to get it back, or choose MTP in Settings to force it.";
     case "drafter_no_vram":
       // Not "without speculative decoding": the backend puts zero-VRAM ngram-mod
       // in the drafter's place where the build has it, so only the drafter is off.
@@ -500,7 +519,16 @@ export function ChatSettingsPanel({
     isLoadedGguf ||
     ggufContextLength != null ||
     (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  const activeModel = useChatRuntimeStore(
+    (s) => s.models.find((m) => m.id === currentCheckpoint) ?? null,
+  );
+  // Same call the request body makes, on the same summary, so the panel cannot offer a
+  // seed the body drops. An external selection carries an `external::` id that no local
+  // entry matches, so the summary answers that case without a separate guard.
+  const showSeed = modelReadsSamplingSeed(activeModel);
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
+  const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const loadSettingNames = presetLoadSettingNames(
     isGguf,
@@ -524,6 +552,7 @@ export function ChatSettingsPanel({
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
+  const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
   const nBatch = useChatRuntimeStore((s) => s.nBatch);
@@ -600,6 +629,36 @@ export function ChatSettingsPanel({
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
   const [systemVariablesDraft, setSystemVariablesDraft] = useState("");
   const [systemVariablesOpen, setSystemVariablesOpen] = useState(false);
+  // Raw keystrokes while the Seed box is being typed into, null once committed.
+  // Clamping straight into params would rewrite the box mid-entry, so the commit
+  // waits for blur the way NumericValueInput's does.
+  const [seedDraft, setSeedDraft] = useState<string | null>(null);
+  // What blur would commit, available before it runs. Clicking Save blurs the box during
+  // mousedown, but React has not re-rendered by the time that button's onClick fires, so
+  // a handler reading `params` there still sees the seed from before the entry.
+  // NumericValueInput bridges the same gap with its imperative commit().
+  const committedSeed = useMemo<number | null>(() => {
+    if (seedDraft === null) return params.seed ?? null;
+    // Measured after the padding: a zero-padded seed is short enough to keep, and
+    // truncating instead of clamping would rewrite it.
+    const digits = seedDraft.replace(/^0+(?=\d)/, "");
+    if (digits === "") return null;
+    return digits.length > 10
+      ? MAX_SAMPLING_SEED
+      : Math.min(Number(digits), MAX_SAMPLING_SEED);
+  }, [params.seed, seedDraft]);
+  const paramsWithCommittedSeed = useMemo(
+    () =>
+      committedSeed === (params.seed ?? null)
+        ? params
+        : { ...params, seed: committedSeed },
+    [committedSeed, params],
+  );
+  // Removing a focused element fires no blur, so a draft the user walked away from
+  // would keep reporting through committedSeed with the field gone.
+  useEffect(() => {
+    setSeedDraft(null);
+  }, [currentCheckpoint, showSeed]);
   // When the prompt overflows the inline box, clicking opens the popup editor.
   const systemPromptBoxRef = useRef<HTMLTextAreaElement>(null);
   const [systemPromptOverflows, setSystemPromptOverflows] = useState(false);
@@ -643,8 +702,12 @@ export function ChatSettingsPanel({
       }
       const samplingChanged =
         activePresetDefinition.name === "Default"
-          ? activePresetSource === "modified"
-          : !isSamePresetConfig(activePresetDefinition.params, params);
+          ? activePresetSource === "modified" ||
+            committedSeed !== (params.seed ?? null)
+          : !isSamePresetConfig(
+              activePresetDefinition.params,
+              paramsWithCommittedSeed,
+            );
       const currentLoadConfig = capturePresetLoadConfig();
       const loadChanged = !isSamePresetLoadConfig(
         activePresetDefinition.loadConfig,
@@ -655,6 +718,8 @@ export function ChatSettingsPanel({
     activePresetDefinition,
     activePresetSource,
     params,
+    committedSeed,
+    paramsWithCommittedSeed,
     customContextLength,
     ggufContextLength,
     kvCacheDtype,
@@ -663,6 +728,7 @@ export function ChatSettingsPanel({
     gpuLayers,
     nCpuMoe,
     tensorParallel,
+    disableVision,
     speculativeType,
     specDraftNMax,
     nParallel,
@@ -685,6 +751,7 @@ export function ChatSettingsPanel({
       gpuLayers,
       nCpuMoe,
       tensorParallel,
+      disableVision,
       speculativeType,
       specDraftNMax,
       nParallel,
@@ -725,6 +792,7 @@ export function ChatSettingsPanel({
       ? getExternalMaxOutputTokens(
           externalProviderType,
           externalSelection?.modelId,
+          activeExternalProvider?.maxOutputTokens,
         )
       : isGguf && baseContext
         ? baseContext
@@ -760,15 +828,60 @@ export function ChatSettingsPanel({
     };
   }
 
+  const setSeed = set("seed");
+
+  // Lower a live Max Tokens that no longer fits the connection's cap.
+  // `resolveExternalMaxTokensClamp` documents why an unresolved provider must not be
+  // read as the 32,768 fallback.
+  useEffect(() => {
+    const clampedMaxTokens = resolveExternalMaxTokensClamp({
+      settingsHydrated,
+      hasActiveExternalProvider: activeExternalProvider != null,
+      isExternalModel,
+      maxTokens: params.maxTokens,
+      maxTokensMax,
+    });
+    if (clampedMaxTokens == null) {
+      return;
+    }
+    const nextParams = { ...params, maxTokens: clampedMaxTokens };
+    const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
+      ? getPresetSource(activePreset)
+      : "modified";
+    setActivePresetSource(nextSource);
+    onParamsChange(nextParams);
+  }, [
+    activeExternalProvider,
+    activePreset,
+    activePresetBaseline,
+    isExternalModel,
+    maxTokensMax,
+    onParamsChange,
+    params,
+    settingsHydrated,
+    setActivePresetSource,
+  ]);
+
+  function applyPresetParamsWithinCurrentLimits(
+    presetParams: Parameters<typeof applyPresetParams>[1],
+  ): InferenceParams {
+    const nextParams = applyPresetParams(params, presetParams);
+    // Same reason the effect waits for a provider: without one `maxTokensMax` is the
+    // fallback, so applying a preset here would lower the value for good.
+    if (!isExternalModel || activeExternalProvider == null) return nextParams;
+    return {
+      ...nextParams,
+      maxTokens: Math.min(nextParams.maxTokens, maxTokensMax),
+    };
+  }
+
   function applyPreset(name: string) {
     if (!settingsHydrated) {
       return;
     }
     const p = presets.find((pr) => pr.name === name);
     if (p) {
-      onParamsChange({
-        ...applyPresetParams(params, p.params),
-      });
+      onParamsChange(applyPresetParamsWithinCurrentLimits(p.params));
       if (p.loadConfig) {
         applyPresetLoadConfig(p.loadConfig);
       }
@@ -802,7 +915,7 @@ export function ChatSettingsPanel({
       ...next,
       {
         name: saveName,
-        params: toPresetParams(params),
+        params: toPresetParams(paramsWithCommittedSeed),
         ...(loadConfig ? { loadConfig } : {}),
       },
     ];
@@ -828,9 +941,9 @@ export function ChatSettingsPanel({
     setCustomPresets(next);
     if (activePreset === name) {
       if (fallbackPreset) {
-        onParamsChange({
-          ...        applyPresetParams(params, fallbackPreset.params),
-        });
+        onParamsChange(
+          applyPresetParamsWithinCurrentLimits(fallbackPreset.params),
+        );
         if (fallbackPreset.loadConfig) {
           applyPresetLoadConfig(fallbackPreset.loadConfig);
         }
@@ -1003,9 +1116,21 @@ export function ChatSettingsPanel({
               )}
               {showContextVramWarning && (
                 <p className="text-ui-11 text-amber-500">
-                  Context length exceeds the estimated VRAM capacity (
+                  {isUnifiedMemory ? (
+                    <>
+                      Context length exceeds what fits in unified memory (
+                      {ggufMaxContextLength?.toLocaleString()} tokens). The GPU
+                      and the rest of the system share one pool here, so there
+                      is nothing to offload to. Lower the context, leave it on
+                      Auto, or set the KV cache to q8_0.
+                    </>
+                  ) : (
+                    <>
+                      Context length exceeds the estimated VRAM capacity (
                       {ggufMaxContextLength?.toLocaleString()} tokens). The
                       model may use system RAM.
+                    </>
+                  )}
                 </p>
               )}
             </div>
@@ -1415,6 +1540,54 @@ export function ChatSettingsPanel({
               }
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />
+            {showSeed ? (
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+                    Seed
+                  </span>
+                  <InfoHint>
+                    Pins the sampling draw so the same prompt and settings can
+                    reproduce the same reply. Leave blank to draw a fresh seed
+                    each request. It only fixes the draw, so the other sampling
+                    settings have to stay put as well; at Temperature 0 decoding
+                    is already greedy and a seed changes nothing. Matching a
+                    reply also needs the model loaded with Parallel Slots at 1
+                    and Speculative Decoding off, since both change how tokens
+                    are batched and that moves the result.
+                  </InfoHint>
+                </div>
+                <InputGroup className="panel-input-group w-[8.5rem] shrink-0">
+                  <InputGroupInput
+                    id="inference-seed"
+                    // A TEXT input: type="number" reports an unreadable entry as "", clearing the pin.
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={
+                      seedDraft ??
+                      (params.seed == null ? "" : String(params.seed))
+                    }
+                    onChange={(e) =>
+                      setSeedDraft(e.target.value.replace(/\D/g, ""))
+                    }
+                    onBlur={() => {
+                      if (seedDraft === null) return;
+                      setSeedDraft(null);
+                      setSeed(committedSeed);
+                    }}
+                    onKeyDown={(e) => {
+                      // Blur is the only commit, so Enter has to reach it.
+                      if (e.key === "Enter") e.currentTarget.blur();
+                    }}
+                    placeholder="Random"
+                    aria-label="Seed"
+                    className="!h-9 min-h-0 min-w-0 self-stretch !px-3 py-0 text-ui-13 font-medium leading-9 text-nav-fg md:text-ui-13"
+                  />
+                </InputGroup>
+              </div>
+            ) : null}
           </div>
         </CollapsibleSection>
 
