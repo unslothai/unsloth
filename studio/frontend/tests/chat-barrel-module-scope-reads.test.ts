@@ -302,6 +302,43 @@ function isImmediatelyInvoked(node: ts.Node): boolean {
   );
 }
 
+/** True when this node is something with a callable body. */
+function isCallableNode(node: ts.Node): node is ts.FunctionLikeDeclaration {
+  return (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node)
+  );
+}
+
+/** The call or construction that invokes this function expression, if any. */
+function invocationOf(node: ts.Node): ts.CallExpression | ts.NewExpression | undefined {
+  let current: ts.Node = node;
+  let parent = current.parent;
+  while (parent && ts.isParenthesizedExpression(parent)) {
+    current = parent;
+    parent = parent.parent;
+  }
+  if (!parent) return undefined;
+  if ((ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.expression === current) {
+    return parent;
+  }
+  // `.call(...)` / `.apply(...)`: the arguments are the callee's, shifted by the
+  // receiver, so they cannot be matched positionally. Report no arguments,
+  // which makes defaults conservatively eligible.
+  return undefined;
+}
+
+/** Array and Object helpers that run their callback before returning. */
+const SYNCHRONOUS_CALLBACK_METHODS = new Set([
+  "map", "forEach", "filter", "reduce", "reduceRight", "flatMap",
+  "find", "findLast", "findIndex", "findLastIndex", "some", "every", "sort",
+]);
+
 /** Nodes whose bodies run when called, not when the module loads. */
 function defersEvaluation(node: ts.Node): boolean {
   if (
@@ -313,8 +350,10 @@ function defersEvaluation(node: ts.Node): boolean {
     ts.isGetAccessorDeclaration(node) ||
     ts.isSetAccessorDeclaration(node)
   ) {
-    // An IIFE runs during module initialization like any other expression.
-    return !isImmediatelyInvoked(node);
+    // Always deferred here. An IIFE does run now, but it is entered through
+    // enterCallable so that a generator or an await inside it is respected;
+    // walking the body eagerly from here ignored both.
+    return true;
   }
   // An instance field initializer runs at construction; a static one runs at
   // class definition, which is module load, so it is NOT deferred.
@@ -576,6 +615,65 @@ function eagerReads(
     ) {
       const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
       found.push(`${node.text} (line ${line + 1})`);
+    }
+    // An IIFE runs now, but through enterCallable so a generator body or an
+    // await inside it still holds back what does not run yet. Walking it
+    // eagerly reported reads that only happen after the module has loaded.
+    if (!deferred && isCallableNode(node) && isImmediatelyInvoked(node)) {
+      if (!entered.has(node)) {
+        entered.add(node);
+        enterCallable(node, targets, invocationOf(node)?.arguments);
+      }
+      return;
+    }
+    // `` tag`value` `` invokes tag synchronously, exactly like tag("value").
+    if (!deferred && ts.isTaggedTemplateExpression(node) && ts.isIdentifier(node.tag)) {
+      const tagged = targets.functions.get(node.tag.text);
+      if (tagged && !entered.has(tagged) && resolvesToTarget(node.tag, tagged)) {
+        entered.add(tagged);
+        enterCallable(tagged, targets);
+      }
+    }
+    // `[0].map(cb)` runs cb before it returns. Only these built-ins: an
+    // arbitrary callback may be stored and invoked long after load, which is
+    // the same line the Promise executor case draws.
+    if (
+      !deferred &&
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      SYNCHRONOUS_CALLBACK_METHODS.has(node.expression.name.text)
+    ) {
+      for (const argument of node.arguments) {
+        if (!isCallableNode(argument) || entered.has(argument)) continue;
+        entered.add(argument);
+        enterCallable(argument, targets);
+      }
+    }
+    // `obj.read()` on a local object literal runs that method now. The getter
+    // case below covers a bare `obj.value`; this is the invoked-method twin.
+    if (
+      !deferred &&
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression)
+    ) {
+      const object = targets.objects.get(node.expression.expression.text);
+      if (object && resolvesToTarget(node.expression.expression, object)) {
+        const wanted = node.expression.name.text;
+        for (const property of object.properties) {
+          const name = property.name;
+          if (!name || !ts.isIdentifier(name) || name.text !== wanted) continue;
+          const fn = ts.isMethodDeclaration(property)
+            ? property
+            : ts.isPropertyAssignment(property) && isCallableNode(property.initializer)
+              ? property.initializer
+              : undefined;
+          if (fn && !entered.has(fn)) {
+            entered.add(fn);
+            enterCallable(fn, targets, node.arguments);
+          }
+        }
+      }
     }
     // `const value = read()` at module scope runs read's body now, so the read
     // inside it is eager even though the declaration looked deferred. Without
@@ -857,8 +955,18 @@ function barrelInitClosure(files: string[]): Set<string> {
     return out;
   };
 
+  // Resolved, not hard-coded. Moving the barrel to an equally importable
+  // features/chat.ts would leave a hard-coded index.ts path with no edges, so
+  // atRisk would come back empty and every offender would silently stop being
+  // reported while the importer count still looked healthy.
+  const entry = resolve(BARREL, path.join(SRC, "index.ts"));
+  assert.ok(
+    entry !== null,
+    `${BARREL} does not resolve to a file under ${SRC}; the guard would scan nothing`,
+  );
+
   const seen = new Set<string>();
-  const stack = [path.join(SRC, "features", "chat", "index.ts")];
+  const stack = [entry as string];
   while (stack.length > 0) {
     const node = stack.pop() as string;
     for (const next of edges(node)) {
@@ -941,6 +1049,22 @@ test("no module-scope read of a chat barrel value", () => {
 test("the scan catches every shape the regex version missed", () => {
   const cases: Array<[string, string]> = [
     ["plain const", `import { K } from "${BARREL}";\nconst a = [K];\n`],
+    [
+      "callback passed to a synchronous array method",
+      `import { K } from "${BARREL}";\n[0].map(() => K);\n`,
+    ],
+    [
+      "local object method invoked at module scope",
+      `import { K } from "${BARREL}";\nconst obj = { read() { return K; } };\nobj.read();\n`,
+    ],
+    [
+      "local function invoked as a template tag",
+      `import { K } from "${BARREL}";\nfunction tag() { return K; }\nconst v = tag\`value\`;\n`,
+    ],
+    [
+      "inline async IIFE before its first await",
+      `import { K } from "${BARREL}";\nvoid (async () => { consume(K); await ready; })();\n`,
+    ],
     [
       "second import declaration",
       `import { A } from "${BARREL}";\nimport { K } from "${BARREL}";\nconst a = [K];\n`,
@@ -1213,6 +1337,18 @@ test("deferred reads and non-references are left alone", () => {
       `import { K } from "${BARREL}";\nfunction read(v = K) {}\nread(1);\n`,
     ],
     [
+      "inline async IIFE after its first await",
+      `import { K } from "${BARREL}";\nvoid (async () => { await ready; consume(K); })();\n`,
+    ],
+    [
+      "inline generator IIFE only builds an iterator",
+      `import { K } from "${BARREL}";\nconst it = (function* () { yield K; })();\n`,
+    ],
+    [
+      "callback passed to an unknown function stays deferred",
+      `import { K } from "${BARREL}";\nregisterLater(() => K);\n`,
+    ],
+    [
       "a reassignable callee is not resolved to its declaration",
       `import { K } from "${BARREL}";\nlet read = () => K;\nread = () => 1;\nread();\n`,
     ],
@@ -1352,4 +1488,24 @@ test("an eager call into an imported helper is followed across modules", () => {
     helpers: new Map([["read", build(safe)]]),
   });
   assert.deepEqual(clean, [], "a helper that does not touch the barrel is left alone");
+});
+
+test("the barrel entry is resolved, so moving it cannot silently empty the scan", () => {
+  // The guard's own vacuity hazard: a hard-coded index.ts path would resolve to
+  // nothing after a move, atRisk would be empty, and every offender would stop
+  // being reported while `importers >= 5` still passed.
+  const moved = path.join(SRC, "features", "chat.ts");
+  const leaf = path.join(SRC, "leaf.ts");
+  const sources = new Map<string, string>([
+    [moved, `export * from "./chat/store";\n`],
+    [path.join(SRC, "features", "chat", "store.ts"), `export const K = 1;\n`],
+    [leaf, `import { K } from "${BARREL}";\n`],
+  ]);
+  const resolve = makeResolver(sources);
+  assert.equal(resolve(BARREL, leaf), moved, "the barrel resolves to the moved file");
+  assert.equal(
+    resolve(BARREL, path.join(SRC, "index.ts")),
+    moved,
+    "and resolves the same way from the root the closure starts at",
+  );
 });
