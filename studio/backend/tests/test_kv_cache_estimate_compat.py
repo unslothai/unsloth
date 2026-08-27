@@ -17,6 +17,8 @@ upgrade. Two directions matter:
 No GPU, no network.
 """
 
+from __future__ import annotations
+
 import asyncio
 import inspect
 import sys
