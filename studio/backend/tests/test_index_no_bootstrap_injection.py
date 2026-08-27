@@ -64,8 +64,8 @@ def test_seed_pointer_survives_bootstrap_suppression(tmp_path, monkeypatch, caps
     monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", authdir / ".bootstrap_password")
     monkeypatch.setattr(storage, "_bootstrap_password", None, raising = False)
     seed = storage.generate_bootstrap_password()
-    storage.ensure_default_admin()          # first run already happened
-    assert storage.ensure_default_admin() is False   # so this is the restart branch
+    storage.ensure_default_admin()  # first run already happened
+    assert storage.ensure_default_admin() is False  # so this is the restart branch
 
     app = FastAPI()
     app.state.suppress_bootstrap_injection = True
