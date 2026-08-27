@@ -274,7 +274,13 @@ export function ArtifactHtmlFrame({
                   setting: t("settings.chat.artifacts.allowNetworkAccess"),
                 })}
               </p>
+              {/* Same pairing as the tool Allow / Always allow controls: the
+                  narrow grant leads as the primary action and the one that
+                  widens every canvas is the quieter outline beside it. */}
               <div className="flex flex-wrap gap-2">
+                <Button size="sm" onClick={() => setGrantedCode(code)}>
+                  {t("settings.chat.artifacts.blockedBannerAction")}
+                </Button>
                 <Button
                   size="sm"
                   variant="outline"
@@ -289,13 +295,6 @@ export function ArtifactHtmlFrame({
                   }}
                 >
                   {t("settings.chat.artifacts.blockedSettingsAction")}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setGrantedCode(code)}
-                >
-                  {t("settings.chat.artifacts.blockedBannerAction")}
                 </Button>
               </div>
             </AlertDescription>

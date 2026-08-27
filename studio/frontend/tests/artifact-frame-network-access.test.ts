@@ -499,3 +499,41 @@ test("the climbing blocked count is kept out of the assertive alert", () => {
     "the count line must opt out of the live region",
   );
 });
+
+/** The opening tag of the `<Button>` whose subtree calls `needle`. */
+function readButtonCalling(needle: string): string {
+  const source = sourceFile(FRAME);
+  let text: string | undefined;
+  const visit = (node: ts.Node): void => {
+    const opening = openingTag(node);
+    if (
+      opening?.tagName.getText() === "Button" &&
+      node.getText().includes(needle)
+    ) {
+      text = opening.getText();
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  assert.ok(text, `no <Button> calls ${needle}`);
+  return text;
+}
+
+// The grant covers one canvas; the settings link turns network access on for
+// every canvas from here on. Studio's tool controls lead with the narrow grant
+// -- Allow is the primary, Always allow the outline beside it -- so the banner
+// matches, and the emphasis never lands on the action that widens the most.
+test("the emphasized action is the per-canvas grant, not the global setting", () => {
+  const grant = readButtonCalling("setGrantedCode");
+  const settings = readButtonCalling("openDialog");
+  assert.doesNotMatch(
+    grant,
+    /variant=/,
+    "the per-canvas grant must stay the default (primary) button",
+  );
+  assert.match(
+    settings,
+    /variant="outline"/,
+    "the global setting must be the quieter outline button",
+  );
+});
