@@ -103,6 +103,7 @@ from .diffusion_auto_policy import (
 from .diffusion_transformer_quant import (
     TQ_AUTO,
     dense_transformer_supported,
+    dense_transformer_unsupported_reason,
     explain_unusable_scheme,
     normalize_transformer_quant,
     quantize_transformer,
@@ -273,7 +274,7 @@ def _assert_video_precision_for_target(
                 f"'{model_kind}' load, which runs the precision its checkpoint carries"
             )
         elif not dense_transformer_supported(target):
-            reason = "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
+            reason = dense_transformer_unsupported_reason(target)
         elif forces_offload:
             # balanced and low_vram name their offload policy without measuring anything, and
             # offload hooks move modules with Module.to(), which torchao tensors do not survive.

@@ -226,8 +226,8 @@ import type { CachedGgufRepo, CachedModelRepo } from "./chat-api";
 import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
+  createContinuationMerger,
   type IncompleteReason,
-  joinContinuation,
   readIncompleteInfo,
   readContinuationRequest,
   rejectsAssistantPrefill,
@@ -5191,18 +5191,20 @@ export function createOpenAIStreamAdapter(
       // is for providers that may ignore the prefill and repeat or restart.
       const repairContinuation =
         isExternalRequest && !resumesExactly(externalProvider?.providerType);
-      const mergeContinuation = (text: string): string =>
-        continuationPartial && repairContinuation
-          ? joinContinuation(
-              continuationPartial,
-              text.slice(continuationPartial.length),
-            )
-          : text;
+      // Streamed publishes get the cumulative text unchanged; the repairs run once, on
+      // the finished turn. Both of them re-decide as the continuation grows, so running
+      // them per arrival published a SHORTER text than the arrival before it, and the
+      // restart branch published only the continuation, dropping the whole partial the
+      // reader was already looking at.
+      const mergeContinuation = createContinuationMerger(
+        continuationPartial,
+        repairContinuation,
+      );
       // The parse of everything already streamed, extended by each delta.
-      // `mergeContinuation` can rewrite the prefix it is handed, and a rewritten
-      // prefix is exactly what an extend-only parse cannot follow, so that one
-      // path keeps reparsing the whole reply as before. It is a continuation of
-      // an external provider that may repeat itself, not the streaming case.
+      // The final merge can rewrite the prefix it is handed, and a rewritten prefix is
+      // exactly what an extend-only parse cannot follow, so that one path keeps
+      // reparsing the whole reply as before. It is a continuation of an external
+      // provider that may repeat itself, not the streaming case.
       const segmentedText = createSegmentedAssistantText({
         trustAppends: !(continuationPartial && repairContinuation),
       });
@@ -7366,7 +7368,7 @@ export function createOpenAIStreamAdapter(
         ) {
           // Rendered parts, not the raw stream: `cumulativeText` carries <think>.
           const answerText = answerTextFromParts(
-            buildAssistantContent(mergeContinuation(cumulativeText)),
+            buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
           );
           const subjects = missingListSubjects(answerText, toolCallParts);
           if (subjects.length > 0) {
@@ -7444,7 +7446,7 @@ export function createOpenAIStreamAdapter(
         reasoningDurationTracker.finishGroup();
         yield {
           content: [
-            ...buildAssistantContent(mergeContinuation(cumulativeText)),
+            ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
             ...sourceParts,
             ...documentCitationParts,
           ],
@@ -7582,7 +7584,7 @@ export function createOpenAIStreamAdapter(
         }
         if (!abortSignal.aborted) {
           closeReasoningContent();
-          const partialText = mergeContinuation(cumulativeText);
+          const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
           if (partialContent.length > 0) {
             const partialTiming = buildTiming(
