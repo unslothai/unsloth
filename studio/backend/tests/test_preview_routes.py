@@ -135,6 +135,7 @@ def test_page_renders_reasoning_stream(client):
     assert 'choice.finish_reason === "length"' in text
     assert "Reply cut off at the preview length limit." in text
     assert "cutoff.hidden = !truncated" in text
+    assert 'cutoff.setAttribute("role", "status")' in text
     assert "preview stream ended before completion" in text
 
 

@@ -398,6 +398,7 @@
         body.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
         const cutoff = document.createElement("div");
         cutoff.className = "cutoff";
+        cutoff.setAttribute("role", "status");
         cutoff.hidden = true;
         out.append(think, body, cutoff);
         let acc = "",
