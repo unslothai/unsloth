@@ -401,6 +401,7 @@ def _compacted_arguments(
     name: str,
     arguments: str,
     phrase: Optional[str] = None,
+    reply: object = None,
 ) -> Optional[str]:
     """A receipt standing in for a completed call's arguments, or None to leave them.
 
@@ -418,7 +419,7 @@ def _compacted_arguments(
     # literal default silently kept the OLD wording on this path while the executed and
     # refused paths moved to the new one -- the same receipt the model misread as tool
     # output, still being emitted by the most common caller.
-    phrase = phrase or _completed_phrase_for(name)
+    phrase = phrase or _completed_phrase_for(name, reply)
     if not isinstance(arguments, str) or len(arguments) < _ARG_COMPACTION_FLOOR_CHARS:
         return None
     try:
@@ -492,16 +493,43 @@ _COMPLETED_PHRASE = "of arguments you sent, already written{where}; elided to sa
 # like `edit_file`, so a 2000-character `code` argument was handed a receipt saying it
 # was "already written" and that "the file on disk holds it" -- a file the model can
 # then set out to read, or reason from as persisted, when nothing was persisted at all.
-_COMPLETED_NO_FILE_PHRASE = (
-    "of arguments you sent, elided to save room; the call already ran. Not tool output, "
-    "and nothing was written to disk"
+# Neither claim about the filesystem, for every case where the reply does not settle it.
+# Says only what is certainly true: these are the model's own arguments, the call ran, and
+# this is not the tool's output.
+_COMPLETED_NEUTRAL_PHRASE = (
+    "of arguments you sent, elided to save room; the call already ran. Not tool output"
 )
 # Tools whose completed call really does leave the content in a file.
 _FILE_WRITING_TOOLS = frozenset({"edit_file"})
 
+# A reply that opens like this reports a call that ran and did NOT do what was asked, so
+# the file wording would describe a write that never landed.
+_FAILED_REPLY_MARKERS = ("error", "failed", "not found", "no such file", "traceback")
 
-def _completed_phrase_for(name: str) -> str:
-    return _COMPLETED_PHRASE if name in _FILE_WRITING_TOOLS else _COMPLETED_NO_FILE_PHRASE
+
+def _reply_proves_a_write(name: str, content: object) -> bool:
+    """Whether this reply settles that the call left its content in a file.
+
+    The tool NAME alone is wrong in both directions, and under the tight context that
+    triggers compaction the model acts on the answer. An `edit_file` that ran and returned
+    "old_string not found" is not a write, and telling it the content is already on disk
+    invites it to skip the retry the error was asking for. A `python` or `terminal` call
+    whose code created files is not a non-write either, and telling it nothing was written
+    invites it to do the same work twice.
+
+    So the file wording is earned, not assumed: a file tool AND a reply that does not read
+    as a failure. Everything else gets a receipt that claims nothing about the disk.
+    """
+    if name not in _FILE_WRITING_TOOLS:
+        return False
+    if not isinstance(content, str):
+        return False
+    head = content[:200].strip().lower()
+    return not any(marker in head for marker in _FAILED_REPLY_MARKERS)
+
+
+def _completed_phrase_for(name: str, reply: object = None) -> str:
+    return _COMPLETED_PHRASE if _reply_proves_a_write(name, reply) else _COMPLETED_NEUTRAL_PHRASE
 
 
 def compact_executed_call_arguments(messages: list[dict], call_id: str) -> list[dict]:
@@ -569,6 +597,14 @@ def _last_index_with_call(messages: list[dict], call_id: str) -> int:
     return -1
 
 
+def _reply_for_call(messages: list[dict], call_id: str) -> object:
+    """The last tool reply answering this id, or None when it has not been answered."""
+    for message in reversed(messages):
+        if message.get("role") == "tool" and str(message.get("tool_call_id") or "") == str(call_id):
+            return message.get("content")
+    return None
+
+
 def _compact_one_call(
     messages: list[dict],
     call_id: str,
@@ -598,7 +634,10 @@ def _compact_one_call(
                 new_calls.append(call)
                 continue
             replacement = _compacted_arguments(
-                str(function.get("name") or ""), function.get("arguments"), phrase
+                str(function.get("name") or ""),
+                function.get("arguments"),
+                phrase,
+                reply = _reply_for_call(messages, call_id),
             )
             if replacement is None:
                 new_calls.append(call)
@@ -630,6 +669,42 @@ def _reply_shows_execution(content: object) -> bool:
     return not any(marker in head for marker in _DID_NOT_RUN_MARKERS)
 
 
+def _executed_call_sites(messages: list[dict]) -> "dict[tuple[int, str], object]":
+    """`(message index, call id)` for each call a reply shows actually ran.
+
+    Keyed on the SITE, not the id. Generated ids restart at `call_0` on every turn, so a
+    conversation-wide set of "answered" ids says an earlier successful `call_0` vouches
+    for a later one. Under a tight context that is how a call the user DECLINED came to be
+    replayed with the completed receipt: the reply marker correctly skipped the denial,
+    and the older success had already put the id in the set. The model is then told a file
+    was written that it refused, which it may report or reason from.
+
+    Paired the way the transcript reads: a reply answers the most recent announcement of
+    that id still waiting for one.
+    """
+    pending: dict[str, list[int]] = {}
+    executed: dict[tuple[int, str], object] = {}
+    for index, message in enumerate(messages):
+        role = message.get("role")
+        if role == "assistant":
+            for call in message.get("tool_calls") or []:
+                if isinstance(call, dict) and call.get("id"):
+                    pending.setdefault(str(call["id"]), []).append(index)
+            continue
+        if role != "tool":
+            continue
+        call_id = message.get("tool_call_id")
+        if not call_id:
+            continue
+        sites = pending.get(str(call_id))
+        if not sites:
+            continue
+        site = sites.pop(0)
+        if _reply_shows_execution(message.get("content")):
+            executed[(site, str(call_id))] = message.get("content")
+    return executed
+
+
 def compact_completed_tool_arguments(
     messages: list[dict], *, protect_last: int = 0
 ) -> tuple[list[dict], int]:
@@ -648,12 +723,7 @@ def compact_completed_tool_arguments(
     reasoning about -- is the last thing spent. ``protect_last`` holds that many trailing
     messages clear of the pass entirely.
     """
-    answered: set[str] = set()
-    for message in messages:
-        if message.get("role") == "tool":
-            call_id = message.get("tool_call_id")
-            if call_id and _reply_shows_execution(message.get("content")):
-                answered.add(str(call_id))
+    answered = _executed_call_sites(messages)
     if not answered:
         return messages, 0
 
@@ -669,11 +739,13 @@ def compact_completed_tool_arguments(
         changed = False
         for call in calls:
             function = call.get("function") if isinstance(call, dict) else None
-            if not isinstance(function, dict) or str(call.get("id") or "") not in answered:
+            if not isinstance(function, dict) or (index, str(call.get("id") or "")) not in answered:
                 new_calls.append(call)
                 continue
             replacement = _compacted_arguments(
-                str(function.get("name") or ""), function.get("arguments")
+                str(function.get("name") or ""),
+                function.get("arguments"),
+                reply = answered[(index, str(call.get("id") or ""))],
             )
             if replacement is None:
                 new_calls.append(call)

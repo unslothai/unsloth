@@ -9374,6 +9374,14 @@ def _edit_file_create(
     return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
 
 
+# Each entry costs a full `count` scan of the file plus a search pass, and the file may be
+# up to 16 MiB, so the work is entries x size. Unbounded, a model-generated batch of a few
+# thousand one-line edits turns a single call into gigabytes of repeated scanning and holds
+# the tool worker for minutes. High enough that no honest refactor hits it, low enough that
+# the worst case stays bounded.
+_MAX_EDITS_PER_CALL = 100
+
+
 def _edit_file_parse_edits(raw) -> "tuple[list[tuple[str, str, bool]], str]":
     """Validate the `edits` array into `(old, new, replace_all)` triples.
 
@@ -9390,6 +9398,12 @@ def _edit_file_parse_edits(raw) -> "tuple[list[tuple[str, str, bool]], str]":
         return [], (
             "Error: 'edits' must be a non-empty array of {old_string, new_string} "
             "objects. Send every change to this file as separate entries in it."
+        )
+    if len(raw) > _MAX_EDITS_PER_CALL:
+        return [], (
+            f"Error: {len(raw)} edits in one call is over the limit of "
+            f"{_MAX_EDITS_PER_CALL}; nothing was written. Send them in batches of "
+            f"{_MAX_EDITS_PER_CALL} or fewer, applying each batch before the next."
         )
     edits: list[tuple[str, str, bool]] = []
     for index, entry in enumerate(raw, 1):

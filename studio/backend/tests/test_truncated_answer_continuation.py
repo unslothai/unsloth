@@ -500,3 +500,76 @@ def test_a_continuation_with_room_to_answer_in_is_still_sent(monkeypatch):
 
     assert len(payloads) == 2, "a continuation with room to answer in was refused"
     assert "</html>" in "".join(_texts(events, "content"))
+
+
+def test_a_caller_set_max_tokens_is_not_exceeded(monkeypatch):
+    """`finish_reason: length` does not say WHICH wall was hit.
+
+    A caller asking for at most 100 completion tokens gets the stop at their own cap, and
+    continuing twice more returned roughly 300 against a limit the API promised. Only the
+    context wall deserves a continuation.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": " never sent"}), _done()]),
+        payloads,
+    )
+
+    _run_no_tools(backend, max_tokens = 100)
+
+    assert len(payloads) == 1, "the caller's output cap was overrun"
+
+
+def test_a_caller_cap_with_room_left_continues_within_it(monkeypatch):
+    """Not a blanket refusal: the retry gets the REMAINDER of the caller's budget."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _usage(400), _finish("length"), _done()],
+            [_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _usage(20), _done()],
+        ],
+        payloads,
+    )
+
+    events = _run_no_tools(backend, max_tokens = 1000)
+
+    assert len(payloads) == 2
+    assert payloads[1]["max_tokens"] == 600, "the retry got a fresh cap, not the remainder"
+    assert "</html>" in "".join(_texts(events, "content"))
+
+
+def test_max_tokens_equal_to_the_window_is_the_context_wall(monkeypatch):
+    """That is what the backend substitutes for "Max", so it is not a caller cap."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        _cut_off_then([_sse({"content": ", 0, 6.28);\n</script>\n</html>"}), _done()]),
+        payloads,
+    )
+
+    _run_no_tools(backend, max_tokens = 4096)
+
+    assert len(payloads) == 2
+
+
+def test_a_refused_continuation_does_not_double_count_its_usage(monkeypatch):
+    """The fold ran before the decision, and the reject path reported the same tokens
+    again through _build_metadata_event."""
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": _HALF_AN_ANSWER}), _usage(700), _finish("length"), _done()]],
+        payloads,
+    )
+    monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 4096)
+
+    usage = _metadata(_run_no_tools(backend))["usage"]
+
+    assert len(payloads) == 1
+    assert usage["completion_tokens"] == 700, "the refused attempt was counted twice"

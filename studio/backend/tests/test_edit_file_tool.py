@@ -745,3 +745,48 @@ class TestBatchedEdits:
         assert not result.startswith("Error:")
         assert time.monotonic() - started < 2.0
         assert target.read_text() == "v = 2\n" * 40000
+
+
+class TestBatchSize:
+    """Each entry costs a full scan of a file that may be 16 MiB, so entries x size is
+    the real work. Unbounded, a model-generated batch of a few thousand one-line edits
+    turns one call into gigabytes of repeated scanning and holds the worker for minutes.
+    """
+
+    def test_a_batch_over_the_limit_is_refused_before_anything_is_written(self, workdir):
+        from core.inference.tools import _MAX_EDITS_PER_CALL
+
+        target = workdir / "a.py"
+        target.write_text("x = 1\n", encoding = "utf-8")
+        edits = [
+            {"old_string": f"line{i}", "new_string": f"L{i}"}
+            for i in range(_MAX_EDITS_PER_CALL + 1)
+        ]
+
+        result = _edit(path = "a.py", edits = edits)
+
+        assert result.startswith("Error:")
+        assert "over the limit" in result
+        assert "nothing was written" in result
+        assert target.read_text(encoding = "utf-8") == "x = 1\n"
+
+    def test_a_batch_at_the_limit_is_still_applied(self, workdir):
+        from core.inference.tools import _MAX_EDITS_PER_CALL
+
+        target = workdir / "a.py"
+        # Zero-padded and terminated: a bare "line1" is also a prefix of "line10", which
+        # the tool correctly refuses as ambiguous. That is the fixture's problem, not the
+        # batching's.
+        target.write_text(
+            "".join(f"line{i:03d}=0\n" for i in range(_MAX_EDITS_PER_CALL)),
+            encoding = "utf-8",
+        )
+        edits = [
+            {"old_string": f"line{i:03d}=0", "new_string": f"line{i:03d}=1"}
+            for i in range(_MAX_EDITS_PER_CALL)
+        ]
+
+        result = _edit(path = "a.py", edits = edits)
+
+        assert not result.startswith("Error:")
+        assert "line000=1" in target.read_text(encoding = "utf-8")

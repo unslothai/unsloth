@@ -289,3 +289,44 @@ def test_distinct_calls_answered_with_the_same_acknowledgement_are_left_alone(mo
 
     assert results, "no tool ran"
     assert not any("it will not change" in r for r in results)
+
+
+def _starve_the_budget(monkeypatch):
+    """Force every result budget under _MIN_USEFUL_RESULT_TOKENS, as a tight window does."""
+    import core.inference.llama_cpp as _lc  # noqa: PLC0415
+
+    monkeypatch.setattr(_lc, "tool_result_budget", lambda *_a, **_k: 0)
+
+
+def test_a_short_result_that_fit_is_not_called_starved(monkeypatch):
+    """The budget says what the window ALLOWED, not what the tool returned.
+
+    "Created a.py" fits a few tokens completely. Telling the model it got nothing usable
+    and to continue without it invites it to discard a successful write, or do it twice.
+    """
+    _starve_the_budget(monkeypatch)
+    streams = [[_call("make the file", 0), _done()], [_sse({"content": "Done."}), _done()]]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "Created a.py")
+
+    results = _tool_results(_run(backend))
+
+    assert any("Created a.py" in r for r in results)
+    assert not any("nothing usable" in r or "without it" in r for r in results)
+
+
+def test_a_result_the_window_actually_cut_is_still_called_starved(monkeypatch):
+    """The case the nudge exists for must survive the new evidence requirement."""
+    _starve_the_budget(monkeypatch)
+    streams = [[_call("read the file", 0), _done()], [_sse({"content": "Done."}), _done()]]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda *_a, **_k: _TRUNCATION_NOTICE
+    )
+
+    results = _tool_results(_run(backend))
+
+    assert any(_TRUNCATION_NOTICE in r for r in results)
+    assert any(r != _TRUNCATION_NOTICE for r in results), "the nudge was not added"

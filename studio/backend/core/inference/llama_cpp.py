@@ -28350,7 +28350,17 @@ class LlamaCppBackend:
                     # The window priced this result at nothing before the call ran, so the
                     # model is told now rather than after three calls prove it.
                     _result_was_starved = False
-                    if _starved_call[0] and isinstance(result, str):
+                    # The budget says what the window ALLOWED, not what the tool returned.
+                    # A short result fits a few tokens completely -- "Created a.py", "OK",
+                    # the acknowledgement a mutation gives -- and telling the model that
+                    # nothing usable came back invites it to discard a successful write or
+                    # do it a second time. So the nudge waits for evidence the result was
+                    # actually cut: the truncation notice, or nothing at all.
+                    if (
+                        _starved_call[0]
+                        and isinstance(result, str)
+                        and (not result.strip() or _is_window_notice(result))
+                    ):
                         _starved_call[0] = False
                         _result_was_starved = True
                         logger.info(
@@ -28360,6 +28370,10 @@ class LlamaCppBackend:
                             _MIN_USEFUL_RESULT_TOKENS,
                         )
                         result = _starved_result_message(decision.tool_name, result)
+                    else:
+                        # Cleared either way: it describes THIS call's budget, and leaving
+                        # it set would hand the notice to the next call instead.
+                        _starved_call[0] = False
 
                     # ── No-progress guard: the same answer, over and over ──
                     # Keyed on the RESULT, not the arguments. In the turn this came from,
@@ -28801,7 +28815,35 @@ class LlamaCppBackend:
         _continue_final = False
         _final_replayed_chars = 0
 
-        def _continuation_would_be_served() -> bool:
+        def _remaining_output_budget() -> "Optional[int]":
+            """What is left of a cap the CALLER set, or None when they set none.
+
+            `finish_reason: "length"` does not say which wall was hit. A caller asking for
+            at most 100 completion tokens gets it at their own cap, and continuing twice
+            more returned roughly 300 -- over the limit the API promised, for latency and
+            tokens nobody asked for. Only the context wall deserves a continuation, and a
+            caller who set a cap gets the remainder of it rather than a fresh one.
+
+            None means no explicit cap: `max_tokens` unset, or set to the whole window,
+            which is what the backend substitutes for "Max" and is indistinguishable from
+            unset. There the length stop IS the context wall, which is the case this
+            continuation exists for.
+            """
+            if max_tokens is None:
+                return None
+            window = self._effective_context_length or 0
+            if window and max_tokens >= window:
+                return None
+            # This attempt's own cost. A server that reported usage gives it exactly;
+            # without one, a `length` stop still means the attempt produced the whole
+            # allowance it was given, so charge that. Guessing LOW here is what lets the
+            # caller's cap be overrun, which is the defect this exists to prevent.
+            _this_attempt = (
+                _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
+            ).get("completion_tokens", 0) or int(stream_payload.get("max_tokens") or 0)
+            return max(0, max_tokens - _accumulated_completion_tokens - _this_attempt)
+
+        def _continuation_would_be_served(candidate_messages, continue_flag: bool) -> bool:
             """Whether the retry's own prompt still fits, now that the partial is in it.
 
             The first pass reached `finish_reason: length` by consuming the physical
@@ -28817,12 +28859,12 @@ class LlamaCppBackend:
                 return True
             try:
                 _tokens = self.count_chat_tokens(
-                    stream_payload["messages"],
+                    candidate_messages,
                     None,
                     None,
                     strict = True,
                     chat_template_kwargs = stream_payload.get("chat_template_kwargs"),
-                    continue_final_message = bool(stream_payload.get("continue_final_message")),
+                    continue_final_message = continue_flag,
                 )
             except Exception:
                 logger.debug("final continuation: prompt count failed", exc_info = True)
@@ -28992,30 +29034,44 @@ class LlamaCppBackend:
                             _final_length_continuations,
                             _MAX_LENGTH_CONTINUATIONS,
                         )
-                        # Only what is NEW since the last replay. `_last_emitted` is
-                        # cumulative across attempts, and the helper PREPENDS the trailing
-                        # assistant text, so handing it the cumulative value a second time
-                        # yields "fragment1 + fragment1 + continuation1".
+                        # Built as a CANDIDATE, committed only once another stream is
+                        # certain to run. Mutating the payload first and folding the usage
+                        # in first meant a refused continuation had already spent both:
+                        # `_build_metadata_event` adds the same usage again, so the reply
+                        # reported roughly double the tokens it really cost.
+                        #
+                        # Only what is NEW since the last replay goes back. `_last_emitted`
+                        # is cumulative across attempts, and the helper PREPENDS the
+                        # trailing assistant text, so handing it the cumulative value a
+                        # second time yields "fragment1 + fragment1 + continuation1".
+                        _candidate_messages = list(stream_payload["messages"])
                         _append_assistant_turn(
-                            stream_payload["messages"],
+                            _candidate_messages,
                             {
                                 "role": "assistant",
                                 "content": _last_emitted[_final_replayed_chars:],
                             },
                             continue_final_message = True,
                         )
-                        _final_replayed_chars = len(_last_emitted)
-                        stream_payload["continue_final_message"] = True
-                        # Folded in before the next stream overwrites them, else the
-                        # reported usage counts only the last fragment.
-                        _fu_f = (
-                            _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
-                        )
-                        _accumulated_completion_tokens += _fu_f.get("completion_tokens", 0)
-                        _it_f = _metadata_timings or {}
-                        _accumulated_predicted_ms += _it_f.get("predicted_ms", 0)
-                        _accumulated_predicted_n += _it_f.get("predicted_n", 0)
-                        if _continuation_would_be_served():
+                        _next_cap = _remaining_output_budget()
+                        if _next_cap != 0 and _continuation_would_be_served(
+                            _candidate_messages, True
+                        ):
+                            stream_payload["messages"] = _candidate_messages
+                            _final_replayed_chars = len(_last_emitted)
+                            stream_payload["continue_final_message"] = True
+                            if _next_cap is not None:
+                                stream_payload["max_tokens"] = _next_cap
+                            # Folded in only now, else the reported usage counts the last
+                            # fragment alone.
+                            _fu_f = (
+                                _backfill_usage_from_timings(_metadata_usage, _metadata_timings)
+                                or {}
+                            )
+                            _accumulated_completion_tokens += _fu_f.get("completion_tokens", 0)
+                            _it_f = _metadata_timings or {}
+                            _accumulated_predicted_ms += _it_f.get("predicted_ms", 0)
+                            _accumulated_predicted_n += _it_f.get("predicted_n", 0)
                             _stream_done = False
                             _metadata_finish_reason = None
                             _continue_final = True
@@ -29053,8 +29109,12 @@ class LlamaCppBackend:
                                 _final_length_continuations,
                                 _MAX_LENGTH_CONTINUATIONS,
                             )
+                            # Candidate first, committed only if it will actually run.
+                            # See the answer continuation above: spending the payload and
+                            # the usage before the decision double-counted both.
+                            _candidate_r = list(stream_payload["messages"])
                             _append_assistant_turn(
-                                stream_payload["messages"],
+                                _candidate_r,
                                 {
                                     "role": "assistant",
                                     "content": _unfinished_thought_progress(reasoning_text),
@@ -29063,26 +29123,38 @@ class LlamaCppBackend:
                                     stream_payload.get("continue_final_message")
                                 ),
                             )
-                            stream_payload["messages"].append(
+                            _candidate_r.append(
                                 {"role": "user", "content": _continue_after_length_message()}
                             )
-                            # The retry ends on a USER turn, so the flag from any earlier
-                            # answer continuation no longer describes this payload.
-                            stream_payload.pop("continue_final_message", None)
-                            _off_kw = self._request_reasoning_kwargs(False, None, preserve_thinking)
-                            if _off_kw is not None:
-                                stream_payload["chat_template_kwargs"] = _off_kw
-                            else:
-                                stream_payload.pop("chat_template_kwargs", None)
-                            _fu_r = (
-                                _backfill_usage_from_timings(_metadata_usage, _metadata_timings)
-                                or {}
-                            )
-                            _accumulated_completion_tokens += _fu_r.get("completion_tokens", 0)
-                            _it_r = _metadata_timings or {}
-                            _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
-                            _accumulated_predicted_n += _it_r.get("predicted_n", 0)
-                            if _continuation_would_be_served():
+                            _next_cap_r = _remaining_output_budget()
+                            if _next_cap_r != 0 and _continuation_would_be_served(
+                                _candidate_r, False
+                            ):
+                                stream_payload["messages"] = _candidate_r
+                                # The retry ends on a USER turn, so the flag from any
+                                # earlier answer continuation no longer describes it.
+                                stream_payload.pop("continue_final_message", None)
+                                if _next_cap_r is not None:
+                                    stream_payload["max_tokens"] = _next_cap_r
+                                _off_kw = self._request_reasoning_kwargs(
+                                    False, None, preserve_thinking
+                                )
+                                if _off_kw is not None:
+                                    stream_payload["chat_template_kwargs"] = _off_kw
+                                else:
+                                    stream_payload.pop("chat_template_kwargs", None)
+                                _fu_r = (
+                                    _backfill_usage_from_timings(
+                                        _metadata_usage, _metadata_timings
+                                    )
+                                    or {}
+                                )
+                                _accumulated_completion_tokens += _fu_r.get(
+                                    "completion_tokens", 0
+                                )
+                                _it_r = _metadata_timings or {}
+                                _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
+                                _accumulated_predicted_n += _it_r.get("predicted_n", 0)
                                 _stream_done = False
                                 _metadata_finish_reason = None
                                 _continue_final = True

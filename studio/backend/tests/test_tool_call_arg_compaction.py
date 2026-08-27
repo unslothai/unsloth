@@ -570,3 +570,77 @@ def test_the_refusal_offers_a_lever_the_tool_actually_has(tool_name, lever):
     assert lever in message
     if tool_name != "edit_file":
         assert "smaller file" not in message
+
+
+def test_an_earlier_success_does_not_vouch_for_a_later_declined_call():
+    """Ids restart at call_0 every turn, so "answered" cannot be a conversation-wide set.
+
+    The reply marker correctly skips the denial, but the older success had already put
+    call_0 in the set, and the declined call was replayed as already written. The model
+    is then told a file exists that it refused to create.
+    """
+    messages = _reused_id_thread()
+    messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": "edit_file",
+            "content": "The user declined to run this tool call.",
+        }
+    )
+
+    fitted, compacted = compact_completed_tool_arguments(messages)
+
+    # The first call really did run, so it is still spent.
+    assert compacted == 1
+    assert "a" * 4000 not in json.dumps(fitted[1])
+    # The declined one keeps its arguments and is never called written.
+    assert "b" * 4000 in json.dumps(fitted[3])
+    assert "already written to second.html" not in json.dumps(fitted)
+
+
+def test_an_edit_that_ran_and_failed_is_not_called_written():
+    """The tool NAME does not settle disk state. A call that ran and changed nothing is
+    not a write, and saying the content is already there invites the model to skip the
+    retry the error was asking for."""
+    body = "x" * 8000
+    messages = _thread(body)
+    messages[-1]["content"] = "Error: old_string not found in flappy-bird.html"
+
+    fitted, compacted = compact_completed_tool_arguments(messages)
+
+    assert compacted == 1, "the arguments are still spent; only the wording changes"
+    replayed = json.dumps(fitted)
+    assert body not in replayed
+    assert "already written" not in replayed
+    assert "the file on disk holds it" not in replayed
+    assert "the call already ran" in replayed
+
+
+def test_a_successful_edit_still_earns_the_file_wording():
+    messages = _thread("<!DOCTYPE html>" + "x" * 8000)
+
+    fitted, _ = compact_completed_tool_arguments(messages)
+
+    assert "already written to flappy-bird.html" in _replayed_arguments(fitted)
+
+
+@pytest.mark.parametrize("tool_name", ["python", "terminal"])
+def test_a_non_file_tool_is_not_told_it_wrote_nothing(tool_name):
+    """The other direction of the same guess: this code may well have created files."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [_call("c1", tool_name, code = "open('out.txt','w')\n" * 400)],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": tool_name, "content": "done"},
+    ]
+
+    fitted, compacted = compact_completed_tool_arguments(messages)
+
+    assert compacted == 1
+    replayed = json.dumps(fitted)
+    assert "nothing was written" not in replayed
+    assert "already written" not in replayed
+    assert "the call already ran" in replayed
