@@ -26,7 +26,7 @@ from _playwright_robust import (  # noqa: E402
     install_wall_clock_watchdog,
     is_benign_console_error,
     is_benign_page_error,
-    recover_or_replace_page,
+    recover_or_replace_page as _robust_recover_or_replace_page,
     robust_evaluate,
     wait_for_health,
     click_forced,
@@ -65,6 +65,12 @@ PERMISSION_ONLY = os.environ.get("STUDIO_UI_PERMISSION_ONLY", "0") == "1"
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
+# Render like the 4 vCPU boxes users and Kaggle sessions actually run on. The
+# rapid-submit step passes unthrottled here and fails at 4x and 8x, which is how
+# the parked-send bug was finally reproduced off Kaggle. Off unless set, and
+# Chromium only, since it is delivered over CDP.
+CPU_THROTTLE = float(os.environ.get("STUDIO_UI_CPU_THROTTLE", "0") or 0)
+
 # Per-fetch budget; /api/inference/load is the slowest (cold-cache GGUF load).
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
 LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"))
@@ -82,6 +88,44 @@ def info(s):
 
 def fail(m):
     raise AssertionError(f"[ui] FAIL: {m}")
+
+
+def apply_cpu_throttle(ctx, page):
+    """Throttle this page, if the option is set. No-op otherwise."""
+    if CPU_THROTTLE <= 1:
+        return page
+    ctx.new_cdp_session(page).send("Emulation.setCPUThrottlingRate", {"rate": CPU_THROTTLE})
+    info(f"CPU throttled {CPU_THROTTLE}x")
+    return page
+
+
+def new_throttled_page(ctx):
+    """Every page this driver opens, with the settings common to all of them.
+
+    The throttle is scoped to the page TARGET, so a page opened directly runs
+    at full speed and the steps after it pass under exactly the conditions the
+    throttle exists to reproduce. The 60s default rides along for the reason it
+    always did: macos-14 renders, webfonts and lazy routes crowd 30s.
+    """
+    page = ctx.new_page()
+    page.set_default_timeout(60_000)
+    apply_cpu_throttle(ctx, page)
+    return page
+
+
+def recover_or_replace_page(page, ctx, **kwargs):
+    """The shared recovery, with the throttle carried onto a replacement page.
+
+    `Emulation.setCPUThrottlingRate` is scoped to the PAGE TARGET, so a page
+    from `ctx.new_page()` runs at full speed however the option was set, and
+    every remaining step would pass under exactly the conditions the throttle
+    exists to reproduce. Wrapping the import rather than each call site means a
+    fourth recovery point cannot forget it.
+    """
+    replacement = _robust_recover_or_replace_page(page, ctx, **kwargs)
+    if replacement is not page:
+        apply_cpu_throttle(ctx, replacement)
+    return replacement
 
 
 def expected_default_model():
@@ -660,6 +704,13 @@ with sync_playwright() as p:
             launch_kwargs["channel"] = PLAYWRIGHT_CHANNEL
     elif PLAYWRIGHT_CHANNEL:
         fail("STUDIO_PLAYWRIGHT_CHANNEL requires chromium")
+    if CPU_THROTTLE > 1 and PLAYWRIGHT_BROWSER != "chromium":
+        # Refused here rather than at the call: `new_cdp_session` is Chromium
+        # only, so firefox/webkit would abort mid-run with a Playwright error
+        # about CDP that says nothing about the option that caused it. Both are
+        # supported browsers, so this pairing is reachable from the documented
+        # environment alone.
+        fail(f"STUDIO_UI_CPU_THROTTLE requires chromium, not {PLAYWRIGHT_BROWSER}")
     browser = browser_type.launch(**launch_kwargs)
     ctx = browser.new_context(
         viewport = {"width": 1280, "height": 900},
@@ -680,10 +731,7 @@ with sync_playwright() as p:
             else None
         ),
     )
-    page = ctx.new_page()
-    # 60s default (was 30s): the macos-14 runners are slow enough that
-    # renders/webfonts/lazy routes routinely crowd 30s.
-    page.set_default_timeout(60_000)
+    page = new_throttled_page(ctx)
     page_errors = []
     page.on("pageerror", lambda e: page_errors.append(str(e)))
     console_errors: list[str] = []
@@ -2194,8 +2242,7 @@ with sync_playwright() as p:
         )
     except Exception as exc:
         info(f"WARN clearing stale auth tokens failed: {exc!r}")
-    _fresh_page = ctx.new_page()
-    _fresh_page.set_default_timeout(60_000)
+    _fresh_page = new_throttled_page(ctx)
     _fresh_page.on("pageerror", lambda e: page_errors.append(str(e)))
     _fresh_page.on("console", _on_console)
     try:

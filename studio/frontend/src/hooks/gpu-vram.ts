@@ -111,6 +111,28 @@ export interface MemoryCapacityDevice {
   memoryTotalGb: number;
   sharedMemory: boolean;
   sharedMemoryHostBackedGb?: number | null;
+  /** The backend's per-device `unified_memory`, for a ROCm APU.
+   *
+   *  Separate from `sharedMemory` because the backend reports them separately and
+   *  they do not coincide: `hardware.py` sets `shared_memory` only on Windows, so
+   *  on Linux the very same APU arrives as `unified_memory: true,
+   *  shared_memory: false`. Reading only `sharedMemory` there counts the APU's
+   *  carved window as VRAM standing BESIDE system RAM, when it is a view INTO it.
+   *
+   *  Both flags mean the same thing for capacity, which is why
+   *  `sharesHostMemory` below folds them together rather than either one being
+   *  taught about the other. */
+  unifiedMemory?: boolean;
+}
+
+/** Whether this device's memory is a view into host RAM rather than beside it.
+ *  The one question capacity cares about; the two flags are how the backend
+ *  happens to report it on two platforms. */
+function sharesHostMemory(device: {
+  sharedMemory?: boolean;
+  unifiedMemory?: boolean;
+}): boolean {
+  return device.sharedMemory === true || device.unifiedMemory === true;
 }
 
 function budgetedGpuMemoryGb(
@@ -128,7 +150,7 @@ function budgetedGpuMemoryGb(
         ? device.memoryTotalGb
         : 0;
     const deviceCapacity = total * budget;
-    if (!device.sharedMemory) {
+    if (!sharesHostMemory(device)) {
       dedicated += deviceCapacity;
       continue;
     }
@@ -175,8 +197,24 @@ export interface MemoryCapacityInput {
    *  nothing is pinned; a pin answers for itself. */
   hostSharesSystemRam: boolean;
   systemRamTotalGb: number;
-  /** Apple Silicon: one pool for everything, whatever the devices say. */
+  /** One pool for everything, whatever the shared-memory flags say. True on Apple
+   *  Silicon and on a ROCm APU, which is why the pool's SIZE is a separate question
+   *  below: the two report it differently. */
   unifiedMemory: boolean;
+  /** Whether the GPU figure already describes the whole pool.
+   *
+   *  True on Apple, where `memory_total_gb` IS the machine's unified memory, so the
+   *  budgeted GPU capacity is the ceiling and adding RAM would double count.
+   *
+   *  False on a ROCm APU, where the GPU figure is a BIOS-carved window onto system
+   *  RAM -- 48 GiB of a 96 GiB machine is typical -- and taking it as the ceiling
+   *  discards the rest of the pool the weights actually load into. The backend says
+   *  so in as many words (`llama_cpp.py::_available_system_memory_mib`: "On a
+   *  unified-memory APU this, not the ROCm-reported VRAM, is the real ceiling").
+   *
+   *  Defaults to true, which is the answer for every caller that predates the ROCm
+   *  case and passed `unifiedMemory` meaning Apple. */
+  unifiedPoolReportedAsGpuMemory?: boolean;
   /** VRAM Budget: the fraction of each GPU a load may claim, from the setting beside
    *  this row. 1 (or absent) means the whole card. Applied to the GPU figure only --
    *  it caps what llama.cpp is allowed to take, not how much RAM the host has. */
@@ -203,7 +241,10 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   const pinnedTotals = gpuMemoryTotalsGb(
     input.pinnedDevices.map((device) => ({
       memory_total_gb: device.memoryTotalGb,
-      shared_memory: device.sharedMemory,
+      // Folded, not passed through: a Linux ROCm APU reports shared_memory false
+      // and unified_memory true, and counting its carved window as dedicated VRAM
+      // added 46.56 GiB of capacity that is already inside system RAM.
+      shared_memory: sharesHostMemory(device),
       shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
     })),
   );
@@ -244,7 +285,10 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   const capacityDeviceTotals = gpuMemoryTotalsGb(
     capacityDevices.map((device) => ({
       memory_total_gb: device.memoryTotalGb,
-      shared_memory: device.sharedMemory,
+      // Folded, not passed through: a Linux ROCm APU reports shared_memory false
+      // and unified_memory true, and counting its carved window as dedicated VRAM
+      // added 46.56 GiB of capacity that is already inside system RAM.
+      shared_memory: sharesHostMemory(device),
       shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
     })),
   );
@@ -278,16 +322,17 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   return {
     gpuCapacityGb,
     totalCapacityGb: singleMemoryPool
-      ? input.unifiedMemory
+      ? input.unifiedMemory && input.unifiedPoolReportedAsGpuMemory !== false
         // Apple reports the one pool as the GPU budget already.
         ? gpuCapacityGb
-        // A Vulkan iGPU's budget is a CAPPED view of system RAM, so RAM must not be
-        // added to it -- but it must not replace it either. The pool's real size is
-        // the RAM, and taking the capped figure as the machine's whole capacity
-        // called a 20 GB CPU-offloaded load impossible on a 91 GiB host because the
-        // iGPU was allowed 12. The larger of the two is the pool; on a mixed
-        // inventory that under-counts a discrete card sitting beside it, which is
-        // the side that refuses a load rather than admitting one that cannot run.
+        // A Vulkan iGPU's budget, and a ROCm APU's, are both a CAPPED view of system
+        // RAM, so RAM must not be added to it -- but it must not replace it either.
+        // The pool's real size is the RAM, and taking the capped figure as the
+        // machine's whole capacity called a 20 GB CPU-offloaded load impossible on a
+        // 91 GiB host because the iGPU was allowed 12. The larger of the two is the
+        // pool; on a mixed inventory that under-counts a discrete card sitting beside
+        // it, which is the side that refuses a load rather than admitting one that
+        // cannot run.
         : Math.max(gpuCapacityGb, systemRamTotalGb)
       // Dedicated VRAM, not the whole GPU figure: on a mixed inventory the iGPU's
       // budget is already inside systemRamTotalGb, and adding it again inflated the
@@ -378,6 +423,11 @@ export interface FreeVramDevice {
   sharedMemory?: boolean;
   /** Host-backed portion of memoryTotalGb when sharedMemory is true. */
   sharedMemoryHostBackedGb?: number | null;
+  /** The backend's per-device `unified_memory`. Same reason it exists on
+   *  MemoryCapacityDevice: a Linux ROCm APU reports `unified_memory: true,
+   *  shared_memory: false`, and summing its window into the DEDICATED free total
+   *  counts memory that is already inside the host's RAM. */
+  unifiedMemory?: boolean;
 }
 
 /**
@@ -410,7 +460,7 @@ export function aggregateUsableFreeVramGb(
   let fullySharedFree = 0;
   for (const device of devices) {
     const deviceUsable = usable(device);
-    if (!device.sharedMemory) {
+    if (!sharesHostMemory(device)) {
       dedicated += deviceUsable;
       continue;
     }

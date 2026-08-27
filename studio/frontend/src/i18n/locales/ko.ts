@@ -1357,10 +1357,29 @@ export const ko = {
       rememberParamsPerModel: "모델별로 설정 기억",
       rememberParamsPerModelDescription:
         "모델을 전환하면 해당 모델에서 마지막으로 사용한 온도, 프롬프트 등의 설정이 복원됩니다. 끄면 모든 모델이 하나의 설정을 공유합니다.",
+      autoCompact: "긴 채팅 자동 압축",
+      autoCompactDescription:
+        "로컬 GGUF 채팅이 설정한 컨텍스트 길이에 도달하면 오류를 반환하는 대신 오래된 턴을 삭제합니다. 사용 가능한 VRAM을 기준으로 하지 않습니다.",
+      compactionStyle: "컨텍스트가 가득 찼을 때",
+      compactionStyleDescription:
+        "서버 기본값을 사용하면 UNSLOTH_CONTEXT_POLICY가 유지됩니다. 대화 재설정은 최신 턴과 지속 지침을 남깁니다. 슬라이딩 윈도우는 가장 오래된 턴을 삭제하고 최근 기록을 더 많이 유지할 수 있습니다.",
+      compactionStyleInherit: "서버 기본값 사용",
+      compactionStyleCheckpoint: "대화 재설정",
+      compactionStyleRollingDefault: "오래된 턴 삭제(약 25% 추가 여유)",
+      compactionStyleRolling10: "오래된 턴 삭제(약 10% 추가 여유)",
+      compactionStyleRolling5: "오래된 턴 삭제(약 5% 추가 여유)",
+      compactionStyleRollingNone: "오래된 턴 삭제(추가 잘라내기 없음)",
+      autoCompactKeywords:
+        "압축 자동 컨텍스트 윈도우 자르기 슬라이딩 체크포인트 여유 compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:
           "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
+      },
+      tools: {
+        collapseByDefault: "기본적으로 도구 활동 접기",
+        collapseByDefaultDescription:
+          "도구가 실행되는 동안 입력과 출력을 접어 둡니다. 확인하려면 도구 행을 펼치세요.",
       },
       webSearch: {
         title: "웹 검색",
