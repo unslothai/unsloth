@@ -390,6 +390,6 @@ def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
         for messages in counted
         if messages and messages[-1].get("role") == "assistant" and messages[-1].get("tool_calls")
     ]
-    assert not ends_on_the_call, (
-        "a prompt was priced with the pending call's own arguments rendered away"
-    )
+    assert (
+        not ends_on_the_call
+    ), "a prompt was priced with the pending call's own arguments rendered away"

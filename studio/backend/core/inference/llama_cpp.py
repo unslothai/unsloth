@@ -29038,7 +29038,9 @@ class LlamaCppBackend:
             return max(0, max_tokens - _accumulated_completion_tokens - _this_attempt)
 
         def _continuation_would_be_served(
-            candidate_messages, continue_flag: bool, reasoning_kw = _UNSET
+            candidate_messages,
+            continue_flag: bool,
+            reasoning_kw = _UNSET,
         ) -> bool:
             """Whether the retry's own prompt still fits, now that the partial is in it.
 
@@ -29351,9 +29353,7 @@ class LlamaCppBackend:
                             # original thinking-on kwargs prices a different rendered
                             # prompt from the one about to be sent, which refuses a retry
                             # that would have fit or admits one llama-server then rejects.
-                            _off_kw = self._request_reasoning_kwargs(
-                                False, None, preserve_thinking
-                            )
+                            _off_kw = self._request_reasoning_kwargs(False, None, preserve_thinking)
                             _next_cap_r = _remaining_output_budget()
                             if _next_cap_r != 0 and _continuation_would_be_served(
                                 _candidate_r, False, _off_kw

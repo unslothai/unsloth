@@ -629,9 +629,7 @@ def test_the_final_pass_still_blames_the_window_when_no_cap_was_set(monkeypatch)
     assert "output allowance" not in text
 
 
-def test_the_final_pass_retry_is_admitted_under_the_kwargs_it_will_be_sent_with(
-    monkeypatch,
-):
+def test_the_final_pass_retry_is_admitted_under_the_kwargs_it_will_be_sent_with(monkeypatch):
     """Admission has to price the prompt that is actually about to be sent.
 
     The retry goes out with thinking OFF, which renders a different prompt from the
@@ -663,7 +661,7 @@ def test_the_final_pass_retry_is_admitted_under_the_kwargs_it_will_be_sent_with(
 
     assert len(payloads) == 2, "the retry was refused"
     assert payloads[1]["chat_template_kwargs"] == {"enable_thinking": False}
-    assert {"enable_thinking": False} in seen, (
-        "the retry was admitted under kwargs it is not sent with"
-    )
+    assert {
+        "enable_thinking": False
+    } in seen, "the retry was admitted under kwargs it is not sent with"
     assert "Here is the answer." in "".join(_texts(events, "content"))

@@ -78,9 +78,7 @@ def is_repetition_dominated(text: str) -> bool:
             if len(first_at) >= _MAX_TRACKED_WINDOWS:
                 continue
             first_at[key] = index
-        elif (
-            text[first : first + _REPEAT_WINDOW] != text[index : index + _REPEAT_WINDOW]
-        ):
+        elif text[first : first + _REPEAT_WINDOW] != text[index : index + _REPEAT_WINDOW]:
             # Two different windows, one hash. Not a repeat.
             continue
         seen = counts.get(key, 0) + 1

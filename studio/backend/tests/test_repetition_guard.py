@@ -117,9 +117,7 @@ def test_the_scan_does_not_grow_with_the_length_of_the_fragment():
     from core.inference import repetition_guard
 
     def peak_for(lines: int) -> int:
-        text = "".join(
-            f"unique line number {index:07d} of prose\n" for index in range(lines)
-        )
+        text = "".join(f"unique line number {index:07d} of prose\n" for index in range(lines))
         tracemalloc.start()
         try:
             assert repetition_guard.is_repetition_dominated(text) is False
@@ -130,9 +128,7 @@ def test_the_scan_does_not_grow_with_the_length_of_the_fragment():
     small = peak_for(20_000)
     large = peak_for(40_000)
 
-    assert large < small * 1.3, (
-        f"twice the fragment cost {large} bytes against {small}"
-    )
+    assert large < small * 1.3, f"twice the fragment cost {large} bytes against {small}"
 
 
 def test_the_window_cap_cannot_turn_a_clean_fragment_into_a_refusal():
