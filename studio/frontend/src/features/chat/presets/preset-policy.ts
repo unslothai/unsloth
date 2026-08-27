@@ -367,18 +367,13 @@ export function resolveFitMaxSeqLength(
 
 /**
  * The context pin a completed load leaves behind: the n_ctx it was actually
- * invoked with, or null when it asked for Auto. 0 is the wire value for Auto
- * (the backend then sizes the context itself), so it is the one input that
- * clears the pin.
+ * invoked with, or null when it asked for Auto. 0 is the wire value for Auto, so
+ * it is the one input that clears the pin.
  *
- * Every GPU Memory mode, deliberately. The predicate this replaces kept a pin
- * only under Manual + Auto layers, but the Context Length control is offered in
- * every mode and `resolveLoadMaxSeqLength` honors a pin in every mode. A
- * survival rule narrower than the send rule meant a load on Default sent the
- * user's 262,144, then dropped it on completion: the settings panel re-seeded to
- * Auto (`customContextLength` is the first field of its React key) and the next
- * load sent 0, which the backend resolves to its host-offload fallback of 8,192
- * for a model that fits no GPU subset.
+ * Takes no GPU Memory mode, deliberately. `resolveLoadMaxSeqLength` honors a pin
+ * in every mode, but the predicate this replaces kept one only under Manual +
+ * Auto layers: a survival rule narrower than the send rule, so a load on Default
+ * sent the user's pin and then dropped it on completion. That was the bug.
  *
  * Callers keep their own isGguf/targetIsGguf guard inline: a non-GGUF load has
  * no n_ctx, and its max_seq_length must not be pinned as one.

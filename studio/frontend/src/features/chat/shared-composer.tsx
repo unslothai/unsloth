@@ -1618,11 +1618,9 @@ export function SharedComposer({
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
-        // The context this pane's load was invoked with, kept so a later
-        // Apply/Reset doesn't silently revert the model to auto-fit sizing.
-        // compareMaxSeqLength is what went on the wire as max_seq_length,
-        // mirroring the interactive path's keepCustomCtx. Non-GGUF compare loads
-        // send a sequence length rather than an n_ctx, so their baseline clears.
+        // compareMaxSeqLength is what went on the wire as max_seq_length, so the
+        // pin cannot disagree with the launched -c. Non-GGUF compare loads send a
+        // sequence length rather than an n_ctx, so their baseline clears.
         const keepCustomCtx = targetIsGguf
           ? resolveLoadedCtxPin(compareMaxSeqLength)
           : null;
@@ -1694,11 +1692,9 @@ export function SharedComposer({
           loadedVisionDisabledByUser: resp.vision_disabled_by_user ?? false,
           mmprojFallbackReason: resp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: resp.is_local_model ?? false,
-          // Record the context this pane loaded with (like the single-model path)
-          // so when it becomes the active model, the UI and later reload/save use
-          // its context, not the previous/default one. The same value as the
-          // baseline above: both name the n_ctx this pane actually sent, so the
-          // control opens undirtied.
+          // Same value as the baseline above, so that when this pane becomes the
+          // active model the UI and later reload/save use the context it actually
+          // loaded with, not the previous/default one.
           customContextLength: keepCustomCtx,
           ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
           ggufNativeContextLength: resp.is_gguf

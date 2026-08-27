@@ -306,30 +306,22 @@ export function applyActiveModelStatusToStore(
   });
   // A load sends its context pin as max_seq_length and status only exposes the
   // RESOLVED context, so re-seed the pin from the requested value (parity with
-  // the load paths' keepCustomCtx).
-  //
-  // A previous model's pin still cannot survive a model change underneath and
-  // reload at the old length, and it never was the narrowness of the old
-  // Manual-only filter that guaranteed that: it is the SOURCE. This reads only
-  // `status`, never `prevState`, and `requested_context_length` is by definition
-  // the n_ctx the ACTIVE load was invoked with (backend: llama_backend
-  // .requested_n_ctx). So whichever model the server is running is the model
-  // this pin describes, and the outgoing one's value is overwritten rather than
-  // carried. The caller also applies this under the checkpoint the same status
-  // named, so the two cannot disagree about which model is being described.
+  // the load paths' keepCustomCtx). Sourced from `status` alone, never
+  // `prevState`: `requested_context_length` is by definition the n_ctx the ACTIVE
+  // load was invoked with (backend: llama_backend.requested_n_ctx), so a model
+  // change underneath overwrites the outgoing model's pin rather than carrying it.
   const loadedCtxPin = status.is_gguf
     ? resolveLoadedCtxPin(status.requested_context_length ?? null)
     : null;
-  // The one window where status can still answer for the OUTGOING model is a
-  // poll landing while this tab's own load is in flight -- status refreshes do
-  // run with modelLoading still true (see use-chat-model-runtime's
-  // loadedLlamaExtraArgs note). That was invisible while the pin was almost
-  // always null; now that a pin survives in every GPU Memory mode a stale poll
-  // would plant the outgoing model's context on the model coming in. So the pin
-  // takes the same rule as every other load param here: while a load is in
-  // flight performLoad owns it. It clears the field itself on a cross-model
-  // switch, writes the authoritative value on completion, and restores the
-  // outgoing model's own baseline if the load fails.
+  // Status can still answer for the OUTGOING model in one window: a poll landing
+  // while this tab's own load is in flight, since refreshes do run with
+  // modelLoading still true (see use-chat-model-runtime's loadedLlamaExtraArgs
+  // note). Harmless while the pin was almost always null, but now that one
+  // survives in every GPU Memory mode a stale poll would plant the outgoing
+  // model's context on the model coming in. So the pin takes the same rule as
+  // every other load param: while a load is in flight performLoad owns it,
+  // clearing it on a cross-model switch, writing the authoritative value on
+  // completion, and restoring the outgoing model's baseline if the load fails.
   const ctxPinFields = seedLoadParams
     ? {
         customContextLength: loadedCtxPin,
@@ -363,8 +355,7 @@ export function applyActiveModelStatusToStore(
       },
       { ids: incomingGpuIds, indexKind: incomingGpuIndexKind },
     ) ||
-    // Only when this status is allowed to advance the baseline; mid-load it is
-    // not, and a difference it will not apply is not a change.
+    // A difference this status will not apply (mid-load) is not a change.
     (seedLoadParams && prevState.loadedCustomContextLength !== loadedCtxPin);
   const gpuMemoryEditsPending =
     (prevState.loadedGpuMemoryMode !== null &&

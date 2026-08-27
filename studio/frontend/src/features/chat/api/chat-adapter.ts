@@ -3329,10 +3329,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         is_gguf: loadResp.is_gguf ?? candidate.kind === "gguf",
       });
       if (candidate.kind === "gguf") {
-        // The context this auto-load was invoked with, kept so a later Apply
-        // doesn't silently revert it to auto-fit sizing. fitMaxSeqLength is what
-        // went on the wire as max_seq_length, mirroring the interactive path's
-        // keepCustomCtx; 0 (Auto) clears the pin.
+        // fitMaxSeqLength is what went on the wire as max_seq_length, so the pin
+        // cannot disagree with the launched -c.
         const keepCustomCtx = resolveLoadedCtxPin(fitMaxSeqLength);
         // Slots this auto-load committed. Diffusion ignores --parallel, so a count
         // there would mint a phantom override a saved preset carries onto a GGUF.
@@ -3390,9 +3388,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           defaultChatTemplate: loadResp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
-          // The same pin as the baseline above, so the control opens undirtied:
-          // the saved config and the launched -c are the same number whenever
-          // one was requested, and null stays null (auto/VRAM-fit).
+          // Same value as the baseline above, so the control opens undirtied.
           customContextLength: keepCustomCtx,
           loadedIsMultimodal: isMultimodalResponse(loadResp),
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,

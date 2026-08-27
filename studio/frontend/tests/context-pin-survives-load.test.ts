@@ -3,14 +3,12 @@
 
 // What happens to an explicit Context Length once the load that used it finishes.
 //
-// The send rule honors a pin in every GPU Memory mode (resolveLoadMaxSeqLength returns
-// it before it looks at anything else). The survival rule used to be narrower: only a
-// Manual + Auto-layers load kept its pin, so a load on Default sent the user's 262,144
-// and then dropped it. customContextLength is the first field of ModelConfigPage's React
-// key, so the panel remounted and re-seeded to Auto, and the next load sent 0 -- which
-// the backend resolves to its host-offload fallback of 8,192 (_AUTO_OFFLOAD_CTX) for a
-// model that fits no GPU subset. The user's report: "it's ignoring my Context Length and
-// always stop at Auto (8,192)".
+// The send rule honors a pin in every GPU Memory mode, but the survival rule used to be
+// narrower: only a Manual + Auto-layers load kept its pin, so a load on Default sent the
+// user's 262,144 and then dropped it. The panel re-seeded to Auto and the next load sent
+// 0, which the backend resolves to its host-offload fallback of 8,192 (_AUTO_OFFLOAD_CTX)
+// for a model that fits no GPU subset: "it's ignoring my Context Length and always stop
+// at Auto (8,192)".
 //
 // The rule is now "the pin is the n_ctx the load was invoked with, 0 (Auto) clears it".
 // The four writers are checked at the source, like the llama-extra-args status test next
@@ -85,8 +83,7 @@ function sentNCtx(
       currentCheckpoint,
       activeGgufVariant: VARIANT,
       maxSeqLength: 4096,
-      // The store's own default (getPresetSource("Default")), which is the
-      // configuration the bug was reported in.
+      // The configuration the bug was reported in.
       presetSource: policy.getPresetSource("Default"),
     }),
   );
@@ -103,8 +100,7 @@ function configWithPin(pin: number | null) {
 }
 
 test("a completed load keeps the context it was invoked with, in every mode", () => {
-  // No GPU Memory mode in the signature at all: that is the fix. The control is
-  // offered in every mode, so its pin has to survive in every mode.
+  // No GPU Memory mode in the signature at all: that is the fix.
   for (const [mode, gpuLayers] of [
     ["auto", -1],
     ["auto", 20],
@@ -122,8 +118,8 @@ test("a completed load keeps the context it was invoked with, in every mode", ()
 });
 
 test("the next load still sends the user's number", () => {
-  // The reported failure: the second load is the one that came back at 8,192,
-  // because the pin was gone and 0 went out instead.
+  // The reported failure: the SECOND load came back at 8,192, because the pin
+  // was gone by then and 0 went out instead.
   const pinAfterLoad = policy.resolveLoadedCtxPin(sentNCtx(REQUESTED));
   assert.equal(
     sentNCtx(pinAfterLoad, { residentCtx: REQUESTED }),
@@ -139,8 +135,7 @@ test("the next load still sends the user's number", () => {
 
 test("the settings panel does not remount back to Auto", () => {
   // customContextLength is the first field of modelConfigInstanceKey, so a pin
-  // that vanishes on completion re-keys the editor, which re-seeds configState
-  // from the cleared config and snaps the slider to position 0 (Auto).
+  // that vanishes on completion re-keys the editor and snaps it back to Auto.
   const pinAfterLoad = policy.resolveLoadedCtxPin(sentNCtx(REQUESTED));
   assert.equal(
     loadedConfigSignature(configWithPin(pinAfterLoad)),
@@ -161,8 +156,8 @@ test("the settings panel does not remount back to Auto", () => {
 });
 
 test("an Auto load still clears the pin and stays Auto", () => {
-  // 0 is the wire value for Auto; the backend omits -c or sizes the context
-  // itself, so there is nothing to pin and the control must keep reading Auto.
+  // 0 is the wire value for Auto: the backend sizes the context itself, so there
+  // is nothing to pin and the control must keep reading Auto.
   const sentAuto = sentNCtx(null);
   assert.equal(sentAuto, 0);
   const pinAfterAutoLoad = policy.resolveLoadedCtxPin(sentAuto);
@@ -175,10 +170,9 @@ test("an Auto load still clears the pin and stays Auto", () => {
 });
 
 test("a model change does not carry the old pin across", () => {
-  // The status applier reads requested_context_length, which is the n_ctx of the
-  // ACTIVE load, never a previous value held in the store. A different model
-  // loaded underneath therefore reports its own, and one that came up on Auto
-  // reports 0 -- so the outgoing model's pin is overwritten, not inherited.
+  // requested_context_length is the n_ctx of the ACTIVE load, never a previous
+  // value held in the store, so the outgoing model's pin is overwritten rather
+  // than inherited.
   const outgoingPin = policy.resolveLoadedCtxPin(REQUESTED);
   assert.equal(outgoingPin, REQUESTED);
   const incomingOnAuto = { requested_context_length: 0, is_gguf: true };
@@ -202,8 +196,7 @@ test("a model change does not carry the old pin across", () => {
 
 test("a poll landing mid-load cannot plant the outgoing model's context", () => {
   // The one window where status still answers for the model on its way out.
-  // Harmless while the pin was almost always null; now it is a real number, so
-  // the applier takes the same in-flight rule as every other load param.
+  // Harmless while the pin was almost always null; now it is a real number.
   assert.match(
     APPLIER,
     /const ctxPinFields = seedLoadParams\s*\n\s*\? \{\s*\n\s*customContextLength: loadedCtxPin,\s*\n\s*loadedCustomContextLength: loadedCtxPin,/,
@@ -245,8 +238,8 @@ test("all four writers pin the n_ctx their load actually sent", () => {
 });
 
 test("the Manual-only predicate is retired, not left to be picked up again", () => {
-  // It answered a different question ("does Manual + Auto layers need its pin
-  // re-derived") and had no caller left once the four writers moved off it.
+  // It answered a different question and had no caller left once the four
+  // writers moved off it.
   assert.equal(
     (policy as Record<string, unknown>).resolveManualAutoCtxPin,
     undefined,

@@ -1764,11 +1764,8 @@ export function useChatModelRuntime() {
             const reportedNativeCtx = loadResponse.is_gguf
               ? (loadResponse.native_context_length ?? null)
               : null;
-            // The context this load was invoked with, kept so a later Apply
-            // doesn't revert it to Auto and so re-open/re-save keeps the
-            // intended override rather than the backend's auto-fit context.
             // loadMaxSeqLength is what went on the wire as max_seq_length, so
-            // the pin cannot disagree with the launched -c; 0 (Auto) clears it.
+            // the pin cannot disagree with the launched -c.
             const keepCustomCtx = resolveLoadedCtxPin(
               loadResponse.is_gguf ? loadMaxSeqLength : null,
             );
