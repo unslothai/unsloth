@@ -40,3 +40,46 @@ def test_index_never_contains_bootstrap_seed(tmp_path, monkeypatch):
         assert "__UNSLOTH_BOOTSTRAP__" not in r.text, path
         # no per-request injection means no Origin-varying and no script nonce
         assert "x-internal-script-nonce" not in {k.lower() for k in r.headers}
+
+
+def test_seed_pointer_survives_bootstrap_suppression(tmp_path, monkeypatch, capsys):
+    """A public launch that suppressed injection must still say WHERE the seed is.
+
+    With the in-page credential gone, .bootstrap_password is the only way to
+    learn the seeded password. suppress_bootstrap_injection means "do not hand
+    the secret to a public page"; the pointer is a PATH, not the secret, so
+    gating it on that flag hid the file on exactly the launch that needs it --
+    a public launch restarted before first login.
+    """
+    import asyncio
+
+    from fastapi import FastAPI
+
+    import main as studio_main
+    from auth import storage
+
+    authdir = tmp_path / "auth"
+    authdir.mkdir(parents = True)
+    monkeypatch.setattr(storage, "DB_PATH", authdir / "auth.db")
+    monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", authdir / ".bootstrap_password")
+    monkeypatch.setattr(storage, "_bootstrap_password", None, raising = False)
+    seed = storage.generate_bootstrap_password()
+    storage.ensure_default_admin()          # first run already happened
+    assert storage.ensure_default_admin() is False   # so this is the restart branch
+
+    app = FastAPI()
+    app.state.suppress_bootstrap_injection = True
+
+    async def _drive():
+        async with studio_main.lifespan(app):
+            pass
+
+    asyncio.run(_drive())
+    out = capsys.readouterr().out
+    assert ".bootstrap_password" in out, (
+        "a suppressed public launch printed no pointer to the seed file, so the "
+        "operator has no way to learn the password"
+    )
+    assert seed not in out, "the seed itself must never reach stdout (CWE-532)"
+    # Suppression still does its job: the secret is not parked in app.state.
+    assert getattr(app.state, "bootstrap_password", None) is None

@@ -752,7 +752,13 @@ async def lifespan(app: FastAPI):
         app.state.bootstrap_password = bootstrap_pw
         # A restart before first login skips the creation banner above; still
         # point the operator to the seed file while the bootstrap pw is unrotated.
-        if bootstrap_pw:
+        #
+        # Deliberately keyed off storage, NOT off bootstrap_pw. Suppression means
+        # "do not hand the secret to a public page", and this prints a PATH, not
+        # the secret. Gating the pointer on it too would hide the file on exactly
+        # the launch that most needs it: a public launch restarted before first
+        # login, where the file is now the only way to learn the password.
+        if storage.get_bootstrap_password():
             bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
             print(f"\nAdmin password change still required. Read it from: {bootstrap_path}\n")
 

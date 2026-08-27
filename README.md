@@ -174,6 +174,12 @@ unsloth studio -H 0.0.0.0 -p 8888
 **LAN Access (home network)**: `Settings > API keys > LAN access`
 
 #### Password management & headless starts
+On first launch Unsloth seeds a one-time admin password and saves it to
+`~/.unsloth/studio/auth/.bootstrap_password` (owner-readable only). The startup
+banner prints that path. Open the file to read the password, sign in as
+`unsloth`, and change it. The password is never embedded in the served page, so
+that file (or the banner) is where you get it.
+
 Headless starts:
 ```bash
 UNSLOTH_STUDIO_PASSWORD='your-strong-password' unsloth studio --secure   # via env var
