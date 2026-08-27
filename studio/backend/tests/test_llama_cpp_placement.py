@@ -1582,9 +1582,7 @@ def _shrink_to_hold_both_backend(
     backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
     backend._estimate_compute_buffer_bytes = lambda **k: 1
     backend._mtp_draft_kv_bytes = lambda *a, **k: 0
-    backend._estimate_mtp_overhead_bytes = lambda ctx, *a, **k: int(
-        ctx * mtp_mib_per_tok * 1024**2
-    )
+    backend._estimate_mtp_overhead_bytes = lambda ctx, *a, **k: int(ctx * mtp_mib_per_tok * 1024**2)
     backend.probe_server_capabilities = lambda _binary = None: {
         "supports_dspark": True,
         "supports_ngram_mod": True,

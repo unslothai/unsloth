@@ -919,8 +919,7 @@ class TestPerDeviceSplitReserve:
         while the driver charged reserve(8192) == 1216.
         """
         reserve_mib = (
-            self._OH
-            + b._compute_buffer_ctx_bytes(_FIT_MIN_CTX, self._UB, "f16", layer_split = True)
+            self._OH + b._compute_buffer_ctx_bytes(_FIT_MIN_CTX, self._UB, "f16", layer_split = True)
         ) / MIB
         return round(reserve_mib + margin_mib + 0.03 * total_mib)
 

@@ -188,10 +188,16 @@ class TestTheRefitDoesNotSpendTheReserve:
     ):
         """Unpriced, the two stay identical however large --ctx-checkpoints gets,
         while the child allocates it anyway."""
-        free = _plan(tmp_path, weights_mib = 14_172, n_parallel = 4, ctx_checkpoints = 0,
-                     vram_mib = 16 * 1024)
-        charged = _plan(tmp_path, weights_mib = 14_172, n_parallel = 4,
-                        ctx_checkpoints = checkpoints, vram_mib = 16 * 1024)
+        free = _plan(
+            tmp_path, weights_mib = 14_172, n_parallel = 4, ctx_checkpoints = 0, vram_mib = 16 * 1024
+        )
+        charged = _plan(
+            tmp_path,
+            weights_mib = 14_172,
+            n_parallel = 4,
+            ctx_checkpoints = checkpoints,
+            vram_mib = 16 * 1024,
+        )
         assert charged["reserve_bytes"] > 0
         assert charged["checkpoints"] == str(checkpoints)
         # Same slot count on both sides, or the per-slot contexts are not comparable.
@@ -220,8 +226,13 @@ class TestTheRefitDoesNotSpendTheReserve:
         not placed. The failure this guards is the opposite one, pinning a context that
         leaves no room for a reserve the child allocates anyway.
         """
-        charged = _plan(tmp_path, weights_mib = 14_172, n_parallel = 4,
-                        ctx_checkpoints = checkpoints, vram_mib = 16 * 1024)
+        charged = _plan(
+            tmp_path,
+            weights_mib = 14_172,
+            n_parallel = 4,
+            ctx_checkpoints = checkpoints,
+            vram_mib = 16 * 1024,
+        )
         assert charged["reserve_bytes"] > 0
         assert charged["checkpoints"] == str(checkpoints)
         assert charged["fit"] == "on", charged
