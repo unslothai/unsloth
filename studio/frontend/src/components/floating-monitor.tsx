@@ -7,7 +7,7 @@ import {
   useMonitorFrameStore,
   useMonitorOverlayStore,
 } from "@/features/settings";
-import { resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
+import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import {
@@ -465,7 +465,9 @@ function FloatingMonitorPanel({
     ? aggregateGpuMemoryTotalGb(separateInferenceGpu.devices)
     : 0;
   const devices = displayedGpu?.devices ?? [];
-  const vramTotal = aggregateGpuMemoryTotalGb(devices);
+  const memoryTotals = gpuMemoryTotalsGb(devices);
+  const vramTotal = memoryTotals.total;
+  const hasSharedPool = memoryTotals.shared > 0;
   // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
   // readout. The host figure can still be known when no device's is (#7452).
   const resolvedVramUsed = resolveGpuVramUsedGb(displayedGpu);
@@ -596,7 +598,12 @@ function FloatingMonitorPanel({
                 </div>
                 <div className="text-xs text-muted-foreground font-mono tabular-nums">
                   {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} /{" "}
-                  {formatGiB(vramTotal)}
+                  {hasSharedPool
+                    ? t("settings.resources.environment.vramWithShared", {
+                        vram: formatGiB(memoryTotals.dedicated),
+                        shared: formatGiB(memoryTotals.shared),
+                      })
+                    : formatGiB(vramTotal)}
                 </div>
                 <Progress
                   value={vramUsageKnown ? vramPercent : 0}

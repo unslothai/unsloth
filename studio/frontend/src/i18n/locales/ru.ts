@@ -798,7 +798,7 @@ export const ru = {
         embeddingModel: "Модель эмбеддингов",
         embeddingModelDescription:
           "Модель Hugging Face или локальный путь для индексации и поиска по вашим документам. По умолчанию {defaultModel}.",
-        searchPlaceholder: "Поиск embedding-моделей",
+        searchPlaceholder: "Поиск любой модели на HF",
         reindexWarning:
           "Влияет только на вновь индексируемые документы. После смены модели загрузите существующие документы заново.",
         emptyError: "Введите ID модели Hugging Face или локальный путь.",
@@ -806,7 +806,24 @@ export const ru = {
         saveError: "Не удалось сохранить модель эмбеддингов.",
         saved: "Модель эмбеддингов сохранена.",
         saveAnyway: "Всё равно сохранить",
-        resetAction: "Восстановить значение по умолчанию",
+        recommended: "Рекомендуется",
+        onDevice: "На устройстве",
+        searching: "Поиск в Hugging Face…",
+        checking: "Проверка…",
+        noResults: "Модели эмбеддингов не найдены",
+        download: "Скачать",
+        unload: "Выгрузить",
+        unloadFailed: "Не удалось выгрузить модель эмбеддингов",
+        downloadingStatus: "Загрузка…",
+        notDownloaded: "Не загружено",
+        notDownloadedSized: "Не загружено · {size}",
+        loaded: "Загружено",
+        downloading: "Загрузка {model}",
+        downloadingDescription:
+          "Прогресс виден на панели загрузок. После завершения он будет использован для индексации.",
+        downloadFailed: "Не удалось начать загрузку",
+        downloadConflict: "Возобновите эту загрузку в Hub",
+        downloadBusy: "Загрузка уже выполняется",
       },
       storage: {
         sectionTitle: "Хранилище",
@@ -1195,6 +1212,7 @@ export const ru = {
         processMemory: "Память процесса",
         notInstalled: "Не установлено",
         unknown: "Неизвестно",
+        vramWithShared: "{vram} VRAM + {shared} общей памяти",
       },
     },
     agents: {

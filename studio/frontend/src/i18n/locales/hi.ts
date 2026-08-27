@@ -797,7 +797,7 @@ export const hi = {
         embeddingModel: "एम्बेडिंग मॉडल",
         embeddingModelDescription:
           "आपके दस्तावेज़ों को इंडेक्स और खोजने के लिए उपयोग किया जाने वाला Hugging Face मॉडल या स्थानीय पथ। डिफ़ॉल्ट {defaultModel} है।",
-        searchPlaceholder: "एम्बेडिंग मॉडल खोजें",
+        searchPlaceholder: "HF पर कोई भी मॉडल खोजें",
         reindexWarning:
           "केवल नए इंडेक्स किए गए दस्तावेज़ों को प्रभावित करता है। मॉडल बदलने के बाद मौजूदा दस्तावेज़ फिर से अपलोड करें।",
         emptyError: "एक Hugging Face मॉडल id या स्थानीय पथ दर्ज करें।",
@@ -805,7 +805,24 @@ export const hi = {
         saveError: "एम्बेडिंग मॉडल सहेजने में विफल।",
         saved: "एम्बेडिंग मॉडल सहेजा गया।",
         saveAnyway: "फिर भी सहेजें",
-        resetAction: "डिफ़ॉल्ट पर रीसेट करें",
+        recommended: "अनुशंसित",
+        onDevice: "डिवाइस पर",
+        searching: "Hugging Face पर खोज रहे हैं…",
+        checking: "जाँच रहे हैं…",
+        noResults: "कोई एम्बेडिंग मॉडल नहीं मिला",
+        download: "डाउनलोड करें",
+        unload: "अनलोड करें",
+        unloadFailed: "एम्बेडिंग मॉडल अनलोड नहीं हो सका",
+        downloadingStatus: "डाउनलोड हो रहा है…",
+        notDownloaded: "डाउनलोड नहीं हुआ",
+        notDownloadedSized: "डाउनलोड नहीं हुआ · {size}",
+        loaded: "लोड हो गया",
+        downloading: "{model} डाउनलोड हो रहा है",
+        downloadingDescription:
+          "प्रगति डाउनलोड पैनल में दिखती है। पूरा होने पर इंडेक्सिंग इसका उपयोग करेगी।",
+        downloadFailed: "डाउनलोड शुरू नहीं हो सका",
+        downloadConflict: "इस डाउनलोड को Hub से फिर से शुरू करें",
+        downloadBusy: "डाउनलोड पहले से चल रहा है",
       },
       storage: {
         sectionTitle: "स्टोरेज",
@@ -1192,6 +1209,7 @@ export const hi = {
         processMemory: "प्रोसेस मेमोरी",
         notInstalled: "इंस्टॉल नहीं है",
         unknown: "अज्ञात",
+        vramWithShared: "{vram} VRAM + {shared} साझा मेमोरी",
       },
     },
     agents: {

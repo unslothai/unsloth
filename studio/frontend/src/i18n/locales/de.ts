@@ -815,7 +815,7 @@ export const de = {
         embeddingModel: "Embedding-Modell",
         embeddingModelDescription:
           "Hugging-Face-Modell oder lokaler Pfad zum Indexieren und Durchsuchen Ihrer Dokumente. Standard ist {defaultModel}.",
-        searchPlaceholder: "Embedding-Modelle suchen",
+        searchPlaceholder: "Beliebiges Modell auf HF suchen",
         reindexWarning:
           "Betrifft nur neu indexierte Dokumente. Laden Sie bestehende nach einer Modelländerung erneut hoch.",
         emptyError:
@@ -825,7 +825,24 @@ export const de = {
         saveError: "Das Embedding-Modell konnte nicht gespeichert werden.",
         saved: "Embedding-Modell gespeichert.",
         saveAnyway: "Trotzdem speichern",
-        resetAction: "Auf Standard zurücksetzen",
+        recommended: "Empfohlen",
+        onDevice: "Auf dem Gerät",
+        searching: "Hugging Face wird durchsucht…",
+        checking: "Wird geprüft…",
+        noResults: "Keine Embedding-Modelle gefunden",
+        download: "Herunterladen",
+        unload: "Entladen",
+        unloadFailed: "Embedding-Modell konnte nicht entladen werden",
+        downloadingStatus: "Wird heruntergeladen…",
+        notDownloaded: "Nicht heruntergeladen",
+        notDownloadedSized: "Nicht heruntergeladen · {size}",
+        loaded: "Geladen",
+        downloading: "{model} wird heruntergeladen",
+        downloadingDescription:
+          "Der Fortschritt steht im Downloads-Bereich. Nach Abschluss wird es für die Indizierung genutzt.",
+        downloadFailed: "Download konnte nicht gestartet werden",
+        downloadConflict: "Diesen Download im Hub fortsetzen",
+        downloadBusy: "Download läuft bereits",
       },
       storage: {
         sectionTitle: "Speicher",
@@ -1218,6 +1235,7 @@ export const de = {
         processMemory: "Prozessspeicher",
         notInstalled: "Nicht installiert",
         unknown: "Unbekannt",
+        vramWithShared: "{vram} VRAM + {shared} gemeinsam genutzter Speicher",
       },
     },
     agents: {

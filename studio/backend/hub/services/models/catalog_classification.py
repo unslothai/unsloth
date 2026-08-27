@@ -44,6 +44,10 @@ _QWEN3_ASR_HINT = re.compile(
     r"(?<![a-z0-9])qwen3[-_. ]*asr[-_. ]*(?:0[._]6|1[._]7)b(?![a-z0-9])",
     re.IGNORECASE,
 )
+_ORPHEUS_GGUF_HINT = re.compile(
+    r"(?<![a-z0-9])orpheus[-_. ]*3b(?![a-z0-9])",
+    re.IGNORECASE,
+)
 
 
 def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
@@ -97,6 +101,10 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
         _QWEN3_ASR_HINT.search(str(hint)) for hint in name_hints if hint
     ):
         return "automatic-speech-recognition"
+    if normalized == "llama" and any(
+        _ORPHEUS_GGUF_HINT.search(str(hint)) for hint in name_hints if hint
+    ):
+        return _SPEECH_TASK
     if normalized in _PLACEHOLDER_DIFFUSION_GGUF_ARCHS:
         from core.inference.video_families import detect_video_family
 
@@ -155,6 +163,22 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     if normalized in _UNSUPPORTED_DIFFUSION_GGUF_ARCHS:
         return _UNSUPPORTED_DIFFUSION_TASK
     return "text-generation"
+
+
+def _arch_to_audio_type(
+    arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()
+) -> Optional[str]:
+    """Decoder provenance for a GGUF classified as speech."""
+    if arch is None:
+        return None
+    normalized = arch.strip().lower()
+    if normalized == "llama" and any(
+        _ORPHEUS_GGUF_HINT.search(str(hint)) for hint in name_hints if hint
+    ):
+        return "snac"
+    if is_speech_gguf_architecture(normalized):
+        return "csm"
+    return None
 
 
 def _is_trailing_split_shard(name: str) -> bool:
@@ -252,6 +276,36 @@ def _repo_gguf_task(repo_info, selected: Optional[Path] = None) -> Optional[str]
         return None
 
 
+def _gguf_path_audio_type(
+    path: str | Path, id_hints: tuple[Optional[str], ...] = ()
+) -> Optional[str]:
+    model_path = Path(path)
+    try:
+        paths = (
+            [model_path]
+            if model_path.suffix.lower() == ".gguf" and model_path.is_file()
+            else _iter_gguf_paths(model_path)
+        )
+        for gguf_path in paths:
+            audio_type = _arch_to_audio_type(
+                _gguf_architecture(str(gguf_path)),
+                name_hints = id_hints + (gguf_path.name,),
+            )
+            if audio_type is not None:
+                return audio_type
+    except Exception:
+        return None
+    return None
+
+
+def _repo_gguf_audio_type(repo_info, selected: Optional[Path] = None) -> Optional[str]:
+    repo_id = getattr(repo_info, "repo_id", None)
+    try:
+        return _gguf_path_audio_type(selected or Path(repo_info.repo_path), (repo_id,))
+    except Exception:
+        return None
+
+
 def _gguf_path_task(path: str | Path, id_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
     model_path = Path(path)
     try:
@@ -336,6 +390,28 @@ def _local_model_task(model) -> Optional[str]:
         return None
     except Exception:
         return "text-to-image"
+
+
+def _local_model_audio_type(model) -> Optional[str]:
+    path = model.path
+    if model.model_format == "gguf" or Path(path).suffix.lower() == ".gguf":
+        return _gguf_path_audio_type(path, (model.model_id, model.display_name, model.id))
+    try:
+        from utils.audio_tokens import detect_local_tts_audio_type
+        return detect_local_tts_audio_type(path)
+    except Exception:
+        return None
+
+
+def _local_model_classification(model) -> tuple[Optional[str], Optional[str]]:
+    """Return picker task and decoder provenance from one local-row probe."""
+    task = _local_model_task(model)
+    audio_type = _local_model_audio_type(model) if task is None or task == _SPEECH_TASK else None
+    if task is None and audio_type is not None:
+        from utils.audio_tokens import is_tts_audio_type
+        if is_tts_audio_type(audio_type):
+            task = _SPEECH_TASK
+    return task, audio_type
 
 
 def _local_is_diffusers(model) -> bool:

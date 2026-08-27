@@ -3337,7 +3337,12 @@ export function HubModelPicker({
   const hubEvidenceById = useMemo(() => {
     const map = new Map<
       string,
-      { baseModel?: string | null; tags?: string[]; libraryName?: string | null }
+      {
+        baseModel?: string | null;
+        tags?: string[];
+        libraryName?: string | null;
+        audioType?: string | null;
+      }
     >();
     for (const r of [
       ...results,
@@ -3357,12 +3362,31 @@ export function HubModelPicker({
     // here the same row picked from the unscoped Chat picker was judged on its id alone
     // and refused routing to the page that does list it.
     for (const c of cachedModels) {
-      if (map.has(c.repo_id)) continue;
+      const existing = map.get(c.repo_id);
+      if (existing) {
+        map.set(c.repo_id, {
+          ...existing,
+          audioType: existing.audioType ?? c.audio_type,
+        });
+        continue;
+      }
       map.set(c.repo_id, {
         baseModel: null,
         tags: c.tags,
         libraryName: c.library_name,
+        audioType: c.audio_type,
       });
+    }
+    for (const c of cachedGguf) {
+      const existing = map.get(c.repo_id);
+      if (existing) {
+        map.set(c.repo_id, {
+          ...existing,
+          audioType: existing.audioType ?? c.audio_type,
+        });
+        continue;
+      }
+      map.set(c.repo_id, { audioType: c.audio_type });
     }
     return map;
   }, [
@@ -3371,6 +3395,7 @@ export function HubModelPicker({
     communityQuerySearch.results,
     communityBrowse.results,
     cachedModels,
+    cachedGguf,
   ]);
 
   // Tag-accurate capabilities keyed by repo id, pooled from both HF listings, then the
@@ -3446,10 +3471,11 @@ export function HubModelPicker({
             audioPickIsRoutable({
               id: c.repo_id,
               task: c.task,
+              audioType: c.audio_type,
               isGguf: true,
               isCurated: artifactForRepoId(c.repo_id, AUDIO_CATALOG) !== null,
-              // _repo_gguf_task reads these off the arch too, so the same rule holds: a
-              // speech tag means llama-csm even when the repo id names another family.
+              // The task and codec both came from GGUF classification; codec provenance
+              // separates runnable Orpheus from unsupported CSM.
               taskFromGgufArch: true,
             }),
         ),
@@ -3493,6 +3519,7 @@ export function HubModelPicker({
                   id: c.repo_id,
                   tags: c.tags,
                   libraryName: c.library_name,
+                  audioType: c.audio_type,
                 }) &&
                 macTtsHubRowIsRunnable({
                   isMac,
@@ -3550,10 +3577,11 @@ export function HubModelPicker({
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,
+              audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
               isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
-              // These rows are tasked by _local_model_task reading the GGUF's own arch,
-              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              // Task and codec came from the filesystem classifier, so a renamed CSM file
+              // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
             }) &&
             // The backend tags every local model with its task for exactly this: on the Images/Video pages a chat GGUF must not be offered.
@@ -3596,10 +3624,11 @@ export function HubModelPicker({
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,
+              audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
               isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
-              // These rows are tasked by _local_model_task reading the GGUF's own arch,
-              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              // Task and codec came from the filesystem classifier, so a renamed CSM file
+              // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
             }) &&
             passesTaskGate(
@@ -3645,10 +3674,11 @@ export function HubModelPicker({
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,
+              audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
               isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
-              // These rows are tasked by _local_model_task reading the GGUF's own arch,
-              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              // Task and codec came from the filesystem classifier, so a renamed CSM file
+              // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
             }) &&
             passesTaskGate(
