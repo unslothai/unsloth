@@ -332,8 +332,10 @@ def _fit_fallback_placement(
     # The cache follows the layer, so a layer moved to host takes its share with
     # it. Per-layer rather than per-attention-layer: SWA already makes the
     # planner abstain upstream, so the shares are uniform by the time we get here.
-    kv_total = 0 if kv_on_host else cache_bytes(
-        layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor
+    kv_total = (
+        0
+        if kv_on_host
+        else cache_bytes(layout, n_ctx, kv_quantised = quantised, kv_bytes_floor = kv_bytes_floor)
     )
     kv_per_layer = kv_total / len(blocks)
 
@@ -346,9 +348,11 @@ def _fit_fallback_placement(
     # about 2.2K ever live. Feasibility above still uses the full reservation,
     # because llama.cpp really does allocate it.
     live_tokens = min(n_ctx, max(1, opts.workload_prompt_tokens + opts.workload_generated_tokens))
-    kv_live_per_layer = cache_bytes(
-        layout, live_tokens, kv_quantised = quantised
-    ) / len(blocks) if not kv_on_host else 0.0
+    kv_live_per_layer = (
+        cache_bytes(layout, live_tokens, kv_quantised = quantised) / len(blocks)
+        if not kv_on_host
+        else 0.0
+    )
 
     # llama.cpp keeps the FIRST n_gpu_layers on the device, so the host takes the
     # trailing ones. Walk out from the end until the remainder fits.
@@ -367,9 +371,7 @@ def _fit_fallback_placement(
                 # Attention, norms and routers: dense, read in full every token.
                 groups.append(TensorGroup("layers", attention, Access.CONTIGUOUS))
             if layout.lm_head_bytes:
-                groups.append(
-                    TensorGroup("lm_head", layout.lm_head_bytes, Access.SINGLE_MATVEC)
-                )
+                groups.append(TensorGroup("lm_head", layout.lm_head_bytes, Access.SINGLE_MATVEC))
             live_kv = int(kv_live_per_layer * moved)
             if live_kv:
                 # NOT ``kv_host_bytes``. That field carries the 20.1x rate, which
@@ -973,17 +975,21 @@ def _cost_gate(
     fit_ms = _score_of(fallback, scored)
     if plan_ms <= fit_ms * (1.0 - opts.min_penalty_reduction):
         return None, plan_ms, fit_ms
-    return Plan(
-        n_ctx = n_ctx,
-        predicted_request_ms = plan_ms,
-        predicted_fit_request_ms = fit_ms,
-        reason = (
-            f"planning this load is not worth it: the spill costs "
-            f"{plan_ms:.0f} ms against {fit_ms:.0f} ms for llama.cpp's own fit "
-            f"over {opts.workload_prompt_tokens} prompt and "
-            f"{opts.workload_generated_tokens} generated tokens, so it is left to --fit on"
+    return (
+        Plan(
+            n_ctx = n_ctx,
+            predicted_request_ms = plan_ms,
+            predicted_fit_request_ms = fit_ms,
+            reason = (
+                f"planning this load is not worth it: the spill costs "
+                f"{plan_ms:.0f} ms against {fit_ms:.0f} ms for llama.cpp's own fit "
+                f"over {opts.workload_prompt_tokens} prompt and "
+                f"{opts.workload_generated_tokens} generated tokens, so it is left to --fit on"
+            ),
         ),
-    ), plan_ms, fit_ms
+        plan_ms,
+        fit_ms,
+    )
 
 
 def _score_of(placement: Placement, scored: Sequence[tuple[Placement, float]]) -> float:

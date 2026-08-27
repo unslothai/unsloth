@@ -31,9 +31,7 @@ def dense_layout(
     kv_gib_at_32k: float = 2.0,
 ) -> ModelLayout:
     """A dense 27B-ish model, the shape #9861 spilled every block of."""
-    blocks = tuple(
-        BlockLayout(i, int(ffn_gib * GIB), int(attn_gib * GIB)) for i in range(n_blocks)
-    )
+    blocks = tuple(BlockLayout(i, int(ffn_gib * GIB), int(attn_gib * GIB)) for i in range(n_blocks))
     return ModelLayout(
         arch = "qwen3",
         n_layers = n_blocks,
@@ -101,9 +99,7 @@ def test_a_load_the_fitter_cannot_place_either_is_never_declined():
     """
     layout = dense_layout()
     tiny = 3 * GIB
-    plan = plan_placement(
-        layout, [tiny], 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6))
-    )
+    plan = plan_placement(layout, [tiny], 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6)))
     assert "not worth it" not in plan.reason
 
 
@@ -126,7 +122,10 @@ def test_the_workload_shape_moves_the_trade():
     ratios = []
     for n_prompt, n_generated in ((8192, 16), (2048, 256), (512, 2048), (16, 8192)):
         plan = plan_placement(
-            layout, card, 94 * GIB, 32768,
+            layout,
+            card,
+            94 * GIB,
+            32768,
             opts = gated(
                 host = HostProfile(threads = 6),
                 workload_prompt_tokens = n_prompt,
@@ -147,11 +146,12 @@ def test_the_margin_is_what_decides_a_near_tie():
     """
     layout = dense_layout()
     card = [14848 * 1024 * 1024]
-    strict = plan_placement(
-        layout, card, 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6))
-    )
+    strict = plan_placement(layout, card, 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6)))
     lenient = plan_placement(
-        layout, card, 94 * GIB, 32768,
+        layout,
+        card,
+        94 * GIB,
+        32768,
         opts = gated(host = HostProfile(threads = 6), min_penalty_reduction = 0.0),
     )
     assert not strict.spilled_blocks

@@ -29,10 +29,7 @@ def test_the_planner_loses_almost_every_cell_at_the_published_workload():
 def test_two_cells_are_worth_keeping():
     """A gate that declined all 31 would look excellent and still be wrong."""
     labels = {cell.label for cell in WINNING_CELLS}
-    assert labels == {
-        "Llama-3.3-70B Q4 @ Ada 38016 MiB",
-        "Qwen3.6-35B-A3B Q4 @ 3090 9344 MiB",
-    }
+    assert labels == {"Llama-3.3-70B Q4 @ Ada 38016 MiB", "Qwen3.6-35B-A3B Q4 @ 3090 9344 MiB"}
     best = max(WINNING_CELLS, key = lambda cell: cell.speedup())
     assert best.label == "Llama-3.3-70B Q4 @ Ada 38016 MiB"
     assert best.speedup() == pytest.approx(1.41, abs = 0.01)
