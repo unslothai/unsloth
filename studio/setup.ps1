@@ -4288,6 +4288,38 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $shouldRebuild = $false
     }
 
+    # A cu* venv is never wiped by a DIRECT update just because nvidia-smi did not answer.
+    # $HasNvidiaSmi is a bounded probe of one executable (:2030-2058), and every way it can come
+    # back empty on a machine with working NVIDIA GPUs -- nvidia-smi off PATH, a driver still
+    # initializing, the probe timing out -- collapses $expectedTorchTag to "cpu" here. None of
+    # the escapes above catch it: :4162 needs a pin, :4170 needs cu*->cu*, and :4223/:4265 need
+    # $InstallerManagedSetup, which is true only under install.ps1. So a healthy cu124 venv reads
+    # as "torch cu124 != required cpu", gets deleted, and the run aborts a few lines below at
+    # "Virtual environment not found" -- with no rollback copy, because only install.ps1 makes
+    # one. That is a worse outcome than keeping a wheel that may be wrong, and it is unrecoverable
+    # without re-downloading the whole environment. Same reasoning the XPU escape above applies.
+    #
+    # Narrow on purpose: unpinned only (a cpu index PIN is a deliberate CPU install and still
+    # rebuilds), cu* installed only, and only when the expectation collapsed for want of an
+    # NVIDIA answer rather than because another vendor won ($AmdHasGpuWheels / $script:IsIntelXpu
+    # produce "rocm" / "xpu", not "cpu"). $_pinnedIdx and $expectedTorchTag are read only after
+    # $installedTorchTag has answered: both are assigned inside the `if (-not $shouldRebuild)`
+    # block, and a probe that answered is what makes that block run -- so ordering the -and chain
+    # this way is what keeps the reads legal under a caller's Set-StrictMode.
+    if ($shouldRebuild -and -not $InstallerManagedSetup -and
+        $installedTorchTag -and (Test-CudaFamilyLeaf $installedTorchTag) -and
+        -not $_pinnedIdx -and -not $HasNvidiaSmi -and $expectedTorchTag -eq "cpu") {
+        substep "nvidia-smi did not answer, but this venv holds a $installedTorchTag build -- keeping it." "Yellow"
+        substep "If training runs on CPU, re-run install.ps1: irm https://unsloth.ai/install.ps1 | iex" "Yellow"
+        $shouldRebuild = $false
+        # Keeping the wheel is only half the job. The index selection below re-runs the same
+        # rescan, sees no NVIDIA either, and picks $CuTag = "cpu" -- which routes the install to
+        # the CPU arm and the /cpu index. Naming the family already installed keeps the pass on
+        # that family's index instead, where the bare trio the CUDA arm uses is already satisfied
+        # and nothing is force-reinstalled. Mirrors the installer-managed preserve guard above.
+        $script:PreservedInstallerTorchTag = $installedTorchTag
+    }
+
     if ($shouldRebuild) {
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
         # why: mirror install.ps1 env-mode guard so an update against a custom
@@ -5328,6 +5360,31 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
 # already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
 # Duplicate metadata repair is the one pass that DOES reinstall unsloth under
 # SKIP_STUDIO_BASE, so the CLI wraps this script in its launcher transaction.
+
+# ── Publish the torch flavor this run settled on ──
+# install_python_stack.py's dependency steps install WITH deps and WITHOUT an --index-url, and
+# constraints.txt names no torch, so the resolver's default source is PyPI -- whose Windows torch
+# is 2.11.0+cpu. It can therefore swap the GPU wheel installed above for a CPU one and still exit
+# 0. install.ps1 repairs exactly that afterwards, but the in-app updater never runs install.ps1:
+# it runs `unsloth studio update`, which lands here. Hand the stack the flavor and the index this
+# run used so it can enforce the same invariant itself (_ensure_expected_torch_flavor).
+#
+# The tag vocabulary is Get-InstalledTorchTag's, because that is what it gets compared against.
+# An unknown leaf (a corporate /simple mirror) names no flavor, so publish nothing rather than a
+# tag nothing can verify -- the stack then falls back to the manifest and to its own probe.
+if (-not $NoTorchMode) {
+    $_expectedLeaf = Get-TorchIndexLeaf $TorchInstallIndexUrl
+    # $ROCmIndexUrl first: the AMD Windows path installs the ROCm trio from repo.amd.com while
+    # $TorchInstallIndexUrl still points at /cpu, so the leaf alone would report the wrong flavor.
+    $_expectedTag = if ($ROCmIndexUrl) { "rocm" }
+                    elseif (Test-CudaFamilyLeaf $_expectedLeaf) { $_expectedLeaf }
+                    elseif ($_expectedLeaf -eq "cpu" -or $_expectedLeaf -eq "xpu") { $_expectedLeaf }
+                    elseif (Test-PipRocmFamilyLeaf $_expectedLeaf) { "rocm" }
+                    else { $null }
+    # Assigning "" to an $env: entry deletes it, which is the "unset" the reader tests for.
+    $env:UNSLOTH_EXPECTED_TORCH_TAG = if ($_expectedTag) { $_expectedTag } else { "" }
+    $env:UNSLOTH_TORCH_INSTALL_INDEX_URL = $TorchInstallIndexUrl
+}
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
