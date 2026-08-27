@@ -245,3 +245,37 @@ test("the dialog body claims no height it has to guess", async () => {
   // The row minimums are what actually keeps each pane usable.
   assert.match(source, /grid-rows-\[minmax\(132px,30%\)_minmax\(272px,1fr\)\]/);
 });
+
+// The New form's fields stay editable while its create is out, and Cancel can
+// start a fresh draft during one. Resetting unconditionally when the request
+// lands discarded text that never reached the server, which is the defect
+// samePromptDraft already guards on the edit panes.
+test("a create resets its draft only if it still holds what was sent", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(source, /samePromptDraft\(prev, submitted\) \? emptyPromptDraft\(\) : prev/);
+  assert.match(source, /sameListDraft\(prev, submitted\) \? emptyListDraft\(\) : prev/);
+  // The created path must not run the Cancel callback, which discards outright.
+  assert.doesNotMatch(
+    source,
+    /onCreated\(id, submitted\);\n\s+onClose\(\);/,
+    "the created path closes through Cancel again, which resets unconditionally",
+  );
+  assert.equal(
+    source.split("onCreated(id, submitted);").length - 1,
+    2,
+    "both create paths should hand the submitted snapshot up",
+  );
+});
+
+// The comparison is the same one the edit panes use, so the empty-draft case has
+// to behave: a create that lands after Cancel must not resurrect an empty form.
+test("an empty draft does not match a submitted one", () => {
+  assert.equal(samePromptDraft({ name: "", text: "" }, { name: "n", text: "t" }), false);
+  assert.equal(sameListDraft({ name: "", items: ["", ""] }, { name: "l", items: ["a"] }), false);
+});

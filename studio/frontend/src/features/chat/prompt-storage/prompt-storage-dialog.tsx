@@ -1722,7 +1722,7 @@ function NewPromptForm({
   onDraftChange: (draft: PromptDraft) => void;
   onClose: () => void;
   onRefresh: () => Promise<void>;
-  onCreated: (id: string) => void;
+  onCreated: (id: string, submitted: PromptDraft) => void;
   creating: boolean;
   create: (fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
@@ -1737,6 +1737,9 @@ function NewPromptForm({
         if (!trimText) return;
         const ts = now();
         const id = newId();
+        // What the request carries. The fields stay editable while it is out,
+        // so the draft can move on before it resolves.
+        const submitted: PromptDraft = { name, text };
         try {
           await savePromptEntry({
             id,
@@ -1756,10 +1759,11 @@ function NewPromptForm({
         // Await the refresh first, or the keep-a-row-selected effect runs
         // against a list without the new id and bounces the selection off it.
         await onRefresh();
-        onCreated(id);
-        onClose();
+        // The parent selects the new row, hides this form, and resets the draft
+        // only if it still holds what was sent.
+        onCreated(id, submitted);
       }),
-    [name, text, create, onClose, onRefresh, onCreated],
+    [name, text, create, onRefresh, onCreated],
   );
 
   return (
@@ -2001,7 +2005,7 @@ function NewPromptListForm({
   onDraftChange: (draft: ListDraft) => void;
   onClose: () => void;
   onRefresh: () => Promise<void>;
-  onCreated: (id: string) => void;
+  onCreated: (id: string, submitted: ListDraft) => void;
   creating: boolean;
   create: (fn: () => Promise<void>) => Promise<void>;
 }): ReactElement {
@@ -2016,6 +2020,8 @@ function NewPromptListForm({
         if (filtered.length === 0) return;
         const ts = now();
         const id = newId();
+        // See NewPromptForm: the editor stays usable while the request is out.
+        const submitted: ListDraft = { name, items };
         try {
           await savePromptList({
             id,
@@ -2033,10 +2039,9 @@ function NewPromptListForm({
         }
         // See NewPromptForm: select only once the refreshed list contains the id.
         await onRefresh();
-        onCreated(id);
-        onClose();
+        onCreated(id, submitted);
       }),
-    [name, items, create, onClose, onRefresh, onCreated],
+    [name, items, create, onRefresh, onCreated],
   );
 
   const addItem = () => setItems([...items, ""]);
@@ -2236,14 +2241,26 @@ export function PromptStorageDialog({
 
   // Clear the search too: an active one the new entry does not match keeps it
   // out of the filtered rail, and the effect below bounces the selection off it.
-  const selectCreatedPrompt = useCallback((id: string) => {
+  //
+  // The draft resets only when it still holds what was sent. The fields stay
+  // editable while the create is out, and Cancel can start a fresh one, so an
+  // unconditional reset discards text that never reached the server.
+  const selectCreatedPrompt = useCallback((id: string, submitted: PromptDraft) => {
     setSearchQuery("");
     setSelectedPromptId(id);
+    setNewPromptDraft((prev) =>
+      samePromptDraft(prev, submitted) ? emptyPromptDraft() : prev,
+    );
+    setShowNewPrompt(false);
   }, []);
 
-  const selectCreatedList = useCallback((id: string) => {
+  const selectCreatedList = useCallback((id: string, submitted: ListDraft) => {
     setSearchQuery("");
     setSelectedListId(id);
+    setNewListDraft((prev) =>
+      sameListDraft(prev, submitted) ? emptyListDraft() : prev,
+    );
+    setShowNewList(false);
   }, []);
 
   const filteredPrompts = useMemo(() => {
