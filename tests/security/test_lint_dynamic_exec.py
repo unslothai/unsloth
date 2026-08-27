@@ -194,6 +194,7 @@ def test_an_unjustified_allowlist_entry_fails(tmp_path):
 
 # The callee is written some other way and still resolves to the builtin.
 _SINK_IS_STILL_RESOLVED = {
+    'a sink above the return still runs': 'def f(name):\n    exec(f"import {name}")\n    return\n',
     'next runs the callback on the first mapped element': 'def f(name):\n    next(map(exec, [f"import {name}"]))\n',
     'a lambda hands the sink itself back': 'def f(name):\n    (lambda run: run)(exec)(f"import {name}")\n',
     'a key callback runs on every element sorted consumes': 'def f(name):\n    sorted([f"import {name}"], key = exec)\n',
@@ -417,6 +418,8 @@ def test_taint_carried_through_a_binding_is_reported(description, tmp_path):
 
 # Shadowed, unreachable, unbound or unable to build a string at all.
 _NOTHING_REACHES_THE_SINK = {
+    'a function body ends at an unconditional return': 'def f(name):\n    return\n    exec(f"import {name}")\n',
+    'a function body ends at an unconditional raise': 'def f(name):\n    raise SystemExit\n    exec(f"import {name}")\n',
     'a discarded generator never evaluates its element': 'def f(name):\n    (exec(f"import {name}") for _ in [0])\n',
     'min compares two results and raises before the third': 'def f(name):\n    min(map(exec, ["pass", "pass", f"import {name}"]))\n',
     'an empty second iterable stops the map before it starts': 'def f(name):\n    list(map(exec, [f"import {name}"], []))\n',

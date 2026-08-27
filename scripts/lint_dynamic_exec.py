@@ -3430,8 +3430,10 @@ class _Visitor(ast.NodeVisitor):
                     self.sink_aliases[-1].pop(argument.arg, None)
                     self.sink_aliases[-1].pop(f"module:{argument.arg}", None)
         self._collect_aliases(node.body)
-        for statement in node.body:
-            self.visit(statement)
+        # The body ends at an unconditional jump, exactly as a loop or an `if` suite
+        # does: `def f(name): return; exec(f"import {name}")` cannot reach the sink,
+        # and reporting it failed the gate on code that does nothing.
+        self._visit_suite(node.body)
         self.collected_aliases.pop()
         self.sink_aliases.pop()
         self.shadowed_sinks.pop()
