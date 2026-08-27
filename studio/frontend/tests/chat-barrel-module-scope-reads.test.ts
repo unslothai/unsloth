@@ -38,7 +38,14 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(HERE, "..", "src");
 const BARREL = "@/features/chat";
 
-/** Local names this module binds to values pulled from the chat barrel. */
+/**
+ * Local names this module binds to values pulled from the chat barrel.
+ *
+ * A namespace import contributes its own name: `import * as chat` makes
+ * `chat.ANYTHING` a read of the namespace object, and the object itself is what
+ * is uninitialized, so flagging a module-scope mention of `chat` is exactly
+ * right.
+ */
 function barrelValueNames(source: ts.SourceFile): Set<string> {
   const names = new Set<string>();
   for (const statement of source.statements) {
@@ -48,15 +55,61 @@ function barrelValueNames(source: ts.SourceFile): Set<string> {
     const clause = statement.importClause;
     // `import type { ... }` is erased before the code runs, so it cannot trip a
     // temporal dead zone.
-    if (!clause || clause.isTypeOnly || !clause.namedBindings) continue;
-    if (!ts.isNamedImports(clause.namedBindings)) continue;
-    for (const element of clause.namedBindings.elements) {
+    if (!clause || clause.isTypeOnly) continue;
+    if (clause.name) names.add(clause.name.text); // default import
+    const bound = clause.namedBindings;
+    if (!bound) continue;
+    if (ts.isNamespaceImport(bound)) {
+      names.add(bound.name.text);
+      continue;
+    }
+    for (const element of bound.elements) {
       if (element.isTypeOnly) continue;
       // element.name is the LOCAL name, so `X as y` correctly yields `y`.
       names.add(element.name.text);
     }
   }
   return names;
+}
+
+/**
+ * Names the module re-declares itself, which therefore do not refer to the
+ * import wherever they appear.
+ *
+ * Whole-file rather than per-scope on purpose: shadowing an imported name is
+ * already unusual, and the cost of the two errors is not symmetric. Skipping a
+ * shadowed name loses coverage in one file; flagging one rejects code that never
+ * touches the import and makes the guard something people delete.
+ */
+function shadowedNames(source: ts.SourceFile, names: Set<string>): Set<string> {
+  const shadowed = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) return;
+    const declared =
+      (ts.isVariableDeclaration(node) ||
+        ts.isFunctionDeclaration(node) ||
+        ts.isClassDeclaration(node) ||
+        ts.isParameter(node) ||
+        ts.isBindingElement(node)) &&
+      node.name;
+    if (declared && ts.isIdentifier(declared) && names.has(declared.text)) {
+      shadowed.add(declared.text);
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  return shadowed;
+}
+
+/** True when this function is called on the spot, so its body runs eagerly. */
+function isImmediatelyInvoked(node: ts.Node): boolean {
+  let current: ts.Node = node;
+  let parent = current.parent;
+  while (parent && ts.isParenthesizedExpression(parent)) {
+    current = parent;
+    parent = parent.parent;
+  }
+  return Boolean(parent) && ts.isCallExpression(parent) && parent.expression === current;
 }
 
 /** Nodes whose bodies run when called, not when the module loads. */
@@ -70,10 +123,13 @@ function defersEvaluation(node: ts.Node): boolean {
     ts.isGetAccessorDeclaration(node) ||
     ts.isSetAccessorDeclaration(node)
   ) {
-    return true;
+    // An IIFE runs during module initialization like any other expression.
+    return !isImmediatelyInvoked(node);
   }
   // An instance field initializer runs at construction. A static one runs when
-  // the class is defined, which is module load, so it is NOT deferred.
+  // the class is defined, which is module load, so it is NOT deferred. Either
+  // way the COMPUTED NAME is evaluated at class definition; the walk visits it
+  // with the outer deferral for that reason.
   if (ts.isPropertyDeclaration(node)) {
     const isStatic = ts
       .getModifiers(node)
@@ -96,7 +152,11 @@ function isNonReference(node: ts.Identifier): boolean {
   return false;
 }
 
-function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
+function eagerReads(source: ts.SourceFile, allNames: Set<string>): string[] {
+  const shadowed = shadowedNames(source, allNames);
+  const names = new Set([...allNames].filter((n) => !shadowed.has(n)));
+  if (names.size === 0) return [];
+
   const found: string[] = [];
   const visit = (node: ts.Node, deferred: boolean): void => {
     // The import declaration binds these names; it does not read them.
@@ -113,7 +173,15 @@ function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
       found.push(`${node.text} (line ${line + 1})`);
     }
     const next = deferred || defersEvaluation(node);
-    node.forEachChild((child) => visit(child, next));
+    node.forEachChild((child) => {
+      // `class C { [KEY] = 1 }` evaluates KEY when the class is defined, even
+      // though the initializer waits for construction.
+      const eagerName =
+        ts.isPropertyDeclaration(node) &&
+        child === node.name &&
+        ts.isComputedPropertyName(child);
+      visit(child, eagerName ? deferred : next);
+    });
   };
   source.forEachChild((child) => visit(child, false));
   return found;
@@ -148,7 +216,17 @@ function barrelInitClosure(files: string[]): Set<string> {
     if (spec.startsWith("@/")) base = path.join(SRC, spec.slice(2));
     else if (spec.startsWith(".")) base = path.resolve(path.dirname(from), spec);
     else return null;
-    for (const c of [`${base}.ts`, `${base}.tsx`, path.join(base, "index.ts"), path.join(base, "index.tsx")]) {
+    // The exact path first: this codebase writes the extension on 66 imports,
+    // and appending another produced "clipboard-payload.ts.ts", silently
+    // dropping those edges and shrinking the at-risk set.
+    const candidates = [
+      base,
+      `${base}.ts`,
+      `${base}.tsx`,
+      path.join(base, "index.ts"),
+      path.join(base, "index.tsx"),
+    ];
+    for (const c of candidates) {
       if (sources.has(c)) return c;
     }
     return null;
@@ -231,6 +309,22 @@ test("the scan catches every shape the regex version missed", () => {
       "static class field",
       `import { K } from "${BARREL}";\nclass C { static k = K; }\n`,
     ],
+    [
+      "namespace import",
+      `import * as chat from "${BARREL}";\nconst a = chat.K;\n`,
+    ],
+    [
+      "immediately invoked arrow",
+      `import { K } from "${BARREL}";\nconst a = (() => K)();\n`,
+    ],
+    [
+      "immediately invoked function expression",
+      `import { K } from "${BARREL}";\nconst a = (function () { return K; })();\n`,
+    ],
+    [
+      "computed instance field name",
+      `import { K } from "${BARREL}";\nclass C { [K] = 1; }\n`,
+    ],
   ];
   for (const [label, code] of cases) {
     assert.equal(analyse("t.ts", code).length, 1, `${label} should be flagged`);
@@ -260,8 +354,35 @@ test("deferred reads and non-references are left alone", () => {
       `import { K } from "${BARREL}";\nconst f = () => obj.K;\n`,
     ],
     ["different module", `import { K } from "@/features/hub";\nconst a = [K];\n`],
+    [
+      "a name the module re-declares itself",
+      `import { K } from "${BARREL}";\n{ const K = 1; consume(K); }\n`,
+    ],
+    [
+      "namespace object only touched inside a function",
+      `import * as chat from "${BARREL}";\nconst f = () => chat.K;\n`,
+    ],
+    [
+      "deferred instance field initializer",
+      `import { K } from "${BARREL}";\nclass C { k = K; }\n`,
+    ],
   ];
   for (const [label, code] of cases) {
     assert.deepEqual(analyse("t.ts", code), [], `${label} should not be flagged`);
+  }
+});
+
+test("the barrel closure resolves imports that spell their extension", () => {
+  // The 66 such imports in this tree were invisible to the previous resolver,
+  // which appended a second extension and dropped the edge.
+  const closure = barrelInitClosure(walkSources(SRC));
+  for (const relative of [
+    "features/chat/utils/clipboard-payload.ts",
+    "features/chat/stores/sidebar-organization-keys.ts",
+  ]) {
+    assert.ok(
+      closure.has(path.join(SRC, relative)),
+      `${relative} is reachable from the barrel but missing from the closure`,
+    );
   }
 });
