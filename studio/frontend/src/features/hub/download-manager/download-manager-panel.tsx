@@ -121,7 +121,7 @@ function StatusLine({ job }: { job: ManagedDownload }) {
     return <span className="text-status-success">Downloaded</span>;
   }
   if (job.state === "cancelled") {
-    return <span>Stopped. Partial files kept.</span>;
+    return <span>Cancelled. Partial files kept.</span>;
   }
   if (job.state === "error") {
     return (
