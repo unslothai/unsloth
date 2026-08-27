@@ -277,7 +277,6 @@ class TestMacosDyldLoadProbe:
         )
         ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
 
-
     def test_the_referencing_dylib_survives_into_the_message(self, tmp_path):
         """dyld names the library AND the dylib that asked for it. The second half
         is what says libggml-rpc rather than llama-server is at fault, so keep
@@ -293,7 +292,6 @@ class TestMacosDyldLoadProbe:
         message = str(caught.value)
         assert "librdma" in message
         assert "libggml-rpc" in message
-
 
 
 class TestLooksLikeMacosLoaderFailure:
