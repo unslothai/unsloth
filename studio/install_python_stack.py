@@ -189,6 +189,13 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "gfx1150": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1152": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
 }
+# Bound companion versions for ABI compatibility while retaining older per-arch mirror builds.
+_ROCM_ARCH_INDEX_TORCH_PKG_SPEC: tuple[str, str, str] = (
+    "torch>=2.4,<2.12.0",
+    "torchvision>=0.19,<0.27.0",
+    "torchaudio>=2.4,<2.12.0",
+)
+
 _PYTORCH_WHL_BASE = (
     os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
 ).rstrip("/")
@@ -1724,6 +1731,42 @@ def _detect_amd_gfx_codes(
 _HSA_SPOOFABLE_PHYSICAL_GFX: frozenset[str] = frozenset({"gfx1151", "gfx1150", "gfx1152"})
 
 
+# Architectures reported by torch 2.10.0+rocm7.1's generic wheel on 2026-08-27.
+# Recheck this list when the generic torch pin changes.
+_GENERIC_ROCM_WHEEL_GFX: frozenset[str] = frozenset(
+    {
+        "gfx900", "gfx906", "gfx908", "gfx90a", "gfx942", "gfx950",
+        "gfx1030", "gfx1100", "gfx1101", "gfx1102",
+        "gfx1150", "gfx1151", "gfx1200", "gfx1201",
+    }
+)
+
+
+def _generic_rocm_wheel_lacks_kernels(gfx: "str | None") -> bool:
+    """Whether only an available AMD per-arch index carries kernels for ``gfx``."""
+    if not gfx:
+        return False
+    return gfx not in _GENERIC_ROCM_WHEEL_GFX and gfx in _GFX_TO_AMD_INDEX_ARCH
+
+
+def _runtime_gfx_target(inferred_linux_gfx: "str | None") -> "tuple[str | None, list[str], str | None]":
+    """Return the selected gfx target, detected arches, and corrected physical arch."""
+    gfx_devices = _detect_amd_gfx_codes(dedup = False)
+    physical_gfx = _hsa_spoofed_physical_gfx(inferred_linux_gfx, gfx_devices)
+    if physical_gfx is not None:
+        gfx_devices = [physical_gfx]
+    rocr_applied = (
+        _LAST_AMD_GFX_PROBE == "rocminfo"
+        and _first_set_visible_mask() == "ROCR_VISIBLE_DEVICES"
+    )
+    runtime_gfx = (
+        gfx_devices[0 if rocr_applied else _pick_visible_index(len(gfx_devices))]
+        if gfx_devices
+        else None
+    )
+    return runtime_gfx, list(dict.fromkeys(gfx_devices)), physical_gfx
+
+
 def _hsa_override_gfx_arch(value: "str | None") -> "str | None":
     """gfx arch named by an HSA_OVERRIDE_GFX_VERSION value, or None if unreadable.
 
@@ -3123,42 +3166,15 @@ def _ensure_rocm_torch() -> None:
     # segfaults in _grouped_mm). See _strix_needs_amd_arch_index for the floor gate.
     _strix_override_url: "str | None" = None
     _strix_override_pkgs: "tuple[str, str, str] | None" = None
-    # An explicit ROCm pin is authoritative: never auto-reroute it.
-    if (
-        _strix_needs_amd_arch_index(ver)
-        and _explicit_rocm_torch_index_url() is None
-        and not _gfx906_arch_override
-    ):
-        # One entry per DEVICE: the mask names a device ordinal, so a deduplicated list
-        # picks the wrong card when two GPUs share an arch (gfx1100,gfx1100,gfx1151
-        # would read index 1 as the Strix).
-        gfx_devices = _detect_amd_gfx_codes(dedup = False)
-        # HSA_OVERRIDE_GFX_VERSION=11.0.0 (the circulated Strix workaround) makes ROCr
-        # hand rocminfo the SPOOFED ISA, so a gfx1151 host reports gfx1100 and every
-        # check below misses it (unslothai#7331). Correct the reading back to the
-        # physical arch first, only in the narrow shape that cannot be a real mixed host.
-        _physical_gfx = _hsa_spoofed_physical_gfx(_inferred_linux_gfx, gfx_devices)
-        if _physical_gfx is not None:
-            gfx_devices = [_physical_gfx]
-        gfx_codes = list(dict.fromkeys(gfx_devices))
+    # An explicit ROCm pin wins; otherwise both reroutes share one hardware probe.
+    if _explicit_rocm_torch_index_url() is None and not _gfx906_arch_override:
+        _runtime_gfx, gfx_codes, _physical_gfx = _runtime_gfx_target(_inferred_linux_gfx)
         _strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
-        _detected_strix = _strix_gfx.intersection(gfx_codes)
+        # Only the Strix reroute has a ROCm-version floor.
+        _detected_strix = (
+            _strix_gfx.intersection(gfx_codes) if _strix_needs_amd_arch_index(ver) else set()
+        )
         if _detected_strix:
-            # rocminfo links HSA/ROCr directly and never loads HIP, so only
-            # ROCR_VISIBLE_DEVICES filters and renumbers its output; HIP_VISIBLE_DEVICES
-            # and CUDA_VISIBLE_DEVICES (a HIP-layer alias) do not touch it. Re-indexing an
-            # already-ROCR-filtered list applies the mask twice, while skipping the index
-            # for the other two would ignore the pin. amd-smi reads the driver and is
-            # filtered by none of them, so it always indexes.
-            _rocr_applied = (
-                _LAST_AMD_GFX_PROBE == "rocminfo"
-                and _first_set_visible_mask() == "ROCR_VISIBLE_DEVICES"
-            )
-            _runtime_gfx = (
-                gfx_devices[0 if _rocr_applied else _pick_visible_index(len(gfx_devices))]
-                if gfx_devices
-                else None
-            )
             if _runtime_gfx in _strix_gfx:
                 _selected_gfx = _runtime_gfx
                 _amd_mirror = (
@@ -3193,6 +3209,39 @@ def _ensure_rocm_torch() -> None:
                     f"selects a non-Strix runtime target ({_runtime_gfx});\n"
                     f"   skipping AMD per-gfx index override.\n"
                 )
+
+        # If the generic wheel lacks the runtime target, replace it from AMD's per-arch index.
+        # This branch has no ROCm-version floor because generic wheels never carried these targets.
+        if _strix_override_url is None:
+            _missing_kernels = {g for g in gfx_codes if _generic_rocm_wheel_lacks_kernels(g)}
+            if _missing_kernels:
+                _leaf = (
+                    _GFX_TO_AMD_INDEX_ARCH.get(_runtime_gfx or "")
+                    if _generic_rocm_wheel_lacks_kernels(_runtime_gfx)
+                    else None
+                )
+                if _leaf is not None:
+                    _amd_mirror = (
+                        os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl"
+                    ).rstrip("/")
+                    _strix_override_url = f"{_amd_mirror}/{_leaf}/"
+                    # Keep older per-arch builds valid while bounding companion versions.
+                    _strix_override_pkgs = _ROCM_ARCH_INDEX_TORCH_PKG_SPEC
+                    _safe_print(
+                        f"   {_runtime_gfx} is the runtime target, and no pytorch.org ROCm wheel\n"
+                        f"   carries kernels for it -- torch would load but fault on its first\n"
+                        f"   GPU operation. Routing the torch install to AMD's arch-specific\n"
+                        f"   index ({_strix_override_url}), which does.\n"
+                    )
+                    # Let the runtime report the native target carried by these wheels.
+                    if _physical_gfx is not None:
+                        _clear_confirmed_hsa_spoof(_runtime_gfx)
+                else:
+                    _gfx_str = ", ".join(sorted(_missing_kernels))
+                    _safe_print(
+                        f"   GPU without generic-wheel kernels ({_gfx_str}) present, but the\n"
+                        f"   selected runtime target is {_runtime_gfx}; keeping the generic index.\n"
+                    )
 
     # gfx906 (MI50 / Radeon VII): is this the runtime GPU target? Used below to skip
     # the generic bitsandbytes wheel (no gfx906 kernels). This must hold even under
