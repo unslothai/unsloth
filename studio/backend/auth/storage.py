@@ -769,6 +769,7 @@ def update_password(
     *,
     revoke_refresh_tokens: bool = False,
     expect_password_hash: Optional[str] = None,
+    require_must_change: bool = False,
     preserve_desktop_secret: bool = False,
 ) -> Optional[str]:
     """Update password, clear first-login requirement, rotate JWT secret.
@@ -784,46 +785,80 @@ def update_password(
     ``expect_password_hash`` makes the write conditional on the credential the
     caller verified still being current, so a request that checked the old
     password cannot overwrite a reset that landed while it was in flight.
-    Returns False when the credential moved underneath it.
+    Returns None when the credential moved underneath it.
+
+    ``require_must_change`` makes it conditional on the account still holding a
+    seeded credential. Auto-generated launch credentials use it so a user who
+    completes /change-password in another tab between a
+    ``requires_password_change()`` read and this call is not silently overwritten
+    (and no already-replaced generated password is displayed).
+
+    Both guards ride the SAME statement rather than branching per guard: SQLite
+    applies the whole WHERE atomically, so exactly one of two racing writers sees
+    rowcount > 0 no matter which guard the loser tripped. A guard that rejects the
+    write commits NOTHING -- no revocation, no rotation -- because the credential
+    a rejected caller would be revoking belongs to the writer that won.
+
+    (``expect_password_hash`` strictly subsumes ``require_must_change``: every
+    write rehashes with a fresh salt, so any concurrent change trips it too. The
+    two are kept separate because they state different policies -- "the credential
+    I verified is still current" versus "only ever replace a never-set credential"
+    -- and the auto-generate callers hold no credential to pass. Collapsing them
+    is a follow-up, not a rebase.)
 
     ``preserve_desktop_secret`` keeps the local desktop credential valid. It is
     for a caller that already authenticated as the desktop app: revoking the
     secret it is currently using would break desktop auto-auth for a change the
     desktop itself made.
+
+    The desktop secret (unless preserved) is revoked in this same transaction. It
+    authenticates as this user without the password and is keyed off the JWT
+    secret rotated below, so it has to die with the rotation. A post-commit
+    ``clear_desktop_secret()`` opens a SECOND connection and can raise
+    ``sqlite3.OperationalError`` on a busy database, leaving a pre-change desktop
+    credential live against the new password, and would propagate that error to a
+    caller whose new password is already committed. The only remaining post-commit
+    step is the best-effort bootstrap FILE removal, which cannot join a SQL
+    transaction and never fails the change.
     """
     from .hashing import hash_password
 
     salt, pwd_hash = hash_password(new_password)
     jwt_secret = secrets.token_urlsafe(64)
+
+    # Only literal fragments are interpolated below; every value stays a bound
+    # parameter, so this is not string-built SQL in the injectable sense. Order is
+    # load-bearing: the SET params, then username, then the optional hash guard.
+    guards = ""
+    params = [salt, pwd_hash, jwt_secret, username]
+    if require_must_change:
+        guards += " AND must_change_password = 1"
+    if expect_password_hash is not None:
+        guards += " AND password_hash = ?"
+        params.append(expect_password_hash)
+
     conn = get_connection()
     try:
-        if expect_password_hash is None:
-            cursor = conn.execute(
-                """
-                UPDATE auth_user
-                SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
-                WHERE username = ?
-                """,
-                (salt, pwd_hash, jwt_secret, username),
-            )
-        else:
-            cursor = conn.execute(
-                """
-                UPDATE auth_user
-                SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
-                WHERE username = ? AND password_hash = ?
-                """,
-                (salt, pwd_hash, jwt_secret, username, expect_password_hash),
-            )
-        if revoke_refresh_tokens and cursor.rowcount > 0:
+        cursor = conn.execute(
+            f"""
+            UPDATE auth_user
+            SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+            WHERE username = ?{guards}
+            """,
+            tuple(params),
+        )
+        if cursor.rowcount == 0:
+            # Unknown user, or a guard rejected the write. Nothing rotated, so
+            # nothing may be revoked: roll back before any DELETE can run.
+            conn.rollback()
+            return None
+        if not preserve_desktop_secret:
+            clear_desktop_secret(conn)
+        if revoke_refresh_tokens:
             conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.commit()
-        if cursor.rowcount > 0:
-            clear_bootstrap_password()
-            if not preserve_desktop_secret:
-                clear_desktop_secret()
-            return jwt_secret
-        return None
+        clear_bootstrap_password()
+        return jwt_secret
     finally:
         conn.close()
 
@@ -1018,8 +1053,21 @@ def validate_desktop_secret(raw_secret: str) -> Optional[str]:
     return verified[0] if verified else None
 
 
-def clear_desktop_secret() -> None:
-    """Remove backend-side desktop auth state."""
+def clear_desktop_secret(conn: Optional[sqlite3.Connection] = None) -> None:
+    """Remove backend-side desktop auth state.
+
+    Given an open *conn*, the delete joins the CALLER's transaction and the caller
+    commits it (``update_password`` revokes the desktop secret in the same atomic
+    write as the password rotation, so a failure cannot leave a pre-change desktop
+    credential able to authenticate without the password). Otherwise it runs
+    standalone on its own connection.
+    """
+    if conn is not None:
+        conn.execute(
+            "DELETE FROM app_secrets WHERE key IN (?, ?)",
+            (_DESKTOP_SECRET_HASH_KEY, _DESKTOP_SECRET_CREATED_AT_KEY),
+        )
+        return
     conn = get_connection()
     try:
         conn.execute(

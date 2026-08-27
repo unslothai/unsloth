@@ -1033,6 +1033,32 @@ def test_update_password_clears_desktop_secret():
     assert storage.validate_desktop_secret(raw) is None
 
 
+def test_update_password_revokes_desktop_secret_in_the_same_transaction(monkeypatch):
+    # The desktop secret authenticates as this user WITHOUT the password, so it has
+    # to die in the SAME transaction as the rotation. It used to be revoked after
+    # the commit, on a second connection: anything that failed in between (a locked
+    # or busy database, or the bootstrap-file cleanup raising first, as simulated
+    # here) left a pre-change desktop credential live against the new password.
+    seed_user()
+    raw = storage.create_desktop_secret()
+    assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
+
+    def _boom():
+        raise OSError("auth dir is read-only")
+
+    monkeypatch.setattr(storage, "clear_bootstrap_password", _boom)
+
+    with pytest.raises(OSError):
+        storage.update_password(storage.DEFAULT_ADMIN_USERNAME, "new-admin-password")
+
+    # The rotation committed, and the desktop secret went with it.
+    assert storage.validate_desktop_secret(raw) is None
+    salt, pwd_hash, _jwt, _must_change = storage.get_user_and_secret(storage.DEFAULT_ADMIN_USERNAME)
+    from auth import hashing
+
+    assert hashing.verify_password("new-admin-password", salt, pwd_hash) is True
+
+
 def test_update_password_on_unknown_user_leaves_desktop_secret_intact():
     seed_user()
     raw = storage.create_desktop_secret()
