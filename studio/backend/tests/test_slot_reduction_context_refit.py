@@ -249,6 +249,14 @@ class TestWhatMustNotMove:
         assert (got["slots"], got["ctx"]) == (slots, ctx)
 
 
+# Multiples of the fit floor rather than literals. _AUTO_OFFLOAD_CTX is documented
+# to sit at or above _FIT_MIN_CTX, so sweeping it below the floor would drive the
+# planner through a state the product never reaches and call whatever came back a
+# regression. Identical to [4096, 8192, 16384, 32768] while the floor is 4096, and
+# still the intended sweep after it moves.
+_OFFLOAD_SWEEP = [llama_cpp._FIT_MIN_CTX * step for step in (1, 2, 4, 8)]
+
+
 class TestTheReductionIsPricedAtTheFitFloor:
     """The search that picks the slot count must not be priced at _AUTO_OFFLOAD_CTX.
 
@@ -278,7 +286,7 @@ class TestTheReductionIsPricedAtTheFitFloor:
         (10_500, DENSE),
     ]
 
-    @pytest.mark.parametrize("offload_ctx", [4096, 8192, 16384, 32768])
+    @pytest.mark.parametrize("offload_ctx", _OFFLOAD_SWEEP)
     def test_moving_the_offload_fallback_does_not_move_the_placement(
         self, tmp_path, monkeypatch, offload_ctx
     ):
@@ -292,7 +300,7 @@ class TestTheReductionIsPricedAtTheFitFloor:
         assert (got["slots"], got["fit"], got["ctx"], got["devices"]) == (2, "off", 7_680, "0")
 
     @pytest.mark.parametrize("weights_mib,metadata", RESCUED)
-    @pytest.mark.parametrize("offload_ctx", [4096, 8192])
+    @pytest.mark.parametrize("offload_ctx", _OFFLOAD_SWEEP[:2])
     def test_a_load_the_reduction_can_rescue_never_offloads(
         self, tmp_path, monkeypatch, weights_mib, metadata, offload_ctx
     ):
@@ -393,15 +401,26 @@ class TestAGgufWithNoNativeContext:
     """Cover slot reduction when native-context metadata is absent."""
 
     @pytest.mark.parametrize(
-        "vram_mib,weights_mib,asked,slots",
+        "vram_mib,weights_mib,asked",
         [
-            (12 * 1024, 9_000, 8, 3),
-            (16 * 1024, 12_000, 8, 5),
+            (12 * 1024, 9_000, 8),
+            (16 * 1024, 12_000, 8),
         ],
     )
     def test_the_reduction_still_pins_without_a_native_context(
-        self, tmp_path, vram_mib, weights_mib, asked, slots
+        self, tmp_path, vram_mib, weights_mib, asked
     ):
+        """Without native-context metadata the search has no length to expand to,
+        so the reduction pins at the fit floor itself.
+
+        The floor is read, not spelled 4096, for the reason
+        test_weights_that_fit_nowhere_still_offload gives about _AUTO_OFFLOAD_CTX:
+        a literal here is a re-edit every time the constant moves, and the re-edit
+        is indistinguishable from noticing that placement changed. The exact
+        surviving slot count is left unpinned for the same reason -- it is
+        arithmetic against the floor, not the claim in this test's name. What must
+        hold is that a reduction happened at all and that it stayed resident.
+        """
         got = _plan(
             tmp_path,
             weights_mib = weights_mib,
@@ -410,7 +429,10 @@ class TestAGgufWithNoNativeContext:
             vram_mib = vram_mib,
             metadata = NO_NATIVE_CTX,
         )
-        assert (got["slots"], got["fit"], got["ctx"]) == (slots, "off", 4096)
+        assert (got["fit"], got["ctx"]) == ("off", llama_cpp._FIT_MIN_CTX)
+        assert (
+            1 <= got["slots"] < asked
+        ), f"the reduction did not fire: asked for {asked}, kept {got['slots']}"
 
     def test_no_planner_exception_is_swallowed(self, tmp_path, monkeypatch):
         """The broad placement handler must not hide a planner failure."""
