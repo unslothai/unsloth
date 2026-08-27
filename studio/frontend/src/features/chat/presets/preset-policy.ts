@@ -305,17 +305,7 @@ export function mergeBackendRecommendedInference({
   };
 }
 
-export function resolveLoadMaxSeqLength({
-  modelId,
-  ggufVariant,
-  isGguf,
-  customContextLength,
-  ggufContextLength,
-  currentCheckpoint,
-  activeGgufVariant,
-  maxSeqLength,
-  presetSource,
-}: {
+type LoadMaxSeqLengthArgs = {
   modelId: string;
   ggufVariant?: string | null;
   isGguf?: boolean | null;
@@ -325,7 +315,38 @@ export function resolveLoadMaxSeqLength({
   activeGgufVariant?: string | null;
   maxSeqLength: number;
   presetSource: ChatPresetSource;
-}): number {
+};
+
+/**
+ * Where the context we are about to send came from.
+ *
+ * `resident-reload` is the one the backend may re-fit: it is a value OUR fitter
+ * resolved on the previous load of this same model, replayed so the sheet keeps
+ * showing what the user sees. Everything else is either a number the user chose
+ * or a 0 that asks the fitter to decide, and both are honored as-is. See #9550.
+ */
+export type LoadMaxSeqLengthSource =
+  | "user-pinned"
+  | "builtin-default"
+  | "resident-reload"
+  | "gguf-auto"
+  | "transformers";
+
+export function resolveLoadMaxSeqLengthDetailed(args: LoadMaxSeqLengthArgs): {
+  value: number;
+  source: LoadMaxSeqLengthSource;
+} {
+  const {
+    modelId,
+    ggufVariant,
+    isGguf,
+    customContextLength,
+    ggufContextLength,
+    currentCheckpoint,
+    activeGgufVariant,
+    maxSeqLength,
+    presetSource,
+  } = args;
   const isDirectGgufFile = modelId.toLowerCase().endsWith(".gguf");
   const isGgufLoad = isGguf === true || ggufVariant != null || isDirectGgufFile;
   const isReloadingCurrentGguf =
@@ -334,18 +355,22 @@ export function resolveLoadMaxSeqLength({
     (ggufVariant ?? null) === (activeGgufVariant ?? null);
 
   if (customContextLength != null) {
-    return customContextLength;
+    return { value: customContextLength, source: "user-pinned" };
   }
   if (isGgufLoad && presetSource === "builtin-default") {
-    return 0;
+    return { value: 0, source: "builtin-default" };
   }
   if (isReloadingCurrentGguf) {
-    return ggufContextLength ?? 0;
+    return { value: ggufContextLength ?? 0, source: "resident-reload" };
   }
   if (isGgufLoad) {
-    return 0;
+    return { value: 0, source: "gguf-auto" };
   }
-  return maxSeqLength;
+  return { value: maxSeqLength, source: "transformers" };
+}
+
+export function resolveLoadMaxSeqLength(args: LoadMaxSeqLengthArgs): number {
+  return resolveLoadMaxSeqLengthDetailed(args).value;
 }
 
 /**

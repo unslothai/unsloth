@@ -89,6 +89,7 @@ import {
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
   resolveLoadMaxSeqLength,
+  resolveLoadMaxSeqLengthDetailed,
   resolveManualAutoCtxPin,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
@@ -1591,7 +1592,7 @@ export function useChatModelRuntime() {
             ) {
               loadCustomContextLength = loadGgufContextLength;
             }
-            const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
+            const resolvedMaxSeqLength = resolveLoadMaxSeqLengthDetailed({
               modelId,
               ggufVariant,
               isGguf,
@@ -1602,6 +1603,7 @@ export function useChatModelRuntime() {
               maxSeqLength,
               presetSource: loadActivePresetSource,
             });
+            const effectiveMaxSeqLength = resolvedMaxSeqLength.value;
             const loadMaxSeqLength = resolveFitMaxSeqLength(
               isGguf,
               loadGpuMemoryMode,
@@ -1620,6 +1622,16 @@ export function useChatModelRuntime() {
               nativePathLease: loadNativePathLease,
               hf_token: hfToken,
               max_seq_length: loadMaxSeqLength,
+              // Provenance, not a different value: this is the context OUR fitter
+              // resolved on the previous load of this model, replayed so the sheet
+              // keeps showing it. Saying so lets the backend re-fit it when a
+              // forced drafter adds a reserve the number never priced (#9550);
+              // anything the user chose stays honored verbatim.
+              // biome-ignore lint/style/useNamingConvention: API schema
+              max_seq_length_auto_derived:
+                resolvedMaxSeqLength.source === "resident-reload" &&
+                loadMaxSeqLength === resolvedMaxSeqLength.value &&
+                loadMaxSeqLength > 0,
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,

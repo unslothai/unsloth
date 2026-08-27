@@ -58,6 +58,13 @@ export interface LoadModelRequest {
   nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
+  /**
+   * Whether max_seq_length is a value a previous load's fitter resolved and we
+   * replayed, rather than one the user asked for. Only then may the backend
+   * re-fit it, which is how a forced drafter stops inheriting a context that
+   * never priced its reserve (#9550). Omitted means user-supplied.
+   */
+  max_seq_length_auto_derived?: boolean;
   load_in_4bit: boolean;
   is_lora: boolean;
   gguf_variant?: string | null;

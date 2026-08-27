@@ -427,6 +427,11 @@ class GgufLoadIntent:
     # for the session.
     disable_vision: bool = False
     n_ctx: int = 4096
+    # True when n_ctx is a value OUR fitter resolved on a previous load and the
+    # client replayed, not one the user asked for. A replayed context is still
+    # honored verbatim; it only becomes re-fittable when a forced speculative
+    # choice adds a reserve that was not priced into it (issue #9550).
+    n_ctx_auto_derived: bool = False
     chat_template_override: Optional[str] = None
     cache_type_kv: Optional[str] = None
     speculative_type: Optional[str] = None
@@ -16062,6 +16067,7 @@ class LlamaCppBackend:
         is_vision = intent.is_vision
         disable_vision = intent.disable_vision
         n_ctx = intent.n_ctx
+        n_ctx_auto_derived = intent.n_ctx_auto_derived
         chat_template_override = intent.chat_template_override
         cache_type_kv = intent.cache_type_kv
         speculative_type = intent.speculative_type
@@ -18469,6 +18475,93 @@ class LlamaCppBackend:
                                 max_available_ctx = min(_AUTO_OFFLOAD_CTX, native_ctx_for_cap)
 
                         if explicit_ctx:
+                            # One exception to honoring it verbatim: a context WE
+                            # resolved, replayed by the client, against a drafter
+                            # the user has now forced on.
+                            #
+                            # Auto drops a drafter that does not fit rather than
+                            # shrink the context for it, and clears mtp_overhead_fn
+                            # when it does, so the context it settles on is fit with
+                            # no reserve in it. The client sends that number back on
+                            # the next load of the same model, which makes it
+                            # explicit; the forced choice then re-arms the reserve,
+                            # and the block below spends the shortfall on more GPUs
+                            # instead of on the context that never priced it. The
+                            # reporter saw a 31 GB model take a second card to hold a
+                            # 2.18 GB drafter at a context picked while that drafter
+                            # was dropped (#9550).
+                            #
+                            # Gated on all three: a user-typed context is still
+                            # honored verbatim, Auto still keeps its context and
+                            # drops the drafter, and a load with no reserve is
+                            # untouched.
+                            if (
+                                n_ctx_auto_derived
+                                and _mtp_reserves_gpu
+                                and (_canonicalize_spec_mode(speculative_type) or "auto") != "auto"
+                            ):
+                                # Re-fit against the cards the context was fit for,
+                                # not the whole pool: the complaint is the drafter
+                                # pulling in another card, so a pooled budget would
+                                # find room for the reserve and change nothing. Price
+                                # the placement the context already assumed -- model,
+                                # KV and compute buffer, no reserve -- and hold the
+                                # context to it.
+                                _base_indices, _base_fit = self._select_gpus_split_aware(
+                                    model_size_fit
+                                    + _kv_bytes(effective_ctx)
+                                    + _cc_bytes(effective_ctx),
+                                    gpus,
+                                    usable_fraction = _pin_fraction,
+                                    total_by_idx = total_by_idx,
+                                    per_device_overhead_bytes = _pipeline_overhead_bytes
+                                    + _cc_bytes(effective_ctx),
+                                    min_gpus = _layer_min_gpus,
+                                    split_extra_bytes = _cc_split_extra(effective_ctx),
+                                )
+                                # No subset held it even without the reserve, so the
+                                # fitter is not what decides this launch; leave it.
+                                _base_gpus = (
+                                    [g for g in gpus if g[0] in set(_base_indices)]
+                                    if _base_indices and not _base_fit
+                                    else []
+                                )
+                                _refit_pool = (
+                                    _pool_budget_mib(_base_gpus, _pin_fraction) if _base_gpus else 0
+                                )
+                                _refit = (
+                                    0
+                                    if not _refit_pool
+                                    else self._fit_context_to_vram(
+                                        effective_ctx,
+                                        _refit_pool,
+                                        model_size_fit,
+                                        cache_type_kv,
+                                        swa_full = swa_full,
+                                        n_parallel = n_parallel,
+                                        kv_unified = planned_kv_unified,
+                                        n_ubatch = _effective_ubatch,
+                                        ctx_checkpoints = _effective_ctx_checkpoints,
+                                        flash_attn = planned_flash_attn,
+                                        mtp_engaged = _mtp_reserves_gpu,
+                                        mtp_overhead_fn = mtp_overhead_fn,
+                                        compute_ctx_bytes_fn = _cc_bytes,
+                                        budget_frac = 1.0,
+                                        pooled = True,
+                                        total_mib = None,
+                                    )
+                                )
+                                # Only ever downwards. The fitter returns the request
+                                # unchanged when the weights alone are over budget,
+                                # and a larger answer would be a context the client
+                                # never showed the user.
+                                if 0 < _refit < effective_ctx:
+                                    logger.info(
+                                        "Context re-fit for the forced drafter: "
+                                        f"{effective_ctx} -> {_refit} "
+                                        f"(reserve {_mtp_bytes(_refit) / 1024**3:.2f} GB)"
+                                    )
+                                    effective_ctx = _refit
                             # Honor the requested context verbatim. If it fits,
                             # pin GPUs and skip --fit; else ship -c <ctx> --fit
                             # on and let llama-server flex -ngl (CPU offload).
