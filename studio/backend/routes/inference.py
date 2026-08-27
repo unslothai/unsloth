@@ -17385,9 +17385,7 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
         # One frame past the cap, so a container that misreports its length is
         # still never fully read.
         waveform, sr = (
-            torchaudio.load(tmp_path, num_frames = limit + 1)
-            if limit
-            else torchaudio.load(tmp_path)
+            torchaudio.load(tmp_path, num_frames = limit + 1) if limit else torchaudio.load(tmp_path)
         )
     finally:
         os.unlink(tmp_path)
