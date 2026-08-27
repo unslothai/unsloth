@@ -880,6 +880,14 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     chatPageSource,
+    /setBaseThreadId\(\s*\(\s*threads\.find\(\(t\) => t\.modelType === "base"\) \?\?\s*threads\.find\(\(t\) => t\.modelType === "model1"\)\s*\)\?\.id,/,
+  );
+  assert.match(
+    chatPageSource,
+    /setLoraThreadId\(\s*\(\s*threads\.find\(\(t\) => t\.modelType === "lora"\) \?\?\s*threads\.find\(\(t\) => t\.modelType === "model2"\)\s*\)\?\.id,/,
+  );
+  assert.match(
+    chatPageSource,
     /const previewsReady = items\.every[\s\S]*?!dataLoaded \|\|[\s\S]*?!runtimeReady \|\|[\s\S]*?!previewsReady \|\|[\s\S]*?unsloth:app-shell-ready/,
   );
   assert.match(

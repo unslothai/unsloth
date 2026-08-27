@@ -765,8 +765,18 @@ const LoraCompareContent = memo(function LoraCompareContent({
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
-        setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
-        setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
+        setBaseThreadId(
+          (
+            threads.find((t) => t.modelType === "base") ??
+            threads.find((t) => t.modelType === "model1")
+          )?.id,
+        );
+        setLoraThreadId(
+          (
+            threads.find((t) => t.modelType === "lora") ??
+            threads.find((t) => t.modelType === "model2")
+          )?.id,
+        );
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
