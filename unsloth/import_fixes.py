@@ -756,7 +756,9 @@ def _left_padded_probe_mask(torch):
     import. The probe is two elements, so pinning it to CPU costs nothing.
     """
     return torch.tensor(
-        [[False, True], [True, True]], dtype = torch.bool, device = "cpu",
+        [[False, True], [True, True]],
+        dtype = torch.bool,
+        device = "cpu",
     )
 
 
