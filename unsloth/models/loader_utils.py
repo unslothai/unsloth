@@ -702,24 +702,24 @@ def _get_new_mapper():
                 return isinstance(iterable.value, (str, bytes)) and not iterable.value
             return False
 
-        def _class_bound(body):
-            # Names a class body binds with a plain assignment. `class C:
+        def _class_bound(statement):
+            # Names this class-body statement binds with a plain assignment. `class C:
             # FLOAT_TO_FP8_ROW_MAPPER = {}` makes every later mutation in that suite a
             # class attribute, not the module table, so applying it to the exported
             # one fabricated support the import never installs.
-            bound = set()
-            for statement in body:
-                targets = []
-                if isinstance(statement, ast.Assign):
-                    targets = statement.targets
-                elif isinstance(statement, ast.AnnAssign):
-                    targets = [statement.target]
-                for target in targets:
-                    if isinstance(target, ast.Name):
-                        bound.add(target.id)
-            return bound
+            #
+            # Per statement rather than precomputed over the whole suite: the shadow
+            # starts where the binding RUNS. A mutation written above it still reaches
+            # the module global and really does install its entry, and marking the name
+            # shadowed from the suite's first line dropped that live mapping.
+            targets = []
+            if isinstance(statement, ast.Assign):
+                targets = statement.targets
+            elif isinstance(statement, ast.AnnAssign):
+                targets = [statement.target]
+            return {target.id for target in targets if isinstance(target, ast.Name)}
 
-        def _executed_nodes(body, shadowed = frozenset()):
+        def _executed_nodes(body, shadowed = frozenset(), class_body = False):
             # Returns what ENDED the suite, so a caller that recursed into a nested
             # one knows what it means: `"return"` leaves the whole function and
             # `True` leaves only the suite it is in. `if True: return` inside
@@ -727,6 +727,11 @@ def _get_new_mapper():
             # `while True:` body that returns does the same - while a `break` in that
             # body leaves the LOOP and the statements after it still run.
             for statement in body:
+                if class_body:
+                    # The binding statement shadows its own target as well: it assigns
+                    # the class attribute and never the module table. Only the
+                    # statements ABOVE it still see the global.
+                    shadowed = shadowed | _class_bound(statement)
                 if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     # A `def` binds a name; it does not run.
                     continue
@@ -743,9 +748,7 @@ def _get_new_mapper():
                     # install that entry. Grouping it with the deferred bodies dropped
                     # it. Anything deferred inside the class is still skipped, because
                     # this recurses with the same exclusions.
-                    yield from _executed_nodes(
-                        statement.body, shadowed | _class_bound(statement.body)
-                    )
+                    yield from _executed_nodes(statement.body, shadowed, class_body = True)
                     continue
                 if isinstance(statement, ast.If) and _constant_truth(statement.test) is not None:
                     # Only a literal test is decided here. Anything else conditional is
@@ -897,6 +900,10 @@ def _get_new_mapper():
         builder_call = None
         builder_index = None
         first_call = None
+        # Whether the selected call's result is ASSIGNED to the exported tables. If it
+        # is, running it replaces all five, so anything written into them above it is
+        # gone; the fallback call, which binds nothing, leaves them alone.
+        builder_rebinds = False
         for index, statement in enumerate(tree.body):
             calls = [
                 node for node, _shadowed in _executed_nodes([statement]) if _calls_the_builder(node)
@@ -916,6 +923,7 @@ def _get_new_mapper():
             # than breaking, exactly as the source-table selection does.
             if _binds_the_exports(statement):
                 builder_call, builder_index = calls[0], index
+                builder_rebinds = True
         if builder_call is None and first_call is not None:
             builder_call, builder_index = first_call
         builder_called = builder_call is not None
@@ -1061,6 +1069,12 @@ def _get_new_mapper():
         # A newer mapper.py may carry entry shapes this builder does not know; the
         # caller already treats an empty result as "the probe found nothing".
         tables = build_mappers(source_table or {})
+        # What the selected build produces, before anything is replayed onto it. The
+        # replay below restores this at the call, because that assignment REPLACES the
+        # five exported tables: a mapper that builds them, adds an entry directly and
+        # then rebuilds from another source leaves that entry gone, and keeping it
+        # fabricated support for a name the newer file does not have.
+        built = [dict(table) for table in tables]
 
         # The fp8 tables can also gain entries as plain subscript assignments rather
         # than through the source table, e.g.
@@ -1099,6 +1113,10 @@ def _get_new_mapper():
         #
         # Materialised rather than chained: this whole body is lifted out and run in
         # an isolated namespace by its own tests, so it cannot reach for `itertools`.
+        # Stands where the selected build ASSIGNS the five exports, so the replay can
+        # put them back to what that call produced. Not an AST node, and matched by
+        # identity, so nothing in the walk below can collide with it.
+        rebuilt = object()
         ordered = []
         for node, shadowed in _executed_nodes(tree.body):
             ordered.append((node, shadowed))
@@ -1106,16 +1124,22 @@ def _get_new_mapper():
             # builder call put them before a clear or a rebind written between the two,
             # so aliases the fetched builder really does install were wiped and never
             # reapplied.
-            if builder_additions and (
-                node is builder_call or (builder_call is None and _calls_the_builder(node))
-            ):
+            if node is builder_call or (builder_call is None and _calls_the_builder(node)):
+                if builder_rebinds:
+                    ordered.append((rebuilt, frozenset()))
                 ordered.extend(builder_additions)
                 builder_additions = []
         # A call this could not locate - the builder ran somewhere unreadable - still
         # ran, so its additions are applied at the end rather than dropped.
         ordered.extend(builder_additions)
         for node, shadowed in ordered:
-            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            if node is rebuilt:
+                # The assignment replaced all five tables. Anything written into them
+                # above this call is gone, exactly as it is at import.
+                for table, original in zip(tables, built):
+                    table.clear()
+                    table.update(original)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                 # `FLOAT_TO_FP8_ROW_MAPPER["org/x"]: str = "unsloth/x-row"` runs the
                 # assignment exactly as the unannotated form does - the annotation on a
                 # subscript target is evaluated and discarded - so a newer mapper that

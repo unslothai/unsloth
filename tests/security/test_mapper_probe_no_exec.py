@@ -860,3 +860,65 @@ def test_builder_aliases_land_at_the_export_producing_call(monkeypatch):
         for table in tables
         if isinstance(table, dict)
     ), "the builder's aliases were applied before a rebind that wiped them"
+
+
+_EXPORT_BUILD = (
+    "(\n"
+    "    INT_TO_FLOAT_MAPPER,\n"
+    "    FLOAT_TO_INT_MAPPER,\n"
+    "    MAP_TO_UNSLOTH_16bit,\n"
+    "    FLOAT_TO_FP8_BLOCK_MAPPER,\n"
+    "    FLOAT_TO_FP8_ROW_MAPPER,\n"
+    ") = build_mappers(__INT_TO_FLOAT_MAPPER)\n"
+)
+
+
+def _above_the_builder(lines):
+    """The index of the line that opens the export-producing assignment."""
+    insert = next(
+        i
+        for i, line in enumerate(lines)
+        if line.rstrip().endswith("= build_mappers(__INT_TO_FLOAT_MAPPER)")
+    )
+    while insert > 0 and not lines[insert - 1].rstrip().endswith((")", ":", "}", "]")):
+        insert -= 1
+    return insert
+
+
+def test_a_rebuild_drops_a_mutation_made_before_it(monkeypatch):
+    """The second build REPLACES the tables, so an entry added between the two goes."""
+    lines = REAL_MAPPER.splitlines(True)
+    insert = _above_the_builder(lines)
+    staged = "".join(
+        lines[:insert]
+        + [
+            _EXPORT_BUILD,
+            'FLOAT_TO_FP8_ROW_MAPPER["vendor/stale"] = "unsloth/stale-row"\n',
+        ]
+        + lines[insert:]
+    )
+    with _serving(staged, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    assert not any(
+        "vendor/stale" in table for table in tables if isinstance(table, dict)
+    ), "a mutation the later rebuild replaced was still reported as installed"
+
+
+def test_a_mutation_above_a_class_shadow_still_counts(monkeypatch):
+    """The shadow starts where the class binds the name, not at the suite's first line."""
+    lines = REAL_MAPPER.splitlines(True)
+    staged = "".join(
+        lines
+        + [
+            "class _Late:\n",
+            '    FLOAT_TO_FP8_ROW_MAPPER["vendor/live"] = "unsloth/live-row"\n',
+            "    FLOAT_TO_FP8_ROW_MAPPER = {}\n",
+        ]
+    )
+    with _serving(staged, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    assert any(
+        table.get("vendor/live") == "unsloth/live-row"
+        for table in tables
+        if isinstance(table, dict)
+    ), "an entry installed before the class bound the name was dropped"

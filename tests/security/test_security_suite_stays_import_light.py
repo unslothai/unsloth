@@ -167,7 +167,30 @@ _LOADER_ORIGINS = {
 _ALIAS_ROUNDS = 8
 
 
-def _loader_aliases(tree):
+# The statement kinds that open a lexical scope of their own. A `Lambda` binds no
+# name this reads, so it is not one of them.
+_ALIAS_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _scope_bindings(scope):
+    """The import and assignment nodes written directly in this scope.
+
+    Not `ast.walk`: a nested `def` has its own scope, and its bindings belong to that
+    one rather than to this.
+    """
+    found = []
+    pending = list(ast.iter_child_nodes(scope))
+    while pending:
+        current = pending.pop()
+        if isinstance(current, _ALIAS_SCOPES):
+            continue
+        if isinstance(current, (ast.ImportFrom, ast.Assign)):
+            found.append(current)
+        pending.extend(ast.iter_child_nodes(current))
+    return found
+
+
+def _settled_aliases(bindings, inherited):
     """Names bound to one of those helpers, by an import or by an assignment.
 
     Two spellings, both of which state outright what the name holds:
@@ -188,15 +211,15 @@ def _loader_aliases(tree):
     # OUT of the table for the same reason: it no longer holds one.
     #
     # Repeated until the table stops moving, since `load = other` may sit above the
-    # statement that gives `other` its meaning. Each round rebuilds from scratch
-    # against the previous round's answers, so a chain resolves without an earlier
-    # binding surviving a later one.
-    aliases: dict = {}
+    # statement that gives `other` its meaning. Each round rebuilds from the ENCLOSING
+    # scope's answers against the previous round's, so a chain resolves without an
+    # earlier binding surviving a later one.
+    aliases: dict = dict(inherited)
     for _round in range(_ALIAS_ROUNDS):
         previous = aliases
-        aliases = {}
+        aliases = dict(inherited)
         for node in sorted(
-            (child for child in ast.walk(tree) if isinstance(child, (ast.ImportFrom, ast.Assign))),
+            bindings,
             key = lambda child: (getattr(child, "lineno", 0), getattr(child, "col_offset", 0)),
         ):
             if isinstance(node, ast.ImportFrom):
@@ -229,6 +252,40 @@ def _loader_aliases(tree):
         if aliases == previous:
             break
     return aliases
+
+
+def _alias_scopes(tree):
+    """One alias table per lexical scope, each built on its enclosing one.
+
+    A single file-wide table let a binding in one function decide how a call in an
+    unrelated one was read: a module-level `from importlib import import_module as
+    load` plus a helper's own `from pytest import importorskip as load` left the
+    module-level call labelled a skip guard, and the file stayed on the light runner
+    where it fails. Names are resolved where they are written instead.
+    """
+    scopes: dict = {}
+
+    def visit(scope, inherited):
+        table = _settled_aliases(_scope_bindings(scope), inherited)
+        scopes[id(scope)] = table
+        # A name bound in a CLASS body is not visible inside its methods, so a nested
+        # `def` inherits what the class itself inherited rather than the class table.
+        handed_down = inherited if isinstance(scope, ast.ClassDef) else table
+        pending = list(ast.iter_child_nodes(scope))
+        while pending:
+            current = pending.pop()
+            if isinstance(current, _ALIAS_SCOPES):
+                visit(current, handed_down)
+                continue
+            pending.extend(ast.iter_child_nodes(current))
+
+    visit(tree, {})
+    return scopes
+
+
+def _loader_aliases(tree):
+    """The module-scope alias table, for callers that read module level only."""
+    return _alias_scopes(tree)[id(tree)]
 
 
 def _loader_call_names(call, loaders):
@@ -317,11 +374,15 @@ def _body_level_heavy_imports(path):
     does not count - unlike at module scope, where it silently skips the whole file.
     """
     tree = ast.parse(path.read_text(encoding = "utf-8"))
-    loaders = _loader_aliases(tree)
+    scopes = _alias_scopes(tree)
+    module_loaders = scopes[id(tree)]
     found = set()
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
+        # This body's OWN table: what `load` means inside another function says
+        # nothing about what it means here.
+        loaders = scopes.get(id(node), module_loaders)
         skipped = _guarded_roots(node, loaders)
         for child in ast.walk(node):
             names = []
@@ -408,6 +469,14 @@ def _guarded_roots(node, loaders):
         # the file on the runner where that call fails. The alias's ORIGIN decides,
         # not its presence in the table.
         if not _is_pytest_skip(attribute, loaders):
+            # A call that is not a skip guard is still a statement, and it may be the
+            # one that loads the dependency: `importlib.import_module("torch")` above a
+            # later `pytest.importorskip("torch")` fails on the light runner before the
+            # skip is reached. Only the non-call statements were checked for that, so a
+            # dynamic load spelled as a bare call slipped past and the file stayed on
+            # the runner where it fails. Same stop, applied to calls as well.
+            if _reaches_a_heavy_dependency(statement, loaders):
+                break
             continue
         candidates = list(call.args[:1])
         for keyword in call.keywords:
@@ -826,5 +895,32 @@ def test_an_import_before_the_assigned_guard_is_still_reported(tmp_path):
         "    from torch import nn\n"
         '    torch = pytest.importorskip("torch")\n'
         "    assert nn is not None\n"
+    )
+    assert _body_level_heavy_imports(sample) == {"torch"}
+
+
+def test_a_dynamic_load_before_the_guard_is_still_reported(tmp_path):
+    """A dynamic load above the skip is reached first, exactly as an `import` is."""
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "import importlib\n"
+        "import pytest\n"
+        "def test_it():\n"
+        '    importlib.import_module("torch")\n'
+        '    pytest.importorskip("torch")\n'
+    )
+    assert _body_level_heavy_imports(sample) == {"torch"}
+
+
+def test_a_local_alias_does_not_reclassify_another_scope(tmp_path):
+    """A binding inside one function must not relabel a call in an unrelated one."""
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "from importlib import import_module as load\n"
+        "def test_it():\n"
+        '    load("torch")\n'
+        "def helper():\n"
+        "    from pytest import importorskip as load\n"
+        '    return load("torch")\n'
     )
     assert _body_level_heavy_imports(sample) == {"torch"}
