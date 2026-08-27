@@ -56,7 +56,7 @@ def test_unmarked_ollama_request_does_not_send_reasoning_effort():
     assert "chat_template_kwargs" not in body
 
 
-@pytest.mark.parametrize("effort", ["none", "low", "medium", "high"])
+@pytest.mark.parametrize("effort", ["none", "low", "medium", "high", "max"])
 def test_ollama_forwards_reasoning_effort(effort):
     body = _capture_body(
         "ollama",
@@ -96,7 +96,7 @@ def test_ollama_explicit_effort_wins_over_enable_thinking():
 
 @pytest.mark.parametrize(
     "incoming, expected",
-    [("minimal", "low"), ("max", "high"), ("xhigh", "high")],
+    [("minimal", "low"), ("xhigh", "max")],
 )
 def test_ollama_maps_studio_effort_aliases(incoming, expected):
     body = _capture_body(

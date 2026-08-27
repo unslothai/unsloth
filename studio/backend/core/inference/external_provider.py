@@ -590,13 +590,12 @@ def _apply_mistral_reasoning_controls(
             body["reasoning_effort"] = "high"
 
 
-# Ollama's OpenAI-compat /v1/chat/completions accepts these four values.
+# Ollama's OpenAI-compat /v1/chat/completions accepts these five values.
 # https://docs.ollama.com/api/openai-compatibility
-_OLLAMA_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high"})
+_OLLAMA_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "max"})
 _OLLAMA_REASONING_EFFORT_ALIASES = {
     "minimal": "low",
-    "max": "high",
-    "xhigh": "high",
+    "xhigh": "max",
 }
 
 
