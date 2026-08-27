@@ -273,3 +273,40 @@ def test_probe_answers_for_a_row_only_repo_the_fetched_mapper_knows(monkeypatch)
         )
 
     assert namespace["FLOAT_TO_FP8_ROW_MAPPER"] is installed_row
+
+
+def test_a_fetched_mapper_that_uses_update_still_installs_its_entries(monkeypatch):
+    """`.update({...})` adds entries exactly as the subscript spelling does.
+
+    Only the subscript spelling was read, so a newer mapper.py written the ordinary
+    way left the row table empty and the models it had just added got no upgrade
+    notice. The subscript case is asserted alongside it, so the test cannot pass by
+    the probe having stopped reading either spelling.
+    """
+    installed = _mapper_source()
+    namespace = _load_resolver(installed)
+
+    both = installed + (
+        f'\nFLOAT_TO_FP8_ROW_MAPPER.update({{{_ROW_ONLY.lower()!r}: {_NEW_ROW!r}}})\n'
+        f'FLOAT_TO_FP8_ROW_MAPPER[{_NEW_OFFICIAL.lower()!r}] = {_NEW_ROW!r}\n'
+    )
+    _install_fake_requests(monkeypatch, both)
+
+    fetched = namespace["_get_new_mapper"]()
+    row_table = fetched[4]
+    assert row_table.get(_ROW_ONLY.lower()) == _NEW_ROW, f"update() entry missing: {row_table}"
+    assert row_table.get(_NEW_OFFICIAL.lower()) == _NEW_ROW, f"subscript entry missing: {row_table}"
+
+
+def test_update_on_a_name_the_probe_does_not_export_is_ignored(monkeypatch):
+    """The receiver has to name one of the five tables, or nothing is read from it."""
+    installed = _mapper_source()
+    namespace = _load_resolver(installed)
+
+    _install_fake_requests(
+        monkeypatch,
+        installed + f'\nSOMETHING_ELSE.update({{{_ROW_ONLY.lower()!r}: {_NEW_ROW!r}}})\n',
+    )
+    fetched = namespace["_get_new_mapper"]()
+    assert _ROW_ONLY.lower() not in fetched[4]
+
