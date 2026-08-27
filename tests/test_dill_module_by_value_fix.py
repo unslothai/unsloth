@@ -628,9 +628,7 @@ def test_stripped_bytecode_answers_to_its_recorded_source(tmp_path):
     files = frozenset({recorded})
 
     module = types.ModuleType("pkg")
-    module.__spec__ = types.SimpleNamespace(
-        name = "pkg", origin = str(layer / "pkg" / "__init__.pyc")
-    )
+    module.__spec__ = types.SimpleNamespace(name = "pkg", origin = str(layer / "pkg" / "__init__.pyc"))
     unrecorded = types.ModuleType("otherpkg")
     unrecorded.__spec__ = types.SimpleNamespace(
         name = "otherpkg", origin = str(layer / "otherpkg" / "__init__.pyc")
@@ -642,9 +640,9 @@ def test_stripped_bytecode_answers_to_its_recorded_source(tmp_path):
             "the live .pyc is not matched to the .py its own metadata "
             "recorded, so a stripped layer keeps the crash"
         )
-        assert not _dill_module_is_importable_by_name(unrecorded, files), (
-            "a .pyc whose source was never recorded is claimed anyway"
-        )
+        assert not _dill_module_is_importable_by_name(
+            unrecorded, files
+        ), "a .pyc whose source was never recorded is claimed anyway"
     finally:
         del sys.modules["pkg"]
         del sys.modules["otherpkg"]

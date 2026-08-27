@@ -1330,6 +1330,12 @@ class LoadResponse(_InferenceRuntimeFields):
     inference: dict = Field(
         ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
     )
+    memory_warning: Optional[str] = Field(
+        None,
+        description = "Non-blocking advisory about this load, or null. Set when the "
+        "weights do not fit in free VRAM plus available system RAM, so llama.cpp pages "
+        "them in from disk and generation will be slow. The model still loaded.",
+    )
 
 
 class UnloadResponse(BaseModel):
