@@ -47,6 +47,17 @@ const AUTHED = {
 const UNAUTHED = { chat_only: false };
 // Authed, but sent while the hardware snapshot is still provisional: health_check ships
 // the tunnel fields before it knows a device_type. Here the tunnel has been stopped.
+// Authed and provisional, with the tunnel already up: the backend publishes the tunnel
+// fields before it knows a device_type, so this leaves real URLs stored while `fetched`
+// is still false.
+const AUTHED_DETECTING_TUNNEL = {
+  chat_only: false,
+  hardware_detecting: true,
+  version: "2026.1.1",
+  cloudflare_url: TUNNEL,
+  server_url: "http://10.0.0.4:8000",
+  secure: true,
+};
 const AUTHED_DETECTING = {
   chat_only: false,
   hardware_detecting: true,
@@ -187,4 +198,66 @@ test("an expired token does not throw away the reason the UI is explaining", asy
   );
   assert.equal(kept.chatOnlyDetail, "mlx-lm 0.19 is too old");
   assert.equal(kept.chatOnly, true, "and the verdict itself was flipped");
+});
+
+test("a tunnel learned before the verdict survives an expired token", async () => {
+  // A fresh session: nothing measured yet, so `fetched` is false throughout.
+  usePlatformStore.setState({
+    fetched: false,
+    cloudflareUrl: null,
+    serverUrl: null,
+    secure: false,
+  });
+  next = async () => AUTHED_DETECTING_TUNNEL;
+  await fetchDeviceType({ force: true });
+  const detecting = usePlatformStore.getState();
+  assert.equal(detecting.cloudflareUrl, TUNNEL);
+  assert.equal(
+    detecting.fetched,
+    false,
+    "the verdict is what has not settled here",
+  );
+
+  next = async () => UNAUTHED;
+  await fetchDeviceType({ force: true });
+
+  assert.equal(
+    usePlatformStore.getState().cloudflareUrl,
+    TUNNEL,
+    "gating on `fetched` alone lets the unauthed poll null a tunnel that is up",
+  );
+});
+
+test("a later failed refresh does not discard an earlier success", async () => {
+  next = async () => AUTHED;
+  await fetchDeviceType({ force: true });
+
+  // The slow success, carrying a tunnel that has just been restarted.
+  const restarted = {
+    ...AUTHED,
+    cloudflare_url: "https://second.trycloudflare.com",
+  };
+  let releaseSlow = () => {};
+  next = async () => {
+    await new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    return restarted;
+  };
+  const slow = fetchDeviceType({ force: true });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // A second refresh starts and fails outright, writing nothing.
+  next = async () => {
+    throw new Error("network");
+  };
+  await fetchDeviceType({ force: true });
+
+  releaseSlow();
+  await slow;
+  assert.equal(
+    usePlatformStore.getState().cloudflareUrl,
+    "https://second.trycloudflare.com",
+    "the only answer either read got was dropped because a failed one started later",
+  );
 });

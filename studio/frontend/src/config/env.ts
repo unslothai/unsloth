@@ -109,8 +109,16 @@ const HARDWARE_DETECT_POLL_MS = 200;
 let hardwareWaitSpent = false;
 
 // Forced reads bypass the cache and always write, so they race each other: a slow one
-// landing after a later one restores what that one replaced. Only the newest may write.
+// landing after a later one restores what that one replaced. Ordered on what has been
+// WRITTEN, not on what has been issued -- a later read that fails writes nothing, and
+// discarding an earlier success for it would throw away the only answer either got.
 let forcedRead = 0;
+let forcedWritten = 0;
+// Whether any reply has carried the authed-only fields yet. An unauthenticated body says
+// strictly less than one of those did, so once this is set it must not write over one.
+// Not `fetched`: the backend publishes the tunnel before the hardware verdict, so an
+// authed reply during detection leaves real URLs stored with `fetched` still false.
+let authoritativeReply = false;
 
 // `force` re-reads /api/health even if cached, to pick up a late-arriving tunnel URL.
 export async function fetchDeviceType(options?: {
@@ -119,7 +127,7 @@ export async function fetchDeviceType(options?: {
   const { fetched } = usePlatformStore.getState();
   if (fetched && !options?.force) return usePlatformStore.getState().deviceType;
   const read = options?.force ? ++forcedRead : 0;
-  const superseded = () => read !== 0 && read !== forcedRead;
+  const superseded = () => read !== 0 && read < forcedWritten;
 
   try {
     // /api/health only reports the server's device_type to authed callers.
@@ -186,13 +194,16 @@ export async function fetchDeviceType(options?: {
       // already refuses it for a non-forced read. A forced read is the same reply, so it
       // is refused too -- otherwise every poll made against an expired token walks a
       // measurement back to a browser guess.
+      const authed = "cloudflare_url" in data;
       if (
         shouldKeepAuthoritativePlatform(options?.force) ||
         superseded() ||
-        (!("cloudflare_url" in data) && previous.fetched)
+        (!authed && authoritativeReply)
       ) {
         return previous.deviceType;
       }
+      authoritativeReply = authoritativeReply || authed;
+      forcedWritten = read || forcedWritten;
       // A provisional reply omits device_type, so a forced refresh during the warm would
       // fall back to the browser platform and relabel a WSL, SSH or remote host as local,
       // changing model filtering, paths and install commands. Keep the server's answer.
@@ -240,6 +251,7 @@ export async function fetchDeviceType(options?: {
     if (usePlatformStore.getState().fetched || superseded()) {
       return usePlatformStore.getState().deviceType;
     }
+    forcedWritten = read || forcedWritten;
     const deviceType = detectLocalPlatform();
     const chatOnly = deviceType === "mac";
     usePlatformStore.setState({ deviceType, chatOnly, fetched: false });
