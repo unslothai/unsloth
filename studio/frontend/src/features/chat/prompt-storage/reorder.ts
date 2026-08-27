@@ -48,3 +48,27 @@ export function ownsDrag(
 ): boolean {
   return activePointerId !== null && activePointerId === eventPointerId;
 }
+
+/**
+ * The translateY, in pixels, each row needs so that a reorder appears to start
+ * from where the rows were before it.
+ *
+ * `first` must be read at the moment the reorder is requested. Rows change
+ * height without the order changing, from the preview toggle and from a
+ * textarea regrowing on resize, so a baseline recorded at some earlier commit
+ * describes a layout that no longer exists and shifts every row by the
+ * difference. Sub-pixel moves are dropped rather than animated.
+ */
+export function flipShifts(
+  first: ReadonlyMap<string, number>,
+  last: ReadonlyMap<string, number>,
+): Map<string, number> {
+  const shifts = new Map<string, number>();
+  last.forEach((offset, uid) => {
+    const from = first.get(uid);
+    if (from === undefined) return;
+    const dy = from - offset;
+    if (Math.abs(dy) >= 1) shifts.set(uid, dy);
+  });
+  return shifts;
+}

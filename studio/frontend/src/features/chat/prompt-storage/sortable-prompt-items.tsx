@@ -3,7 +3,7 @@
 
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { cn } from "@/lib/utils";
-import { insertionIndex, ownsDrag } from "./reorder";
+import { flipShifts, insertionIndex, ownsDrag } from "./reorder";
 import { GripVerticalIcon, XIcon } from "lucide-react";
 import {
   type ReactElement,
@@ -122,8 +122,8 @@ export function SortablePromptItems({
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const prevOffsets = useRef(new Map<string, number>());
   const uidsRef = useRef(uids);
-  // Offsets are re-recorded on every commit but only a reorder animates, or an
-  // auto-growing textarea would make the rows below it wobble as you type.
+  // Only a reorder animates, or an auto-growing textarea would make the rows
+  // below it wobble as you type.
   const reorderTick = useRef(0);
   const animatedTick = useRef(0);
 
@@ -136,34 +136,31 @@ export function SortablePromptItems({
     setUids(rowUids);
   }
 
+  // Layout offsets, not client rects: a rect moves with the scroll position, so
+  // scrolling the pane between reorders would bake that distance into every
+  // transform and jump the whole list.
+  const measureOffsets = useCallback(() => {
+    const offsets = new Map<string, number>();
+    rowRefs.current.forEach((el, uid) => offsets.set(uid, el.offsetTop));
+    return offsets;
+  }, []);
+
   // FLIP: snap each moved row back to where it was, then release, so the browser
   // animates one transform per row rather than animating layout.
   useLayoutEffect(() => {
-    // Layout offsets, not client rects: a rect moves with the scroll position,
-    // so scrolling the pane between reorders would bake that distance into
-    // every transform and jump the whole list.
-    const next = new Map<string, number>();
-    rowRefs.current.forEach((el, uid) => next.set(uid, el.offsetTop));
-
-    if (reorderTick.current !== animatedTick.current) {
-      animatedTick.current = reorderTick.current;
-      next.forEach((offset, uid) => {
-        const old = prevOffsets.current.get(uid);
-        const el = rowRefs.current.get(uid);
-        if (old === undefined || !el) return;
-        const dy = old - offset;
-        if (Math.abs(dy) < 1) return;
-        el.style.transition = "none";
-        el.style.transform = `translateY(${dy}px)`;
-        requestAnimationFrame(() => {
-          el.style.transition = "transform 180ms cubic-bezier(0.2, 0, 0, 1)";
-          el.style.transform = "";
-        });
+    if (reorderTick.current === animatedTick.current) return;
+    animatedTick.current = reorderTick.current;
+    flipShifts(prevOffsets.current, measureOffsets()).forEach((dy, uid) => {
+      const el = rowRefs.current.get(uid);
+      if (!el) return;
+      el.style.transition = "none";
+      el.style.transform = `translateY(${dy}px)`;
+      requestAnimationFrame(() => {
+        el.style.transition = "transform 180ms cubic-bezier(0.2, 0, 0, 1)";
+        el.style.transform = "";
       });
-    }
-
-    prevOffsets.current = next;
-  }, [uids, items]);
+    });
+  }, [uids, measureOffsets]);
 
   // Mirrors, so the drag listener does not resubscribe on every keystroke. A
   // layout effect, not an assignment during render: they only have to be
@@ -178,6 +175,10 @@ export function SortablePromptItems({
 
   const applyOrder = useCallback((from: number, to: number) => {
     if (from === to) return;
+    // FLIP's "first", read now rather than at whichever commit last recorded it:
+    // the preview toggle and a resize change row heights on their own, and
+    // animating from those stale offsets shifted the whole list.
+    prevOffsets.current = measureOffsets();
     reorderTick.current += 1;
     const nextItems = move(itemsRef.current, from, to);
     const nextUids = move(uidsRef.current, from, to);
@@ -187,7 +188,7 @@ export function SortablePromptItems({
     uidsRef.current = nextUids;
     onChangeRef.current(nextItems);
     setUids(nextUids);
-  }, []);
+  }, [measureOffsets]);
 
   const handlePointerDown = useCallback(
     (uid: string, e: React.PointerEvent<HTMLButtonElement>) => {
