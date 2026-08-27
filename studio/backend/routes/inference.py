@@ -16836,6 +16836,8 @@ def _openai_model_objects() -> list[dict]:
         _native_ctx = _positive_int_or_none(getattr(llama_backend, "native_context_length", None))
         if _native_ctx is not None:
             entry["native_context_length"] = _native_ctx
+        if getattr(llama_backend, "_audio_type", None):
+            entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
 
     # Check Unsloth backend
@@ -16859,6 +16861,8 @@ def _openai_model_objects() -> list[dict]:
                     break
         if _ctx is not None:
             entry["context_length"] = _ctx
+        if model_info.get("audio_type"):
+            entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
 
     return models
@@ -16929,6 +16933,133 @@ def _catalog_lock() -> asyncio.Lock:
         return lock
 
 
+def _classified_catalog(models: list) -> list:
+    from routes.models import _local_model_task
+
+    classified = []
+    for model in models:
+        if getattr(model, "task", None) is None and hasattr(model, "model_copy"):
+            try:
+                model = model.model_copy(update = {"task": _local_model_task(model)})
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "model task classification failed for %s: %s", getattr(model, "id", "?"), exc
+                )
+        classified.append(model)
+    return classified
+
+
+_MEDIA_MODEL_TASKS = ("text-to-image", "text-to-video")
+_STT_MODEL_TASK = "automatic-speech-recognition"
+_TTS_MODEL_TASK = "text-to-speech"
+
+
+def _media_owner(task: str) -> str:
+    from core.inference.gpu_arbiter import DIFFUSION, VIDEO
+
+    return DIFFUSION if task == "text-to-image" else VIDEO
+
+
+def _resident_media_status(task: str) -> Optional[dict]:
+    from core.inference.media_keepwarm import engine_if_imported
+
+    try:
+        engine = engine_if_imported(_media_owner(task))
+        status = engine.status() if engine is not None else None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("%s status unavailable for /v1/models: %s", task, exc)
+        return None
+    return status if status and status.get("loaded") else None
+
+
+def _media_model_objects(catalog: list, quants_by_id: dict, created: int) -> list[dict]:
+    from core.inference.media_model_index import identity_key
+
+    objects: list[dict] = []
+    for task in _MEDIA_MODEL_TASKS:
+        status = _resident_media_status(task)
+        resident = identity_key(str(status.get("repo_id") or "")) if status else ""
+        resident_listed = False
+        for info in catalog:
+            if getattr(info, "task", None) != task:
+                continue
+            cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+            if not cid:
+                continue
+            keys = {identity_key(cid), identity_key(str(getattr(info, "path", None) or ""))}
+            loaded = bool(resident) and resident in keys
+            resident_listed |= loaded
+            obj = {
+                "id": cid,
+                "object": "model",
+                "created": created,
+                "owned_by": _OWNED_BY,
+                "task": task,
+                "loaded": loaded,
+            }
+            quants = quants_by_id.get(id(info))
+            quant = (status.get("gguf_variant") if loaded else None) or (quants[0] if quants else None)
+            if quant:
+                obj["quant"] = quant
+            display = getattr(info, "display_name", None)
+            if display:
+                obj["display_name"] = display
+            objects.append(obj)
+        if status and not resident_listed:
+            obj = {
+                "id": public_model_id(str(status.get("repo_id"))),
+                "object": "model",
+                "created": created,
+                "owned_by": _OWNED_BY,
+                "task": task,
+                "loaded": True,
+            }
+            if status.get("gguf_variant"):
+                obj["quant"] = status["gguf_variant"]
+            objects.append(obj)
+    return objects
+
+
+def _stt_model_objects(created: int) -> list[dict]:
+    try:
+        from core.inference import stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
+
+        loaded = {
+            sidecar.loaded_model
+            for sidecar in (
+                stt_sidecar.get_stt_sidecar(),
+                stt_ggml_sidecar.get_ggml_stt_sidecar(),
+                stt_mtmd_sidecar.get_mtmd_stt_sidecar(),
+            )
+        } - {None}
+        ids = [
+            model_id
+            for model_id in stt_sidecar.STT_MODELS
+            if stt_sidecar.is_model_downloaded(model_id)
+            or stt_ggml_sidecar._cached_model_path(model_id) is not None
+        ]
+        ids.extend(
+            model_id
+            for model_id in stt_mtmd_sidecar.MTMD_STT_MODELS
+            if stt_mtmd_sidecar.is_model_downloaded(model_id)
+        )
+        ids.extend(sorted(model_id for model_id in loaded if model_id not in ids))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("stt models unavailable for /v1/models: %s", exc)
+        return []
+    return [
+        {
+            "id": model_id,
+            "object": "model",
+            "created": created,
+            "owned_by": _OWNED_BY,
+            "task": _STT_MODEL_TASK,
+            "loaded": model_id in loaded,
+        }
+        for model_id in ids
+    ]
+
+
 async def _cached_local_catalog() -> list:
     """Locally available models (models dir + HF caches + LM Studio + scan
     folders), cached for a few seconds. Returns a list of LocalModelInfo.
@@ -16950,7 +17081,7 @@ async def _cached_local_catalog() -> list:
         try:
             from routes.models import collect_local_models
             _CATALOG_CACHE["models"] = await asyncio.to_thread(
-                collect_local_models, Path("./models").resolve()
+                lambda: _classified_catalog(collect_local_models(Path("./models").resolve()))
             )
         except Exception as exc:
             logger.debug("model catalog scan failed: %s", exc)
@@ -16980,12 +17111,19 @@ async def _openai_catalog_objects() -> list[dict]:
     # model_format unset for GGUF snapshots, so a model_format filter would drop
     # every cached GGUF. The file checks run off the loop.
     from core.inference.local_model_resolver import local_gguf_quants
+    from routes.models import _UNSUPPORTED_DIFFUSION_TASK
 
     catalog = await _cached_local_catalog()
     # One scan yields both "is this servable" and its on-disk quants, so no second pass.
-    servable = await asyncio.to_thread(
-        lambda: [(i, q) for i in catalog if (q := local_gguf_quants(i)) is not None]
+    quants_by_id = await asyncio.to_thread(
+        lambda: {id(i): local_gguf_quants(i) for i in catalog}
     )
+    servable = [
+        (i, quants_by_id[id(i)])
+        for i in catalog
+        if quants_by_id[id(i)] is not None
+        and getattr(i, "task", None) not in (*_MEDIA_MODEL_TASKS, _UNSUPPORTED_DIFFUSION_TASK)
+    ]
     for info, quants in servable:
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
         if not cid or cid in by_id:
@@ -17014,6 +17152,12 @@ async def _openai_catalog_objects() -> list[dict]:
         if display:
             obj["display_name"] = display
         by_id[cid] = obj
+
+    media = await asyncio.to_thread(
+        lambda: _media_model_objects(catalog, quants_by_id, _created) + _stt_model_objects(_created)
+    )
+    for obj in media:
+        by_id.setdefault(obj["id"], obj)
 
     return list(by_id.values())
 
