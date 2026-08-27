@@ -1261,7 +1261,8 @@ def _tokenizer_special_token_contents(config: dict) -> list[str]:
 def _gemma4_metadata_declares_audio(documents: list[dict]) -> bool:
     """True only for Gemma 4 metadata with an explicit audio input component."""
     is_gemma4 = any(
-        str(document.get("model_type", "")).lower().replace("_", "") == "gemma4"
+        str(document.get("model_type", "")).lower().replace("_", "") in ("gemma4", "gemma4audio", "gemma4vision")
+        or any("gemma4" in str(arch).lower() for arch in (document.get("architectures") or []))
         for document in documents
     )
     if not is_gemma4:
@@ -1273,6 +1274,9 @@ def _gemma4_metadata_declares_audio(documents: list[dict]) -> bool:
         "audio_processor",
         "audio_tower",
         "audio_feature_extractor",
+        "audio_token_id",
+        "boa_token_id",
+        "eoa_token_id",
     }
 
     def _declares(value) -> bool:
@@ -1287,6 +1291,7 @@ def _gemma4_metadata_declares_audio(documents: list[dict]) -> bool:
         return False
 
     return any(_declares(document) for document in documents)
+
 
 
 def detect_audio_type(

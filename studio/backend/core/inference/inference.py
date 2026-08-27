@@ -683,7 +683,27 @@ class InferenceBackend:
             self._resolve_chat_eos(model_name)
             self._load_chat_template_info(model_name)
 
+            loaded_model = self.models[model_name].get("model")
+            if loaded_model is not None and hasattr(loaded_model, "config"):
+                _cfg = loaded_model.config
+                _cfg_dict = _cfg.to_dict() if hasattr(_cfg, "to_dict") else {}
+                _archs = getattr(_cfg, "architectures", []) or []
+                _is_gemma4 = (
+                    any("gemma4" in str(a).lower() for a in _archs)
+                    or getattr(_cfg, "model_type", None) == "gemma4"
+                )
+                _has_audio_cfg = (
+                    getattr(_cfg, "audio_config", None) is not None
+                    or "audio_config" in _cfg_dict
+                    or getattr(_cfg, "audio_token_id", None) is not None
+                )
+                if _is_gemma4 and _has_audio_cfg:
+                    self.models[model_name]["has_audio_input"] = True
+                    if not self.models[model_name].get("audio_type"):
+                        self.models[model_name]["audio_type"] = "audio_vlm"
+
             self.active_model_name = model_name
+
             self.loading_models.discard(model_name)
 
             logger.info(f"Successfully loaded model: {model_name}")
