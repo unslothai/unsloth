@@ -139,6 +139,12 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
 // Long enough that crossing a catalog costs nothing, short enough to be over before the
 // menu has finished opening.
 const HOVER_PREFETCH_MS = 150;
+// How long a resolved path is trusted. The cache exists so the copy has it in hand
+// before Safari's click expires, not to stand in for the cache on disk: a CLI download
+// or a delete moves the snapshot without touching inventoryVersion, and the pre-cache
+// behaviour rescanned on every copy. Long enough to cover opening a menu and choosing
+// from it, short enough that a menu left open does not answer from another era.
+const CACHED_PATH_TTL_MS = 30000;
 const CHIP_BASE =
   "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-ui-11p5 font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
 const CHIP_DEFAULT =
@@ -302,7 +308,13 @@ export function QuantOptionsMenu({
     deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
   // One menu stays mounted while the run bar swaps repoId/quant under it, and while a
   // re-download moves the snapshot the old path pointed at.
-  const cachedPathRef = useRef<{ key: string; path: string } | null>(null);
+  const cachedPathRef = useRef<{ key: string; path: string; at: number } | null>(null);
+  const freshPath = (key: string): string | null => {
+    const entry = cachedPathRef.current;
+    return entry?.key === key && Date.now() - entry.at < CACHED_PATH_TTL_MS
+      ? entry.path
+      : null;
+  };
   const inventoryVersion = useInventoryVersion();
   const pathKey = JSON.stringify([repoId, quant ?? null, inventoryVersion]);
   const pathKeyRef = useRef(pathKey);
@@ -321,7 +333,7 @@ export function QuantOptionsMenu({
       .then(({ path: resolved }) => {
         // The request for a quant we switched off can land last; it must not evict.
         if (pathKeyRef.current === pathKey) {
-          cachedPathRef.current = { key: pathKey, path: resolved };
+          cachedPathRef.current = { key: pathKey, path: resolved, at: Date.now() };
         }
         return resolved;
       })
@@ -341,7 +353,7 @@ export function QuantOptionsMenu({
     }
   }, []);
   const prefetchCachedPath = useCallback(() => {
-    if (!downloaded || cachedPathRef.current?.key === pathKey) {
+    if (!downloaded || freshPath(pathKey) !== null) {
       return;
     }
     void resolveCachedPath().catch(() => undefined);
@@ -363,9 +375,7 @@ export function QuantOptionsMenu({
   const handleCopyPath = useCallback(async () => {
     try {
       // Safari drops the click's clipboard permission after any other await.
-      const cached = cachedPathRef.current;
-      const path =
-        cached?.key === pathKey ? cached.path : await resolveCachedPath();
+      const path = freshPath(pathKey) ?? (await resolveCachedPath());
       if (await copyToClipboard(path)) {
         toast.success("Copied path");
       } else {

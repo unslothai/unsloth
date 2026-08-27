@@ -203,7 +203,13 @@ export async function fetchDeviceType(options?: {
         return previous.deviceType;
       }
       authoritativeReply = authoritativeReply || authed;
-      forcedWritten = read || forcedWritten;
+      // Only an authed reply orders the forced reads. An unauthenticated one is accepted
+      // here just to seed a cold start, and letting it take the mark would make it
+      // outrank an authenticated read still in flight -- the same way a failed read used
+      // to, one branch over.
+      if (authed) {
+        forcedWritten = read || forcedWritten;
+      }
       // A provisional reply omits device_type, so a forced refresh during the warm would
       // fall back to the browser platform and relabel a WSL, SSH or remote host as local,
       // changing model filtering, paths and install commands. Keep the server's answer.

@@ -80,12 +80,21 @@ test("the prefetched model path is keyed to the model it was fetched for", () =>
     "the cache key must cover repoId and quant",
   );
   assert.ok(
-    PREFETCH_PATH.includes("cachedPathRef.current?.key === pathKey"),
+    PREFETCH_PATH.includes("freshPath(pathKey) !== null"),
     "the guard must miss once the menu moved to another model",
   );
   assert.match(
     GGUF,
-    /cachedPathRef\.current = \{ key: pathKey, path: resolved \}/,
+    /entry\?\.key === key && Date\.now\(\) - entry\.at < CACHED_PATH_TTL_MS/,
+    "a CLI download or a delete moves the snapshot without touching inventoryVersion",
+  );
+  assert.ok(
+    COPY_PATH.includes("freshPath(pathKey) ??"),
+    "the copy must not answer from an entry the prefetch would already have replaced",
+  );
+  assert.match(
+    GGUF,
+    /cachedPathRef\.current = \{ key: pathKey, path: resolved, at: Date\.now\(\) \}/,
   );
 });
 
@@ -178,9 +187,8 @@ test("copy path never serves another model's cached path", () => {
     !/cachedPathRef\.current \?\?/.test(COPY_PATH),
     "an unkeyed fallback copies whatever was fetched last",
   );
-  assert.ok(COPY_PATH.includes("cached?.key === pathKey"));
   assert.ok(
-    COPY_PATH.includes("? cached.path"),
+    COPY_PATH.includes("freshPath(pathKey) ?? (await resolveCachedPath())"),
     "a warm cache must skip the fetch, or the await loses the gesture",
   );
 });
