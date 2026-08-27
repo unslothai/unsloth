@@ -437,10 +437,24 @@ def _auto_generate_colab_admin_password() -> "str | None":
         logger.warning(f"Could not load auth storage to secure the public link ({e}).")
         return None
     try:
-        _clear_colab_login_credentials()
         ensure_default_admin()
         if not requires_password_change(DEFAULT_ADMIN_USERNAME):
+            # A password is already set, so there is nothing to rotate. Before
+            # dropping the pre-#7392 plaintext cache, hand its credential back
+            # ONCE if it still authenticates.
+            #
+            # An upgrading runtime is the case that matters. The removed finalize
+            # flow re-displayed this cache on every cell re-run, so it was a
+            # standing recovery surface; purging it silently would delete the only
+            # copy a user who cleared their earlier cell output still had, leaving
+            # a working password nobody can discover. Showing it once and then
+            # removing it keeps the CWE-256 fix and still leaves the user a way in.
+            cached = _load_colab_login_credentials()
+            if cached is not None and _colab_credentials_still_valid(*cached):
+                _display_admin_credentials(*cached, final_cached_copy = True)
+            _clear_colab_login_credentials()
             return None
+        _clear_colab_login_credentials()
         if not _display_channel_active():
             # Nowhere to render the one-time card, so rotating would destroy the
             # only recovery credential for a password nobody could read. Refuse
@@ -487,8 +501,18 @@ def _auto_generate_colab_admin_password() -> "str | None":
         return None
 
 
-def _display_admin_credentials(username: str, password: str) -> bool:
-    """Show an auto-generated admin credential once, in the notebook cell.
+def _display_admin_credentials(
+    username: str,
+    password: str,
+    *,
+    final_cached_copy: bool = False,
+) -> bool:
+    """Show an admin credential once, in the notebook cell.
+
+    ``final_cached_copy`` re-displays a credential recovered from the pre-#7392
+    ``.colab_notebook_login`` cache on an upgraded runtime, immediately before
+    that cache is deleted. It is not newly generated, so the card says so and
+    tells the user this is the last time it will appear.
 
     Renders a branded HTML card with a plain-text fallback. Both paths publish
     through the IPython display channel (iopub display_data), NOT sys.stdout, so
@@ -512,6 +536,13 @@ def _display_admin_credentials(username: str, password: str) -> bool:
         from IPython.display import HTML, display
     except Exception:
         return False
+    _lede = (
+        "This is your existing admin password, recovered from the credential file an "
+        "older Unsloth cached on this runtime. That file has now been removed, so this "
+        "is the last time it will be shown."
+        if final_cached_copy
+        else "Auto-generated for this public launch."
+    )
     try:
         display(
             HTML(f"""
@@ -521,7 +552,7 @@ def _display_admin_credentials(username: str, password: str) -> bool:
         <p style="margin:2px 0;font-size:14px;color:#000;">Username: <b style="font-family:monospace;">{username}</b></p>
         <p style="margin:2px 0;font-size:14px;color:#000;">Password: <b style="font-family:monospace;">{password}</b></p>
         <p style="margin:10px 0 0 0;font-size:12px;color:#333;">
-            Auto-generated for this public launch. The server never writes it to its logs, but
+            {_lede} The server never writes it to its logs, but
             this notebook saves cell output: copy the password now, then clear this cell's output
             before you share, export or download the notebook. Change it any time in Settings, or
             with <b style="font-family:monospace;">unsloth studio reset-password</b>.
@@ -539,7 +570,7 @@ def _display_admin_credentials(username: str, password: str) -> bool:
                     "text/plain": (
                         "Unsloth Studio admin login  "
                         f"username: {username}  password: {password}  "
-                        "(auto-generated for this public launch; this cell's output is saved "
+                        f"({_lede} this cell's output is saved "
                         "with the notebook, so clear it before sharing or exporting)"
                     )
                 },

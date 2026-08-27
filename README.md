@@ -178,6 +178,12 @@ Headless starts:
 ```bash
 UNSLOTH_STUDIO_PASSWORD='your-strong-password' unsloth studio --secure   # via env var
 ```
+If you do not supply one, a public launch (`--secure`, `--cloudflare`, or Colab)
+generates a strong admin password, prints it once to the console, and never
+writes it to disk or the server log. Copy it when it appears: it is not shown
+again, and recovering from a lost one means `unsloth studio reset-password`. A
+launch with no console at all (a detached service with redirected output) refuses
+to start rather than rotate a password nobody could read.
 Reset your password:
 ```bash
 unsloth studio reset-password

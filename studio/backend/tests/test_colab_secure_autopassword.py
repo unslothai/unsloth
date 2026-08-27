@@ -590,3 +590,59 @@ def test_consume_supplied_password_never_logs_the_value(monkeypatch, caplog):
 
     assert "notebook-supplied-pw-3" not in caplog.text
     assert "UNSLOTH_STUDIO_PASSWORD" not in os.environ
+
+
+def test_upgrade_rerun_hands_back_the_cached_credential_before_purging(monkeypatch):
+    # An existing Colab user upgrades and re-runs start(). Their password is
+    # already set, so nothing is rotated -- but the pre-#7392 flow re-displayed
+    # the cached credential on every re-run, and that cache was the only copy a
+    # user who cleared their earlier cell output still had. Purging it silently
+    # would leave a working password nobody can discover, so hand it back once
+    # and THEN remove the file: the CWE-256 fix without the lockout.
+    admin = _seed_admin(must_change_password = True)
+    existing = "existing-colab-password-from-last-run"
+    assert storage.update_password(admin, existing) is not None
+    colab._store_colab_login_credentials(admin, existing)
+    cache = colab._colab_login_credentials_path()
+    assert cache.exists()
+
+    shown: list = []
+    monkeypatch.setattr(
+        colab, "_display_admin_credentials",
+        lambda u, p, **kw: shown.append((u, p, kw)) or True,
+    )
+    monkeypatch.setattr(colab, "_display_channel_active", lambda: True)
+
+    assert colab._auto_generate_colab_admin_password() is None  # nothing rotated
+    assert not cache.exists(), "the plaintext cache must still be purged"
+    assert len(shown) == 1, shown
+    user, pw, kwargs = shown[0]
+    assert (user, pw) == (admin, existing)
+    assert kwargs.get("final_cached_copy") is True
+    # and the credential it handed back is the one that actually works
+    from auth import hashing
+
+    salt, pwd_hash, _jwt, _mc = storage.get_user_and_secret(admin)
+    assert hashing.verify_password(existing, salt, pwd_hash) is True
+
+
+def test_upgrade_rerun_purges_a_cached_credential_that_no_longer_works(monkeypatch):
+    # Same path, but the cached copy is stale (the user changed the password in
+    # the app). Showing it would print a credential that does not authenticate,
+    # so it is dropped without being displayed.
+    admin = _seed_admin(must_change_password = True)
+    colab._store_colab_login_credentials(admin, "stale-cached-password")
+    assert storage.update_password(admin, "the-real-current-password") is not None
+    cache = colab._colab_login_credentials_path()
+    assert cache.exists()
+
+    shown: list = []
+    monkeypatch.setattr(
+        colab, "_display_admin_credentials",
+        lambda u, p, **kw: shown.append((u, p, kw)) or True,
+    )
+    monkeypatch.setattr(colab, "_display_channel_active", lambda: True)
+
+    assert colab._auto_generate_colab_admin_password() is None
+    assert not cache.exists()
+    assert shown == [], "a credential that no longer authenticates must not be shown"
