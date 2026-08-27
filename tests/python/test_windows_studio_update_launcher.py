@@ -314,7 +314,10 @@ def test_an_in_process_update_does_not_stage(monkeypatch, studio, tmp_path):
     monkeypatch.setattr(studio, "_stage_update", lambda **kwargs: staged.append(kwargs))
     calls = []
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: calls.append("setup"))
-    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: calls.append("verify"))
+    # Tolerant of the verify hook's arity, which is not what this test pins.
+    monkeypatch.setattr(
+        studio, "_fail_if_install_damaged", lambda *_a, **_k: calls.append("verify")
+    )
     monkeypatch.setattr(
         studio, "_refresh_desktop_shortcuts", lambda **_kwargs: calls.append("refresh")
     )

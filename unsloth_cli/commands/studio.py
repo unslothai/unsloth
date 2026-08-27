@@ -4072,11 +4072,14 @@ def update(
     # keeps the launcher recoverable across the setup it wraps.
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
     with _studio_runtime_launch_guard(inherited = runtime_gate_handoff or staging):
+        if not staging:
+            _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
+        # Constructed after the idle scan, which test_studio_runtime_gate pins: the
+        # transaction wraps the mutation, so nothing of it may precede the gate.
         launcher_transaction = _WindowsLauncherUpdateTransaction()
         if staging:
+            # A staged run writes no launcher; there is nothing to keep recoverable.
             launcher_transaction.enabled = False
-        else:
-            _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
         with launcher_transaction as launcher_update:
             _run_setup_script(verbose = verbose, repo_root = repo_root)
             # This deliberately runs even with --no-verify: the broad package scan
