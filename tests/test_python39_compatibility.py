@@ -54,7 +54,6 @@ STUDIO_UNION_DEBT_FILES = frozenset(
         "studio/backend/tests/test_chat_attachments.py",
         "studio/backend/tests/test_chat_history_storage.py",
         "studio/backend/tests/test_export_absolute_paths.py",
-        "studio/backend/tests/test_index_bootstrap_origin.py",
         "studio/backend/tests/test_kv_cache_estimation.py",
         "studio/backend/tests/test_middleware.py",
         "studio/backend/tests/test_openai_citation_markers.py",

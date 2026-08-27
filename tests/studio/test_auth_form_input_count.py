@@ -49,8 +49,13 @@ def _conditional_extent(src: str) -> tuple[int, int]:
 
 
 def test_hasbootstrappassword_constant_is_derived_from_bootstrap_window_value():
-    """The guard must read from window.__UNSLOTH_BOOTSTRAP__, matching the backend's
-    bootstrap-injection contract in studio/backend/main.py::_inject_bootstrap."""
+    """The guard must read from window.__UNSLOTH_BOOTSTRAP__.
+
+    The backend no longer injects that object -- serving the seed to the page could not
+    be scoped safely behind a same-host reverse proxy -- so the guard now always
+    evaluates false and the Current password input always renders. The branch is kept
+    as-is rather than deleted so a mixed-version frontend cannot lose the field; lock
+    its derivation so a rename does not silently make it truthy again."""
     src = AUTH_FORM.read_text(encoding = "utf-8")
     assert "const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);" in src, (
         "hasBootstrapPassword constant missing or its derivation drifted; "
