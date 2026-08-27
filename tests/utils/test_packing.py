@@ -603,13 +603,18 @@ def test_patch_mamba2_varlen_rebinds_compiled_module_alias(monkeypatch):
         sys.modules.pop(compiled.__name__, None)
 
 
-def test_patch_mamba2_varlen_rewrites_cuda_kernels_forward_global(monkeypatch):
-    # transformers 5.5 Nemotron-H LOAD_GLOBALs mamba_split_conv1d_scan_combined
-    # from cuda_kernels_forward and hardcodes seq_idx=None. That is the H200 abort.
-    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+def _make_hub_mamba2_namespace(module_name):
+    """A modeling module shaped like transformers' dynamic module loading.
+
+    The module is registered in ``sys.modules`` and its functions are exec'd
+    into the module dict, so ``cuda_kernels_forward.__globals__`` *is* that
+    dict - which is what its LOAD_GLOBAL of the fused kernel resolves through.
+    """
+    import sys
     import types
 
-    ns: dict = {"__name__": "transformers_modules.fake_nemotron_h"}
+    module = types.ModuleType(module_name)
+    sys.modules[module_name] = module
     exec(
         """
 def mamba_split_conv1d_scan_combined(*args, seq_idx=None, **kwargs):
@@ -619,8 +624,20 @@ mamba_split_conv1d_scan_combined.calls = []
 def cuda_kernels_forward(self, hidden_states, cache_params=None, attention_mask=None):
     return mamba_split_conv1d_scan_combined(hidden_states, seq_idx=None)
 """,
-        ns,
+        module.__dict__,
     )
+    return module
+
+
+def test_patch_mamba2_varlen_rewrites_cuda_kernels_forward_global(monkeypatch):
+    # transformers 5.5 Nemotron-H LOAD_GLOBALs mamba_split_conv1d_scan_combined
+    # from cuda_kernels_forward and hardcodes seq_idx=None. That is the H200 abort.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
+    import types
+
+    module = _make_hub_mamba2_namespace("transformers_modules.fake_nemotron_h")
+    ns = module.__dict__
 
     class _HubNemotronHMamba2Mixer(_FakeNemotronHMamba2Mixer):
         def __init__(self):
@@ -631,27 +648,75 @@ def cuda_kernels_forward(self, hidden_states, cache_params=None, attention_mask=
         def forward(self, hidden_states, **kwargs):
             return self.cuda_kernels_forward(hidden_states)
 
+    _HubNemotronHMamba2Mixer.__module__ = module.__name__
+
     class _HubModel(_FakeMamba2Model):
         def __init__(self):
             super().__init__()
             self.mixer = _HubNemotronHMamba2Mixer()
 
-    model = _HubModel()
-    assert patch_hybrid_linear_attention_varlen(model) is True
-    ns["mamba_split_conv1d_scan_combined"].calls.clear()
-    model(
-        input_ids = torch.zeros(1, 6, dtype = torch.long),
-        packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
-        use_cache = False,
+    try:
+        model = _HubModel()
+        assert patch_hybrid_linear_attention_varlen(model) is True
+        ns["mamba_split_conv1d_scan_combined"].calls.clear()
+        model(
+            input_ids = torch.zeros(1, 6, dtype = torch.long),
+            packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+            use_cache = False,
+        )
+        seq_idx = ns["mamba_split_conv1d_scan_combined"].calls[-1]
+        assert seq_idx is not None
+        assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+def test_patch_mamba2_varlen_unreachable_kernel_namespace_aborts(monkeypatch):
+    # The install reaches module globals by name; it deliberately does not hunt
+    # references through gc or closures. A kernel reachable only from an
+    # unregistered namespace must fail closed, never train unpacked.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import types
+
+    ns: dict = {"__name__": "nowhere.fake_nemotron_h"}
+    exec(
+        """
+def mamba_split_conv1d_scan_combined(*args, seq_idx=None, **kwargs):
+    return args[0]
+def cuda_kernels_forward(self, hidden_states, cache_params=None, attention_mask=None):
+    return mamba_split_conv1d_scan_combined(hidden_states, seq_idx=None)
+""",
+        ns,
     )
-    seq_idx = ns["mamba_split_conv1d_scan_combined"].calls[-1]
-    assert seq_idx is not None
-    assert seq_idx.tolist() == [[0, 0, 1, 2, 2, 2]]
+
+    class _HiddenNemotronHMamba2Mixer(_FakeNemotronHMamba2Mixer):
+        def __init__(self):
+            super().__init__()
+            del self.mamba2_split_conv1d_scan_combined
+            self.cuda_kernels_forward = types.MethodType(ns["cuda_kernels_forward"], self)
+
+        def forward(self, hidden_states, **kwargs):
+            return self.cuda_kernels_forward(hidden_states)
+
+    class _HiddenModel(_FakeMamba2Model):
+        def __init__(self):
+            super().__init__()
+            self.mixer = _HiddenNemotronHMamba2Mixer()
+
+    model = _HiddenModel()
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    with pytest.raises(RuntimeError, match = "varlen conv/scan wrappers were not both invoked"):
+        model(
+            input_ids = torch.zeros(1, 6, dtype = torch.long),
+            packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+            use_cache = False,
+        )
 
 
-def test_patch_mamba2_varlen_rewrites_bytecode_load_global(monkeypatch):
+def test_patch_mamba2_varlen_reaches_compiled_module_global(monkeypatch):
     # Unsloth compiles mixer methods into unsloth_compiled_cache as free
-    # functions whose co_names include mamba_split_conv1d_scan_combined.
+    # functions that LOAD_GLOBAL the fused kernel from the compiled module's own
+    # globals. Reassigning the name there is what the call resolves through.
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     import sys
     import types
