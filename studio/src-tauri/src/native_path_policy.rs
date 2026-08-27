@@ -481,6 +481,13 @@ fn has_soundtracker_pattern_data(bytes: &[u8], pattern_end: usize) -> bool {
     true
 }
 
+/// Legacy Word `.dot` and PowerPoint `.pot` templates are OLE compound files,
+/// unlike Graphviz `.dot` and gettext `.pot`.
+pub fn is_binary_office_template(path: &Path, bytes: &[u8]) -> bool {
+    (has_extension(path, "dot") || has_extension(path, "pot"))
+        && bytes.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+}
+
 /// gfortran writes a compiled `.mod` module as gzip; text `go.mod` never is.
 pub fn is_compiled_fortran_mod(path: &Path, bytes: &[u8]) -> bool {
     has_extension(path, "mod") && bytes.starts_with(b"\x1f\x8b")
@@ -1273,6 +1280,24 @@ mod tests {
             Path::new("movie.txt"),
             b"\x00\x00\x01\xbapayload"
         ));
+    }
+
+    #[test]
+    fn legacy_office_templates_are_detected_without_rejecting_text_templates() {
+        // OLE compound file header, shared by legacy .dot and .pot templates.
+        let ole = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1payload";
+        assert!(is_binary_office_template(Path::new("report.dot"), ole));
+        assert!(is_binary_office_template(Path::new("deck.pot"), ole));
+        // Graphviz and gettext keep the same extensions and stay accepted.
+        assert!(!is_binary_office_template(
+            Path::new("graph.dot"),
+            b"digraph G { a -> b; }"
+        ));
+        assert!(!is_binary_office_template(
+            Path::new("messages.pot"),
+            b"msgid \"\"\nmsgstr \"\"\n"
+        ));
+        assert!(!is_binary_office_template(Path::new("deck.ppt"), ole));
     }
 
     #[test]

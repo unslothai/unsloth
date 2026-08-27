@@ -60,9 +60,11 @@ import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
   isBinaryPropertyList,
   isBinaryTrackerModule,
+  isBinaryOfficeTemplate,
   isCompiledFortranModule,
   isBinaryVobSubSubtitle,
   readTextAttachment,
+  UndecodableTextError,
 } from "./text-attachment-accept";
 import {
   loadConnectionsEnabled,
@@ -392,6 +394,22 @@ class TextAttachmentAdapter implements AttachmentAdapter {
         "Compiled Fortran .mod modules aren't supported as text attachments.";
       toast.error(reason);
       throw new Error(reason);
+    }
+    if (await isBinaryOfficeTemplate(file)) {
+      const reason =
+        "Legacy Word and PowerPoint templates aren't supported as text attachments.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+    // Decodes here so an unreadable encoding is reported while attaching rather
+    // than at send, where the composer has no room to explain it.
+    try {
+      await readTextAttachment(file);
+    } catch (error) {
+      if (error instanceof UndecodableTextError) {
+        toast.error(error.message);
+      }
+      throw error;
     }
     return {
       id: crypto.randomUUID(),

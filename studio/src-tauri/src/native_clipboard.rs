@@ -3,7 +3,7 @@
 
 use crate::native_path_policy::{
     is_audio_only_3gp, is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub,
-    is_compiled_fortran_mod,
+    is_binary_office_template, is_compiled_fortran_mod,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
@@ -201,6 +201,7 @@ fn read_clipboard_files(paths: Vec<PathBuf>) -> Result<Vec<NativeClipboardFile>,
             || is_binary_vobsub(&path, &bytes)
             || is_binary_tracker_mod(&path, &bytes)
             || is_compiled_fortran_mod(&path, &bytes)
+            || is_binary_office_template(&path, &bytes)
         {
             continue;
         }

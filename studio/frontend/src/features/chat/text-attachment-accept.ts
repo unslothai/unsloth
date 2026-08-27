@@ -624,11 +624,39 @@ export function decodeTextAttachmentBytes(
       stream: true,
     });
   } catch {
-    // Not UTF-8: a subtitle or editor export saved in a legacy single-byte code
-    // page. windows-1252 maps every byte, so the text arrives readable instead
-    // of as the replacement characters a lenient UTF-8 decode would produce.
-    return new TextDecoder("windows-1252").decode(bytes);
+    // A legacy code page, but which one is not knowable from the bytes: the same
+    // byte is a different letter in windows-1252, windows-1251 and Shift-JIS.
+    // Guessing sends confident mojibake to the model, so say so instead.
+    throw new UndecodableTextError(fileName);
   }
+}
+
+/** Bytes that are not UTF-8 and carry no marker saying what they are. */
+export class UndecodableTextError extends Error {
+  constructor(fileName: string) {
+    super(
+      `${fileName || "This file"} is not UTF-8 text. It looks like a legacy ` +
+        "code page; convert it to UTF-8 before attaching it.",
+    );
+    this.name = "UndecodableTextError";
+  }
+}
+
+const OLE_COMPOUND_FILE_MAGIC = [
+  0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1,
+];
+
+/** Legacy Word `.dot` and PowerPoint `.pot` templates are OLE compound files,
+ *  unlike Graphviz `.dot` and gettext `.pot`. */
+export async function isBinaryOfficeTemplate(file: File): Promise<boolean> {
+  if (!/\.(?:dot|pot)$/i.test(file.name)) {
+    return false;
+  }
+  const header = new Uint8Array(await file.slice(0, 8).arrayBuffer());
+  return (
+    header.length === 8 &&
+    OLE_COMPOUND_FILE_MAGIC.every((byte, index) => header[index] === byte)
+  );
 }
 
 /** Decode editor text, including the BOM emitted by Windows Registry Editor. */

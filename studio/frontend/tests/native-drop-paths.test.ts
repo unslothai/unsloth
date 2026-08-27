@@ -15,10 +15,12 @@ import {
   TEXT_ATTACHMENT_EXTENSIONS,
   isBinaryPropertyList,
   isBinaryTrackerModule,
+  isBinaryOfficeTemplate,
   isBinaryVobSubSubtitle,
   isCompiledFortranModule,
   pickerAcceptForTextBasenames,
   readTextAttachment,
+  UndecodableTextError,
 } from "../src/features/chat/text-attachment-accept.ts";
 import {
   dequeueNativeAttachments,
@@ -826,17 +828,22 @@ test("compiled Fortran modules are rejected, text .mod files are not", async () 
   );
 });
 
-test("a legacy code page subtitle survives instead of becoming noise", async () => {
-  // A Windows-authored .srt is often ANSI, not UTF-8. Decoding it leniently as
-  // UTF-8 replaced every accented byte; windows-1252 maps them all.
+test("a legacy code page subtitle is named, not guessed at", async () => {
+  // The same byte is a different letter in windows-1252, windows-1251 and
+  // Shift-JIS, so decoding it as any one of them sends confident mojibake.
   const srt = new Uint8Array([
     ...new TextEncoder().encode("1\n00:00:01,000 --> 00:00:02,000\nCaf"),
-    0xe9, // "e-acute" in windows-1252, invalid on its own in UTF-8
+    0xe9, // valid in several code pages, invalid on its own in UTF-8
     0x0a,
   ]);
-  const text = await readTextAttachment(new File([srt], "movie.srt"));
-  assert.match(text, /Caf\u00e9/);
-  assert.equal(text.includes("\uFFFD"), false);
+  await assert.rejects(
+    readTextAttachment(new File([srt], "movie.srt")),
+    (error: Error) => {
+      assert.ok(error instanceof UndecodableTextError);
+      assert.match(error.message, /movie\.srt is not UTF-8 text/);
+      return true;
+    },
+  );
 });
 
 test("valid UTF-8 keeps its own decoding", async () => {
@@ -853,6 +860,31 @@ test("a preview cut mid-character stays UTF-8", async () => {
   const cut = full.subarray(0, full.length - 1);
   const text = await readTextAttachment(new File([cut], "notes.txt"));
   assert.equal(text, "caf");
+});
+
+test("legacy Office templates are rejected, text templates are not", async () => {
+  const ole = new Uint8Array([
+    0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0x00, 0x00,
+  ]);
+  assert.equal(
+    await isBinaryOfficeTemplate(new File([ole], "report.dot")),
+    true,
+  );
+  assert.equal(await isBinaryOfficeTemplate(new File([ole], "deck.pot")), true);
+  // Graphviz and gettext keep the same extensions and stay accepted.
+  assert.equal(
+    await isBinaryOfficeTemplate(
+      new File(["digraph G { a -> b; }"], "graph.dot"),
+    ),
+    false,
+  );
+  assert.equal(
+    await isBinaryOfficeTemplate(
+      new File(['msgid ""\nmsgstr ""\n'], "messages.pot"),
+    ),
+    false,
+  );
+  assert.equal(await isBinaryOfficeTemplate(new File([ole], "deck.ppt")), false);
 });
 
 test("legacy M3U playlists are not advertised as UTF-8 text", () => {
