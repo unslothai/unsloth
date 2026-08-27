@@ -357,7 +357,7 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
 ];
 
 /// Conventional extensionless names represented by dotted frontend accept tokens.
-pub const TEXT_ATTACHMENT_NAMES: &[&str] = &["containerfile"];
+pub const TEXT_ATTACHMENT_NAMES: &[&str] = &["containerfile", "dockerfile", "makefile"];
 
 pub fn is_text_attachment_name(path: &Path) -> bool {
     path.file_name()

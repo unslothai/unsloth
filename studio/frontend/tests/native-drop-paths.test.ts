@@ -17,6 +17,7 @@ import {
   isBinaryTrackerModule,
   MAX_TEXT_ATTACHMENT_BYTES,
   decodeTextAttachmentBytes,
+  isTextAttachmentName,
   isBinaryOfficeTemplate,
   isBinaryVobSubSubtitle,
   isCompiledFortranModule,
@@ -1002,6 +1003,24 @@ test("both attachment stages go through the decode-once path", () => {
     adapter.indexOf("MAX_TEXT_ATTACHMENT_BYTES") <
       adapter.indexOf("isBinaryPropertyList"),
   );
+});
+
+test("every basename the picker claims is one the drop paths accept", () => {
+  // assistant-ui derives the extension as `.${name.split(".").pop()}`, so an
+  // extensionless "Dockerfile" matches the ".dockerfile" token and the picker
+  // takes it. A drop of the same file has to agree, or the two disagree on one
+  // conventional build file.
+  for (const name of ["Dockerfile", "Makefile", "Containerfile"]) {
+    const derived = `.${name.split(".").pop()!.toLowerCase()}`;
+    assert.ok(
+      TEXT_ATTACHMENT_EXTENSIONS.includes(derived),
+      `${name} is claimed through ${derived}`,
+    );
+    assert.equal(isTextAttachmentName(name), true, `${name} is droppable`);
+  }
+  // A name with no matching token stays out of both, rather than being widened.
+  assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".gnumakefile"), false);
+  assert.equal(isTextAttachmentName("GNUmakefile"), false);
 });
 
 test("legacy M3U playlists are not advertised as UTF-8 text", () => {

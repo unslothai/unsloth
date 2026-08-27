@@ -320,8 +320,14 @@ export const TEXT_ATTACHMENT_EXTENSIONS = [
  *  .mbox can run to gigabytes, and reading one decodes it twice over in memory. */
 export const MAX_TEXT_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
-/** Conventional extensionless names matched through their dotted adapter tokens. */
-export const TEXT_ATTACHMENT_BASENAMES = ["containerfile"] as const;
+/** Conventional extensionless names matched through their dotted adapter tokens.
+ *  assistant-ui reads "Dockerfile" as the extension ".dockerfile", so the picker
+ *  already claims these; the drop paths have to agree. */
+export const TEXT_ATTACHMENT_BASENAMES = [
+  "containerfile",
+  "dockerfile",
+  "makefile",
+] as const;
 const PATH_SEPARATOR_RE = /[\\/]/;
 
 /** Whether a path or filename belongs to the inline UTF-8 text adapter. */
