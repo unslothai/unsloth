@@ -4303,7 +4303,6 @@ _persist_rocm_wsl_dropin() {
     [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ] || return 0
     _rw_rocm=/opt/rocm
     export HSA_ENABLE_DXG_DETECTION=1
-    export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
     case ":${PATH}:" in
         *":${_rw_rocm}/bin:"*) ;;
         *) export PATH="${_rw_rocm}/bin:${PATH}" ;;
@@ -4313,7 +4312,6 @@ _persist_rocm_wsl_dropin() {
     _rw_dropin="$(
         printf '# >>> Unsloth ROCm-on-WSL (gfx1151) >>>\n'
         printf 'export HSA_ENABLE_DXG_DETECTION=1\n'
-        printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
         printf 'export PATH="%s/bin:${PATH}"\n' "${_rw_rocm}"
         printf 'export LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n' "${_rw_rocm}"
         printf '# <<< Unsloth ROCm-on-WSL (gfx1151) <<<\n'

@@ -23,16 +23,10 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 # card. setdefault so an override wins; full rationale in utils/hardware/hardware.py.
 os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
-# Same shape on AMD: torch keeps its AOTriton flash and memory-efficient SDPA kernels behind this
-# gate wherever AOTriton has an eligible kernel but still marks the architecture experimental.
-# There, leaving it shut drops SDPA to the MATH backend, which materialises the full score matrix
-# and grows peak VRAM with the SQUARE of the token count (#8225 is a 3.4 GB video model asking a
-# 16 GB card for a single 66.54 GiB allocation). The launcher and a direct `uvicorn main:app` both
-# come through here, and spawned inference, training and diffusion workers inherit the
-# environment. A plain setdefault, not a probe: deciding from the torch build would mean importing
-# torch on the app-import path, which utils/torch_warmup.py exists to keep off it. Torch reads the
-# variable only in the case above, so every other GPU is unaffected by it, and a pre-existing "0"
-# is kept as the opt-out for the architectures this does gate.
+# Match the library entry point for ROCm AOTriton kernels that PyTorch still gates as
+# experimental. Studio deliberately defers importing torch, and spawned workers inherit this
+# value. PyTorch keeps its normal hardware and backend checks; `setdefault` preserves an explicit
+# override, including "0".
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
 # Windows terminals default to the active system code page. Reconfigure stdout/stderr

@@ -262,7 +262,6 @@ _envfile="/etc/profile.d/unsloth-rocm-wsl.sh"
 $SUDO tee "$_envfile" >/dev/null <<EOF
 # >>> Unsloth ROCm-on-WSL >>>
 export HSA_ENABLE_DXG_DETECTION=1
-export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
 export PATH="${ROCM_DIR}/bin:\${PATH}"
 export LD_LIBRARY_PATH="${ROCM_DIR}/lib:\${LD_LIBRARY_PATH:-}"
 # <<< Unsloth ROCm-on-WSL <<<
