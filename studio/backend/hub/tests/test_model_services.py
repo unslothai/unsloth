@@ -7256,9 +7256,7 @@ def test_local_inventory_derives_speech_task_from_filesystem_codec(monkeypatch):
     monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: 0)
 
     listed = asyncio.run(local_inventory.list_local_models_response("./renamed-tts-models"))
-    assert [(row.task, row.audio_type) for row in listed.models] == [
-        ("text-to-speech", "snac")
-    ]
+    assert [(row.task, row.audio_type) for row in listed.models] == [("text-to-speech", "snac")]
 
 
 def test_local_inventory_classifies_a_superseded_result_off_the_event_loop(monkeypatch):
