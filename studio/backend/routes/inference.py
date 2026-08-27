@@ -16836,7 +16836,11 @@ def _openai_model_objects() -> list[dict]:
         _native_ctx = _positive_int_or_none(getattr(llama_backend, "native_context_length", None))
         if _native_ctx is not None:
             entry["native_context_length"] = _native_ctx
-        if getattr(llama_backend, "_audio_type", None):
+        # The same gate /v1/audio/speech applies: _audio_type alone also matches whisper
+        # (ASR) and audio_vlm (Gemma 3n chat), which that route rejects with a 400.
+        if getattr(llama_backend, "_is_audio", False) and (
+            getattr(llama_backend, "_audio_type", None) in _GGUF_TTS_AUDIO_TYPES
+        ):
             entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
 
@@ -16861,7 +16865,9 @@ def _openai_model_objects() -> list[dict]:
                     break
         if _ctx is not None:
             entry["context_length"] = _ctx
-        if model_info.get("audio_type"):
+        if model_info.get("is_audio") and (
+            model_info.get("audio_type") in _TRANSFORMERS_TTS_AUDIO_TYPES
+        ):
             entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
 

@@ -45,6 +45,7 @@ class _FakeLlama:
     context_length = None
     max_context_length = None
     native_context_length = None
+    _is_audio = False
     _audio_type = None
 
 
@@ -220,6 +221,7 @@ def test_loaded_tts_model_is_tagged(monkeypatch):
     class _Tts(_FakeLlama):
         is_loaded = True
         model_identifier = "/srv/models/orpheus-3b-Q4.gguf"
+        _is_audio = True
         _audio_type = "snac"
 
     class _Chat(_FakeLlama):
@@ -234,6 +236,57 @@ def test_loaded_tts_model_is_tagged(monkeypatch):
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _Chat())
     (entry,) = inf._openai_model_objects()
     assert entry["id"] == "qwen3-Q4" and "task" not in entry
+
+
+def test_audio_input_models_are_not_tagged_text_to_speech(monkeypatch):
+    """Only what /v1/audio/speech can actually serve is tagged text-to-speech.
+
+    whisper (ASR) and audio_vlm (Gemma 3n chat) carry an _audio_type but that route
+    400s on both, and csm is transformers-only, so none may advertise the task."""
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+    for audio_type in ("whisper", "audio_vlm", "csm"):
+        gguf = type(
+            "_Gguf",
+            (_FakeLlama,),
+            {
+                "is_loaded": True,
+                "model_identifier": f"/srv/models/{audio_type}-Q4.gguf",
+                "_is_audio": False,
+                "_audio_type": audio_type,
+            },
+        )
+        monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda gguf = gguf: gguf())
+        (entry,) = inf._openai_model_objects()
+        assert "task" not in entry, f"{audio_type} advertised as {entry.get('task')}"
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama())
+    for audio_type, is_audio in (("audio_vlm", False), ("whisper", True)):
+        unsloth = type(
+            "_Unsloth",
+            (_FakeUnsloth,),
+            {
+                "active_model_name": f"org/{audio_type}-model",
+                "models": {
+                    f"org/{audio_type}-model": {"is_audio": is_audio, "audio_type": audio_type}
+                },
+            },
+        )
+        monkeypatch.setattr(inf, "get_inference_backend", lambda unsloth = unsloth: unsloth())
+        (entry,) = inf._openai_model_objects()
+        assert "task" not in entry, f"{audio_type} advertised as {entry.get('task')}"
+
+    # A transformers TTS codec still is tagged.
+    unsloth = type(
+        "_Tts",
+        (_FakeUnsloth,),
+        {
+            "active_model_name": "unsloth/csm-1b",
+            "models": {"unsloth/csm-1b": {"is_audio": True, "audio_type": "csm"}},
+        },
+    )
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: unsloth())
+    (entry,) = inf._openai_model_objects()
+    assert entry["task"] == "text-to-speech"
 
 
 def test_resident_media_status(monkeypatch):
