@@ -109,6 +109,16 @@ _HOSTILE_TREE = {
     "ovdep-0.0.dist-info/RECORD": "ovmod.py,,\novuser.py,,\n",
 }
 
+# A SECOND off-prefix layer, holding a recorded dependency and nothing the
+# gate looks for. A deployment can spread its layers, and a transform reaching
+# this one hits the same failure; the roots search has to find it from sys.path
+# rather than only from wherever `datasets` or `pyarrow` happens to live.
+_SECOND_LAYER = {
+    "secondlayer.py": "V = 0\n",
+    "secondproj.py": "VALUE = 1\n",
+    "seconddep-0.0.dist-info/RECORD": "secondlayer.py,,\n",
+}
+
 _DRIVER = textwrap.dedent(
     """
     import importlib.util, json, os, sys
@@ -135,10 +145,10 @@ _DRIVER = textwrap.dedent(
     # `projcfg` is the user's own module sitting in the same directory as the
     # dependencies, which is what `pip install --target .` produces: it must
     # stay by value or its mutable state drops out of every fingerprint.
-    import pyarrow, ovmod, projcfg
+    import pyarrow, ovmod, projcfg, secondlayer, secondproj
     out["by_reference"] = {
         name: bool(_core._is_builtin_module(sys.modules[name]))
-        for name in ("pyarrow", "ovmod", "projcfg")
+        for name in ("pyarrow", "ovmod", "projcfg", "secondlayer", "secondproj")
     }
 
     import dill, ovuser
@@ -188,9 +198,18 @@ def _run_on_hostile_tree(
         target = overlay / name
         target.parent.mkdir(parents = True, exist_ok = True)
         target.write_text(body, encoding = "utf-8")
+    second = tmp_path / "overlay_second"
+    second.mkdir()
+    for name, body in _SECOND_LAYER.items():
+        target = second / name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_text(body, encoding = "utf-8")
     if omit_metadata:
-        for meta in overlay.glob("*.dist-info"):
-            shutil.rmtree(meta)
+        # Both layers: leaving the second one's metadata would keep the patch
+        # alive and the "no metadata anywhere" case would never be exercised.
+        for layer in (overlay, second):
+            for meta in layer.glob("*.dist-info"):
+                shutil.rmtree(meta)
     driver = tmp_path / "driver.py"
     driver.write_text(_DRIVER, encoding = "utf-8")
 
@@ -202,7 +221,12 @@ def _run_on_hostile_tree(
 
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
-        [str(overlay), sysconfig.get_paths()["purelib"], os.environ.get("PYTHONPATH", "")]
+        [
+            str(overlay),
+            str(second),
+            sysconfig.get_paths()["purelib"],
+            os.environ.get("PYTHONPATH", ""),
+        ]
     )
     env["IMPORT_FIXES"] = str(REPO / "unsloth" / "import_fixes.py")
     env["APPLY"] = "1" if apply else "0"
@@ -261,6 +285,11 @@ def test_a_co_located_project_module_keeps_its_by_value_state(tmp_path):
         "pyarrow": True,
         "ovmod": True,
         "projcfg": False,
+        # A recorded dependency in a SECOND off-prefix layer, found from
+        # sys.path rather than from wherever pyarrow happens to live.
+        "secondlayer": True,
+        # And that layer's own unrecorded project module is untouched.
+        "secondproj": False,
     }, got["by_reference"]
 
 
@@ -597,6 +626,43 @@ def test_only_recorded_files_are_treated_as_dependency_owned(tmp_path):
     )
 
     assert _dill_distribution_paths(str(tmp_path / "absent")) == set()
+
+
+def test_stripped_bytecode_answers_to_its_recorded_source(tmp_path):
+    """A sourceless install keeps RECORD naming the `.py` it built from.
+
+    `compileall` then deleting the sources leaves `pkg/__init__.pyc` live while
+    the retained wheel RECORD still says `pkg/__init__.py`. An exact match then
+    leaves the installed package by value and the original PicklingError
+    stands, on exactly the stripped layers this patch is for.
+    """
+    from unsloth.import_fixes import _dill_module_is_importable_by_name
+
+    layer = tmp_path / "layer"
+    recorded = os.path.realpath(str(layer / "pkg" / "__init__.py"))
+    files = frozenset({recorded})
+
+    module = types.ModuleType("pkg")
+    module.__spec__ = types.SimpleNamespace(
+        name = "pkg", origin = str(layer / "pkg" / "__init__.pyc")
+    )
+    unrecorded = types.ModuleType("otherpkg")
+    unrecorded.__spec__ = types.SimpleNamespace(
+        name = "otherpkg", origin = str(layer / "otherpkg" / "__init__.pyc")
+    )
+    sys.modules["pkg"] = module
+    sys.modules["otherpkg"] = unrecorded
+    try:
+        assert _dill_module_is_importable_by_name(module, files), (
+            "the live .pyc is not matched to the .py its own metadata "
+            "recorded, so a stripped layer keeps the crash"
+        )
+        assert not _dill_module_is_importable_by_name(unrecorded, files), (
+            "a .pyc whose source was never recorded is claimed anyway"
+        )
+    finally:
+        del sys.modules["pkg"]
+        del sys.modules["otherpkg"]
 
 
 def test_a_top_level_package_name_alone_claims_nothing(tmp_path):

@@ -5775,9 +5775,17 @@ def _dill_module_is_importable_by_name(module, files = ()):
     if not origin or not files:
         return False
     try:
-        return os.path.realpath(origin) in files
+        real = os.path.realpath(origin)
     except Exception:
         return False
+    if real in files:
+        return True
+    # A deployment that compiles to adjacent bytecode and drops the sources
+    # leaves the wheel's RECORD naming `pkg/__init__.py` while the live spec
+    # points at `pkg/__init__.pyc`. Same installed file, one step of the build
+    # later, so the recorded source answers for it.
+    stem, ext = os.path.splitext(real)
+    return ext in (".pyc", ".pyo") and stem + ".py" in files
 
 
 def fix_dill_module_by_value_pickling():
@@ -5833,6 +5841,21 @@ def fix_dill_module_by_value_pickling():
     # contributes nothing, so the patch declines rather than fall back to
     # "everything under the directory is a dependency" -- a loud crash beats a
     # stale cache.
+    # Every off-prefix path entry carrying installed metadata, not just the one
+    # `datasets` or `pyarrow` happens to live in. A deployment can spread its
+    # layers, and a transform reaching a dependency from a second layer hits
+    # the very failure this patch exists to prevent. The ownership rule is
+    # unchanged: a file still has to be one an installed distribution
+    # recorded, so a wider search admits more DEPENDENCIES and nothing else.
+    for entry in list(sys.path):
+        if not entry or not os.path.isdir(entry):
+            continue
+        if not _dill_path_pickles_by_value(os.path.join(entry, "__unsloth_probe__.py")):
+            continue
+        real_entry = os.path.realpath(entry)
+        if real_entry not in roots:
+            roots.append(real_entry)
+
     owned_files = set()
     for root in roots:
         owned_files |= _dill_distribution_paths(root)
