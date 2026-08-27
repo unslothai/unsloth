@@ -188,6 +188,46 @@ def _loader_aliases(tree):
             return aliases
 
 
+def _loader_call_names(call, loaders):
+    """The module names a dynamic loader call names outright, else an empty list.
+
+    `importlib.import_module("torch")`, `__import__("torch")` and
+    `pytest.importorskip("torch")`, under their own names or under an alias this file
+    recorded. Only literal arguments are read, which is what these calls look like in
+    practice, and the module name is taken positionally or by the keyword each helper
+    documents.
+    """
+    if not isinstance(call, ast.Call):
+        return []
+    function = call.func
+    attribute = (
+        function.attr if isinstance(function, ast.Attribute)
+        else (function.id if isinstance(function, ast.Name) else "")
+    )
+    if attribute not in _LOADER_ORIGINS and attribute not in loaders:
+        return []
+    candidates = list(call.args[:1])
+    for keyword in call.keywords:
+        if keyword.arg in ("modname", "name"):
+            candidates.append(keyword.value)
+    return [
+        first.value for first in candidates
+        if isinstance(first, ast.Constant) and isinstance(first.value, str)
+    ]
+
+
+def _is_importorskip(call, loaders):
+    """Whether a call is `pytest.importorskip`, under any recorded spelling."""
+    function = call.func
+    attribute = (
+        function.attr if isinstance(function, ast.Attribute)
+        else (function.id if isinstance(function, ast.Name) else "")
+    )
+    if attribute == "importorskip":
+        return True
+    return attribute in loaders and _LOADER_ORIGINS.get(attribute) == "pytest"
+
+
 def _module_level_heavy_imports(path):
     """Top-level import names only. An import inside a function is paid lazily."""
     tree = ast.parse(path.read_text(encoding = "utf-8"))
@@ -208,28 +248,7 @@ def _module_level_heavy_imports(path):
             # while this guard reports the file as import-light. Only literal argument
             # forms are read, which is what these calls look like in practice.
             for call in _own_expressions(node):
-                if not isinstance(call, ast.Call):
-                    continue
-                function = call.func
-                attribute = (
-                    function.attr
-                    if isinstance(function, ast.Attribute)
-                    else (function.id if isinstance(function, ast.Name) else "")
-                )
-                if attribute not in _LOADER_ORIGINS and attribute not in loaders:
-                    continue
-                # The module name is positional in practice, but each of these
-                # helpers also names it as a keyword - `importorskip(modname = ...)`,
-                # `import_module(name = ...)`, `__import__(name = ...)` - and the
-                # keyword form loads the dependency exactly the same way. Requiring a
-                # positional argument skipped it and the file was called import-light.
-                candidates = list(call.args[:1])
-                for keyword in call.keywords:
-                    if keyword.arg in ("modname", "name"):
-                        candidates.append(keyword.value)
-                for first in candidates:
-                    if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                        names.append(first.value)
+                names.extend(_loader_call_names(call, loaders))
         for name in names:
             root = name.split(".")[0]
             if root in HEAVY:
@@ -259,11 +278,36 @@ def _body_level_heavy_imports(path):
                 names = [alias.name for alias in child.names]
             elif isinstance(child, ast.ImportFrom) and not child.level:
                 names = [child.module or ""]
+            elif isinstance(child, ast.Call):
+                # `importlib.import_module("torch")` inside a body loads the
+                # dependency with no `Import` node at all, and the light runner runs
+                # that call and fails just the same. The module-scope scanner already
+                # read these; the body one saw only the statement spellings and called
+                # the file light. `importorskip` stays exempt here: it skips this one
+                # test rather than erroring, which is the allowance the docstring
+                # above already states.
+                if not _is_importorskip(child, loaders):
+                    names = _loader_call_names(child, loaders)
             for name in names:
                 root = name.split(".")[0]
                 if root in HEAVY and root not in skipped:
                     found.add(root)
     return found
+
+
+def _reaches_a_heavy_dependency(statement, loaders):
+    """Whether a statement loads a heavy dependency, however it spells the load."""
+    for child in ast.walk(statement):
+        names = []
+        if isinstance(child, ast.Import):
+            names = [alias.name for alias in child.names]
+        elif isinstance(child, ast.ImportFrom) and not child.level:
+            names = [child.module or ""]
+        elif isinstance(child, ast.Call) and not _is_importorskip(child, loaders):
+            names = _loader_call_names(child, loaders)
+        if any(name.split(".")[0] in HEAVY for name in names):
+            return True
+    return False
 
 
 def _guarded_roots(node, loaders):
@@ -281,6 +325,13 @@ def _guarded_roots(node, loaders):
     roots = set()
     for statement in node.body:
         if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+            # An import BEFORE the guard is reached first, and the light runner fails
+            # there: `def t(): import torch; pytest.importorskip("torch")` never gets
+            # to the skip. Scanning the whole body regardless of order recorded the
+            # later call as a guard and let the file stay on the light runner, so the
+            # scan stops at the first statement that loads anything heavy.
+            if _reaches_a_heavy_dependency(statement, loaders):
+                break
             continue
         call = statement.value
         function = call.func
@@ -419,6 +470,44 @@ def test_a_body_that_skips_first_does_not_redirect_the_file(tmp_path):
         'from pytest import importorskip as need\n\n\ndef t():\n    need("torch")\n    import torch\n': set(),
         'import pytest\n\n\ndef t():\n    if 0:\n        pytest.importorskip("torch")\n    import torch\n': {"torch"},
         'def t():\n    import torch\n': {"torch"},
+    }
+    for source, expected in cases.items():
+        sample = tmp_path / "sample.py"
+        sample.write_text(source)
+        assert _body_level_heavy_imports(sample) == expected, source
+
+
+def test_a_guard_after_the_import_does_not_count(tmp_path):
+    """The light runner reaches the import first and fails there.
+
+    Order matters: `import torch` then `pytest.importorskip("torch")` is not guarded,
+    though scanning the whole body regardless of position recorded it as one.
+    """
+    cases = {
+        'import pytest\n\n\ndef t():\n    import torch\n    pytest.importorskip("torch")\n': {"torch"},
+        'import pytest\n\n\ndef t():\n    pytest.importorskip("torch")\n    import torch\n': set(),
+        # A statement that reaches nothing heavy does not end the guard run.
+        'import pytest\n\n\ndef t():\n    x = 1\n    pytest.importorskip("torch")\n    import torch\n': set(),
+    }
+    for source, expected in cases.items():
+        sample = tmp_path / "sample.py"
+        sample.write_text(source)
+        assert _body_level_heavy_imports(sample) == expected, source
+
+
+def test_a_dynamic_import_inside_a_body_also_needs_the_redirect(tmp_path):
+    """A body can load a dependency with no `Import` node at all.
+
+    The light runner runs the call and fails just as hard. `importorskip` stays
+    exempt: it skips that one test rather than erroring.
+    """
+    cases = {
+        'import importlib\n\n\ndef t():\n    importlib.import_module("torch")\n': {"torch"},
+        'from importlib import import_module\n\n\ndef t():\n    import_module("torch")\n': {"torch"},
+        'def t():\n    __import__("torch")\n': {"torch"},
+        'import importlib\n\n\ndef t():\n    importlib.import_module(name = "torch")\n': {"torch"},
+        'import pytest\n\n\ndef t():\n    pytest.importorskip("torch")\n': set(),
+        'import importlib\n\n\ndef t():\n    importlib.import_module(picked)\n': set(),
     }
     for source, expected in cases.items():
         sample = tmp_path / "sample.py"

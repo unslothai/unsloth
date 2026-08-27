@@ -85,6 +85,7 @@ on:
       - 'unsloth/models/_custom_dtype.py'
       - 'unsloth/models/loader.py'
       - 'unsloth/models/vision.py'
+      - 'unsloth/models/_utils.py'
       - '.github/workflows/security-audit.yml'
   push:
     branches: [main]

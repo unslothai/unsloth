@@ -316,6 +316,32 @@ def test_a_mutation_that_never_runs_is_not_read(monkeypatch):
         assert not any("inside-a-def" in str(key) for key in table)
 
 
+def test_a_deferred_lambda_body_is_not_read(monkeypatch):
+    """A `lambda` is an expression, so it seeded the expression walk.
+
+    The walk already refuses to descend INTO a lambda it meets as a child, but the
+    lambda attached to an assignment was the seed itself, and its body was read as if
+    it ran at import. Same argument as the `def` above: nothing in it executes.
+    """
+    dead = REAL_MAPPER + (
+        "\n"
+        "unused = lambda: FLOAT_TO_FP8_ROW_MAPPER.update("
+        "{'vendor/in-a-lambda': 'unsloth/in-a-lambda'})\n"
+        "also_unused = [lambda: FLOAT_TO_FP8_ROW_MAPPER.update("
+        "{'vendor/in-a-listed-lambda': 'unsloth/in-a-listed-lambda'})]\n"
+    )
+
+    with _serving(REAL_MAPPER, monkeypatch):
+        expected = loader_utils._get_new_mapper()
+    with _serving(dead, monkeypatch):
+        got = loader_utils._get_new_mapper()
+
+    assert any(expected), "the real mapper produced nothing, so this proves nothing"
+    assert got == expected, "a lambda body was read as installed"
+    for table in got:
+        assert not any("lambda" in str(key) for key in table)
+
+
 def test_a_branch_that_does_run_is_still_read(monkeypatch):
     """The exclusion is about DEAD code, not about conditionals in general."""
     live = REAL_MAPPER + (

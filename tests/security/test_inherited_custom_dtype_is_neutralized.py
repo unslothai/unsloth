@@ -143,3 +143,57 @@ def test_the_module_neutralizes_on_import():
         and getattr(node.value.func, "id", "") == "neutralize_inherited_custom_dtype"
     ]
     assert called, "the module no longer neutralizes an inherited value on import"
+
+
+def test_the_compiler_entry_point_neutralizes_again():
+    """A value set AFTER import must not reach the older `unsloth_zoo` reader.
+
+    The import-time pass has already run by then, and `trusted_custom_dtype()` only
+    labels the new value untrusted, which stops THIS package running its code fields.
+    `unsloth_compile_transformers` runs before that check and reaches `unsloth_zoo`,
+    whose supported older release still calls `eval` on the dtype field, so the value
+    is sanitized again at that entry point. Read off the source, so the call cannot be
+    removed without this failing.
+    """
+
+    import ast
+    import pathlib
+
+    import unsloth.models._utils as module
+
+    source = pathlib.Path(module.__file__).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    wrappers = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "unsloth_compile_transformers"
+    ]
+    assert wrappers, "unsloth_compile_transformers is gone"
+    called = [
+        node for node in ast.walk(wrappers[0])
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", "") == "neutralize_inherited_custom_dtype"
+    ]
+    assert called, "the compiler entry point no longer re-neutralizes an inherited value"
+
+
+def test_a_value_set_after_import_is_still_neutralized(monkeypatch):
+    """End to end through the entry point, with the compilation itself disabled."""
+
+    from unsloth.models._utils import unsloth_compile_transformers
+
+    hostile = 'all;__import__("os").environ["UNSLOTH_TEST_MARKER"] = "1";None;;print(1)'
+    monkeypatch.setenv(_ENV_KEY, hostile)
+    monkeypatch.delenv("UNSLOTH_TEST_MARKER", raising = False)
+
+    # `disable = True` returns before any compilation, which is all this needs: the
+    # sanitizing runs first.
+    unsloth_compile_transformers(
+        dtype = None, model_name = "unsloth/tiny", model_types = ["llama"], disable = True,
+    )
+
+    sanitized = os.environ[_ENV_KEY]
+    assert sanitized.count(";") == 4, sanitized
+    checker, dtype, bnb, custom, code = sanitized.split(";", 4)
+    assert dtype == "None" and bnb == "None", sanitized
+    assert custom == "" and code == "", sanitized
+    assert "UNSLOTH_TEST_MARKER" not in os.environ

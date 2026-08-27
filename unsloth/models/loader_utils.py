@@ -775,10 +775,25 @@ def _get_new_mapper():
                 # descended into them again - including into a `def` nested under a
                 # condition this cannot decide, whose body never runs at import and
                 # would have fabricated entries the module does not install.
+                # A `Lambda` is an expression, so it seeded this list even though the
+                # loop below refuses to descend into one: `unused = lambda:
+                # MAPPER.update({...})` had its body read as if it ran at import, and
+                # the probe fabricated support for an entry the newer mapper never
+                # installs. The same exclusion the loop applies, applied at the seed.
                 pending = [
                     child
                     for child in ast.iter_child_nodes(statement)
-                    if not isinstance(child, (ast.stmt, ast.excepthandler))
+                    if not isinstance(
+                        child,
+                        (
+                            ast.stmt,
+                            ast.excepthandler,
+                            ast.FunctionDef,
+                            ast.AsyncFunctionDef,
+                            ast.ClassDef,
+                            ast.Lambda,
+                        ),
+                    )
                 ]
                 yield statement, shadowed
                 while pending:
