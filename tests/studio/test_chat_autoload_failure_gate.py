@@ -748,7 +748,12 @@ def _build_harness(run_dir: Path):
     )
 
 
-def _run(scenario_expr: str, prelude: str = "", *, queued: bool = False) -> dict:
+def _run(
+    scenario_expr: str,
+    prelude: str = "",
+    *,
+    queued: bool = False,
+) -> dict:
     _require_node()
     # Its own directory per invocation: a shared file lets one runner read another's rewrite.
     TEMP.mkdir(parents = True, exist_ok = True)
