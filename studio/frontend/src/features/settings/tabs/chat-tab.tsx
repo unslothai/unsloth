@@ -17,6 +17,7 @@ import {
   useSidebarOrganizationStore,
 } from "@/features/chat";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
+import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
 import {
@@ -167,6 +168,10 @@ export function ChatTab() {
   const setAllowArtifactNetworkAccess = useChatRuntimeStore(
     (state) => state.setAllowArtifactNetworkAccess,
   );
+  const searchImages = useChatRuntimeStore((state) => state.searchImages);
+  const setSearchImages = useChatRuntimeStore(
+    (state) => state.setSearchImages,
+  );
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
   );
@@ -181,6 +186,10 @@ export function ChatTab() {
   );
   const setShowAllQuantizations = useChatRuntimeStore(
     (state) => state.setShowAllQuantizations,
+  );
+  const showMemoryBar = useChatRuntimeStore((state) => state.showMemoryBar);
+  const setShowMemoryBar = useChatRuntimeStore(
+    (state) => state.setShowMemoryBar,
   );
   const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
   const setOrganizeBy = useSidebarOrganizationStore((s) => s.setOrganizeBy);
@@ -207,6 +216,14 @@ export function ChatTab() {
   );
   const setPastedTextMinChars = useChatPreferencesStore(
     (state) => state.setPastedTextMinChars,
+  );
+  // The platform's own paste-without-formatting chord, which the composer reads
+  // as "put it in the box" whatever this threshold says. macOS carries it on
+  // Option, that being the chord its Edit menu binds.
+  const macPlatform = isMacPlatform();
+  const plainPasteLabel = formatBindingLabel(
+    { code: "KeyV", mod: true, ctrl: false, shift: true, alt: macPlatform },
+    macPlatform,
   );
 
   useEffect(() => {
@@ -246,6 +263,14 @@ export function ChatTab() {
             checked={showAllQuantizations}
             onCheckedChange={setShowAllQuantizations}
           />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.showMemoryBar")}
+          description={t(
+            "settings.chat.modelSelection.showMemoryBarDescription",
+          )}
+        >
+          <Switch checked={showMemoryBar} onCheckedChange={setShowMemoryBar} />
         </SettingsRow>
       </SettingsSection>
 
@@ -337,7 +362,9 @@ export function ChatTab() {
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.pastedTextThreshold")}
-          description={t("settings.chat.pastedTextThresholdDescription")}
+          description={t("settings.chat.pastedTextThresholdDescription", {
+            shortcut: plainPasteLabel,
+          })}
         >
           <Select
             value={String(pastedTextMinChars)}
@@ -394,6 +421,15 @@ export function ChatTab() {
             checked={allowArtifactNetworkAccess}
             onCheckedChange={setAllowArtifactNetworkAccess}
           />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.chat.webSearch.title")}>
+        <SettingsRow
+          label={t("settings.chat.webSearch.images")}
+          description={t("settings.chat.webSearch.imagesDescription")}
+        >
+          <Switch checked={searchImages} onCheckedChange={setSearchImages} />
         </SettingsRow>
       </SettingsSection>
     </div>

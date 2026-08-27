@@ -28,6 +28,7 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 # public bind, so we only ever take back a value we set ourselves.
 _auto_enabled = False
 _remote_connector_active = False
+_lan_connector_active = False
 
 
 def is_external_host(host: str) -> bool:
@@ -99,12 +100,30 @@ def set_remote_connector_active(active: bool) -> None:
     _remote_connector_active = bool(active)
 
 
-def remote_connector_active() -> bool:
+def set_lan_connector_active(active: bool) -> None:
+    """Publish whether a runtime LAN listener is serving beyond loopback."""
+    global _lan_connector_active
+    _lan_connector_active = bool(active)
+
+
+def tunnel_connector_active() -> bool:
+    """True while a tunnel is publishing this server past the local network."""
     return _remote_connector_active
+
+
+def lan_connector_active() -> bool:
+    """True while a runtime LAN listener is serving the local network."""
+    return _lan_connector_active
+
+
+def remote_connector_active() -> bool:
+    """True while any connector can carry a request from beyond loopback."""
+    return _remote_connector_active or _lan_connector_active
 
 
 def _reset_loopback_default_state() -> None:
     """Test hook: forget runtime trust state applied earlier in this process."""
-    global _auto_enabled, _remote_connector_active
+    global _auto_enabled, _remote_connector_active, _lan_connector_active
     _auto_enabled = False
     _remote_connector_active = False
+    _lan_connector_active = False

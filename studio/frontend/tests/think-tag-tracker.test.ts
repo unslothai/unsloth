@@ -10,15 +10,38 @@ import {
 } from "../src/features/chat/utils/parse-assistant-content.ts";
 
 /**
- * Feed `chunks` in order and assert the tracker agrees with a full rescan after
- * each one. `hasUnclosedThinkTag` is the reference: the tracker exists only to
- * give the same answer without rereading the buffer.
+ * The tracker takes deltas, because reading the accumulated buffer at all
+ * costs O(reply) per arrival. The cases below are written against the buffer,
+ * so this maps a buffer to the calls the adapter makes for it: an arrival
+ * appends what it added, and the trailing-fragment strip retracts to what it
+ * left behind.
+ */
+function bufferTracker(): { update(text: string): boolean } {
+  const tracker = createThinkTagTracker();
+  let seen = "";
+  return {
+    update(text: string): boolean {
+      if (text.length >= seen.length) {
+        tracker.append(text.slice(seen.length));
+      } else {
+        tracker.retract(text);
+      }
+      seen = text;
+      return tracker.endsInsideThink();
+    },
+  };
+}
+
+/**
+ * Feed `chunks` in order and assert the tracker agrees with a full rescan
+ * after every one of them. `hasUnclosedThinkTag` is the reference: the
+ * tracker exists only to give the same answer without rereading the buffer.
  */
 function assertAgreesOnStream(
   chunks: string[],
   label: string,
 ): { unclosed: number; closed: number } {
-  const tracker = createThinkTagTracker();
+  const tracker = bufferTracker();
   let text = "";
   let unclosed = 0;
   let closed = 0;
@@ -116,7 +139,7 @@ test("a near miss is not mistaken for a tag", () => {
 });
 
 test("a stream seeded with a continuation partial is tracked", () => {
-  const tracker = createThinkTagTracker();
+  const tracker = bufferTracker();
   let text = "<think>resumed reasoning";
   assert.equal(tracker.update(text), hasUnclosedThinkTag(text));
   text += "</think> answer";
@@ -150,7 +173,7 @@ test("a suffix removed from the buffer is accounted for", () => {
     },
   ];
   for (const { steps, label } of cases) {
-    const tracker = createThinkTagTracker();
+    const tracker = bufferTracker();
     for (const [index, text] of steps.entries()) {
       assert.equal(
         tracker.update(text),
@@ -162,9 +185,9 @@ test("a suffix removed from the buffer is accounted for", () => {
 });
 
 test("append then strip within one arrival is tracked", () => {
-  // What the adapter does: append the delta, strip a trailing fragment, then
-  // ask once. Only the post-strip buffer is ever seen.
-  const tracker = createThinkTagTracker();
+  // What the adapter actually does: append the delta, strip a trailing
+  // fragment, then ask once. Only the post-strip buffer is ever seen.
+  const tracker = bufferTracker();
   const deltas = [
     "<think>",
     "reasoning ",
@@ -247,7 +270,7 @@ test("tracker agrees with a full rescan on random streams with strips", () => {
   let closed = 0;
   let strips = 0;
   for (let run = 0; run < 2_000; run += 1) {
-    const tracker = createThinkTagTracker();
+    const tracker = bufferTracker();
     let text = "";
     const count = 1 + (next() % 16);
     for (let i = 0; i < count; i += 1) {
@@ -271,4 +294,32 @@ test("tracker agrees with a full rescan on random streams with strips", () => {
   assert.equal(strips > 1_000, true, `only ${strips} suffixes were removed`);
   assert.equal(unclosed > 500, true, `only ${unclosed} unclosed states seen`);
   assert.equal(closed > 500, true, `only ${closed} closed states seen`);
+});
+
+test("the adapter's own order, append the delta then retract the strip, is tracked", () => {
+  // The wrapper above only ever sees the buffer a strip left behind, so it
+  // hides the two-call sequence the adapter really makes. This drives the
+  // tracker directly: every delta is appended whole, and only then is the
+  // fragment taken back off.
+  const random = mulberry32(20260817);
+  const alphabet = ["<think>", "</think>", "x", " ", "<thi", "nk>", "}", "${a}"];
+  for (let seed = 0; seed < 400; seed += 1) {
+    const tracker = createThinkTagTracker();
+    let text = "";
+    for (let step = 0; step < 24; step += 1) {
+      const delta = alphabet[random() % alphabet.length];
+      text += delta;
+      tracker.append(delta);
+      const stripped = text.replace(/\s*\$\{[^}]*\}\s*$/, "");
+      if (stripped.length !== text.length) {
+        text = stripped;
+        tracker.retract(text);
+      }
+      assert.equal(
+        tracker.endsInsideThink(),
+        hasUnclosedThinkTag(text),
+        `seed ${seed} step ${step}: disagreed on ${JSON.stringify(text)}`,
+      );
+    }
+  }
 });

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""CPU-only unit tests for the Kaggle Studio GPU harness.
+"""CPU-only unit tests for the Kaggle Unsloth GPU harness.
 
-The payload itself needs a GPU, a browser and a Studio install, and none of
+The payload itself needs a GPU, a browser and an Unsloth install, and none of
 that runs here. What does run is everything that decides whether a green tick
 means anything: the GPU-offload verdict, the polling predicates that separate
 "finished" from "has not started", the adapter check, the generated kernel
@@ -25,6 +25,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -251,7 +252,7 @@ def test_auto_mode_gpu_layers_of_minus_one_is_not_treated_as_zero():
 
 
 def test_health_is_not_ready_until_hardware_detection_settles():
-    """Studio answers healthy while still detecting, and refuses to start a
+    """Unsloth answers healthy while still detecting, and refuses to start a
     training run or an export in that window."""
     assert not studio_client.health_is_ready({"status": "healthy", "hardware_detecting": True})
     assert studio_client.health_is_ready({"status": "healthy"})
@@ -790,20 +791,61 @@ def test_the_workflow_never_cancels_a_run_that_may_hold_a_kernel():
     assert wf["jobs"]["studio-gpu"]["concurrency"]["cancel-in-progress"] is False
 
 
-def test_the_two_kaggle_legs_queue_behind_each_other():
-    """Kaggle's 2-kernel cap is per ACCOUNT and is not workflow-aware, so
-    sharing a concurrency group is what stops one leg's push being rejected
-    by the other's kernel."""
+def test_the_two_kaggle_legs_fit_the_account_side_by_side():
+    """One kernel each, against a 2-kernel per-ACCOUNT cap, so they can overlap.
+
+    They used to SHARE a concurrency group, because the notebook leg pushed two
+    kernels and took both of Kaggle's slots: this leg would have raced the cap
+    and lost its push, so it had to queue behind instead. The cost was that it
+    queued behind the whole notebook JOB even though the account was free again
+    the moment that job's kernels finished -- measured, run 32607617804 waited
+    about 40 minutes on run 32607621452.
+
+    The notebook leg now packs its four legs into one kernel. So the invariant
+    worth holding is no longer "same group" but the arithmetic that made the
+    same group necessary: what each leg PUSHES has to sum to within the cap.
+    Separate groups plus one kernel each is exactly 2 of 2, with no headroom,
+    which is why this asserts the sum rather than the group names.
+    """
     yaml = pytest.importorskip("yaml")
-    notebook = yaml.safe_load(
-        (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(
-            encoding = "utf-8"
-        )
+    # Read the cap out of gate.py's SOURCE rather than importing it. Both
+    # .github/scripts/kaggle_studio_ci and .github/scripts/kaggle_t4_ci ship a
+    # module called `report`, so putting either on sys.path here decides which
+    # one `import report` resolves to for every test that runs afterwards in
+    # the same process. An earlier draft of this test did exactly that and took
+    # nine unrelated summary tests down with it.
+    gate_src = (REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "gate.py").read_text(
+        encoding = "utf-8"
     )
-    assert (
-        _workflow()["jobs"]["studio-gpu"]["concurrency"]["group"]
-        == notebook["jobs"]["t4-smoke"]["concurrency"]["group"]
+    caps = re.findall(r"^MAX_CONCURRENT_GPU_KERNELS = (\d+)$", gate_src, re.MULTILINE)
+    assert len(caps) == 1, caps
+    MAX_CONCURRENT_GPU_KERNELS = int(caps[0])
+
+    notebook_text = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(
+        encoding = "utf-8"
     )
+    notebook = yaml.safe_load(notebook_text)
+    studio_group = _workflow()["jobs"]["studio-gpu"]["concurrency"]["group"]
+    notebook_group = notebook["jobs"]["t4-smoke"]["concurrency"]["group"]
+
+    assert studio_group != notebook_group, (
+        "the two legs share a concurrency group again, so Unsloth waits out the "
+        "whole notebook job for a Kaggle session that is free"
+    )
+    # Neither may be keyed on the ref: one account, so two branches of the SAME
+    # workflow still must not overlap even though the two workflows may.
+    for group in (studio_group, notebook_group):
+        assert "github.ref" not in group, group
+
+    pushes = {}
+    for label, text in (
+        ("studio", WORKFLOW.read_text(encoding = "utf-8")),
+        ("notebook", notebook_text),
+    ):
+        found = {int(k) for k in re.findall(r"--kernels (\d+)", text)}
+        assert len(found) == 1, (label, found)
+        pushes[label] = found.pop()
+    assert sum(pushes.values()) <= MAX_CONCURRENT_GPU_KERNELS, pushes
 
 
 def test_the_workflow_is_never_preempted_by_the_capacity_sweeper():
@@ -871,12 +913,12 @@ def test_studio_is_sampled_harder_than_the_notebook_leg():
     # Share of the shared 50h CI allowance, and the stand-down floor that
     # enforces the priority: the cheap leg stops first so the expensive one
     # gets the tail of the week.
-    assert "The split is Studio 35, this leg 15" in notebook
+    assert "The split is Unsloth 35, this leg 15" in notebook
     assert "--reserve-hours 20" in notebook and "--reserve-hours 10" in studio
 
-    # The Studio block states the notebook leg's reserve in PROSE, so the number
+    # The Unsloth block states the notebook leg's reserve in PROSE, so the number
     # lives in two files and one of them is not executable. Raising the notebook
-    # reserve without touching that sentence leaves the Studio budget arguing from
+    # reserve without touching that sentence leaves the Unsloth budget arguing from
     # a figure that is no longer true, which is exactly how the "cheap leg yields
     # first" priority gets documented backwards. Assert the sentence agrees.
     assert "reserve-hours is 10 rather than the notebook leg's 20" in studio
@@ -1036,7 +1078,7 @@ def test_the_reporter_survives_the_shared_module_being_unavailable(monkeypatch, 
 
 
 class _RecordingStudio(studio_client.Studio):
-    """A Studio whose HTTP layer is a script, so login can be driven off-box."""
+    """An Unsloth whose HTTP layer is a script, so login can be driven off-box."""
 
     def __init__(self, responses):
         super().__init__(base_url = "http://127.0.0.1:0")
@@ -1133,7 +1175,7 @@ def test_the_ui_driver_gets_a_freshly_seeded_account():
     """The API path and the UI driver want OPPOSITE auth states, so the payload
     has to re-seed between them.
 
-    authenticate() retires the bootstrap password to get past Studio's forced
+    authenticate() retires the bootstrap password to get past Unsloth's forced
     change; the driver's first UI step waits for #new-password on that very
     form. Three hardware runs walked the whole cycle -- 412345d2 failed the API
     assertions on the gate, 9ddd8ae4 fixed those and failed the driver on a
@@ -1634,11 +1676,11 @@ def test_real_losses_still_count():
     assert studio_client.nonfinite_losses(status) == []
 
 
-# ------------------------------------------------------ which Studio gets started
+# ------------------------------------------------------ which Unsloth gets started
 
 
 def test_studio_is_launched_from_the_interpreter_running_the_payload(tmp_path, monkeypatch):
-    """The payload runs under the Studio venv, whose bin is NOT on PATH. A
+    """The payload runs under the Unsloth venv, whose bin is NOT on PATH. A
     global `unsloth` anywhere on PATH would otherwise win shutil.which() and
     the run would measure some other install instead of the checkout."""
     module = _load_payload()
@@ -1783,7 +1825,7 @@ def test_a_log_that_was_rotated_under_us_is_read_whole(tmp_path):
 
 
 def test_the_restart_that_reseeds_the_account_keeps_the_earlier_log(tmp_path, monkeypatch):
-    """assert_chat_ui() restarts Studio, and a truncating open threw away the
+    """assert_chat_ui() restarts Unsloth, and a truncating open threw away the
     backend log of every GPU assertion before the evidence was packaged."""
     module = _load_payload()
     session = _session(
@@ -2261,3 +2303,34 @@ def test_a_box_without_nvidia_smi_reports_no_gpu_rather_than_crashing(tmp_path, 
     assert module.gpu_inventory() == []
     assert module.nvidia_used_mib() is None
     assert module.nvidia_compute_apps() is None
+
+
+def test_the_kaggle_client_is_new_enough_to_read_the_only_credential_we_have():
+    """A client that cannot read KAGGLE_API_TOKEN makes this workflow report green forever.
+
+    The gate is handed exactly one credential, KAGGLE_API_TOKEN, and nothing in
+    the workflow or under .github/scripts/kaggle_t4_ci writes a kaggle.json. On
+    2.x, authenticate() tries _authenticate_with_access_token() first, which
+    reaches kagglesdk.get_access_token_from_env() and reads that variable. On
+    1.7.4.5 it does not: KAGGLE_API_TOKEN appears only in
+    kagglesdk/kaggle_http_client.py, whose own header says that client "is not
+    currently usable by the CLI", so authenticate() falls through to
+    read_config_file() and raises IOError, which IS OSError on Python 3.
+
+    That error is not loud. gate.py turns any error into a skip unless
+    --no-soft-fail is passed, and a skip exits 0, so the run is green with the
+    GPU job skipped: identical on the surface to the ~95% of invocations the
+    5% sampler declines. Observed on run 32605377065, dispatched with
+    force=true to bypass the sampler, which still reported
+    "could not authenticate to Kaggle: OSError" and a green workflow.
+
+    The notebook leg has carried this guard since it was written; this leg had
+    no equivalent and sat on 1.7.4.5, so it had never authenticated once.
+    """
+    packaging_version = pytest.importorskip("packaging.version")
+    pins = re.findall(
+        r"pip install [^\n]*'kaggle==([0-9][^']*)'", WORKFLOW.read_text(encoding = "utf-8")
+    )
+    assert pins, "no pinned kaggle client in the workflow"
+    assert len(set(pins)) == 1, f"jobs disagree on the kaggle client: {pins}"
+    assert packaging_version.Version(pins[0]) >= packaging_version.Version("2.2.0"), pins[0]

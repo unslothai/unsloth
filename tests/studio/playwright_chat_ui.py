@@ -29,6 +29,7 @@ from _playwright_robust import (  # noqa: E402
     recover_or_replace_page,
     robust_evaluate,
     wait_for_health,
+    click_forced,
 )
 
 BASE = os.environ["BASE_URL"]
@@ -183,10 +184,80 @@ def exercise_permission_mode_controls(page, shoot):
         else:
             route.continue_()
 
+    # Every reload in this block used to be followed by a bare
+    # `expect(pill).to_be_visible()` on the default 5s expect timeout.
+    # `domcontentloaded` fires long before React has mounted the composer, and on
+    # a 3-core macOS runner with a paravirtual GPU that gap is regularly wider
+    # than 5s. That is the failure that took studio-mac-ui-smoke red at 35672fc9b
+    # and again at bfcaea465, both times on this exact locator, with green runs on
+    # either side -- a race, not a regression.
+    #
+    # The composer-mount step already settles the network before waiting, for the
+    # same reason and with the same note about macOS. This does the same after
+    # each reload. It asserts exactly what it asserted before; it just stops
+    # asking before the answer can exist.
+    def reload_and_wait_for_pill():
+        page.reload(wait_until = "domcontentloaded")
+        try:
+            page.wait_for_load_state("networkidle", timeout = 30_000)
+        except Exception:
+            pass  # best-effort -- proceed even if network never idles
+        expect(pill).to_be_visible(timeout = 30_000)
+
+    # choose() only drives THIS tab. The mirror to /api/chat/settings is a 400ms
+    # trailing-edge debounce (SETTINGS_DEBOUNCE_MS, chat-runtime-store.ts) whose
+    # only early flush is the beforeunload keepalive, so the pill turning over
+    # proves the click landed locally, not that the installation stored it.
+    #
+    # Measured on webkit, timed from the choose() below: choose returns at
+    # t+238ms, set_legacy_confirm at t+248ms, and the reload starts there. The
+    # debounce would not have fired until ~t+630ms, so the only PUT that goes out
+    # at all is the beforeunload keepalive at t+252ms, and the reloaded page's
+    # hydrating GET arrives at t+697ms. The assertion after the reload was
+    # therefore never testing the level this step chose. It was betting that an
+    # unload-time keepalive beats a hydrating GET by 445ms of loopback, on every
+    # engine, every run.
+    #
+    # When that bet loses, hydration returns the level the migration loop above
+    # left on the install ("off"), the pill reads "Run automatically", and the
+    # step fails as though migration were broken. That is what took webkit red at
+    # 20a98fd54 while chromium and firefox passed the same assertion in the same
+    # job.
+    #
+    # So: wait for the level to actually be ON the installation before reloading
+    # and asserting on it. Assert what was achieved, not what was commanded. This
+    # deliberately stops depending on the unload-time flush; that flush is worth a
+    # test of its own, but it was never what this step meant to assert.
+    def expect_server_mode(expected, timeout_ms = 15_000):
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        seen = "<never read>"
+        while True:
+            seen = page.evaluate(
+                """async () => {
+                    const token = localStorage.getItem("unsloth_auth_token");
+                    const res = await fetch("/api/chat/settings", {
+                        headers: token ? { Authorization: "Bearer " + token } : {},
+                        cache: "no-store",
+                    });
+                    if (!res.ok) return "<http " + res.status + ">";
+                    const body = await res.json();
+                    return (body && body.settings && body.settings.permissionMode) ?? null;
+                }"""
+            )
+            if seen == expected:
+                return
+            if time.monotonic() >= deadline:
+                break
+            page.wait_for_timeout(100)
+        fail(
+            f"permission level never reached the installation: /api/chat/settings "
+            f"reports permissionMode={seen!r} after {timeout_ms}ms, expected "
+            f"{expected!r} -- the debounced mirror never landed"
+        )
+
     page.route("**/api/chat/settings", refuse_settings_hydration)
     set_legacy_confirm(None)
-    page.reload(wait_until = "domcontentloaded")
-    expect(pill).to_be_visible()
+    reload_and_wait_for_pill()
 
     # Fresh profiles default to Approve for me.
     expect_mode("Approve for me")
@@ -230,8 +301,7 @@ def exercise_permission_mode_controls(page, shoot):
     try:
         for legacy_value, expected_label in migration_cases:
             set_legacy_confirm(legacy_value)
-            page.reload(wait_until = "domcontentloaded")
-            expect(pill).to_be_visible()
+            reload_and_wait_for_pill()
             expect_mode(expected_label)
     finally:
         page.unroute("**/api/chat/settings", refuse_settings_hydration)
@@ -241,9 +311,9 @@ def exercise_permission_mode_controls(page, shoot):
     # rather than its own derivation.
     choose("Ask for approval")
     expect_mode("Ask for approval")
+    expect_server_mode("ask")
     set_legacy_confirm("false")
-    page.reload(wait_until = "domcontentloaded")
-    expect(pill).to_be_visible()
+    reload_and_wait_for_pill()
     expect_mode("Ask for approval")
     cached = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
     if cached != "ask":
@@ -282,8 +352,7 @@ def exercise_permission_mode_controls(page, shoot):
     if stored != "off":
         fail(f"Full access overwrote persisted mode with {stored!r}")
 
-    page.reload(wait_until = "domcontentloaded")
-    expect(pill).to_be_visible()
+    reload_and_wait_for_pill()
     expect_mode("Run automatically")
 
     # Leave the full chat smoke in the fresh-install default.
@@ -1131,7 +1200,7 @@ with sync_playwright() as p:
         """(args) => {
             const [secondPrompt, holdMs] = args;
             window.__unslothRapid = {
-                intercepted: false, submitted: false, queueSeen: false,
+                intercepted: false, preparing: false, submitted: false, queueSeen: false,
                 observed: false, error: null, seen: [], holdUntil: 0,
             };
             const state = window.__unslothRapid;
@@ -1139,7 +1208,11 @@ with sync_playwright() as p:
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
             const sendFollowUp = (deadline) => {
-                if (state.submitted || state.error) return;
+                if (state.preparing || state.submitted || state.error) return;
+                if (deadline === undefined) deadline = Date.now() + 5000;
+                if (state.holdUntil) {
+                    deadline = Math.min(deadline, state.holdUntil - 250);
+                }
                 // Re-query, and retry: this is the chat's first message, so
                 // sending it swaps the welcome composer for the dock composer.
                 // A node captured earlier is detached, and for a short window
@@ -1148,14 +1221,10 @@ with sync_playwright() as p:
                     'textarea[aria-label="Message input"]'
                 );
                 if (!composer || !composer.isConnected || !composer.form) {
-                    if (deadline === undefined) deadline = Date.now() + 5000;
                     // Never retry past the hold. The response is released when
                     // it expires, so a submit after that races a buffered reply
                     // finishing first and would report a queue failure for an
                     // application that behaved correctly.
-                    if (state.holdUntil) {
-                        deadline = Math.min(deadline, state.holdUntil - 250);
-                    }
                     if (Date.now() > deadline) {
                         state.error = "no connected composer for the follow-up";
                         return;
@@ -1170,8 +1239,32 @@ with sync_playwright() as p:
                 ).set;
                 setValue.call(composer, secondPrompt);
                 composer.dispatchEvent(new Event("input", { bubbles: true }));
-                composer.form.requestSubmit();
-                state.submitted = true;
+                // Synthetic input and requestSubmit in the same JS turn can make
+                // the form callback read the previous controlled value. That is
+                // not how a user types, and it leaves the new text visible while
+                // the test incorrectly records a submit. Let React publish the
+                // input, then re-check the composer because the welcome bar can
+                // be replaced by the dock bar during this frame.
+                state.preparing = true;
+                requestAnimationFrame(() => {
+                    state.preparing = false;
+                    const current = document.querySelector(
+                        'textarea[aria-label="Message input"]'
+                    );
+                    if (
+                        !current || !current.isConnected || !current.form ||
+                        current.value !== secondPrompt
+                    ) {
+                        if (Date.now() > deadline) {
+                            state.error = "follow-up composer did not settle";
+                            return;
+                        }
+                        setTimeout(() => sendFollowUp(deadline), 25);
+                        return;
+                    }
+                    current.form.requestSubmit();
+                    state.submitted = true;
+                });
             };
 
             window.fetch = async (...a) => {
@@ -1267,6 +1360,32 @@ with sync_playwright() as p:
             f"{state['intercepted']})"
         )
 
+    # Settle before the five-turn sequence below: two bubbles, nothing streaming,
+    # nothing queued. That is the whole job of this wait. What the turns SAID is
+    # not checked here and never was; the queue behaviour this step exists to
+    # prove is `state.queueSeen` above.
+    #
+    # This used to also require every reply's innerText to be non-empty, which
+    # measured the action bar, not the reply. innerText of a message root spans
+    # the whole subtree, and the assistant action bar sits inside it, so the
+    # clause was satisfied by button labels ("Copy Edit response Refresh Delete
+    # message Read aloud More" plus the tok/s readout) whatever the model
+    # returned. Instrumented at this exact point on the CI runners, comparing the
+    # message content element against the message root, two passing runs read:
+    #
+    #   content=[0, 0]   innerText=[73, 73]  -> clause held, both replies empty
+    #   content=[0, 19]  innerText=[73, 89]  -> clause held, first reply empty
+    #
+    # gemma-3-270m-it answers "Reply with exactly: rapid-first" with an empty
+    # completion often enough to appear in 3 of 8 sampled runs, and the clause
+    # held anyway every time, so it never had the coverage its wording implies.
+    # A content-based replacement would be flakier than what it replaces, because
+    # an empty completion is the model's behaviour, not a defect in Unsloth.
+    #
+    # It matters now because the assistant action bar autohides on every reply but
+    # the newest, so for the older of the two this reads, the labels are no longer in
+    # the subtree and the clause finally started reporting what it was actually
+    # measuring: a hidden hover affordance.
     page.wait_for_function(
         """(want) => {
             const replies = Array.from(
@@ -1274,7 +1393,6 @@ with sync_playwright() as p:
             ).slice(-2);
             return replies.length === 2 &&
                 document.querySelectorAll('[data-role="assistant"]').length >= want &&
-                replies.every((reply) => (reply.innerText || '').trim().length > 0) &&
                 !document.querySelector('button[aria-label="Stop generating"]') &&
                 !document.querySelector('button[aria-label="Remove queued prompt 1"]');
         }""",
@@ -1566,7 +1684,7 @@ with sync_playwright() as p:
             opened = False
             for attempt in range(2):
                 try:
-                    acct.click(force = True)
+                    click_forced(acct)
                 except Exception as exc:
                     if attempt == 1:
                         soft_fail(f"theme cycle {cycle + 1}: account-menu click failed ({exc!r})")
@@ -1600,10 +1718,10 @@ with sync_playwright() as p:
             for click_attempt in range(3):
                 try:
                     if click_attempt == 0:
-                        theme_item.click(force = True, timeout = 3_000)
+                        click_forced(theme_item, timeout = 3_000)
                     elif click_attempt == 1:
                         theme_item.scroll_into_view_if_needed(timeout = 2_000)
-                        theme_item.click(force = True, timeout = 3_000)
+                        click_forced(theme_item, timeout = 3_000)
                     else:
                         theme_item.evaluate("el => el.click()")
                     click_err = None
@@ -1698,7 +1816,7 @@ with sync_playwright() as p:
                 page.wait_for_timeout(500)
                 item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
                 if item.count() == 0:
-                    more_btn.click(force = True)
+                    click_forced(more_btn)
                     page.wait_for_timeout(500)
                     item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
                 if item.count() > 0:
@@ -1711,7 +1829,7 @@ with sync_playwright() as p:
         # though the button is visible + enabled (belt-and-suspenders
         # atop the startViewTransition neutraliser).
         try:
-            btn.click(force = True, timeout = 5_000)
+            click_forced(btn, timeout = 5_000)
         except Exception as exc:
             soft_fail(f"nav '{label}' click failed: {exc!r}")
             return False
@@ -1729,7 +1847,7 @@ with sync_playwright() as p:
     # Compare moved into the composer "Tools and attachments" menu.
     plus_btn = page.get_by_role("button", name = re.compile(r"Tools and attachments", re.I)).first
     if plus_btn.count() > 0:
-        plus_btn.click(force = True)
+        click_forced(plus_btn)
         page.wait_for_timeout(400)
         compare_item = page.get_by_role("menuitem", name = re.compile(r"Compare chat", re.I)).first
         if compare_item.count() == 0:
@@ -1743,13 +1861,13 @@ with sync_playwright() as p:
                     "menuitem", name = re.compile(r"Compare chat", re.I)
                 ).first
                 if compare_item.count() == 0:
-                    more_trigger.click(force = True)
+                    click_forced(more_trigger)
                     page.wait_for_timeout(400)
                     compare_item = page.get_by_role(
                         "menuitem", name = re.compile(r"Compare chat", re.I)
                     ).first
         if compare_item.count() > 0:
-            compare_item.click(force = True)
+            click_forced(compare_item)
             page.wait_for_timeout(800)
             if not re.search(r"/chat\?", page.url):
                 soft_fail(f"'Compare chat' didn't open compare; current: {page.url}")

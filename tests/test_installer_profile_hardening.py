@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+from unsloth_pwsh_runner import run_pwsh
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 STUDIO_COMMAND = REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
@@ -196,7 +198,7 @@ def test_setup_ps1_handoff_never_inherits_the_profile():
     whole file is about ran setup.ps1 with the user's profile loaded and its bare `uv` calls
     exposed to the same alias."""
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
-    start = _locate(src, 'powershell_args = ["powershell.exe"]', "the setup.ps1 launch")
+    start = _locate(src, "powershell_args = [powershell]", "the setup.ps1 launch")
     branch = _locate(src[start:], "_should_hide_windows_subprocesses()", "the hidden-window branch")
     assert (
         '"-NoProfile"' in src[start : start + branch]
@@ -284,7 +286,10 @@ def _profile_paths(env: dict[str, str]) -> dict[str, Path]:
     branch, which is only PowerShell's fallback when XDG_CONFIG_HOME is unset, so on a host that
     exports it the fixture wrote a file pwsh never opened and the profile silently did not apply.
     """
-    res = subprocess.run(
+    # This asks pwsh where its own profiles live, and every fixture below plants a file at
+    # the answer. An interpreter that dies here returns no paths at all, which would read as
+    # pwsh reporting nothing rather than as pwsh never having started.
+    res = run_pwsh(
         [
             shutil.which("pwsh") or "pwsh",
             "-NoProfile",
@@ -327,7 +332,9 @@ def _run_with_profile(
     script = tmp_path / "body.ps1"
     script.write_text(f". {_ps_literal(profile_path)}\n{body}\n", encoding = "utf-8")
     # Absolute path: PATH is replaced in some cases, so pwsh could not be found by name.
-    return subprocess.run(
+    # This helper carries most of the hostile-profile suite, so an interpreter crash here would
+    # be reported once per test as the installer failing to survive a hostile profile.
+    return run_pwsh(
         [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
         capture_output = True,
         text = True,
@@ -387,7 +394,9 @@ def test_a_real_profile_reproduces_the_same_state(tmp_path):
     script.write_text(_STATE_PROBE, encoding = "utf-8")
 
     # -NoProfile deliberately omitted; this is the one place the profile is really loaded.
-    real = subprocess.run(
+    # The anchor compares this run against the dot-sourced simulation, so a crashed interpreter
+    # would be read as the two diverging rather than as one of them never having run.
+    real = run_pwsh(
         [shutil.which("pwsh") or "pwsh", "-NonInteractive", "-File", str(script)],
         capture_output = True,
         text = True,
@@ -659,7 +668,9 @@ def test_module_autoloading_is_restored():
 @requires_pwsh
 def test_install_ps1_parses():
     """A syntax error here is a total install failure, and the file is not imported by anything."""
-    res = subprocess.run(
+    # A nonzero exit here is claimed to mean install.ps1 has a syntax error, and pwsh aborting
+    # before it ever reached the parser exits nonzero too.
+    res = run_pwsh(
         [
             shutil.which("pwsh") or "pwsh",
             "-NoProfile",
@@ -702,7 +713,7 @@ def test_the_setup_launch_reapplies_the_proxy_it_told_the_child_to_forget():
     assert "_UNSLOTH_PS_PROXY_DEFAULTS" in prelude, "the child must read it back"
 
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
-    start = _locate(src, 'powershell_args = ["powershell.exe"]', "the setup.ps1 launch")
+    start = _locate(src, "powershell_args = [powershell]", "the setup.ps1 launch")
     # The f-string itself, not the comment above it that also quotes *>&1.
     command = _locate(src[start:], 'f"', "the -Command f-string")
     assert (
@@ -731,7 +742,9 @@ def test_only_serializable_proxy_keys_reach_the_child(tmp_path):
         encoding = "utf-8",
         newline = "",
     )
-    handoff = subprocess.run(
+    # The proxy keys are read straight out of this run's stdout, so an interpreter that
+    # died would look like the prologue publishing an empty handoff.
+    handoff = run_pwsh(
         [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(driver)],
         capture_output = True,
         text = True,
@@ -763,7 +776,9 @@ def test_the_child_restores_the_proxy_and_nothing_else(tmp_path):
         env = {k: v for k, v in os.environ.items() if k != "_UNSLOTH_PS_PROXY_DEFAULTS"}
         if value is not None:
             env["_UNSLOTH_PS_PROXY_DEFAULTS"] = value
-        return subprocess.run(
+        # Each case asserts the child launched successfully and restored exactly the proxy key,
+        # so a pwsh that aborted at startup would read as the prelude taking setup.ps1 down.
+        return run_pwsh(
             [pwsh, "-NoProfile", "-NonInteractive", "-Command", probe],
             capture_output = True,
             text = True,
@@ -824,7 +839,9 @@ def test_the_filter_takes_lowercase_keys_and_uri_values(tmp_path):
         encoding = "utf-8",
         newline = "",
     )
-    handoff = subprocess.run(
+    # Same reading here for the casing and [uri] cases: no stdout is indistinguishable from
+    # the prologue having filtered every key out.
+    handoff = run_pwsh(
         [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(driver)],
         capture_output = True,
         text = True,
@@ -865,7 +882,7 @@ def test_a_standalone_update_reconstructs_the_proxy_for_itself():
     never reach this Python process. So it is asked for, before -NoProfile drops it."""
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
     assert "_probe_profile_proxy_defaults" in src
-    start = _locate(src, 'powershell_args = ["powershell.exe"]', "the setup.ps1 launch")
+    start = _locate(src, "powershell_args = [powershell]", "the setup.ps1 launch")
     guard = _locate(src[start:], "_probe_profile_proxy_defaults(", "the probe call")
     noprofile = _locate(src[start:], '"-NoProfile"', "the -NoProfile flag")
     assert guard < noprofile, "the probe has to run while the profile is still reachable"
@@ -897,7 +914,9 @@ def test_the_probe_reads_a_hostile_profile_without_carrying_anything_else(tmp_pa
         encoding = "utf-8",
         newline = "",
     )
-    result = subprocess.run(
+    # Empty stdout is already handled below as "the planted profile was not loaded" and skips
+    # the test, so a crashed interpreter would silently retire this check instead of failing.
+    result = run_pwsh(
         [
             shutil.which("pwsh") or "pwsh",
             "-NonInteractive",
@@ -1302,7 +1321,9 @@ def test_a_stale_alias_does_not_block_a_current_uv_on_path(tmp_path):
         "@('stale', 'current')",
         f"@('{stale.as_posix()}', '{current.as_posix()}')",
     )
-    result = subprocess.run(
+    # The uv gate is judged by the first and last lines of stdout, and an interpreter crash
+    # leaves none, which the assertion would report as the gate stopping at the stale alias.
+    result = run_pwsh(
         [shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
         text = True,
