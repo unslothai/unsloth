@@ -176,7 +176,17 @@ _IDENTITY_TRANSLATIONS = ("translate",)
 # takes its text as the first argument. Matched by name rather than by proving the
 # import, which can only ever add findings: a local helper of the same name that did
 # something else to the text would still be handing built source to a sink.
-_TEXT_PRESERVING_FUNCTIONS = ("dedent", "indent")
+# Functions that hand their argument's text straight back, and the stdlib module each
+# one lives in. `copy.copy` of a `str` returns THE SAME object - strings are immutable,
+# so there is nothing to copy - and `deepcopy` does the same, which made
+# `exec(copy.copy(f"import {name}"))` a way past the gate.
+_TEXT_PRESERVING_MODULES = {
+    "textwrap": ("dedent", "indent"),
+    "copy": ("copy", "deepcopy"),
+}
+_TEXT_PRESERVING_FUNCTIONS = tuple(
+    name for names in _TEXT_PRESERVING_MODULES.values() for name in names
+)
 _NORMALISERS = (
     "strip", "lstrip", "rstrip", "upper", "lower", "title", "capitalize",
     "casefold", "swapcase", "expandtabs", "removeprefix", "removesuffix",
@@ -225,7 +235,7 @@ _CONSTRUCTOR_SOURCE_KEYWORD = {
 # none of the tracked sets.
 _MODULE_RECEIVERS = frozenset({
     "codeop", "operator", "ast", "importlib", "functools", "textwrap", "contextlib",
-    "string",
+    "string", "copy",
 })
 
 # `operator` functions that build a string out of two values, and the operator each
@@ -254,16 +264,21 @@ _CONSUMER_NAMES = frozenset({
 def _consumed_count(consumer: str, sink: str) -> int | None:
     """How many mapped elements this consumer provably evaluates. None means every one.
 
-    What decides it is what the callback RETURNS. `exec` and `eval` return None, so
-    `sum` raises on `0 + None` and `dict` raises unpacking it, both after the first
-    element; `all` stops at the first falsy result, which None is; `any` gets None for
-    every element and runs them all. `compile` returns a code object, which reverses
-    both of those: `any` stops at the first, `all` runs them all.
+    What decides it is what the callback RETURNS. `exec` returns None, so `sum` raises
+    on `0 + None` and `dict` raises unpacking it, both after the first element; `all`
+    stops at the first falsy result, which None is; `any` gets None for every element
+    and runs them all. `compile` returns a code object, which reverses both of those:
+    `any` stops at the first, `all` runs them all.
 
-    `min` and `max` pull two elements before comparing, and None (or a code object) is
-    not orderable, so they raise having evaluated exactly two.
+    `eval` returns the value of the EXPRESSION, so its truthiness is unknown and
+    neither short circuit can be relied on: `all(map(eval, ["1", f"{name}"]))` reaches
+    the second element whenever the first is truthy. Grouping it with `exec` capped the
+    walk at one element and lost that. `sum`, `dict`, `min` and `max` are unchanged,
+    since those raise on the first values whatever they are.
     """
-    returns_none = sink.rpartition(".")[2] in ("exec", "eval")
+    returns = sink.rpartition(".")[2]
+    returns_none = returns == "exec"
+    unknown = returns == "eval"
     if consumer == "next":
         return 1
     if consumer in ("sum", "dict"):
@@ -273,7 +288,7 @@ def _consumed_count(consumer: str, sink: str) -> int | None:
     if consumer == "all":
         return 1 if returns_none else None
     if consumer == "any":
-        return None if returns_none else 1
+        return None if returns_none or unknown else 1
     return None
 
 
@@ -328,6 +343,10 @@ def _constructor_name(function: ast.AST, shadowed = None, aliases = None) -> str
             named = aliases(f"constructor:{function.id}")
             if named is not None:
                 return named
+    if isinstance(function, ast.Await):
+        # `(await choose())(f"...")` calls whatever the coroutine handed back, on the
+        # same terms as the walrus below.
+        return _sink_name(function.value, aliases, shadowed)
     if isinstance(function, ast.NamedExpr):
         # `exec((text := str)(f"..."))` converts with whatever the walrus was given,
         # right here. The sink side already unwraps a named expression callee.
@@ -469,6 +488,33 @@ def _constructor_accepts_text(node: ast.Call, name: str) -> bool:
     return True
 
 
+def _expanded_call(node: ast.Call) -> ast.Call:
+    """`f(*(a, b))` rewritten as `f(a, b)` when every expansion is written out.
+
+    `partial(*(exec, f"import {name}"))()` is a valid way to spell the same call, and
+    the first AST argument is the `Starred` node rather than the sink, so neither the
+    callee nor the bound source resolved. An opaque expansion says nothing about what
+    it supplies and the call is handed back untouched.
+    """
+    if not any(isinstance(argument, ast.Starred) for argument in node.args):
+        return node
+    arguments = []
+    for argument in node.args:
+        if not isinstance(argument, ast.Starred):
+            arguments.append(argument)
+            continue
+        inner = argument.value
+        if isinstance(inner, (ast.Tuple, ast.List)) and not any(
+            isinstance(element, ast.Starred) for element in inner.elts
+        ):
+            arguments.extend(inner.elts)
+            continue
+        return node
+    return ast.copy_location(
+        ast.Call(func = node.func, args = arguments, keywords = list(node.keywords)), node,
+    )
+
+
 def _partial_call(node: ast.AST, aliases = None, shadowed = None) -> ast.Call | None:
     """`functools.partial(...)`, a bare `partial(...)`, or a recorded alias of it.
 
@@ -492,7 +538,7 @@ def _partial_call(node: ast.AST, aliases = None, shadowed = None) -> ast.Call | 
         if shadowed is not None and shadowed(owner):
             return None
         if owner == "functools" or (aliases is not None and aliases(f"functools:{owner}")):
-            return node
+            return _expanded_call(node)
         return None
     if not isinstance(function, ast.Name):
         return None
@@ -503,7 +549,7 @@ def _partial_call(node: ast.AST, aliases = None, shadowed = None) -> ast.Call | 
     # records. Accepting the spelling unconditionally reported an application-defined
     # `def partial(...)` that never invokes what it was handed.
     if aliases is not None and aliases(f"partial:{function.id}"):
-        return node
+        return _expanded_call(node)
     return None
 
 
@@ -643,6 +689,20 @@ def _literal_selection(node: ast.Subscript) -> ast.AST | None:
     value is taken, whether it is going to be executed or is going to do the executing.
     """
     container, index = node.value, node.slice
+    if isinstance(container, (ast.ListComp, ast.SetComp)):
+        # `[f"import {name}" for _ in [0]][0]` builds a list with one element written
+        # out right here and then selects it. The element is the same expression
+        # whichever index is taken, so an index this cannot read changes nothing; what
+        # has to be certain is that the comprehension produces at least one element,
+        # which needs a visibly nonempty iterable and no filters to reject it.
+        if len(container.generators) != 1:
+            return None
+        generator = container.generators[0]
+        if generator.ifs or getattr(generator, "is_async", 0):
+            return None
+        if not _visible_length(generator.iter):
+            return None
+        return container.elt
     if isinstance(container, (ast.Tuple, ast.List)):
         position, sign = index, 1
         if isinstance(position, ast.UnaryOp) and isinstance(position.op, (ast.USub, ast.UAdd)):
@@ -667,6 +727,14 @@ def _literal_selection(node: ast.Subscript) -> ast.AST | None:
 def _literal_element(node: ast.Subscript, resolve = None, shadowed = None, resolve_alias = None) -> str | None:
     """The reason for `<literal>[<constant>]`, or None when it is not that shape."""
     container, index = node.value, node.slice
+    if isinstance(container, (ast.ListComp, ast.SetComp)):
+        # A comprehension over a visibly nonempty iterable produces its element, and
+        # the same expression whichever index is taken. `_literal_selection` answers
+        # for the callee side; this is the source side of the same reading.
+        selected = _literal_selection(node)
+        if selected is None:
+            return None
+        return _is_interpolated(selected, resolve, shadowed, resolve_alias)
     if isinstance(container, (ast.Tuple, ast.List)):
         # A negative literal index is `UnaryOp(USub, Constant(1))`, not a `Constant`,
         # so requiring a constant rejected `[...][-1]` before the container was even
@@ -713,7 +781,10 @@ def _is_interpolated(node: ast.AST, resolve = None, shadowed = None, resolve_ali
     # each arm answers outright: nothing under an arm can match a node that
     # reached it. That is why a handler returning None and a handler not
     # matching stay indistinguishable, and why no sentinel is needed.
-    while isinstance(node, ast.NamedExpr):
+    while isinstance(node, (ast.NamedExpr, ast.Await)):
+        # `await` too: `exec(await build(name))` runs the coroutine and hands its
+        # result to the sink, so the awaited expression IS the source. It fell through
+        # every arm below, since an `Await` is none of the shapes they test.
         node = node.value
     if (
         isinstance(node, ast.Constant)
@@ -1108,8 +1179,11 @@ _HELPER_STACK: set = set()
 # what the name ends up bound to.
 _RESULT_PRESERVING_DECORATORS = frozenset({
     "cache", "lru_cache", "wraps", "staticmethod", "classmethod", "final",
-    "override", "no_type_check", "cached_property",
+    "override", "no_type_check",
 })
+# `cached_property` is NOT one of them: it hands back a descriptor, not a function, so
+# `@cached_property def build(): ...` followed by `build()` raises TypeError before any
+# sink is reached and reporting it failed the gate on a call that cannot run.
 
 
 def _decorator_name(node: ast.AST) -> str:
@@ -1128,12 +1202,20 @@ def _returned_expressions(definition) -> list:
 
     Its own: a `return` inside a nested `def` belongs to that one. A bare `return`
     hands back None and contributes nothing.
+
+    Reachable ones: collection stops at a statement that always leaves the body, so
+    `def build(): return "pass"` followed by `return f"import {name}"` hands back the
+    literal and nothing else. Reading the unreachable one reported a sink that can only
+    ever be given `pass`. Only the outermost suite is cut this way - a `return` under a
+    condition this cannot decide leaves everything below it standing.
     """
     found = []
     for statement in definition.body:
         for child in _walk_this_scope(statement):
             if isinstance(child, ast.Return) and child.value is not None:
                 found.append(child.value)
+        if _definitely_jumps(statement):
+            break
     return found
 
 
@@ -1679,8 +1761,12 @@ def _interpolated_call(node, resolve = None, shadowed = None, resolve_alias = No
         # The OWNER has to be `textwrap`, or a recorded alias of it. Reading the
         # attribute name alone treated `cleaner.dedent(...)` on an application object
         # as the stdlib helper and reported a call that may return anything.
-        if _names_module(function.value, "textwrap", shadowed, resolve_alias):
-            preserving = function.attr
+        for module, names in _TEXT_PRESERVING_MODULES.items():
+            if function.attr in names and _names_module(
+                function.value, module, shadowed, resolve_alias,
+            ):
+                preserving = function.attr
+                break
     if preserving not in _TEXT_PRESERVING_FUNCTIONS and isinstance(function, ast.Name):
         # `from textwrap import dedent as clean` binds the same function under a
         # different name, and matching on the spelling alone stopped before the
@@ -1750,27 +1836,11 @@ def _interpolated_call(node, resolve = None, shadowed = None, resolve_alias = No
             return _is_interpolated(
                 ast.copy_location(equivalent, node), resolve, shadowed, resolve_alias,
             )
-    if (
-        isinstance(function, ast.Attribute)
-        and function.attr == "pop"
-        # A list, not a tuple: a tuple has no `pop`, so `(f"...",).pop()` raises
-        # AttributeError before the sink is reached and reporting it failed the gate
-        # on a call that cannot execute.
-        and isinstance(function.value, ast.List)
-        and function.value.elts
-        and not any(isinstance(element, ast.Starred) for element in function.value.elts)
-        and not node.keywords
-    ):
-        # `[f"..."].pop()` returns the last element of a container written out right
-        # here, and `[a, b].pop(0)` the one it names. Only the mapping spelling was
-        # read, so the list one selected and executed source with nothing reported.
-        elements = function.value.elts
-        if not node.args:
-            return _is_interpolated(elements[-1], resolve, shadowed, resolve_alias)
-        index = _constant_integer(node.args[0]) if len(node.args) == 1 else None
-        if index is not None and -len(elements) <= index < len(elements):
-            return _is_interpolated(elements[index], resolve, shadowed, resolve_alias)
-        return None
+    if _pops_a_written_out_list(node):
+        popped = _literal_pop(node)
+        if popped is None:
+            return None
+        return _is_interpolated(popped, resolve, shadowed, resolve_alias)
     if isinstance(function, ast.Attribute):
         literal_mapping = (
             _mapping_literal(function.value, shadowed)
@@ -1780,6 +1850,25 @@ def _interpolated_call(node, resolve = None, shadowed = None, resolve_alias = No
         # container binding now records under its negative index. A named receiver fell
         # through the inline-display branch above and the selected source went
         # unreported.
+        if (
+            function.attr == "setdefault"
+            and len(node.args) == 2
+            and not node.keywords
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            # `{}.setdefault("x", f"import {name}")` stores the default and hands it
+            # back, so the f-string is what runs. A key the mapping already holds gives
+            # the stored value instead. Only a mapping written out right here, the same
+            # reading `get` gets.
+            mapping = _mapping_literal(function.value, shadowed)
+            if mapping is not None:
+                found = _mapping_lookup(mapping, node.args[0].value)
+                if found is None or _uncertain_lookup(mapping):
+                    found = (
+                        node.args[1] if found is None
+                        else _either_value(found, node.args[1])
+                    )
+                return _is_interpolated(found, resolve, shadowed, resolve_alias)
         selected_key = None
         if function.attr in ("get", "pop") and node.args and isinstance(
             node.args[0], ast.Constant
@@ -2553,6 +2642,40 @@ def _lambda_result(call: ast.Call):
     return None if bound is None else bound.get(body.id)
 
 
+def _pops_a_written_out_list(node: ast.AST) -> bool:
+    """Whether `node` is `[...].pop(...)` on a list written out right here.
+
+    A list, not a tuple: a tuple has no `pop`, so `(f"...",).pop()` raises
+    AttributeError before anything is reached, and reporting it failed the gate on a
+    call that cannot execute.
+    """
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "pop"
+        and isinstance(node.func.value, ast.List)
+        and bool(node.func.value.elts)
+        and not any(isinstance(element, ast.Starred) for element in node.func.value.elts)
+        and not node.keywords
+    )
+
+
+def _literal_pop(node: ast.AST):
+    """The element `[...].pop()` hands back, when the list is written out.
+
+    The LAST element with nothing named, and the one a constant index names.
+    """
+    if not _pops_a_written_out_list(node):
+        return None
+    elements = node.func.value.elts
+    if not node.args:
+        return elements[-1]
+    index = _constant_integer(node.args[0]) if len(node.args) == 1 else None
+    if index is not None and -len(elements) <= index < len(elements):
+        return elements[index]
+    return None
+
+
 def _folded_text(node: ast.AST) -> ast.AST:
     """A written-out concatenation of string literals, folded to one constant.
 
@@ -2754,6 +2877,15 @@ def _sink_name(function: ast.AST, aliases = None, shadowed = None) -> str | None
                         return resolved
             finally:
                 _HELPER_STACK.discard(helper.name)
+    if isinstance(function, ast.Call):
+        # `[exec].pop()(f"...")` selects the callee out of a list written out right
+        # here, which the source side already reads. The callee side fell through to
+        # the `getattr` resolver and read nothing.
+        popped = _literal_pop(function)
+        if popped is not None:
+            resolved = _sink_name(popped, aliases, shadowed)
+            if resolved is not None:
+                return resolved
     if isinstance(function, ast.Call):
         # `next(iter([exec]))(f"...")` selects the callee out of a container written out
         # right here, exactly as `[exec][0](...)` does. The unwrapping was only applied
@@ -4823,26 +4955,22 @@ class _Visitor(ast.NodeVisitor):
         self._visit_suite(node.body if decided else node.orelse)
 
     def visit_AsyncWith(self, node):
-        """`async with nullcontext(...)` raises: it has no `__aenter__`.
+        """`async with` does not tell you what the target holds.
 
-        Checked on CPython: `async with contextlib.nullcontext(x)` answers
-        `TypeError: 'async with' received an object that does not implement
-        __aenter__`, so the body never runs. Aliasing this to `visit_With` inferred
-        what the target held from the synchronous constructor and reported a call in a
-        suite that cannot execute. Only that one inference is dropped; everything else
-        `visit_With` does - the unconditional rebinding, the shadowing, visiting the
-        context expressions - still applies, since an ordinary async manager does run
-        its body.
+        Aliasing this to `visit_With` inferred the target's value from the SYNCHRONOUS
+        constructor, which says nothing about what `__aenter__` hands over. Only that
+        inference is dropped; everything else `visit_With` does - the unconditional
+        rebinding, the shadowing, visiting the context expressions and the body - still
+        applies.
+
+        `nullcontext` is no longer treated as un-enterable here. It gained
+        `__aenter__`/`__aexit__` in 3.10, so `async with contextlib.nullcontext():`
+        enters normally on every interpreter this checker targets except 3.9, and
+        skipping the body hid a sink inside one. Scanning it is the conservative
+        reading across the supported range.
         """
         for item in node.items:
             self.visit(item.context_expr)
-            if _is_nullcontext_call(item.context_expr, self._alias, self._is_shadowed):
-                # A written-out `nullcontext` cannot be entered asynchronously, and
-                # items are entered LEFT TO RIGHT, so nothing after this one is even
-                # evaluated - the context expression of the next item included. Testing
-                # every item first visited those expressions and reported a sink in one
-                # of them. The body does not run either.
-                return
             if item.optional_vars is not None:
                 self.visit(item.optional_vars)
                 for child in ast.walk(item.optional_vars):
@@ -5483,7 +5611,10 @@ class _Visitor(ast.NodeVisitor):
                         continue
                     if qualified in _DIRECT_HELPERS:
                         self.collected_aliases[-1][f"stdlibfunc:{bound}"] = qualified
-                    elif statement.module == "textwrap" and alias.name in _TEXT_PRESERVING_FUNCTIONS:
+                    elif (
+                        statement.module in _TEXT_PRESERVING_MODULES
+                        and alias.name in _TEXT_PRESERVING_MODULES[statement.module]
+                    ):
                         self.collected_aliases[-1][f"text:{bound}"] = alias.name
                     elif statement.module == "functools" and alias.name == "partial":
                         self.collected_aliases[-1][f"partial:{bound}"] = "partial"
@@ -5790,9 +5921,9 @@ class _Visitor(ast.NodeVisitor):
                 self.shadowed_sinks[-1].discard(bound)
                 continue
             if (
-                node.module == "textwrap"
+                node.module in _TEXT_PRESERVING_MODULES
                 and not node.level
-                and alias.name in _TEXT_PRESERVING_FUNCTIONS
+                and alias.name in _TEXT_PRESERVING_MODULES[node.module]
             ):
                 # `from textwrap import dedent as clean` gives `clean` the same
                 # function, and matching the callee spelling alone stopped before the
@@ -6964,6 +7095,61 @@ class _Visitor(ast.NodeVisitor):
                     "hash": _call_hash(inner),
                 })
 
+    def _bind_update_elements(self, node: ast.Call) -> None:
+        """`payloads.update(run = f"...")` writes the element `payloads["run"]` holds.
+
+        A mapping populated after it is bound reaches the sink through the ordinary
+        subscript, and the binding pass only ever saw the display written at the
+        assignment - so `payloads = {}` followed by an update stored built source that
+        nothing recorded. Only visible keys: plain keywords, and a literal mapping
+        argument. A `**` of anything else supplies names this cannot read and is left
+        alone.
+        """
+        function = node.func
+        if not isinstance(function, ast.Attribute) or function.attr != "update":
+            return
+        if not isinstance(function.value, (ast.Name, ast.Attribute, ast.Subscript)):
+            return
+        pairs = []
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                mapping = _mapping_literal(keyword.value, self._is_shadowed)
+                if mapping is None:
+                    return
+                for key, item in zip(mapping.keys, mapping.values):
+                    if isinstance(key, ast.Constant) and isinstance(key.value, (str, int)):
+                        pairs.append((key.value, item))
+                continue
+            pairs.append((keyword.arg, keyword.value))
+        for argument in node.args:
+            mapping = _mapping_literal(argument, self._is_shadowed)
+            if mapping is None:
+                return
+            for key, item in zip(mapping.keys, mapping.values):
+                if isinstance(key, ast.Constant) and isinstance(key.value, (str, int)):
+                    pairs.append((key.value, item))
+        for key, item in pairs:
+            path = _compound_key(
+                ast.Subscript(
+                    value = function.value,
+                    slice = ast.Constant(value = key),
+                    ctx = ast.Load(),
+                )
+            )
+            if path is None:
+                continue
+            resolved = _sink_name(item, self._alias, self._is_shadowed)
+            if resolved is not None:
+                for table in (self.sink_aliases, self.collected_aliases):
+                    table[-1][path] = resolved.rpartition(".")[2]
+            reason = _is_interpolated(
+                item, self.tainted[-1].get, self._is_shadowed, self._alias,
+            )
+            if reason is not None and not isinstance(reason, _LiteralText):
+                self.tainted[-1][path] = reason
+            else:
+                self.tainted[-1].pop(path, None)
+
     def _wrapper_sink_calls(self, node: ast.Call):
         """`(sink, argument, inner)` for `def run(source): exec(source)` called here.
 
@@ -7064,6 +7250,7 @@ class _Visitor(ast.NodeVisitor):
                     "line": inner.lineno,
                     "hash": _call_hash(inner),
                 })
+        self._bind_update_elements(node)
         for wrapped_sink, supplied, helper in self._wrapper_sink_calls(node):
             reason = _is_interpolated(
                 supplied, self.tainted[-1].get, self._is_shadowed, self._alias,
@@ -8317,6 +8504,13 @@ def _python_dash_c_commands(text: str):
         # consider the command finished.
         command, last = line, index
         while last + 1 < len(lines) and last - index < _COMMAND_LINE_LIMIT:
+            # A trailing backslash continues the command on the next line, so
+            # `python \` with `-c '...'` below it is one command. Reading the first
+            # line alone found no `-c` and the program went unread.
+            if command.rstrip().endswith("\\"):
+                last += 1
+                command = f"{command.rstrip()[:-1]}{lines[last]}"
+                continue
             try:
                 shlex.split(command, comments = True)
                 break

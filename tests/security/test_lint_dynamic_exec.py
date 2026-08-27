@@ -194,6 +194,8 @@ def test_an_unjustified_allowlist_entry_fails(tmp_path):
 
 # The callee is written some other way and still resolves to the builtin.
 _SINK_IS_STILL_RESOLVED = {
+    'a sink popped from a written-out list is still the builtin': 'def f(name):\n    [exec].pop()(f"import {name}")\n',
+    'a partial built from a written-out expansion still binds the sink': 'from functools import partial\ndef f(name):\n    partial(*(exec, f"import {name}"))()\n',
     'a helper hands back a choice between the sink and something else': 'import builtins\ndef choose(run, flag):\n    return run if flag else print\ndef f(name):\n    choose(builtins.exec, True)(f"import {name}")\n',
     'a sink on a class is the builtin through an instance too': 'import builtins\nclass Runner:\n    run = builtins.exec\ndef f(name):\n    Runner().run(f"import {name}")\n',
     'a constant f-string names the same builtin': 'import builtins\ndef f(name):\n    getattr(builtins, f"{\'exec\'}")(f"import {name}")\n',
@@ -313,6 +315,11 @@ def test_a_text_constructor_reached_through_another_spelling_is_reported(descrip
 
 # The built string survives a lookup, an operator, a wrapper or a spread.
 _SOURCE_SURVIVES_THE_SHAPE = {
+    'a comprehension over a nonempty iterable produces its element': 'def f(name):\n    exec([f"import {name}" for _ in [0]][0])\n',
+    'setdefault stores the default and hands it back': 'def f(name):\n    exec({}.setdefault("x", f"import {name}"))\n',
+    'copy of a string is the same string': 'import copy\ndef f(name):\n    exec(copy.copy(f"import {name}"))\n',
+    'await hands back what the coroutine built': 'async def build(name):\n    return f"import {name}"\nasync def f(name):\n    exec(await build(name))\n',
+    'all reaches past an eval whose value it cannot know': 'def f(name):\n    all(map(eval, ["1", f"{name}"]))\n',
     'a slice that may keep the spliced value still executes it': 'def f():\n    exec(f"{input()}"[:1000])\n',
     'a wrapper executes what its caller built': 'def run(source):\n    exec(source)\ndef f(name):\n    run(f"import {name}")\n',
     'a default cannot be reached past a written-out element': 'def f(name):\n    exec(next(iter([f"import {name}"]), "pass"))\n',
@@ -403,6 +410,9 @@ def test_a_source_that_survives_its_wrapper_is_reported(description, tmp_path):
 
 # One level of local indirection: an alias of a name that holds a built string.
 _TAINT_TRAVELS_THROUGH_A_BINDING = {
+    'a second context expression runs once the first is entered': 'import contextlib\nasync def f(name, manager):\n    async with contextlib.nullcontext(), manager(exec(f"import {name}")):\n        pass\n',
+    'update writes the element the subscript then reads': 'def f(name):\n    payloads = {}\n    payloads.update(run = f"import {name}")\n    exec(payloads["run"])\n',
+    'an async with that enters still runs its body': 'import contextlib\nasync def f(name):\n    async with contextlib.nullcontext():\n        exec(f"import {name}")\n',
     'pop with nothing named takes the last element': 'def f(name):\n    payloads = [f"import {name}"]\n    exec(payloads.pop())\n',
     'a closure reads an alias bound after the def': 'def f(name):\n    payload = f"import {name}"\n    def inner():\n        exec(alias)\n    alias = payload\n    inner()\n',
     'a helper in one function is not the helper in another': 'def harmless():\n    def build():\n        return "pass"\n    return exec(build())\ndef vulnerable(name):\n    def build():\n        return f"import {name}"\n    exec(build())\n',
@@ -451,6 +461,8 @@ def test_taint_carried_through_a_binding_is_reported(description, tmp_path):
 
 # Shadowed, unreachable, unbound or unable to build a string at all.
 _NOTHING_REACHES_THE_SINK = {
+    'a cached_property is a descriptor, not a callable': 'from functools import cached_property\n@cached_property\ndef build(name):\n    return f"import {name}"\ndef f(name):\n    exec(build())\n',
+    'a return below an unconditional return never runs': 'def build(name):\n    return "pass"\n    return f"import {name}"\ndef f(name):\n    exec(build(name))\n',
     'exec has no such keyword': 'def f(name):\n    exec(f"import {name}", spam = 1)\n',
     'eval has no such keyword either': 'def f(name):\n    eval(f"1 + {name}", spam = 1)\n',
     'compile has no such keyword either': 'def f(name):\n    compile(f"import {name}", "<x>", "exec", spam = 1)\n',
@@ -503,7 +515,6 @@ _NOTHING_REACHES_THE_SINK = {
     'a format method on a locally defined class is not a builder': 'class Safe:\n    def format(self, value):\n        return "pass"\ndef f(name):\n    exec(Safe().format(name))\n',
     'a written-out expansion says how many arguments it supplies': 'def f(name):\n    compile(*[f"import {name}"])\n',
     'a written-out mapping expansion names the keys it supplies': 'def f(name):\n    compile(**{"source": f"import {name}"})\n',
-    'an async with stops at the context it cannot enter': 'import contextlib\nasync def f(name, manager):\n    async with contextlib.nullcontext(), manager(exec(f"import {name}")):\n        pass\n',
     'a field-free template held by a name ignores its arguments': 'def f(user):\n    template = "pass"\n    exec(template.format(user))\n',
     'a field-free format_map template ignores its mapping': 'def f(name):\n    exec("pass".format_map({"x": name}))\n',
     'compile without a filename and a mode raises first': 'def f(name):\n    compile(f"import {name}")\n',
@@ -940,3 +951,23 @@ def test_composite_actions_are_scanned_where_they_exist():
     assert '".github/actions"' in source, (
         "this repository ships composite actions, so they belong in DEFAULT_TARGETS"
     )
+
+
+_WORKFLOW_CONTINUES_A_LINE = """name: demo
+on: [push]
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          python \\
+            -c 'exec(f"import {name}")'
+"""
+
+
+def test_a_continued_shell_command_is_joined(tmp_path):
+    """A trailing backslash continues the command, so the `-c` is on the next line."""
+    sample = tmp_path / "demo.yml"
+    sample.write_text(_WORKFLOW_CONTINUES_A_LINE)
+    proc = _run("--paths", str(sample))
+    assert proc.returncode == 1, f"{proc.stdout}\n{proc.stderr}"
