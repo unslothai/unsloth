@@ -16027,34 +16027,31 @@ async def transcribe_audio_raw(
 
 def _decode_audio_base64(b64: str) -> "np.ndarray":
     """Decode base64 audio (any format) → float32 numpy array at 16kHz."""
-    import torchaudio
-    import tempfile
-    import os
-    from utils.paths import ensure_dir, tmp_root
+    import numpy as np
 
+    if b64.startswith("data:"):
+        b64 = b64.split(",", 1)[1] if "," in b64 else ""
     raw = base64.b64decode(b64)
-    # torchaudio.load needs a path or file-like with a format hint; write a
-    # temp file so it can auto-detect the format.
-    with tempfile.NamedTemporaryFile(
-        suffix = ".audio",
-        delete = False,
-        dir = str(ensure_dir(tmp_root())),
-    ) as tmp:
-        tmp.write(raw)
-        tmp_path = tmp.name
-    try:
-        waveform, sr = torchaudio.load(tmp_path)
-    finally:
-        os.unlink(tmp_path)
-
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim = 0, keepdim = True)
+    arr, sr = _decode_audio_mono(raw)
 
     if sr != 16000:
-        resampler = torchaudio.transforms.Resample(orig_freq = sr, new_freq = 16000)
-        waveform = resampler(waveform)
+        try:
+            import torchaudio
+            import torch
 
-    return waveform.squeeze(0).numpy()
+            resampler = torchaudio.transforms.Resample(orig_freq = sr, new_freq = 16000)
+            tensor = torch.from_numpy(arr).unsqueeze(0)
+            arr = resampler(tensor).squeeze(0).numpy()
+        except Exception:
+            try:
+                import librosa
+
+                arr = librosa.resample(arr, orig_sr = sr, target_sr = 16000)
+            except Exception:
+                arr = _resample_mono_linear(arr, sr, 16000)
+
+    return arr.astype(np.float32) if hasattr(arr, "astype") else arr
+
 
 
 # Reject oversized audio before decoding. base64 inflates raw bytes by ~4/3, so
