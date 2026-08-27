@@ -849,6 +849,4 @@ def test_a_continuation_is_sized_by_what_is_left_of_the_cap(monkeypatch):
 
     assert len(payloads) == 2, "the answer was not continued"
     assert payloads[1]["max_tokens"] == 100, "the payload did not get the remainder"
-    assert 100 in targets, (
-        f"every sizing decision still used the whole cap: {sorted(set(targets))}"
-    )
+    assert 100 in targets, f"every sizing decision still used the whole cap: {sorted(set(targets))}"

@@ -791,6 +791,6 @@ def test_an_attempt_that_reports_no_usage_is_not_charged_the_previous_one(monkey
 
     usage = _metadata(_run_no_tools(backend))["usage"]
 
-    assert usage["completion_tokens"] == 700, (
-        f"the first attempt's 700 tokens were counted twice: {usage['completion_tokens']}"
-    )
+    assert (
+        usage["completion_tokens"] == 700
+    ), f"the first attempt's 700 tokens were counted twice: {usage['completion_tokens']}"
