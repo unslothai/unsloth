@@ -181,13 +181,6 @@ except ModuleNotFoundError:
 except:
     raise
 
-# PyTorch reads this gate at the first SDPA capability check, not at import. Identify the exact
-# runtime first so an Unsloth import cannot enable unvalidated experimental kernels.
-from ._rocm_attention import enable_rocm_aotriton_attention as _enable_rocm_aotriton_attention
-
-_enable_rocm_aotriton_attention(torch_module = torch)
-del _enable_rocm_aotriton_attention
-
 from unsloth_zoo.device_type import (
     is_hip,
     get_device_type,
