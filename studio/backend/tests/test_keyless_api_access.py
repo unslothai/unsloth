@@ -394,7 +394,7 @@ def test_desktop_password_setup_does_not_block_keyless_access(monkeypatch):
         assert subject_of(request) == storage.DEFAULT_ADMIN_USERNAME
 
 
-def test_setup_is_still_owed_after_keyless_access(monkeypatch):
+def test_setup_is_still_owed_after_keyless_access():
     """Admitting a keyless caller must not settle the password setup it skipped.
 
     The UI routes to /change-password off ``/api/auth/status``, which takes no auth
