@@ -18,8 +18,8 @@ import {
   PlayIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useRouterState } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { Link, useRouterState } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { RESUMABLE_STATES } from "./download-manager-config";
 import {
   type DownloadRequest,
@@ -247,7 +247,8 @@ export function DownloadManagerPanel({
 }: { positioned?: boolean } = {}) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const enabled = canUseDownloadManager(pathname);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
+  const previousActiveCount = useRef(0);
 
   useEffect(() => {
     if (!enabled) return;
@@ -259,7 +260,14 @@ export function DownloadManagerPanel({
   const activeCount = useDownloadManagerStore(selectActiveJobCount);
   const resumableCount = useDownloadManagerStore(selectResumableJobCount);
 
-  if (!enabled || jobKeys.length === 0) return null;
+  useEffect(() => {
+    if (activeCount > 0 && previousActiveCount.current === 0) {
+      setCollapsed(false);
+    }
+    previousActiveCount.current = activeCount;
+  }, [activeCount]);
+
+  if (!enabled) return null;
 
   const attentionCount = activeCount + resumableCount;
   const headerLabel =
@@ -322,11 +330,27 @@ export function DownloadManagerPanel({
               />
             </button>
           </div>
-          <ul className="max-h-[60dvh] divide-y divide-foreground/[0.06] overflow-y-auto [scrollbar-width:thin]">
-            {jobKeys.map((jobKey) => (
-              <DownloadRow key={jobKey} jobKey={jobKey} />
-            ))}
-          </ul>
+          {jobKeys.length === 0 ? (
+            <div className="flex flex-col gap-2 px-4 py-3 text-ui-12 text-muted-foreground">
+              <p>
+                No downloads yet. Interrupted transfers stay here so you can
+                resume them.
+              </p>
+              <Link
+                to="/hub"
+                search={{ tab: "downloaded" }}
+                className="text-ui-12p5 font-medium text-foreground underline-offset-2 hover:underline"
+              >
+                Open Model hub
+              </Link>
+            </div>
+          ) : (
+            <ul className="max-h-[60dvh] divide-y divide-foreground/[0.06] overflow-y-auto [scrollbar-width:thin]">
+              {jobKeys.map((jobKey) => (
+                <DownloadRow key={jobKey} jobKey={jobKey} />
+              ))}
+            </ul>
+          )}
         </div>
       )}
     </div>
