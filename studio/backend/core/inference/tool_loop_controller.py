@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import copy
 import json
-import re
 from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
