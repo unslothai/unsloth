@@ -17447,6 +17447,9 @@ class LlamaCppBackend:
                 # The pageable rewrite a CPU replay applied, kept across attempts: the
                 # env is shared, so only the first replay to need it produces a note.
                 _replay_pageable_override: Optional[str] = None
+                # Set by the restored cpu_fallback path, consumed once the launch is
+                # healthy: str carries that replay's override note, True means none.
+                _restored_cpu_reprice: Union[str, bool, None] = None
                 # Whether Unsloth's placement planner actually RAN and came back
                 # unable to fit the model. `use_fit` alone cannot answer that: it
                 # starts True at its declaration below and is also what the except
@@ -22063,6 +22066,15 @@ class LlamaCppBackend:
                         # and a no-op on a load whose warning the opt-out silenced, which
                         # keeps the log line as its only record.
                         self._amend_load_warning(_replay_pageable_note)
+                        # This replay is CPU-only by construction (--device none), so
+                        # the advisory has to describe the whole model in host RAM. The
+                        # amend above can only add to a notice that already exists, and
+                        # on a restored fallback there often is none: an empty Vulkan
+                        # probe leaves _child_has_no_gpu False, so the preflight
+                        # abstained and memory_warning was null for a session paging
+                        # everything from disk. Deferred rather than priced here,
+                        # because only a child that came up is evidence of what runs.
+                        _restored_cpu_reprice = _replay_pageable_note or True
                         # Same normalization the crash path applies, so a client that
                         # sent only the flag cannot leave a CPU-only server reporting
                         # an Auto/GPU placement (which then fails holds_no_vram).
@@ -22863,6 +22875,22 @@ class LlamaCppBackend:
                                 )
                             )
 
+                if _restored_cpu_reprice is not None:
+                    # The child that answered is the CPU-only replay, so price the
+                    # advisory against the whole model in system RAM, against the pool
+                    # the preflight read rather than a live one taken with the weights
+                    # already resident.
+                    self._reprice_after_cpu_only_fallback(
+                        host_msg = _host_ram_msg,
+                        cpu_cmd = _last_spawn_cmd or cmd,
+                        env = env,
+                        avail_mib = _preflight_avail_mib,
+                        pageable_note = (
+                            _restored_cpu_reprice
+                            if isinstance(_restored_cpu_reprice, str)
+                            else None
+                        ),
+                    )
                 self._healthy = True
                 self._commit_effective_parallel_slots(n_parallel)
                 self._swa_full = swa_full

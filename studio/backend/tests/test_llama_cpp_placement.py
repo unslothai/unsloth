@@ -3516,3 +3516,45 @@ def test_a_pinned_load_that_fits_the_card_it_got_keeps_its_mode(tmp_path, monkey
 
     assert _unmapped_tokens(cmd) == ["--no-mmap"], f"the fitting load lost its mode: {cmd}"
     assert backend.last_load_warning is None
+
+
+def test_a_restored_cpu_fallback_is_priced_against_host_ram(tmp_path, monkeypatch):
+    """A persisted cpu_fallback load reconstructs the CPU-only replay directly, with
+    no crash to price around, so nothing upstream ever warned about it.
+
+    The Vulkan probe returns an empty pool on this shape, which leaves
+    `_child_has_no_gpu` False and makes the preflight abstain, so there is no notice
+    for the amend on that path to add to. The child then serves the whole model out of
+    system RAM and `memory_warning` came back null for it, which is the session that
+    most needs the advisory.
+    """
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 4_000, avail_mib = 12_000
+    )
+    # The probe comes back EMPTY, which is the shape that makes the preflight abstain:
+    # _child_has_no_gpu credits _cpu_only_zero_offload only when a device was detected,
+    # so with no rows it stays False and the guard cannot tell an unreadable pool from
+    # a host with no GPU. A row reporting zero free is a different, already-warned case.
+    backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
+
+    _launch_with_vulkan_cpu_replay(backend, gguf, crash = False, cpu_fallback = True)
+
+    warning = backend.last_load_warning or ""
+    assert "20 GB" in warning, (
+        f"a restored CPU-only session reported nothing about paging the model: {warning!r}"
+    )
+
+
+def test_a_restored_cpu_fallback_the_host_can_hold_says_nothing(tmp_path, monkeypatch):
+    """The control. Same restored path, a host with room: no shortfall, so no advisory
+    is invented for a session that is running comfortably."""
+    backend, gguf = _vulkan_cpu_replay_backend(
+        tmp_path, monkeypatch, gguf_gb = 20.0, free_mib = 4_000, avail_mib = 64_000
+    )
+    backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
+
+    _launch_with_vulkan_cpu_replay(backend, gguf, crash = False, cpu_fallback = True)
+
+    assert backend.last_load_warning is None
