@@ -42,27 +42,34 @@ const BARREL = "@/features/chat";
 function barrelValueNames(
   source: ts.SourceFile,
   // A re-export hands out the same live binding, so importing from a bridge is
-  // importing from the barrel. Callers with the module graph pass a predicate.
-  carriesBarrelValues: (specifier: string) => boolean = (s) => s === BARREL,
+  // importing from the barrel. Asked per imported name, not per module: a
+  // bridge also exports values of its own, and those are ordinary imports.
+  // `exported` is undefined when the whole module is taken, as by `import *`.
+  carriesBarrelValues: (specifier: string, exported?: string) => boolean = (s) => s === BARREL,
 ): Set<string> {
   const names = new Set<string>();
   for (const statement of source.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
     const specifier = statement.moduleSpecifier;
-    if (!ts.isStringLiteral(specifier) || !carriesBarrelValues(specifier.text)) continue;
+    if (!ts.isStringLiteral(specifier)) continue;
+    const from = specifier.text;
     const clause = statement.importClause;
     // Erased before the code runs, so it cannot trip a dead zone.
     if (!clause || clause.isTypeOnly) continue;
-    if (clause.name) names.add(clause.name.text); // default import
+    if (clause.name && carriesBarrelValues(from, "default")) {
+      names.add(clause.name.text);
+    }
     const bound = clause.namedBindings;
     if (!bound) continue;
     if (ts.isNamespaceImport(bound)) {
-      names.add(bound.name.text);
+      if (carriesBarrelValues(from)) names.add(bound.name.text);
       continue;
     }
     for (const element of bound.elements) {
       if (element.isTypeOnly) continue;
-      // element.name is the LOCAL name, so `X as y` correctly yields `y`.
+      // propertyName is the name on the far side; element.name is the LOCAL
+      // one, so `X as y` is looked up as X and recorded as y.
+      if (!carriesBarrelValues(from, (element.propertyName ?? element.name).text)) continue;
       names.add(element.name.text);
     }
   }
@@ -376,6 +383,12 @@ function collectTargets(statements: readonly ts.Statement[], inherited?: Targets
       continue;
     }
     if (!ts.isVariableStatement(statement)) continue;
+    // `const` only. A reassignable binding's declaration initializer is not
+    // what the call reaches: `let read = () => 1; read = () => K; read()` reads
+    // K, and swapping the two bodies rejects code that does not. Tracking
+    // assignments would mean flow analysis, so a mutable target is simply not
+    // resolved -- that loses a hazard rather than inventing one.
+    if (!(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
     for (const declaration of statement.declarationList.declarations) {
       const initializer = declaration.initializer;
       if (!initializer || !ts.isIdentifier(declaration.name)) continue;
@@ -425,14 +438,43 @@ function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
   return Boolean(modifiers?.some((m) => m.kind === kind));
 }
 
+/** Constructs whose body may be skipped, so an await inside is not certain. */
+function isConditionalConstruct(node: ts.Node): boolean {
+  return (
+    ts.isIfStatement(node) ||
+    ts.isSwitchStatement(node) ||
+    ts.isTryStatement(node) ||
+    ts.isConditionalExpression(node) ||
+    ts.isForStatement(node) ||
+    ts.isForInStatement(node) ||
+    ts.isForOfStatement(node) ||
+    ts.isWhileStatement(node) ||
+    ts.isDoStatement(node)
+  );
+}
+
+/**
+ * Where this body first suspends for certain, or null if it never does.
+ *
+ * Only an await that always runs counts. `if (skip) await x; return K;` reads K
+ * synchronously whenever the branch is not taken, so treating the lexically
+ * first await as the boundary would skip a genuine eager read. Awaits inside
+ * conditionals and loops are therefore not boundaries, which keeps the rest of
+ * the body eager and errs toward reporting. Nested functions are skipped too:
+ * an await in a callback declared here does not suspend its declarer.
+ */
 function firstSuspensionPos(body: ts.Node): number | null {
   let earliest: number | null = null;
   const visit = (node: ts.Node): void => {
     if (node !== body && isVarScope(node) && !ts.isSourceFile(node)) return;
-    const suspends =
-      ts.isAwaitExpression(node) ||
-      ((ts.isForOfStatement(node) && node.awaitModifier !== undefined));
-    if (suspends && (earliest === null || node.getStart() < earliest)) {
+    if (node !== body && isConditionalConstruct(node)) {
+      // `for await (...)` suspends on entry, before the body is skippable.
+      if (ts.isForOfStatement(node) && node.awaitModifier !== undefined) {
+        if (earliest === null || node.getStart() < earliest) earliest = node.getStart();
+      }
+      return;
+    }
+    if (ts.isAwaitExpression(node) && (earliest === null || node.getStart() < earliest)) {
       earliest = node.getStart();
     }
     node.forEachChild(visit);
@@ -454,13 +496,33 @@ function visitUntil(
   body.forEachChild(walk);
 }
 
-function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
-  if (names.size === 0) return [];
+/** A function another module exports, together with that module's barrel names. */
+interface ImportedHelper {
+  file: string;
+  source: ts.SourceFile;
+  fn: ts.FunctionLikeDeclaration;
+  names: Set<string>;
+}
+
+interface ScanOptions {
+  /** Start at this callable instead of the module body. */
+  entry?: ts.Node;
+  /** Local name -> a helper another module exports, for cross-file calls. */
+  helpers?: Map<string, ImportedHelper>;
+}
+
+function eagerReads(
+  source: ts.SourceFile,
+  names: Set<string>,
+  options: ScanOptions = {},
+): string[] {
+  if (names.size === 0 && !options.helpers?.size) return [];
 
   const moduleTargets = collectTargets(source.statements);
   // Guards against recursion, and stops a function called twice from being
   // reported twice.
   const entered = new Set<ts.Node>();
+  const helpers = options.helpers ?? new Map<string, ImportedHelper>();
 
   const found: string[] = [];
 
@@ -471,11 +533,28 @@ function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
    * builds an iterator, and an async function resumes past initialization, so
    * the body is walked only as far as its first suspension.
    */
-  const enterCallable = (target: ts.Node, targets: Targets): void => {
+  const enterCallable = (
+    target: ts.Node,
+    targets: Targets,
+    args?: readonly ts.Expression[],
+  ): void => {
     const fn = target as ts.FunctionLikeDeclaration;
-    for (const parameter of fn.parameters ?? []) {
-      if (parameter.initializer) visit(parameter.initializer, false, targets);
-    }
+    (fn.parameters ?? []).forEach((parameter, index) => {
+      if (!parameter.initializer) return;
+      // A default only runs when the argument is missing or literally
+      // `undefined`. `read(1)` never evaluates `value = K`, and reporting it
+      // rejects code that cannot crash. A rest parameter has no single
+      // argument to match, so leave those alone.
+      if (args && !parameter.dotDotDotToken) {
+        const supplied = args[index];
+        const omitted =
+          supplied === undefined ||
+          (ts.isIdentifier(supplied) && supplied.text === "undefined") ||
+          supplied.kind === ts.SyntaxKind.SpreadElement;
+        if (!omitted) return;
+      }
+      visit(parameter.initializer, false, targets);
+    });
     if (!fn.body || fn.asteriskToken) return;
     const inner = ts.isBlock(fn.body) ? collectTargets(fn.body.statements, targets) : targets;
     const suspendsAt = firstSuspensionPos(fn.body);
@@ -506,7 +585,22 @@ function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
       const target = targets.functions.get(node.expression.text);
       if (target && !entered.has(target) && resolvesToTarget(node.expression, target)) {
         entered.add(target);
-        enterCallable(target, targets);
+        enterCallable(target, targets, node.arguments);
+      }
+      // Extracting the helper into its own module is the same move as
+      // extracting it into a function, and it hid the read just as well: the
+      // helper only ever sees a deferred read, and the caller has no barrel
+      // name of its own to match. Reported at the call site, since that is the
+      // line that has to change.
+      const helper = !target ? helpers.get(node.expression.text) : undefined;
+      if (helper && !entered.has(helper.fn) && !isShadowed(node.expression)) {
+        entered.add(helper.fn);
+        const inner = eagerReads(helper.source, helper.names, { entry: helper.fn });
+        if (inner.length > 0) {
+          const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
+          const where = path.relative(SRC, helper.file);
+          found.push(`${node.expression.text}() (line ${line + 1}) reaches ${where}: ${inner.join(", ")}`);
+        }
       }
     }
     // `new C()` runs the constructor and every instance field initializer now,
@@ -517,7 +611,7 @@ function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
         entered.add(cls);
         for (const member of cls.members) {
           if (ts.isConstructorDeclaration(member) && member.body) {
-            enterCallable(member, targets);
+            enterCallable(member, targets, node.arguments ?? []);
           } else if (
             ts.isPropertyDeclaration(member) &&
             member.initializer &&
@@ -558,7 +652,8 @@ function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
       visit(child, eagerName ? deferred : next, targets);
     });
   };
-  source.forEachChild((child) => visit(child, false, moduleTargets));
+  if (options.entry) enterCallable(options.entry, moduleTargets);
+  else source.forEachChild((child) => visit(child, false, moduleTargets));
   return found;
 }
 
@@ -644,49 +739,101 @@ function readAll(files: string[]): Map<string, string> {
 function barrelBearingModules(
   sources: Map<string, string>,
   resolve: Resolver,
-): Set<string> {
-  const bearing = new Set<string>();
+): Map<string, Set<string>> {
+  // file -> the names IT exports that are the barrel's own bindings. Per name,
+  // not per module: a bridge usually also exports things of its own, and
+  // `export { K } from barrel; export const SAFE = 1` must not make an
+  // importer of SAFE look like a barrel consumer.
+  const bearing = new Map<string, Set<string>>();
+  const record = (file: string, name: string): boolean => {
+    let names = bearing.get(file);
+    if (!names) bearing.set(file, (names = new Set()));
+    if (names.has(name)) return false;
+    names.add(name);
+    return true;
+  };
+  const carries = (file: string) => (spec: string, exported?: string): boolean => {
+    if (spec === BARREL) return true;
+    const target = resolve(spec, file);
+    if (target === null) return false;
+    const names = bearing.get(target);
+    if (!names) return false;
+    return exported === undefined ? names.size > 0 : names.has(exported);
+  };
+
   let changed = true;
   while (changed) {
     changed = false;
     for (const [file, text] of sources) {
-      if (bearing.has(file)) continue;
       const source = parse(file, text);
       // `import { K } from barrel; export { K }` re-exports the same live
       // binding as `export { K } from barrel`, just spelled in two statements,
       // so the local names have to be known before the exports are read.
-      const imported = barrelValueNames(source, (spec) => {
-        if (spec === BARREL) return true;
-        const target = resolve(spec, file);
-        return target !== null && bearing.has(target);
-      });
+      const imported = barrelValueNames(source, carries(file));
       for (const statement of source.statements) {
         if (!ts.isExportDeclaration(statement)) continue;
         if (isErasedEdge(statement)) continue;
         const specifier = statement.moduleSpecifier;
+        const clause = statement.exportClause;
         if (!specifier) {
-          const clause = statement.exportClause;
           if (!clause || !ts.isNamedExports(clause)) continue;
-          // The LOCAL name is what was imported, so `export { K as J }` counts.
-          const reExports = clause.elements.some(
-            (element) => !element.isTypeOnly && imported.has((element.propertyName ?? element.name).text),
-          );
-          if (!reExports) continue;
-          bearing.add(file);
-          changed = true;
-          break;
+          for (const element of clause.elements) {
+            // The LOCAL name is what was imported; the EXPORTED name is what a
+            // consumer sees, so `export { K as J }` publishes J.
+            if (element.isTypeOnly) continue;
+            if (!imported.has((element.propertyName ?? element.name).text)) continue;
+            if (record(file, element.name.text)) changed = true;
+          }
+          continue;
         }
         if (!ts.isStringLiteral(specifier)) continue;
         const target = resolve(specifier.text, file);
-        if (specifier.text === BARREL || (target && bearing.has(target))) {
-          bearing.add(file);
-          changed = true;
-          break;
+        const fromBarrel = specifier.text === BARREL;
+        const upstream = target ? bearing.get(target) : undefined;
+        if (!fromBarrel && !upstream) continue;
+        if (!clause) {
+          // `export * from x` republishes whatever x carries.
+          for (const name of upstream ?? []) if (record(file, name)) changed = true;
+          continue;
+        }
+        if (ts.isNamespaceExport(clause)) {
+          // `export * as ns from x` -- the namespace object itself carries them.
+          if (record(file, clause.name.text)) changed = true;
+          continue;
+        }
+        for (const element of clause.elements) {
+          if (element.isTypeOnly) continue;
+          const source_name = (element.propertyName ?? element.name).text;
+          if (!fromBarrel && !upstream?.has(source_name)) continue;
+          if (record(file, element.name.text)) changed = true;
         }
       }
     }
   }
   return bearing;
+}
+
+/** Functions a module exports by name, for resolving a cross-module call. */
+function exportedFunctions(source: ts.SourceFile): Map<string, ts.FunctionLikeDeclaration> {
+  const out = new Map<string, ts.FunctionLikeDeclaration>();
+  for (const statement of source.statements) {
+    if (!hasModifier(statement, ts.SyntaxKind.ExportKeyword)) continue;
+    if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) {
+      out.set(statement.name.text, statement);
+      continue;
+    }
+    if (!ts.isVariableStatement(statement)) continue;
+    // `const` only, for the same reason collectTargets takes only const.
+    if (!(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      const initializer = declaration.initializer;
+      if (!initializer || !ts.isIdentifier(declaration.name)) continue;
+      if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) {
+        out.set(declaration.name.text, initializer);
+      }
+    }
+  }
+  return out;
 }
 
 /** Every module the barrel's own initialization can pull in, transitively. */
@@ -733,6 +880,16 @@ test("no module-scope read of a chat barrel value", () => {
   const sources = readAll(files);
   const resolve = makeResolver(sources);
   const bearing = barrelBearingModules(sources, resolve);
+  const barrelNameFilter =
+    (from: string) =>
+    (specifier: string, exported?: string): boolean => {
+      if (specifier === BARREL) return true;
+      const target = resolve(specifier, from);
+      if (target === null) return false;
+      const carried = bearing.get(target);
+      if (!carried) return false;
+      return exported === undefined ? carried.size > 0 : carried.has(exported);
+    };
   const offenders: string[] = [];
   let importers = 0;
   for (const file of files) {
@@ -740,15 +897,32 @@ test("no module-scope read of a chat barrel value", () => {
     // No text prefilter on BARREL: a module importing through a bridge never
     // spells the name, and skipping it was the hole.
     const source = parse(file, text);
-    const names = barrelValueNames(source, (specifier) => {
-      if (specifier === BARREL) return true;
-      const target = resolve(specifier, file);
-      return target !== null && bearing.has(target);
-    });
-    if (names.size === 0) continue;
-    importers += 1;
+    const names = barrelValueNames(source, barrelNameFilter(file));
+    const helpers = new Map<string, ImportedHelper>();
+    for (const statement of source.statements) {
+      if (!ts.isImportDeclaration(statement)) continue;
+      const specifier = statement.moduleSpecifier;
+      if (!ts.isStringLiteral(specifier)) continue;
+      const target = resolve(specifier.text, file);
+      if (target === null) continue;
+      const clause = statement.importClause;
+      if (!clause || clause.isTypeOnly) continue;
+      const bound = clause.namedBindings;
+      if (!bound || ts.isNamespaceImport(bound)) continue;
+      const helperSource = parse(target, sources.get(target) ?? "");
+      const helperNames = barrelValueNames(helperSource, barrelNameFilter(target));
+      if (helperNames.size === 0) continue;
+      const exported = exportedFunctions(helperSource);
+      for (const element of bound.elements) {
+        if (element.isTypeOnly) continue;
+        const fn = exported.get((element.propertyName ?? element.name).text);
+        if (fn) helpers.set(element.name.text, { file: target, source: helperSource, fn, names: helperNames });
+      }
+    }
+    if (names.size === 0 && helpers.size === 0) continue;
+    if (names.size > 0) importers += 1;
     if (!atRisk.has(file)) continue;
-    for (const hit of eagerReads(source, names)) {
+    for (const hit of eagerReads(source, names, { helpers })) {
       offenders.push(`${path.relative(SRC, file)}: ${hit}`);
     }
   }
@@ -883,6 +1057,18 @@ test("the scan catches every shape the regex version missed", () => {
     [
       "async body before the first await",
       `import { K } from "${BARREL}";\nasync function read() { const a = K; await x; }\nread();\n`,
+    ],
+    [
+      "read after a conditional await still runs synchronously",
+      `import { K } from "${BARREL}";\nasync function read() { if (skip) await x; return K; }\nread();\n`,
+    ],
+    [
+      "default used because the call omits the argument",
+      `import { K } from "${BARREL}";\nfunction read(v = K) {}\nread();\n`,
+    ],
+    [
+      "default used because the call passes undefined",
+      `import { K } from "${BARREL}";\nfunction read(v = K) {}\nread(undefined);\n`,
     ],
     [
       "await only inside a nested callback does not suspend",
@@ -1023,6 +1209,14 @@ test("deferred reads and non-references are left alone", () => {
       `import { K } from "${BARREL}";\nasync function read() { await x; return K; }\nread();\n`,
     ],
     [
+      "default skipped because the call supplies the argument",
+      `import { K } from "${BARREL}";\nfunction read(v = K) {}\nread(1);\n`,
+    ],
+    [
+      "a reassignable callee is not resolved to its declaration",
+      `import { K } from "${BARREL}";\nlet read = () => K;\nread = () => 1;\nread();\n`,
+    ],
+    [
       "self-recursive function is not followed forever",
       `import { K } from "${BARREL}";\nfunction loop() { return loop(); }\nconst v = loop();\n`,
     ],
@@ -1061,15 +1255,18 @@ test("barrel bindings are tracked through local re-export bridges", () => {
   const resolve = makeResolver(sources);
   const bearing = barrelBearingModules(sources, resolve);
 
-  assert.ok(bearing.has(bridge), "a direct re-export of the barrel carries its bindings");
-  assert.ok(bearing.has(deeper), "bearing propagates through a second hop");
+  assert.deepEqual([...(bearing.get(bridge) ?? [])], ["K"], "a direct re-export carries K");
+  assert.deepEqual([...(bearing.get(deeper) ?? [])], ["K"], "bearing propagates a second hop");
   assert.ok(!bearing.has(plain), "a module exporting its own value carries nothing");
 
   const names = (from: string, text: string): Set<string> =>
-    barrelValueNames(parse(from, text), (specifier) => {
+    barrelValueNames(parse(from, text), (specifier, exported) => {
       if (specifier === BARREL) return true;
       const target = resolve(specifier, from);
-      return target !== null && bearing.has(target);
+      if (target === null) return false;
+      const carried = bearing.get(target);
+      if (!carried) return false;
+      return exported === undefined ? carried.size > 0 : carried.has(exported);
     });
 
   assert.deepEqual(
@@ -1104,7 +1301,55 @@ test("an import-then-export bridge carries barrel bindings too", () => {
     [copy, `import { K } from "${BARREL}";\nexport const J = K;\n`],
   ]);
   const bearing = barrelBearingModules(sources, makeResolver(sources));
-  assert.ok(bearing.has(bridge), "import-then-export re-exports the live binding");
-  assert.ok(bearing.has(aliased), "renaming on the way out changes nothing");
+  assert.deepEqual([...(bearing.get(bridge) ?? [])], ["K"], "import-then-export carries K");
+  assert.deepEqual([...(bearing.get(aliased) ?? [])], ["J"], "the EXPORTED name is what consumers see");
   assert.ok(!bearing.has(copy), "export const is a copy, not the barrel's binding");
+});
+
+test("a bridge's own exports are not treated as barrel bindings", () => {
+  const bridge = path.join(SRC, "fake", "mixed.ts");
+  const consumer = path.join(SRC, "fake", "mixedconsumer.ts");
+  const sources = new Map<string, string>([
+    [bridge, `export { K } from "${BARREL}";\nexport const SAFE = 1;\n`],
+    [consumer, `import { SAFE, K } from "./mixed";\nconst a = [SAFE, K];\n`],
+  ]);
+  const resolve = makeResolver(sources);
+  const bearing = barrelBearingModules(sources, resolve);
+  assert.deepEqual([...(bearing.get(bridge) ?? [])], ["K"], "only K comes from the barrel");
+
+  const names = barrelValueNames(parse(consumer, sources.get(consumer) as string), (spec, exported) => {
+    if (spec === BARREL) return true;
+    const target = resolve(spec, consumer);
+    const carried = target === null ? undefined : bearing.get(target);
+    if (!carried) return false;
+    return exported === undefined ? carried.size > 0 : carried.has(exported);
+  });
+  assert.deepEqual([...names], ["K"], "SAFE is the bridge's own value, not the barrel's");
+});
+
+test("an eager call into an imported helper is followed across modules", () => {
+  const helper = path.join(SRC, "fake", "helper.ts");
+  const safe = path.join(SRC, "fake", "safehelper.ts");
+  const sources = new Map<string, string>([
+    [helper, `import { K } from "${BARREL}";\nexport function read() { return K; }\n`],
+    [safe, `import { K } from "${BARREL}";\nexport function read() { return 1; }\n`],
+  ]);
+  const build = (target: string) => {
+    const source = parse(target, sources.get(target) as string);
+    const fn = exportedFunctions(source).get("read") as ts.FunctionLikeDeclaration;
+    return { file: target, source, fn, names: barrelValueNames(source) };
+  };
+  const consumerText = `import { read } from "./helper";\nconst v = read();\n`;
+  const consumer = parse(path.join(SRC, "fake", "c.ts"), consumerText);
+
+  const hits = eagerReads(consumer, new Set<string>(), {
+    helpers: new Map([["read", build(helper)]]),
+  });
+  assert.equal(hits.length, 1, "the read inside the imported helper must be reported");
+  assert.match(hits[0], /read\(\) \(line 2\) reaches .*helper\.ts: K/);
+
+  const clean = eagerReads(consumer, new Set<string>(), {
+    helpers: new Map([["read", build(safe)]]),
+  });
+  assert.deepEqual(clean, [], "a helper that does not touch the barrel is left alone");
 });
