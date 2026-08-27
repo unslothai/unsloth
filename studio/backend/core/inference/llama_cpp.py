@@ -3353,7 +3353,6 @@ def _spilled_decode_threads() -> int:
     """
     try:
         import psutil
-
         physical = psutil.cpu_count(logical = False)
         if physical and physical > 0:
             return int(physical)

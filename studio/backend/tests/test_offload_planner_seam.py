@@ -1681,6 +1681,7 @@ def test_the_cost_model_is_told_physical_cores_not_hyperthreads():
             return 12 if logical else 6
 
     import sys
+
     saved = sys.modules.get("psutil")
     sys.modules["psutil"] = _FakePsutil
     try:
