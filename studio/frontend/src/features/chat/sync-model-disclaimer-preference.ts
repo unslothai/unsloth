@@ -37,12 +37,14 @@ export function readLegacyModelDisclaimer(): boolean | undefined {
   }
 }
 
-async function hydrate(migrateLegacy: boolean): Promise<void> {
-  const mutation = mutationRevision;
+async function hydrate(
+  migrateLegacy: boolean,
+  expectedMutation: number,
+): Promise<void> {
   const settings = migrateLegacy
     ? await migrateChatPreferences(readLegacyModelDisclaimer())
     : await loadChatPreferences();
-  if (mutation !== mutationRevision) {
+  if (expectedMutation !== mutationRevision) {
     return;
   }
   useChatPreferencesStore
@@ -50,12 +52,17 @@ async function hydrate(migrateLegacy: boolean): Promise<void> {
     .setShowModelDisclaimer(settings.showModelDisclaimer);
 }
 
+function enqueueHydration(migrateLegacy: boolean): Promise<void> {
+  const expectedMutation = mutationRevision;
+  return enqueue(() => hydrate(migrateLegacy, expectedMutation));
+}
+
 export async function hydrateModelDisclaimerPreference(): Promise<void> {
-  await enqueue(() => hydrate(true));
+  await enqueueHydration(true);
 }
 
 export async function refreshModelDisclaimerPreference(): Promise<void> {
-  await enqueue(() => hydrate(false));
+  await enqueueHydration(false);
 }
 
 export async function saveModelDisclaimerPreference(
@@ -79,7 +86,7 @@ export async function saveModelDisclaimerPreference(
     } catch (error) {
       if (mutation === mutationRevision) {
         try {
-          await hydrate(false);
+          await hydrate(false, mutation);
         } catch {
           useChatPreferencesStore.getState().setShowModelDisclaimer(previous);
         }

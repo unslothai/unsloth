@@ -15,7 +15,30 @@ let serverValue: boolean | undefined;
 const requests: Array<{ method: string; path: string; body: unknown }> = [];
 const API_KEY = "show_model_disclaimer";
 
-globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+type ResponseGate = {
+  method: string;
+  reached: Promise<void>;
+  wait: Promise<void>;
+  markReached: () => void;
+  release: () => void;
+};
+
+let responseGate: ResponseGate | null = null;
+
+function holdNextResponse(method: string): ResponseGate {
+  let markReached: () => void = () => undefined;
+  let release: () => void = () => undefined;
+  const reached = new Promise<void>((resolve) => {
+    markReached = resolve;
+  });
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  responseGate = { method, reached, wait, markReached, release };
+  return responseGate;
+}
+
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const path = String(input);
   const method = init?.method ?? "GET";
   const body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -30,12 +53,18 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     serverValue = (body as Record<string, boolean>)[API_KEY];
   }
 
-  return Promise.resolve(
-    new Response(JSON.stringify({ [API_KEY]: serverValue ?? false }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    }),
-  );
+  const responseValue = serverValue ?? false;
+  const gate = responseGate?.method === method ? responseGate : null;
+  if (gate) {
+    responseGate = null;
+    gate.markReached();
+    await gate.wait;
+  }
+
+  return new Response(JSON.stringify({ [API_KEY]: responseValue }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
 }) as typeof fetch;
 
 const { useChatPreferencesStore } = await import(
@@ -101,6 +130,33 @@ test("a legacy disabled default does not claim the installation setting", () => 
     JSON.stringify({ state: { showModelDisclaimer: false }, version: 0 }),
   );
   assert.equal(readLegacyModelDisclaimer(), undefined);
+});
+
+test("a queued refresh cannot revert a newer toggle", async () => {
+  serverValue = false;
+  requests.length = 0;
+  localStorage.delete("unsloth_chat_preferences");
+  useChatPreferencesStore.getState().setShowModelDisclaimer(false);
+  localStorage.delete("unsloth_chat_preferences");
+
+  const migrationGate = holdNextResponse("POST");
+  const migration = hydrateModelDisclaimerPreference();
+  await migrationGate.reached;
+
+  const refresh = refreshModelDisclaimerPreference();
+  const saveGate = holdNextResponse("PUT");
+  const save = saveModelDisclaimerPreference(true);
+  migrationGate.release();
+  await saveGate.reached;
+
+  assert.equal(useChatPreferencesStore.getState().showModelDisclaimer, true);
+  assert.deepEqual(
+    requests.map(({ method }) => method),
+    ["POST", "GET", "PUT"],
+  );
+  saveGate.release();
+  await Promise.all([migration, refresh, save]);
+  assert.equal(serverValue, true);
 });
 
 test("saving the switch updates both the browser and installation", async () => {
