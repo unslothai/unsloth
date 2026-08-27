@@ -97,8 +97,9 @@ class Host(Protocol):
         model: Optional[str] = None,
         max_tokens: int = SUPERVISE_MAX_TOKENS,
     ) -> str:
-        """Optional. One-shot vote/plan/mine/filter. No tools, no episode loop.
-        Missing → getattr skip (voter abstains, planner off, filter skipped)."""
+        """Optional. One-shot vote/plan/mine/filter/judge. No tools, no episode loop.
+        Missing → getattr skip (voter abstains, planner off, filter uses algo,
+        judge uses algo)."""
         ...
 
     async def run_action(

@@ -8,6 +8,7 @@ export type UnforgettableEpisodeExtras = {
   planner_model?: string | null;
   filter?: string | null;
   filter_model?: string | null;
+  judge_model?: string | null;
   user_label?: string | null;
   stakes?: string | null;
   confirm_retry?: boolean | null;
@@ -30,6 +31,7 @@ export function mergeUnforgettableChatExtras(
   if (extras.planner_model) out.planner_model = extras.planner_model;
   if (extras.filter) out.filter = extras.filter;
   if (extras.filter_model) out.filter_model = extras.filter_model;
+  if (extras.judge_model) out.judge_model = extras.judge_model;
   if (extras.user_label) out.user_label = extras.user_label;
   if (extras.stakes) out.stakes = extras.stakes;
   if (extras.confirm_retry !== null && extras.confirm_retry !== undefined) {

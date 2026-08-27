@@ -77,7 +77,7 @@ from unforgettable.operators import (
     reject_record,
     review_proposed,
 )
-from unforgettable.supervisor import resolve_supervisor_host
+from unforgettable.supervisor import config_from_env, resolve_supervisor_host
 
 DEFAULT_SEARCH_TOP = 20
 DEFAULT_LIST_LIMIT = 20
@@ -560,6 +560,8 @@ def _cmd_eval(args: argparse.Namespace, db_path: Path) -> int:
             backend = backend,
             world = world,
             db_path = db_path,
+            host = _supervisor_host(),
+            config = config_from_env(),
         )
     except KeyError:
         return _unknown_id(args.id)

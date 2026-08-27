@@ -18,7 +18,8 @@ import json
 from pathlib import Path
 
 from unforgettable.sidecar.adapters import get_adapter
-from unforgettable.sidecar.eval import completion_score, eval_adapter
+from unforgettable.sidecar.eval import completion_score, eval_adapter, scored_completion
+from unforgettable.supervisor import SupervisorConfig
 from unforgettable.sidecar.pack import ROLE_HOLDOUT, list_pack_items, pack_from_admitted_b
 from unforgettable.sidecar.train import FakeTrainBackend, train_pack
 from unforgettable.store.records import insert_record, insert_retrieve_use, insert_rollout
@@ -148,3 +149,52 @@ def test_completion_score_gold_prefix_in_output():
 
 def test_completion_score_empty_output():
     assert completion_score("", "hello world") == 0.0
+
+
+class _JudgeHost:
+    def __init__(self, text: str):
+        self.text = text
+        self.calls = []
+
+    async def supervise(self, purpose, messages, *, model = None, max_tokens = 400):
+        self.calls.append({"purpose": purpose, "model": model})
+        return self.text
+
+
+def test_scored_completion_uses_judge_then_falls_back():
+    host = _JudgeHost('{"score": 0.8}')
+    assert scored_completion("nope", "hello world", host = host, model = "judge") == 0.8
+    assert host.calls[0]["purpose"] == "judge"
+    assert host.calls[0]["model"] == "judge"
+    bad = _JudgeHost("not json")
+    assert scored_completion("hello world extra", "hello world", host = bad, model = "j") == 1.0
+    assert scored_completion("hello world extra", "hello world") == 1.0
+
+
+def test_eval_adapter_uses_judge_scores(db_path, monkeypatch):
+    monkeypatch.setattr("unforgettable.sidecar.pack.HOLDOUT_MIN_EPISODES", 1)
+    for i in range(5):
+        _voted_procedure(
+            db_path,
+            title = f"Playbook {i}",
+            body = f"steps {i}",
+            episode_id = f"ep-{i}",
+        )
+    packed = pack_from_admitted_b(db_path = db_path)
+    result = train_pack(
+        packed.pack_id,
+        backend = FakeTrainBackend(),
+        base_model = "fake",
+        db_path = db_path,
+    )
+    report = eval_adapter(
+        result.adapter_id,
+        backend = FakeTrainBackend(),
+        db_path = db_path,
+        host = _JudgeHost('{"score": 0.8}'),
+        config = SupervisorConfig(judge_model = "judge"),
+    )
+    assert report.n_holdout >= 1
+    assert report.adapter_lean == 0.8
+    assert report.base_lean == 0.8
+    assert report.passed is True

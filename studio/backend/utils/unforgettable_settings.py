@@ -119,6 +119,7 @@ def normalize_unforgettable_settings(raw: Any) -> dict[str, Any]:
         "planner_model": _coerce_optional_str(source.get("planner_model")),
         "filter": filter_value,
         "filter_model": _coerce_optional_str(source.get("filter_model")),
+        "judge_model": _coerce_optional_str(source.get("judge_model")),
         "user_label": _coerce_optional_str(source.get("user_label")),
         "stakes": stakes_value,
         "confirm_retry": _coerce_optional_bool(source.get("confirm_retry")),
@@ -156,6 +157,7 @@ def get_unforgettable_settings() -> dict[str, Any]:
         "planner_model": stored["planner_model"] or env.planner_model,
         "filter": filter_flag or "on",
         "filter_model": stored.get("filter_model") or env.filter_model,
+        "judge_model": stored.get("judge_model") or env.judge_model,
         "voter": voter or "off",
         "voter_model": stored["voter_model"] or env.voter_model,
         "supervisor_url": stored["supervisor_url"] or env.url,
@@ -192,6 +194,8 @@ def episode_extras_from_settings(settings: dict[str, Any] | None = None) -> dict
         extras["filter"] = data["filter"]
     if data.get("filter_model"):
         extras["filter_model"] = data["filter_model"]
+    if data.get("judge_model"):
+        extras["judge_model"] = data["judge_model"]
     if data.get("user_label"):
         extras["user_label"] = data["user_label"]
     if data.get("stakes"):

@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Holdout lean score vs base. Does not call Host.complete."""
+"""Holdout lean score vs base. Does not call Host.complete.
+
+Prefix/substring is the default. An optional supervisor judge overlays it
+when ``judge_model`` is configured.
+"""
 
 from __future__ import annotations
 
@@ -26,6 +30,7 @@ from unforgettable.eyes.probes import run_probes
 from unforgettable.sidecar.adapters import get_adapter, set_adapter_metrics
 from unforgettable.sidecar.pack import ROLE_HOLDOUT, list_pack_items
 from unforgettable.sidecar.train import TrainBackend
+from unforgettable.supervisor import SupervisorConfig, config_from_env, request_score_sync
 
 EVAL_CLIP = 200
 
@@ -47,6 +52,7 @@ def completion_score(
     *,
     clip: int = EVAL_CLIP,
 ) -> float:
+    """Prefix / substring lean. Used as the default and as the judge fallback."""
     g = (gold or "")[:clip].strip().casefold()
     o = (output or "")[:clip].strip().casefold()
     if not g:
@@ -59,6 +65,23 @@ def completion_score(
             break
         n += 1
     return n / len(g)
+
+
+def scored_completion(
+    output: str,
+    gold: str,
+    *,
+    clip: int = EVAL_CLIP,
+    host = None,
+    model: str | None = None,
+) -> float:
+    algo = completion_score(output, gold, clip = clip)
+    if host is None or not model:
+        return algo
+    judged = request_score_sync(host, output = output, gold = gold, model = model)
+    if judged is None:
+        return algo
+    return judged
 
 
 def _user_only_and_gold(item: dict[str, Any]) -> tuple[list[dict[str, str]], str]:
@@ -85,6 +108,8 @@ def eval_adapter(
     backend: TrainBackend,
     world = None,
     db_path = None,
+    host = None,
+    config: SupervisorConfig | None = None,
 ) -> EvalReport:
     adapter = get_adapter(adapter_id, db_path = db_path)
     if adapter is None:
@@ -94,12 +119,29 @@ def eval_adapter(
     adapter_scores: list[float] = []
     base_scores: list[float] = []
     adapter_path = adapter.get("path") or None
+    cfg = config or config_from_env()
+    judge_model = cfg.judge_model
+    judge_host = host if judge_model else None
     for item in holdout:
         user_only, gold = _user_only_and_gold(item)
         adapter_out = backend.complete(user_only, adapter_path = adapter_path, max_tokens = 80)
         base_out = backend.complete(user_only, adapter_path = None, max_tokens = 80)
-        adapter_scores.append(completion_score(adapter_out, gold))
-        base_scores.append(completion_score(base_out, gold))
+        adapter_scores.append(
+            scored_completion(
+                adapter_out,
+                gold,
+                host = judge_host,
+                model = judge_model,
+            )
+        )
+        base_scores.append(
+            scored_completion(
+                base_out,
+                gold,
+                host = judge_host,
+                model = judge_model,
+            )
+        )
     n_holdout = len(holdout)
     if n_holdout:
         adapter_lean = sum(adapter_scores) / n_holdout

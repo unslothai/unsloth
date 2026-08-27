@@ -154,6 +154,64 @@ export function UnforgettableTab() {
           />
         </SettingsRow>
         <SettingsRow
+          label={t("settings.unforgettable.episode.filter")}
+          description={t("settings.unforgettable.episode.filterDescription")}
+          hint={t("settings.unforgettable.episode.filterHint")}
+        >
+          <Switch
+            checked={settings?.filter !== "off"}
+            disabled={!settings || saving}
+            onCheckedChange={(on) =>
+              void patch({ filter: on ? "on" : "off" })
+            }
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.unforgettable.episode.filterModel")}
+          description={t(
+            "settings.unforgettable.episode.filterModelDescription",
+          )}
+        >
+          <Input
+            className="w-56"
+            value={settings?.filter_model ?? ""}
+            disabled={!settings || saving}
+            placeholder={t("settings.unforgettable.episode.modelPlaceholder")}
+            onChange={(event) =>
+              setSettings((prev) =>
+                prev ? { ...prev, filter_model: event.target.value } : prev,
+              )
+            }
+            onBlur={() =>
+              void patch({ filter_model: settings?.filter_model || null })
+            }
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.unforgettable.episode.judgeModel")}
+          description={t(
+            "settings.unforgettable.episode.judgeModelDescription",
+          )}
+          hint={t("settings.unforgettable.episode.judgeHint")}
+        >
+          <Input
+            className="w-56"
+            value={settings?.judge_model ?? ""}
+            disabled={!settings || saving}
+            placeholder={t(
+              "settings.unforgettable.episode.judgeModelPlaceholder",
+            )}
+            onChange={(event) =>
+              setSettings((prev) =>
+                prev ? { ...prev, judge_model: event.target.value } : prev,
+              )
+            }
+            onBlur={() =>
+              void patch({ judge_model: settings?.judge_model || null })
+            }
+          />
+        </SettingsRow>
+        <SettingsRow
           label={t("settings.unforgettable.episode.highStakes")}
           description={t(
             "settings.unforgettable.episode.highStakesDescription",

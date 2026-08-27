@@ -18,6 +18,8 @@ test("virtual model ids match the Apache alias", () => {
 test("extras only attach when the model is unforgettable", () => {
   const extras = {
     planner: "on",
+    filter: "off",
+    judge_model: "judge-large",
     stakes: "high",
     skip_standing: true,
     confirm_retry: false,
@@ -26,6 +28,8 @@ test("extras only attach when the model is unforgettable", () => {
   assert.deepEqual(mergeUnforgettableChatExtras("qwen", extras), {});
   const merged = mergeUnforgettableChatExtras("unforgettable", extras);
   assert.equal(merged.planner, "on");
+  assert.equal(merged.filter, "off");
+  assert.equal(merged.judge_model, "judge-large");
   assert.equal(merged.stakes, "high");
   assert.equal(merged.skip_standing, true);
   assert.equal(merged.confirm_retry, false);
@@ -46,6 +50,16 @@ test("settings search indexes the Unforgettable tab", () => {
   assert.ok(
     SETTINGS_SEARCH_INDEX.unforgettable.includes(
       "settings.unforgettable.approver.voter",
+    ),
+  );
+  assert.ok(
+    SETTINGS_SEARCH_INDEX.unforgettable.includes(
+      "settings.unforgettable.episode.filter",
+    ),
+  );
+  assert.ok(
+    SETTINGS_SEARCH_INDEX.unforgettable.includes(
+      "settings.unforgettable.episode.judgeModel",
     ),
   );
 });

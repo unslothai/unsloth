@@ -153,7 +153,7 @@ Optional (`getattr` skip):
 
 | Method | Missing behavior |
 |--------|------------------|
-| `supervise(purpose, messages, model=)` | Voter abstains / planner skip |
+| `supervise(purpose, messages, model=)` | Voter abstains / planner skip / filter uses algo / judge uses algo |
 | `run_action(...)` | No test command / no harness grade |
 | `confirm(...)` | If confirm is required → `ESCALATE` |
 
@@ -212,7 +212,7 @@ Production modules only. Tests are listed in §5. Plans under `plans/` are chart
 | `operators.py` | Shared admit / reject / review / mine / compile / promote / `summarize_store` used by CLI and Studio. Does not change `admit()` predicates. |
 | `constants.py` | Kinds, statuses, provenances, speakers, typology class, namespace defaults, `PROVENANCE_WEIGHT` |
 | `host.py` | `Host` protocol, `GenerateRequest` / `GenerateResult` / `ToolTrace`, run-action / supervise constants |
-| `supervisor.py` | Approver (vote/mine) and planner: config, prompts, parse, `HttpSupervisor` |
+| `supervisor.py` | Approver (vote/mine), planner, filter (algo ∪ LLM), judge: config, prompts, parse, `HttpSupervisor` |
 | `LICENSE` | Apache 2.0 text |
 | `README.md` | User-facing overview |
 | `TECHNICAL.md` | This file |
@@ -282,7 +282,7 @@ Production modules only. Tests are listed in §5. Plans under `plans/` are chart
 |------|-------------|
 | `__init__.py` | Eyes façade |
 | `protocols.py` | `RecognizedFailure`, `WorldEyes` / `SimEyes` / `GateEyes`, `Contradiction` |
-| `basic.py` | Tool-result eyes, runner fingerprints, user phrases, `grade_run_action` |
+| `basic.py` | Tool-result eyes, runner fingerprints, user phrases, `grade_run_action` (phrases stay algo; episode may overlay `judge_model`) |
 | `gate.py` | Title-contradiction scan, WHO-vs-WHAT dissonance, `review_write`, `LogGateEyes` |
 | `probes.py` | `Probe:` procedures; CLI and post-extract run |
 
@@ -295,7 +295,7 @@ Production modules only. Tests are listed in §5. Plans under `plans/` are chart
 | `format.py` | Title→body SFT messages; world fail/pass preference pairs |
 | `train.py` | `TrainBackend`, `FakeTrainBackend`, lazy `UnslothTrainBackend`, `train_pack` |
 | `export_gguf.py` | PEFT dir → GGUF LoRA via `convert_lora_to_gguf.py`; lazy Unsloth |
-| `eval.py` | Holdout lean score vs base; optional probes |
+| `eval.py` | Holdout lean score vs base (prefix match; optional `judge_model` overlay); optional probes |
 | `adapters.py` | Registry: shadow → promote / discard / rollback; optional `gguf_path` |
 
 ### 3.10 `plans/` (not imported)
@@ -406,17 +406,18 @@ Live Studio inject does **not** shrink on promote alone. Shrink + `GenerateReque
 
 `bind_episode` sets `_db_path`, `_episode_id`, `_namespace`, `_traces`, `_contact`. `execute_tool` calls `note_tool_result` and `dispatch` (which reads `current_db_path()`). Unbound `dispatch` returns an error instead of creating `~/.unforgettable/memory.db`. Studio’s inner loop runs tools in `stream_tool_execution` on a worker thread (`studio/backend/core/inference/tool_stream_exec.py`). That thread is started with `contextvars.copy_context().run` so the bind survives. `StudioHost.run_action` wraps `asyncio.to_thread` in `copy_context()` as well (needed on Python 3.9–3.10). Apache `tests/test_runtime_context.py` locks copy vs raw thread. Memory/rims tools are stripped from ordinary Studio chat (`_select_request_tools` when `not in_inner_generate()`). Non-stream confirm cannot show a card and therefore escalates if confirm is required.
 
-`StudioHost.run_action` uses `asyncio.to_thread` (copies context). Extract uses `complete`, not `generate`, so it cannot re-enter the act/sim loop. `supervise` is the same one-shot path with an optional larger `model` (`planner_model` / `voter_model`).
+`StudioHost.run_action` uses `asyncio.to_thread` (copies context). Extract uses `complete`, not `generate`, so it cannot re-enter the act/sim loop. `supervise` is the same one-shot path with an optional larger `model` (`planner_model` / `voter_model` / `filter_model` / `judge_model`).
 
-### 4.7 Supervisor (approver + planner)
+### 4.7 Supervisor (approver + planner + filter + judge)
 
-Not the MemoryWheels outer wheel. Two optional jobs, separately configured, default off. Neither trains the large model. Neither reopens `admit()` or `decide()`.
+Not the MemoryWheels outer wheel. Jobs are separately configured. Neither trains the large model. Neither reopens `admit()` or `decide()`.
 
 | Job | Config | Call site | Effect |
 |-----|--------|-----------|--------|
 | **Approver** | `UNFORGETTABLE_VOTER=off\|advisory\|binding` + `UNFORGETTABLE_SUPERVISOR_URL` | CLI `admit` / `compile` / `promote` / `review` / `mine` | Votes after local select, before promote. Binding deny blocks unless `--force`. `episode` rows are skipped. New mine drafts stay `proposed` `infer`. |
 | **Planner** | `EpisodeRequest.planner` (`on`/`off`); Studio copies payload or `UNFORGETTABLE_PLANNER` | `episode.run` before first generate; refresh on `RETRY_WORLD` | Temporary A suffix. Fail-open. Not written to B. |
-| **Filter** | `EpisodeRequest.filter` (`on`/`off`, default on); `UNFORGETTABLE_FILTER` | `episode.run` before first generate; cached spans on `memory_write` | Strips coercive/manipulative spans, keeps remainder in A. Empty remainder → ENTER_SIM + confirm. Fail-open skip. Not an LLM rewrite of compact. |
+| **Filter** | `EpisodeRequest.filter` (`on`/`off`, default on); `UNFORGETTABLE_FILTER` | `episode.run` before first generate; cached spans on `memory_write` | Closed-list algo always runs; a parsed LLM reply **adds** spans (union). `kept` is recomputed from the original so the LLM cannot restore algo strips. Empty remainder → ENTER_SIM + confirm. Not an LLM rewrite of compact. |
+| **Judge** | `UNFORGETTABLE_JUDGE_MODEL` / `judge_model` (default unset) | sidecar `eval_adapter` holdout scores; `episode.run` user-failure paraphrase | LLM if configured and the reply parses; else prefix-match eval / closed `user_declares_failure` list. Parse-fail does not ENTER_SIM. |
 
 `HttpSupervisor` POSTs `{purpose, model, messages, max_tokens}` and reads `{text}`. `StudioHost.supervise` uses the loaded inner generate with tools off.
 
@@ -424,7 +425,7 @@ Not the MemoryWheels outer wheel. Two optional jobs, separately configured, defa
 
 ## 5. Automated tests
 
-Apache suite: **285** CPU tests under `unforgettable/tests/` (ignore `test_sidecar_gpu.py`; the ledger-week file is marked `scenario` + `slow` and is deselected by root addopts), no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`. `test_sidecar_gpu.py` is marked `gpu` and skips unless CUDA torch and cached `--base` weights are present. `tests/scenario/test_ledger_week.py` is an opt-in integration week: scripted inner, real unittest world judge, B under load, pack + fake C at the end.
+Apache suite: **299** CPU tests under `unforgettable/tests/` (ignore `test_sidecar_gpu.py`; the ledger-week file is marked `scenario` + `slow` and is deselected by root addopts), no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`. `test_sidecar_gpu.py` is marked `gpu` and skips unless CUDA torch and cached `--base` weights are present. `tests/scenario/test_ledger_week.py` is an opt-in integration week: scripted inner, real unittest world judge, B under load, pack + fake C at the end.
 
 | File | What it locks |
 |------|----------------|
@@ -443,7 +444,7 @@ Apache suite: **285** CPU tests under `unforgettable/tests/` (ignore `test_sidec
 | `test_rims_throne.py` | Clone ignore list, same-path refuse, dest-inside-src refuse, symlink copy, `decide()` fail→sim→retry, confirm matrix |
 | `test_probes.py` | Prefix identity, CLI `--run`, episode cap 3, skip without sim/`run_action` |
 | `test_tools.py` | Tool names, CRUD, admit log id, supersede stays proposed, compact/compile dry-run defaults, compile-with-id needs hits |
-| `test_supervisor.py` | Vote/mine/filter parse, env config, request-scoped planner, binding vs advisory, HTTP POST shape |
+| `test_supervisor.py` | Vote/mine/filter parse, algo filter + union, judge parse, env config, request-scoped planner, binding vs advisory, HTTP POST shape |
 | `test_cli.py` | Subcommands, `--db`, compact/pack `--apply`, admit `--force`, voter admit/review/mine, fake train, honest eval, promote/rollback |
 | `test_episode.py` | Happy path + drift + enter_sim + user phrase + harness + timeout + confirm + standing + re-retrieve + compile + adapter shrink; FakeHost |
 | `test_stream_forward.py` | `on_chunk` forwarded into `GenerateRequest` |
@@ -452,7 +453,7 @@ Apache suite: **285** CPU tests under `unforgettable/tests/` (ignore `test_sidec
 | `test_remember_path.py` | Unbound dispatch, no human/episode from tools, sim cannot mint world, supersede does not promote, generate-text clip |
 | `test_sidecar_train.py` | Min size, fake shadow dir, full-FT refuse, preference pairs.jsonl, unpacked episode is not preference gold, missing-TRL DPO refuse, flattened DPO rows, stubbed Unsloth DPO |
 | `test_sidecar_gpu.py` | Marked `gpu`. CUDA + cached `--base` only: SFT writes a real PEFT dir and `complete()` returns a string (adapter and base); preference writes PEFT + `pairs.jsonl`. Skips without GPU or weights |
-| `test_sidecar_eval.py` | Seeded holdout 1.0 vs 0.0; **unseeded holdout fails**; empty holdout fails |
+| `test_sidecar_eval.py` | Seeded holdout 1.0 vs 0.0; **unseeded holdout fails**; empty holdout fails; optional judge score overlay |
 | `test_sidecar_adapters.py` | Promote gate, one promoted, rollback keeps files, probe-fail refuse |
 | `tests/scenario/test_ledger_week.py` | Marked `scenario` and `slow`. Multi-episode ledger week through `episode.run`: fail→sim→world retry, WHO/WHAT retrieve, filter, planner, twin_note, standing, compact, pack ≥16 train + holdout, fake SFT + preference, eval. Not CI |
 

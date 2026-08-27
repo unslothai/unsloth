@@ -442,6 +442,12 @@ class StudioHost:
                 or os.environ.get("UNFORGETTABLE_FILTER_MODEL")
                 or None
             )
+        if purpose == "judge":
+            return (
+                getattr(self.payload, "judge_model", None)
+                or os.environ.get("UNFORGETTABLE_JUDGE_MODEL")
+                or None
+            )
         if purpose in {"vote", "mine"}:
             return (
                 getattr(self.payload, "voter_model", None)
@@ -495,6 +501,11 @@ async def handle_chat_completions(payload, request, current_subject: str, inner:
         filter_model = (
             getattr(payload, "filter_model", None)
             or os.environ.get("UNFORGETTABLE_FILTER_MODEL")
+            or None
+        ),
+        judge_model = (
+            getattr(payload, "judge_model", None)
+            or os.environ.get("UNFORGETTABLE_JUDGE_MODEL")
             or None
         ),
         user_label = getattr(payload, "user_label", None),

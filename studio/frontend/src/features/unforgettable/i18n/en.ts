@@ -37,6 +37,19 @@ export const unforgettableMessages = {
         plannerModel: "Planner model",
         plannerModelDescription: "Optional model id for the planner complete.",
         modelPlaceholder: "Leave blank for the inner model",
+        judgeModelPlaceholder: "Leave blank for the algo",
+        filter: "Filter",
+        filterDescription:
+          "Strip coercive and manipulative language from the user prompt.",
+        filterHint:
+          "A closed-list algo always runs. An LLM, if configured, may add spans.",
+        filterModel: "Filter model",
+        filterModelDescription: "Optional model id for the filter complete.",
+        judgeModel: "Judge model",
+        judgeModelDescription:
+          "Optional model for holdout scoring and user-failure paraphrase.",
+        judgeHint:
+          "Unset keeps prefix-match eval and the closed failure-phrase list.",
         highStakes: "High stakes",
         highStakesDescription:
           "Drop sim and inferred rows from world retrieve.",

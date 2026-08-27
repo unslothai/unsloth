@@ -44,6 +44,7 @@ from unforgettable.supervisor import (
     filter_is_on,
     planner_block,
     planner_is_on,
+    request_failure_judge,
     request_filter,
     request_plan,
 )
@@ -377,6 +378,10 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                 LogGateEyes().note("filter: skipped", db_path = db_path)
             else:
                 set_filter_stripped(filt.stripped)
+                if filt.llm_used:
+                    LogGateEyes().note("filter: llm+algo", db_path = db_path)
+                elif filt.stripped:
+                    LogGateEyes().note("filter: algo", db_path = db_path)
                 for span in filt.stripped:
                     LogGateEyes().note(
                         f"filter: {span.class_name}: {span.reason}",
@@ -413,11 +418,27 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
         generated = False
         while True:
             set_contact(state.contact)
+            declared_failure = False
             if (
                 not generated
                 and state.contact == "world"
                 and state.clone_count == 0
-                and (filter_empty or user_declares_failure(last_user_text(working_messages)))
+                and not filter_empty
+            ):
+                last_user = last_user_text(working_messages)
+                declared_failure = user_declares_failure(last_user)
+                if not declared_failure and request.judge_model:
+                    judged = await request_failure_judge(
+                        host,
+                        user_text = last_user,
+                        model = request.judge_model,
+                    )
+                    declared_failure = judged is True
+            if (
+                not generated
+                and state.contact == "world"
+                and state.clone_count == 0
+                and (filter_empty or declared_failure)
             ):
                 fail_summary = "filter stripped prompt" if filter_empty else "user declared failure"
                 state.note_failure(fail_summary, "world")

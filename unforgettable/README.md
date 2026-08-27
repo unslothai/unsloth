@@ -52,7 +52,7 @@ Derived class (not stored as a kind):
 
 Retrieve sort is `(typology class, provenance, FTS rank)`. A WHO row that shares a title with a retrieved WHAT row is dropped from the inject so both tokens never share the completion path. Unbacked user claims stay **proposed** (candidate facts). Tools cannot self-certify `speaker=user` or mint `provenance=world` for an unbacked user assertion.
 
-A filter judge (`Host.supervise("filter")`, default on) strips coercive and manipulative language from the user prompt and keeps the technical remainder. Pure coercion (empty remainder) enters sim and requires confirm before world retry.
+A filter (`Host.supervise("filter")` plus a closed-list algo, default on) strips coercive and manipulative language from the user prompt and keeps the technical remainder. The algo always runs; a parsed LLM reply may add spans. Pure coercion (empty remainder) enters sim and requires confirm before world retry.
 
 ## Requirements
 
@@ -95,6 +95,7 @@ Optional extras on the same request (also first-class fields on Studio’s chat 
 | `planner_model` | Model id for that planner complete (else `UNFORGETTABLE_PLANNER_MODEL`, else the inner model) |
 | `filter` | `"off"` disables the coercion/manipulation judge (default on; `UNFORGETTABLE_FILTER=off`) |
 | `filter_model` | Model id for that filter complete (else `UNFORGETTABLE_FILTER_MODEL`, else the inner model) |
+| `judge_model` | Optional model for holdout scoring and user-failure paraphrase (else `UNFORGETTABLE_JUDGE_MODEL`; unset keeps the algos) |
 | `user_label` | Optional speaker label for this operator |
 
 The inner model can call memory tools. Durable facts must go through those tools — chat history is not B, and a successful generate is stored as a short grade, not the full completion.
@@ -161,9 +162,9 @@ Promote never merges into base weights. Rollback discards the promoted row; file
 - Transformers / MLX inner: pass `adapter_id`; PEFT attaches for the episode.
 - GGUF / llama.cpp inner: put `--lora <exported.gguf>` on the model load (Studio extra args) and reload. Mid-chat attach does not restart llama-server. `adapter_id` still shrinks standing.
 
-### Optional supervisor (approver + planner + filter)
+### Optional supervisor (approver + planner + filter + judge)
 
-A larger model can judge promotions, sketch a plan for one episode, and filter coercive/manipulative language from the user prompt. It is not trained. It does not replace `admit()` or the act/sim policy. The filter is default on when `host.supervise` exists; empty replies fail open (keep the original text).
+A larger model can judge promotions, sketch a plan for one episode, filter coercive/manipulative language from the user prompt, and optionally score holdout completions or paraphrased “that failed” lines. It is not trained. It does not replace `admit()` or the act/sim policy. The filter is default on: a closed-list algo always strips high-precision coercion, and a parsed LLM reply may add spans. Empty or missing LLM replies no longer skip the filter. An optional `UNFORGETTABLE_JUDGE_MODEL` overlays prefix-match eval and the closed failure-phrase list; unset keeps those algos.
 
 ```bash
 export UNFORGETTABLE_VOTER=advisory   # or binding (deny blocks admit/promote)

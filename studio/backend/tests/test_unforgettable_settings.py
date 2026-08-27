@@ -40,9 +40,13 @@ def test_defaults_are_off(monkeypatch, tmp_path):
     monkeypatch.setattr(unforgettable_settings, "memory_db_path", lambda: tmp_path / "memory.db")
     monkeypatch.delenv("UNFORGETTABLE_VOTER", raising = False)
     monkeypatch.delenv("UNFORGETTABLE_PLANNER", raising = False)
+    monkeypatch.delenv("UNFORGETTABLE_FILTER", raising = False)
+    monkeypatch.delenv("UNFORGETTABLE_JUDGE_MODEL", raising = False)
     settings = unforgettable_settings.get_unforgettable_settings()
     assert settings["planner"] == "off"
     assert settings["filter"] == "on"
+    assert settings["filter_model"] is None
+    assert settings["judge_model"] is None
     assert settings["voter"] == "off"
     assert settings["skip_standing"] is False
     assert settings["namespace"] == "default"
@@ -54,14 +58,21 @@ def test_set_and_episode_extras(monkeypatch, tmp_path):
     updated = unforgettable_settings.set_unforgettable_settings(
         {
             "planner": "on",
+            "filter": "off",
+            "filter_model": "filter-large",
+            "judge_model": "judge-large",
             "stakes": "high",
             "confirm_retry": True,
             "adapter_id": "ada-1",
         }
     )
     assert updated["planner"] == "on"
+    assert updated["filter"] == "off"
     extras = unforgettable_settings.episode_extras_from_settings(updated)
     assert extras["planner"] == "on"
+    assert extras["filter"] == "off"
+    assert extras["filter_model"] == "filter-large"
+    assert extras["judge_model"] == "judge-large"
     assert extras["stakes"] == "high"
     assert extras["confirm_retry"] is True
     assert extras["adapter_id"] == "ada-1"

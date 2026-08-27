@@ -91,6 +91,9 @@ def test_settings_get_and_put(client, monkeypatch):
     values = {
         "planner": "off",
         "planner_model": None,
+        "filter": "on",
+        "filter_model": None,
+        "judge_model": None,
         "stakes": None,
         "confirm_retry": None,
         "skip_standing": False,

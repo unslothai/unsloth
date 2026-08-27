@@ -421,6 +421,9 @@ class UnforgettableSettingsPayload(BaseModel):
 
     planner: Optional[str] = None
     planner_model: Optional[str] = None
+    filter: Optional[str] = None
+    filter_model: Optional[str] = None
+    judge_model: Optional[str] = None
     stakes: Optional[str] = None
     confirm_retry: Optional[bool] = None
     skip_standing: Optional[bool] = None
