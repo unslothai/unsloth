@@ -149,7 +149,7 @@ import {
 } from "../stores/chat-runtime-store";
 import {
   resolveFitMaxSeqLength,
-  resolveLoadedCtxPin,
+  resolveExplicitCtxPin,
 } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -3329,9 +3329,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         is_gguf: loadResp.is_gguf ?? candidate.kind === "gguf",
       });
       if (candidate.kind === "gguf") {
-        // fitMaxSeqLength is what went on the wire as max_seq_length, so the pin
-        // cannot disagree with the launched -c.
-        const keepCustomCtx = resolveLoadedCtxPin(fitMaxSeqLength);
+        // The Context Length saved for this model, not fitMaxSeqLength: the wire
+        // value is Auto-resolved for a same-model reload, so pinning it would
+        // convert Auto into a number the user never set (see resolveExplicitCtxPin).
+        const keepCustomCtx = resolveExplicitCtxPin(config.customContextLength);
         // Slots this auto-load committed. Diffusion ignores --parallel, so a count
         // there would mint a phantom override a saved preset carries onto a GGUF.
         const committedSlots =

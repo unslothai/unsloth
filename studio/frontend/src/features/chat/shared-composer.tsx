@@ -122,7 +122,7 @@ import {
   loadModel,
   validateModel,
 } from "./api/chat-api";
-import { resolveFitMaxSeqLength, resolveLoadedCtxPin } from "./presets/preset-policy";
+import { resolveFitMaxSeqLength, resolveExplicitCtxPin } from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
@@ -1618,11 +1618,13 @@ export function SharedComposer({
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
-        // compareMaxSeqLength is what went on the wire as max_seq_length, so the
-        // pin cannot disagree with the launched -c. Non-GGUF compare loads send a
-        // sequence length rather than an n_ctx, so their baseline clears.
+        // This pane's own saved Context Length, not compareMaxSeqLength: the wire
+        // value is Auto-resolved for a same-model reload, so pinning it would
+        // convert Auto into a number the user never set (see resolveExplicitCtxPin).
+        // Non-GGUF compare loads send a sequence length rather than an n_ctx, so
+        // their baseline clears.
         const keepCustomCtx = targetIsGguf
-          ? resolveLoadedCtxPin(compareMaxSeqLength)
+          ? resolveExplicitCtxPin(effectiveCustomContextLength)
           : null;
         // Slots this compare load committed. Diffusion ignores --parallel, so a
         // count there would mint a phantom override a preset carries onto a GGUF.

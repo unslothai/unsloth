@@ -89,7 +89,7 @@ import {
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
   resolveLoadMaxSeqLength,
-  resolveLoadedCtxPin,
+  resolveExplicitCtxPin,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
@@ -1574,6 +1574,12 @@ export function useChatModelRuntime() {
               loadSplitRatio = null;
             }
 
+            // The Context Length the USER set for this load, captured before the
+            // clamp below can stand in for it. This, not the n_ctx that goes on
+            // the wire, is what the completed load pins: several send rules put a
+            // positive n_ctx on the wire with the control on Auto, and a pin read
+            // back out of one of those is a number the user never chose.
+            const explicitCtxPin = loadCustomContextLength;
             // Pinning layers on the SAME model keeps the currently resolved
             // context: with no explicit pin, a manual+pinned reload would send 0,
             // which the backend's --fit off branch treats as the NATIVE context --
@@ -1764,10 +1770,10 @@ export function useChatModelRuntime() {
             const reportedNativeCtx = loadResponse.is_gguf
               ? (loadResponse.native_context_length ?? null)
               : null;
-            // loadMaxSeqLength is what went on the wire as max_seq_length, so
-            // the pin cannot disagree with the launched -c.
-            const keepCustomCtx = resolveLoadedCtxPin(
-              loadResponse.is_gguf ? loadMaxSeqLength : null,
+            // The user's own Context Length (see explicitCtxPin), so an Auto load
+            // stays Auto whatever n_ctx the send rules resolved for it.
+            const keepCustomCtx = resolveExplicitCtxPin(
+              loadResponse.is_gguf ? explicitCtxPin : null,
             );
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";

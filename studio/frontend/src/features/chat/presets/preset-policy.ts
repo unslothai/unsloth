@@ -366,9 +366,16 @@ export function resolveFitMaxSeqLength(
 }
 
 /**
- * The context pin a completed load leaves behind: the n_ctx it was actually
- * invoked with, or null when it asked for Auto. 0 is the wire value for Auto, so
- * it is the one input that clears the pin.
+ * The context pin a completed load leaves behind: the Context Length the user
+ * EXPLICITLY set for it, or null for Auto.
+ *
+ * Takes the user's setting, never the n_ctx that went on the wire. The wire
+ * value cannot answer this: `resolveLoadMaxSeqLength`'s isReloadingCurrentGguf
+ * branch sends the resolved context on a same-model reload so the reload does
+ * not resize, so under a custom or modified preset an Auto load puts a positive
+ * n_ctx on the wire too. Reading a pin back out of that turned Auto into a
+ * numeric pin at the current context on any same-model reload, after which a GPU
+ * memory change could no longer auto-resize.
  *
  * Takes no GPU Memory mode, deliberately. `resolveLoadMaxSeqLength` honors a pin
  * in every mode, but the predicate this replaces kept one only under Manual +
@@ -378,10 +385,10 @@ export function resolveFitMaxSeqLength(
  * Callers keep their own isGguf/targetIsGguf guard inline: a non-GGUF load has
  * no n_ctx, and its max_seq_length must not be pinned as one.
  */
-export function resolveLoadedCtxPin(
-  requestedContextLength: number | null | undefined,
+export function resolveExplicitCtxPin(
+  customContextLength: number | null | undefined,
 ): number | null {
-  return requestedContextLength && requestedContextLength > 0
-    ? requestedContextLength
+  return customContextLength && customContextLength > 0
+    ? customContextLength
     : null;
 }

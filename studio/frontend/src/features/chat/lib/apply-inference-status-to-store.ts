@@ -8,10 +8,7 @@ import { resolveResidentInitialConfig } from "@/features/model-picker";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
-import {
-  mergeBackendRecommendedInference,
-  resolveLoadedCtxPin,
-} from "../presets/preset-policy";
+import { mergeBackendRecommendedInference } from "../presets/preset-policy";
 import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import {
   CHAT_REASONING_ENABLED_KEY,
@@ -33,6 +30,7 @@ import { resolveQwenThinkingParams } from "../utils/qwen-params";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
+import { resolveCtxPinSeed } from "./resolve-ctx-pin-seed";
 import { shouldSeedVisionSwitch } from "./resolve-vision-switch-seed";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
@@ -305,32 +303,22 @@ export function applyActiveModelStatusToStore(
     modelChanged: slotsModelChanged,
   });
   // A load sends its context pin as max_seq_length and status only exposes the
-  // RESOLVED context, so re-seed the pin from the requested value (parity with
-  // the load paths' keepCustomCtx). Sourced from `status` alone, never
-  // `prevState`: `requested_context_length` is by definition the n_ctx the ACTIVE
-  // load was invoked with (backend: llama_backend.requested_n_ctx), so a model
-  // change underneath overwrites the outgoing model's pin rather than carrying it.
-  const loadedCtxPin = status.is_gguf
-    ? resolveLoadedCtxPin(status.requested_context_length ?? null)
-    : null;
-  // Status can still answer for the OUTGOING model in one window: a poll landing
-  // while this tab's own load is in flight, since refreshes do run with
-  // modelLoading still true (see use-chat-model-runtime's loadedLlamaExtraArgs
-  // note). Harmless while the pin was almost always null, but now that one
-  // survives in every GPU Memory mode a stale poll would plant the outgoing
-  // model's context on the model coming in. So the pin takes the same rule as
-  // every other load param: while a load is in flight performLoad owns it,
-  // clearing it on a cross-model switch, writing the authoritative value on
-  // completion, and restoring the outgoing model's baseline if the load fails.
-  const ctxPinFields = seedLoadParams
-    ? {
-        customContextLength: loadedCtxPin,
-        loadedCustomContextLength: loadedCtxPin,
-      }
-    : {
-        customContextLength: prevState.customContextLength,
-        loadedCustomContextLength: prevState.loadedCustomContextLength,
-      };
+  // resolved context plus the requested n_ctx, and a positive requested n_ctx
+  // does NOT mean a human asked for it: an Auto same-model reload under a custom
+  // preset reports one too. So the pin is re-seeded here from what this tab (or
+  // the model's saved config) actually recorded, never inferred from the echo
+  // alone, and the echo is trusted only where it is unambiguous. See
+  // resolveCtxPinSeed for the full rule, including the mid-load window where
+  // status still answers for the OUTGOING model.
+  const ctxPinFields = resolveCtxPinSeed({
+    incoming: status.requested_context_length,
+    isGguf: status.is_gguf ?? true,
+    seedLoadParams,
+    modelChanged: slotsModelChanged,
+    remembered: remembered?.remembered
+      ? (remembered.config.customContextLength ?? null)
+      : null,
+  });
   const incomingGpuMode = status.is_gguf
     ? (status.gpu_memory_mode ?? "auto")
     : null;
@@ -355,8 +343,11 @@ export function applyActiveModelStatusToStore(
       },
       { ids: incomingGpuIds, indexKind: incomingGpuIndexKind },
     ) ||
-    // A difference this status will not apply (mid-load) is not a change.
-    (seedLoadParams && prevState.loadedCustomContextLength !== loadedCtxPin);
+    // Only a pin this status will actually move counts: a difference it declines
+    // to apply (mid-load, or an echo it cannot read intent out of) is not one.
+    (ctxPinFields.loadedCustomContextLength !== undefined &&
+      prevState.loadedCustomContextLength !==
+        ctxPinFields.loadedCustomContextLength);
   const gpuMemoryEditsPending =
     (prevState.loadedGpuMemoryMode !== null &&
       prevState.gpuMemoryMode !== prevState.loadedGpuMemoryMode) ||
