@@ -81,6 +81,7 @@ let _trainOnCompletionsManuallySet = false;
 
 let _trainingMethodEditGeneration = 0;
 let _modelDefaultsEditGeneration = 0;
+let _targetModulesEditGeneration = 0;
 let _modelDefaultsEditBaseline: {
   modelName: string;
   editGeneration: number;
@@ -152,6 +153,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         const requestState = get();
         const requestedModelDefaultsEditGeneration =
           _modelDefaultsEditGeneration;
+        const requestedTargetModulesEditGeneration =
+          _targetModulesEditGeneration;
         if (applyTrainingDefaults) {
           _modelDefaultsEditBaseline = {
             modelName,
@@ -199,6 +202,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (!requestMatchesSelection()) return;
 
             const shouldApplyTrainingDefaults = canApplyTrainingDefaults();
+            const shouldApplyCptTargetDefaults =
+              applyTrainingDefaults &&
+              !shouldApplyTrainingDefaults &&
+              get().trainingMethod === "cpt" &&
+              _targetModulesEditGeneration ===
+                requestedTargetModulesEditGeneration;
             if (shouldApplyTrainingDefaults) {
               _trainOnCompletionsManuallySet = false;
             }
@@ -292,6 +301,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               shouldApplyTrainingDefaults && get().trainingMethod === "cpt"
                 ? cptDefaultsPatch
                 : {};
+            const cptTargetOverrides = shouldApplyCptTargetDefaults
+              ? { targetModules: cptDefaultsPatch.targetModules }
+              : {};
             const modelDefaultsBaseline = {
               ...modelDefaultsPatch,
               ...(get().trainingMethod === "cpt" ? cptDefaultsPatch : {}),
@@ -318,6 +330,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             set({
               ...patch,
               ...cptOverrides,
+              ...cptTargetOverrides,
               ...deferredCompletionDefault,
               ...(shouldApplyTrainingDefaults
                 ? {
@@ -335,10 +348,25 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                         : {}),
                     },
                   }
-                : {}),
+                : shouldApplyCptTargetDefaults &&
+                    modelDefaultsPatch.targetModules !== undefined
+                  ? {
+                      trainingMethodProvenance: {
+                        ...get().trainingMethodProvenance,
+                        targetModulesBeforeCpt: [
+                          ...modelDefaultsPatch.targetModules,
+                        ],
+                      },
+                    }
+                  : {}),
               advancedSettingsBaseline: shouldApplyTrainingDefaults
                 ? modelDefaultsBaseline
-                : advancedSettingsBaseline,
+                : shouldApplyCptTargetDefaults
+                  ? {
+                      ...advancedSettingsBaseline,
+                      targetModules: cptDefaultsPatch.targetModules,
+                    }
+                  : advancedSettingsBaseline,
               modelType: inferredModelType,
               isVisionModel: modelDetails.is_vision,
               isEmbeddingModel: isEmbedding,
@@ -1273,11 +1301,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ finetuneAttentionModules }),
         setFinetuneMLPModules: (finetuneMLPModules) =>
           setUserEdit({ finetuneMLPModules }),
-        setTargetModules: (targetModules) => setUserEdit({ targetModules }),
+        setTargetModules: (targetModules) => {
+          _targetModulesEditGeneration += 1;
+          setUserEdit({ targetModules });
+        },
         setS3Config: (s3Config) => setUserEdit({ s3Config }),
         reset: () => {
           trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;
+          _targetModulesEditGeneration += 1;
           _modelDefaultsEditBaseline = null;
           setUserEdit(initialTrainingConfigState);
         },
@@ -1293,6 +1325,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         applyConfigPatch: (config: BackendModelConfig) => {
           const patch = mapBackendModelConfigToTrainingPatch(config);
+          if (patch.targetModules !== undefined) {
+            _targetModulesEditGeneration += 1;
+          }
           setUserEdit((state) => ({
             ...patch,
             ...(patch.trainOnCompletions !== undefined
