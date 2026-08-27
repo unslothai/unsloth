@@ -436,6 +436,39 @@ class TestAutoLayersWithTheFitterTurnedOff:
         cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["--fit", "off"], **self.AUTO_LAYERS)
         assert cmd[-2:] == ["--fit", "off"]
 
+    def test_the_no_kv_cap_lands_on_the_same_floor(self, tmp_path, monkeypatch):
+        """The cap path, not the zero-context one, and in DEFAULT memory mode.
+
+        Manual with Auto layers resolves an Auto request to 0, so it never reaches
+        the cap; the default mode expands it to the model's native length, which
+        does.
+
+        A GGUF that DOES carry a context length takes the Apple cap, which assigns
+        a positive context of its own. _metal_zero_ctx_floor never sees it: its
+        first condition returns 0 for any positive effective_ctx, so the no-fitter
+        reduction has to be made where the cap is chosen. Without that, this arm
+        hands a Mac 8192 with nothing able to bring it down.
+        """
+        cmd, _ = _launch(
+            tmp_path,
+            monkeypatch,
+            ctx_metadata = 262144,
+            extra_args = ["--fit", "off"],
+        )
+        assert _ctx_values(cmd) == [str(_LLAMA_FIT_MIN_CTX)]
+
+    def test_the_no_kv_cap_keeps_the_raised_floor_while_a_fitter_runs(
+        self, tmp_path, monkeypatch
+    ):
+        """The control: same path, fitter left on, so the exemption stands and the
+        command carries no -c at all, leaving the child to size the context. What
+        must NOT happen is this arm quietly adopting llama.cpp's lower floor for a
+        launch that still has a fitter to come down from."""
+        cmd, _ = _launch(tmp_path, monkeypatch, ctx_metadata = 262144)
+        assert _ctx_values(cmd) == [str(_FIT_MIN_CTX)], (
+            f"the raised ceiling was given up on a launch that still has a fitter: {cmd}"
+        )
+
     def test_a_zero_override_alongside_it_is_still_dropped(self, tmp_path, monkeypatch):
         cmd, _ = _launch(
             tmp_path,

@@ -19087,6 +19087,18 @@ class LlamaCppBackend:
                         # ggml-metal's free-memory report, blind to Unsloth's own footprint
                         # and the wired limit. See _metal_context_overcommit_message.
                         native_ctx_for_cap = self._context_length or effective_ctx
+                        # This arm's floor, which is _FIT_MIN_CTX only while the child's
+                        # fitter can come down from it. With --fit off (argv or
+                        # LLAMA_ARG_FIT) nothing reduces what we emit, so hand over the
+                        # number llama.cpp's own fitter would have reduced to instead.
+                        # _metal_zero_ctx_floor draws the same distinction but never sees
+                        # these paths: they assign a POSITIVE context, and its first
+                        # condition returns 0 for any positive effective_ctx.
+                        _metal_floor_ctx = (
+                            _FIT_MIN_CTX
+                            if fit_is_effectively_on(extra_args, os.environ)
+                            else _LLAMA_FIT_MIN_CTX
+                        )
                         # Only a ceiling backed by a real KV estimate may refuse; the 4096
                         # fallback below is a guess and would block working loads.
                         _apple_measured_ceiling: Optional[int] = None
@@ -19174,7 +19186,7 @@ class LlamaCppBackend:
                                     # whose weights alone miss the budget, and that is the
                                     # host-RAM guard's failure. Floor for the UI, but do
                                     # not refuse against a number the fit never vouched for.
-                                    max_available_ctx = min(_FIT_MIN_CTX, native_ctx_for_cap)
+                                    max_available_ctx = min(_metal_floor_ctx, native_ctx_for_cap)
                                 elif _apple_footprint_mib(_floor_cap) <= _apple_fit_budget_mib:
                                     max_available_ctx = _floor_cap
                                     _apple_measured_ceiling = _floor_cap
@@ -19187,13 +19199,13 @@ class LlamaCppBackend:
                                     # else here -- it keeps this arm's floor, which is now
                                     # _FIT_MIN_CTX like every other arm, rather than the
                                     # separate 4096 Metal used to hold.
-                                    max_available_ctx = min(_FIT_MIN_CTX, native_ctx_for_cap)
+                                    max_available_ctx = min(_metal_floor_ctx, native_ctx_for_cap)
                                     _apple_nothing_fits = True
                         else:
                             # No KV estimate: mirror the discrete file-size-only fallback
                             # and floor to _FIT_MIN_CTX rather than launch at native and
                             # over-commit.
-                            max_available_ctx = min(_FIT_MIN_CTX, native_ctx_for_cap)
+                            max_available_ctx = min(_metal_floor_ctx, native_ctx_for_cap)
                         if not explicit_ctx:
                             effective_ctx = max_available_ctx
                         elif (
