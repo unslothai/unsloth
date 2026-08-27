@@ -5381,9 +5381,27 @@ if (-not $NoTorchMode) {
                     elseif ($_expectedLeaf -eq "cpu" -or $_expectedLeaf -eq "xpu") { $_expectedLeaf }
                     elseif (Test-PipRocmFamilyLeaf $_expectedLeaf) { "rocm" }
                     else { $null }
-    # Assigning "" to an $env: entry deletes it, which is the "unset" the reader tests for.
-    $env:UNSLOTH_EXPECTED_TORCH_TAG = if ($_expectedTag) { $_expectedTag } else { "" }
-    $env:UNSLOTH_TORCH_INSTALL_INDEX_URL = $TorchInstallIndexUrl
+    # Remove-Item, NOT `= ""`. Assigning an empty string deleted the entry on Windows
+    # PowerShell 5.1 and on 7.0-7.4, but 7.5 took .NET 9's change and now KEEPS the name
+    # with an empty value; only $null removes it there. Both spellings would still read
+    # as unset through this pair of readers, which test truthiness rather than presence,
+    # but the setup script must not publish a value whose meaning depends on which
+    # PowerShell the user happens to have. Remove-Item behaves the same on every version.
+    #
+    # Deleting matters beyond tidiness: a value inherited from the caller's environment
+    # (a previous run in the same shell, or a user who exported one by hand) would
+    # otherwise survive a run that deliberately decided it cannot name this host's flavor,
+    # and the stack would enforce a stale expectation against a freshly resolved venv.
+    if ($_expectedTag) {
+        $env:UNSLOTH_EXPECTED_TORCH_TAG = $_expectedTag
+    } else {
+        Remove-Item Env:\UNSLOTH_EXPECTED_TORCH_TAG -ErrorAction SilentlyContinue
+    }
+    if ($TorchInstallIndexUrl) {
+        $env:UNSLOTH_TORCH_INSTALL_INDEX_URL = $TorchInstallIndexUrl
+    } else {
+        Remove-Item Env:\UNSLOTH_TORCH_INSTALL_INDEX_URL -ErrorAction SilentlyContinue
+    }
 }
 
 # Ordered heavy dependency installation -- shared cross-platform script

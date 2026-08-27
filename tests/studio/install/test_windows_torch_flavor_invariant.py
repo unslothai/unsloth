@@ -47,6 +47,18 @@ def _line_of(source: str, needle: str) -> int:
     raise AssertionError(f"not found in source: {needle!r}")
 
 
+def _publication_block() -> str:
+    """The whole flavor-publication block, delimited by the section that follows it.
+
+    Sliced by its end marker rather than a character count: a count silently
+    truncates the moment a comment inside the block grows, and a test that reads
+    half the block passes for the wrong reason.
+    """
+    start = _SETUP_SRC.index("# ── Publish the torch flavor this run settled on ──")
+    end = _SETUP_SRC.index("# Ordered heavy dependency installation", start)
+    return _SETUP_SRC[start:end]
+
+
 # ── setup.ps1: the venv wipe ─────────────────────────────────────────────────
 
 
@@ -123,10 +135,33 @@ class TestSetupPs1PublishesTheFlavor:
         assert "else { $null }" in block
 
     def test_no_torch_mode_publishes_nothing(self):
-        block = _SETUP_SRC[
-            _SETUP_SRC.index("# ── Publish the torch flavor this run settled on ──") :
-        ][:1800]
-        assert "if (-not $NoTorchMode) {" in block
+        assert "if (-not $NoTorchMode) {" in _publication_block()
+
+    def test_unsetting_does_not_depend_on_the_powershell_version(self):
+        """`$env:X = ""` is not a portable unset, so it must not be used here.
+
+        Windows PowerShell 5.1 and PowerShell 7.0-7.4 delete the entry when it is
+        assigned an empty string. PowerShell 7.5 took .NET 9's change and KEEPS the
+        name with an empty value; only $null removes it there. Both spellings still
+        read as unset through the two readers on the Python side, which test
+        truthiness rather than presence, so this is about not shipping a line whose
+        meaning depends on which PowerShell the user happens to have installed.
+        Remove-Item behaves identically on every version.
+
+        Deleting rather than blanking also matters on its own: a value inherited
+        from the caller's shell must not survive a run that decided it cannot name
+        this host's flavor, or the stack enforces a stale expectation.
+        """
+        block = _publication_block()
+        for name in (
+            "UNSLOTH_EXPECTED_TORCH_TAG",
+            "UNSLOTH_TORCH_INSTALL_INDEX_URL",
+        ):
+            assert f"Remove-Item Env:\\{name} -ErrorAction SilentlyContinue" in block, (
+                f"{name} must be removed, not blanked"
+            )
+            assert f'$env:{name} = ""' not in block
+            assert f"$env:{name} = if (" not in block
 
 
 # ── install.ps1 parity ───────────────────────────────────────────────────────
