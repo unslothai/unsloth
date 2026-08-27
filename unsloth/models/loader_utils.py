@@ -720,10 +720,12 @@ def _get_new_mapper():
             return bound
 
         def _executed_nodes(body, shadowed = frozenset()):
-            # Returns True when the suite ENDED in a jump, so a caller that recursed
-            # into a decided branch knows nothing below it runs either:
-            # `if True: return` inside `build_mappers` leaves the additions written
-            # under it unreachable, and yielding from the branch alone lost that.
+            # Returns what ENDED the suite, so a caller that recursed into a nested
+            # one knows what it means: `"return"` leaves the whole function and
+            # `True` leaves only the suite it is in. `if True: return` inside
+            # `build_mappers` makes the additions below it unreachable, and a
+            # `while True:` body that returns does the same - while a `break` in that
+            # body leaves the LOOP and the statements after it still run.
             for statement in body:
                 if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     # A `def` binds a name; it does not run.
@@ -733,7 +735,7 @@ def _get_new_mapper():
                     # this suite runs, so a mapping written below one is never
                     # installed. `return` matters inside `build_mappers`, whose body is
                     # read with this same walk.
-                    return True
+                    return "return" if isinstance(statement, ast.Return) else True
                 if isinstance(statement, ast.ClassDef):
                     # A class body, unlike a function body, RUNS at import: the
                     # statements in it execute when the class is created, so
@@ -750,21 +752,26 @@ def _get_new_mapper():
                     # INCLUDED: a real mapper's entries are unconditional, so being
                     # generous costs at most reading a conditional entry as present.
                     branch = statement.body if _constant_truth(statement.test) else statement.orelse
-                    if (yield from _executed_nodes(branch, shadowed)):
-                        return True
+                    ended = yield from _executed_nodes(branch, shadowed)
+                    if ended:
+                        return ended
                     continue
                 if isinstance(statement, ast.While) and _constant_truth(statement.test) is not None:
                     # `while False:` never runs its body, exactly as `if False:` does
                     # not, and its `else` runs instead. A truthy literal test keeps the
                     # body and skips the `else`, which never runs without a `break`.
                     if _constant_truth(statement.test):
-                        # A `while True:` body that jumps out ends this suite too, but
-                        # only through `return`: a `break` leaves the loop, not the
-                        # suite around it, and the walk cannot tell them apart here.
-                        yield from _executed_nodes(statement.body, shadowed)
+                        # A `while True:` body that RETURNS ends this suite as well: the
+                        # function is over, so nothing written after the loop runs. A
+                        # `break` only leaves the loop, and the statements below it do
+                        # run, which is why the two are told apart here.
+                        ended = yield from _executed_nodes(statement.body, shadowed)
+                        if ended == "return":
+                            return ended
                     else:
-                        if (yield from _executed_nodes(statement.orelse, shadowed)):
-                            return True
+                        ended = yield from _executed_nodes(statement.orelse, shadowed)
+                        if ended:
+                            return ended
                     continue
                 if isinstance(statement, ast.For) and _iterates_nothing(statement.iter):
                     # `for _ in ():` and `for _ in "":` iterate nothing, so the body
@@ -772,8 +779,9 @@ def _get_new_mapper():
                     # container or empty string is decided here; any other iterable
                     # keeps the body, since a real mapper's entries are unconditional
                     # and being generous costs at most an extra read.
-                    if (yield from _executed_nodes(statement.orelse, shadowed)):
-                        return True
+                    ended = yield from _executed_nodes(statement.orelse, shadowed)
+                    if ended:
+                        return ended
                     continue
                 for field in ("body", "orelse", "finalbody"):
                     children = getattr(statement, field, None)
@@ -901,9 +909,13 @@ def _get_new_mapper():
             # runs: a fetched mapper may call the builder over a dummy table to check
             # something before the call that really populates the five, and reading the
             # first one derived every mapping from that dummy.
+            #
+            # The LAST such call, not the first: rebuilding the five exports twice
+            # leaves the second result installed, so reading the first invented support
+            # the second build removed and dropped what it added. Reading on rather
+            # than breaking, exactly as the source-table selection does.
             if _binds_the_exports(statement):
                 builder_call, builder_index = calls[0], index
-                break
         if builder_call is None and first_call is not None:
             builder_call, builder_index = first_call
         builder_called = builder_call is not None

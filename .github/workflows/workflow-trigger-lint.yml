@@ -209,6 +209,7 @@ jobs:
             pypi.org:443
             files.pythonhosted.org:443
             download.pytorch.org:443
+            download-r2.pytorch.org:443
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -229,7 +230,13 @@ jobs:
           # `unsloth/__init__.py`, and that raises ImportError outright when the zoo
           # distribution is absent - `UNSLOTH_ZOO_DISABLE_GPU_INIT` does not bypass it.
           # Without this the job would fail during collection rather than run.
-          python -m pip install --quiet transformers peft pytest unsloth-zoo
+          # Triton as well. `unsloth/_gpu_init.py` imports it unconditionally, and the
+          # CPU torch wheel does not supply it - only the CUDA wheels pull
+          # pytorch-triton in. `UNSLOTH_ALLOW_CPU=1` bypasses device probing, not that
+          # import, so without this the job fails during collection and none of the
+          # four suites run. `consolidated-tests-ci.yml` installs it for the same
+          # reason on the same kind of runner.
+          python -m pip install --quiet transformers peft pytest unsloth-zoo triton
 
       # Named one by one, not as a directory. The point of this job is those three
       # files, and pyproject.toml sets testpaths = ["tests/security"], so a bare

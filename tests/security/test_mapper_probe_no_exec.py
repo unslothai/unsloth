@@ -717,3 +717,73 @@ def test_the_builder_call_that_binds_the_exports_is_the_one_read(monkeypatch):
             "vendor/dummy" in str(key) for key in table
         ), "the dummy call was read as the one that populates the exports"
     assert tables == expected
+
+
+def test_the_last_export_producing_call_is_the_one_read(monkeypatch):
+    """Rebuilding the exports twice leaves the SECOND result installed.
+
+    Reading the first invented support the second build removed and dropped what it
+    added, either way through the upgrade-only NotImplementedError.
+    """
+    lines = REAL_MAPPER.splitlines(True)
+    insert = next(
+        i for i, line in enumerate(lines)
+        if line.rstrip().endswith("= build_mappers(__INT_TO_FLOAT_MAPPER)")
+    ) + 1
+    rebuilt = "".join(
+        lines[:insert]
+        + [
+            'SECOND_SOURCE = {"vendor/second-bnb-4bit": ("vendor/second",)}\n',
+            "(\n"
+            "    INT_TO_FLOAT_MAPPER,\n"
+            "    FLOAT_TO_INT_MAPPER,\n"
+            "    MAP_TO_UNSLOTH_16bit,\n"
+            "    FLOAT_TO_FP8_BLOCK_MAPPER,\n"
+            "    FLOAT_TO_FP8_ROW_MAPPER,\n"
+            ") = build_mappers(SECOND_SOURCE)\n",
+        ]
+        + lines[insert:]
+    )
+    with _serving(rebuilt, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    assert any(
+        "vendor/second" in str(key) for table in tables for key in table
+    ), "the second build was ignored"
+
+
+def test_an_addition_after_a_returning_loop_is_not_read(monkeypatch):
+    """`while True: return` ends the function, so nothing written below it runs."""
+    lines = REAL_MAPPER.splitlines(True)
+    insert = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers(")) + 1
+    dead = "".join(
+        lines[:insert]
+        + [
+            "    while True:\n        return ({}, {}, {}, {}, {})\n",
+            '    _add_with_lower(MAP_TO_UNSLOTH_16bit, "vendor/after-loop", "unsloth/after-loop")\n',
+        ]
+        + lines[insert:]
+    )
+    with _serving(dead, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    for table in tables:
+        assert not any("vendor/after-loop" in str(key) for key in table)
+
+
+def test_an_addition_after_a_breaking_loop_is_still_read(monkeypatch):
+    """The other direction: `break` leaves the LOOP, and the rest of the body runs."""
+    lines = REAL_MAPPER.splitlines(True)
+    insert = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers(")) + 1
+    live = "".join(
+        lines[:insert]
+        + [
+            "    while True:\n        break\n",
+            '    _add_with_lower(MAP_TO_UNSLOTH_16bit, "vendor/after-break", "unsloth/after-break")\n',
+        ]
+        + lines[insert:]
+    )
+    with _serving(live, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+    assert any(
+        table.get("vendor/after-break") == "unsloth/after-break"
+        for table in tables if isinstance(table, dict)
+    ), "an addition after a loop that only breaks was dropped"
