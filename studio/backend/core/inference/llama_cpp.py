@@ -8959,6 +8959,29 @@ class LlamaCppBackend:
         n_layers = self.n_layers
         return requested == -1 or (bool(n_layers) and requested > n_layers)
 
+    @staticmethod
+    def _rows_the_child_can_reach(detected_gpus, pinned_ids) -> list:
+        """``detected_gpus`` narrowed to the cards THIS launch pinned the child to.
+
+        ``_launch_host_shortfall_message`` sums free VRAM over every row it is handed,
+        which is right for an advisory about the host and wrong for a decision about
+        one launch: a child pinned to a subset cannot spend the VRAM on the cards it
+        cannot see, so crediting them prices the spill too low and can leave an
+        unmapped oversized load unrewritten, which is an OOM rather than a slow load.
+
+        ``pinned_ids`` is the narrowing this load performed, not the visibility mask
+        in ``env``. An inherited CUDA_VISIBLE_DEVICES is already applied: the probe
+        only ever reported the cards it left visible, so re-applying it here would
+        subtract the same pin twice and price a single-card host as having none.
+        None means nothing narrowed the launch, which is not the same as an empty
+        pin, and physical ids match ``row[0]``.
+        """
+        rows = list(detected_gpus or ())
+        if pinned_ids is None:
+            return rows
+        visible = set(pinned_ids)
+        return [row for row in rows if row[0] in visible]
+
     def _shared_heap_budget(
         self,
         gpus: Iterable[tuple],
@@ -17415,6 +17438,15 @@ class LlamaCppBackend:
                 # the same reason as _detected_gpus: the except path (--fit on) falls
                 # through to the launch, which reads it.
                 _arch_gate_forced_cpu = False
+                # The GPUs THIS launch pinned the child to, or None when it pinned
+                # nothing. Set where the pin is emitted, and read by the pageable
+                # override so it prices against VRAM the child can actually spend.
+                # Not derived from env: an inherited mask is already applied by the
+                # probe, so re-reading it there would subtract the same pin twice.
+                _launch_pinned_ids: Optional[list] = None
+                # The pageable rewrite a CPU replay applied, kept across attempts: the
+                # env is shared, so only the first replay to need it produces a note.
+                _replay_pageable_override: Optional[str] = None
                 # Whether Unsloth's placement planner actually RAN and came back
                 # unable to fit the model. `use_fit` alone cannot answer that: it
                 # starts True at its declaration below and is also what the except
@@ -21266,6 +21298,7 @@ class LlamaCppBackend:
                     self._emit_child_gpu_visibility(
                         env, ",".join(str(i) for i in gpu_indices), prefer_rocr = True
                     )
+                    _launch_pinned_ids = list(gpu_indices)
                 elif not is_vulkan_backend and not gpu_ids:
                     # Nothing above pinned the child. Two shapes land here and the gate
                     # breaks both the same way, so they share one probe: `--fit on`
@@ -21337,6 +21370,8 @@ class LlamaCppBackend:
                         self._emit_child_gpu_visibility(
                             env, ",".join(str(i) for i in _survivors), prefer_rocr = True
                         )
+                        # Narrower than any pin above, so it replaces it.
+                        _launch_pinned_ids = list(_survivors)
                     elif manual_tensor_split_emitted:
                         # A manual per-GPU ratio across ALL GPUs (no explicit pick, so
                         # no mask above): the UI built --tensor-split in ascending
@@ -21368,10 +21403,17 @@ class LlamaCppBackend:
                 _preflight_avail_mib = (
                     self._available_system_memory_mib() if _cpu_fallback_eligible else None
                 )
+                # Only the cards this child can reach. VRAM on a card this launch
+                # pinned away is not VRAM it can spend: crediting it prices the spill
+                # too low and leaves an unmapped oversized load unrewritten, which is
+                # an OOM rather than the slow load the override exists to produce.
+                _reachable_gpus = self._rows_the_child_can_reach(
+                    _detected_gpus, _launch_pinned_ids
+                )
                 # reads the argv the child gets, not the mid-fit state that produced it
                 _offload_msg = self._launch_host_shortfall_message(
                     cmd,
-                    _detected_gpus,
+                    _reachable_gpus,
                     env,
                     child_has_no_gpu = _child_has_no_gpu,
                     avail_mib = _preflight_avail_mib,
@@ -21401,7 +21443,7 @@ class LlamaCppBackend:
                     return bool(
                         self._launch_host_shortfall_message(
                             cmd,
-                            _detected_gpus,
+                            _reachable_gpus,
                             env,
                             child_has_no_gpu = _child_has_no_gpu,
                             shared_gpu_ids = _shared_gpu_ids,
@@ -21804,6 +21846,7 @@ class LlamaCppBackend:
                     worth replaying.
                     """
                     nonlocal intent, gpu_memory_mode, gpu_layers, n_cpu_moe
+                    nonlocal _replay_pageable_override
                     nonlocal tensor_parallel, tensor_split, gpu_indices, use_fit, _spawn_cwd
                     # GGML_ASSERT is a signal on POSIX and a CRT abort (exit 3) on
                     # MSVC, so Windows needs both. Cancel-checked like every retry
@@ -21833,6 +21876,15 @@ class LlamaCppBackend:
                         self._cleanup_cpu_fallback_runtime()
                         return False
                     replay, _spawn_cwd, _cpu_pageable_note = prepared
+                    # The rewrite mutates the SHARED env in place, so it happens once
+                    # even when several argvs are replayed. A non-terminal failure
+                    # below returns without the note, and the next replay then finds an
+                    # already-pageable env and produces none of its own -- so whichever
+                    # attempt finally comes up would report ordinary paging and never
+                    # say the user's load mode had been overridden. Carried instead.
+                    if _cpu_pageable_note:
+                        _replay_pageable_override = _cpu_pageable_note
+                    _cpu_pageable_note = _cpu_pageable_note or _replay_pageable_override
 
                     logger.warning(
                         "The auto-selected Vulkan backend hard-crashed during "

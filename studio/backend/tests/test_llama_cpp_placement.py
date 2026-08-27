@@ -3456,3 +3456,63 @@ def test_the_cpu_reprice_reads_the_pool_the_preflight_saw_not_the_one_the_model_
         "the reprice charged the weights against a pool they already occupy, so a model "
         f"that started fine still warns it does not fit: {backend.last_load_warning!r}"
     )
+
+
+@pytest.mark.parametrize("extra_args", _UNMAPPED_ARGV, ids = _UNMAPPED_IDS)
+def test_an_unmapped_load_is_priced_against_the_cards_the_pin_left_it(
+    tmp_path, monkeypatch, extra_args
+):
+    """VRAM on a card this launch pinned away is not VRAM the child can spend.
+
+    Two 24 GB cards, and Unsloth pins the child to one of them. A 25 GB model is
+    smaller than the pair and larger than the card it actually gets, so the spill
+    is real and the 3 GB host cannot hold it. Summing both cards prices that spill
+    at zero, leaves the unmapped request standing, and the child then allocates the
+    offloaded weights in host RAM and is OOM-killed: the override exists to turn
+    exactly that into a slow load.
+    """
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(0, 20_000, 24_576), (1, 20_000, 24_576)]
+    )
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(25 * 1024**3)
+    backend._select_gpus = lambda *args, **kw: ([0], False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 3_000)
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+
+    result = _launch(backend, gguf, extra_args = extra_args)
+    cmd = result["cmd"]
+
+    assert cmd, "the pinned unmapped load never spawned llama-server"
+    assert not _unmapped_tokens(cmd), (
+        f"the child still loads unmapped, priced against a card the pin hid: {cmd}"
+    )
+    assert "memory mapping instead" in (backend.last_load_warning or "")
+
+
+def test_a_pinned_load_that_fits_the_card_it_got_keeps_its_mode(tmp_path, monkeypatch):
+    """The control, and the one that stops the fix double-counting a pin.
+
+    Same pin, same single reachable card, but the model fits it. Nothing is
+    oversized, so the request survives untouched and no warning is invented. This
+    is also what fails if the reachable set is ever derived from an INHERITED
+    CUDA_VISIBLE_DEVICES: the probe has already applied that mask, so subtracting
+    it again would price a card the child really does have as absent.
+    """
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(0, 20_000, 24_576), (1, 20_000, 24_576)]
+    )
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(8 * 1024**3)
+    backend._select_gpus = lambda *args, **kw: ([0], False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 3_000)
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+
+    cmd = _launch(backend, gguf, extra_args = ["--no-mmap"])["cmd"]
+
+    assert _unmapped_tokens(cmd) == ["--no-mmap"], f"the fitting load lost its mode: {cmd}"
+    assert backend.last_load_warning is None
