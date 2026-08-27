@@ -11,6 +11,7 @@ import {
   pickHuggingFaceCacheDir,
 } from "@/features/native-intents";
 import {
+  gpuMemoryTotalsGb,
   gpuVramUsedIsPerDevice,
   resolveGpuVramUsedGb,
 } from "@/hooks/gpu-vram";
@@ -247,7 +248,8 @@ export function ResourcesTab() {
     const diskFree = systemInfo.disk?.free_gb ?? 0;
     const diskUsed = Math.max(0, diskTotal - diskFree);
     const diskPercent = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
-    const vramTotal = aggregateGpuMemoryTotalGb(devices);
+    const gpuMemoryTotals = gpuMemoryTotalsGb(devices);
+    const vramTotal = gpuMemoryTotals.total;
     // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
     // total, so the device's own row stays unknown. The host figure can still be
     // known when no device's is (#7452).
@@ -282,6 +284,8 @@ export function ResourcesTab() {
       diskUsed,
       diskPercent,
       vramTotal,
+      vramDedicated: gpuMemoryTotals.dedicated,
+      vramShared: gpuMemoryTotals.shared,
       vramUsed,
       vramFree,
       vramPercent,
@@ -388,6 +392,13 @@ export function ResourcesTab() {
           .join(" · ")
     : null;
   const unknownLabel = t("settings.resources.environment.unknown");
+  const vramCapacityLabel =
+    metrics.vramShared > 0
+      ? t("settings.resources.environment.vramWithShared", {
+          vram: formatGiB(metrics.vramDedicated),
+          shared: formatGiB(metrics.vramShared),
+        })
+      : formatGiB(metrics.vramTotal);
   // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
 
@@ -476,8 +487,8 @@ export function ResourcesTab() {
                 ? unknownLabel
                 : hasGpu
                   ? metrics.vramUsageKnown
-                    ? `${formatGiB(metrics.vramUsed)} / ${formatGiB(metrics.vramTotal)}`
-                    : `${unknownLabel} / ${formatGiB(metrics.vramTotal)}`
+                    ? `${formatGiB(metrics.vramUsed)} / ${vramCapacityLabel}`
+                    : `${unknownLabel} / ${vramCapacityLabel}`
                   : t("settings.resources.liveMonitor.noGpu")
             }
             detail={

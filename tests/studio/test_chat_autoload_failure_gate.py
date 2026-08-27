@@ -525,6 +525,18 @@ async function loadModel(payload: any) {
   if (result instanceof Error) throw result;
   return result;
 }
+
+// The speech-only verdict, mirroring
+// studio/frontend/src/features/chat/lib/speech-only-status.ts. Real logic rather than a
+// neutral stub: a stub that always answered false would keep every scenario green if the
+// queued path's guard were removed.
+export function isSpeechOnlyStatus(status: any): boolean {
+  return (
+    Boolean(status?.is_audio) &&
+    status?.audio_type !== "whisper" &&
+    status?.audio_type !== "audio_vlm"
+  );
+}
 """
 
 SCENARIO_HELPERS = """
