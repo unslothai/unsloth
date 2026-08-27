@@ -1502,6 +1502,7 @@ pythonpath = ["."]
 markers = [
     "gpu: needs a real accelerator, and usually downloads a checkpoint to use it",
     "slow: minutes rather than seconds, and covered again more cheaply elsewhere",
+    "scenario: optional Unforgettable CPU/B week; run with -o addopts= -m scenario",
 ]
 
 # Deselected by default, not deleted: CI runs them in their own leg with

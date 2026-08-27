@@ -424,7 +424,7 @@ Not the MemoryWheels outer wheel. Two optional jobs, separately configured, defa
 
 ## 5. Automated tests
 
-Apache suite: **285** CPU tests under `unforgettable/tests/` (ignore `test_sidecar_gpu.py`), no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`. `test_sidecar_gpu.py` is marked `gpu` and skips unless CUDA torch and cached `--base` weights are present.
+Apache suite: **285** CPU tests under `unforgettable/tests/` (ignore `test_sidecar_gpu.py`; the ledger-week file is marked `scenario` + `slow` and is deselected by root addopts), no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`. `test_sidecar_gpu.py` is marked `gpu` and skips unless CUDA torch and cached `--base` weights are present. `tests/scenario/test_ledger_week.py` is an opt-in integration week: scripted inner, real unittest world judge, B under load, pack + fake C at the end.
 
 | File | What it locks |
 |------|----------------|
@@ -454,6 +454,7 @@ Apache suite: **285** CPU tests under `unforgettable/tests/` (ignore `test_sidec
 | `test_sidecar_gpu.py` | Marked `gpu`. CUDA + cached `--base` only: SFT writes a real PEFT dir and `complete()` returns a string (adapter and base); preference writes PEFT + `pairs.jsonl`. Skips without GPU or weights |
 | `test_sidecar_eval.py` | Seeded holdout 1.0 vs 0.0; **unseeded holdout fails**; empty holdout fails |
 | `test_sidecar_adapters.py` | Promote gate, one promoted, rollback keeps files, probe-fail refuse |
+| `tests/scenario/test_ledger_week.py` | Marked `scenario` and `slow`. Multi-episode ledger week through `episode.run`: fail→sim→world retry, WHO/WHAT retrieve, filter, planner, twin_note, standing, compact, pack ≥16 train + holdout, fake SFT + preference, eval. Not CI |
 
 Names that later phases must keep green: `test_episode_fail_sim_retry_writes_error_fix`, `test_episode_sim_ok_world_retry_fail_writes_twin_note`, `test_retrieve_injects_before_generate`, `test_episode_standing_excludes_from_retrieve`, `test_episode_re_retrieve_on_enter_sim`, `test_episode_maybe_compile_after_second_world_pass`.
 
@@ -512,13 +513,22 @@ python -m pytest unforgettable/tests --ignore=unforgettable/tests/test_sidecar_g
 python -m pytest unforgettable/tests/test_episode.py -q
 ```
 
-Expect the Apache suite green (the GPU file is marked `gpu`, so default addopts deselects it; CI also `--ignore=`s it). Runtime is a few seconds on a laptop. On a CUDA box with `unsloth/Qwen3.5-4B` cached:
+Expect the Apache suite green (the GPU file is marked `gpu` and the ledger week is marked `slow`/`scenario`, so default addopts deselects both; CI also `--ignore=`s the GPU file). Runtime is a few seconds on a laptop. On a CUDA box with `unsloth/Qwen3.5-4B` cached:
 
 ```bash
 python -m pytest -o addopts= unforgettable/tests/test_sidecar_gpu.py
 ```
 
-SFT (including `complete()`) and preference should pass in well under two minutes. Root addopts is `-m 'not gpu and not slow'`; `-m gpu` ANDs with that and collects nothing, so override addopts as above.
+Optional CPU/B ledger week (must override addopts, same pattern as gpu):
+
+```bash
+python -m pytest -o addopts= -m scenario unforgettable/tests -s
+
+# keep memory.db + pack JSONL + chronicle for a later GPU C job
+UNFORGETTABLE_SCENARIO_OUT=/tmp/ledger-week python -m pytest -o addopts= -m scenario unforgettable/tests -s
+```
+
+SFT (including `complete()`) and preference should pass in well under two minutes. Root addopts is `-m 'not gpu and not slow'`; `-m gpu` or `-m scenario` ANDs with that and collects nothing, so override addopts as above.
 
 If the environment has no `pytest` in the project venv:
 
@@ -562,7 +572,7 @@ python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" promote <adapter-id
 
 - `unforgettable` imports with no Studio on `sys.path`.
 - `import unforgettable.sidecar` does not import `unsloth` or `torch`.
-- `pytest unforgettable/tests --ignore=unforgettable/tests/test_sidecar_gpu.py` 285 passed.
+- `pytest unforgettable/tests --ignore=unforgettable/tests/test_sidecar_gpu.py` 285 passed, 1 deselected (ledger week).
 - FakeHost happy path: world fail → sim → world ok → `error_fix` **proposed**, sim **removed**.
 - FakeHost drift path: sim ok + world retry fail → active `twin_note`, sim **kept**.
 - Empty adapter set / no `adapter_id` leaves Phase 4 inject unchanged.

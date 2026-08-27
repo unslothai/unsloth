@@ -205,7 +205,13 @@ From the Unsloth repo root (do **not** rely on bare `pytest` — root `testpaths
 python -m pytest unforgettable/tests
 ```
 
-No GPU. See [`TECHNICAL.md`](TECHNICAL.md) for the full build and test matrix, including Studio-face tests.
+No GPU. An optional ledger-week integration test (CPU, Layer B, pack for C) is marked `scenario` and is **not** in that default run:
+
+```bash
+python -m pytest -o addopts= -m scenario unforgettable/tests -s
+```
+
+See [`TECHNICAL.md`](TECHNICAL.md) for the full build and test matrix, including Studio-face tests.
 
 ## License
 
