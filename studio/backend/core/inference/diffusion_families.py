@@ -746,8 +746,12 @@ def canonical_base(repo_id: Optional[str]) -> str:
 _WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".pt", ".ckpt", ".gguf"})
 
 
-def _root_holds_upstream(root: Path, repo_id: str, wanted: Sequence[str]) -> bool:
-    """``_upstream_is_cached`` for ONE cache root. Never raises."""
+def _cached_revisions(root: Path, repo_id: str) -> list[Path]:
+    """The snapshot dirs a fetch pinned to ``root`` could resolve for ``repo_id``. Never raises.
+
+    ``refs/main`` alone when it exists, the one commit a branch fetch falls back to on a failed
+    HEAD; every snapshot when it does not, since a commit-pinned download leaves no ref.
+    """
     try:
         repo = root / f"models--{repo_id.replace('/', '--')}"
         ref = repo / "refs" / "main"
@@ -756,9 +760,28 @@ def _root_holds_upstream(root: Path, repo_id: str, wanted: Sequence[str]) -> boo
             if ref.is_file()
             else sorted((repo / "snapshots").iterdir())
         )
-        for rev in revs:
-            if not rev.is_dir():
-                continue
+        return [rev for rev in revs if rev.is_dir()]
+    except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
+        return []
+
+
+def _root_revision_coverage(root: Path, repo_id: str, wanted: Sequence[str]) -> set[frozenset[str]]:
+    """Which subsets of ``wanted`` ONE root can serve, one entry per revision it could resolve.
+
+    A fetch that lands in a root lands in a SINGLE revision of it, so a name may not be borrowed
+    from a superseded snapshot to complete a newer one. The empty set is always an option: a root
+    is allowed to contribute nothing.
+    """
+    covers: set[frozenset[str]] = {frozenset()}
+    for rev in _cached_revisions(root, repo_id):
+        covers.add(frozenset(name for name in wanted if (rev / name).exists()))
+    return covers
+
+
+def _root_holds_upstream(root: Path, repo_id: str, wanted: Sequence[str]) -> bool:
+    """``_upstream_is_cached`` for ONE cache root. Never raises."""
+    try:
+        for rev in _cached_revisions(root, repo_id):
             if wanted:
                 if all((rev / name).exists() for name in wanted):
                     return True
@@ -802,8 +825,9 @@ def _upstream_is_cached(
     With BOTH roots the set is answered per FILE, because that is what those callers then do: a
     pair split across a cache-folder change (one file fetched before it, one after) is held by
     neither root alone, and asking each root for the whole set calls it absent and re-pulls bytes
-    the two roots already have between them. Within a root the whole-set, one-revision rule above
-    still applies, so a superseded revision cannot contribute a file.
+    the two roots already have between them. Split across ROOTS only: within a root a name still
+    has to come from the one revision that root's fetch resolves, so a superseded snapshot cannot
+    complete a newer one. Any single root answering the whole set is the case above unchanged.
     """
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
@@ -819,10 +843,13 @@ def _upstream_is_cached(
                 roots.append(fallback)
         wanted = tuple(files or ())
         if wanted and len(roots) > 1:
-            return all(
-                any(_root_holds_upstream(root, repo_id, (name,)) for root in roots)
-                for name in wanted
-            )
+            # One revision per root, unioned across roots: a name may come from either root, but
+            # within a root it has to come from the revision that root's fetch would resolve.
+            reachable = {frozenset()}
+            for root in roots:
+                covers = _root_revision_coverage(root, repo_id, wanted)
+                reachable = {have | cover for have in reachable for cover in covers}
+            return any(set(wanted) <= have for have in reachable)
         return any(_root_holds_upstream(root, repo_id, wanted) for root in roots)
     except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
         return False

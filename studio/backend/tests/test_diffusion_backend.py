@@ -531,6 +531,41 @@ def test_the_two_root_union_does_not_relax_the_revision_rule(monkeypatch, tmp_pa
     assert _upstream_is_cached(repack, (first, second), other_root = True) is False
 
 
+def test_the_union_never_borrows_across_revisions_inside_one_root(monkeypatch, tmp_path):
+    """Split across ROOTS is reusable; split across SNAPSHOTS of one root is not.
+
+    A commit-pinned download leaves no refs/main, so every snapshot is a candidate. Answering the
+    set name by name would then let an old snapshot complete a newer one inside the same root,
+    which no fetch can do: a fetch that lands in a root lands in ONE revision of it. Studio never
+    pins a revision itself, but the cache is shared with anything else that does.
+    """
+    from huggingface_hub import constants
+
+    from core.inference.diffusion_families import _upstream_is_cached
+
+    repack = "Comfy-Org/z_image_turbo"
+    first, second = "split_files/vae/ae.safetensors", "split_files/text_encoders/te.safetensors"
+    live, other = tmp_path / "live", tmp_path / "other"
+    other.mkdir()
+
+    def seed(root, name, revision):
+        rev = root / f"models--{repack.replace('/', '--')}" / "snapshots" / revision
+        (rev / name).parent.mkdir(parents = True, exist_ok = True)
+        (rev / name).write_bytes(b"x")
+
+    # No refs/main anywhere, and the two names live in different snapshots of the SAME root.
+    seed(live, first, "a" * 40)
+    seed(live, second, "b" * 40)
+    monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(live))
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(other))
+
+    assert _upstream_is_cached(repack, (first, second), other_root = True) is False
+
+    # One snapshot holding both is the ordinary no-ref case, and still counts.
+    seed(live, second, "a" * 40)
+    assert _upstream_is_cached(repack, (first, second), other_root = True) is True
+
+
 def test_te_prequant_equivalence_group_accepts_a_mirrored_base():
     """The T5-XXL artifact is shared across the FLUX.1 releases through an equivalence group of
     UPSTREAM ids. A mirrored base is a different string, so without normalising it the pre-cast
