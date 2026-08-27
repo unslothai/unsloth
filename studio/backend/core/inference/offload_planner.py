@@ -1103,7 +1103,8 @@ def _finish(
             budget,
             quantised = quantised,
             kv_bytes_floor = kv_bytes_floor,
-            host_bytes = layout.token_embd_bytes + sum(b.spillable_bytes for b in chosen)
+            host_bytes = layout.token_embd_bytes
+            + sum(b.spillable_bytes for b in chosen)
             + (layout.lm_head_bytes if spill_lm_head else 0),
             host_ram_bytes = host_ram_bytes,
         )

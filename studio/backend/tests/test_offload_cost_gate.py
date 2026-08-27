@@ -260,13 +260,19 @@ def test_a_spill_larger_than_host_ram_is_refused_outright():
     layout = dense_layout()
     card = [14848 * 1024 * 1024]
     roomy = plan_placement(
-        layout, card, 94 * GIB, 32768,
+        layout,
+        card,
+        94 * GIB,
+        32768,
         opts = gated(host = HostProfile(threads = 6), min_penalty_reduction = 0.0),
     )
     assert roomy.spills_anything, "with RAM to spare this cell is planned"
 
     cramped = plan_placement(
-        layout, card, 8 * GIB, 32768,
+        layout,
+        card,
+        8 * GIB,
+        32768,
         opts = gated(host = HostProfile(threads = 6), min_penalty_reduction = 0.0),
     )
     assert not cramped.spills_anything
