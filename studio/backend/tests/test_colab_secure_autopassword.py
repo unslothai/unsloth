@@ -242,11 +242,11 @@ def test_start_cloudflare_tunnel_refuses_after_an_undelivered_rotation(monkeypat
         lambda port, **_kwargs: started.update(called = True) or "https://example.trycloudflare.com",
     )
 
-    assert colab.start_cloudflare_tunnel(8888) is None       # first run: refuses
+    assert colab.start_cloudflare_tunnel(8888) is None  # first run: refuses
     assert storage.requires_password_change(admin) is False  # ...but it committed
     assert storage.credential_undelivered(admin) is True
 
-    assert colab.start_cloudflare_tunnel(8888) is None       # retry: still refuses
+    assert colab.start_cloudflare_tunnel(8888) is None  # retry: still refuses
     assert started["called"] is False
 
 

@@ -501,7 +501,6 @@ def _auto_generate_colab_admin_password() -> "str | None":
         # start_cloudflare_tunnel once _display_admin_credentials succeeds.
         try:
             from auth.storage import mark_credential_undelivered
-
             mark_credential_undelivered(DEFAULT_ADMIN_USERNAME)
         except Exception:
             pass
