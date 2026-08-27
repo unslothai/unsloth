@@ -26367,7 +26367,12 @@ class LlamaCppBackend:
             # rule for what counts as servable stays in one place.
             return _fitted
 
-        def _loop_continuation_fits(candidate, tools, reasoning_kw, continue_flag = False) -> bool:
+        def _loop_continuation_fits(
+            candidate,
+            tools,
+            reasoning_kw,
+            continue_flag = False,
+        ) -> bool:
             """Whether the retry's own prompt still fits once the partial is in it.
 
             The final pass has the same guard. This path did not, and it is the one a

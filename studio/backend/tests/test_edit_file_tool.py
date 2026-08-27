@@ -616,9 +616,9 @@ class TestCreationLeavesNothingBehindWhenTheWriteFails:
         )
         monkeypatch.undo()
         assert result.startswith("Error:")
-        assert "No space left on device" in result, (
-            "the write was never attempted, so the cleanup was not exercised"
-        )
+        assert (
+            "No space left on device" in result
+        ), "the write was never attempted, so the cleanup was not exercised"
         assert not (workdir / "notes.py").exists()
 
     def test_a_failed_create_does_not_remove_someone_elses_file(self, workdir):
