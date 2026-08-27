@@ -613,6 +613,9 @@ const EMAIL_CONTENT_TYPE_RE =
 const EMAIL_CHARSET_RE = /charset[ \t]*=[ \t]*"?([A-Za-z0-9._-]+)"?/i;
 // vCard 2.1 puts the encoding on the property: `FN;CHARSET=windows-1252:...`.
 const VCARD_CHARSET_RE = /;[ \t]*CHARSET[ \t]*=[ \t]*"?([A-Za-z0-9._-]+)"?/gi;
+// The delimiter a multipart header names for its own parts.
+const MIME_BOUNDARY_RE =
+  /;[ \t]*boundary[ \t]*=[ \t]*(?:"([^"\r\n]*)"|([^\s;"]+))/gi;
 
 // A header block runs from the start of the file, an mbox "From " separator, or
 // a MIME boundary, to the first blank line. Body text can hold a line that reads
@@ -623,9 +626,24 @@ const VCARD_CHARSET_RE = /;[ \t]*CHARSET[ \t]*=[ \t]*"?([A-Za-z0-9._-]+)"?/gi;
  * One forward pass over the lines, slicing only the header regions themselves.
  * Restarting a search from each candidate boundary instead is quadratic, and a
  * body of diff hunks is all candidate boundaries: 1 MB of them took 14 seconds.
+ *
+ * Only a delimiter a header actually declared reopens the headers. Any line
+ * starting with `--` reopened them before, so a signature marker or a quoted
+ * diff put the body back into header mode, and the next body line shaped like
+ * `Content-Type: ... charset=...` became a second declaration that refused the
+ * file. A closing delimiter, `--boundary--`, ends its part instead of starting
+ * one.
  */
 function emailHeaderBlocks(text: string): string[] {
   const blocks: string[] = [];
+  const boundaries = new Set<string>();
+  const closeBlock = (block: string) => {
+    blocks.push(block);
+    for (const declared of block.matchAll(MIME_BOUNDARY_RE)) {
+      const boundary = declared[1] ?? declared[2];
+      if (boundary) boundaries.add(boundary);
+    }
+  };
   let position = 0;
   let blockStart = 0;
   let inHeader = true;
@@ -639,24 +657,85 @@ function emailHeaderBlocks(text: string): string[] {
     const isBlank = contentEnd === position;
     if (inHeader) {
       if (isBlank) {
-        blocks.push(text.slice(blockStart, position));
+        closeBlock(text.slice(blockStart, position));
         inHeader = false;
       }
-    } else if (
-      !isBlank &&
-      (text.startsWith("From ", position) || text.startsWith("--", position))
-    ) {
-      // An mbox separator or a MIME boundary: headers resume on the next line.
-      inHeader = true;
-      blockStart = lineBreak + 1;
+    } else if (!isBlank) {
+      // An mbox separator, or a delimiter one of the headers above declared.
+      let resumes = text.startsWith("From ", position);
+      if (!resumes && boundaries.size > 0 && text.startsWith("--", position)) {
+        // Trailing whitespace is allowed on a delimiter line and is not part of
+        // the boundary token. A closing delimiter carries the extra "--" into
+        // the token, so it does not match and does not reopen the headers.
+        const token = text
+          .slice(position + 2, contentEnd)
+          .replace(/[ \t]+$/, "");
+        resumes = boundaries.has(token);
+      }
+      if (resumes) {
+        inHeader = true;
+        blockStart = lineBreak + 1;
+      }
     }
     if (lineBreak === text.length) break;
     position = lineBreak + 1;
   }
   if (inHeader && blockStart < text.length) {
-    blocks.push(text.slice(blockStart));
+    closeBlock(text.slice(blockStart));
   }
   return blocks;
+}
+
+/**
+ * The property-parameter sections of a vCard, values excluded.
+ *
+ * `FN;CHARSET=windows-1252:name` declares a charset; `NOTE:see \;CHARSET=x`
+ * does not, because that text is the value. The section therefore ends at the
+ * property's value delimiter: the first colon outside a quoted parameter value.
+ * Folded lines, which begin with a space or tab, continue the line above.
+ */
+function vCardParameterSections(text: string): string[] {
+  const sections: string[] = [];
+  let section = "";
+  let valueReached = true;
+  let quoted = false;
+  let position = 0;
+  while (position <= text.length) {
+    let lineBreak = text.indexOf("\n", position);
+    if (lineBreak === -1) lineBreak = text.length;
+    const contentEnd =
+      lineBreak > position && text[lineBreak - 1] === "\r"
+        ? lineBreak - 1
+        : lineBreak;
+    const folded = text[position] === " " || text[position] === "\t";
+    let start = position;
+    if (folded) {
+      start = position + 1;
+    } else {
+      if (section) sections.push(section);
+      section = "";
+      valueReached = false;
+      quoted = false;
+    }
+    if (!valueReached) {
+      let cut = contentEnd;
+      for (let index = start; index < contentEnd; index += 1) {
+        const character = text[index];
+        if (character === '"') {
+          quoted = !quoted;
+        } else if (character === ":" && !quoted) {
+          cut = index;
+          valueReached = true;
+          break;
+        }
+      }
+      section += text.slice(start, cut);
+    }
+    if (lineBreak === text.length) break;
+    position = lineBreak + 1;
+  }
+  if (section) sections.push(section);
+  return sections;
 }
 
 // An XML prolog names the document's encoding and must be the first thing in it.
@@ -699,8 +778,10 @@ function declaredContainerCharsets(
       }
     }
   } else {
-    for (const property of prefix.matchAll(VCARD_CHARSET_RE)) {
-      add(property[1]);
+    for (const section of vCardParameterSections(prefix)) {
+      for (const property of section.matchAll(VCARD_CHARSET_RE)) {
+        add(property[1]);
+      }
     }
   }
   return found;

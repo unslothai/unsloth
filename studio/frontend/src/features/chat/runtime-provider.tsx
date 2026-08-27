@@ -3,6 +3,10 @@
 
 import { authFetch } from "@/features/auth";
 import {
+  classifiedAttachmentFile,
+  needsAttachmentTrackInspection,
+} from "@/lib/video-utils";
+import {
   AssistantRuntimeProvider,
   type Attachment,
   type AttachmentAdapter,
@@ -212,7 +216,31 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   }
 
   add(state: { file: File }) {
-    return this.delegate.add(state);
+    // A composite picks its adapter synchronously from the name and MIME type,
+    // and both say "video" for an audio-only 3GP recording, so settle that from
+    // the container's own tracks first, as the native readers do. Every other
+    // file goes straight through, keeping the delegate's own return.
+    if (!needsAttachmentTrackInspection(state.file)) {
+      return this.delegate.add(state);
+    }
+    return this.addInspected(state);
+  }
+
+  private async addInspected(state: {
+    file: File;
+  }): Promise<PendingAttachment> {
+    const file = await classifiedAttachmentFile(state.file);
+    const added = await this.delegate.add({ ...state, file });
+    if (Symbol.asyncIterator in added) {
+      // Only the audio and video adapters claim a 3GP and both resolve to one
+      // attachment, so this drains a generator to its last value rather than
+      // forwarding the progress an adapter here does not report.
+      let last: PendingAttachment | undefined;
+      for await (const value of added) last = value;
+      if (!last) throw new Error("The attachment adapter yielded nothing.");
+      return last;
+    }
+    return added;
   }
 
   remove(attachment: Attachment): Promise<void> {

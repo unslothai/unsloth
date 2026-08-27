@@ -68,3 +68,114 @@ export function isVideoFile(file: File): boolean {
   const name = file.name.toLowerCase();
   return VIDEO_EXTENSIONS.some((ext) => name.endsWith(ext));
 }
+
+/** Payloads of every box of the given type at this level. Mirrors
+ *  `bmff_box_payloads` in native_path_policy.rs. */
+function bmffBoxPayloads(data: Uint8Array, wanted: string): Uint8Array[] {
+  const payloads: Uint8Array[] = [];
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let offset = 0;
+  while (data.length - offset >= 8) {
+    const size32 = view.getUint32(offset);
+    const type = String.fromCharCode(
+      data[offset + 4]!,
+      data[offset + 5]!,
+      data[offset + 6]!,
+      data[offset + 7]!,
+    );
+    let headerSize = 8;
+    let boxSize = size32;
+    if (size32 === 0) {
+      // Runs to the end of this level.
+      boxSize = data.length - offset;
+    } else if (size32 === 1) {
+      // A 64-bit size follows the type.
+      if (data.length - offset < 16) break;
+      const size64 = view.getBigUint64(offset + 8);
+      if (size64 > BigInt(Number.MAX_SAFE_INTEGER)) break;
+      headerSize = 16;
+      boxSize = Number(size64);
+    }
+    if (boxSize < headerSize || boxSize > data.length - offset) break;
+    if (type === wanted) {
+      payloads.push(data.subarray(offset + headerSize, offset + boxSize));
+    }
+    offset += boxSize;
+  }
+  return payloads;
+}
+
+/** Whether a 3GP container has audio tracks and no video tracks. Mirrors
+ *  `is_audio_only_3gp` in native_path_policy.rs. */
+export function isAudioOnly3gpBytes(raw: Uint8Array): boolean {
+  let hasAudio = false;
+  let hasVideo = false;
+  for (const moov of bmffBoxPayloads(raw, "moov")) {
+    for (const trak of bmffBoxPayloads(moov, "trak")) {
+      for (const mdia of bmffBoxPayloads(trak, "mdia")) {
+        for (const hdlr of bmffBoxPayloads(mdia, "hdlr")) {
+          if (hdlr.length < 12) continue;
+          const handler = String.fromCharCode(
+            hdlr[8]!,
+            hdlr[9]!,
+            hdlr[10]!,
+            hdlr[11]!,
+          );
+          if (handler === "soun") hasAudio = true;
+          else if (handler === "vide") hasVideo = true;
+        }
+      }
+    }
+  }
+  return hasAudio && !hasVideo;
+}
+
+/** Whether a file's own tracks have to be read before it can be classified.
+ *  Cheap and synchronous, so a surface can keep its existing path for
+ *  everything else. */
+export function needsAttachmentTrackInspection(file: File): boolean {
+  return (
+    /\.3gp$/i.test(file.name) &&
+    !/^audio\//i.test(file.type) &&
+    // Over the cap the surface refuses it anyway, and moov can sit at the end
+    // of the container, so no prefix would settle it more cheaply.
+    file.size <= MAX_VIDEO_SIZE
+  );
+}
+
+/**
+ * The file an attachment surface should classify, with an audio-only 3GP
+ * restamped as audio.
+ *
+ * A voice recording and a clip share the .3gp extension, and the browser
+ * answers "" or video/3gpp for both, so the name alone sends the recording to
+ * whichever surface claims video: rejected outright on an audio model, and fed
+ * to ffmpeg as frames on a video one. The native readers already read the BMFF
+ * handlers and stamp audio/3gpp, so do the same before an adapter is picked.
+ * Everything else is returned untouched, so this costs one predicate per file.
+ */
+export async function classifiedAttachmentFile(file: File): Promise<File> {
+  if (!needsAttachmentTrackInspection(file)) {
+    return file;
+  }
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await file.arrayBuffer());
+  } catch {
+    return file;
+  }
+  if (!isAudioOnly3gpBytes(bytes)) {
+    return file;
+  }
+  return new File([file], file.name, {
+    type: "audio/3gpp",
+    lastModified: file.lastModified,
+  });
+}
+
+/** The same restamping across a picked or dropped batch. */
+export function classifiedAttachmentFiles(
+  files: FileList | readonly File[],
+): Promise<File[]> {
+  return Promise.all(Array.from(files).map(classifiedAttachmentFile));
+}

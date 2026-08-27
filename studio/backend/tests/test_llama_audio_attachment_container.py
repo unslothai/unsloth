@@ -6,8 +6,8 @@ import io
 import sys
 import types
 
-import av
 import numpy as np
+import pytest
 import routes.inference as inference_route
 
 
@@ -58,6 +58,8 @@ def test_aac_and_mp2_are_transcoded_instead_of_forwarded_as_mp3(monkeypatch):
 
 
 def _encode_wma() -> bytes:
+    # PyAV is optional in a backend install, so only the fixtures that need it skip.
+    av = pytest.importorskip("av")
     buffer = io.BytesIO()
     with av.open(buffer, mode = "w", format = "asf") as output:
         stream = output.add_stream("wmav2", rate = 44_100)
@@ -79,6 +81,7 @@ def _encode_wma() -> bytes:
 
 
 def _encode_amr() -> bytes:
+    av = pytest.importorskip("av")
     buffer = io.BytesIO()
     with av.open(buffer, mode = "w", format = "amr") as output:
         stream = output.add_stream("amr_nb", rate = 8_000)
@@ -278,6 +281,81 @@ def test_audio_input_decode_passes_a_short_recording_through(monkeypatch):
     out = inference_route._decode_audio_base64(base64.b64encode(b"short").decode())
     assert out.shape == (16_000,)
     assert out.dtype == np.float32
+
+
+def test_a_load_is_capped_by_the_sample_ceiling_not_only_by_the_clock(monkeypatch):
+    """num_frames is the value being distrusted, so a container that understates
+    it must not license a read up to the rate-relative limit: at 192 kHz that is
+    four times the sample ceiling."""
+    import torch
+
+    loads: list[dict] = []
+    ceiling = 64
+
+    class _FakeTorchaudio:
+        transforms = types.SimpleNamespace()
+
+        @staticmethod
+        def info(_path):
+            # Claims 8 frames; the file actually holds far more.
+            return types.SimpleNamespace(sample_rate = 192_000, num_frames = 8, num_channels = 2)
+
+        @staticmethod
+        def load(_path, **kwargs):
+            loads.append(kwargs)
+            frames = kwargs["num_frames"]
+            return torch.ones((2, frames)), 192_000
+
+    monkeypatch.setattr(inference_route, "_MAX_DECODED_SAMPLES", ceiling)
+    monkeypatch.setitem(sys.modules, "torchaudio", _FakeTorchaudio)
+
+    try:
+        inference_route._decode_audio_base64(base64.b64encode(b"understated").decode())
+    except inference_route._DecodedAudioTooLongError:
+        pass
+    else:
+        raise AssertionError("expected the sample ceiling to be enforced")
+    # One frame past ceiling / channels, not past rate * seconds.
+    assert loads == [{"num_frames": ceiling // 2 + 1}]
+
+
+def test_an_honest_length_is_still_read_in_full(monkeypatch):
+    """Capping by both limits must not truncate a file that fits: the read window
+    stays at or above what info() reported."""
+    import torch
+
+    loads: list[dict] = []
+
+    class _FakeTorchaudio:
+        transforms = types.SimpleNamespace()
+
+        @staticmethod
+        def info(_path):
+            return types.SimpleNamespace(sample_rate = 48_000, num_frames = 48_000 * 60, num_channels = 1)
+
+        @staticmethod
+        def load(_path, **kwargs):
+            loads.append(kwargs)
+            return torch.ones((1, 48_000 * 60)), 48_000
+
+    monkeypatch.setitem(sys.modules, "torchaudio", _FakeTorchaudio)
+
+    def _must_not_stream(_raw):
+        raise AssertionError("a file that fits must not be streamed")
+
+    monkeypatch.setattr(inference_route, "_decode_audio_mono", _must_not_stream)
+
+    class _FakeResample:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __call__(self, waveform):
+            return waveform[..., :16_000]
+
+    _FakeTorchaudio.transforms.Resample = _FakeResample
+    out = inference_route._decode_audio_base64(base64.b64encode(b"one minute").decode())
+    assert out.shape == (16_000,)
+    assert loads[0]["num_frames"] >= 48_000 * 60
 
 
 def test_audio_input_decode_stays_bounded_when_the_probe_fails(monkeypatch):

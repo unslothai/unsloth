@@ -19,7 +19,10 @@ import {
   decodeTextAttachmentBytes,
   isTextAttachmentName,
 } from "../src/features/chat/text-attachment-accept.ts";
-import { isAudioAttachmentFile } from "../src/lib/audio-utils.ts";
+import {
+  AUDIO_PICKER_ACCEPT,
+  isAudioAttachmentFile,
+} from "../src/lib/audio-utils.ts";
 import {
   isBinaryOfficeTemplate,
   isBinaryVobSubSubtitle,
@@ -45,7 +48,11 @@ import type { NativeIntent } from "../src/features/native-intents/types.ts";
 import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
 import { MAX_REFERENCE_BYTES } from "../src/features/video/reference-budget.ts";
 import { AUDIO_ACCEPT } from "../src/lib/audio-utils.ts";
-import { VIDEO_ACCEPT } from "../src/lib/video-utils.ts";
+import {
+  VIDEO_ACCEPT,
+  classifiedAttachmentFile,
+  isAudioOnly3gpBytes,
+} from "../src/lib/video-utils.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -1184,6 +1191,68 @@ test("parts after a boundary are still read as headers", async () => {
   );
 });
 
+test("a signature marker is not a MIME boundary", async () => {
+  // "-- " opens a signature block in most mail clients. Treating every line
+  // starting with "--" as a boundary put the body back into header mode, so a
+  // quoted header below it became a second declaration and refused the file.
+  const enc = new TextEncoder();
+  const eml = new Uint8Array([
+    ...enc.encode("Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf"),
+    0xe9,
+    ...enc.encode(
+      "\r\n-- \r\nSent from a phone\r\n" +
+        "Content-Type: text/plain; charset=windows-1251\r\n",
+    ),
+  ]);
+  assert.match(await readTextAttachment(new File([eml], "message.eml")), /Caf\u00e9/);
+});
+
+test("a closing delimiter ends its part instead of starting one", async () => {
+  // "--b--" closes the multipart; the epilogue after it is body text, so a
+  // header-shaped line there declares nothing.
+  const enc = new TextEncoder();
+  const eml = new Uint8Array([
+    ...enc.encode(
+      "Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\n" +
+        "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf",
+    ),
+    0xe9,
+    ...enc.encode("\r\n--b--\r\nContent-Type: text/plain; charset=windows-1251\r\n"),
+  ]);
+  assert.match(await readTextAttachment(new File([eml], "thread.mbox")), /Caf\u00e9/);
+});
+
+test("a vCard charset in a value is not a property parameter", async () => {
+  // The escaped semicolon is part of the NOTE text. Matching it added a second
+  // declaration and refused a card that names exactly one charset.
+  const enc = new TextEncoder();
+  const vcf = new Uint8Array([
+    ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
+    0xe9,
+    ...enc.encode("\r\nNOTE:Write \\;CHARSET=windows-1251 to pin it\r\nEND:VCARD\r\n"),
+  ]);
+  assert.match(await readTextAttachment(new File([vcf], "contact.vcf")), /Caf\u00e9/);
+});
+
+test("a vCard that really declares two charsets is still refused", async () => {
+  const enc = new TextEncoder();
+  const vcf = new Uint8Array([
+    ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
+    0xe9,
+    ...enc.encode("\r\nORG;CHARSET=windows-1251:"),
+    0xcf,
+    0xf0,
+    ...enc.encode("\r\nEND:VCARD\r\n"),
+  ]);
+  await assert.rejects(
+    readTextAttachment(new File([vcf], "contact.vcf")),
+    (error: Error) => {
+      assert.match(error.message, /windows-1252, windows-1251/);
+      return true;
+    },
+  );
+});
+
 test("an XML prolog encoding is honoured for every XML dialect", async () => {
   // .resx, .xliff and friends are XML documents that state their encoding, so
   // refusing them for carrying the bytes they describe was wrong.
@@ -1409,4 +1478,112 @@ test("the composer adapter reads the shared text accept list", () => {
     attachmentContentSource,
     /import \{[\s\S]*?TEXT_ATTACHMENT_ACCEPT[\s\S]*?decodeTextAttachmentBytes[\s\S]*?\} from "\.\/text-attachment-accept";/,
   );
+});
+
+// Mirrors `bmff_box` and `three_gp_with_tracks` in native_intents.rs, so the
+// browser classifier is tested against the same containers as the native one.
+function bmffBox(kind: string, payload: Uint8Array): Uint8Array {
+  const boxed = new Uint8Array(8 + payload.length);
+  new DataView(boxed.buffer).setUint32(0, boxed.length);
+  boxed.set(new TextEncoder().encode(kind), 4);
+  boxed.set(payload, 8);
+  return boxed;
+}
+
+function threeGpWithTracks(handlers: readonly string[]): Uint8Array {
+  const traks: Uint8Array[] = [];
+  for (const handler of handlers) {
+    const hdlrPayload = new Uint8Array(12);
+    hdlrPayload.set(new TextEncoder().encode(handler), 8);
+    traks.push(bmffBox("trak", bmffBox("mdia", bmffBox("hdlr", hdlrPayload))));
+  }
+  const moovPayload = new Uint8Array(
+    traks.reduce((total, trak) => total + trak.length, 0),
+  );
+  let offset = 0;
+  for (const trak of traks) {
+    moovPayload.set(trak, offset);
+    offset += trak.length;
+  }
+  return bmffBox("moov", moovPayload);
+}
+
+test("3GP tracks decide audio or video, as they do natively", () => {
+  assert.equal(isAudioOnly3gpBytes(threeGpWithTracks(["soun"])), true);
+  assert.equal(isAudioOnly3gpBytes(threeGpWithTracks(["vide"])), false);
+  assert.equal(isAudioOnly3gpBytes(threeGpWithTracks(["soun", "vide"])), false);
+  // Not a container at all, and a truncated one.
+  assert.equal(isAudioOnly3gpBytes(new Uint8Array([1, 2, 3])), false);
+  assert.equal(
+    isAudioOnly3gpBytes(threeGpWithTracks(["soun"]).subarray(0, 20)),
+    false,
+  );
+});
+
+test("an audio-only 3GP recording is classified as audio, not video", async () => {
+  // The browser answers "" or video/3gpp for both kinds, and the video accept
+  // list claims .3gp, so without this the recording reached the video adapter.
+  const recording = new File([threeGpWithTracks(["soun"])], "voice.3gp", {
+    type: "",
+  });
+  const classified = await classifiedAttachmentFile(recording);
+  assert.equal(classified.type, "audio/3gpp");
+  assert.equal(classified.name, "voice.3gp");
+  assert.equal(isAudioAttachmentFile(classified), true);
+});
+
+test("a real 3GP clip stays video", async () => {
+  const clip = new File([threeGpWithTracks(["soun", "vide"])], "clip.3gp", {
+    type: "video/3gpp",
+  });
+  assert.equal(await classifiedAttachmentFile(clip), clip);
+});
+
+test("classification leaves every other container untouched", async () => {
+  for (const [name, type] of [
+    ["clip.mp4", "video/mp4"],
+    ["take.mkv", ""],
+    ["voice.m4a", ""],
+    ["notes.txt", "text/plain"],
+  ] as const) {
+    const file = new File([new Uint8Array([0, 1, 2, 3])], name, { type });
+    assert.equal(await classifiedAttachmentFile(file), file, name);
+  }
+});
+
+test("the restamped recording routes to the audio adapter", async () => {
+  // The composite's own matcher, not a copy of it: audio is registered before
+  // video, so a file the audio accept list claims never reaches the video one.
+  const { fileMatchesAccept } = (await import(
+    new URL(
+      "../node_modules/@assistant-ui/core/dist/adapters/attachment.js",
+      import.meta.url,
+    ).href
+  )) as { fileMatchesAccept: (file: File, accept: string) => boolean };
+  const recording = new File([threeGpWithTracks(["soun"])], "voice.3gp", {
+    type: "",
+  });
+  assert.equal(fileMatchesAccept(recording, AUDIO_PICKER_ACCEPT), false);
+  assert.equal(fileMatchesAccept(recording, VIDEO_ACCEPT), true);
+
+  const classified = await classifiedAttachmentFile(recording);
+  assert.equal(fileMatchesAccept(classified, AUDIO_PICKER_ACCEPT), true);
+});
+
+test("the composer classifies before an adapter is picked", () => {
+  // A composite matches on name and MIME synchronously, so the restamping has
+  // to happen in the wrapper above it rather than inside an adapter.
+  const src = readFileSync(
+    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /class PreStreamAwareAttachmentAdapter[\s\S]*?if \(!needsAttachmentTrackInspection\(state\.file\)\)[\s\S]*?await classifiedAttachmentFile\(state\.file\)/,
+  );
+  const composer = readFileSync(
+    new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(composer, /await classifiedAttachmentFiles\(input\)/);
 });

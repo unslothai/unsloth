@@ -17391,8 +17391,13 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
         # inside the clock, it is just too wide to hold at once.
         if limit and frames and frames * channels <= _MAX_DECODED_SAMPLES:
             # One frame past the cap, so a container that misreports its length
-            # is still never fully read.
-            waveform, sr = torchaudio.load(tmp_path, num_frames = limit + 1)
+            # is still never fully read. Both caps apply: info() is the value
+            # being distrusted here, so an understated num_frames must not let
+            # the read run to the rate-relative limit, which at 192 kHz is four
+            # times the sample ceiling. A file that fits is unaffected: its
+            # length is under both.
+            read_frames = min(limit, _MAX_DECODED_SAMPLES // channels)
+            waveform, sr = torchaudio.load(tmp_path, num_frames = read_frames + 1)
         else:
             import torch
             samples, sr = _decode_audio_mono(raw)
