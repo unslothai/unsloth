@@ -1665,6 +1665,7 @@ export function ChatProvidersSettings({
                               >
                                 <Checkbox
                                   id={`provider-reasoning-model-${index}`}
+                                  aria-label={`Mark ${model} as a reasoning model`}
                                   checked={reasoningModelIds.includes(model)}
                                   onCheckedChange={() => {
                                     setReasoningModelIds((prev) =>
