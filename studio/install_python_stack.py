@@ -3274,7 +3274,8 @@ def _ensure_rocm_torch() -> None:
                 )
 
         # If the generic wheel lacks the runtime target, replace it from AMD's per-arch index.
-        # This branch has no ROCm-version floor because generic wheels never carried these targets.
+        # No ROCm-version floor here: whichever generic index a host's ROCm version picks,
+        # its wheel carries no kernels for these targets (see _GENERIC_ROCM_WHEEL_GFX).
         if _arch_index_url is None:
             _missing_kernels = {g for g in gfx_codes if _generic_rocm_wheel_lacks_kernels(g)}
             if _missing_kernels:
@@ -3291,8 +3292,12 @@ def _ensure_rocm_torch() -> None:
                 # repick: act only on a family read back positively from a torch that
                 # really links HIP, never on a guess -- an unknowable family is None
                 # here and reinstalls, as does a CPU/CUDA torch.
-                _installed_family = _installed_rocm_wheel_family() if has_hip_torch else None
-                if _leaf is not None and _installed_family == _leaf.lower():
+                _already_on_leaf = (
+                    _leaf is not None
+                    and has_hip_torch
+                    and _installed_rocm_wheel_family() == _leaf.lower()
+                )
+                if _already_on_leaf:
                     _safe_print(
                         f"   torch already runs on the {_leaf} wheels {_runtime_gfx} needs; "
                         f"keeping it.\n"
