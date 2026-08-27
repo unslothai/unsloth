@@ -1568,10 +1568,12 @@ function PromptDetail({
         return;
       }
       onDraftChange(undefined);
+      // Refresh before clearing, or the keep-a-row-selected pass runs against a
+      // list that still holds this row and can select the deleted entry back.
+      await onRefresh();
       // Id goes up so the parent only clears if this row is still selected: the
       // delete is awaited, and a click elsewhere meanwhile would be undone.
       onDeleted(entry.id);
-      onRefresh();
     });
   }, [entry.id, onDraftChange, onDeleted, onRefresh, runMutation]);
 
@@ -1865,9 +1867,10 @@ function PromptListDetail({
         return;
       }
       onDraftChange(undefined);
+      // See PromptDetail: clearing first can reselect the row being deleted.
+      await onRefresh();
       // See PromptDetail: only the parent knows whether this row is still current.
       onDeleted(entry.id);
-      onRefresh();
     });
   }, [entry.id, onDraftChange, onDeleted, onRefresh, runMutation]);
 

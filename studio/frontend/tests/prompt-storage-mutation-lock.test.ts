@@ -179,3 +179,30 @@ test("a save clears its draft only after the refreshed entry is in", async () =>
     "the unawaited refresh is back",
   );
 });
+
+// The parent keeps a row selected during render, so clearing the selection while
+// the deleted row is still in promptEntries reselects it. The pane then renders
+// an entry the backend no longer has until the refetch lands.
+test("a delete clears its selection only after the row is gone", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const leadIns = source.split("onDeleted(entry.id);").slice(0, -1);
+  assert.equal(leadIns.length, 2, "both detail panes should clear a deleted row");
+  for (const before of leadIns) {
+    assert.ok(
+      before.lastIndexOf("await onRefresh();") >
+        before.lastIndexOf("await runMutation("),
+      "a delete pane clears the selection before its refresh lands",
+    );
+  }
+  assert.doesNotMatch(
+    source,
+    /onDeleted\(entry\.id\);\n\s+onRefresh\(\);/,
+    "the unawaited refresh is back",
+  );
+});
