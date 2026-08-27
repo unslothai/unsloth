@@ -213,6 +213,16 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS", bypass)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "cloud-key")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cloud-oauth")
+    monkeypatch.setenv("CLAUDE_CODE_USE_FOUNDRY", "1")
+    monkeypatch.setenv(
+        "ANTHROPIC_FOUNDRY_BASE_URL",
+        "https://corporate-gateway.azure-api.net/anthropic-stream",
+    )
+    monkeypatch.setenv("ANTHROPIC_FOUNDRY_RESOURCE", "my-foundry-resource")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_ANTHROPIC_AWS", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_MANTLE", "1")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(bridge, "_claude_flags", lambda model: ["--settings", "{}"])
@@ -257,6 +267,10 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert child_env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "90"
     assert "ANTHROPIC_API_KEY" not in child_env
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in child_env
+    # Provider routing must not leak: Foundry/Bedrock/Vertex take precedence
+    # over ANTHROPIC_BASE_URL and would send the child to a remote gateway.
+    for name in bridge._CLAUDE_ENV_UNSET:
+        assert name not in child_env
 
 
 def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):

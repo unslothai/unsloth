@@ -1416,8 +1416,8 @@ def fake_studio(tmp_path, monkeypatch):
 def test_connect_claude_no_launch(fake_studio):
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
-    _assert_env_unset(result.output, "ANTHROPIC_API_KEY")
-    _assert_env_unset(result.output, "CLAUDE_CODE_OAUTH_TOKEN")
+    for name in start._CLAUDE_ENV_UNSET:
+        _assert_env_unset(result.output, name)
     _assert_env_set(result.output, "ANTHROPIC_BASE_URL", BASE)
     _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
@@ -1573,6 +1573,16 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     captured = {}
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-stale")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-stale")
+    monkeypatch.setenv("CLAUDE_CODE_USE_FOUNDRY", "1")
+    monkeypatch.setenv(
+        "ANTHROPIC_FOUNDRY_BASE_URL",
+        "https://corporate-gateway.azure-api.net/anthropic-stream",
+    )
+    monkeypatch.setenv("ANTHROPIC_FOUNDRY_RESOURCE", "my-foundry-resource")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_ANTHROPIC_AWS", "1")
+    monkeypatch.setenv("CLAUDE_CODE_USE_MANTLE", "1")
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
 
@@ -1586,8 +1596,8 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
 
     assert result.exit_code == 0, result.output
     assert captured["command"] == ["/usr/local/bin/claude", "--model", MODEL["id"]]
-    assert "ANTHROPIC_API_KEY" not in captured["env"]
-    assert "CLAUDE_CODE_OAUTH_TOKEN" not in captured["env"]
+    for name in start._CLAUDE_ENV_UNSET:
+        assert name not in captured["env"]
     assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-feedfacefeedface"
     assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
     assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
@@ -1625,8 +1635,8 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
         "--model",
         MODEL["id"],
     ]
-    assert captured["env"]["ANTHROPIC_API_KEY"] == ""
-    assert captured["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == ""
+    for name in start._CLAUDE_ENV_UNSET:
+        assert captured["env"][name] == ""
     assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-feedfacefeedface"
     assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
     assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
@@ -1637,8 +1647,7 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_MODEL",
-        "ANTHROPIC_API_KEY",
-        "CLAUDE_CODE_OAUTH_TOKEN",
+        *start._CLAUDE_ENV_UNSET,
     ):
         assert name in captured["env"]["WSLENV"].split(":")
 
@@ -2039,8 +2048,8 @@ def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
 
     assert result.exit_code == 0, result.output
-    assert "export ANTHROPIC_API_KEY=" in result.output
-    assert "export CLAUDE_CODE_OAUTH_TOKEN=" in result.output
+    for name in start._CLAUDE_ENV_UNSET:
+        assert f"export {name}=" in result.output
     assert "export WSLENV=" in result.output
     # PWD must NOT be frozen into the recipe (no `export PWD=`): WSLENV PWD/p translates the
     # shell's live PWD at run time, so a recipe reused from another dir resolves the project root.
@@ -2471,8 +2480,8 @@ def test_no_launch_claude_last_line_blanks_conflicting_auth(fake_studio):
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     last = [ln for ln in result.output.splitlines() if ln.strip()][-1]
-    assert "ANTHROPIC_API_KEY= " in last
-    assert "CLAUDE_CODE_OAUTH_TOKEN= " in last
+    for name in start._CLAUDE_ENV_UNSET:
+        assert f"{name}= " in last
     assert "ANTHROPIC_AUTH_TOKEN=" in last  # the real key still applied after the blanks
 
 
