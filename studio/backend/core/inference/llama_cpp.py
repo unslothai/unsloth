@@ -29144,14 +29144,10 @@ class LlamaCppBackend:
                                 else:
                                     stream_payload.pop("chat_template_kwargs", None)
                                 _fu_r = (
-                                    _backfill_usage_from_timings(
-                                        _metadata_usage, _metadata_timings
-                                    )
+                                    _backfill_usage_from_timings(_metadata_usage, _metadata_timings)
                                     or {}
                                 )
-                                _accumulated_completion_tokens += _fu_r.get(
-                                    "completion_tokens", 0
-                                )
+                                _accumulated_completion_tokens += _fu_r.get("completion_tokens", 0)
                                 _it_r = _metadata_timings or {}
                                 _accumulated_predicted_ms += _it_r.get("predicted_ms", 0)
                                 _accumulated_predicted_n += _it_r.get("predicted_n", 0)
