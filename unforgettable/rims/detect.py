@@ -35,12 +35,12 @@ def first_nonempty_line(body: str) -> str:
 def resolve_test_command(
     *,
     requested: str | None,
-    db_path=None,
+    db_path = None,
     tree: Path | None = None,
 ) -> str | None:
     if requested and requested.strip():
         return requested.strip()
-    for rec in list_records(kinds=["procedure"], statuses=["active"], db_path=db_path):
+    for rec in list_records(kinds = ["procedure"], statuses = ["active"], db_path = db_path):
         if normalize_title(rec["title"]) == TEST_COMMAND_TITLE:
             cmd = first_nonempty_line(rec["body"])
             if cmd:
@@ -63,7 +63,7 @@ def detect_test_command(tree: Path) -> str | None:
         try:
             if not path.is_file():
                 return None
-            return path.read_text(encoding="utf-8", errors="replace")
+            return path.read_text(encoding = "utf-8", errors = "replace")
         except OSError:
             return None
 

@@ -192,7 +192,14 @@ def _install_execute_tool(monkeypatch, fn) -> None:
 def test_studio_host_run_action_emits_tool_start_and_end(monkeypatch):
     seen = {}
 
-    def execute_tool(name, arguments, session_id = None, timeout = None, cancel_event = None, **kwargs):
+    def execute_tool(
+        name,
+        arguments,
+        session_id = None,
+        timeout = None,
+        cancel_event = None,
+        **kwargs,
+    ):
         seen["name"] = name
         seen["arguments"] = arguments
         seen["session_id"] = session_id
@@ -250,14 +257,21 @@ def test_studio_host_run_action_emits_tool_start_and_end(monkeypatch):
 def test_studio_host_confirm_emits_tool_start_and_end(monkeypatch):
     seen = {}
 
-    def wait_tool_decision(slot, approval_id, cancel_event = None, timeout = None):
+    def wait_tool_decision(
+        slot,
+        approval_id,
+        cancel_event = None,
+        timeout = None,
+    ):
         seen["slot"] = slot
         seen["approval_id"] = approval_id
         seen["cancel_event"] = cancel_event
         time.sleep(0.08)
         return "allow"
 
-    monkeypatch.setattr("state.tool_approvals.begin_tool_decision", lambda session, approval: {"session": session})
+    monkeypatch.setattr(
+        "state.tool_approvals.begin_tool_decision", lambda session, approval: {"session": session}
+    )
     monkeypatch.setattr("state.tool_approvals.wait_tool_decision", wait_tool_decision)
     monkeypatch.setattr("state.tool_approvals.new_approval_id", lambda: "approval-retry-1")
     monkeypatch.setattr(
@@ -327,7 +341,6 @@ def _payload():
 
         def model_copy(self, deep = True):
             import copy
-
             return copy.deepcopy(self)
 
     return Payload()
@@ -468,7 +481,11 @@ def test_apply_adapter_state_loads_peft_directory(tmp_path):
                 disable_adapter_layers = lambda: None,
             )
 
-        def load_adapter(self, path, adapter_name = None):
+        def load_adapter(
+            self,
+            path,
+            adapter_name = None,
+        ):
             loaded.append((path, adapter_name))
             self.peft_config[adapter_name] = path
 

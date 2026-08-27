@@ -67,11 +67,11 @@ class EpisodeState:
     sim_turns: int = 0
     had_world_failure: bool = False
     had_success_after_failure: bool = False
-    traces: list[ToolTrace] = field(default_factory=list)
-    trace_events: list[dict[str, Any]] = field(default_factory=list)
+    traces: list[ToolTrace] = field(default_factory = list)
+    trace_events: list[dict[str, Any]] = field(default_factory = list)
     keep_sim: bool = False
     test_command: Optional[str] = None
-    created_sims: list[str] = field(default_factory=list)
+    created_sims: list[str] = field(default_factory = list)
     last_generate_text: str = ""
     last_fail_summary: str = ""
     last_sim_summary: str = ""
@@ -103,21 +103,15 @@ class EpisodeState:
         self.last_fail_summary = summary or self.last_fail_summary
         if contact == "sim":
             self.last_sim_summary = summary or self.last_sim_summary
-        self.trace_events.append(
-            {"kind": "failure", "summary": summary, "contact": contact}
-        )
+        self.trace_events.append({"kind": "failure", "summary": summary, "contact": contact})
 
     def note_success(self, summary: str, contact: str) -> None:
         summary = _clip_event_summary(summary)
-        if self.had_world_failure or any(
-            ev.get("kind") == "failure" for ev in self.trace_events
-        ):
+        if self.had_world_failure or any(ev.get("kind") == "failure" for ev in self.trace_events):
             self.had_success_after_failure = True
         if contact == "sim":
             self.last_sim_summary = summary or self.last_sim_summary
-        self.trace_events.append(
-            {"kind": "success", "summary": summary, "contact": contact}
-        )
+        self.trace_events.append({"kind": "success", "summary": summary, "contact": contact})
 
 
 def last_user_text(messages: list[dict[str, Any]]) -> str:

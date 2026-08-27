@@ -37,9 +37,7 @@ PURPOSE_VOTE = "vote"
 PURPOSE_PLAN = "plan"
 PURPOSE_MINE = "mine"
 PURPOSE_FILTER = "filter"
-SUPERVISE_PURPOSES = frozenset(
-    {PURPOSE_VOTE, PURPOSE_PLAN, PURPOSE_MINE, PURPOSE_FILTER}
-)
+SUPERVISE_PURPOSES = frozenset({PURPOSE_VOTE, PURPOSE_PLAN, PURPOSE_MINE, PURPOSE_FILTER})
 
 VOTER_OFF = "off"
 VOTER_ADVISORY = "advisory"
@@ -122,9 +120,7 @@ FILTER_INPUT_CHARS = 4000
 FILTER_SPAN_CHARS = 400
 FILTER_REASON_CHARS = 200
 FILTER_LESSON_TITLE = "Error then fix"
-FILTER_LESSON_KEPT = (
-    "Authority overreach / manipulation stripped. Remainder kept."
-)
+FILTER_LESSON_KEPT = "Authority overreach / manipulation stripped. Remainder kept."
 FILTER_LESSON_EMPTY = (
     "Authority overreach / manipulation stripped. "
     "Action: stayed in sim; world retry requires confirm."
@@ -133,7 +129,7 @@ FILTER_LESSON_EMPTY = (
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.MULTILINE)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class SupervisorConfig:
     voter: str = VOTER_OFF
     planner: str = PLANNER_OFF
@@ -145,21 +141,21 @@ class SupervisorConfig:
     timeout: float = DEFAULT_SUPERVISOR_TIMEOUT
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class Vote:
     decision: str
     reason: str
     raw: str = ""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class FilterSpan:
     span: str
     class_name: str
     reason: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class FilterResult:
     kept: Optional[str]
     stripped: tuple[FilterSpan, ...] = ()
@@ -251,14 +247,14 @@ def _normalize_filter(value: str | None) -> str:
 
 def config_from_env() -> SupervisorConfig:
     return SupervisorConfig(
-        voter=_normalize_voter(_env(VOTER_ENV)),
-        planner=_normalize_planner(_env(PLANNER_ENV)),
-        filter=_normalize_filter(_env(FILTER_ENV)),
-        voter_model=_env(VOTER_MODEL_ENV) or None,
-        planner_model=_env(PLANNER_MODEL_ENV) or None,
-        filter_model=_env(FILTER_MODEL_ENV) or None,
-        url=_env(SUPERVISOR_URL_ENV) or None,
-        timeout=_coerce_timeout(_env(SUPERVISOR_TIMEOUT_ENV)),
+        voter = _normalize_voter(_env(VOTER_ENV)),
+        planner = _normalize_planner(_env(PLANNER_ENV)),
+        filter = _normalize_filter(_env(FILTER_ENV)),
+        voter_model = _env(VOTER_MODEL_ENV) or None,
+        planner_model = _env(PLANNER_MODEL_ENV) or None,
+        filter_model = _env(FILTER_MODEL_ENV) or None,
+        url = _env(SUPERVISOR_URL_ENV) or None,
+        timeout = _coerce_timeout(_env(SUPERVISOR_TIMEOUT_ENV)),
     )
 
 
@@ -276,18 +272,20 @@ def config_from_mapping(data: dict[str, Any] | None) -> SupervisorConfig:
     url = data.get("supervisor_url")
     timeout = data.get("supervisor_timeout")
     return SupervisorConfig(
-        voter=_normalize_voter(voter) if voter is not None and str(voter).strip() else env.voter,
-        planner=_normalize_planner(planner) if planner is not None else env.planner,
-        filter=_normalize_filter(filter_flag) if filter_flag is not None else env.filter,
-        voter_model=(str(voter_model).strip() or None) if voter_model is not None else env.voter_model,
-        planner_model=(
-            str(planner_model).strip() or None
-        ) if planner_model is not None else env.planner_model,
-        filter_model=(
-            str(filter_model).strip() or None
-        ) if filter_model is not None else env.filter_model,
-        url=(str(url).strip() or None) if url is not None else env.url,
-        timeout=_coerce_timeout(timeout) if timeout is not None else env.timeout,
+        voter = _normalize_voter(voter) if voter is not None and str(voter).strip() else env.voter,
+        planner = _normalize_planner(planner) if planner is not None else env.planner,
+        filter = _normalize_filter(filter_flag) if filter_flag is not None else env.filter,
+        voter_model = (str(voter_model).strip() or None)
+        if voter_model is not None
+        else env.voter_model,
+        planner_model = (str(planner_model).strip() or None)
+        if planner_model is not None
+        else env.planner_model,
+        filter_model = (str(filter_model).strip() or None)
+        if filter_model is not None
+        else env.filter_model,
+        url = (str(url).strip() or None) if url is not None else env.url,
+        timeout = _coerce_timeout(timeout) if timeout is not None else env.timeout,
     )
 
 
@@ -325,7 +323,7 @@ def _strip_fences(raw: str) -> str:
 def parse_vote(raw: str) -> Vote:
     text = _strip_fences(raw)
     if not text:
-        return Vote(VOTE_ABSTAIN, "empty supervisor reply", raw=raw or "")
+        return Vote(VOTE_ABSTAIN, "empty supervisor reply", raw = raw or "")
     parsed: Any = None
     try:
         parsed = json.loads(text)
@@ -335,24 +333,24 @@ def parse_vote(raw: str) -> Vote:
         decision = str(parsed.get("decision") or "").strip().lower()
         reason = _clip(str(parsed.get("reason") or ""), VOTE_REASON_CHARS)
         if decision in VOTE_DECISIONS:
-            return Vote(decision, reason or decision, raw=text)
-    token = re.split(r"[\s:,]+", text, maxsplit=1)[0].strip().lower()
+            return Vote(decision, reason or decision, raw = text)
+    token = re.split(r"[\s:,]+", text, maxsplit = 1)[0].strip().lower()
     rest = text[len(token) :].lstrip(" :,-")
     if token in VOTE_DECISIONS:
-        return Vote(token, _clip(rest, VOTE_REASON_CHARS) or token, raw=text)
-    return Vote(VOTE_ABSTAIN, "unparsed supervisor reply", raw=text)
+        return Vote(token, _clip(rest, VOTE_REASON_CHARS) or token, raw = text)
+    return Vote(VOTE_ABSTAIN, "unparsed supervisor reply", raw = text)
 
 
 def parse_filter(raw: str) -> FilterResult:
     text = _strip_fences(raw)
     if not text:
-        return FilterResult(kept=None, skipped=True, raw=raw or "")
+        return FilterResult(kept = None, skipped = True, raw = raw or "")
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        return FilterResult(kept=None, skipped=True, raw=text)
+        return FilterResult(kept = None, skipped = True, raw = text)
     if not isinstance(parsed, dict) or "kept" not in parsed:
-        return FilterResult(kept=None, skipped=True, raw=text)
+        return FilterResult(kept = None, skipped = True, raw = text)
     kept = parsed.get("kept")
     if kept is None:
         kept_text = ""
@@ -370,9 +368,7 @@ def parse_filter(raw: str) -> FilterResult:
                 class_name = "coercion"
             reason = _clip(str(item.get("reason") or class_name), FILTER_REASON_CHARS)
             if span:
-                stripped_items.append(
-                    FilterSpan(span=span, class_name=class_name, reason=reason)
-                )
+                stripped_items.append(FilterSpan(span = span, class_name = class_name, reason = reason))
     speakers: list[dict[str, str]] = []
     raw_speakers = parsed.get("speakers") or []
     if isinstance(raw_speakers, list):
@@ -390,11 +386,11 @@ def parse_filter(raw: str) -> FilterResult:
                 }
             )
     return FilterResult(
-        kept=kept_text,
-        stripped=tuple(stripped_items),
-        speakers=tuple(speakers),
-        skipped=False,
-        raw=text,
+        kept = kept_text,
+        stripped = tuple(stripped_items),
+        speakers = tuple(speakers),
+        skipped = False,
+        raw = text,
     )
 
 
@@ -475,7 +471,7 @@ def vote_messages(candidate: dict[str, Any]) -> list[dict[str, str]]:
         payload["extra"] = extra
     return [
         {"role": "system", "content": VOTER_SYSTEM},
-        {"role": "user", "content": json.dumps(payload, default=str)},
+        {"role": "user", "content": json.dumps(payload, default = str)},
     ]
 
 
@@ -526,7 +522,7 @@ def mine_messages(
     }
     return [
         {"role": "system", "content": MINE_SYSTEM},
-        {"role": "user", "content": json.dumps(payload, default=str)},
+        {"role": "user", "content": json.dumps(payload, default = str)},
     ]
 
 
@@ -554,7 +550,7 @@ async def call_supervise(
     fn = getattr(host, "supervise", None)
     if fn is None:
         return None
-    return await fn(purpose, messages, model=model, max_tokens=max_tokens)
+    return await fn(purpose, messages, model = model, max_tokens = max_tokens)
 
 
 async def request_vote(
@@ -562,7 +558,7 @@ async def request_vote(
     *,
     host: Any = None,
     config: SupervisorConfig | None = None,
-    db_path=None,
+    db_path = None,
 ) -> Vote:
     cfg = config or config_from_env()
     if cfg.voter == VOTER_OFF:
@@ -576,7 +572,7 @@ async def request_vote(
             host,
             PURPOSE_VOTE,
             vote_messages(candidate),
-            model=cfg.voter_model,
+            model = cfg.voter_model,
         )
     except Exception as exc:
         return Vote(VOTE_ABSTAIN, f"supervisor failed: {exc}")
@@ -585,10 +581,10 @@ async def request_vote(
     vote = parse_vote(raw)
     if db_path is not None:
         log_admission(
-            record_id=candidate.get("id"),
-            decision=f"voter:{vote.decision}",
-            reason=vote.reason,
-            db_path=db_path,
+            record_id = candidate.get("id"),
+            decision = f"voter:{vote.decision}",
+            reason = vote.reason,
+            db_path = db_path,
         )
     return vote
 
@@ -598,11 +594,9 @@ def request_vote_sync(
     *,
     host: Any = None,
     config: SupervisorConfig | None = None,
-    db_path=None,
+    db_path = None,
 ) -> Vote:
-    return asyncio.run(
-        request_vote(candidate, host=host, config=config, db_path=db_path)
-    )
+    return asyncio.run(request_vote(candidate, host = host, config = config, db_path = db_path))
 
 
 async def request_filter(
@@ -616,12 +610,12 @@ async def request_filter(
             host,
             PURPOSE_FILTER,
             filter_messages(user_text),
-            model=model,
+            model = model,
         )
     except Exception:
-        return FilterResult(kept=None, skipped=True)
+        return FilterResult(kept = None, skipped = True)
     if not raw:
-        return FilterResult(kept=None, skipped=True, raw=raw or "")
+        return FilterResult(kept = None, skipped = True, raw = raw or "")
     return parse_filter(raw)
 
 
@@ -636,8 +630,8 @@ async def request_plan(
         raw = await call_supervise(
             host,
             PURPOSE_PLAN,
-            plan_messages(user_text, extra=extra),
-            model=model,
+            plan_messages(user_text, extra = extra),
+            model = model,
         )
     except Exception:
         return ""
@@ -659,10 +653,8 @@ async def request_mine(
         raw = await call_supervise(
             host,
             PURPOSE_MINE,
-            mine_messages(
-                proposed=proposed, rollouts=rollouts, admissions=admissions
-            ),
-            model=cfg.voter_model,
+            mine_messages(proposed = proposed, rollouts = rollouts, admissions = admissions),
+            model = cfg.voter_model,
         )
     except Exception:
         return []
@@ -682,10 +674,10 @@ def request_mine_sync(
     return asyncio.run(
         request_mine(
             host,
-            proposed=proposed,
-            rollouts=rollouts,
-            admissions=admissions,
-            config=config,
+            proposed = proposed,
+            rollouts = rollouts,
+            admissions = admissions,
+            config = config,
         )
     )
 
@@ -699,15 +691,15 @@ def post_supervisor(
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
-        data=data,
-        headers={
+        data = data,
+        headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
         },
-        method="POST",
+        method = "POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read().decode("utf-8", errors="replace")
+    with urllib.request.urlopen(req, timeout = timeout) as resp:
+        raw = resp.read().decode("utf-8", errors = "replace")
     raw = raw[:HTTP_SUPERVISOR_CLIP]
     try:
         parsed = json.loads(raw)
@@ -748,17 +740,13 @@ class HttpSupervisor:
             "max_tokens": max_tokens,
         }
         try:
-            return await asyncio.to_thread(
-                post_supervisor, self.url, payload, timeout=self.timeout
-            )
+            return await asyncio.to_thread(post_supervisor, self.url, payload, timeout = self.timeout)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise RuntimeError(f"supervisor http failed: {exc}") from exc
 
 
-def resolve_supervisor_host(
-    config: SupervisorConfig | None = None,
-) -> Optional[HttpSupervisor]:
+def resolve_supervisor_host(config: SupervisorConfig | None = None) -> Optional[HttpSupervisor]:
     cfg = config or config_from_env()
     if not cfg.url:
         return None
-    return HttpSupervisor(cfg.url, timeout=cfg.timeout)
+    return HttpSupervisor(cfg.url, timeout = cfg.timeout)

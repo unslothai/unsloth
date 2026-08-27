@@ -48,10 +48,10 @@ def test_tools_cannot_claim_human_or_write_episode(db_path):
                 "body": "the model claimed this was human",
                 "provenance": "human",
             },
-            db_path=db_path,
+            db_path = db_path,
         )
     )
-    rec = get_record(human["id"], db_path=db_path)
+    rec = get_record(human["id"], db_path = db_path)
     assert rec["provenance"] == "infer"
     assert rec["status"] == "proposed"
     refused = dispatch(
@@ -62,14 +62,14 @@ def test_tools_cannot_claim_human_or_write_episode(db_path):
             "body": "chat transcript must not be B",
             "provenance": "world",
         },
-        db_path=db_path,
+        db_path = db_path,
     )
     assert refused.startswith("Error:")
-    assert not any(row["kind"] == "episode" for row in list_records(db_path=db_path))
+    assert not any(row["kind"] == "episode" for row in list_records(db_path = db_path))
 
 
 def test_sim_contact_cannot_mint_world_provenance(db_path):
-    tokens, _ = bind_episode(db_path=str(db_path), episode_id="ep-sim")
+    tokens, _ = bind_episode(db_path = str(db_path), episode_id = "ep-sim")
     try:
         set_contact("sim")
         written = json.loads(
@@ -81,12 +81,12 @@ def test_sim_contact_cannot_mint_world_provenance(db_path):
                     "body": "laundered from sim",
                     "provenance": "world",
                 },
-                db_path=db_path,
+                db_path = db_path,
             )
         )
     finally:
         reset_episode(tokens)
-    rec = get_record(written["id"], db_path=db_path)
+    rec = get_record(written["id"], db_path = db_path)
     assert rec["provenance"] == "sim"
     assert rec["contact_tag"] == "sim"
     assert rec["status"] == "proposed"
@@ -102,7 +102,7 @@ def test_supersede_does_not_promote_proposed(db_path):
                 "body": "Tried: boom\nThen: maybe",
                 "provenance": "infer",
             },
-            db_path=db_path,
+            db_path = db_path,
         )
     )
     assert first["status"] == "proposed"
@@ -114,67 +114,67 @@ def test_supersede_does_not_promote_proposed(db_path):
                 "body": "Tried: boom\nThen: world looks fine",
                 "provenance": "world",
             },
-            db_path=db_path,
+            db_path = db_path,
         )
     )
     assert second["status"] == "proposed"
-    assert get_record(first["id"], db_path=db_path)["status"] == "superseded"
+    assert get_record(first["id"], db_path = db_path)["status"] == "superseded"
 
 
 def test_rejected_cannot_be_superseded(db_path):
     rec = insert_record(
-        kind="claim",
-        title="Dead",
-        body="no",
-        provenance="infer",
-        status="rejected",
-        db_path=db_path,
+        kind = "claim",
+        title = "Dead",
+        body = "no",
+        provenance = "infer",
+        status = "rejected",
+        db_path = db_path,
     )
     out = dispatch(
         "memory_supersede",
         {"id": rec["id"], "body": "revived"},
-        db_path=db_path,
+        db_path = db_path,
     )
     assert out.startswith("Error:")
-    assert get_record(rec["id"], db_path=db_path)["status"] == "rejected"
+    assert get_record(rec["id"], db_path = db_path)["status"] == "rejected"
 
 
 def test_generate_text_is_clipped_before_it_becomes_an_event():
-    state = EpisodeState(episode_id="ep-clip", world_session="world")
+    state = EpisodeState(episode_id = "ep-clip", world_session = "world")
     state.note_success("x" * 4000, "world")
     assert len(state.trace_events[0]["summary"]) <= EVENT_SUMMARY_CHARS + 3
 
 
 def test_insert_record_clips_unbounded_bodies(db_path):
     rec = insert_record(
-        kind="procedure",
-        title="Huge",
-        body="B" * 20000,
-        provenance="world",
-        db_path=db_path,
+        kind = "procedure",
+        title = "Huge",
+        body = "B" * 20000,
+        provenance = "world",
+        db_path = db_path,
     )
     assert len(rec["body"]) == RECORD_BODY_CHARS
 
 
 def test_memory_search_strips_episode_kind(db_path):
     insert_record(
-        kind="episode",
-        title="Episode secret",
-        body="EPISODE_SECRET last user said ship it",
-        provenance="mixed",
-        db_path=db_path,
+        kind = "episode",
+        title = "Episode secret",
+        body = "EPISODE_SECRET last user said ship it",
+        provenance = "mixed",
+        db_path = db_path,
     )
     insert_record(
-        kind="claim",
-        title="Ship it",
-        body="the real claim",
-        provenance="world",
-        db_path=db_path,
+        kind = "claim",
+        title = "Ship it",
+        body = "the real claim",
+        provenance = "world",
+        db_path = db_path,
     )
     out = dispatch(
         "memory_search",
         {"query": "ship", "kinds": "episode,claim"},
-        db_path=db_path,
+        db_path = db_path,
     )
     assert "EPISODE_SECRET" not in out
     hits = json.loads(out)

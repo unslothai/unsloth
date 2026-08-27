@@ -65,28 +65,28 @@ def _config():
 def _raise_outcome(outcome) -> None:
     kind = outcome.error_kind
     if kind == ERROR_UNKNOWN:
-        raise HTTPException(status_code=404, detail=f"unknown id: {outcome.error_detail}")
+        raise HTTPException(status_code = 404, detail = f"unknown id: {outcome.error_detail}")
     if kind == ERROR_REFUSED:
         raise HTTPException(
-            status_code=409,
-            detail=f"admit refused: status is {outcome.error_detail} (use force)",
+            status_code = 409,
+            detail = f"admit refused: status is {outcome.error_detail} (use force)",
         )
     if kind == ERROR_BLOCKED:
         raise HTTPException(
-            status_code=409,
-            detail=f"refused: voter deny: {outcome.error_detail}",
+            status_code = 409,
+            detail = f"refused: voter deny: {outcome.error_detail}",
         )
     if kind == ERROR_VOTER_OFF:
         raise HTTPException(
-            status_code=400,
-            detail="voter off; set Unforgettable voter to advisory or binding",
+            status_code = 400,
+            detail = "voter off; set Unforgettable voter to advisory or binding",
         )
     if kind == ERROR_NO_HOST:
-        raise HTTPException(status_code=400, detail="mine needs a supervisor URL")
+        raise HTTPException(status_code = 400, detail = "mine needs a supervisor URL")
     if kind == ERROR_INVALID:
-        raise HTTPException(status_code=400, detail=outcome.error_detail or "invalid")
+        raise HTTPException(status_code = 400, detail = outcome.error_detail or "invalid")
     if not outcome.ok:
-        raise HTTPException(status_code=400, detail=outcome.error_detail or "failed")
+        raise HTTPException(status_code = 400, detail = outcome.error_detail or "failed")
 
 
 class RecordPatch(BaseModel):
@@ -104,7 +104,7 @@ class RejectBody(BaseModel):
 
 class ApplyBody(BaseModel):
     apply: bool = False
-    limit: int = Field(default=20, ge=1, le=100)
+    limit: int = Field(default = 20, ge = 1, le = 100)
 
 
 class CompactBody(BaseModel):
@@ -117,7 +117,7 @@ class DeprecateBody(BaseModel):
 
 @router.get("/summary")
 def get_summary(current_subject: str = Depends(get_current_subject)) -> dict[str, Any]:
-    return summarize_store(db_path=_db())
+    return summarize_store(db_path = _db())
 
 
 @router.get("/records")
@@ -127,28 +127,38 @@ def get_records(
     kind: Optional[str] = None,
     q: Optional[str] = None,
     provenance: Optional[str] = None,
-    limit: int = Query(default=40, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default = 40, ge = 1, le = 200),
+    offset: int = Query(default = 0, ge = 0),
 ) -> dict[str, Any]:
-    statuses = None if not status or status == "all" else [part.strip() for part in status.split(",") if part.strip()]
-    kinds = None if not kind or kind == "all" else [part.strip() for part in kind.split(",") if part.strip()]
-    provenances = None if not provenance else [part.strip() for part in provenance.split(",") if part.strip()]
+    statuses = (
+        None
+        if not status or status == "all"
+        else [part.strip() for part in status.split(",") if part.strip()]
+    )
+    kinds = (
+        None
+        if not kind or kind == "all"
+        else [part.strip() for part in kind.split(",") if part.strip()]
+    )
+    provenances = (
+        None if not provenance else [part.strip() for part in provenance.split(",") if part.strip()]
+    )
     if q:
         rows = search_records(
             q,
-            top_k=limit,
-            kinds=kinds,
-            statuses=statuses,
-            provenances=provenances,
-            db_path=_db(),
+            top_k = limit,
+            kinds = kinds,
+            statuses = statuses,
+            provenances = provenances,
+            db_path = _db(),
         )
     else:
         rows = list_records(
-            statuses=statuses,
-            kinds=kinds,
-            limit=limit,
-            offset=offset,
-            db_path=_db(),
+            statuses = statuses,
+            kinds = kinds,
+            limit = limit,
+            offset = offset,
+            db_path = _db(),
         )
         if provenances:
             rows = [row for row in rows if row.get("provenance") in set(provenances)]
@@ -157,12 +167,11 @@ def get_records(
 
 @router.get("/records/{record_id}")
 def get_one_record(
-    record_id: str,
-    current_subject: str = Depends(get_current_subject),
+    record_id: str, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, Any]:
-    rec = get_record(record_id, db_path=_db())
+    rec = get_record(record_id, db_path = _db())
     if rec is None:
-        raise HTTPException(status_code=404, detail=f"unknown id: {record_id}")
+        raise HTTPException(status_code = 404, detail = f"unknown id: {record_id}")
     return rec
 
 
@@ -175,14 +184,14 @@ def patch_record(
     try:
         return update_proposed_record(
             record_id,
-            title=payload.title,
-            body=payload.body,
-            db_path=_db(),
+            title = payload.title,
+            body = payload.body,
+            db_path = _db(),
         )
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"unknown id: {record_id}") from None
+        raise HTTPException(status_code = 404, detail = f"unknown id: {record_id}") from None
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
 
 
 @router.post("/records/{record_id}/admit")
@@ -193,11 +202,11 @@ def post_admit(
 ) -> dict[str, Any]:
     outcome = admit_record(
         record_id,
-        force=payload.force,
-        db_path=_db(),
-        host=_host(),
-        config=_config(),
-        reason=STUDIO_ADMIT_REASON,
+        force = payload.force,
+        db_path = _db(),
+        host = _host(),
+        config = _config(),
+        reason = STUDIO_ADMIT_REASON,
     )
     if outcome.vote is not None and not outcome.ok and outcome.error_kind != ERROR_BLOCKED:
         _raise_outcome(outcome)
@@ -220,8 +229,8 @@ def post_reject(
 ) -> dict[str, Any]:
     outcome = reject_record(
         record_id,
-        reason=payload.reason or STUDIO_REJECT_REASON,
-        db_path=_db(),
+        reason = payload.reason or STUDIO_REJECT_REASON,
+        db_path = _db(),
     )
     if not outcome.ok:
         _raise_outcome(outcome)
@@ -235,28 +244,25 @@ def post_deprecate(
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, Any]:
     try:
-        return deprecate_record(record_id, reason=payload.reason, db_path=_db())
+        return deprecate_record(record_id, reason = payload.reason, db_path = _db())
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"unknown id: {record_id}") from None
+        raise HTTPException(status_code = 404, detail = f"unknown id: {record_id}") from None
 
 
 @router.get("/compiled")
-def get_compiled_rows(
-    current_subject: str = Depends(get_current_subject),
-) -> dict[str, Any]:
-    return {"records": list_compiled(db_path=_db())}
+def get_compiled_rows(current_subject: str = Depends(get_current_subject)) -> dict[str, Any]:
+    return {"records": list_compiled(db_path = _db())}
 
 
 @router.post("/compile/{record_id}")
 def post_compile(
-    record_id: str,
-    current_subject: str = Depends(get_current_subject),
+    record_id: str, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, Any]:
     outcome = compile_record(
         record_id,
-        db_path=_db(),
-        host=_host(),
-        config=_config(),
+        db_path = _db(),
+        host = _host(),
+        config = _config(),
     )
     if not outcome.ok:
         _raise_outcome(outcome)
@@ -265,21 +271,18 @@ def post_compile(
 
 @router.post("/uncompile/{record_id}")
 def post_uncompile(
-    record_id: str,
-    current_subject: str = Depends(get_current_subject),
+    record_id: str, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, Any]:
-    row = get_compiled(record_id, db_path=_db())
+    row = get_compiled(record_id, db_path = _db())
     if row is None:
-        raise HTTPException(status_code=404, detail=f"unknown id: {record_id}")
-    unpin_compiled(record_id, db_path=_db())
+        raise HTTPException(status_code = 404, detail = f"unknown id: {record_id}")
+    unpin_compiled(record_id, db_path = _db())
     return row
 
 
 @router.get("/contradictions")
-def get_contradictions(
-    current_subject: str = Depends(get_current_subject),
-) -> dict[str, Any]:
-    rows = contradictions(db_path=_db())
+def get_contradictions(current_subject: str = Depends(get_current_subject)) -> dict[str, Any]:
+    rows = contradictions(db_path = _db())
     return {
         "contradictions": [
             {
@@ -295,9 +298,9 @@ def get_contradictions(
 @router.get("/admissions")
 def get_admissions(
     current_subject: str = Depends(get_current_subject),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default = 50, ge = 1, le = 200),
 ) -> dict[str, Any]:
-    return {"admissions": list_admissions(limit=limit, db_path=_db())}
+    return {"admissions": list_admissions(limit = limit, db_path = _db())}
 
 
 @router.get("/rollouts")
@@ -305,14 +308,14 @@ def get_rollouts(
     current_subject: str = Depends(get_current_subject),
     contact: Optional[str] = None,
     outcome: Optional[str] = None,
-    limit: int = Query(default=40, ge=1, le=200),
+    limit: int = Query(default = 40, ge = 1, le = 200),
 ) -> dict[str, Any]:
     return {
         "rollouts": list_rollouts(
-            contact=contact,
-            outcome=outcome,
-            limit=limit,
-            db_path=_db(),
+            contact = contact,
+            outcome = outcome,
+            limit = limit,
+            db_path = _db(),
         )
     }
 
@@ -320,33 +323,30 @@ def get_rollouts(
 @router.get("/load")
 def get_load(
     current_subject: str = Depends(get_current_subject),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default = 20, ge = 1, le = 100),
 ) -> dict[str, Any]:
-    return {"inject": list_inject_stats(limit=limit, db_path=_db())}
+    return {"inject": list_inject_stats(limit = limit, db_path = _db())}
 
 
 @router.post("/compact")
 def post_compact(
-    payload: CompactBody,
-    current_subject: str = Depends(get_current_subject),
+    payload: CompactBody, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, Any]:
     from dataclasses import asdict
-
-    report = run_compact(_db(), dry_run=not payload.apply)
+    report = run_compact(_db(), dry_run = not payload.apply)
     return asdict(report)
 
 
 @router.post("/review")
 def post_review(
-    payload: ApplyBody,
-    current_subject: str = Depends(get_current_subject),
+    payload: ApplyBody, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, Any]:
     outcome = review_proposed(
-        apply=payload.apply,
-        limit=payload.limit,
-        db_path=_db(),
-        host=_host(),
-        config=_config(),
+        apply = payload.apply,
+        limit = payload.limit,
+        db_path = _db(),
+        host = _host(),
+        config = _config(),
     )
     if not outcome.ok:
         _raise_outcome(outcome)
@@ -355,15 +355,14 @@ def post_review(
 
 @router.post("/mine")
 def post_mine(
-    payload: ApplyBody,
-    current_subject: str = Depends(get_current_subject),
+    payload: ApplyBody, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, Any]:
     outcome = mine_store(
-        apply=payload.apply,
-        limit=payload.limit,
-        db_path=_db(),
-        host=_host(),
-        config=_config(),
+        apply = payload.apply,
+        limit = payload.limit,
+        db_path = _db(),
+        host = _host(),
+        config = _config(),
     )
     if not outcome.ok:
         _raise_outcome(outcome)
@@ -372,18 +371,17 @@ def post_mine(
 
 @router.get("/adapters")
 def get_adapters(
-    current_subject: str = Depends(get_current_subject),
-    status: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject), status: Optional[str] = None
 ) -> dict[str, Any]:
-    return {"adapters": list_adapters(status=status, db_path=_db())}
+    return {"adapters": list_adapters(status = status, db_path = _db())}
 
 
 @router.get("/packs")
 def get_packs(
     current_subject: str = Depends(get_current_subject),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default = 20, ge = 1, le = 100),
 ) -> dict[str, Any]:
-    return {"packs": list_packs(limit=limit, db_path=_db())}
+    return {"packs": list_packs(limit = limit, db_path = _db())}
 
 
 @router.post("/adapters/{adapter_id}/promote")
@@ -394,10 +392,10 @@ def post_promote(
 ) -> dict[str, Any]:
     outcome = promote_adapter_record(
         adapter_id,
-        force=payload.force,
-        db_path=_db(),
-        host=_host(),
-        config=_config(),
+        force = payload.force,
+        db_path = _db(),
+        host = _host(),
+        config = _config(),
     )
     if not outcome.ok:
         _raise_outcome(outcome)
@@ -405,8 +403,6 @@ def post_promote(
 
 
 @router.post("/adapters/rollback")
-def post_rollback(
-    current_subject: str = Depends(get_current_subject),
-) -> dict[str, Any]:
-    row = rollback_adapter(db_path=_db())
+def post_rollback(current_subject: str = Depends(get_current_subject)) -> dict[str, Any]:
+    row = rollback_adapter(db_path = _db())
     return {"promoted": row}

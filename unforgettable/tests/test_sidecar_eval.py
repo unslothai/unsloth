@@ -26,32 +26,32 @@ from unforgettable.store.records import insert_record, insert_retrieve_use, inse
 
 def _voted_procedure(db_path, *, title: str, body: str, episode_id: str) -> dict:
     rec = insert_record(
-        kind="procedure",
-        title=title,
-        body=body,
-        provenance="world",
-        db_path=db_path,
+        kind = "procedure",
+        title = title,
+        body = body,
+        provenance = "world",
+        db_path = db_path,
     )
     insert_retrieve_use(
-        episode_id=episode_id,
-        record_id=rec["id"],
-        contact="world",
-        db_path=db_path,
+        episode_id = episode_id,
+        record_id = rec["id"],
+        contact = "world",
+        db_path = db_path,
     )
     insert_rollout(
-        episode_id=episode_id,
-        contact="world",
-        outcome="pass",
-        summary="ok",
-        db_path=db_path,
+        episode_id = episode_id,
+        contact = "world",
+        outcome = "pass",
+        summary = "ok",
+        db_path = db_path,
     )
     return rec
 
 
 def _seed_holdout_gold(adapter_path: str, pack_id: str, db_path) -> None:
     dest = Path(adapter_path) / "fake_gold.json"
-    gold = json.loads(dest.read_text(encoding="utf-8")) if dest.is_file() else {}
-    for item in list_pack_items(pack_id, db_path=db_path):
+    gold = json.loads(dest.read_text(encoding = "utf-8")) if dest.is_file() else {}
+    for item in list_pack_items(pack_id, db_path = db_path):
         if item.get("role") != ROLE_HOLDOUT:
             continue
         user = ""
@@ -63,7 +63,7 @@ def _seed_holdout_gold(adapter_path: str, pack_id: str, db_path) -> None:
                 assistant = msg.get("content") or ""
         if user:
             gold[user] = assistant
-    dest.write_text(json.dumps(gold), encoding="utf-8")
+    dest.write_text(json.dumps(gold), encoding = "utf-8")
 
 
 def test_eval_holdout_gold_beats_base(db_path, monkeypatch):
@@ -71,27 +71,25 @@ def test_eval_holdout_gold_beats_base(db_path, monkeypatch):
     for i in range(5):
         _voted_procedure(
             db_path,
-            title=f"Playbook {i}",
-            body=f"steps {i}",
-            episode_id=f"ep-{i}",
+            title = f"Playbook {i}",
+            body = f"steps {i}",
+            episode_id = f"ep-{i}",
         )
-    packed = pack_from_admitted_b(db_path=db_path)
+    packed = pack_from_admitted_b(db_path = db_path)
     assert packed.n_holdout >= 1
     result = train_pack(
         packed.pack_id,
-        backend=FakeTrainBackend(),
-        base_model="fake",
-        db_path=db_path,
+        backend = FakeTrainBackend(),
+        base_model = "fake",
+        db_path = db_path,
     )
     _seed_holdout_gold(result.path, packed.pack_id, db_path)
-    report = eval_adapter(
-        result.adapter_id, backend=FakeTrainBackend(), db_path=db_path
-    )
+    report = eval_adapter(result.adapter_id, backend = FakeTrainBackend(), db_path = db_path)
     assert report.n_holdout >= 1
     assert report.adapter_lean == 1.0
     assert report.base_lean == 0.0
     assert report.passed is True
-    row = get_adapter(result.adapter_id, db_path=db_path)
+    row = get_adapter(result.adapter_id, db_path = db_path)
     metrics = json.loads(row["metrics"])
     assert metrics["adapter_lean"] == 1.0
     assert metrics["passed"] is True
@@ -102,21 +100,19 @@ def test_eval_without_holdout_gold_fails(db_path, monkeypatch):
     for i in range(5):
         _voted_procedure(
             db_path,
-            title=f"Playbook {i}",
-            body=f"steps {i}",
-            episode_id=f"ep-{i}",
+            title = f"Playbook {i}",
+            body = f"steps {i}",
+            episode_id = f"ep-{i}",
         )
-    packed = pack_from_admitted_b(db_path=db_path)
+    packed = pack_from_admitted_b(db_path = db_path)
     assert packed.n_holdout >= 1
     result = train_pack(
         packed.pack_id,
-        backend=FakeTrainBackend(),
-        base_model="fake",
-        db_path=db_path,
+        backend = FakeTrainBackend(),
+        base_model = "fake",
+        db_path = db_path,
     )
-    report = eval_adapter(
-        result.adapter_id, backend=FakeTrainBackend(), db_path=db_path
-    )
+    report = eval_adapter(result.adapter_id, backend = FakeTrainBackend(), db_path = db_path)
     assert report.n_holdout >= 1
     assert report.adapter_lean == 0.0
     assert report.base_lean == 0.0
@@ -127,21 +123,19 @@ def test_eval_empty_holdout_no_world_fails(db_path):
     for i in range(4):
         _voted_procedure(
             db_path,
-            title=f"Playbook {i}",
-            body=f"steps {i}",
-            episode_id=f"ep-{i}",
+            title = f"Playbook {i}",
+            body = f"steps {i}",
+            episode_id = f"ep-{i}",
         )
-    packed = pack_from_admitted_b(db_path=db_path)
+    packed = pack_from_admitted_b(db_path = db_path)
     assert packed.n_holdout == 0
     result = train_pack(
         packed.pack_id,
-        backend=FakeTrainBackend(),
-        base_model="fake",
-        db_path=db_path,
+        backend = FakeTrainBackend(),
+        base_model = "fake",
+        db_path = db_path,
     )
-    report = eval_adapter(
-        result.adapter_id, backend=FakeTrainBackend(), db_path=db_path
-    )
+    report = eval_adapter(result.adapter_id, backend = FakeTrainBackend(), db_path = db_path)
     assert report.n_holdout == 0
     assert report.adapter_lean == 0.0
     assert report.base_lean == 0.0

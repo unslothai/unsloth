@@ -30,7 +30,7 @@ from unforgettable.sidecar.train import TrainBackend
 EVAL_CLIP = 200
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class EvalReport:
     adapter_id: str
     n_holdout: int
@@ -41,7 +41,12 @@ class EvalReport:
     passed: bool
 
 
-def completion_score(output: str, gold: str, *, clip: int = EVAL_CLIP) -> float:
+def completion_score(
+    output: str,
+    gold: str,
+    *,
+    clip: int = EVAL_CLIP,
+) -> float:
     g = (gold or "")[:clip].strip().casefold()
     o = (output or "")[:clip].strip().casefold()
     if not g:
@@ -78,23 +83,21 @@ def eval_adapter(
     adapter_id: str,
     *,
     backend: TrainBackend,
-    world=None,
-    db_path=None,
+    world = None,
+    db_path = None,
 ) -> EvalReport:
-    adapter = get_adapter(adapter_id, db_path=db_path)
+    adapter = get_adapter(adapter_id, db_path = db_path)
     if adapter is None:
         raise KeyError(adapter_id)
-    items = list_pack_items(adapter["pack_id"], db_path=db_path)
+    items = list_pack_items(adapter["pack_id"], db_path = db_path)
     holdout = [item for item in items if item.get("role") == ROLE_HOLDOUT]
     adapter_scores: list[float] = []
     base_scores: list[float] = []
     adapter_path = adapter.get("path") or None
     for item in holdout:
         user_only, gold = _user_only_and_gold(item)
-        adapter_out = backend.complete(
-            user_only, adapter_path=adapter_path, max_tokens=80
-        )
-        base_out = backend.complete(user_only, adapter_path=None, max_tokens=80)
+        adapter_out = backend.complete(user_only, adapter_path = adapter_path, max_tokens = 80)
+        base_out = backend.complete(user_only, adapter_path = None, max_tokens = 80)
         adapter_scores.append(completion_score(adapter_out, gold))
         base_scores.append(completion_score(base_out, gold))
     n_holdout = len(holdout)
@@ -109,7 +112,7 @@ def eval_adapter(
     probes_fail = 0
     probes_ran = world is not None
     if probes_ran:
-        results = run_probes(world=world, host=None, db_path=db_path)
+        results = run_probes(world = world, host = None, db_path = db_path)
         if inspect.isawaitable(results):
             raise RuntimeError("eval_adapter cannot await run_probes")
         for row in results:
@@ -128,14 +131,14 @@ def eval_adapter(
         passed = adapter_lean >= base_lean and adapter_lean > 0.0 and probes_fail == 0
 
     report = EvalReport(
-        adapter_id=adapter_id,
-        n_holdout=n_holdout,
-        adapter_lean=adapter_lean,
-        base_lean=base_lean,
-        probes_pass=probes_pass,
-        probes_fail=probes_fail,
-        passed=passed,
+        adapter_id = adapter_id,
+        n_holdout = n_holdout,
+        adapter_lean = adapter_lean,
+        base_lean = base_lean,
+        probes_pass = probes_pass,
+        probes_fail = probes_fail,
+        passed = passed,
     )
-    set_adapter_metrics(adapter_id, asdict(report), db_path=db_path)
-    LogGateEyes().note(f"eval: lean={adapter_lean}", db_path=db_path)
+    set_adapter_metrics(adapter_id, asdict(report), db_path = db_path)
+    LogGateEyes().note(f"eval: lean={adapter_lean}", db_path = db_path)
     return report

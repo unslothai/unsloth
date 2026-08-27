@@ -26,7 +26,11 @@ from unforgettable.loop.episode import run
 class _ForwardHost:
     """Minimal host that fires ``on_chunk`` when episode.run passes it through."""
 
-    def __init__(self, root: Path, fires: int = 1):
+    def __init__(
+        self,
+        root: Path,
+        fires: int = 1,
+    ):
         self.db = root / "memory.db"
         self.world = root / "world"
         self.world.mkdir()
@@ -63,7 +67,7 @@ class _ForwardHost:
                 if inspect.isawaitable(maybe):
                     await maybe
         text = "".join(pieces) or "ok"
-        return GenerateResult(text=text)
+        return GenerateResult(text = text)
 
 
 def test_episode_run_passes_on_chunk_through(tmp_path: Path):
@@ -72,13 +76,13 @@ def test_episode_run_passes_on_chunk_through(tmp_path: Path):
     async def on_chunk(data: bytes) -> None:
         seen.append(data)
 
-    host = _ForwardHost(tmp_path, fires=2)
+    host = _ForwardHost(tmp_path, fires = 2)
     outcome = asyncio.run(
         run(
             host,
             EpisodeRequest(
-                messages=[{"role": "user", "content": "hi"}],
-                on_chunk=on_chunk,
+                messages = [{"role": "user", "content": "hi"}],
+                on_chunk = on_chunk,
             ),
         )
     )
@@ -92,11 +96,11 @@ def test_episode_run_passes_on_chunk_through(tmp_path: Path):
 
 
 def test_episode_run_without_on_chunk_still_generates(tmp_path: Path):
-    host = _ForwardHost(tmp_path, fires=3)
+    host = _ForwardHost(tmp_path, fires = 3)
     outcome = asyncio.run(
         run(
             host,
-            EpisodeRequest(messages=[{"role": "user", "content": "hi"}]),
+            EpisodeRequest(messages = [{"role": "user", "content": "hi"}]),
         )
     )
     assert host.seen_on_chunk is None

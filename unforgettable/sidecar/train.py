@@ -35,18 +35,14 @@ from unforgettable.sidecar.pack import (
 from unforgettable.store.db import default_db_path
 
 FAKE_BASE_MODEL = "fake"
-FULL_FINETUNE_REFUSED = (
-    "sidecar refuses full fine-tune; unset UNSLOTH_ENABLE_FULL_FINETUNING"
-)
+FULL_FINETUNE_REFUSED = "sidecar refuses full fine-tune; unset UNSLOTH_ENABLE_FULL_FINETUNING"
 PREFERENCE_NEEDS_DPO = "preference recipe needs trl.DPOTrainer"
-NO_PREFERENCE_PAIRS = (
-    "no preference pairs (need a world pass and an admitted error_fix)"
-)
+NO_PREFERENCE_PAIRS = "no preference pairs (need a world pass and an admitted error_fix)"
 RECIPE_PREFERENCE = "preference"
 DPO_BETA = 0.1
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class TrainResult:
     adapter_id: str
     path: str
@@ -74,7 +70,7 @@ class TrainBackend(Protocol):
     ) -> str: ...
 
 
-def adapters_root(db_path=None) -> Path:
+def adapters_root(db_path = None) -> Path:
     path = Path(db_path) if db_path is not None else default_db_path()
     return path.resolve().parent / "adapters"
 
@@ -125,7 +121,7 @@ def _sft_text(example: Any, tokenizer: Any) -> str:
     apply = getattr(tokenizer, "apply_chat_template", None)
     if callable(apply) and messages:
         try:
-            return apply(messages, tokenize=False, add_generation_prompt=False)
+            return apply(messages, tokenize = False, add_generation_prompt = False)
         except (TypeError, ValueError):
             pass
     user, assistant = _user_assistant(example)
@@ -136,7 +132,7 @@ def _prompt_text(messages: list[dict], tokenizer: Any) -> str:
     apply = getattr(tokenizer, "apply_chat_template", None)
     if callable(apply) and messages:
         try:
-            return apply(messages, tokenize=False, add_generation_prompt=True)
+            return apply(messages, tokenize = False, add_generation_prompt = True)
         except (TypeError, ValueError):
             pass
     user, assistant = _user_assistant(messages)
@@ -177,7 +173,7 @@ def _pair_prompt_text(example: dict) -> str:
     prompt = example.get("prompt")
     if isinstance(prompt, str):
         return prompt
-    return _message_text(prompt, role="user")
+    return _message_text(prompt, role = "user")
 
 
 def _pair_completion_text(value: Any) -> str:
@@ -201,10 +197,10 @@ def _dpo_rows(examples: list[dict]) -> list[dict[str, str]]:
 
 
 def _write_pairs_jsonl(dest: Path, examples: list[dict]) -> None:
-    dest.mkdir(parents=True, exist_ok=True)
+    dest.mkdir(parents = True, exist_ok = True)
     (dest / "pairs.jsonl").write_text(
         "".join(json.dumps(example) + "\n" for example in examples),
-        encoding="utf-8",
+        encoding = "utf-8",
     )
 
 
@@ -218,12 +214,12 @@ def _new_peft_model(base_model: str):
     model, tokenizer = _from_pretrained(loader, base_model)
     model = loader.get_peft_model(
         model,
-        r=16,
-        lora_alpha=16,
-        lora_dropout=0.0,
-        bias="none",
-        use_gradient_checkpointing="unsloth",
-        random_state=3407,
+        r = 16,
+        lora_alpha = 16,
+        lora_dropout = 0.0,
+        bias = "none",
+        use_gradient_checkpointing = "unsloth",
+        random_state = 3407,
     )
     return model, tokenizer
 
@@ -240,7 +236,6 @@ def _import_dpo():
 
 def _dataset_from_list(rows: list[dict]) -> Any:
     from datasets import Dataset
-
     return Dataset.from_list(rows)
 
 
@@ -269,7 +264,14 @@ def _dpo_config(DPOConfig, dest: Path, n_rows: int):
     raise last_error
 
 
-def _dpo_trainer(DPOTrainer, model, tokenizer, args, dataset, extra=None):
+def _dpo_trainer(
+    DPOTrainer,
+    model,
+    tokenizer,
+    args,
+    dataset,
+    extra = None,
+):
     extras = (dict(extra or {}), {})
     attempts = (
         {"ref_model": None, "processing_class": tokenizer},
@@ -281,9 +283,7 @@ def _dpo_trainer(DPOTrainer, model, tokenizer, args, dataset, extra=None):
     for payload in extras:
         for kw in attempts:
             try:
-                return DPOTrainer(
-                    model=model, args=args, train_dataset=dataset, **kw, **payload
-                )
+                return DPOTrainer(model = model, args = args, train_dataset = dataset, **kw, **payload)
             except TypeError as exc:
                 last_error = exc
     assert last_error is not None
@@ -303,7 +303,7 @@ class FakeTrainBackend:
     ) -> None:
         del base_model
         dest = Path(output_dir)
-        dest.mkdir(parents=True, exist_ok=True)
+        dest.mkdir(parents = True, exist_ok = True)
         if recipe == RECIPE_PREFERENCE:
             _write_pairs_jsonl(dest, examples)
             gold = _preference_gold(examples)
@@ -315,9 +315,9 @@ class FakeTrainBackend:
                     gold[user] = assistant
         (dest / "adapter_config.json").write_text(
             json.dumps({"fake": True, "recipe": recipe, "n": len(examples)}),
-            encoding="utf-8",
+            encoding = "utf-8",
         )
-        (dest / "fake_gold.json").write_text(json.dumps(gold), encoding="utf-8")
+        (dest / "fake_gold.json").write_text(json.dumps(gold), encoding = "utf-8")
 
     def complete(
         self,
@@ -332,7 +332,7 @@ class FakeTrainBackend:
         gold_path = Path(adapter_path) / "fake_gold.json"
         if not gold_path.is_file():
             return ""
-        gold = json.loads(gold_path.read_text(encoding="utf-8"))
+        gold = json.loads(gold_path.read_text(encoding = "utf-8"))
         user = ""
         for msg in messages:
             if isinstance(msg, dict) and msg.get("role") == "user":
@@ -343,11 +343,9 @@ class FakeTrainBackend:
 def _unsloth_loader():
     try:
         from unsloth import FastModel
-
         return FastModel
     except ImportError:
         from unsloth import FastLanguageModel
-
         return FastLanguageModel
 
 
@@ -359,7 +357,7 @@ def _from_pretrained(loader, base_model: str):
         "full_finetuning": False,
     }
     try:
-        return loader.from_pretrained(text_only=True, **kwargs)
+        return loader.from_pretrained(text_only = True, **kwargs)
     except TypeError:
         return loader.from_pretrained(**kwargs)
 
@@ -391,7 +389,7 @@ class UnslothTrainBackend:
         rows = _dpo_rows(examples)
         if not rows:
             raise ValueError(NO_PREFERENCE_PAIRS)
-        dest.mkdir(parents=True, exist_ok=True)
+        dest.mkdir(parents = True, exist_ok = True)
         _write_pairs_jsonl(dest, examples)
         DPOTrainer, DPOConfig = _import_dpo()
         model, tokenizer = _new_peft_model(self._base_model or "")
@@ -406,7 +404,7 @@ class UnslothTrainBackend:
     def _train_sft(self, examples: list[dict], dest: Path, base_model: str) -> None:
         from datasets import Dataset
 
-        dest.mkdir(parents=True, exist_ok=True)
+        dest.mkdir(parents = True, exist_ok = True)
         # Import TRL after Unsloth so SFTConfig is the patched class TRL's
         # isinstance check expects. A pre-import instance is rebuilt and
         # picks up Unsloth's '<EOS_TOKEN>' sentinel.
@@ -415,9 +413,7 @@ class UnslothTrainBackend:
 
         eos = _vocab_token(tokenizer, "eos_token")
         pad = _vocab_token(tokenizer, "pad_token") or eos
-        ds = Dataset.from_dict(
-            {"text": [_sft_text(example, tokenizer) for example in examples]}
-        )
+        ds = Dataset.from_dict({"text": [_sft_text(example, tokenizer) for example in examples]})
         sft_kwargs = {
             "output_dir": str(dest),
             "per_device_train_batch_size": 2,
@@ -433,17 +429,17 @@ class UnslothTrainBackend:
         sft_args = SFTConfig(**sft_kwargs)
         try:
             trainer = SFTTrainer(
-                model=model,
-                processing_class=tokenizer,
-                train_dataset=ds,
-                args=sft_args,
+                model = model,
+                processing_class = tokenizer,
+                train_dataset = ds,
+                args = sft_args,
             )
         except TypeError:
             trainer = SFTTrainer(
-                model=model,
-                tokenizer=tokenizer,
-                train_dataset=ds,
-                args=sft_args,
+                model = model,
+                tokenizer = tokenizer,
+                train_dataset = ds,
+                args = sft_args,
             )
         trainer.train()
         model.save_pretrained(dest)
@@ -466,7 +462,6 @@ class UnslothTrainBackend:
         if adapter_path:
             try:
                 from peft import PeftModel
-
                 model = PeftModel.from_pretrained(model, adapter_path)
             except Exception:
                 load_adapter = getattr(model, "load_adapter", None)
@@ -474,13 +469,13 @@ class UnslothTrainBackend:
                     raise
                 load_adapter(adapter_path)
         loader.for_inference(model)
-        inputs = tokenizer(_prompt_text(messages, tokenizer), return_tensors="pt")
+        inputs = tokenizer(_prompt_text(messages, tokenizer), return_tensors = "pt")
         device = getattr(model, "device", None)
         if device is not None and hasattr(inputs, "to"):
             inputs = inputs.to(device)
-        outputs = model.generate(**inputs, max_new_tokens=max_tokens)
+        outputs = model.generate(**inputs, max_new_tokens = max_tokens)
         prompt_len = int(inputs["input_ids"].shape[-1])
-        return tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True)
+        return tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens = True)
 
 
 def _backend_name(backend: TrainBackend) -> str:
@@ -496,23 +491,17 @@ def train_pack(
     backend: TrainBackend,
     base_model: str,
     recipe: str = "sft",
-    db_path=None,
+    db_path = None,
 ) -> TrainResult:
-    items = list_pack_items(pack_id, db_path=db_path)
-    if not items and get_pack(pack_id, db_path=db_path) is None:
+    items = list_pack_items(pack_id, db_path = db_path)
+    if not items and get_pack(pack_id, db_path = db_path) is None:
         raise KeyError(pack_id)
     train_items = [item for item in items if item.get("role") == ROLE_TRAIN]
     if len(train_items) < PACK_MIN_TRAIN:
-        raise ValueError(
-            f"need at least {PACK_MIN_TRAIN} train items, got {len(train_items)}"
-        )
+        raise ValueError(f"need at least {PACK_MIN_TRAIN} train items, got {len(train_items)}")
     if recipe == RECIPE_PREFERENCE:
-        train_eps = {
-            item.get("episode_id")
-            for item in train_items
-            if item.get("episode_id")
-        }
-        examples = preference_pairs(db_path=db_path, train_episode_ids=train_eps)
+        train_eps = {item.get("episode_id") for item in train_items if item.get("episode_id")}
+        examples = preference_pairs(db_path = db_path, train_episode_ids = train_eps)
         if not examples:
             raise ValueError(NO_PREFERENCE_PAIRS)
     else:
@@ -524,24 +513,22 @@ def train_pack(
             examples.append({"messages": messages or []})
     adapter_id = str(uuid.uuid4())
     output_dir = adapters_root(db_path) / adapter_id
-    backend.train(
-        examples, output_dir=output_dir, base_model=base_model, recipe=recipe
-    )
+    backend.train(examples, output_dir = output_dir, base_model = base_model, recipe = recipe)
     path = str(output_dir)
     insert_adapter(
-        adapter_id=adapter_id,
-        pack_id=pack_id,
-        status=STATUS_SHADOW,
-        backend=_backend_name(backend),
-        base_model=base_model,
-        recipe=recipe,
-        path=path,
-        db_path=db_path,
+        adapter_id = adapter_id,
+        pack_id = pack_id,
+        status = STATUS_SHADOW,
+        backend = _backend_name(backend),
+        base_model = base_model,
+        recipe = recipe,
+        path = path,
+        db_path = db_path,
     )
     return TrainResult(
-        adapter_id=adapter_id,
-        path=path,
-        backend=_backend_name(backend),
-        recipe=recipe,
-        n_examples=len(examples),
+        adapter_id = adapter_id,
+        path = path,
+        backend = _backend_name(backend),
+        recipe = recipe,
+        n_examples = len(examples),
     )

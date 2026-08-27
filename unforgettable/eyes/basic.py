@@ -69,24 +69,27 @@ def _last_nonempty_line(text: str) -> str:
 
 
 def inspect_tool_result(
-    name: str, result: str, *, contact: str = "world"
+    name: str,
+    result: str,
+    *,
+    contact: str = "world",
 ) -> Optional[RecognizedFailure]:
     if name in ENTER_SIM_TOOL_NAMES:
-        return RecognizedFailure(summary="enter_sim requested", source="tool")
+        return RecognizedFailure(summary = "enter_sim requested", source = "tool")
     text = result or ""
     head = text.lstrip()
     if name in _RUNNER_TOOL_NAMES:
         for prefix in RUN_ACTION_FAIL_PREFIXES:
             if head.startswith(prefix):
                 return RecognizedFailure(
-                    summary=head.splitlines()[0][:200] if head else f"{name} failed",
-                    source=contact,
+                    summary = head.splitlines()[0][:200] if head else f"{name} failed",
+                    source = contact,
                 )
     if _TRACEBACK in text:
-        return RecognizedFailure(summary=f"{name} raised", source=contact)
+        return RecognizedFailure(summary = f"{name} raised", source = contact)
     if text.startswith("Error:") or "\nError:" in text:
         first = text.strip().splitlines()[0][:200]
-        return RecognizedFailure(summary=first, source=contact)
+        return RecognizedFailure(summary = first, source = contact)
     if name in _RUNNER_TOOL_NAMES:
         last = _last_nonempty_line(text)
         if last and (
@@ -99,28 +102,31 @@ def inspect_tool_result(
             or _JEST_TESTS_FAILED.search(text)
             or _GO_FAIL_TAB.search(text)
         ):
-            return RecognizedFailure(summary=f"{name} failed", source=contact)
+            return RecognizedFailure(summary = f"{name} failed", source = contact)
     match = _EXIT.search(text)
     if match and match.group(1) not in {"0"}:
         return RecognizedFailure(
-            summary=f"{name} exited {match.group(1)}",
-            source=contact,
+            summary = f"{name} exited {match.group(1)}",
+            source = contact,
         )
     lowered = text.lower()
     if "command failed" in lowered or "returned non-zero" in lowered:
-        return RecognizedFailure(summary=f"{name} failed", source=contact)
+        return RecognizedFailure(summary = f"{name} failed", source = contact)
     return None
 
 
 def grade_run_action(
-    name: str, result: str | None, *, contact: str = "sim"
+    name: str,
+    result: str | None,
+    *,
+    contact: str = "sim",
 ) -> Optional[RecognizedFailure]:
     """Grade a harness result. Timeout / cancel / block / empty are fail, never pass."""
     text = "" if result is None else str(result)
     if not text.strip():
-        return RecognizedFailure(summary=f"{name} empty result", source=contact)
+        return RecognizedFailure(summary = f"{name} empty result", source = contact)
     head = text.lstrip()
     for prefix in RUN_ACTION_FAIL_PREFIXES:
         if head.startswith(prefix):
-            return RecognizedFailure(summary=head.splitlines()[0][:200], source=contact)
-    return inspect_tool_result(name, text, contact=contact)
+            return RecognizedFailure(summary = head.splitlines()[0][:200], source = contact)
+    return inspect_tool_result(name, text, contact = contact)

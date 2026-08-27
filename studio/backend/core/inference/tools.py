@@ -10259,7 +10259,6 @@ def execute_tool(
     def _finish(result: str) -> str:
         try:
             from unforgettable.loop.runtime import note_tool_result
-
             note_tool_result(name, arguments or {}, result)
         except Exception:
             pass
@@ -10272,7 +10271,6 @@ def execute_tool(
         or name.startswith("rims.")
     ):
         from unforgettable.tools.handlers import dispatch
-
         return _finish(dispatch(name, arguments or {}))
     if name == "search_knowledge_base":
         return _finish(

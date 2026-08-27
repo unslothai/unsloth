@@ -31,7 +31,7 @@ def test_package_does_not_import_studio():
     for path in ROOT.rglob("*.py"):
         if "tests" in path.parts:
             continue
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding = "utf-8")
         for line in text.splitlines():
             stripped = line.strip()
             if stripped.startswith("#"):
@@ -45,7 +45,7 @@ def test_sidecar_has_no_eager_unsloth_or_torch():
     sidecar = ROOT / "sidecar"
     offenders = []
     for path in sidecar.rglob("*.py"):
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding = "utf-8")
         for lineno, line in enumerate(text.splitlines(), 1):
             stripped = line.strip()
             if stripped.startswith("#"):
@@ -62,13 +62,12 @@ def test_sidecar_has_no_eager_unsloth_or_torch():
 
 def test_importing_sidecar_does_not_load_unsloth_or_torch():
     import unforgettable.sidecar  # noqa: F401
-
     assert "unsloth" not in sys.modules
     assert "torch" not in sys.modules
 
 
 def test_sft_path_does_not_import_dpo():
-    text = (ROOT / "sidecar" / "train.py").read_text(encoding="utf-8")
+    text = (ROOT / "sidecar" / "train.py").read_text(encoding = "utf-8")
     for lineno, line in enumerate(text.splitlines(), 1):
         stripped = line.strip()
         if stripped.startswith("from trl import") and "SFT" in stripped:

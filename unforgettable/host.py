@@ -41,7 +41,7 @@ class GenerateRequest:
     session_id: str
     thread_id: Optional[str] = None
     stream: bool = True
-    extra_tools: list[dict[str, Any]] = field(default_factory=list)
+    extra_tools: list[dict[str, Any]] = field(default_factory = list)
     inner_model: Optional[str] = None
     permission_mode: Optional[str] = None
     on_chunk: Optional[OnChunk] = None
@@ -59,7 +59,7 @@ class ToolTrace:
 @dataclass
 class GenerateResult:
     text: str
-    tool_traces: list[ToolTrace] = field(default_factory=list)
+    tool_traces: list[ToolTrace] = field(default_factory = list)
     finished: bool = True
 
 

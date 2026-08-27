@@ -49,9 +49,9 @@ def test_clone_tree_same_path_raises(tmp_path: Path):
     src = tmp_path / "world"
     src.mkdir()
     (src / "main.py").write_text("print(1)\n")
-    with pytest.raises(ValueError, match="clone_tree refuses to copy a tree onto itself"):
+    with pytest.raises(ValueError, match = "clone_tree refuses to copy a tree onto itself"):
         clone_tree(src, src)
-    with pytest.raises(ValueError, match="clone_tree refuses to copy a tree onto itself"):
+    with pytest.raises(ValueError, match = "clone_tree refuses to copy a tree onto itself"):
         clone_tree(src, src / ".")
 
 
@@ -59,7 +59,7 @@ def test_clone_tree_refuses_dest_inside_source(tmp_path: Path):
     src = tmp_path / "world"
     src.mkdir()
     (src / "main.py").write_text("print(1)\n")
-    with pytest.raises(ValueError, match="into itself"):
+    with pytest.raises(ValueError, match = "into itself"):
         clone_tree(src, src / "nested-sim")
 
 
@@ -86,7 +86,7 @@ def test_eyes_detect_traceback_and_exit_code():
 
 
 def test_throne_world_failure_enters_sim_then_retry():
-    state = EpisodeState(episode_id="e", world_session="world")
+    state = EpisodeState(episode_id = "e", world_session = "world")
     assert decide("failure", state) == Action.ENTER_SIM
     state.enter_sim("sim-1")
     state.had_world_failure = True
@@ -98,25 +98,19 @@ def test_throne_world_failure_enters_sim_then_retry():
 
 
 def test_require_confirm_retry_matrix():
-    assert require_confirm_retry(stakes="high", permission_mode=None, confirm_retry=None)
-    assert require_confirm_retry(stakes=None, permission_mode="ask", confirm_retry=None)
-    assert not require_confirm_retry(
-        stakes="high", permission_mode="ask", confirm_retry=False
-    )
+    assert require_confirm_retry(stakes = "high", permission_mode = None, confirm_retry = None)
+    assert require_confirm_retry(stakes = None, permission_mode = "ask", confirm_retry = None)
+    assert not require_confirm_retry(stakes = "high", permission_mode = "ask", confirm_retry = False)
     for mode in ("full", "off", "auto", None):
-        assert not require_confirm_retry(
-            stakes=None, permission_mode=mode, confirm_retry=None
-        )
-    assert require_confirm_retry(stakes=None, permission_mode=None, confirm_retry=True)
+        assert not require_confirm_retry(stakes = None, permission_mode = mode, confirm_retry = None)
+    assert require_confirm_retry(stakes = None, permission_mode = None, confirm_retry = True)
 
     def wired(**kwargs) -> bool:
-        return policy_from_request(
-            EpisodeRequest(messages=[], **kwargs)
-        ).require_confirm_retry
+        return policy_from_request(EpisodeRequest(messages = [], **kwargs)).require_confirm_retry
 
-    assert wired(stakes="high") is True
-    assert wired(permission_mode="ask") is True
-    assert wired(stakes="high", confirm_retry=False) is False
+    assert wired(stakes = "high") is True
+    assert wired(permission_mode = "ask") is True
+    assert wired(stakes = "high", confirm_retry = False) is False
     for mode in ("full", "off", "auto", None):
-        assert wired(permission_mode=mode) is False
-    assert wired(confirm_retry=True) is True
+        assert wired(permission_mode = mode) is False
+    assert wired(confirm_retry = True) is True

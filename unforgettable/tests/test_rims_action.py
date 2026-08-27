@@ -89,27 +89,27 @@ def test_detect_missing_or_file_or_unreadable_returns_none(tmp_path: Path):
 
 def test_resolve_requested_wins_over_procedure(tmp_path: Path, db_path: Path):
     insert_record(
-        kind="procedure",
-        title="test command",
-        body="pytest\n",
-        provenance="human",
-        db_path=db_path,
+        kind = "procedure",
+        title = "test command",
+        body = "pytest\n",
+        provenance = "human",
+        db_path = db_path,
     )
     tree = tmp_path / "proj"
     tree.mkdir()
     (tree / "go.mod").write_text("module example.com/x\n")
-    assert resolve_test_command(requested="npm test", db_path=db_path, tree=tree) == "npm test"
+    assert resolve_test_command(requested = "npm test", db_path = db_path, tree = tree) == "npm test"
 
 
 def test_resolve_procedure_title_wins_over_detector(tmp_path: Path, db_path: Path):
     insert_record(
-        kind="procedure",
-        title="Test Command",
-        body="custom-test\n",
-        provenance="human",
-        db_path=db_path,
+        kind = "procedure",
+        title = "Test Command",
+        body = "custom-test\n",
+        provenance = "human",
+        db_path = db_path,
     )
     tree = tmp_path / "proj"
     tree.mkdir()
     (tree / "pytest.ini").write_text("[pytest]\n")
-    assert resolve_test_command(requested=None, db_path=db_path, tree=tree) == "custom-test"
+    assert resolve_test_command(requested = None, db_path = db_path, tree = tree) == "custom-test"

@@ -36,7 +36,7 @@ COMPACT_STALE_REASON = "compact: stale proposed"
 KEEP_STALE_ERROR_FIX_PROVENANCE = frozenset({"world", "mixed"})
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class CompactReport:
     emptied: list[str]
     deduped: list[tuple[str, str]]
@@ -45,38 +45,37 @@ class CompactReport:
 
 
 def run_compact(
-    db_path=None, *, dry_run: bool = False, older_than_days: Optional[int] = None
+    db_path = None,
+    *,
+    dry_run: bool = False,
+    older_than_days: Optional[int] = None,
 ) -> CompactReport:
-    records = list_records(db_path=db_path)
+    records = list_records(db_path = db_path)
     now = datetime.now(timezone.utc)
-    empty_ids = _empty_proposed_ids(records, now=now)
-    stale_ids = _stale_proposed_ids(
-        records, now=now, older_than_days=older_than_days
-    )
+    empty_ids = _empty_proposed_ids(records, now = now)
+    stale_ids = _stale_proposed_ids(records, now = now, older_than_days = older_than_days)
     emptied = list(dict.fromkeys([*empty_ids, *stale_ids]))
     empty_set = set(empty_ids)
     deduped = _dedupe_pairs(records)
     folded = _fold_ids(records)
     if not dry_run:
         for rid in emptied:
-            reason = (
-                COMPACT_EMPTY_REASON if rid in empty_set else COMPACT_STALE_REASON
-            )
-            set_record_status(rid, "rejected", reason=reason, db_path=db_path)
+            reason = COMPACT_EMPTY_REASON if rid in empty_set else COMPACT_STALE_REASON
+            set_record_status(rid, "rejected", reason = reason, db_path = db_path)
         for loser_id, winner_id in deduped:
             set_record_status(
                 loser_id,
                 "deprecated",
-                reason=_duplicate_reason(winner_id),
-                db_path=db_path,
+                reason = _duplicate_reason(winner_id),
+                db_path = db_path,
             )
         for rid in folded:
-            set_record_status(rid, "deprecated", db_path=db_path)
+            set_record_status(rid, "deprecated", db_path = db_path)
     return CompactReport(
-        emptied=emptied,
-        deduped=deduped,
-        folded=folded,
-        dry_run=dry_run,
+        emptied = emptied,
+        deduped = deduped,
+        folded = folded,
+        dry_run = dry_run,
     )
 
 
@@ -91,7 +90,7 @@ def _empty_proposed_ids(records: list[dict[str, Any]], *, now: datetime) -> list
             continue
         if not _is_empty_proposed_body(rec.get("body")):
             continue
-        if _is_at_least_days_old(rec.get("created_at"), EMPTY_PROPOSED_AGE_DAYS, now=now):
+        if _is_at_least_days_old(rec.get("created_at"), EMPTY_PROPOSED_AGE_DAYS, now = now):
             ids.append(rec["id"])
     return ids
 
@@ -101,10 +100,7 @@ def _is_empty_proposed_body(body: Optional[str]) -> bool:
 
 
 def _stale_proposed_ids(
-    records: list[dict[str, Any]],
-    *,
-    now: datetime,
-    older_than_days: Optional[int],
+    records: list[dict[str, Any]], *, now: datetime, older_than_days: Optional[int]
 ) -> list[str]:
     days = STALE_PROPOSED_AGE_DAYS if older_than_days is None else int(older_than_days)
     if days < 1:
@@ -115,11 +111,14 @@ def _stale_proposed_ids(
             continue
         if _is_empty_proposed_body(rec.get("body")):
             continue
-        if rec.get("kind") == "error_fix" and rec.get("provenance") in KEEP_STALE_ERROR_FIX_PROVENANCE:
+        if (
+            rec.get("kind") == "error_fix"
+            and rec.get("provenance") in KEEP_STALE_ERROR_FIX_PROVENANCE
+        ):
             continue
         if not (is_who(rec) or rec.get("provenance") == "infer"):
             continue
-        if _is_at_least_days_old(rec.get("created_at"), days, now=now):
+        if _is_at_least_days_old(rec.get("created_at"), days, now = now):
             ids.append(rec["id"])
     return ids
 
@@ -141,7 +140,7 @@ def _dedupe_pairs(records: list[dict[str, Any]]) -> list[tuple[str, str]]:
     for group in groups.values():
         if len(group) < 2:
             continue
-        winner = min(group, key=_dedupe_rank)
+        winner = min(group, key = _dedupe_rank)
         for rec in group:
             if rec["id"] != winner["id"]:
                 pairs.append((rec["id"], winner["id"]))
@@ -157,9 +156,7 @@ def _dedupe_rank(rec: dict[str, Any]) -> tuple[int, float, str]:
 
 def _fold_ids(records: list[dict[str, Any]]) -> list[str]:
     by_id = {rec["id"]: rec for rec in records}
-    referenced = {
-        rec.get("supersedes_id") for rec in records if rec.get("supersedes_id")
-    }
+    referenced = {rec.get("supersedes_id") for rec in records if rec.get("supersedes_id")}
     folded: list[str] = []
     seen: set[str] = set()
     for head in records:
@@ -173,9 +170,7 @@ def _fold_ids(records: list[dict[str, Any]]) -> list[str]:
     return folded
 
 
-def _ancestors(
-    head: dict[str, Any], by_id: dict[str, dict[str, Any]]
-) -> list[dict[str, Any]]:
+def _ancestors(head: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     ancestors: list[dict[str, Any]] = []
     walked = {head["id"]}
     current_id = head.get("supersedes_id")
@@ -193,7 +188,7 @@ def _is_at_least_days_old(created_at: Optional[str], days: int, *, now: datetime
     ts = _parse_dt(created_at)
     if ts is None:
         return False
-    return now - ts >= timedelta(days=days)
+    return now - ts >= timedelta(days = days)
 
 
 def _parse_dt(value: Optional[str]) -> Optional[datetime]:
@@ -204,5 +199,5 @@ def _parse_dt(value: Optional[str]) -> Optional[datetime]:
     except ValueError:
         return None
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
+        ts = ts.replace(tzinfo = timezone.utc)
     return ts.astimezone(timezone.utc)

@@ -79,7 +79,7 @@ def search_records(
     provenances: Optional[Iterable[str]] = None,
     statuses: Optional[Iterable[str]] = None,
     namespace_id: Optional[str] = None,
-    db_path=None,
+    db_path = None,
 ) -> list[dict[str, Any]]:
     """FTS search, then bias by provenance weight. Default: active only."""
     match = _match_query(query)
@@ -100,7 +100,7 @@ def search_records(
         conn.close()
     scored: list[tuple[float, dict[str, Any]]] = []
     for row in rows:
-        rec = get_record(row["record_id"], db_path=db_path)
+        rec = get_record(row["record_id"], db_path = db_path)
         if rec is None:
             continue
         if rec["status"] not in wanted_status:
@@ -114,5 +114,5 @@ def search_records(
         fts_rank = float(row["rank"])
         weight = PROVENANCE_WEIGHT.get(rec["provenance"], 9)
         scored.append((typology_class(rec), weight, fts_rank, rec))
-    scored.sort(key=lambda item: (item[0], item[1], item[2]))
+    scored.sort(key = lambda item: (item[0], item[1], item[2]))
     return [item[3] for item in scored[:top_k]]

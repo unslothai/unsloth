@@ -1988,7 +1988,6 @@ class InferenceBackend:
 
             def generate_fn():
                 from core.unforgettable_host import is_peft_adapter_dir
-
                 with self._generation_lock:
                     snap = None
                     try:

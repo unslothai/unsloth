@@ -76,11 +76,11 @@ def test_go_fail_tab_is_fail_without_fail_space_token():
 
 
 def test_rims_enter_sim_source_is_tool():
-    fail = inspect_tool_result("rims_enter_sim", "enter_sim requested", contact="world")
+    fail = inspect_tool_result("rims_enter_sim", "enter_sim requested", contact = "world")
     assert fail is not None
     assert fail.source == "tool"
     assert fail.summary == "enter_sim requested"
-    dotted = inspect_tool_result("rims.enter_sim", "ok", contact="world")
+    dotted = inspect_tool_result("rims.enter_sim", "ok", contact = "world")
     assert dotted is not None
     assert dotted.source == "tool"
 
@@ -100,7 +100,7 @@ def test_world_studio_sentinels_are_recognized_failures():
         "No command provided.",
     )
     for blob in blobs:
-        fail = inspect_tool_result("terminal", blob, contact="world")
+        fail = inspect_tool_result("terminal", blob, contact = "world")
         assert fail is not None, repr(blob)
 
 

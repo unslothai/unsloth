@@ -20,34 +20,26 @@ from unforgettable.store.records import ensure_default_namespace
 
 
 def test_explicit_human_admitted(db_path):
-    ensure_default_namespace(db_path=db_path)
-    decision = admit(
-        kind="claim", provenance="human", explicit=True, db_path=db_path
-    )
+    ensure_default_namespace(db_path = db_path)
+    decision = admit(kind = "claim", provenance = "human", explicit = True, db_path = db_path)
     assert decision.status == "active"
 
 
 def test_infer_stays_proposed(db_path):
-    ensure_default_namespace(db_path=db_path)
-    decision = admit(
-        kind="claim", provenance="infer", explicit=True, db_path=db_path
-    )
+    ensure_default_namespace(db_path = db_path)
+    decision = admit(kind = "claim", provenance = "infer", explicit = True, db_path = db_path)
     assert decision.status == "proposed"
 
 
 def test_sim_only_claim_not_auto_promoted(db_path):
-    ensure_default_namespace(db_path=db_path)
-    decision = admit(
-        kind="claim", provenance="sim", explicit=True, db_path=db_path
-    )
+    ensure_default_namespace(db_path = db_path)
+    decision = admit(kind = "claim", provenance = "sim", explicit = True, db_path = db_path)
     assert decision.status == "proposed"
 
 
 def test_auto_extract_is_proposed(db_path):
-    ensure_default_namespace(db_path=db_path)
-    decision = admit(
-        kind="error_fix", provenance="mixed", explicit=False, db_path=db_path
-    )
+    ensure_default_namespace(db_path = db_path)
+    decision = admit(kind = "error_fix", provenance = "mixed", explicit = False, db_path = db_path)
     assert decision.status == "proposed"
     conn = get_connection(db_path)
     try:
@@ -59,68 +51,62 @@ def test_auto_extract_is_proposed(db_path):
 
 
 def test_bookkeeping_twin_note_is_active(db_path):
-    ensure_default_namespace(db_path=db_path)
+    ensure_default_namespace(db_path = db_path)
     decision = admit(
-        kind="twin_note",
-        provenance="mixed",
-        explicit=False,
-        bookkeeping=True,
-        db_path=db_path,
+        kind = "twin_note",
+        provenance = "mixed",
+        explicit = False,
+        bookkeeping = True,
+        db_path = db_path,
     )
     assert decision.status == "active"
 
 
 def test_bookkeeping_episode_is_active(db_path):
-    ensure_default_namespace(db_path=db_path)
+    ensure_default_namespace(db_path = db_path)
     decision = admit(
-        kind="episode",
-        provenance="mixed",
-        explicit=False,
-        bookkeeping=True,
-        db_path=db_path,
+        kind = "episode",
+        provenance = "mixed",
+        explicit = False,
+        bookkeeping = True,
+        db_path = db_path,
     )
     assert decision.status == "active"
 
 
 def test_force_proposed_beats_bookkeeping(db_path):
-    ensure_default_namespace(db_path=db_path)
+    ensure_default_namespace(db_path = db_path)
     decision = admit(
-        kind="twin_note",
-        provenance="mixed",
-        explicit=False,
-        bookkeeping=True,
-        force_proposed_reason="contradicts other",
-        db_path=db_path,
+        kind = "twin_note",
+        provenance = "mixed",
+        explicit = False,
+        bookkeeping = True,
+        force_proposed_reason = "contradicts other",
+        db_path = db_path,
     )
     assert decision.status == "proposed"
     assert decision.reason == "contradicts other"
 
 
 def test_sim_procedure_not_auto_promoted(db_path):
-    ensure_default_namespace(db_path=db_path)
-    decision = admit(kind="procedure", provenance="sim", explicit=True, db_path=db_path)
+    ensure_default_namespace(db_path = db_path)
+    decision = admit(kind = "procedure", provenance = "sim", explicit = True, db_path = db_path)
     assert decision.status == "proposed"
 
 
 def test_infer_directive_stays_proposed(db_path):
-    ensure_default_namespace(db_path=db_path)
-    decision = admit(
-        kind="directive", provenance="infer", explicit=True, db_path=db_path
-    )
+    ensure_default_namespace(db_path = db_path)
+    decision = admit(kind = "directive", provenance = "infer", explicit = True, db_path = db_path)
     assert decision.status == "proposed"
 
 
 def test_world_directive_stays_proposed(db_path):
-    ensure_default_namespace(db_path=db_path)
-    decision = admit(
-        kind="directive", provenance="world", explicit=True, db_path=db_path
-    )
+    ensure_default_namespace(db_path = db_path)
+    decision = admit(kind = "directive", provenance = "world", explicit = True, db_path = db_path)
     assert decision.status == "proposed"
 
 
 def test_human_directive_is_admitted(db_path):
-    ensure_default_namespace(db_path=db_path)
-    decision = admit(
-        kind="directive", provenance="human", explicit=True, db_path=db_path
-    )
+    ensure_default_namespace(db_path = db_path)
+    decision = admit(kind = "directive", provenance = "human", explicit = True, db_path = db_path)
     assert decision.status == "active"

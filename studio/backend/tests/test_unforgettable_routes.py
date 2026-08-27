@@ -31,7 +31,7 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(routes_mod, "memory_db_path", lambda: db_path)
     app = FastAPI()
-    app.include_router(router, prefix="/api/unforgettable")
+    app.include_router(router, prefix = "/api/unforgettable")
     app.dependency_overrides[get_current_subject] = lambda: "tester"
     return TestClient(app), db_path
 
@@ -39,19 +39,19 @@ def client(tmp_path, monkeypatch):
 def test_summary_and_admit(client):
     http, db_path = client
     rec = insert_record(
-        kind="claim",
-        title="Draft",
-        body="maybe",
-        provenance="infer",
-        status="proposed",
-        db_path=db_path,
+        kind = "claim",
+        title = "Draft",
+        body = "maybe",
+        provenance = "infer",
+        status = "proposed",
+        db_path = db_path,
     )
     summary = http.get("/api/unforgettable/summary").json()
     assert summary["records"]["by_status"]["proposed"] == 1
-    listed = http.get("/api/unforgettable/records", params={"status": "proposed"})
+    listed = http.get("/api/unforgettable/records", params = {"status": "proposed"})
     assert listed.status_code == 200
     assert listed.json()["records"][0]["id"] == rec["id"]
-    admitted = http.post(f"/api/unforgettable/records/{rec['id']}/admit", json={})
+    admitted = http.post(f"/api/unforgettable/records/{rec['id']}/admit", json = {})
     assert admitted.status_code == 200
     assert admitted.json()["status"] == "active"
 
@@ -59,28 +59,26 @@ def test_summary_and_admit(client):
 def test_admit_active_without_force_conflicts(client):
     http, db_path = client
     rec = insert_record(
-        kind="claim",
-        title="Live",
-        body="stays",
-        provenance="world",
-        db_path=db_path,
+        kind = "claim",
+        title = "Live",
+        body = "stays",
+        provenance = "world",
+        db_path = db_path,
     )
-    response = http.post(f"/api/unforgettable/records/{rec['id']}/admit", json={})
+    response = http.post(f"/api/unforgettable/records/{rec['id']}/admit", json = {})
     assert response.status_code == 409
-    forced = http.post(
-        f"/api/unforgettable/records/{rec['id']}/admit", json={"force": True}
-    )
+    forced = http.post(f"/api/unforgettable/records/{rec['id']}/admit", json = {"force": True})
     assert forced.status_code == 200
 
 
 def test_compact_defaults_to_dry_run(client):
     http, db_path = client
     insert_record(
-        kind="claim",
-        title="Keep",
-        body="body",
-        provenance="world",
-        db_path=db_path,
+        kind = "claim",
+        title = "Keep",
+        body = "body",
+        provenance = "world",
+        db_path = db_path,
     )
-    report = http.post("/api/unforgettable/compact", json={}).json()
+    report = http.post("/api/unforgettable/compact", json = {}).json()
     assert report["dry_run"] is True

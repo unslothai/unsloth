@@ -42,7 +42,7 @@ def _row_to_dict(row) -> dict[str, Any]:
     return dict(row)
 
 
-def procedure_hits(record_id: str, *, db_path=None) -> int:
+def procedure_hits(record_id: str, *, db_path = None) -> int:
     conn = get_connection(db_path)
     try:
         row = conn.execute(
@@ -62,9 +62,7 @@ def procedure_hits(record_id: str, *, db_path=None) -> int:
         conn.close()
 
 
-def _refusal_reason(
-    rec: Optional[dict[str, Any]], *, hits: int, explicit: bool
-) -> Optional[str]:
+def _refusal_reason(rec: Optional[dict[str, Any]], *, hits: int, explicit: bool) -> Optional[str]:
     if rec is None:
         return "unknown record"
     if rec.get("kind") != "procedure":
@@ -83,10 +81,10 @@ def _refusal_reason(
 
 
 def is_compile_candidate(rec: Optional[dict], *, hits: int, explicit: bool) -> bool:
-    return _refusal_reason(rec, hits=hits, explicit=explicit) is None
+    return _refusal_reason(rec, hits = hits, explicit = explicit) is None
 
 
-def get_compiled(record_id: str, *, db_path=None) -> Optional[dict[str, Any]]:
+def get_compiled(record_id: str, *, db_path = None) -> Optional[dict[str, Any]]:
     conn = get_connection(db_path)
     try:
         row = conn.execute(
@@ -97,7 +95,7 @@ def get_compiled(record_id: str, *, db_path=None) -> Optional[dict[str, Any]]:
         conn.close()
 
 
-def refresh_compiled(db_path=None) -> list[str]:
+def refresh_compiled(db_path = None) -> list[str]:
     conn = get_connection(db_path)
     try:
         rows = [_row_to_dict(r) for r in conn.execute("SELECT * FROM compiled").fetchall()]
@@ -106,16 +104,16 @@ def refresh_compiled(db_path=None) -> list[str]:
     dropped: list[str] = []
     for row in rows:
         rid = row["source_record_id"]
-        rec = get_record(rid, db_path=db_path)
+        rec = get_record(rid, db_path = db_path)
         explicit = bool(row["explicit"])
-        hits = procedure_hits(rid, db_path=db_path)
-        if not is_compile_candidate(rec, hits=hits, explicit=explicit):
-            unpin_compiled(rid, db_path=db_path)
+        hits = procedure_hits(rid, db_path = db_path)
+        if not is_compile_candidate(rec, hits = hits, explicit = explicit):
+            unpin_compiled(rid, db_path = db_path)
             dropped.append(rid)
     return dropped
 
 
-def _is_blocked(record_id: str, *, db_path=None) -> bool:
+def _is_blocked(record_id: str, *, db_path = None) -> bool:
     conn = get_connection(db_path)
     try:
         row = conn.execute(
@@ -127,30 +125,35 @@ def _is_blocked(record_id: str, *, db_path=None) -> bool:
         conn.close()
 
 
-def maybe_compile(db_path=None) -> list[str]:
+def maybe_compile(db_path = None) -> list[str]:
     refresh_compiled(db_path)
     pinned: list[str] = []
-    for rec in list_records(kinds=["procedure"], statuses=["active"], db_path=db_path):
+    for rec in list_records(kinds = ["procedure"], statuses = ["active"], db_path = db_path):
         rid = rec["id"]
-        if get_compiled(rid, db_path=db_path) is not None:
+        if get_compiled(rid, db_path = db_path) is not None:
             continue
-        if _is_blocked(rid, db_path=db_path):
+        if _is_blocked(rid, db_path = db_path):
             continue
-        hits = procedure_hits(rid, db_path=db_path)
-        if not is_compile_candidate(rec, hits=hits, explicit=False):
+        hits = procedure_hits(rid, db_path = db_path)
+        if not is_compile_candidate(rec, hits = hits, explicit = False):
             continue
-        pin_compiled(rid, explicit=False, db_path=db_path)
+        pin_compiled(rid, explicit = False, db_path = db_path)
         pinned.append(rid)
     return pinned
 
 
-def pin_compiled(record_id: str, *, explicit: bool = False, db_path=None) -> dict[str, Any]:
-    rec = get_record(record_id, db_path=db_path)
-    hits = procedure_hits(record_id, db_path=db_path)
-    reason = _refusal_reason(rec, hits=hits, explicit=explicit)
+def pin_compiled(
+    record_id: str,
+    *,
+    explicit: bool = False,
+    db_path = None,
+) -> dict[str, Any]:
+    rec = get_record(record_id, db_path = db_path)
+    hits = procedure_hits(record_id, db_path = db_path)
+    reason = _refusal_reason(rec, hits = hits, explicit = explicit)
     if reason:
         raise ValueError(f"cannot compile {record_id}: {reason}")
-    existing = get_compiled(record_id, db_path=db_path)
+    existing = get_compiled(record_id, db_path = db_path)
     if existing is not None:
         if explicit and not existing["explicit"]:
             conn = get_connection(db_path)
@@ -162,15 +165,13 @@ def pin_compiled(record_id: str, *, explicit: bool = False, db_path=None) -> dic
                 conn.commit()
             finally:
                 conn.close()
-        found = get_compiled(record_id, db_path=db_path)
+        found = get_compiled(record_id, db_path = db_path)
         if found is None:
             raise RuntimeError("compiled pin did not persist")
         return found
     conn = get_connection(db_path)
     try:
-        conn.execute(
-            "DELETE FROM compiled_blocked WHERE source_record_id = ?", (record_id,)
-        )
+        conn.execute("DELETE FROM compiled_blocked WHERE source_record_id = ?", (record_id,))
         conn.execute(
             "INSERT INTO compiled(source_record_id, explicit, compiled_at) VALUES(?,?,?)",
             (record_id, 1 if explicit else 0, _now()),
@@ -178,13 +179,13 @@ def pin_compiled(record_id: str, *, explicit: bool = False, db_path=None) -> dic
         conn.commit()
     finally:
         conn.close()
-    found = get_compiled(record_id, db_path=db_path)
+    found = get_compiled(record_id, db_path = db_path)
     if found is None:
         raise RuntimeError("compiled pin did not persist")
     return found
 
 
-def unpin_compiled(record_id: str, *, db_path=None) -> None:
+def unpin_compiled(record_id: str, *, db_path = None) -> None:
     conn = get_connection(db_path)
     try:
         conn.execute("DELETE FROM compiled WHERE source_record_id = ?", (record_id,))
@@ -197,7 +198,7 @@ def unpin_compiled(record_id: str, *, db_path=None) -> None:
         conn.close()
 
 
-def _load_members(db_path=None) -> list[dict[str, Any]]:
+def _load_members(db_path = None) -> list[dict[str, Any]]:
     conn = get_connection(db_path)
     try:
         rows = [_row_to_dict(r) for r in conn.execute("SELECT * FROM compiled").fetchall()]
@@ -205,25 +206,25 @@ def _load_members(db_path=None) -> list[dict[str, Any]]:
         conn.close()
     members: list[dict[str, Any]] = []
     for row in rows:
-        rec = get_record(row["source_record_id"], db_path=db_path)
+        rec = get_record(row["source_record_id"], db_path = db_path)
         if rec is None:
             continue
         members.append(
             {
                 **rec,
-                "hits": procedure_hits(rec["id"], db_path=db_path),
+                "hits": procedure_hits(rec["id"], db_path = db_path),
                 "compiled_at": row["compiled_at"],
                 "explicit": row["explicit"],
             }
         )
     members.sort(
-        key=lambda rec: (int(rec.get("hits") or 0), rec.get("compiled_at") or ""),
-        reverse=True,
+        key = lambda rec: (int(rec.get("hits") or 0), rec.get("compiled_at") or ""),
+        reverse = True,
     )
     return members
 
 
-def count_compiled(db_path=None) -> int:
+def count_compiled(db_path = None) -> int:
     """Membership count only. Does not refresh or unpin."""
     conn = get_connection(db_path)
     try:
@@ -233,12 +234,12 @@ def count_compiled(db_path=None) -> int:
         conn.close()
 
 
-def list_compiled(db_path=None) -> list[dict[str, Any]]:
+def list_compiled(db_path = None) -> list[dict[str, Any]]:
     refresh_compiled(db_path)
     return _load_members(db_path)
 
 
-def list_standing(db_path=None) -> list[dict[str, Any]]:
+def list_standing(db_path = None) -> list[dict[str, Any]]:
     return list_compiled(db_path)[:STANDING_MAX_RECORDS]
 
 
@@ -269,7 +270,7 @@ def _join_section(heading: str, body: str, source: str) -> str:
 
 
 def _standing_section(rec: dict[str, Any]) -> str:
-    heading, body, source = _section_parts(rec, body_chars=COMPILE_BODY_CHARS)
+    heading, body, source = _section_parts(rec, body_chars = COMPILE_BODY_CHARS)
     return _join_section(heading, body, source)
 
 
@@ -278,7 +279,7 @@ def pack_standing(
 ) -> tuple[str, list[dict[str, Any]]]:
     if not rows:
         return "", []
-    heading, _, source = _section_parts(rows[0], body_chars=COMPILE_BODY_CHARS)
+    heading, _, source = _section_parts(rows[0], body_chars = COMPILE_BODY_CHARS)
     leftover = max_chars - len(STANDING_HEADER) - 1
     reserved = len(heading) + 3 + len(source)
     if leftover > reserved:
@@ -303,8 +304,6 @@ def pack_standing(
     return STANDING_HEADER + "\n" + "\n\n".join(blocks), kept
 
 
-def format_standing(
-    rows: list[dict[str, Any]], *, max_chars: int = STANDING_MAX_CHARS
-) -> str:
-    text, _ = pack_standing(rows, max_chars=max_chars)
+def format_standing(rows: list[dict[str, Any]], *, max_chars: int = STANDING_MAX_CHARS) -> str:
+    text, _ = pack_standing(rows, max_chars = max_chars)
     return text

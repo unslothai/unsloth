@@ -51,9 +51,7 @@ def clone_tree(src: str | Path, dst: str | Path) -> Path:
         raise ValueError("clone_tree refuses to copy a tree into itself")
     if not source.is_dir():
         raise FileNotFoundError(f"world sandbox missing: {source}")
-    dest.mkdir(parents=True, exist_ok=True)
+    dest.mkdir(parents = True, exist_ok = True)
     # Copy symlink nodes; do not dereference a world link into ~/.ssh or /etc.
-    shutil.copytree(
-        source, dest, dirs_exist_ok=True, ignore=_ignore, symlinks=True
-    )
+    shutil.copytree(source, dest, dirs_exist_ok = True, ignore = _ignore, symlinks = True)
     return dest
