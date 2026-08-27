@@ -170,6 +170,7 @@ def test_the_probe_says_no_when_the_build_already_corrects_itself(unpatched):
     A stub standing in for a future fixed transformers: the probe must answer
     False, and `fix_...` must then leave the module alone byte for byte.
     """
+
     def already_correct(*args, **kwargs):
         mask = unpatched(*args, **kwargs)
         if mask is not None and not mask.is_floating_point():
@@ -180,9 +181,9 @@ def test_the_probe_says_no_when_the_build_already_corrects_itself(unpatched):
     masking_utils.sdpa_mask = already_correct
     assert _sdpa_mask_leaves_rows_fully_masked() is False
     fix_transformers_fully_masked_rows()
-    assert masking_utils.sdpa_mask is already_correct, (
-        "the fix patched a transformers that does not need it"
-    )
+    assert (
+        masking_utils.sdpa_mask is already_correct
+    ), "the fix patched a transformers that does not need it"
     assert not getattr(masking_utils, "_unsloth_patched_sdpa_mask", False)
 
 
@@ -222,9 +223,7 @@ def test_the_correction_itself_on_every_dtype_it_can_meet():
     assert fixed.dtype == torch.bool
 
     int_mask = bool_mask.to(torch.int64)
-    assert _unmask_rows_attending_to_nothing(int_mask).tolist() == [
-        [[[1, 1], [0, 1]]]
-    ]
+    assert _unmask_rows_attending_to_nothing(int_mask).tolist() == [[[[1, 1], [0, 1]]]]
 
     # The eager path: returned untouched, and by identity, not by value.
     float_mask = torch.zeros((1, 1, 2, 2), dtype = torch.float32)
@@ -244,6 +243,4 @@ def test_the_correction_is_idempotent_and_self_neutralising():
     assert torch.equal(once, twice)
 
     already_fine = torch.tensor([[[[True, False], [True, True]]]])
-    assert torch.equal(
-        _unmask_rows_attending_to_nothing(already_fine), already_fine
-    )
+    assert torch.equal(_unmask_rows_attending_to_nothing(already_fine), already_fine)
