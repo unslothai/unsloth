@@ -1501,7 +1501,7 @@ function PromptDetail({
   onDraftChange: (draft: PromptDraft | undefined) => void;
   onUse: (text: string) => void;
   onExport: (entry: PromptEntry) => void;
-  onRefresh: () => void;
+  onRefresh: () => Promise<void>;
   onDeleted: (deletedId: string) => void;
   onSaved: (submitted: PromptDraft) => void;
   pending: boolean;
@@ -1544,8 +1544,11 @@ function PromptDetail({
           text: trimText,
           updatedAt: now(),
         });
+        // Refresh before dropping the draft. Dropping it first uncovers the
+        // entry this pane still holds, which is the pre-save copy, so the
+        // editor flashes the old text until the fetch lands.
+        await onRefresh();
         onSaved(submitted);
-        onRefresh();
       } catch (err) {
         toast.error("Could not save prompt", {
           description: err instanceof Error ? err.message : "Please try again.",
@@ -1797,7 +1800,7 @@ function PromptListDetail({
   onDraftChange: (draft: ListDraft | undefined) => void;
   onRunList?: (items: string[]) => void;
   onExport: (entry: PromptListEntry) => void;
-  onRefresh: () => void;
+  onRefresh: () => Promise<void>;
   onDeleted: (deletedId: string) => void;
   onSaved: (submitted: ListDraft) => void;
   pending: boolean;
@@ -1840,8 +1843,9 @@ function PromptListDetail({
           items: filtered,
           updatedAt: now(),
         });
+        // See PromptDetail: the draft is what covers the pre-save entry.
+        await onRefresh();
         onSaved(submitted);
-        onRefresh();
       } catch (err) {
         toast.error("Could not save list", {
           description: err instanceof Error ? err.message : "Please try again.",

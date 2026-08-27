@@ -157,3 +157,25 @@ test("both create paths are guarded and report failure", async () => {
   // The ref decides, for the reason the mutation lock's does.
   assert.match(source, /if \(creatingRef\.current\) return;/);
 });
+
+// The draft is what covers the entry the pane still holds, which is the pre-save
+// copy until the list is refetched. Clearing it first flashes the old text back.
+test("a save clears its draft only after the refreshed entry is in", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.equal(
+    source.split("await onRefresh();\n        onSaved(submitted);").length - 1,
+    2,
+    "a save pane drops the draft before the refresh lands",
+  );
+  assert.doesNotMatch(
+    source,
+    /onSaved\(submitted\);\n\s+onRefresh\(\);/,
+    "the unawaited refresh is back",
+  );
+});
