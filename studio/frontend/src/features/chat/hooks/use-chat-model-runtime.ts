@@ -25,6 +25,7 @@ import {
 import { isSettingsRouteAbsent } from "@/features/settings/api/settings-route-absent";
 import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
 import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
+import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -32,6 +33,8 @@ import {
 import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { ModelLoadDescription } from "../components/model-load-status";
 import {
@@ -75,6 +78,10 @@ import {
   tryAdoptServerActiveModel,
 } from "../lib/apply-inference-status-to-store";
 import {
+  isIdleUnloadedStatus,
+  isSpeechOnlyStatus,
+} from "../lib/speech-only-status";
+import {
   residentRuntimeMatchesConfig,
   residentSpeculativeNeedsRepair,
 } from "../lib/resident-config-match";
@@ -110,7 +117,7 @@ import {
 } from "@/features/model-picker/api/llama-flags";
 import type {
   ChatLoraSummary,
-  ChatModelSummary,
+  ChatModelRow,
 } from "../types/runtime";
 
 export type SelectedModelInput = {
@@ -292,7 +299,7 @@ function describeModel(model: {
   return tags.join(" · ");
 }
 
-function toChatModelSummary(model: {
+function toChatModelRow(model: {
   id: string;
   name?: string | null;
   is_lora?: boolean;
@@ -303,7 +310,7 @@ function toChatModelSummary(model: {
   audio_type?: string | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
-}): ChatModelSummary {
+}): ChatModelRow {
   return {
     id: model.id,
     name: model.name || model.id,
@@ -331,6 +338,7 @@ export function syncModelCapabilities(
     is_vision?: boolean;
     is_lora?: boolean;
     is_gguf?: boolean;
+    is_mlx?: boolean;
     is_audio?: boolean;
     audio_type?: string | null;
     has_audio_input?: boolean;
@@ -342,6 +350,9 @@ export function syncModelCapabilities(
   const synced = {
     isVision: Boolean(resp.is_vision),
     isGguf: Boolean(resp.is_gguf),
+    // A locally scanned model is in no /api/models/list row, so this is the only place
+    // its summary learns it is served by MLX, and the seed gate reads that.
+    isMlx: Boolean(resp.is_mlx),
     isAudio: Boolean(resp.is_audio),
     audioType: resp.audio_type ?? null,
     hasAudioInput: Boolean(resp.has_audio_input),
@@ -410,10 +421,22 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
  */
 // Prevent older concurrent status reads from overwriting newer results.
 let syncGeneration = 0;
+let lastIdleUnloadArmed = false;
+
+async function readIdleUnloadArmed(): Promise<boolean> {
+  try {
+    const settings = await loadOpenAIAutoSwitchSettings();
+    lastIdleUnloadArmed = settings.idleUnloadActive;
+  } catch {
+    // Preserve the last answer: treating a settings blip as disarmed would discard the pick.
+  }
+  return lastIdleUnloadArmed;
+}
 
 async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
+  preserveIdleUnloaded?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
   const includeLoras = options?.includeLoras ?? true;
@@ -424,15 +447,18 @@ async function syncInferenceStatusToStore(options?: {
   setModelsError(null);
   try {
     const selectedAtStart = useChatRuntimeStore.getState().params.checkpoint;
-    const [listRes, statusRes, lorasRes] = await Promise.all([
+    const [listRes, statusRes, lorasRes, idleUnloadArmed] = await Promise.all([
       listModels(),
       getInferenceStatus(),
       includeLoras ? listLoras() : Promise.resolve(null),
+      options?.preserveIdleUnloaded
+        ? readIdleUnloadArmed()
+        : Promise.resolve(false),
     ]);
 
     if (signal?.aborted || superseded()) return;
 
-    setModels(listRes.models.map(toChatModelSummary));
+    setModels(listRes.models.map(toChatModelRow));
     if (lorasRes) {
       setLoras(lorasRes.loras.map(toLoraSummary));
     }
@@ -446,8 +472,14 @@ async function syncInferenceStatusToStore(options?: {
     // Status is transitional while a load is present. Keep the last settled
     // residency until a later refresh or the mount observer sees it finish.
     if ((statusRes.loading?.length ?? 0) > 0) return;
+    // The local selection is re-derived from this status on every mount, so adopting a
+    // TTS model made it the chat model without the user picking it. Read the slot as
+    // empty and the eviction branch below clears the stale pick, as it does for an
+    // image or video load.
+    const chatActiveModel =
+      statusRes.active_model && !isSpeechOnlyStatus(statusRes);
     if (
-      statusRes.active_model &&
+      chatActiveModel &&
       !isExternalSelectionActive &&
       !selectionChanged
     ) {
@@ -472,7 +504,7 @@ async function syncInferenceStatusToStore(options?: {
         // capability. Re-apply live status so attach gates survive a refresh.
         syncModelCapabilities(checkpointId, statusRes);
 
-        // Studio starting against an already-resident GGUF: history can load before this first
+        // Unsloth starting against an already-resident GGUF: history can load before this first
         // status refresh has a checkpoint or window, so its own recount never runs. A null thread
         // would publish an empty count, hence the mounted-thread guard.
         const hydrated = useChatRuntimeStore.getState();
@@ -487,11 +519,12 @@ async function syncInferenceStatusToStore(options?: {
         }
       }
     } else if (
-      !statusRes.active_model &&
+      !chatActiveModel &&
       !isExternalSelectionActive &&
       !selectionChanged
     ) {
-      // Loading an image or video model evicts the chat one (the GPU arbiter
+      if (isIdleUnloadedStatus(statusRes, idleUnloadArmed)) return;
+      // Loading an image, video or audio model evicts the chat one (the GPU arbiter
       // allows a single owner), and nothing else here would say so: the picker
       // keeps the selection, so the header would go on claiming it is loaded
       // and the next prompt would come back a bare 400.
@@ -507,16 +540,22 @@ async function syncInferenceStatusToStore(options?: {
         loadedVisionDisabledByUser: null,
         loadedIsDiffusion: false,
       });
-      // Known resident a moment ago, and nothing loading now. Both matter: a
-      // load in flight has no active model yet either, and clearing there would
-      // wipe the pick the user just made.
-      if (wasResident && selectedCheckpoint && !modelLoading) {
+      // A known prior resident or a definitive speech-only owner both prove the
+      // persisted Chat pick is stale. A load in flight has no active model yet
+      // either, so never clear while one is starting.
+      if (
+        (wasResident || isSpeechOnlyStatus(statusRes)) &&
+        selectedCheckpoint &&
+        !modelLoading
+      ) {
         // Already the clean id the header shows: resolveInferenceCheckpointId
         // put it there, not a load path.
-        toast.info(`${wasResident} is no longer loaded`, {
-          description:
-            "The server released it, which loading an image or video model does. Pick it again to keep chatting.",
-        });
+        if (wasResident) {
+          toast.info(`${wasResident} is no longer loaded`, {
+            description:
+              "The server released it, which loading an image, video or audio model does. Pick it again to keep chatting.",
+          });
+        }
         // Drop the pick too, which is what a server-side unload already does.
         // Dimming the tick was not enough: the name alone reads as "this is my
         // model" whatever the tick does, and sending to it returns a bare 400.
@@ -647,6 +686,7 @@ export function useChatModelRuntime() {
       waitForServerModel?: boolean;
       signal?: AbortSignal;
       includeLoras?: boolean;
+      preserveIdleUnloaded?: boolean;
     }) => {
       await syncInferenceStatusToStore(options);
       if (options?.waitForServerModel) {
@@ -664,14 +704,23 @@ export function useChatModelRuntime() {
   useEffect(
     () =>
       subscribeModelLifecycle(({ runtime }) => {
-        // Dictation is a sidecar and takes no GPU ownership, so it evicts
-        // nothing. Chat's own loads already reconcile themselves.
+        // Dictation is a sidecar and evicts nothing; chat's own loads reconcile
+        // themselves. A "tts" load does neither: it is the Audio page taking this very
+        // slot, so read it back like an image or video load.
         if (runtime === "chat" || runtime === "stt") return;
         // Both edges, not only the settle. The arbiter evicts chat inside the
         // image or video load POST, before the download starts, so waiting for
         // the load to finish left the picker and the header naming a model that
         // had already gone and that 400s on send, for the whole download.
         void refresh({ includeLoras: false });
+      }),
+    [refresh],
+  );
+
+  useEffect(
+    () =>
+      subscribeResidentStatusRefresh(() => {
+        void refresh({ includeLoras: false, preserveIdleUnloaded: true });
       }),
     [refresh],
   );

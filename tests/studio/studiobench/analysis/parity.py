@@ -66,6 +66,27 @@ NOT_EXERCISED = "not_exercised"
 #: "this measurement does not apply here", and so `derive_unstable` counts neither as evidence.
 NOT_APPLICABLE = "not_applicable"
 
+#: A KEY ON A NOT_COMPARABLE RESULT, not a fifth verdict.
+#:
+#: `compare` has one refusal that ALSO carries a complete positive reading: the scaffold, every
+#: overlay, the mounted message set and every message not being written at capture time all
+#: agreed, and the only leftover is the subtree of a reply that was mid-tail. It stays a refusal
+#: because a half-arrived digest names a point in a stream rather than a rendering, and it must
+#: never be a pass on the A/B result side: a treatment build whose live message renders wrongly
+#: sits in exactly that shape, and `structural_report` files it under `blind`.
+#:
+#: THE VERDICT DOES NOT MOVE; only `derive_unstable` reads this. The result asks "did this build
+#: change the UI", the null asks "does this action differ against ITSELF", and for the second
+#: question a pair where everything readable agreed is an observation of non-difference rather
+#: than a blank. Calling it blank is what left `keystroke` and `send_turn` permanently undecided
+#: at 100K on a runner where the in-flight tail landed 24 characters apart.
+#:
+#: AND IT CAN ONLY NARROW THE EXCUSE SET: the observation is a NON-difference, so `differed`
+#: cannot grow and nothing can be marked unstable on its strength. The worst case is calling an
+#: action stable that nothing measured as differing, which costs a loud false alarm on the
+#: result and never a silenced regression.
+SETTLED_MATCH = "settled_match"
+
 # Actions whose rendered result legitimately differs between two runs of the SAME build, so a
 # digest mismatch there carries no information about the pull request under test.
 #
@@ -163,8 +184,65 @@ def _messages(capture: dict) -> dict[int, dict]:
     return {m["i"]: m for m in (capture.get("messages") or []) if "i" in m}
 
 
+def in_flight(base: Optional[dict], treat: Optional[dict]) -> set[int]:
+    """Mounted indices of the messages that were still being WRITTEN on either arm.
+
+    THE UNION, not the intersection, and that is the whole point. The ordinary case is precisely
+    that one arm has finished the reply and the other has not: the two arms are two cells run back
+    to back against one pacer, each with its own send click and its own paint clock, so the digest
+    lands at two different points in the same stream. A message that is in flight on EITHER side
+    has no defined moment on that side, and differencing it measures wall clock.
+
+    Read from the capture rather than inferred. `scene/parity.js` takes it from the app's own
+    published state -- assistant-ui's `data-status` on the text part, `aria-busy` on the reasoning
+    content -- so this is the page's statement about itself and not the benchmark's guess.
+
+    A capture recorded before the field existed reports nothing, and is treated as nothing in
+    flight, which is what every such payload was scored as when it was written.
+    """
+    out: set[int] = set()
+    for side in (base, treat):
+        if isinstance(side, dict):
+            for i in side.get("in_flight") or []:
+                if isinstance(i, int):
+                    out.add(i)
+    return out
+
+
+def _scaffold(capture: dict) -> tuple[Optional[str], Optional[int]]:
+    """The thread with every message elided, falling back to the whole-thread digest.
+
+    `digest` is this plus the per-message rows, so comparing the scaffold and the rows separately
+    is the same reading taken apart -- and taken apart it can withhold one message. The fallback is
+    what keeps an old payload comparable: a capture recorded before the scaffold existed carries
+    `digest` alone, and it also carries no `in_flight`, so for those two this IS the old comparison.
+    """
+    if "digest_scaffold" in capture:
+        return capture.get("digest_scaffold"), capture.get("chars_scaffold")
+    return capture.get("digest"), capture.get("chars")
+
+
 def _overlays(capture: dict) -> list[dict]:
     return list(capture.get("overlays") or [])
+
+
+def overlays_moved(base: dict, treat: dict) -> list[str]:
+    """The overlay rows that differ, as claims. Empty when the two arms agree about every overlay.
+
+    THE ONE SURFACE IN THE STRUCTURAL CAPTURE THAT A STREAM CANNOT REACH. An overlay -- an open
+    dialog, a menu, the model picker -- is walked from `document`, outside `.aui-thread-root`
+    entirely, so its digest carries neither the streamed message nor the composer that reflects
+    whether a reply is running. That makes it readable on a pair whose stream could not be placed,
+    which is why it is factored out of `localise` and consulted before the refusal in `compare`.
+    """
+    bo, to = _overlays(base), _overlays(treat)
+    if len(bo) != len(to):
+        return [f"overlays {len(bo)}->{len(to)}"]
+    return [
+        f"overlay{k}[{b.get('sel')}]:{b.get('chars')}->{t.get('chars')}c"
+        for k, (b, t) in enumerate(zip(bo, to))
+        if b.get("digest") != t.get("digest")
+    ]
 
 
 def windowed_mount(capture: Optional[dict]) -> bool:
@@ -270,16 +348,61 @@ def comparability(base: Optional[dict], treat: Optional[dict]) -> Optional[str]:
     return None
 
 
-def localise(base: dict, treat: dict) -> list[str]:
+def streaming_probe(base: dict, treat: dict) -> Optional[str]:
+    """Why the STREAMING PROBE could not be believed on this pair, or None.
+
+    THE POSITIVE CONTROL ON A SCAN THAT CAN RETURN ZERO. The elision below is only as good as its
+    ability to find the streamed message, and `streamingMessages()` walks selectors written against
+    Unsloth's markup: rename `data-status` and it goes quiet, matches nothing, and every capture then
+    reports the strongest thing it can say about the stream -- that there was none -- on the
+    strength of never having looked successfully. That is exactly the shape `compare_styles`
+    already refuses for the style probe and `compare_visible` for the visibility scan.
+
+    The app publishes the fact twice, through the Stop button and through `data-status`, and
+    `capture()` carries the disagreement out of the page rather than resolving it there.
+
+    NOT part of `comparability`, and the ordering is deliberate. This refusal is about the stream
+    split only; a pair whose arms mounted different NUMBERS of messages is a lost conversation and
+    is reported as a difference whether or not the stream could be placed, because that reading
+    does not depend on the split at all. Put here, after `mount_count_mismatch`, a build that drops
+    a message while a reply is running is still a finding rather than a shrug.
+    """
+    for label, side in (("base", base), ("treatment", treat)):
+        if isinstance(side, dict) and side.get("in_flight_unplaced"):
+            return (
+                f"a reply was running on the {label} arm and no message published a streaming "
+                "state, so the streamed message could not be identified and its digest cannot be "
+                "held apart from the settled thread. This is a probe that needs fixing (the "
+                "`data-status` / `aria-busy` hooks in scene/dom.js), not a settled thread"
+            )
+    return None
+
+
+def localise(
+    base: dict,
+    treat: dict,
+    skip: Optional[set[int]] = None,
+) -> list[str]:
     """WHERE the two captures differ, as short human-readable claims.
 
     A whole-thread digest that differs is a fact nobody can act on. The per-message and per-overlay
     rows are what turn it into a bug report, and an unlocalised difference is reported as exactly
     that rather than left to look like a localised one.
+
+    `skip` names the messages that were still being written on one arm or the other. They are left
+    out of the list rather than quoted in it, because a mid-stream digest names a point in a stream
+    and not a rendering, and a reader handed `msg22(assistant):17334->17358c` has no way to tell the
+    two apart. What they were is reported separately, by the caller, as a residue.
     """
+    skip = skip or set()
     moved: list[str] = []
     bm, tm = _messages(base), _messages(treat)
     for i in sorted(set(bm) | set(tm)):
+        if i in skip and i in bm and i in tm:
+            # In flight on BOTH sides of the comparison. A message present on one arm only is a
+            # different statement -- one arm is not rendering a message the other is -- and is
+            # reported below whatever its status.
+            continue
         if i not in bm:
             moved.append(f"msg{i}({tm[i].get('role', '?')}):only treatment")
         elif i not in tm:
@@ -289,22 +412,14 @@ def localise(base: dict, treat: dict) -> list[str]:
                 f"msg{i}({bm[i].get('role', '?')}):" f"{bm[i].get('chars')}->{tm[i].get('chars')}c"
             )
 
-    bo, to = _overlays(base), _overlays(treat)
-    if len(bo) != len(to):
-        moved.append(f"overlays {len(bo)}->{len(to)}")
-    else:
-        for k, (b, t) in enumerate(zip(bo, to)):
-            if b.get("digest") != t.get("digest"):
-                moved.append(f"overlay{k}[{b.get('sel')}]:{b.get('chars')}->{t.get('chars')}c")
+    moved.extend(overlays_moved(base, treat))
 
     if not moved:
         # The whole-thread digest moved but no message and no overlay did. That is the thread
         # scaffolding itself -- the viewport, the composer, the empty-state -- and saying so is
         # more useful than an empty list, which reads as "nothing differs".
-        moved.append(
-            f"thread scaffolding outside any message "
-            f"({base.get('chars')}->{treat.get('chars')}c)"
-        )
+        bc, tc = _scaffold(base)[1], _scaffold(treat)[1]
+        moved.append(f"thread scaffolding outside any message ({bc}->{tc}c)")
     return moved
 
 
@@ -326,15 +441,49 @@ def compare_styles(base: dict, treat: dict) -> tuple[str, str]:
     # counts and equal digests -- both are the hash of an empty string -- so a probe that scanned
     # NOTHING reports MATCH, which is the strongest verdict this function can return and is
     # supported by no observation whatsoever. That is not hypothetical: the selector list is
-    # written against Studio's markup, and a class rename anywhere in it silently empties the
+    # written against Unsloth's markup, and a class rename anywhere in it silently empties the
     # scan. A DOM or CSSOM scan that can return zero has to be able to tell "I looked and they
     # agree" from "I did not look", and this one could not.
     if not bs.get("elements") or not ts.get("elements"):
         return NOT_COMPARABLE, (
             f"the style probe matched no elements (base={bs.get('elements')}, "
             f"treatment={ts.get('elements')}), so it observed nothing on at least one arm. Its "
-            "selector list is written against Studio's markup and does not survive a rename; "
+            "selector list is written against Unsloth's markup and does not survive a rename; "
             "this is a probe that needs fixing, not two arms that agree"
+        )
+    # THE RUN-STATE CONTROL IS IN THE SELECTOR LIST, so this reading straddles the same composer
+    # swap the structural refusals below are about, and it has to be elided for the same reason.
+    # `STYLE_SELECTORS` (scene/parity.js) names `button[aria-label="Send message"]` and
+    # `button[aria-label="Stop generating"]`, and the signature carries the SELECTOR THAT MATCHED
+    # (`parts.push(sel + "#" + n)`) -- so an arm still generating and a settled arm walk two
+    # different entries for the one composer button. Measured on two byte-identical fixture threads
+    # differing only in that control: Send against Stop holds all three properties at
+    # `inline-block` / `visible` / `auto` on both arms and still moves the digest, and Send against
+    # either queue control -- neither of which is in the selector list at all -- moves the element
+    # COUNT from 7 to 6. Both come back DIFFER over identical CSS, and `sweep/ui_parity.report`
+    # prints that as a style-regression advisory for precisely the ordinary cross-stream-state
+    # timing the refusals exist to withhold.
+    #
+    # THE SAME CORROBORATION THE SCAFFOLD SUPPRESSION REQUIRES, and for the same reason: a
+    # differing `composer_control` alone is what a treatment that DROPS or renames the control
+    # produces, and that is a rendering regression this probe should still report. `streaming` and
+    # `queued_idle` are read off the thread's run state rather than off the composer, so they are
+    # evidence the composer cannot manufacture.
+    #
+    # NOT_COMPARABLE AND NOT MATCH. The probe reads ONE aggregate digest over up to `STYLE_CAP`
+    # elements, so a genuine CSS difference elsewhere on the page is inside the same number and
+    # cannot be separated from the swap here. This withholds the reading; it does not pass it.
+    if (bs.get("elements") != ts.get("elements") or bs.get("digest") != ts.get("digest")) and (
+        generation_disagrees(base, treat) and _run_state_disagrees(base, treat)
+    ):
+        return NOT_COMPARABLE, (
+            "the two arms rendered different composer run-state controls "
+            f"({base.get('composer_control')!r} against {treat.get('composer_control')!r}) and the "
+            "run state itself says why, so the style probe walked a different selector for that "
+            "one button -- its signature carries the selector that matched. The difference is the "
+            "control swap and not a stylesheet change. The digest is ONE aggregate over every "
+            "matched element, so a real CSS difference elsewhere cannot be separated from it here; "
+            "this is a reading withheld, not a pass"
         )
     if bs.get("elements") != ts.get("elements"):
         return DIFFER, (
@@ -346,7 +495,127 @@ def compare_styles(base: dict, treat: dict) -> tuple[str, str]:
     return DIFFER, f"display/visibility/pointer-events differ over {bs.get('elements')} elements"
 
 
-def _any_moved(base: dict, treat: dict) -> bool:
+def generation_disagrees(base: dict, treat: dict) -> bool:
+    """Was one arm running a reply while the other was not, at the moment each was digested?
+
+    THE COMPOSER IS A FUNCTION OF THIS, and the composer is inside `.aui-thread-root`:
+    `ThreadPrimitive.Root` wraps `ThreadComposerDock`, so `digest_scaffold` carries whichever
+    control the run state selected. Stop, Queue and Send are different subtrees, so two arms that
+    disagree about generation disagree about the scaffold FOR THAT REASON, with no rendering
+    difference between them.
+
+    Read from `composer_control`, the TOKEN naming which control the composer put in that slot, and
+    not from `streaming`. `streaming` is `isRunning()`, which is true for Stop and for Queue alike,
+    so a queued-idle arm and a streaming arm agree on it while rendering two different subtrees --
+    and the scaffold is exactly what those subtrees are in. Captures taken before the token existed
+    fall back to `streaming`, and captures older than that report neither and are scored as they
+    always were.
+    """
+    bc, tc = base.get("composer_control"), treat.get("composer_control")
+    if bc is not None and tc is not None:
+        return bc != tc
+    return bool(base.get("streaming")) != bool(treat.get("streaming"))
+
+
+def _run_state_disagrees(base: dict, treat: dict) -> bool:
+    """Do the arms disagree about the run state, read OFF the run state rather than the composer?
+
+    `generation_disagrees` reads `composer_control`, which is the composer. Using it alone to
+    excuse a composer difference proves the premise with the conclusion, so this is the second,
+    independent half: `streaming` is `isRunning()` and `queued_idle` is the queue waiting to be
+    dispatched, both taken from the thread's own run state and neither derivable from which button
+    was drawn.
+
+    Captures older than these fields report neither, and two `False`s then read as agreement --
+    which is the conservative direction here, since it makes the pair a reported difference rather
+    than a silent refusal.
+    """
+    return bool(base.get("streaming")) != bool(treat.get("streaming")) or bool(
+        base.get("queued_idle")
+    ) != bool(treat.get("queued_idle"))
+
+
+def _messages_moved(
+    base: dict,
+    treat: dict,
+    skip: Optional[set[int]] = None,
+) -> bool:
+    """The message half of `_any_moved`, on its own."""
+    skip = skip or set()
+    bm, tm = _messages(base), _messages(treat)
+    # A message PRESENT ON ONE ARM ONLY is a difference whether or not it was streaming. Being
+    # mid-reply excuses a digest, never an absence.
+    if set(bm) != set(tm):
+        return True
+    return any(bm[i].get("digest") != tm[i].get("digest") for i in bm if i not in skip)
+
+
+def scaffold_moved(base: dict, treat: dict) -> bool:
+    """Did the thread scaffolding -- viewport, composer, empty state -- move?"""
+    return _scaffold(base)[0] != _scaffold(treat)[0]
+
+
+def settled_messages_moved(base: dict, treat: dict) -> list[str]:
+    """The per-message rows that differ and PROVABLY cannot be the reply being written.
+
+    THE SAME RULE `compare_visible` APPLIES TO ITS OWN ROWS, and it has to be the same rule: the
+    two modes must not disagree about which readings have a defined moment. Two shapes qualify.
+
+    A ROW BOTH ARMS CALL THE USER'S. A stream writes into an assistant message -- assistant-ui's
+    `status` (`running` / `complete` / ...) is defined on assistant messages only, and the
+    `data-status` hook `scene/dom.js` walks is on the assistant text part -- so a user row is never
+    the message being written, whether or not the probe could place that message. The two arms
+    AGREEING about the role is what makes it provable; a row whose role disagrees is reported as a
+    role change instead of being trusted as either.
+
+    A ROW WHOSE ROLE CHANGED. The role is captured beside the digest rather than inside it, and how
+    far a reply has arrived says nothing about whose message it is, so this is reported even for a
+    row that is in flight -- where the digest itself is still withheld.
+
+    Reached only past `mount_count_mismatch`, so the two arms mounted the same number of messages
+    and index `i` names the same position on both sides.
+    """
+    bm, tm = _messages(base), _messages(treat)
+    streaming = in_flight(base, treat)
+    out: list[str] = []
+    for i in sorted(set(bm) & set(tm)):
+        b, t = bm[i], tm[i]
+        if b.get("role") != t.get("role"):
+            out.append(f"msg{i}:role {b.get('role')}->{t.get('role')}")
+            continue
+        # Flagged in flight by the arm that COULD place its stream. Its digest is a point in a
+        # stream on that arm whatever role it carries, so it is withheld like any other.
+        if i in streaming:
+            continue
+        if b.get("role") == "user" and b.get("digest") != t.get("digest"):
+            out.append(f"msg{i}(user):{b.get('chars')}->{t.get('chars')}c")
+    # WHY THERE IS NO ASSISTANT-ROW RULE HERE, since it looks like the obvious next one to add.
+    #
+    # An earlier assistant row on a fully mounted thread really is settled while the tail is being
+    # written, and a counting argument even makes it provable without knowing WHICH row is in
+    # flight: a thread writes one reply at a time, so two differing assistant rows cannot both be
+    # it. Both readings are sound and both are still unusable, because of what BLINDS the probe in
+    # the first place.
+    #
+    # The reachable blind pair is a build that renamed the `data-status` hook. That attribute is on
+    # the assistant text part and the digest walks attributes, so the rename that blinds the probe
+    # ALSO moves the digest of every assistant row, by itself. Reporting those rows therefore turns
+    # every genuinely blind pair into a difference, which is the wall-clock false alarm this file
+    # exists to remove, wearing the other hat. Measured: implementing the counting rule flipped
+    # `test_a_settled_queued_idle_pair_is_scored_rather_than_refused`'s blind control from NOT
+    # COMPARABLE to DIFFER.
+    #
+    # A user row is not exposed to that, which is exactly why it is the one shape that qualifies:
+    # the hook is not on it. Separating "the hook attribute moved" from "the content moved" would
+    # need a digest that excludes the attribute, which is not something this capture carries.
+    return out
+
+
+def _any_moved(
+    base: dict,
+    treat: dict,
+    skip: Optional[set[int]] = None,
+) -> bool:
     """Did ANY digest in the capture move, not just the whole-thread one?
 
     THE HOLE THIS CLOSES, found by the spike control and not by reading the code. An overlay --
@@ -358,17 +627,22 @@ def _any_moved(base: dict, treat: dict) -> bool:
     never fire. Injecting a `role="menu"` element and watching the digest report a clean pass is
     what surfaced it.
     """
-    if base.get("digest") != treat.get("digest"):
+    skip = skip or set()
+    # THE SCAFFOLD, not the whole-thread digest. The whole-thread digest serialises the streamed
+    # message too, so with a reply in flight it differs on essentially every pair -- measured at
+    # 175 of 175 adjacent 24-character steps of the shipped corpus -- and every check below it
+    # would be unreachable behind it, exactly as the whole-thread digest once made the overlay walk
+    # unreachable. The scaffold plus the per-message rows is the same reading taken apart, so
+    # nothing is lost by decomposing it. On a payload with no scaffold this IS the whole-thread
+    # digest and the behaviour is the old one.
+    if _scaffold(base)[0] != _scaffold(treat)[0]:
         return True
     bo, to = _overlays(base), _overlays(treat)
     if [(o.get("sel"), o.get("digest")) for o in bo] != [
         (o.get("sel"), o.get("digest")) for o in to
     ]:
         return True
-    bm, tm = _messages(base), _messages(treat)
-    if set(bm) != set(tm):
-        return True
-    return any(bm[i].get("digest") != tm[i].get("digest") for i in bm)
+    return _messages_moved(base, treat, skip)
 
 
 def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
@@ -406,18 +680,237 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
             "style_reason": style_reason,
         }
     style_verdict, style_reason = compare_styles(base, treat)
-    if not _any_moved(base, treat):
+    blind = streaming_probe(base, treat)
+    if blind is not None:
+        # THE REFUSAL MUST NOT SWALLOW A READING THAT DOES NOT DEPEND ON THE STREAM. An overlay is
+        # walked from `document`, outside the thread root, so a dialog that mounted when it should
+        # not, or one whose contents were rewritten, is a finding whether or not the streamed
+        # message could be identified. Without this it went out with the refusal, and
+        # `structural_report` buckets a refusal as blind and never consults it for the exit code,
+        # so the run went green on it.
+        #
+        # THE SCAFFOLD IS DELIBERATELY NOT CONSULTED HERE, and this is the part of the review item
+        # that measurement does not support. `ThreadPrimitive.Root` wraps `ThreadComposerDock`
+        # (thread.tsx), so the composer is inside `.aui-thread-root` and inside the scaffold -- and
+        # the composer is exactly the surface that changes when a reply starts and stops. Measured
+        # on two byte-identical threads differing only in the composer control: Stop against Send
+        # moves the scaffold from 373 to 381 characters and changes its digest, with no message
+        # content involved at all. On the very pair this branch is about -- one arm generating with
+        # a quiet hook, the other finished -- the scaffold therefore differs BECAUSE one arm is
+        # generating, and reporting that as a rendering difference would manufacture the wall-clock
+        # false alarm this whole file exists to remove.
+        independent = overlays_moved(base, treat)
+        # AND THE SETTLED MESSAGE ROWS, which are the other half of what this refusal must not
+        # swallow. A row both arms call the user's, and a row whose role itself changed, cannot be
+        # the reply being written -- so their meaning does not depend on where the stream had got
+        # to, and discarding them costs exactly the finding this instrument exists to make. Without
+        # this a user message rendered differently by the treatment left here as NOT COMPARABLE
+        # with an empty `moved`, and `structural_report` buckets a refusal as blind and never
+        # consults it for the exit code, so the run went green on it. `compare_visible` already
+        # applies this rule to its own rows and says it is the same rule as this one; it has to be.
+        independent = independent + settled_messages_moved(base, treat)
+        # AND THE SCAFFOLD, but only when the two arms agree about whether a reply was running.
+        # The composer is inside the scaffold and is a function of exactly that, so the scaffold is
+        # readable here when they agree and meaningless when they do not. That is the correct form
+        # of the half of this refusal that measurement did not support.
+        #
+        # AND THE DISAGREEMENT HAS TO BE CORROBORATED OFF THE RUN STATE, exactly as the composer
+        # suppression below requires. `generation_disagrees` reads `composer_control`, which IS the
+        # composer, so on its own it excuses a composer difference with the composer -- and a
+        # treatment that DROPS the Stop control, renames it, or selects the wrong one makes the
+        # tokens differ for that reason and suppressed the whole scaffold with it, while `streaming`
+        # and `queued_idle` were saying the arms were in the same run state all along. That is a
+        # rendering regression withheld by the branch written to admit rendering regressions, and
+        # since a refusal is filed under `blind` the run goes green on it.
+        if scaffold_moved(base, treat) and not (
+            generation_disagrees(base, treat) and _run_state_disagrees(base, treat)
+        ):
+            bc, tc = _scaffold(base)[1], _scaffold(treat)[1]
+            independent = independent + [f"thread scaffolding outside any message ({bc}->{tc}c)"]
+        if independent:
+            return {
+                "verdict": DIFFER,
+                "reason": (
+                    "the streamed message could not be identified on one arm, but surfaces that "
+                    "CANNOT be the reply being written differ: an overlay is walked outside the "
+                    "thread root, so its digest carries neither the stream nor the composer, and a "
+                    "row both arms call the user's, or a row whose role changed, is not the "
+                    f"message a stream writes into. {blind}"
+                ),
+                "moved": independent,
+                "style_verdict": style_verdict,
+                "style_reason": style_reason,
+            }
+        return {
+            "verdict": NOT_COMPARABLE,
+            "reason": blind,
+            "moved": [],
+            "style_verdict": style_verdict,
+            "style_reason": style_reason,
+        }
+    # ── THE STREAMED MESSAGE ────────────────────────────────────────────────────────────────────
+    #
+    # `streaming` holds the messages that were still being written on one arm or the other. They
+    # are scored on NOTHING, and that is a refusal rather than a normalisation: the digest of a
+    # half-written message names a point in a stream, the two arms are at two different points in
+    # the same stream by construction, and no amount of text normalisation can turn one into the
+    # other. See `in_flight`.
+    #
+    # THREE OUTCOMES, and the ordering between them is the load-bearing part.
+    #
+    #   the settled document differs      DIFFER. This is the case that used to be lost. An action
+    #                                     landing inside a stream was silenced wholesale by
+    #                                     UNSTABLE_ACTIONS, so a real regression anywhere else in
+    #                                     the thread -- another message, an overlay, the composer --
+    #                                     printed under "expected to vary" and the run exited 0.
+    #                                     Now the streamed message is elided and the rest is scored.
+    #   the settled document agrees and
+    #   the in-flight message agrees      MATCH, unchanged. Two arms that landed on the same point
+    #                                     in the stream serialised identically, which is the claim
+    #                                     this mode makes, and demoting it would cost coverage for
+    #                                     nothing.
+    #   the settled document agrees and
+    #   the in-flight message differs     NOT COMPARABLE. Not a pass. `CLAIM_STRUCTURAL` quantifies
+    #                                     over the whole thread, one message did not serialise
+    #                                     identically, and the reason it did not is a reading with
+    #                                     no defined moment. Calling that MATCH would be the
+    #                                     instrument certifying a surface it could not look at,
+    #                                     which is the failure `compare_styles` and
+    #                                     `compare_visible` each already refuse in their own way.
+    #
+    # WHAT THIS GIVES UP, plainly, and both of these are measured rather than reasoned about.
+    #
+    # 1. A genuine rendering regression INSIDE the message that happened to be streaming is no
+    #    longer distinguishable here and lands as NOT COMPARABLE. It was not distinguishable before
+    #    either -- every action that lands in a stream is on the declared unstable list -- so
+    #    nothing that used to be caught stops being caught, and the outcome moves from "expected to
+    #    vary, exit 0" to "not measured, not a pass".
+    # 2. A REORDER that moves the streamed message past another message of the same role is
+    #    demoted from DIFFER to NOT COMPARABLE. The per-message rows are keyed by mounted index, so
+    #    swapping two messages puts a streaming row at one index on one arm and at the other index
+    #    on the other; both indices are then in flight on one side or the other, both are withheld,
+    #    and the scaffold markers that survive carry the same role in both orders. Measured on the
+    #    live-DOM battery: 11 injected rendering differences, 10 still reported DIFFER and this one
+    #    demoted. It is a demotion and not a hole -- NOT COMPARABLE is not a pass and the run does
+    #    not go green on it -- and the only shape that reaches it needs the streamed message not to
+    #    be the last one, which the app does not do today.
+    streaming = in_flight(base, treat)
+    # ── THE COMPOSER IS NOT A RENDERING DIFFERENCE ──────────────────────────────────────────────
+    #
+    # The pair this whole change is about is one arm that has finished its reply against one that
+    # is still writing it. Its MESSAGES are withheld correctly. Its COMPOSER is not: the dock is
+    # inside `.aui-thread-root`, so `digest_scaffold` carries Stop on the arm that is generating
+    # and Send on the arm that is not, and `_any_moved` then reports the pair as DIFFER with the
+    # single claim `thread scaffolding outside any message (373->381c)`. Measured on exactly that
+    # pair, with every settled message row byte-identical across the two arms.
+    #
+    # THE NULL BATTERY CANNOT SEE THIS, which is why it survived a 15-of-15-to-0 null. The null is
+    # one build against itself at six points in ONE stream, so BOTH arms are generating and both
+    # render Stop; the bias is symmetric within the control and cancels exactly. A flat null proves
+    # repeatability, never comparability.
+    #
+    # WITHHELD RATHER THAN IGNORED. If a message or an overlay also moved, that is reported as
+    # usual and this never runs. It is only when the scaffold is the ONLY thing that moved, and the
+    # arms disagree about generation, that the reading has no defined moment -- and then the honest
+    # answer is a refusal, not a pass. Calling it MATCH would hide a genuine composer regression.
+    #
+    # AND THE RUN STATE HAS TO SAY SO INDEPENDENTLY, or the suppression argues in a circle.
+    # `generation_disagrees` reads `composer_control`, the token naming which control the composer
+    # rendered -- so "the arms were at different points in the turn" is being proved by the very
+    # surface whose difference is in question. A treatment that DROPS the Send button, renames it,
+    # or selects the wrong control reaches this branch with every message and overlay agreeing, and
+    # a refusal here is a green run: `report` files NOT COMPARABLE under `blind` and takes its exit
+    # code from `stable_bad or one_sided`. That is the regression the note above says must not be
+    # hidden, hidden by the branch written to say so.
+    #
+    # `streaming` and `queued_idle` are read off the run state rather than off the composer, so
+    # they are evidence the composer cannot manufacture. Every legitimate suppression still has
+    # one: Stop against Send differs in `streaming`, and Queue against Send in the queued-idle
+    # interval differs in `queued_idle`. What is left, the arms agreeing on both and still
+    # rendering different controls, has no run-state explanation and is a rendering difference.
+    if (
+        generation_disagrees(base, treat)
+        and _run_state_disagrees(base, treat)
+        and scaffold_moved(base, treat)
+        and not overlays_moved(base, treat)
+        and not _messages_moved(base, treat, streaming)
+    ):
+        bc, tc = _scaffold(base)[1], _scaffold(treat)[1]
+        return {
+            "verdict": NOT_COMPARABLE,
+            "reason": (
+                "the only difference is the thread scaffolding "
+                f"({bc}->{tc}c), and one arm was running a reply while the other was not. The "
+                "composer dock is inside the thread root and renders Stop or Queue while a reply "
+                "is running and Send when it is not, so the scaffolding differs BECAUSE the two "
+                "arms were at different points in the same turn. Every message and every overlay "
+                "agreed. The scaffold is read as ONE AGGREGATE digest -- viewport, composer dock "
+                "and empty state together -- so this cannot separate the composer swap from a "
+                "change elsewhere in the scaffold that happened at the same time, and it does not "
+                "claim to have: that is part of why it refuses. Nothing here is a pass"
+            ),
+            "moved": [],
+            "in_flight": sorted(streaming),
+            "style_verdict": style_verdict,
+            "style_reason": style_reason,
+        }
+    if not _any_moved(base, treat, streaming):
+        bm, tm = _messages(base), _messages(treat)
+        unsettled = sorted(
+            i
+            for i in streaming
+            if i in bm and i in tm and bm[i].get("digest") != tm[i].get("digest")
+        )
+        if unsettled:
+            names = ", ".join(
+                f"msg{i}({bm[i].get('role', '?')}):{bm[i].get('chars')}->{tm[i].get('chars')}c"
+                for i in unsettled[:4]
+            )
+            # A ROW WHOSE ROLE CHANGED IS NOT SOMETHING THIS PAIR AGREED ON, and `_any_moved`
+            # cannot see it: the role sits beside the digest, and an in-flight digest is withheld.
+            # `settled_messages_moved` reports a role change even in flight -- how far a reply has
+            # arrived says nothing about whose message it is -- and the two readings must not
+            # disagree. The verdict is the refusal either way; this only decides whether the
+            # refusal ALSO carries a positive reading, and a role disagreement carries none.
+            roles_agree = all(bm[i].get("role") == tm[i].get("role") for i in set(bm) & set(tm))
+            out = {
+                "verdict": NOT_COMPARABLE,
+                "reason": (
+                    f"the settled thread is identical on both arms and the only difference is in "
+                    f"{len(unsettled)} message(s) that were STILL BEING WRITTEN when the digest "
+                    f"was taken ({names}). The two arms are two cells against one pacer with their "
+                    "own send clicks and their own paint clocks, so that digest names a point in a "
+                    "stream rather than a rendering, and its size carries no information either: "
+                    "the renderer repairs the half-arrived construct, so the serialisation is not "
+                    "monotonic in how much text has landed. Nothing here is a pass"
+                ),
+                "moved": [],
+                "in_flight": sorted(streaming),
+                "not_digested": unsettled,
+                "style_verdict": style_verdict,
+                "style_reason": style_reason,
+            }
+            if roles_agree:
+                # THE ONE REFUSAL THAT ALSO CARRIES A POSITIVE READING. See `SETTLED_MATCH` for
+                # why this flag exists and what it is and is not allowed to move. It is set here
+                # and nowhere else, because this is the only branch reached with `_any_moved`
+                # already false: the scaffold agreed, every overlay agreed, the two arms mounted
+                # the same set of messages, and every message that was NOT being written agreed.
+                out[SETTLED_MATCH] = True
+            return out
         return {
             "verdict": MATCH,
             "reason": "",
             "moved": [],
+            "in_flight": sorted(streaming),
             "style_verdict": style_verdict,
             "style_reason": style_reason,
         }
     return {
         "verdict": DIFFER,
         "reason": "",
-        "moved": localise(base, treat),
+        "moved": localise(base, treat, streaming),
+        "in_flight": sorted(streaming),
         "style_verdict": style_verdict,
         "style_reason": style_reason,
     }
@@ -581,19 +1074,40 @@ def derive_unstable(
     `min_observations` guards the obvious trap: one repetition of an action that happened to
     differ once is not evidence that it is unstable, and treating it as evidence would let a
     single flake permanently silence a real signal.
+
+    A SETTLED-MATCH REFUSAL IS AN OBSERVATION, and the only refusal that is. `SETTLED_MATCH` has
+    the argument; the short version is that this function asks whether an action differs against
+    ITSELF, and a pair whose scaffold, overlays, message set and every settled row agreed has
+    answered that. What it withheld cannot produce a DIFFER on the result side either, so nothing
+    is excused that anything was going to ask about.
+
+    Counting it as blind is not conservative here, it is unreachable: both arms are driven through
+    one film at wall-clock offsets, so on the packed 100K rungs every action landing inside a live
+    turn reaches this branch whenever the two tails land a chunk apart. Measured on the payload
+    that raised this, `keystroke@r100K` scored 0 observations from 2 pairs and `send_turn@r100K`
+    1 from 2, and `audit_null` returned UNDECIDED on a run in which nothing had moved.
     """
     seen: dict[str, int] = collections.Counter()
     differ: dict[str, int] = collections.Counter()
     blind: dict[str, int] = collections.Counter()
+    settled: dict[str, int] = collections.Counter()
     for action, result in pairs:
-        if result.get("verdict") not in (MATCH, DIFFER):
+        verdict = result.get("verdict")
+        if verdict not in (MATCH, DIFFER):
+            if verdict == NOT_COMPARABLE and result.get(SETTLED_MATCH):
+                # Everything this pair could read agreed: an observation of NON-difference, so
+                # `differed` cannot grow and nothing can be called unstable on its strength.
+                # Tallied separately so a reader can see how much of a decision rests on it.
+                seen[action] += 1
+                settled[action] += 1
+                continue
             # Not comparable and not exercised are both "no reading", and neither may be counted
             # as an observation of stability. An action derived as stable from four pairs that
             # never ran would be permanently trusted on the strength of nothing.
             blind[action] += 1
             continue
         seen[action] += 1
-        if result.get("verdict") == DIFFER:
+        if verdict == DIFFER:
             differ[action] += 1
     out: dict[str, dict] = {}
     for action in sorted(set(seen) | set(blind)):
@@ -602,10 +1116,24 @@ def derive_unstable(
             "observations": n,
             "differed": d,
             "not_comparable": blind[action],
+            # How many of `observations` came from a settled-match refusal rather than a MATCH.
+            # Reported rather than folded in: an action decided entirely this way was decided on
+            # the settled thread only, which is the weaker reading.
+            SETTLED_MATCH: settled[action],
             # Unstable only with enough observations to mean it. Below that the honest answer is
             # "not enough evidence", which is not the same as "stable" and is not reported as it.
-            "unstable": bool(d and n >= min_observations),
-            "undetermined": n < min_observations,
+            #
+            # FROM THE COMPLETE COMPARISONS ONLY: a settled-match refusal can decide an action
+            # and never help CLASSIFY one as unstable. One DIFFER beside one settled match is one
+            # differing comparison, and letting the refusal supply the second would mint an
+            # exemption from a reading that never saw the live subtree.
+            "unstable": bool(d and (n - settled[action]) >= min_observations),
+            # THE SAME COUNT `unstable` WAS DECIDED ON, once anything has differed. On the raw
+            # total the mixed state -- one DIFFER beside one settled match -- read as "decided and
+            # stable", so `cross_check` filed a declared action under `declared_stable_in_practice`
+            # ("the null never saw it differ") on a run where it differed once. With nothing
+            # differing there is no classification to make and the total is the right count.
+            "undetermined": (n - settled[action] if d else n) < min_observations,
         }
     return out
 
@@ -873,13 +1401,46 @@ def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
     # never counted as agreement: this is the residue of comparing a windowed arm at one instant.
     uncomparable = sorted(int(o) for o in map(str, sorted(bev)) if o not in bmsg or o not in tmsg)
     moved = []
+    # The subset of `moved` that CANNOT be a point in a stream, kept so the blind-probe refusal
+    # below does not take it out with the rest. See each `settled.append` for why that row is
+    # provably not the reply being written.
+    settled: list[str] = []
     for ordinal in sorted(bev):
         key = str(ordinal)
         b, t = bmsg.get(key), tmsg.get(key)
         if b is None or t is None:
             continue
+        # A ROLE IS NOT A POSITION IN A STREAM. It is captured beside the digest rather than inside
+        # it, and how far a reply has arrived says nothing about whether it is the assistant's. So
+        # a row that changed role is reported even while that row is in flight, where the digest
+        # itself is withheld: a treatment that renders the live assistant row as `data-role="user"`
+        # is a structural regression that used to leave here as NOT COMPARABLE.
+        if b.get("role") != t.get("role"):
+            claim = f"ordinal {ordinal}:role {b.get('role')}->{t.get('role')}"
+            moved.append(claim)
+            settled.append(claim)
+            continue
         if b.get("digest") != t.get("digest"):
-            moved.append(f"ordinal {ordinal}({b.get('role')}):{b.get('chars')}->{t.get('chars')}c")
+            if b.get("in_flight") or t.get("in_flight"):
+                # STILL BEING WRITTEN ON ONE ARM OR THE OTHER, so its digest names a point in a
+                # stream. Residue, exactly like an ordinal that was unmounted before the capture:
+                # it cannot be a difference, and it cannot be an agreement either, so it joins the
+                # list that refuses the verdict below rather than the list that fails it. Same
+                # rule as `compare` applies to the structural digest; the two modes must not
+                # disagree about which readings have a defined moment.
+                uncomparable.append(ordinal)
+                continue
+            claim = f"ordinal {ordinal}({b.get('role')}):{b.get('chars')}->{t.get('chars')}c"
+            moved.append(claim)
+            # A USER ROW IS NEVER THE REPLY BEING WRITTEN. Both arms agree this ordinal is the
+            # user's, and a stream writes into an assistant message, so this difference survives
+            # the blind-probe refusal below. The two arms agreeing is what makes it provable: a
+            # row whose role DISAGREES is reported above as a role change, not silently trusted.
+            if b.get("role") == "user":
+                settled.append(claim)
+    # Ordinals that were unmounted before the capture and ordinals that were still streaming are
+    # the same kind of residue and are counted once each.
+    uncomparable = sorted(set(uncomparable))
     # ONE VIEWPORT ENDED EMPTY AND THE OTHER DID NOT, which is as visible a difference as there is
     # and used to be reported as NOT COMPARABLE -- a refusal, not a finding.
     #
@@ -910,6 +1471,44 @@ def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:
             # would have silenced "the treatment arm's viewport ended empty" -- suppressing a lost
             # conversation on the strength of unrelated jitter in the same action.
             "severe": True,
+        }
+    # THE STREAMING PROBE, on the same footing it has in `compare`, because this mode is scored
+    # from its own payload and never sees the structural verdict. `in_flight` above walks the
+    # `data-status` / `aria-busy` hooks, so a build that renames them reports every row settled;
+    # the two arms are two different builds, so that can be true on ONE of them while the other's
+    # reply has genuinely finished, and the differing digests below are then two points in a stream
+    # scored as a rendering difference.
+    #
+    # AFTER the two lost-conversation findings above and BEFORE the digest comparison, for the
+    # reason `compare` puts it after `mount_count_mismatch`: different messages on screen, or one
+    # viewport emptied, are readings that do not depend on the stream split at all, and a build
+    # that loses the thread while a reply runs stays a finding rather than a shrug.
+    blind = streaming_probe(base, treat)
+    if blind is not None:
+        # SAME RULE AS `compare`: the refusal covers the rows whose meaning depends on where the
+        # stream had got to, and nothing else. `settled` holds the rows that provably cannot be the
+        # reply being written -- a row both arms call the user's, and a row whose role itself
+        # changed -- and those are reported rather than discarded. Without this a changed user
+        # message left here as NOT COMPARABLE with an empty `moved`, and `visible_report` buckets
+        # a refusal as blind and never consults it for the exit code.
+        if settled:
+            return {
+                "verdict": DIFFER,
+                "reason": (
+                    f"{len(settled)} visible message(s) rendered differently on rows that cannot "
+                    "be the reply being written (a user row, or a row whose role changed), so "
+                    f"they are reported even though the stream could not be placed. {blind}"
+                ),
+                "moved": settled,
+                "claim": CLAIM_VISIBLE,
+                "not_digested": uncomparable,
+            }
+        return {
+            "verdict": NOT_COMPARABLE,
+            "reason": blind,
+            "moved": [],
+            "claim": CLAIM_VISIBLE,
+            "not_digested": uncomparable,
         }
     if moved:
         return {

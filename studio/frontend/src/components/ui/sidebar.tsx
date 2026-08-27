@@ -203,7 +203,51 @@ function SidebarProvider({
           } as React.CSSProperties
         }
         className={cn(
-          "group/sidebar-wrapper has-data-[variant=inset]:bg-sidebar flex min-h-svh w-full",
+          // `has-[>...]`, not `has-[...]`, and the combinator is the whole point.
+          //
+          // This wrapper is an ancestor of the chat thread, as the note on
+          // --sidebar-width above already says. A `:has()` whose argument is a
+          // DESCENDANT selector has to be re-checked whenever anything is
+          // inserted or removed anywhere in the subject's subtree, and
+          // answering it means WALKING that subtree. On an ancestor of the
+          // thread that walk is the whole thread, on every mutation.
+          //
+          // It is a traversal, NOT a restyle, and the difference matters
+          // because it is why containment does not help. Blink's own
+          // `UpdateLayoutTree.elementCount` for one inserted span is 1 with
+          // these rules in their child form, 2 with one of them in descendant
+          // form and 3 with both: only the subjects are restyled, never the
+          // thread. So there is no scope for `contain:` to reduce, which is
+          // what the note in index.css near `content-visibility: visible` was
+          // seeing when it recorded containment on the message roots as no
+          // help. `content-visibility: auto` on the message roots does not
+          // help either, measured at -7%: the argument re-check walks skipped
+          // content too.
+          //
+          // Measured at the 500K rung, corpus 23cd2464, on a 357,843-element
+          // thread: appending one EMPTY span inside a message cost 17.5 and
+          // 18.6 ms in two concurrent arms with this rule in place, 8.7 ms with
+          // this rule alone deleted, and 0.10 ms with this rule and the one on
+          // chat-page.tsx deleted. Deleting the other eleven `:has()` rules
+          // that survived the bisect changed nothing (17.2 / 19.2 ms), and the
+          // same span appended to <body> costs 0.10 ms either way.
+          //
+          // CHROMIUM ONLY. On a synthetic thread carrying this same ancestor
+          // chain and the built Unsloth stylesheet, at 300,464 elements, one
+          // inserted span costs 1.20 ms plain / 1.29 ms child / 5.63 ms one
+          // descendant rule / 10.30 ms both in Chromium, and 4.33 / 4.58 /
+          // 4.58 / 4.33 ms in WebKitGTK and 4.65 / 4.72 / 4.45 / 5.10 ms in
+          // Firefox: flat in both, within noise of each other. So this change
+          // is free where it does not help and it does not regress the engine
+          // Unsloth uses on Linux.
+          //
+          // The child combinator is not a weakening. `data-variant` is rendered
+          // on the root element of `Sidebar` below, and `Sidebar` is a direct
+          // child of this wrapper (AppSidebar returns it inside a Fragment,
+          // which is not a DOM node), so the two selectors match the same
+          // elements. What changes is that a mutation deep in the thread can no
+          // longer make Blink ask this question again.
+          "group/sidebar-wrapper has-[>[data-variant=inset]]:bg-sidebar flex min-h-svh w-full",
           className
         )}
         {...props}

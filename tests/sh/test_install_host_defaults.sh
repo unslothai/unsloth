@@ -5,7 +5,7 @@
 # Installer scripts and README must not put a wildcard bind in a user-visible
 # DEFAULT launch command. Binding 0.0.0.0 exposes the raw port to the LAN, so it
 # has to be something the reader opts into, never what they are handed first.
-# Provenance: #5267 (default the Studio host to 127.0.0.1) and #7774 (anchor the
+# Provenance: #5267 (default the Unsloth host to 127.0.0.1) and #7774 (anchor the
 # host-defaults assertions).
 #
 # The property, stated without reference to any heading:
@@ -16,8 +16,8 @@
 #      opt-in, so the capability is not simply undocumented.
 #   3. No launch command the installers print or generate binds a wildcard host.
 #
-# Two things this file used to do, and no longer does, because both went red on
-# an edit that was correct:
+# Three things this file used to do, and no longer does. The first two went red
+# on an edit that was correct; the third went GREEN on one that was not:
 #
 #   * It sliced README.md by heading -- `#### Launch` up to the next heading of
 #     any level -- and asserted BOTH halves inside that one window. Deleting
@@ -35,6 +35,18 @@
 #     the day `-H` is renamed. The flag spellings are now read off the
 #     `typer.Option` in unsloth_cli/commands/studio.py that declares them, so the
 #     needle is derived from the code it protects rather than re-spelled here.
+#
+#   * It sliced the three installer files on hand-written markers, two of which
+#     were COMMENT PROSE ("In interactive terminals, ..."). A comment has no
+#     reason to stay stable, so rewording one turned this guard red for reasons
+#     that had nothing to do with host defaults, and three of the four windows
+#     ran to end of file, so each negative assertion covered a superset of the
+#     region its label named. Worse, the launcher window could go VACUOUS rather
+#     than loud: see the reproduction in the install.sh launcher section below.
+#     Every installer window is now derived from the file's own structure -- a
+#     heredoc delimiter, a top-level `if`/`fi`, a PowerShell brace block -- and
+#     every one of them asserts that it closed on its own closing token instead
+#     of running off the end of the file.
 #
 # `unsloth studio`'s own default (`--host 127.0.0.1`) is asserted separately and
 # structurally in tests/studio/test_cli_studio_defaults.py; this file is about
@@ -344,34 +356,128 @@ assert_detects "a trailing comment naming it"       'unsloth studio  # add -H 0.
 assert_detects "a path, not the subcommand"         'unsloth-studio-launcher -H 0.0.0.0'           ignored
 assert_detects "an empty window"                    ''                                             ignored
 
+# ── the windows ──────────────────────────────────────────────────────────────
+# Every installer window below is cut from the file's own STRUCTURE, never from a
+# comment and never from a sentence someone might reword. Anchoring on a comment
+# is the worst case of all, because a comment exists to be rewritten.
+
+# The heredoc that redirects into the path held by $2, from the line that opens
+# it through its own terminator. `want=delim` returns that terminator instead of
+# the body. Both come from the SAME matched line in the SAME pass, which is the
+# whole point: a window opened by one rule and closed by another can disagree,
+# and when it does the disagreement is silent.
+#
+# While looking for the opener it joins backslash continuations, so the redirect
+# and its `<<` are matched as one shell LOGICAL line however they are wrapped.
+# The joining stops the moment the heredoc opens, because the launcher body has
+# continuations of its own and they are content, not syntax to be folded away.
+_heredoc_window() {
+    awk -v q="\"'" -v target="$2" -v want="${3:-body}" '
+    !delim {
+        line = $0
+        while (line ~ /\\[ \t]*$/ && (getline nxt) > 0) {
+            sub(/\\[ \t]*$/, "", line)
+            sub(/^[ \t]+/, " ", nxt)
+            line = line nxt
+        }
+        if (!index(line, target) || !index(line, "<<")) next
+        rest = substr(line, index(line, "<<") + 2)
+        if (substr(rest, 1, 1) == "-") { dash = 1; rest = substr(rest, 2) }
+        sub(/^[ \t]+/, "", rest)
+        if (index(q, substr(rest, 1, 1))) rest = substr(rest, 2)
+        if (!match(rest, /^[A-Za-z_][A-Za-z0-9_]*/)) next
+        delim = substr(rest, 1, RLENGTH)
+        if (want == "delim") { print delim; exit }
+        print line
+        next
+    }
+    {
+        print
+        line = $0
+        if (dash) sub(/^[ \t]+/, "", line)
+        if (line == delim) exit
+    }
+    ' "$1"
+}
+
+# A top-level shell branch: the `if` line matching $2, through the `fi` in column
+# zero that closes it. Nested branches inside it are indented, so the first
+# column-zero `fi` is the right one. Callers assert the window ended on that `fi`,
+# which is what turns a close that never matched into a report instead of a
+# silent run to end of file.
+_shell_if_block() {
+    awk -v pat="$2" '
+    !found && $0 ~ pat { found = 1; print; next }
+    found { print; if ($0 == "fi") exit }
+    ' "$1"
+}
+
+# A PowerShell block: the line matching $2, through the line where its braces
+# balance again. `[{]` rather than `{` so the brace is a literal and not the
+# start of an ERE interval.
+_ps_brace_block() {
+    awk -v pat="$2" '
+    !found && $0 ~ pat { found = 1 }
+    found { print; depth += gsub(/[{]/, "&") - gsub(/[}]/, "&"); if (depth <= 0) exit }
+    ' "$1"
+}
+
+# The last line of a window, trimmed. A window that ran off the end of the file
+# does not end on its own closing token; that is the difference between a window
+# that closed on purpose and one that was never closed at all.
+_window_close() { printf '%s\n' "$1" | tail -n 1 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'; }
+
 echo ""
 echo "=== install.sh launcher template ==="
 
-# Extract the heredoc that generates ~/.local/share/unsloth/launch-studio.sh.
-# The terminator is read off the `<<` that opens it, so renaming the delimiter
-# cannot silently truncate the window to nothing.
-# Same reason: install.sh contains the literal `$_css_launcher`, it is not ours to expand.
-# shellcheck disable=SC2016
-_launcher_delim=$(grep -m1 'cat > "\$_css_launcher" <<' "$INSTALL_SH" \
-    | sed -E "s/.*<<-?[[:space:]]*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?.*/\1/")
-_launcher=$(awk -v delim="$_launcher_delim" \
-    '/cat > "\$_css_launcher"/{found=1} found{print} $0 == delim{found=0}' "$INSTALL_SH")
+# The heredoc that generates ~/.local/share/unsloth/launch-studio.sh.
+#
+# This window is the one shape in this file that could go vacuous rather than
+# loud, so it is worth stating exactly. It used to find its start with an awk
+# pattern and its terminator with a SEPARATE, stricter grep that also required
+# the `<<` on that same line. Split the redirect across a line continuation --
+#
+#     cat > "$_css_launcher" \
+#         << 'LAUNCHER_EOF'
+#
+# -- and the grep matched nothing, the derived delimiter was the empty string,
+# and `$0 == delim` then matched the first BLANK LINE inside the launcher. The
+# window collapsed from 357 lines to 6. The `#!/usr/bin/env bash` canary sits in
+# those 6 and still passed, so `-H 0.0.0.0` added to the launcher's own `exec`
+# line went through at 39 pass / 0 fail. One helper, one matched line, no second
+# pattern to disagree with the first.
+_launcher_delim=$(_heredoc_window "$INSTALL_SH" '_css_launcher' delim)
+_launcher=$(_heredoc_window "$INSTALL_SH" '_css_launcher' body)
+assert_ge \
+    "launcher template: a heredoc terminator was derived" \
+    "${#_launcher_delim}" 1
 assert_contains \
     "launcher template: extraction found the heredoc content" \
     "$_launcher" "#!/usr/bin/env bash"
+assert_eq \
+    "launcher template: the window closes on the heredoc terminator" \
+    "$_launcher_delim" "$(_window_close "$_launcher")"
 assert_no_wildcard_bind \
     "launcher template: the generated launcher binds no wildcard host" \
     "$_launcher"
 
 echo ""
-# Anchored on content, not a line count: both installers outgrew their tail windows.
 echo "=== install.sh end-of-install block ==="
 
-_end=$(awk '/In interactive terminals/{found=1} found{print}' "$INSTALL_SH")
+# The post-install prompt-or-print branch, anchored on the `if` that declares it.
+# The anchor used to be the comment ABOVE that `if` ("In interactive terminals,
+# ask the user before starting Unsloth ..."), and the window ran from there to
+# end of file. `_SKIP_AUTOSTART` is a shell variable this branch reads: renaming
+# it is a code change, and the prompt canary below reports it at once instead of
+# leaving an empty window behind.
+_end=$(_shell_if_block "$INSTALL_SH" '^if .*_SKIP_AUTOSTART.*; then$')
 # "read" alone also matches "readable" and "_can_read_tty", so pin the full prompt.
 assert_contains \
     "install.sh: interactive block prompts user (read)" \
     "$_end" "read -r _reply"
+assert_eq \
+    "install.sh: the end-of-install window closes on its own fi" \
+    "fi" "$(_window_close "$_end")"
 assert_no_wildcard_bind \
     "install.sh: end-of-install commands bind no wildcard host" \
     "$_end"
@@ -379,10 +485,15 @@ assert_no_wildcard_bind \
 echo ""
 echo "=== install.ps1 end-of-install block ==="
 
-_ps1_end=$(awk '/In interactive terminals/{found=1} found{print}' "$INSTALL_PS1")
+# Same branch, same reasoning, PowerShell braces instead of `fi`. Also anchored
+# on the comment above it until now, and also ran to end of file.
+_ps1_end=$(_ps_brace_block "$INSTALL_PS1" '^[ \t]*if [(][$]IsInteractive[)] [{][ \t]*$')
 assert_contains \
     "install.ps1: interactive block prompts user (Read-Host)" \
     "$_ps1_end" "Read-Host"
+assert_eq \
+    "install.ps1: the end-of-install window closes on its own brace" \
+    "}" "$(_window_close "$_ps1_end")"
 assert_no_wildcard_bind \
     "install.ps1: end-of-install commands bind no wildcard host" \
     "$_ps1_end"
@@ -390,14 +501,42 @@ assert_no_wildcard_bind \
 echo ""
 echo "=== studio/setup.sh launch hint ==="
 
-_setup_tail=$(awk '/"launch"/{found=1} found{print}' "$SETUP_SH")
-# Canary: an empty window would let the negative assertion below pass vacuously.
+# Deliberately NOT windowed, and the label says so. The footer that prints the
+# hint lives in a top-level `if [ "$_LLAMA_ONLY" = "1" ]; then` block, and that
+# same header opens three different top-level blocks in setup.sh, so there is no
+# structural boundary that picks out the footer -- only the ordinal "the third
+# one", which is a hand-written marker wearing a different hat. The old anchor
+# was the bare string `"launch"` and ran to end of file from there, so reading
+# the whole file loses no coverage, gains the rest of it, and cannot be narrowed
+# by an edit anywhere. Over-reporting here is cheap; the file's own wildcard
+# opt-in is prose ("add -H 0.0.0.0 for LAN / cloud access") with no `studio` word
+# in it, so it is not a launch command and does not trip this.
+_setup_all=$(cat "$SETUP_SH")
+# Canary: setup.sh still prints a launch hint at all. A file that stopped
+# mentioning studio would otherwise satisfy the assertion below by saying nothing.
 assert_contains \
-    "studio/setup.sh: extraction found the launch hint" \
-    "$_setup_tail" "unsloth studio -p 8888"
+    "studio/setup.sh: the footer still prints a launch hint" \
+    "$_setup_all" "unsloth studio -p 8888"
 assert_no_wildcard_bind \
-    "studio/setup.sh: the launch hint binds no wildcard host" \
-    "$_setup_tail"
+    "studio/setup.sh: no launch command in setup.sh binds a wildcard host" \
+    "$_setup_all"
+
+echo ""
+echo "=== the installers, whole file ==="
+
+# The windows above name the region each guard is ABOUT, which is what makes a
+# failure readable. These two name the file, which is what makes the family hard
+# to defeat: a window can be narrowed by an edit and still look healthy, a whole
+# file cannot, so a wildcard bind that lands outside every window is still
+# reported, just with a less specific label. Both installers are clean today
+# because their opt-in text is prose rather than a runnable command; if that ever
+# stops being true, prefer rephrasing the prose over deleting these two.
+assert_no_wildcard_bind \
+    "install.sh: no launch command anywhere in the file binds a wildcard host" \
+    "$(cat "$INSTALL_SH")"
+assert_no_wildcard_bind \
+    "install.ps1: no launch command anywhere in the file binds a wildcard host" \
+    "$(cat "$INSTALL_PS1")"
 
 echo ""
 echo "=== README.md launch commands ==="

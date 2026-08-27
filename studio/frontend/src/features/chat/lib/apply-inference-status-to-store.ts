@@ -7,6 +7,7 @@ import { resolveResidentInitialConfig } from "@/features/model-picker";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
+import { isSpeechOnlyStatus } from "./speech-only-status";
 import {
   mergeBackendRecommendedInference,
   resolveManualAutoCtxPin,
@@ -27,7 +28,7 @@ import {
   type InferenceStatusResponse,
   isMultimodalResponse,
 } from "../types/api";
-import type { ChatModelSummary } from "../types/runtime";
+import type { ChatModelRow } from "../types/runtime";
 import { resolveQwenThinkingParams } from "../utils/qwen-params";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
@@ -99,6 +100,8 @@ function ensureActiveModelInStoreList(
 ): void {
   const store = useChatRuntimeStore.getState();
   const caps = {
+    // Adopting a model the backend already had mints a row with no catalog entry behind it.
+    isMlx: status.is_mlx ?? false,
     isAudio: status.is_audio ?? false,
     audioType: status.audio_type ?? null,
     hasAudioInput: status.has_audio_input ?? false,
@@ -115,7 +118,7 @@ function ensureActiveModelInStoreList(
     }
     return;
   }
-  const summary: ChatModelSummary = {
+  const summary: ChatModelRow = {
     id: checkpointId,
     // active_model is already the clean public id; its leaf matches the catalog rows,
     // and the fallback keeps a snapshot path out of the trigger.
@@ -701,7 +704,6 @@ export async function tryAdoptServerActiveModel(options?: {
   if (store.modelLoading && !options?.allowWhileModelLoading) {
     return false;
   }
-
   let status: InferenceStatusResponse;
   if (options?.status) {
     status = options.status;
@@ -713,7 +715,13 @@ export async function tryAdoptServerActiveModel(options?: {
       return false;
     }
   }
-  if (!status.active_model || (status.loading?.length ?? 0) > 0) {
+  // Not something chat can adopt; the sweep below picks a real chat model, which evicts
+  // it exactly as an image load would.
+  if (
+    !status.active_model ||
+    (status.loading?.length ?? 0) > 0 ||
+    isSpeechOnlyStatus(status)
+  ) {
     return false;
   }
 

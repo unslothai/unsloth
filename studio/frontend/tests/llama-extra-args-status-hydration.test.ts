@@ -49,7 +49,7 @@ test("the CLI adoption path hydrates settings while it owns the load lease", () 
   );
   assert.match(
     APPLIER,
-    /!status\.active_model \|\| \(status\.loading\?\.length \?\? 0\) > 0/,
+    /!status\.active_model \|\|\s*\(status\.loading\?\.length \?\? 0\) > 0 \|\|\s*isSpeechOnlyStatus\(status\)/,
   );
 });
 

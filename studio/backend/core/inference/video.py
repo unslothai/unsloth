@@ -31,6 +31,7 @@ family's official base repos, or a local path the user explicitly picked.
 from __future__ import annotations
 
 import contextlib
+import functools
 import inspect
 import os
 import tempfile
@@ -140,6 +141,8 @@ from .video_minimax_h3 import (
     H3_ANCHOR_LAST,
     H3_CANVAS_MAX_PIXELS,
     H3_CANVAS_SHORT_EDGE,
+    H3_REF_IMAGE_SOURCE_MAX_PIXELS,
+    H3_REF_IMAGE_SOURCE_MAX_SIDE,
     H3_REF_SIZE_MATCH,
     H3_TASK_REFERENCES,
     fit_h3_keyframe,
@@ -306,7 +309,7 @@ def _assert_video_precision_for_target(
     # rejected loads the runtime would run and report as fell_back -- Windows ROCm,
     # where the torchao stub kills int8 while fp8 still works.
     # A family with a HOSTED quantized conditioner never touches the generic path this gate
-    # reasons about. Studio loads that artifact itself: INT8 storage, a Hadamard rotation and an
+    # reasons about. Unsloth loads that artifact itself: INT8 storage, a Hadamard rotation and an
     # ordinary F.linear, no torchao and no fp8 tensor cores. Left to the code below, the request is
     # first rewritten int8 -> fp8 by effective_te_quant (H3 has no keep-bf16 schedule) and then
     # refused for want of hardware neither the rewrite nor the real loader needs, so a supported
@@ -548,6 +551,21 @@ class _VideoLoadState:
     # preflight has to know, because that turns its floor from a max into a sum.
     h3_denoiser_pinned: bool = False
     resolved: Optional[dict] = None
+
+
+@dataclass(frozen = True)
+class _VideoResolvedInputs:
+    """CPU-side request inputs resolved against one exact resident pipeline state."""
+
+    state: _VideoLoadState
+    first_frame: Any
+    last_frame: Any
+    width: int
+    height: int
+    conditioning: str
+    references: Any
+    flow_shift: Optional[float]
+    audio_flow_shift: Optional[float]
 
 
 @dataclass
@@ -1036,6 +1054,9 @@ class VideoBackend:
         self._gen: dict[str, Any] = {"active": False}
         # True from begin_generate() until its worker records a terminal state, so a second call is refused while it runs.
         self._generate_job_active = False
+        # Which job the flag belongs to. The flag alone cannot tell "my job" from "the job that
+        # replaced mine", so finalising is keyed on this. Compared by identity.
+        self._generate_job_token: Optional[object] = None
 
     def _device_target(self, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
         """The device target for ``ordinal``, pinned onto the calling thread.
@@ -1188,8 +1209,8 @@ class VideoBackend:
                 import diffusers
                 if not hasattr(diffusers, fam.transformer_class):
                     raise ValueError(
-                        "MiniMax-H3 needs the Diffusers revision bundled with this Studio "
-                        "version. Reinstall Studio dependencies and retry."
+                        "MiniMax-H3 needs the Diffusers revision bundled with this Unsloth "
+                        "version. Reinstall Unsloth dependencies and retry."
                     )
         if kind != "gguf" and not _is_trusted_video_repo(repo_id):
             raise ValueError(
@@ -1434,7 +1455,10 @@ class VideoBackend:
             kwargs["base_repo"] = base
             # An fp8 encoder request loads a hosted pre-cast checkpoint, so neither the estimate nor the pull includes those dense shards.
             te_sources = self._te_prequant_sources(
-                fam, kwargs.get("text_encoder_quant"), kwargs.get("gpu_ordinal")
+                fam,
+                kwargs.get("text_encoder_quant"),
+                kwargs.get("gpu_ordinal"),
+                base = base,
             )
             # The same deal for the denoiser: a hosted pre-quantized checkpoint replaces the dense
             # DiT shards, so the estimate and the scoped pull below both drop them. VERIFIED, like
@@ -2025,12 +2049,14 @@ class VideoBackend:
         fam: Any,
         text_encoder_quant: Optional[str],
         gpu_ordinal: Optional[int] = None,
+        base: Optional[str] = None,
     ) -> dict[str, Any]:
         """``{component: source}`` for the text encoders this load will take PRE-CAST from a
         hosted checkpoint instead of the base repo's dense weights (``{}`` when none)."""
-        from .diffusion_te_prequant import te_prequant_sources
-        return te_prequant_sources(
+        from .diffusion_te_prequant import te_prequant_sources_for_base
+        return te_prequant_sources_for_base(
             fam,
+            base or str(getattr(fam, "base_repo", "") or ""),
             te_quant_mode = text_encoder_quant,
             # The selected card: an fp8 encoder the default card cannot take is still hosted
             # pre-cast for the one this load lands on, and vice versa.
@@ -2877,7 +2903,10 @@ class VideoBackend:
                     )
             # Pre-cast encoders first: only a checkpoint that really resolves earns the right to drop the dense shards.
             te_sources = self._te_prequant_sources(
-                fam, text_encoder_quant, load_kwargs.get("gpu_ordinal")
+                fam,
+                text_encoder_quant,
+                load_kwargs.get("gpu_ordinal"),
+                base = base,
             )
             te_files = self._te_prequant_hub_files(te_sources, api)
             for component, files in te_files.items():
@@ -3496,7 +3525,12 @@ class VideoBackend:
         # families widen it), so only components[1] is scaled.
         from .diffusion_te_prequant import te_prequant_budget_scale
 
-        te_scale = te_prequant_budget_scale(fam, te_quant_mode = text_encoder_quant, target = target)
+        te_scale = te_prequant_budget_scale(
+            fam,
+            te_quant_mode = text_encoder_quant,
+            target = target,
+            base = repo_id if kind == "pipeline" else base,
+        )
         transformer_mib: Optional[int] = None
         if kind != "pipeline":
             checkpoint_path = self._resolve_checkpoint_path(
@@ -3640,6 +3674,7 @@ class VideoBackend:
             dtype = dtype,
             hf_token = hf_token,
             logger = logger,
+            local_files_only = local_files_only,
         )
         pipe_kwargs.update(te_injected)
         # The fp8-sized budget is valid only once the pre-cast encoder is actually in hand. Injection is best-effort
@@ -4335,7 +4370,7 @@ class VideoBackend:
                     local_files_only = local_files_only,
                     # Pin the live cache root, as every other loader call does: unset, the fetch
                     # lands under huggingface_hub's import-time constant and a later cache change
-                    # re-downloads multiple GB into a root Studio no longer reads.
+                    # re-downloads multiple GB into a root Unsloth no longer reads.
                     cache_dir = hub_cache_dir(),
                     # The hosted H3 denoisers carry the PRUNED (curve-form) adaLN: the modulation is
                     # a rank-8 factorization of the time-embedding curve plus a shared table, which
@@ -4543,7 +4578,7 @@ class VideoBackend:
             )
         # cache_dir for the same reason as the token: load_components forwards extra kwargs through
         # ComponentSpec.load into each from_pretrained, and without it those ~145 GB of Hub-pinned
-        # components resolve against the import-time HF_HUB_CACHE snapshot rather than Studio's
+        # components resolve against the import-time HF_HUB_CACHE snapshot rather than Unsloth's
         # live cache folder, which the user can move.
         pipe.load_components(
             workflow = workflow,
@@ -4946,7 +4981,7 @@ class VideoBackend:
         """Validate cheaply, then run generate + gallery persist on a daemon thread.
 
         Returns at once, mirroring begin_load: a clip takes minutes to denoise, and
-        a proxy in front of Studio (secure mode's Cloudflare tunnel) caps the origin
+        a proxy in front of Unsloth (secure mode's Cloudflare tunnel) caps the origin
         response window near 100 seconds, so the HTTP call must not span the
         generation. The terminal outcome (phase "completed" with the saved gallery
         record, or "failed" with a client-safe error) is reported by
@@ -4955,56 +4990,69 @@ class VideoBackend:
         sentinels the route maps to 409.
         """
         cancel = threading.Event()
-        # Snapshot load state before decoding outside the backend lock.
-        with self._lock:
-            if self._state is None:
-                raise RuntimeError(VIDEO_NOT_LOADED_MSG)
-            if self._generate_job_active:
-                raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
-            family = self._state.family
-            task = self._state.h3_task
-            engine = self._state.engine
-        # Validate conditioning before creating the asynchronous job so request errors return 400.
-        _, _, canvas_w, canvas_h, _ = self._resolve_keyframes(
-            family, task, first_frame, last_frame, width, height
-        )
-        self._resolve_references(
-            family,
-            task,
-            engine,
-            reference_images,
-            reference_videos,
-            reference_audios,
-            reference_image_size,
-            canvas_w,
-            canvas_h,
-        )
-        self._resolve_flow_shifts(family, engine, flow_shift, audio_flow_shift)
-        with self._lock:
-            if self._state is None:
-                raise RuntimeError(VIDEO_NOT_LOADED_MSG)
-            if self._generate_job_active:
-                raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
-            # Under the SAME lock that reserves the state this job will run against. A load
-            # commits its new state here too, so judging the shape from a separate earlier read
-            # could accept a size for the family being replaced and then denoise it with the new
-            # one, or reject a size the new family supports. getattr, so a state carrying no
-            # family degrades to the old snapping rather than raising.
-            fam = getattr(self._state, "family", None)
-            if fam is not None:
-                validate_video_request_shape(fam, width = width, height = height, num_frames = num_frames)
-            self._generate_job_active = True
-            # Register BEFORE the worker starts so a cancel/unload in the spawn window still stops the run.
-            self._active_generate_cancel = cancel
-            self._gen = {
-                "active": True,
-                "phase": "queued",
-                "step": 0,
-                "total": 0,
-                "eta_seconds": None,
-            }
-        threading.Thread(
-            target = self._run_generate,
+        job_token = object()  # this reservation's identity; only its own worker may finalise it
+        while True:
+            # Resolve outside the lock, then retry if the resident state changed.
+            with self._lock:
+                state = self._state
+                if state is None:
+                    raise RuntimeError(VIDEO_NOT_LOADED_MSG)
+                if self._generate_job_active:
+                    raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+            first_pil, last_pil, canvas_w, canvas_h, conditioning = self._resolve_keyframes(
+                state.family, state.h3_task, first_frame, last_frame, width, height
+            )
+            references = self._resolve_references(
+                state.family,
+                state.h3_task,
+                state.engine,
+                reference_images,
+                reference_videos,
+                reference_audios,
+                reference_image_size,
+                canvas_w,
+                canvas_h,
+            )
+            shift, audio_shift = self._resolve_flow_shifts(
+                state.family, state.engine, flow_shift, audio_flow_shift
+            )
+            if references:
+                conditioning = h3_conditioning_mode(has_references = True)
+            resolved_inputs = _VideoResolvedInputs(
+                state = state,
+                first_frame = first_pil,
+                last_frame = last_pil,
+                width = canvas_w,
+                height = canvas_h,
+                conditioning = conditioning,
+                references = references,
+                flow_shift = shift,
+                audio_flow_shift = audio_shift,
+            )
+            with self._lock:
+                if self._state is not state:
+                    continue
+                if self._generate_job_active:
+                    raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+                validate_video_request_shape(
+                    state.family, width = width, height = height, num_frames = num_frames
+                )
+                self._generate_job_active = True
+                self._generate_job_token = job_token
+                # Register before the worker starts so cancellation covers the spawn window.
+                self._active_generate_cancel = cancel
+                self._gen = {
+                    "active": True,
+                    "phase": "queued",
+                    "step": 0,
+                    "total": 0,
+                    "eta_seconds": None,
+                }
+                break
+        worker = threading.Thread(
+            # The token rides on the target rather than in kwargs: those kwargs are also a
+            # valid generate() call, and callers replay them as one.
+            target = functools.partial(self._run_generate, job_token = job_token),
             kwargs = dict(
                 prompt = prompt,
                 negative_prompt = negative_prompt,
@@ -5016,20 +5064,63 @@ class VideoBackend:
                 guidance = guidance,
                 guidance_2 = guidance_2,
                 seed = seed,
-                first_frame = first_frame,
-                last_frame = last_frame,
-                reference_images = reference_images,
-                reference_videos = reference_videos,
-                reference_audios = reference_audios,
-                reference_image_size = reference_image_size,
-                flow_shift = flow_shift,
-                audio_flow_shift = audio_flow_shift,
+                _resolved_inputs = resolved_inputs,
                 cancel_event = cancel,
             ),
             daemon = True,
-        ).start()
+        )
+        try:
+            worker.start()
+        except RuntimeError:
+            # No thread, so nothing would ever release the slot reserved above: generate stays
+            # refused for the session, and liveness reports a rendering backend to a watchdog
+            # that answers busy by waiting longer rather than restarting.
+            # RuntimeError, not BaseException: start() raises it only before the thread exists,
+            # but it then waits on the child, and a signal in that wait unwinds with the worker
+            # live. Rolling back there would retire a running render's token and drop its cancel
+            # handle. A worker that exists finalises its own reservation.
+            self._finish_generate_job(
+                job_token = job_token,
+                cancel_event = cancel,
+                error = "Video generation could not start.",
+            )
+            raise
 
-    def _run_generate(self, *, cancel_event: threading.Event, **gen_kwargs: Any) -> None:
+    def _run_generate(
+        self,
+        *,
+        cancel_event: threading.Event,
+        job_token: Optional[object] = None,
+        **gen_kwargs: Any,
+    ) -> None:
+        """Backstop around the worker body, so a reservation cannot outlive its thread.
+
+        The body names every ordinary outcome and finalises it; keyed on job_token, this
+        finally is then a no-op. It is for what the body cannot name: an exit through
+        BaseException, or a failure before its first try. A leaked marker tells the watchdog a
+        wedged backend is still rendering, the inverse of the bug the marker fixes.
+
+        Still the thread target: begin_generate resolves it by name and doubles subclass it."""
+        try:
+            self._run_generate_body(cancel_event = cancel_event, job_token = job_token, **gen_kwargs)
+        finally:
+            if job_token is not None:
+                # Only begin_generate makes a reservation, so only it can leave one dangling.
+                # Firing for a direct call would match the same unreserved token the body just
+                # finalised with, replacing its outcome with the generic failure below.
+                self._finish_generate_job(
+                    job_token = job_token,
+                    cancel_event = cancel_event,
+                    error = "Video generation failed.",
+                )
+
+    def _run_generate_body(
+        self,
+        *,
+        cancel_event: threading.Event,
+        job_token: Optional[object] = None,
+        **gen_kwargs: Any,
+    ) -> None:
         """begin_generate's worker: generate, persist to the gallery, record the
         terminal state where generate_progress() reports it. The error mapping is
         the exact one the route applied when the call was synchronous: ValueError
@@ -5041,18 +5132,24 @@ class VideoBackend:
         try:
             result = self.generate(cancel_event = cancel_event, **gen_kwargs)
         except ValueError as exc:
-            self._finish_generate_job(cancel_event = cancel_event, error = str(exc))
+            self._finish_generate_job(
+                job_token = job_token, cancel_event = cancel_event, error = str(exc)
+            )
             return
         except RuntimeError as exc:
             msg = str(exc)
             if msg not in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG):
                 logger.error("video.generate_failed: %s", exc, exc_info = True)
                 msg = "Video generation failed."
-            self._finish_generate_job(cancel_event = cancel_event, error = msg)
+            self._finish_generate_job(job_token = job_token, cancel_event = cancel_event, error = msg)
             return
         except Exception as exc:  # noqa: BLE001 -- worker thread: never propagate
             logger.error("video.generate_failed: %s", exc, exc_info = True)
-            self._finish_generate_job(cancel_event = cancel_event, error = "Video generation failed.")
+            self._finish_generate_job(
+                job_token = job_token,
+                cancel_event = cancel_event,
+                error = "Video generation failed.",
+            )
             return
 
         # Persist the clip with its full recipe as the JSON sidecar the gallery reads back.
@@ -5096,14 +5193,22 @@ class VideoBackend:
         except Exception as exc:  # noqa: BLE001 -- disk failure must reach the poller
             logger.error("video.persist_failed: %s", exc)
             self._finish_generate_job(
-                cancel_event = cancel_event, error = "Failed to save the generated video."
+                job_token = job_token,
+                cancel_event = cancel_event,
+                error = "Failed to save the generated video.",
             )
             return
-        self._finish_generate_job(cancel_event = cancel_event, video = record, total = result["steps"])
+        self._finish_generate_job(
+            job_token = job_token,
+            cancel_event = cancel_event,
+            video = record,
+            total = result["steps"],
+        )
 
     def _finish_generate_job(
         self,
         *,
+        job_token: Optional[object] = None,
         cancel_event: Optional[threading.Event] = None,
         video: Optional[dict] = None,
         error: Optional[str] = None,
@@ -5112,8 +5217,18 @@ class VideoBackend:
         """Record a job's terminal state as one atomic swap. The terminal dict
         replaces the live-progress one so a poll can never mix fields from both,
         and the busy flag drops in the same critical section so the earliest
-        moment a new begin_generate() can start is after the outcome is visible."""
+        moment a new begin_generate() can start is after the outcome is visible.
+
+        At most once per reservation and only by that reservation: the first call carrying the
+        live token publishes and retires it, later ones return. Keyed on the token, not on
+        _generate_job_active, because the flag goes true again the moment the next job reserves
+        and the backstop runs after the body published - on the flag a finished job would
+        finalise its successor. None means a caller that never reserved, e.g. direct
+        _run_generate()."""
         with self._lock:
+            if self._generate_job_token is not job_token:
+                return
+            self._generate_job_token = None
             self._generate_job_active = False
             if cancel_event is not None and self._active_generate_cancel is cancel_event:
                 # Covers a worker that failed before reaching generate()'s finally; identity-guarded so a direct generate() keeps its handle.
@@ -5159,6 +5274,7 @@ class VideoBackend:
         flow_shift: Optional[float] = None,
         audio_flow_shift: Optional[float] = None,
         cancel_event: Optional[threading.Event] = None,
+        _resolved_inputs: Optional[_VideoResolvedInputs] = None,
     ) -> dict[str, Any]:
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
@@ -5170,6 +5286,8 @@ class VideoBackend:
                 state = self._state
                 if state is None:
                     raise RuntimeError(VIDEO_NOT_LOADED_MSG)
+                if _resolved_inputs is not None and _resolved_inputs.state is not state:
+                    raise RuntimeError(VIDEO_CANCELLED_MSG)
                 self._active_generate_cancel = cancel
             # Bound below, once the request is resolved. None means the failure beat the
             # resolution, and there is nothing truthful to report.
@@ -5181,22 +5299,35 @@ class VideoBackend:
                 # the pipeline sits on the selected one.
                 self._state_device_target(state)
                 fam = state.family
-                first_pil, last_pil, width, height, conditioning = self._resolve_keyframes(
-                    fam, state.h3_task, first_frame, last_frame, width, height
-                )
-                references = self._resolve_references(
-                    fam,
-                    state.h3_task,
-                    state.engine,
-                    reference_images,
-                    reference_videos,
-                    reference_audios,
-                    reference_image_size,
-                    width,
-                    height,
-                )
-                if references:
-                    conditioning = h3_conditioning_mode(has_references = True)
+                if _resolved_inputs is None:
+                    first_pil, last_pil, width, height, conditioning = self._resolve_keyframes(
+                        fam, state.h3_task, first_frame, last_frame, width, height
+                    )
+                    references = self._resolve_references(
+                        fam,
+                        state.h3_task,
+                        state.engine,
+                        reference_images,
+                        reference_videos,
+                        reference_audios,
+                        reference_image_size,
+                        width,
+                        height,
+                    )
+                    if references:
+                        conditioning = h3_conditioning_mode(has_references = True)
+                    shift, audio_shift = self._resolve_flow_shifts(
+                        fam, state.engine, flow_shift, audio_flow_shift
+                    )
+                else:
+                    first_pil = _resolved_inputs.first_frame
+                    last_pil = _resolved_inputs.last_frame
+                    width = _resolved_inputs.width
+                    height = _resolved_inputs.height
+                    conditioning = _resolved_inputs.conditioning
+                    references = _resolved_inputs.references
+                    shift = _resolved_inputs.flow_shift
+                    audio_shift = _resolved_inputs.audio_flow_shift
                 frames = snap_num_frames(fam, num_frames or fam.default_num_frames)
                 out_fps = (
                     fam.default_fps if fam.name == "minimax-h3" else int(fps or fam.default_fps)
@@ -5231,10 +5362,6 @@ class VideoBackend:
                 if not fam.supports_cfg:
                     guidance = float(fam.default_guidance)
                     negative_prompt = None
-                shift, audio_shift = self._resolve_flow_shifts(
-                    fam, state.engine, flow_shift, audio_flow_shift
-                )
-
                 if state.engine == "sd_cpp":
                     return self._generate_h3_native(
                         state = state,
@@ -5649,6 +5776,7 @@ class VideoBackend:
             MiniMaxH3References,
             decode_h3_reference_audio,
             decode_h3_reference_video,
+            validate_h3_reference_trim,
         )
 
         images = list(reference_images or [])
@@ -5669,7 +5797,12 @@ class VideoBackend:
 
         fitted_images = tuple(
             fit_h3_reference_image(
-                decode_b64_image(item, mode = "RGB"),
+                decode_b64_image(
+                    item,
+                    mode = "RGB",
+                    max_side = H3_REF_IMAGE_SOURCE_MAX_SIDE,
+                    max_pixels = H3_REF_IMAGE_SOURCE_MAX_PIXELS,
+                ),
                 width = width,
                 height = height,
                 policy = policy,
@@ -5679,10 +5812,26 @@ class VideoBackend:
         decoded_videos = []
         for item in videos:
             blob = _decode_b64_media(item.get("video") if isinstance(item, dict) else item)
-            frames, waveform, sample_rate = decode_h3_reference_video(blob)
+            trim_start = item.get("trim_start_seconds") if isinstance(item, dict) else None
+            trim_end = item.get("trim_end_seconds") if isinstance(item, dict) else None
             override = item.get("audio") if isinstance(item, dict) else None
+            frames, waveform, sample_rate = decode_h3_reference_video(
+                blob,
+                trim_start_seconds = trim_start,
+                trim_end_seconds = trim_end,
+                decode_audio = not bool(override),
+            )
             if override:
-                waveform, sample_rate = decode_h3_reference_audio(_decode_b64_media(override))
+                # A replacement soundtrack is a separate upload on its own timeline: it starts
+                # at its own zero and runs the clip's length. The video's coordinates dropped
+                # its first trim_start seconds and refused anything shorter. Only the embedded
+                # track shares the video's timeline.
+                clip = validate_h3_reference_trim(trim_start, trim_end)
+                waveform, sample_rate = decode_h3_reference_audio(
+                    _decode_b64_media(override),
+                    trim_start_seconds = None if clip is None else 0.0,
+                    trim_end_seconds = None if clip is None else clip[1] - clip[0],
+                )
             decoded_videos.append((frames, waveform, sample_rate))
         if engine == "sd_cpp":
             soundtrack_gap = False
@@ -6116,3 +6265,9 @@ def get_video_backend() -> VideoBackend:
         if _backend is None:
             _backend = VideoBackend()
         return _backend
+
+
+def generation_in_flight() -> bool:
+    """Read the background-job marker without constructing or locking the backend."""
+    backend = _backend
+    return backend is not None and bool(backend._generate_job_active)

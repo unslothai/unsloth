@@ -15,8 +15,8 @@ const { store } = installLocalStorageFake();
  * `unsloth_model_configs` map.
  *
  * Until now this had no test at all. Its only coverage was one step of
- * tests/studio/playwright_model_config.py, which needs a browser, a booted Studio and a
- * downloaded GGUF, and which races that Studio's own network traffic -- so a defect here
+ * tests/studio/playwright_model_config.py, which needs a browser, a booted Unsloth and a
+ * downloaded GGUF, and which races that Unsloth's own network traffic -- so a defect here
  * surfaced as an intermittent red on a job nobody could run locally, and the assertion it
  * failed ("not migrated into unsloth_model_configs") named the migration for damage the
  * migration had not done. These pin the contract directly, in milliseconds.

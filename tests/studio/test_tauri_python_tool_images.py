@@ -39,7 +39,7 @@ def test_desktop_csp_has_no_explicit_http_loopback_image_source() -> None:
     ]
     assert loopback == []
     assert "blob:" in directives["img-src"]
-    # The boundary is the HTTP Studio backend regression. Ordinary remote
+    # The boundary is the HTTP Unsloth backend regression. Ordinary remote
     # HTTPS images remain supported, including HTTPS loopback if its certificate
     # is trusted by the host.
     assert "https:" in directives["img-src"]

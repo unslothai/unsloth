@@ -25,6 +25,10 @@ import {
   isOpenWebUIRecord,
   openWebUIRecordToConversation,
 } from "./openwebui-import";
+import {
+  isOpenAIMessageRecord,
+  messageJsonlConversationRecord,
+} from "./ndjson";
 
 /** CSV has no record framing to stream on, so it is still read whole. */
 const CSV_MAX_BYTES = 64 * 1024 * 1024;
@@ -109,6 +113,32 @@ export function nativeImportSource(handle: {
 
 // role:"tool" results are absorbed into the preceding assistant tool-call
 // part's `result` field rather than becoming separate records.
+function oaiContentToParts(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) {
+    return typeof raw === "string" && raw.trim()
+      ? [{ type: "text", text: raw }]
+      : [];
+  }
+
+  return raw.flatMap((value): unknown[] => {
+    if (typeof value !== "object" || value === null) return [];
+    const part = value as Record<string, unknown>;
+    if (part.type === "text" && typeof part.text === "string") {
+      return [{ type: "text", text: part.text }];
+    }
+    if (part.type === "image_url") {
+      const imageUrl =
+        typeof part.image_url === "object" && part.image_url !== null
+          ? (part.image_url as Record<string, unknown>).url
+          : undefined;
+      return typeof imageUrl === "string" && imageUrl
+        ? [{ type: "image", image: imageUrl }]
+        : [];
+    }
+    return [];
+  });
+}
+
 function oaiMessagesToRecords(
   oaiMsgs: unknown[],
   threadId: string,
@@ -136,10 +166,7 @@ function oaiMessagesToRecords(
     let content: unknown[];
 
     if (role === "assistant") {
-      const parts: unknown[] = [];
-      if (typeof msg.content === "string" && msg.content.trim()) {
-        parts.push({ type: "text", text: msg.content });
-      }
+      const parts = oaiContentToParts(msg.content);
       if (Array.isArray(msg.tool_calls)) {
         for (const tc of msg.tool_calls) {
           const tcObj = tc as Record<string, unknown>;
@@ -164,22 +191,7 @@ function oaiMessagesToRecords(
       }
       content = parts;
     } else {
-      const raw = msg.content;
-      if (Array.isArray(raw)) {
-        content = raw.flatMap((p): unknown[] => {
-          const part = p as Record<string, unknown>;
-          if (part.type === "text" && typeof part.text === "string") {
-            return [{ type: "text", text: part.text }];
-          }
-          if (part.type === "image_url") {
-            const iu = (part.image_url as Record<string, unknown>) ?? {};
-            return [{ type: "image", image: typeof iu.url === "string" ? iu.url : "" }];
-          }
-          return [];
-        });
-      } else {
-        content = typeof raw === "string" && raw.trim() ? [{ type: "text", text: raw }] : [];
-      }
+      content = oaiContentToParts(msg.content);
     }
 
     if (content.length === 0) continue;
@@ -188,7 +200,7 @@ function oaiMessagesToRecords(
       id,
       threadId,
       parentId: prevId,
-      role: role as MessageRecord["role"],
+      role: (role === "developer" ? "system" : role) as MessageRecord["role"],
       content: content as MessageRecord["content"],
       createdAt: baseTs + idx,
     });
@@ -298,6 +310,7 @@ export function parseImportText(
   }
 
   const results: ParsedConversation[] = [];
+  const messageRecords: Record<string, unknown>[] = [];
   let index = 0;
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -307,8 +320,17 @@ export function parseImportText(
     } catch {
       continue;
     }
-    const parsed = recordToConversation(record, `${basename} ${index + 1}`);
     index++;
+    if (isOpenAIMessageRecord(record)) {
+      messageRecords.push(record);
+      continue;
+    }
+    const parsed = recordToConversation(record, `${basename} ${index}`);
+    if (parsed) results.push(parsed);
+  }
+  const messageConversation = messageJsonlConversationRecord(messageRecords);
+  if (messageConversation) {
+    const parsed = recordToConversation(messageConversation, basename);
     if (parsed) results.push(parsed);
   }
   return results;
@@ -366,6 +388,7 @@ export async function importConversationsFromSource(
   }
 
   const inFlight = new Set<Promise<void>>();
+  const messageRecords: Record<string, unknown>[] = [];
   let index = 0;
   let failure: unknown;
   let reportedBytes = 0;
@@ -384,8 +407,12 @@ export async function importConversationsFromSource(
         progress.failed++;
       },
     })) {
-      const conversation = recordToConversation(record, `${basename} ${index + 1}`);
       index++;
+      if (isOpenAIMessageRecord(record)) {
+        messageRecords.push(record);
+        continue;
+      }
+      const conversation = recordToConversation(record, `${basename} ${index}`);
       if (!conversation) continue;
 
       const task = writeConversation(conversation, projectId)
@@ -406,6 +433,21 @@ export async function importConversationsFromSource(
   } catch (error) {
     // A read that dies partway still leaves earlier chats saved.
     failure = error;
+  }
+
+  if (failure === undefined) {
+    const messageConversation = messageJsonlConversationRecord(messageRecords);
+    const conversation = messageConversation
+      ? recordToConversation(messageConversation, basename)
+      : null;
+    if (conversation) {
+      try {
+        await writeConversation(conversation, projectId);
+        progress.imported++;
+      } catch {
+        progress.failed++;
+      }
+    }
   }
 
   await Promise.allSettled(inFlight);
