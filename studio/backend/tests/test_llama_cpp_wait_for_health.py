@@ -114,9 +114,7 @@ class TestWaitForHealthResilience:
         scoped.set()
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
         started = time.monotonic()
-        assert b._wait_for_health(
-            timeout = 30.0, interval = 0.01, cancelled = scoped.is_set
-        ) is False
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01, cancelled = scoped.is_set) is False
         assert time.monotonic() - started < 1.0
         assert not any("health check timed out" in ln for ln in b._stdout_lines)
 
