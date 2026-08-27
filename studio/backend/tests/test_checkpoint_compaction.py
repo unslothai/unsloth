@@ -658,16 +658,12 @@ def test_the_count_request_declares_the_studio_tool_history_marker():
     branch[2]["tool_calls"][0]["function"]["name"] = "python"
     branch[3]["name"] = "python"
 
-    payload = ChatCountTokensRequest(
-        model = "local", messages = branch, studio_tool_history = True
-    )
+    payload = ChatCountTokensRequest(model = "local", messages = branch, studio_tool_history = True)
     assert payload.studio_tool_history is True
     assert inference_route._only_studio_tool_history(payload) is True
     assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is False
 
-    denied = ChatCountTokensRequest(
-        model = "local", messages = branch, studio_tool_history = "false"
-    )
+    denied = ChatCountTokensRequest(model = "local", messages = branch, studio_tool_history = "false")
     assert denied.studio_tool_history is False
     assert inference_route._only_studio_tool_history(denied) is False
 
