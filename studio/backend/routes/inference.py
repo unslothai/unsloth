@@ -4421,14 +4421,21 @@ async def _select_request_tools(
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
-    # Memory/rims tools are episode-bound. Offering them on ordinary Studio chat
-    # writes to ~/.unforgettable/memory.db (no bind) or surprises the user.
+    # Memory/rims specs live in Apache, not ALL_TOOLS. Offer them only on the
+    # inner generate of the virtual model so ordinary Studio chat never sees them.
     try:
         from core.unforgettable_host import in_inner_generate
-        from unforgettable.tools.specs import CONTACT_TOOL_NAMES, MEMORY_TOOL_NAMES
-        if not in_inner_generate():
-            skip = MEMORY_TOOL_NAMES | CONTACT_TOOL_NAMES
-            tools = [t for t in tools if t["function"]["name"] not in skip]
+        from unforgettable.tools.specs import CONTACT_TOOLS, MEMORY_TOOLS
+
+        if in_inner_generate():
+            have = {t["function"]["name"] for t in tools}
+            extras = [
+                spec
+                for spec in (*MEMORY_TOOLS, *CONTACT_TOOLS)
+                if spec["function"]["name"] not in have
+            ]
+            if extras:
+                tools = list(tools) + extras
     except Exception:
         pass
     # Same rule for the conversation archive: offered only once this thread has had turns

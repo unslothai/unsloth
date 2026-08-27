@@ -82,3 +82,40 @@ def test_compact_defaults_to_dry_run(client):
     )
     report = http.post("/api/unforgettable/compact", json = {}).json()
     assert report["dry_run"] is True
+
+
+def test_settings_get_and_put(client, monkeypatch):
+    http, db_path = client
+    import routes.unforgettable as routes_mod
+
+    values = {
+        "planner": "off",
+        "planner_model": None,
+        "stakes": None,
+        "confirm_retry": None,
+        "skip_standing": False,
+        "adapter_id": None,
+        "test_command": None,
+        "max_clones": None,
+        "max_sim_turns": None,
+        "voter": "off",
+        "voter_model": None,
+        "supervisor_url": None,
+        "supervisor_timeout": 30.0,
+        "db_path": str(db_path),
+        "namespace": "default",
+    }
+
+    monkeypatch.setattr(routes_mod, "get_unforgettable_settings", lambda: dict(values))
+
+    def _set(patch):
+        values.update(patch)
+        return dict(values)
+
+    monkeypatch.setattr(routes_mod, "set_unforgettable_settings", _set)
+    got = http.get("/api/unforgettable/settings")
+    assert got.status_code == 200
+    assert got.json()["planner"] == "off"
+    put = http.put("/api/unforgettable/settings", json = {"planner": "on"})
+    assert put.status_code == 200
+    assert put.json()["planner"] == "on"

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TranslationKey } from "@/i18n";
+import { UNFORGETTABLE_SEARCH_KEYS } from "../unforgettable/studio-ui";
 import type { SettingsTab } from "./stores/settings-dialog-store";
 
 /**
@@ -160,25 +161,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.readAloud.volumeLabel",
     "settings.voice.readAloud.previewLabel",
   ],
-  unforgettable: [
-    "settings.unforgettable.title",
-    "settings.unforgettable.episode.title",
-    "settings.unforgettable.episode.planner",
-    "settings.unforgettable.episode.plannerModel",
-    "settings.unforgettable.episode.highStakes",
-    "settings.unforgettable.episode.confirmRetry",
-    "settings.unforgettable.episode.skipStanding",
-    "settings.unforgettable.episode.adapter",
-    "settings.unforgettable.episode.testCommand",
-    "settings.unforgettable.episode.maxClones",
-    "settings.unforgettable.episode.maxSimTurns",
-    "settings.unforgettable.approver.title",
-    "settings.unforgettable.approver.voter",
-    "settings.unforgettable.approver.voterModel",
-    "settings.unforgettable.approver.supervisorUrl",
-    "settings.unforgettable.store.title",
-    "settings.unforgettable.store.path",
-  ],
+  unforgettable: [...UNFORGETTABLE_SEARCH_KEYS],
   "keyboard-shortcuts": [
     // The tab title and every action label, so searching "sidebar" or
     // "new chat" from the settings search lands on the row itself.

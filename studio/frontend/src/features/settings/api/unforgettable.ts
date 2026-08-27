@@ -37,7 +37,7 @@ export function subscribeUnforgettableSettings(
 }
 
 async function fetchSettings(): Promise<UnforgettableSettings> {
-  const res = await authFetch("/api/settings/unforgettable");
+  const res = await authFetch("/api/unforgettable/settings");
   if (!res.ok) {
     throw new Error(
       await readFastApiError(res, "Failed to load Unforgettable settings"),
@@ -63,7 +63,7 @@ export function peekUnforgettableSettings() {
 export async function updateUnforgettableSettings(
   patch: Partial<UnforgettableSettings>,
 ): Promise<UnforgettableSettings> {
-  const res = await authFetch("/api/settings/unforgettable", {
+  const res = await authFetch("/api/unforgettable/settings", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),

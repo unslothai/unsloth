@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from unforgettable import VIRTUAL_MODEL_ID, inner_model_id, is_virtual_model
+from unforgettable.sidecar.peft import is_peft_adapter_dir, peft_adapter_name
 from unforgettable.supervisor import coerce_filter_flag, coerce_planner_flag
 from unforgettable.host import (
     EXTRACT_MAX_TOKENS,
@@ -47,28 +48,6 @@ _BUFFERED_STREAM_CHUNK_ID = "chatcmpl-unforgettable"
 _TOOL_APPROVAL_FLUSH_DELAY_S = 0.05
 
 
-def is_peft_adapter_dir(path: str | os.PathLike[str] | None) -> bool:
-    """True when ``path`` is a PEFT adapter directory, not a fake sidecar dir."""
-    if not path:
-        return False
-    root = Path(path)
-    cfg_path = root / "adapter_config.json"
-    if not root.is_dir() or not cfg_path.is_file():
-        return False
-    try:
-        data = json.loads(cfg_path.read_text(encoding = "utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(data, dict) or data.get("fake"):
-        return False
-    return "peft_type" in data or "base_model_name_or_path" in data
-
-
-def peft_adapter_name(path: str | os.PathLike[str]) -> str:
-    """Stable PEFT adapter id derived from the directory name."""
-    return Path(path).name.replace(".", "_")
-
-
 def in_inner_generate() -> bool:
     return bool(_INNER.get())
 
@@ -81,6 +60,66 @@ def catalog_entry(created: int | None = None) -> dict:
         "owned_by": "unforgettable",
         "loaded": True,
     }
+
+
+def snapshot_adapter_state(backend) -> Optional[dict]:
+    """Record which adapter was live so a sidecar attach can be undone."""
+    from peft import PeftModel, PeftModelForCausalLM
+
+    base = backend.active_model_name
+    if not base or base not in backend.models:
+        return None
+    model = backend.models[base].get("model")
+    if model is None:
+        return None
+    base_tuner = getattr(model, "base_model", None)
+    return {
+        "base": base,
+        "was_peft": isinstance(model, (PeftModel, PeftModelForCausalLM)),
+        "active": backend.models[base].get("active_adapter"),
+        "disabled": bool(getattr(base_tuner, "_disable_adapters", False)),
+    }
+
+
+def restore_sidecar_adapter(backend, snap: Optional[dict]) -> None:
+    from peft import PeftModel, PeftModelForCausalLM
+
+    if not snap:
+        return
+    base = snap.get("base") or backend.active_model_name
+    if not base or base not in backend.models:
+        return
+    model = backend.models[base].get("model")
+    if model is None or not isinstance(model, (PeftModel, PeftModelForCausalLM)):
+        return
+    if not snap.get("was_peft") or snap.get("disabled"):
+        model.base_model.disable_adapter_layers()
+        return
+    model.base_model.enable_adapter_layers()
+    previous = snap.get("active")
+    if previous:
+        backend.set_active_adapter(base, previous)
+
+
+def prepare_sidecar_adapter(backend, use_adapter):
+    """Load a PEFT dir onto the live model and return a named adapter for upstream apply.
+
+    Returns ``(use_adapter, snapshot)``. Snapshot is None when this is not a
+    sidecar path, so the caller can skip restore. A failed load returns
+    ``(None, snapshot)`` so generation keeps the previous adapter.
+    """
+    if not isinstance(use_adapter, str) or not is_peft_adapter_dir(use_adapter):
+        return use_adapter, None
+    snap = snapshot_adapter_state(backend)
+    name = peft_adapter_name(use_adapter)
+    base = backend.active_model_name
+    if not base or not backend.load_adapter(base, use_adapter, name):
+        _log.warning(
+            "use_adapter path '%s' did not load; inner generate stays on the base",
+            use_adapter,
+        )
+        return None, snap
+    return name, snap
 
 
 _MESSAGE_EXTRA_KEYS = ("name", "tool_call_id", "tool_calls")
@@ -752,5 +791,16 @@ __all__ = [
     "is_peft_adapter_dir",
     "is_virtual_model",
     "peft_adapter_name",
+    "prepare_sidecar_adapter",
+    "restore_sidecar_adapter",
     "union_unforgettable_enabled_tools",
 ]
+
+
+def _install_tool_patches() -> None:
+    from core.unforgettable_patches import install
+
+    install()
+
+
+_install_tool_patches()

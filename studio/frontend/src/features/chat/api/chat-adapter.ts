@@ -5895,11 +5895,10 @@ export function createOpenAIStreamAdapter(
             params.checkpoint,
             await loadUnforgettableSettings().catch(() => null),
           );
-          return {
+          const request: OpenAIChatCompletionsRequest = {
             model: params.checkpoint,
             messages: outboundMessages,
             stream: true,
-            ...unforgettableExtras,
             ...(continuation ? { continue_final_message: true } : {}),
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
@@ -6036,6 +6035,8 @@ export function createOpenAIStreamAdapter(
                 // tool pill lit has to say so.
                 { enable_tools: false }),
           };
+          Object.assign(request, unforgettableExtras);
+          return request;
         };
 
         let retriedWithRefreshedKey = false;

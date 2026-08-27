@@ -325,6 +325,7 @@ from hub.routes import (
     token_router as hub_token_router,
 )
 from picker.routes import templates_router as picker_templates_router
+from core.unforgettable_patches import install as install_unforgettable_patches
 from hub.schemas.downloads import TransportCapabilities
 from hub.utils.download_registry import (
     get_download_transport_capabilities,
@@ -1433,6 +1434,7 @@ app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(unforgettable_router, prefix = "/api/unforgettable", tags = ["unforgettable"])
+install_unforgettable_patches()
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])

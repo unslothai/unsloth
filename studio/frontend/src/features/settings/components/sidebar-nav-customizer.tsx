@@ -3,7 +3,6 @@
 
 import {
   AudioWave01Icon,
-  Bookmark02Icon,
   ChefHatIcon,
   DashboardCircleIcon,
   DownloadSquare01Icon,
@@ -18,6 +17,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
 import { Switch } from "@/components/ui/switch";
+import { UNFORGETTABLE_NAV_ITEM_META } from "@/features/unforgettable/studio-ui";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
@@ -38,10 +38,7 @@ const ITEM_META: Record<
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },
   export: { icon: DownloadSquare01Icon, labelKey: "shell.navigation.export" },
   api: { icon: Globe02Icon, labelKey: "shell.navigation.api" },
-  unforgettable: {
-    icon: Bookmark02Icon,
-    labelKey: "shell.navigation.unforgettable",
-  },
+  unforgettable: UNFORGETTABLE_NAV_ITEM_META,
 };
 
 function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {

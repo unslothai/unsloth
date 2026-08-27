@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { unforgettableMessages } from "../features/unforgettable/i18n/en";
+import { mergeMessageTrees } from "../features/unforgettable/i18n/merge-message-trees";
 import { getLocale } from "./locale-store";
 import { en as upstreamEnglish } from "./locales/en";
-import { mergeMessageTrees } from "./merge-message-trees";
 import type { InterpolationValues, MessageKey, MessageTree } from "./types";
-import { unforgettableMessages } from "./unforgettable-messages";
 
 const en = mergeMessageTrees(upstreamEnglish, unforgettableMessages);
 

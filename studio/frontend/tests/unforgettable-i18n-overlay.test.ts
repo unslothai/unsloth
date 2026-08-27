@@ -9,11 +9,11 @@ registerBundlerResolver();
 
 const { en: upstreamEnglish } = await import("../src/i18n/locales/en.ts");
 const { mergeMessageTrees } = await import(
-  "../src/i18n/merge-message-trees.ts"
+  "../src/features/unforgettable/i18n/merge-message-trees.ts"
 );
 const messagesModule = await import("../src/i18n/messages.ts");
 const { unforgettableMessages } = await import(
-  "../src/i18n/unforgettable-messages.ts"
+  "../src/features/unforgettable/i18n/en.ts"
 );
 
 test("upstream English has no Unforgettable keys", () => {

@@ -182,6 +182,30 @@ def test_enabled_tools_union_keeps_pills_and_adds_apache_tools():
     assert union_unforgettable_enabled_tools(None) is None
 
 
+def test_studio_tools_list_does_not_ship_memory_specs():
+    from core.inference.tools import ALL_TOOLS
+
+    names = {tool["function"]["name"] for tool in ALL_TOOLS}
+    assert "memory_write" not in names
+    assert "rims_enter_sim" not in names
+
+
+def test_execute_tool_patch_dispatches_memory_and_marks_safe(tmp_path):
+    from core.unforgettable_patches import install
+    from unforgettable.loop.runtime import bind_episode, reset_episode
+
+    install()
+    from core.inference.tools import execute_tool, is_always_safe_tool
+
+    assert is_always_safe_tool("memory_search") is True
+    tokens, _ = bind_episode(db_path = str(tmp_path / "memory.db"), episode_id = "ep-tools")
+    try:
+        result = execute_tool("memory_search", {"query": "nothing"})
+    finally:
+        reset_episode(tokens)
+    assert isinstance(result, str)
+
+
 def _install_execute_tool(monkeypatch, fn) -> None:
     name = "core.inference.tools"
     if name not in sys.modules:
@@ -460,9 +484,8 @@ def test_studio_host_generate_skips_fake_adapter_dir(tmp_path):
     assert seen["use_adapter"] is None
 
 
-def test_apply_adapter_state_loads_peft_directory(tmp_path):
-    pytest.importorskip("torch")
-    from core.inference.inference import InferenceBackend
+def test_prepare_sidecar_adapter_loads_peft_directory(tmp_path):
+    from core.unforgettable_host import prepare_sidecar_adapter
 
     peft = tmp_path / "ada-path"
     peft.mkdir()
@@ -472,31 +495,15 @@ def test_apply_adapter_state_loads_peft_directory(tmp_path):
     )
     loaded = []
 
-    class FakeModel:
-        def __init__(self):
-            self.peft_config = {}
-            self.base_model = types.SimpleNamespace(
-                _disable_adapters = False,
-                enable_adapter_layers = lambda: None,
-                disable_adapter_layers = lambda: None,
-            )
+    class FakeBackend:
+        active_model_name = "qwen"
+        models = {"qwen": {"model": object(), "active_adapter": None}}
 
-        def load_adapter(
-            self,
-            path,
-            adapter_name = None,
-        ):
-            loaded.append((path, adapter_name))
-            self.peft_config[adapter_name] = path
+        def load_adapter(self, base, path, name):
+            loaded.append((base, path, name))
+            return True
 
-        def set_adapter(self, name):
-            self.active = name
-
-    backend = InferenceBackend.__new__(InferenceBackend)
-    model = FakeModel()
-    backend.models = {"qwen": {"model": model, "active_adapter": None, "loaded_adapters": {}}}
-    backend.active_model_name = "qwen"
-    backend._apply_adapter_state(str(peft))
-    assert loaded == [(str(peft), "ada-path")]
-    assert model.active == "ada-path"
-    assert backend.models["qwen"]["active_adapter"] == "ada-path"
+    name, snap = prepare_sidecar_adapter(FakeBackend(), str(peft))
+    assert name == "ada-path"
+    assert loaded == [("qwen", str(peft), "ada-path")]
+    assert snap is not None

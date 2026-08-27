@@ -4563,17 +4563,8 @@ def _render_html_reaches_network(arguments: dict) -> bool:
 # prompt for approval on every call. deep_research runs no code and reaches nothing either: it
 # only reports that the user's own armed research is starting, and without it here
 # is_high_risk_tool_call's unknown-name default would prompt on every handoff.
-# memory_search / memory_get are read-only notebook lookups used by the unforgettable
-# virtual model.
 _ALWAYS_SAFE_TOOLS = frozenset(
-    {
-        "web_search",
-        "search_knowledge_base",
-        "search_conversation",
-        "deep_research",
-        "memory_search",
-        "memory_get",
-    }
+    {"web_search", "search_knowledge_base", "search_conversation", "deep_research"}
 )
 
 
@@ -9936,8 +9927,6 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
     },
 }
 
-from unforgettable.tools.specs import CONTACT_TOOLS, MEMORY_TOOLS
-
 SEARCH_CONVERSATION_TOOL = {
     "type": "function",
     "function": {
@@ -9973,8 +9962,6 @@ ALL_TOOLS = [
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
     SEARCH_CONVERSATION_TOOL,
-    *MEMORY_TOOLS,
-    *CONTACT_TOOLS,
 ]
 
 # Deliberately an ordinary tool with an ordinary result. Studio runs three tool loops -- one for
@@ -10255,70 +10242,49 @@ def execute_tool(
     # last result overflow.
     _REQUEST_RESULT_BUDGET.set(result_budget_tokens)
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
-
-    def _finish(result: str) -> str:
-        try:
-            from unforgettable.loop.runtime import note_tool_result
-            note_tool_result(name, arguments or {}, result)
-        except Exception:
-            pass
-        return result
-
-    if (
-        name.startswith("memory_")
-        or name.startswith("memory.")
-        or name.startswith("rims_")
-        or name.startswith("rims.")
-    ):
-        from unforgettable.tools.handlers import dispatch
-        return _finish(dispatch(name, arguments or {}))
     if name == "search_knowledge_base":
-        return _finish(
-            _fit_result_to_room(
-                _search_knowledge_base_with_budget(
-                    arguments,
-                    rag_scope,
-                    effective_timeout,
-                    cancel_event,
-                ),
-                name,
-            )
+        return _fit_result_to_room(
+            _search_knowledge_base_with_budget(
+                arguments,
+                rag_scope,
+                effective_timeout,
+                cancel_event,
+            ),
+            name,
         )
     if name == "search_conversation":
         # Scoped by thread id alone: the archive is this chat's own evicted turns, so it
         # works with or without a document rag_scope.
-        return _finish(
-            _fit_result_to_room(
-                _search_knowledge_base_with_budget(
-                    arguments,
-                    {
-                        "thread_id": thread_id,
-                        "branch_messages": conversation_branch,
-                        "budget_tokens": conversation_budget_tokens,
-                        "token_counter": conversation_token_counter,
-                    },
-                    effective_timeout,
-                    cancel_event,
-                    search_fn = _search_conversation,
-                ),
-                name,
-            )
+        return _fit_result_to_room(
+            _search_knowledge_base_with_budget(
+                arguments,
+                {
+                    "thread_id": thread_id,
+                    "branch_messages": conversation_branch,
+                    "budget_tokens": conversation_budget_tokens,
+                    "token_counter": conversation_token_counter,
+                },
+                effective_timeout,
+                cancel_event,
+                search_fn = _search_conversation,
+            ),
+            name,
         )
     if name == "render_html":
-        return _finish(_fit_result_to_room(_render_html_result(arguments), name))
+        return _fit_result_to_room(_render_html_result(arguments), name)
     if name.startswith(MCP_TOOL_PREFIX):
         try:
             _, server_id, tool_name = name.split("__", 2)
         except ValueError:
-            return _finish(f"Error: malformed MCP tool name '{name}'")
+            return f"Error: malformed MCP tool name '{name}'"
         server = mcp_servers_db.get_server(server_id)
         if not server:
-            return _finish(f"Error: MCP server for tool '{tool_name}' not found")
+            return f"Error: MCP server for tool '{tool_name}' not found"
         display = server.get("display_name") or server_id
         if not server.get("is_enabled"):
-            return _finish(f"Error: MCP server '{display}' is disabled")
+            return f"Error: MCP server '{display}' is disabled"
         if is_stdio(server["url"]) and not stdio_mcp_enabled():
-            return _finish(f"Error: stdio MCP server '{display}' is disabled on this host")
+            return f"Error: stdio MCP server '{display}' is disabled on this host"
         # Persist a stateful stdio session only per conversation (thread_id).
         # session_id is the project-wide sandbox id, so scoping by it alone leaks
         # browser/DB/REPL state across conversations; fall back to one-shot. Tag +
@@ -10344,84 +10310,74 @@ def execute_tool(
                 and parse_server_headers(row) == headers
             )
 
-        return _finish(
-            _fit_result_to_room(
-                call_tool_sync(
-                    url = url,
-                    headers = headers,
-                    name = tool_name,
-                    args = arguments,
-                    timeout = effective_timeout,
-                    use_oauth = bool(server.get("use_oauth")),
-                    cancel_event = cancel_event,
-                    scope = mcp_scope,
-                    config_check = _config_current,
-                ),
-                name,
-            )
+        return _fit_result_to_room(
+            call_tool_sync(
+                url = url,
+                headers = headers,
+                name = tool_name,
+                args = arguments,
+                timeout = effective_timeout,
+                use_oauth = bool(server.get("use_oauth")),
+                cancel_event = cancel_event,
+                scope = mcp_scope,
+                config_check = _config_current,
+            ),
+            name,
         )
     if name == "deep_research":
         if not str(arguments.get("question") or "").strip():
             return "Error: deep_research needs a question to investigate."
         return DEEP_RESEARCH_STARTED
     if name == "web_search":
-        return _finish(
-            _fit_result_to_room(
-                _web_search(
-                    arguments.get("query", ""),
-                    url = arguments.get("url"),
-                    timeout = effective_timeout,
-                    cancel_event = cancel_event,
-                    website_policy = website_policy,
-                    include_images = search_images,
-                    image_queries = arguments.get("image_queries"),
-                ),
-                name,
-            )
+        return _fit_result_to_room(
+            _web_search(
+                arguments.get("query", ""),
+                url = arguments.get("url"),
+                timeout = effective_timeout,
+                cancel_event = cancel_event,
+                website_policy = website_policy,
+                include_images = search_images,
+                image_queries = arguments.get("image_queries"),
+            ),
+            name,
         )
     # Both run with the session's sandbox as cwd, so a chat deleted mid-call
     # must not unlink it from under them.
     if name == "python":
         with _session_in_flight(session_id):
-            return _finish(
-                _python_exec(
-                    arguments.get("code", ""),
-                    cancel_event,
-                    effective_timeout,
-                    session_id,
-                    disable_sandbox = disable_sandbox,
-                    output_callback = output_callback,
-                    thread_id = thread_id,
-                )
+            return _python_exec(
+                arguments.get("code", ""),
+                cancel_event,
+                effective_timeout,
+                session_id,
+                disable_sandbox = disable_sandbox,
+                output_callback = output_callback,
+                thread_id = thread_id,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
-            return _finish(
-                _bash_exec(
-                    arguments.get("command", ""),
-                    cancel_event,
-                    effective_timeout,
-                    session_id,
-                    disable_sandbox = disable_sandbox,
-                    output_callback = output_callback,
-                    thread_id = thread_id,
-                )
+            return _bash_exec(
+                arguments.get("command", ""),
+                cancel_event,
+                effective_timeout,
+                session_id,
+                disable_sandbox = disable_sandbox,
+                output_callback = output_callback,
+                thread_id = thread_id,
             )
     # Same in-flight guard as the two above: it writes into the session workdir,
     # so a chat deleted mid-call must not unlink it underneath.
     if name == "edit_file":
         with _session_in_flight(session_id):
-            return _finish(
-                _fit_result_to_room(
-                    _edit_file(
-                        arguments,
-                        session_id = session_id,
-                        disable_sandbox = disable_sandbox,
-                    ),
-                    name,
-                )
+            return _fit_result_to_room(
+                _edit_file(
+                    arguments,
+                    session_id = session_id,
+                    disable_sandbox = disable_sandbox,
+                ),
+                name,
             )
-    return _finish(f"Unknown tool: {name}")
+    return f"Unknown tool: {name}"
 
 
 def _opt_int(v) -> int | None:

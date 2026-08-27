@@ -10,6 +10,10 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  loadUnforgettableSettingsTab,
+  UNFORGETTABLE_SETTINGS_TAB,
+} from "@/features/unforgettable/studio-ui";
 import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { MicIcon } from "@/lib/mic-icon";
@@ -21,7 +25,6 @@ import {
   CloudIcon,
   ComputerTerminal01Icon,
   CpuIcon,
-  Bookmark02Icon,
   DatabaseSettingIcon,
   EnergyRectangleIcon,
   Globe02Icon,
@@ -78,8 +81,7 @@ const TAB_LOADERS = {
   "remote-lan": () =>
     import("./tabs/remote-lan-tab").then((m) => ({ default: m.RemoteLanTab })),
   agents: () => import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
-  unforgettable: () =>
-    import("./tabs/unforgettable-tab").then((m) => ({ default: m.UnforgettableTab })),
+  unforgettable: loadUnforgettableSettingsTab,
   debugging: () =>
     import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
   about: () => import("./tabs/about-tab").then((m) => ({ default: m.AboutTab })),
@@ -223,12 +225,7 @@ const TABS: TabDef[] = [
     icon: EnergyRectangleIcon,
     badgeKey: "common.new",
   },
-  {
-    id: "unforgettable",
-    labelKey: "settings.tabs.unforgettable",
-    icon: Bookmark02Icon,
-    badgeKey: "common.new",
-  },
+  UNFORGETTABLE_SETTINGS_TAB,
   {
     id: "debugging",
     labelKey: "settings.tabs.debugging",

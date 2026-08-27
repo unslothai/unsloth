@@ -162,13 +162,15 @@ Optional (`getattr` skip):
 
 | File | What it may do |
 |------|----------------|
-| `studio/backend/core/unforgettable_host.py` | `StudioHost`, stream rewrite, `handle_chat_completions`, enabled-tool union, `supervise` one-shot, PEFT `use_adapter` attach |
-| `studio/backend/routes/unforgettable.py` | Thin HTTP face over `operators.py` + store inspect. No status math. |
-| `studio/backend/utils/unforgettable_settings.py` | Persisted episode defaults and voter knobs (`/api/settings/unforgettable`) |
-| `studio/backend/routes/inference.py` | If `is_virtual_model(model)` and not `in_inner_generate()` → `handle_chat_completions`; catalog entry |
-| `studio/backend/core/inference/tools.py` | `*MEMORY_TOOLS` + `*CONTACT_TOOLS` on `ALL_TOOLS` (inner generate only; `_select_request_tools` strips them when `not in_inner_generate()`); `execute_tool` dispatches `memory_*` / `rims_*` to Apache `dispatch` |
+| `studio/backend/core/unforgettable_host.py` | `StudioHost`, stream rewrite, `handle_chat_completions`, sidecar prepare/restore, `supervise` one-shot |
+| `studio/backend/core/unforgettable_patches.py` | `install()` wraps `execute_tool` (memory/rims `dispatch` + `note_tool_result`) and extends `_ALWAYS_SAFE_TOOLS`. Do not edit `tools.py`. |
+| `studio/backend/routes/unforgettable.py` | Thin HTTP face over `operators.py` + store inspect + `/settings`. No status math. |
+| `studio/backend/utils/unforgettable_settings.py` | Persisted episode defaults and voter knobs (`/api/unforgettable/settings`) |
+| `studio/backend/routes/inference.py` | If `is_virtual_model(model)` and not `in_inner_generate()` → `handle_chat_completions`; catalog entry; union memory/rims specs on inner generate only |
+| `studio/backend/core/inference/inference.py` | `generate_fn` calls `prepare_sidecar_adapter` / `restore_sidecar_adapter` around upstream `_apply_adapter_state` |
 | `studio/backend/core/inference/tool_stream_exec.py` | Copies ContextVars into the tool worker so episode bind survives the thread |
-| `studio/backend/models/inference.py` | Documents virtual model id + Unforgettable extra fields (`planner`, `planner_model`, `voter_model`, …) |
+| `studio/frontend/src/i18n/messages.ts` | Merges `features/unforgettable/i18n/en.ts` into each catalog at load |
+| `studio/frontend/src/features/unforgettable/` | Dashboard, chat extras, settings tab loader, search keys, i18n overlay |
 
 Policy, schema, clone, and admit **must not** grow in those files. If a function starts owning B or throne, move it back to Apache.
 
@@ -451,7 +453,7 @@ Names that later phases must keep green: `test_episode_fail_sim_retry_writes_err
 
 `studio/backend/tests/test_unforgettable_stream.py` — `_rewrite_inner_frame` (tool frames unchanged, `finish_reason` nulled, inner `[DONE]` dropped), stream drain/`aclose`, enabled-tools union, `run_action`/`confirm` SSE, ContextVar copy through `stream_tool_execution`, PEFT `use_adapter` attach. Needs Studio backend on `PYTHONPATH` and Studio Python extras (`structlog`, …).
 
-Frontend: `studio/frontend/tests/unforgettable-merge-extras.test.ts` — virtual-model extras merge and settings search index. Studio settings/routes: `studio/backend/tests/test_unforgettable_settings.py`, `test_unforgettable_routes.py`.
+Frontend: `studio/frontend/tests/unforgettable-merge-extras.test.ts` — virtual-model extras merge and settings search index. Overlay: `unforgettable-i18n-overlay.test.ts`. Studio settings/routes: `studio/backend/tests/test_unforgettable_settings.py`, `test_unforgettable_routes.py`.
 
 ---
 

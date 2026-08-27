@@ -1726,10 +1726,7 @@ class ChatCompletionRequest(BaseModel):
 
     model: str = Field(
         "default",
-        description = (
-            "Model identifier (informational; the active model is used). "
-            "Use 'unforgettable' or 'unforgettable/<base>' for the memory-aware episode loop."
-        ),
+        description = "Model identifier (informational; the active model is used)",
     )
     messages: list[ChatMessage] = Field(..., description = "Conversation messages")
     stream: bool = Field(
@@ -1897,9 +1894,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = (
             "[x-unsloth] List of enabled tool names. Local GGUF/safetensors models "
-            "accept ['web_search', 'python', 'terminal', 'edit_file', 'render_html']. The "
-            "unforgettable virtual model also unions memory_* and rims_enter_sim. "
-            "External "
+            "accept ['web_search', 'python', 'terminal', 'edit_file', 'render_html']. External "
             "providers accept ['web_search', 'web_fetch', 'code_execution'] for "
             "Anthropic and ['web_search', 'code_execution', 'image_generation'] for "
             "OpenAI Responses. If None, all local tools are enabled and no "
@@ -1938,93 +1933,6 @@ class ChatCompletionRequest(BaseModel):
             "'auto' for the per-call gate; a non-streaming request without an explicit "
             "mode cannot prompt and runs the loop. An unrecognized value (e.g. from a "
             "newer client) is treated as 'ask'."
-        ),
-    )
-    stakes: Optional[str] = Field(
-        None,
-        description = (
-            "[x-unsloth] Unforgettable retrieve stakes. 'high' drops sim/infer "
-            "from world retrieve and can require confirm before world retry."
-        ),
-    )
-    test_command: Optional[str] = Field(
-        None,
-        description = (
-            "[x-unsloth] Unforgettable sim test harness command. Overrides the "
-            "stored 'test command' procedure and tree detector."
-        ),
-    )
-    confirm_retry: Optional[bool] = Field(
-        None,
-        description = (
-            "[x-unsloth] Unforgettable: force (true) or skip (false) the "
-            "Allow/Deny card before retrying the world after sim."
-        ),
-    )
-    max_clones: Optional[int] = Field(
-        None,
-        ge = 1,
-        description = "[x-unsloth] Unforgettable max world→sim clones this episode.",
-    )
-    max_sim_turns: Optional[int] = Field(
-        None,
-        ge = 1,
-        description = "[x-unsloth] Unforgettable max budgeted sim generate turns.",
-    )
-    adapter_id: Optional[str] = Field(
-        None,
-        description = (
-            "[x-unsloth] Unforgettable sidecar adapter id to attach (shrinks "
-            "standing pack sources). Omit to keep Phase 4 inject."
-        ),
-    )
-    skip_standing: Optional[bool] = Field(
-        None,
-        description = "[x-unsloth] Unforgettable: skip compiled standing inject.",
-    )
-    planner: Optional[str] = Field(
-        None,
-        description = (
-            "[x-unsloth] Unforgettable planner overlay: on|off. When on, a "
-            "one-shot supervisor plan is injected into working memory for this "
-            "episode only. Default off, or UNFORGETTABLE_PLANNER."
-        ),
-    )
-    planner_model: Optional[str] = Field(
-        None,
-        description = (
-            "[x-unsloth] Unforgettable: model id for the planner complete. "
-            "Falls back to UNFORGETTABLE_PLANNER_MODEL, then the inner model."
-        ),
-    )
-    filter: Optional[str] = Field(
-        None,
-        description = (
-            "[x-unsloth] Unforgettable filter judge: on|off. When on (default), "
-            "a one-shot supervisor strips coercive and manipulative language "
-            "from the user prompt and keeps the technical remainder. "
-            "UNFORGETTABLE_FILTER=off disables."
-        ),
-    )
-    filter_model: Optional[str] = Field(
-        None,
-        description = (
-            "[x-unsloth] Unforgettable: model id for the filter complete. "
-            "Falls back to UNFORGETTABLE_FILTER_MODEL, then the inner model."
-        ),
-    )
-    user_label: Optional[str] = Field(
-        None,
-        description = (
-            "[x-unsloth] Unforgettable: optional speaker label for this operator "
-            "(copied onto speaker_label when the speaker is user)."
-        ),
-    )
-    voter_model: Optional[str] = Field(
-        None,
-        description = (
-            "[x-unsloth] Unforgettable: model id for the approval voter "
-            "(CLI review / admit). Falls back to UNFORGETTABLE_VOTER_MODEL."
         ),
     )
     auto_heal_tool_calls: Optional[bool] = Field(

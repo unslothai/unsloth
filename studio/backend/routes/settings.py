@@ -3409,59 +3409,6 @@ def update_personalization_settings(
     return PersonalizationPayload.model_validate(merged)
 
 
-class UnforgettableSettingsPayload(BaseModel):
-    model_config = ConfigDict(extra = "ignore")
-
-    planner: Optional[str] = None
-    planner_model: Optional[str] = None
-    stakes: Optional[str] = None
-    confirm_retry: Optional[bool] = None
-    skip_standing: Optional[bool] = None
-    adapter_id: Optional[str] = None
-    test_command: Optional[str] = None
-    max_clones: Optional[int] = Field(default = None, ge = 1)
-    max_sim_turns: Optional[int] = Field(default = None, ge = 1)
-    voter: Optional[str] = None
-    voter_model: Optional[str] = None
-    supervisor_url: Optional[str] = None
-    supervisor_timeout: Optional[float] = Field(default = None, gt = 0)
-
-
-class UnforgettableSettingsResponse(UnforgettableSettingsPayload):
-    db_path: str = ""
-    namespace: str = "default"
-
-
-def _unforgettable_settings_response() -> UnforgettableSettingsResponse:
-    from utils.unforgettable_settings import get_unforgettable_settings
-    return UnforgettableSettingsResponse.model_validate(get_unforgettable_settings())
-
-
-@router.get("/unforgettable", response_model = UnforgettableSettingsResponse)
-def get_unforgettable_settings_route(
-    current_subject: str = Depends(get_current_subject),
-) -> UnforgettableSettingsResponse:
-    return _unforgettable_settings_response()
-
-
-@router.put("/unforgettable", response_model = UnforgettableSettingsResponse)
-def update_unforgettable_settings_route(
-    payload: UnforgettableSettingsPayload, current_subject: str = Depends(get_current_subject)
-) -> UnforgettableSettingsResponse:
-    from utils.unforgettable_settings import set_unforgettable_settings
-    try:
-        set_unforgettable_settings(payload.model_dump(exclude_unset = True))
-    except ValueError as exc:
-        raise log_and_http_error(
-            exc,
-            400,
-            safe_error_detail(exc, fallback = "Invalid Unforgettable settings."),
-            event = "settings.update_unforgettable_failed",
-            log = logger,
-        ) from exc
-    return _unforgettable_settings_response()
-
-
 # ── Logs: read the log files from inside the app ─────────────────────────────
 # Backs the Settings > Logs tab. The session log always existed, but its
 # path was only printed to a console the desktop user never sees.
