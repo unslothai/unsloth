@@ -396,7 +396,10 @@
         const thinkText = think.appendChild(document.createElement("div"));
         const body = document.createElement("div");
         body.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
-        out.append(think, body);
+        const cutoff = document.createElement("div");
+        cutoff.className = "cutoff";
+        cutoff.hidden = true;
+        out.append(think, body, cutoff);
         let acc = "",
           reasoning = "",
           truncated = false;
@@ -459,14 +462,11 @@
             if (reasoning) reply.reasoning_content = reasoning;
             msgs.push(reply);
           }
-          if (!acc) {
-            if (truncated) {
-              body.className = "cutoff";
-              body.textContent = "Reply cut off at the preview length limit.";
-            } else {
-              body.textContent = "";
-            }
-          }
+          cutoff.hidden = !truncated;
+          cutoff.textContent = truncated
+            ? "Reply cut off at the preview length limit."
+            : "";
+          if (!acc) body.textContent = "";
         } catch (err) {
           // Keep any streamed text, flag the break, restore the prompt for retry.
           body.textContent = acc ? acc + "\n\n[connection lost]" : "Network error, please retry.";
