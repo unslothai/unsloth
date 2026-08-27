@@ -201,7 +201,8 @@ def _loader_call_names(call, loaders):
         return []
     function = call.func
     attribute = (
-        function.attr if isinstance(function, ast.Attribute)
+        function.attr
+        if isinstance(function, ast.Attribute)
         else (function.id if isinstance(function, ast.Name) else "")
     )
     if attribute not in _LOADER_ORIGINS and attribute not in loaders:
@@ -211,7 +212,8 @@ def _loader_call_names(call, loaders):
         if keyword.arg in ("modname", "name"):
             candidates.append(keyword.value)
     return [
-        first.value for first in candidates
+        first.value
+        for first in candidates
         if isinstance(first, ast.Constant) and isinstance(first.value, str)
     ]
 
@@ -220,7 +222,8 @@ def _is_importorskip(call, loaders):
     """Whether a call is `pytest.importorskip`, under any recorded spelling."""
     function = call.func
     attribute = (
-        function.attr if isinstance(function, ast.Attribute)
+        function.attr
+        if isinstance(function, ast.Attribute)
         else (function.id if isinstance(function, ast.Name) else "")
     )
     if attribute == "importorskip":
@@ -486,7 +489,9 @@ def test_a_guard_after_the_import_does_not_count(tmp_path):
     though scanning the whole body regardless of position recorded it as one.
     """
     cases = {
-        'import pytest\n\n\ndef t():\n    import torch\n    pytest.importorskip("torch")\n': {"torch"},
+        'import pytest\n\n\ndef t():\n    import torch\n    pytest.importorskip("torch")\n': {
+            "torch"
+        },
         'import pytest\n\n\ndef t():\n    pytest.importorskip("torch")\n    import torch\n': set(),
         # A statement that reaches nothing heavy does not end the guard run.
         'import pytest\n\n\ndef t():\n    x = 1\n    pytest.importorskip("torch")\n    import torch\n': set(),
@@ -505,11 +510,13 @@ def test_a_dynamic_import_inside_a_body_also_needs_the_redirect(tmp_path):
     """
     cases = {
         'import importlib\n\n\ndef t():\n    importlib.import_module("torch")\n': {"torch"},
-        'from importlib import import_module\n\n\ndef t():\n    import_module("torch")\n': {"torch"},
+        'from importlib import import_module\n\n\ndef t():\n    import_module("torch")\n': {
+            "torch"
+        },
         'def t():\n    __import__("torch")\n': {"torch"},
         'import importlib\n\n\ndef t():\n    importlib.import_module(name = "torch")\n': {"torch"},
         'import pytest\n\n\ndef t():\n    pytest.importorskip("torch")\n': set(),
-        'import importlib\n\n\ndef t():\n    importlib.import_module(picked)\n': set(),
+        "import importlib\n\n\ndef t():\n    importlib.import_module(picked)\n": set(),
     }
     for source, expected in cases.items():
         sample = tmp_path / "sample.py"

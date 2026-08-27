@@ -164,12 +164,14 @@ def test_the_compiler_entry_point_neutralizes_again():
     source = pathlib.Path(module.__file__).read_text(encoding = "utf-8")
     tree = ast.parse(source)
     wrappers = [
-        node for node in tree.body
+        node
+        for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "unsloth_compile_transformers"
     ]
     assert wrappers, "unsloth_compile_transformers is gone"
     called = [
-        node for node in ast.walk(wrappers[0])
+        node
+        for node in ast.walk(wrappers[0])
         if isinstance(node, ast.Call)
         and getattr(node.func, "id", "") == "neutralize_inherited_custom_dtype"
     ]
@@ -188,7 +190,10 @@ def test_a_value_set_after_import_is_still_neutralized(monkeypatch):
     # `disable = True` returns before any compilation, which is all this needs: the
     # sanitizing runs first.
     unsloth_compile_transformers(
-        dtype = None, model_name = "unsloth/tiny", model_types = ["llama"], disable = True,
+        dtype = None,
+        model_name = "unsloth/tiny",
+        model_types = ["llama"],
+        disable = True,
     )
 
     sanitized = os.environ[_ENV_KEY]
