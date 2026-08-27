@@ -239,6 +239,16 @@ jobs:
           python scripts/verify_import_hoist.py \
             --before "$MERGE_BASE" --after "$HEAD_SHA" "${CHANGED[@]}"
 
+      - name: Dynamic-execution lint self-test
+        run: python scripts/lint_dynamic_exec.py --self-test
+
+      - name: No exec/eval/compile of an interpolated string
+        # unsloth-zoo PR #1083: a model_type off a downloaded config.json was
+        # interpolated into an exec'd import. Bare exec(inspect.getsource(...)) is
+        # normal here and is not flagged; a built string is, unless it carries a
+        # written justification in scripts/dynamic_exec_allowlist.json.
+        run: python scripts/lint_dynamic_exec.py
+
       - name: Duplicate-definition verifier self-test
         # scripts/lint_duplicate_definitions.py refuses a name bound twice in one
         # scope: two top-level copies of a def / class / constant, or a name
