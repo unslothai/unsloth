@@ -3,10 +3,14 @@
 
 "use client";
 
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+// eslint-disable-next-line no-restricted-imports -- the settings barrel imports this feature back
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useT } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
+import { ShieldAlertIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { hashArtifactCode } from "./types";
@@ -218,22 +222,44 @@ export function ArtifactHtmlFrame({
         title={title}
       />
       {showBlockedBanner ? (
-        <div className="absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-between gap-2 border-t bg-background/95 px-3 py-2 text-xs backdrop-blur">
-          <span className="text-muted-foreground">
-            {t(
-              blockedForCanvas.uris.length === 1
-                ? "settings.chat.artifacts.blockedBanner"
-                : "settings.chat.artifacts.blockedBannerPlural",
-              { count: blockedForCanvas.uris.length, hosts: blockedFrom },
-            )}
-          </span>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => setGrantedCode(code)}
-          >
-            {t("settings.chat.artifacts.blockedBannerAction")}
-          </Button>
+        <div className="absolute inset-x-0 top-0 p-2">
+          <Alert className="border-amber-500/40 bg-background/95 shadow-md backdrop-blur">
+            <ShieldAlertIcon className="text-amber-500" />
+            <AlertTitle>{t("settings.chat.artifacts.blockedTitle")}</AlertTitle>
+            <AlertDescription>
+              <p>
+                {t(
+                  blockedForCanvas.uris.length === 1
+                    ? "settings.chat.artifacts.blockedBanner"
+                    : "settings.chat.artifacts.blockedBannerPlural",
+                  { count: blockedForCanvas.uris.length, hosts: blockedFrom },
+                )}{" "}
+                {t("settings.chat.artifacts.blockedHint", {
+                  setting: t("settings.chat.artifacts.allowNetworkAccess"),
+                })}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    useSettingsDialogStore.getState().openDialog("chat", {
+                      scrollTarget: "chat-canvas-network",
+                    })
+                  }
+                >
+                  {t("settings.chat.artifacts.blockedSettingsAction")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setGrantedCode(code)}
+                >
+                  {t("settings.chat.artifacts.blockedBannerAction")}
+                </Button>
+              </div>
+            </AlertDescription>
+          </Alert>
         </div>
       ) : null}
     </div>

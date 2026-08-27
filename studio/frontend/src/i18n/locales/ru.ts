@@ -1417,6 +1417,10 @@ export const ru = {
         blockedBanner: "Заблокирован {count} внешний ресурс с {hosts}.",
         blockedBannerPlural: "Заблокировано внешних ресурсов: {count} с {hosts}.",
         blockedBannerAction: "Разрешить для этого Canvas",
+        blockedTitle: "Доступ Canvas к сети отключён",
+        blockedHint:
+          "Включите «{setting}» в разделе Настройки → Чат, чтобы Canvas мог загружать внешние ресурсы, или разрешите только для этого Canvas.",
+        blockedSettingsAction: "Открыть настройки",
       },
       data: "Данные",
       exportHistory: "Экспортировать историю чатов",

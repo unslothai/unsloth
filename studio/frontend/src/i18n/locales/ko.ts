@@ -1398,6 +1398,10 @@ export const ko = {
         blockedBanner: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
         blockedBannerPlural: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
         blockedBannerAction: "이 Canvas에서 허용",
+        blockedTitle: "Canvas 네트워크 액세스가 꺼져 있습니다",
+        blockedHint:
+          "설정 → 채팅에서 “{setting}”을 켜면 Canvas가 외부 리소스를 불러올 수 있습니다. 이 Canvas에서만 허용할 수도 있습니다.",
+        blockedSettingsAction: "설정 열기",
       },
       data: "데이터",
       exportHistory: "채팅 기록 내보내기",
