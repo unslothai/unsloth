@@ -12,6 +12,11 @@ _schema_lock = threading.Lock()
 _schema_ready = False
 
 
+# Not a column: `_server_result` derives it so a masked read can report that a
+# secret exists without carrying a value that could be used as one.
+HAS_OAUTH_CLIENT_SECRET_KEY = "has_oauth_client_secret"
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
@@ -143,10 +148,16 @@ def get_server(id: str, *, include_secret: bool = True) -> Optional[dict]:
 def _server_result(row, *, include_secret: bool) -> dict:
     """``include_secret=False`` keeps the stored client secret out of the
     result while still reporting whether one is set, so response and listing
-    paths can never serialize it back to a caller."""
+    paths can never serialize it back to a caller.
+
+    Presence is reported in its own field on BOTH reads rather than typed into
+    ``oauth_client_secret``: a masked row is otherwise one call away from
+    handing a stand-in value to the OAuth client as a real secret, and callers
+    do not have to know which read produced the row."""
     result = dict(row)
+    result[HAS_OAUTH_CLIENT_SECRET_KEY] = bool(result["oauth_client_secret"])
     if not include_secret:
-        result["oauth_client_secret"] = True if result["oauth_client_secret"] else None
+        result["oauth_client_secret"] = None
     return result
 
 

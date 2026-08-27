@@ -150,8 +150,13 @@ def test_oauth_credentials_round_trip_in_storage(tmp_path, monkeypatch):
     row = mcp_servers_db.get_server("calendar")
     assert row["oauth_client_id"] == "configured-client-id"
     assert row["oauth_client_secret"] == "configured-client-secret"
+    assert row[mcp_servers_db.HAS_OAUTH_CLIENT_SECRET_KEY] is True
     masked = mcp_servers_db.get_server("calendar", include_secret = False)
-    assert masked["oauth_client_secret"] is True
+    assert masked[mcp_servers_db.HAS_OAUTH_CLIENT_SECRET_KEY] is True
+    # Presence, never a stand-in value: a masked row must not carry anything
+    # that a connection path could hand to the OAuth client as the secret.
+    assert masked["oauth_client_secret"] is None
+    assert mcp_client.oauth_client_kwargs(masked)["oauth_client_secret"] is None
 
 
 def test_create_response_masks_oauth_secret(tmp_path, monkeypatch):

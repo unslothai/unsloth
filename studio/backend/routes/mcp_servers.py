@@ -172,7 +172,7 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
         oauth_client_id = row.get("oauth_client_id"),
-        has_oauth_client_secret = bool(row.get("oauth_client_secret")),
+        has_oauth_client_secret = bool(row.get(mcp_servers_db.HAS_OAUTH_CLIENT_SECRET_KEY)),
         created_at = row["created_at"],
         updated_at = row["updated_at"],
     )
