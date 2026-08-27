@@ -1800,6 +1800,16 @@ _GENERIC_ROCM_WHEEL_GFX: frozenset[str] = frozenset(
 )
 
 
+def _gfx_has_a_wheel_route(gfx: "str | None") -> bool:
+    """Whether ANY index this installer can pick carries kernels for ``gfx``.
+
+    Either the generic pytorch.org wheel already serves it, or AMD publishes a per-arch
+    index for it. An arch in neither (gfx1010 / RDNA 1, say) cannot be made to work by
+    choosing a different index, so it must never depose a card that can.
+    """
+    return bool(gfx) and (gfx in _GENERIC_ROCM_WHEEL_GFX or gfx in _GFX_TO_AMD_INDEX_ARCH)
+
+
 def _generic_rocm_wheel_lacks_kernels(gfx: "str | None") -> bool:
     """Whether only an available AMD per-arch index carries kernels for ``gfx``."""
     if not gfx:
@@ -1860,7 +1870,14 @@ def _runtime_gfx_target(
         # card the generic index was already serving. Same #7776 preference
         # _detect_windows_gfx_arch applies, and it stops at a set mask for the same reason:
         # a pin is the user naming a device, and is honoured verbatim.
-        _discrete = next((g for g in gfx_devices if g not in _SHADOWING_INTEGRATED_GFX), None)
+        _others = [g for g in gfx_devices if g not in _SHADOWING_INTEGRATED_GFX]
+        # Prefer a discrete card the installer can serve. Deposing a routable APU for one
+        # that no index carries (an RDNA 1 dGPU beside a gfx1103) trades a repairable GPU
+        # for nothing, so fall back to the bare order only when the APU has no route
+        # either. Same shape _detect_windows_gfx_arch's _withWheels guard has.
+        _routable = [g for g in _others if _gfx_has_a_wheel_route(g)]
+        _candidates = _routable or ([] if _gfx_has_a_wheel_route(runtime_gfx) else _others)
+        _discrete = _candidates[0] if _candidates else None
         if _discrete is not None:
             _safe_print(
                 f"   multiple AMD GPUs detected "
@@ -3384,6 +3401,24 @@ def _ensure_rocm_torch() -> None:
                         f"   GPU without generic-wheel kernels ({_gfx_str}) present, but the\n"
                         f"   selected runtime target is {_runtime_gfx}; keeping the generic index.\n"
                     )
+
+        # A per-arch install can outlive the GPU it was made for: add a dGPU, or point
+        # HIP_VISIBLE_DEVICES at one, and the runtime target moves to an arch those wheels
+        # carry no kernels for. torch.version.hip still reads ROCm, so rocm_torch_ready
+        # would keep the generic fallback below from ever running and the wrong family
+        # would survive every update. Same repick _detect_windows_gfx_arch's caller does
+        # for #7776, and this route is what makes per-arch installs common enough to need
+        # it here. Act only on a family read back positively from a torch that owns it,
+        # and only with a target to compare against.
+        if _arch_index_url is None and rocm_torch_ready and _runtime_gfx is not None:
+            _have = _installed_rocm_wheel_family() if _torch_requires_rocm_sdk() else None
+            _want = (_GFX_TO_AMD_INDEX_ARCH.get(_runtime_gfx) or "").lower()
+            if _have is not None and _have != _want:
+                _safe_print(
+                    f"   installed ROCm torch is the {_have} build, which carries no\n"
+                    f"   {_runtime_gfx} kernels -- reinstalling for this GPU.\n"
+                )
+                rocm_torch_ready = False
 
     # gfx906 (MI50 / Radeon VII): is this the runtime GPU target? Used below to skip
     # the generic bitsandbytes wheel (no gfx906 kernels). This must hold even under

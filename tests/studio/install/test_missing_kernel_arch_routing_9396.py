@@ -649,3 +649,66 @@ def test_the_ownership_check_reads_torchs_own_requires(requires, owns):
     ROCm build and rocm-sdk-core is a sibling distribution, so neither may match."""
     with patch("importlib.metadata.requires", return_value = requires):
         assert stack_mod._torch_requires_rocm_sdk() is owns
+
+
+def test_an_unroutable_discrete_card_does_not_depose_a_routable_apu():
+    """gfx1010 (RDNA 1) is in neither the generic wheel nor the per-arch map, so no index
+    can make it work. Handing it the decision trades a repairable 780M for nothing."""
+    calls = _run_install(gfx_devices = ("gfx1103", "gfx1010"))
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+def test_an_all_unroutable_host_keeps_enumeration_order():
+    """Neither card has a route, so there is nothing to prefer and nothing to lose."""
+    calls = _run_install(gfx_devices = ("gfx1013", "gfx1010"))
+    assert _GENERIC in calls, calls
+    assert _AMD not in calls, calls
+
+
+# ── a per-arch install outliving the GPU it was made for ─────────────────────
+
+
+def test_a_stale_per_arch_family_is_replaced_when_the_target_goes_generic():
+    """An earlier gfx1103-only run installs gfx110X-all. Add a dGPU, or point
+    HIP_VISIBLE_DEVICES at one, and those wheels carry no kernels for the new target,
+    while torch.version.hip keeps rocm_torch_ready true and the fallback from running."""
+    calls = _run_install(
+        gfx_devices = ("gfx1200",),
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+    )
+    assert _GENERIC in calls, calls
+
+
+def test_a_target_inside_the_installed_family_is_left_alone():
+    """gfx1101 is served by the same gfx110X-all build; nothing to repick."""
+    calls = _run_install(
+        gfx_devices = ("gfx1101",),
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+    )
+    assert _GENERIC not in calls, calls
+    assert _AMD not in calls, calls
+
+
+def test_a_stale_family_is_replaced_by_the_right_per_arch_index_too():
+    calls = _run_install(
+        gfx_devices = ("gfx1032",),
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+    )
+    assert f"{_AMD}/gfx103X-all/" in calls, calls
+
+
+@pytest.mark.parametrize("family, owns", [(None, True), ("gfx110x-all", False)])
+def test_an_unreadable_family_never_forces_a_reinstall(family, owns):
+    """None is "unknowable" and a torch that does not own `rocm` is not a per-arch install;
+    neither may churn a working venv."""
+    calls = _run_install(
+        gfx_devices = ("gfx1200",),
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = family,
+        torch_owns_rocm = owns,
+    )
+    assert _GENERIC not in calls, calls
+    assert _AMD not in calls, calls
