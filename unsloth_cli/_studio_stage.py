@@ -175,6 +175,8 @@ def stage(
         raise StageError(f"no managed environment at {live}")
     root = stage_root(studio_home)
     discard(root)
+    if root.exists():
+        raise StageError(f"could not clear the previous staging directory at {root}")
     if shutil.disk_usage(studio_home).free < MIN_FREE_BYTES:
         raise StageError("not enough free disk space to prepare an update")
     root.mkdir(parents = True)

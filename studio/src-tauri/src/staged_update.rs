@@ -173,7 +173,13 @@ fn activate_ready(home: &Path, shell_version: &str) -> Result<(), String> {
     let _ = fs::remove_dir_all(&prev);
     fs::create_dir_all(&prev).map_err(|e| e.to_string())?;
     swap_entries(home, &stage, &prev)?;
-    write_versions(&prev.join(PENDING_MARKER), &versions)?;
+    if let Err(error) = write_versions(&prev.join(PENDING_MARKER), &versions) {
+        // Without the marker the next launch drops the previous runtime instead of
+        // restoring it, so an unverified backend would become permanent. Put it back.
+        let _ = swap_entries(home, &prev, &stage);
+        let _ = fs::remove_dir_all(&prev);
+        return Err(error);
+    }
     let _ = fs::remove_file(home.join(FAILED_MARKER));
     let _ = fs::remove_dir_all(&stage);
     info!(
@@ -424,6 +430,28 @@ mod tests {
             assert!(!prev.join(name).join("tag").exists(), "{name}");
         }
         assert_eq!(tag(&stage, "unsloth_studio"), "new");
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn swapping_back_restores_the_runtime_the_activation_replaced() {
+        let home = temp_home("swap-back");
+        make_runtime(&home, "old");
+        let stage = home.join(STAGE_DIR);
+        make_runtime(&stage, "new");
+        let prev = home.join(PREV_DIR);
+        fs::create_dir_all(&prev).unwrap();
+
+        swap_entries(&home, &stage, &prev).unwrap();
+        assert_eq!(tag(&home, "unsloth_studio"), "new");
+        // What the failed-marker branch runs: the previous runtime goes back and the
+        // staged one returns to the stage, so the next launch can try it again.
+        swap_entries(&home, &prev, &stage).unwrap();
+
+        for name in RUNTIME_ENTRIES {
+            assert_eq!(tag(&home, name), "old", "{name}");
+            assert_eq!(tag(&stage, name), "new", "{name}");
+        }
         fs::remove_dir_all(home).unwrap();
     }
 

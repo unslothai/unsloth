@@ -1970,9 +1970,13 @@ _target_has_pkg_version() {
 }
 _NEED_T5_INSTALL=false
 if [ -d "$STUDIO_HOME/.venv_t5" ]; then
-    # Legacy layout — migrate
-    _assert_studio_owned_or_absent "$STUDIO_HOME/.venv_t5" "legacy transformers sidecar venv"
-    rm -rf "$STUDIO_HOME/.venv_t5"
+    # Legacy layout — migrate. The tiered venvs a staged run builds land under the
+    # stage root and may never be activated, so removing the live legacy one here
+    # would strip the running install of its only sidecar. The live update does it.
+    if [ -z "$STAGE_ROOT" ]; then
+        _assert_studio_owned_or_absent "$STUDIO_HOME/.venv_t5" "legacy transformers sidecar venv"
+        rm -rf "$STUDIO_HOME/.venv_t5"
+    fi
     _NEED_T5_INSTALL=true
 fi
 [ ! -d "$VENV_T5_530_DIR" ] && _NEED_T5_INSTALL=true

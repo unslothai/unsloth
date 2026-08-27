@@ -159,6 +159,21 @@ def test_stage_refuses_without_a_managed_environment(tmp_path):
         )
 
 
+def test_stage_refuses_when_the_previous_stage_could_not_be_cleared(monkeypatch, tmp_path):
+    _make_venv(tmp_path)
+    stale = _studio_stage.stage_root(tmp_path)
+    (stale / "leftover").mkdir(parents = True)
+    # discard() swallows its errors, so a locked or undeletable tree would otherwise
+    # be staged into and shipped as if it were a fresh clone.
+    monkeypatch.setattr(_studio_stage, "discard", lambda root: None)
+
+    with pytest.raises(_studio_stage.StageError, match = "could not clear"):
+        _studio_stage.stage(
+            tmp_path, update_args = [], echo = lambda _: None, run_update = lambda root, args: 0
+        )
+    assert (stale / "leftover").is_dir()
+
+
 def test_child_environment_points_the_staged_cli_at_the_stage_root(monkeypatch, tmp_path):
     monkeypatch.setenv("VIRTUAL_ENV", "/elsewhere")
     monkeypatch.setenv("PYTHONHOME", "/elsewhere")
@@ -219,3 +234,22 @@ def test_update_stage_passes_the_update_options_through(monkeypatch):
     assert captured["home"] == studio_mod.STUDIO_HOME
     assert captured["args"] == ["--package", "unsloth", "--verbose", "--no-verify"]
     assert "Staged Unsloth Studio 2026.9.1" in result.output
+
+
+def test_update_stage_reports_an_unexpected_failure_as_a_tauri_error(monkeypatch):
+    from typer.testing import CliRunner
+    from unsloth_cli.commands import studio as studio_mod
+
+    monkeypatch.delenv(_studio_stage.STAGE_ROOT_ENV, raising = False)
+
+    def failing_stage(home, *, update_args, echo):
+        # A full disk during the clone, not a StageError: the desktop parses this
+        # stream, so a traceback would reach it as an unlabelled failure.
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(_studio_stage, "stage", failing_stage)
+    result = CliRunner().invoke(studio_mod.studio_app, ["update", "--stage"])
+
+    assert result.exit_code == 1
+    assert "[TAURI:ERROR] OSError:" in result.output
+    assert "No space left on device" in result.output

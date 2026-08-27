@@ -5491,8 +5491,13 @@ function Test-TargetPackageVersion {
 
 $_NeedT5Install = $false
 if (Test-Path -LiteralPath $VenvT5Legacy) {
-    Assert-StudioOwnedOrAbsent -Path $VenvT5Legacy -Label "legacy transformers sidecar venv"
-    Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force
+    # Legacy layout -- migrate. The tiered venvs a staged run builds land under the
+    # stage root and may never be activated, so removing the live legacy one here
+    # would strip the running install of its only sidecar. The live update does it.
+    if (-not $StageRoot) {
+        Assert-StudioOwnedOrAbsent -Path $VenvT5Legacy -Label "legacy transformers sidecar venv"
+        Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force
+    }
     $_NeedT5Install = $true
 }
 if (-not (Test-Path -LiteralPath $VenvT5_530Dir)) { $_NeedT5Install = $true }
