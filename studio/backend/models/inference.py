@@ -2398,6 +2398,15 @@ class ChatCountTokensRequest(BaseModel):
         None,
         description = "[x-unsloth] Strip leaked tool-call markup from replayed history",
     )
+    studio_tool_history: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Mirrors ChatCompletionRequest: the replayed tool calls came from "
+            "Studio's local tool loop, so _takes_tool_passthrough routes the count the way "
+            "it routes the completion. Declared rather than left to extra='allow', which "
+            "coerces nothing and would read the string 'false' as a claim of ownership."
+        ),
+    )
     permission_mode: Optional[str] = Field(
         None,
         description = "[x-unsloth] Permission level the completion would send. Only 'full' changes "

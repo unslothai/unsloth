@@ -644,6 +644,38 @@ def test_marked_python_history_keeps_compaction_on_the_fitted_path():
     assert inference_route._only_studio_tool_history(empty) is False
 
 
+def test_the_count_request_declares_the_studio_tool_history_marker():
+    """The context-usage bar prices the same prompt only if it routes the same way.
+
+    `ChatCountTokensRequest` sets `extra = "allow"`, so an undeclared marker arrives
+    uncoerced: the JSON string "false" would reach `_only_studio_tool_history` as a truthy
+    value and move the count onto the Unsloth tool path the completion never takes.
+    """
+    from models.inference import ChatCountTokensRequest
+    from routes import inference as inference_route
+
+    branch = _memory_tool_branch()
+    branch[2]["tool_calls"][0]["function"]["name"] = "python"
+    branch[3]["name"] = "python"
+
+    payload = ChatCountTokensRequest(
+        model = "local", messages = branch, studio_tool_history = True
+    )
+    assert payload.studio_tool_history is True
+    assert inference_route._only_studio_tool_history(payload) is True
+    assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is False
+
+    denied = ChatCountTokensRequest(
+        model = "local", messages = branch, studio_tool_history = "false"
+    )
+    assert denied.studio_tool_history is False
+    assert inference_route._only_studio_tool_history(denied) is False
+
+    unset = ChatCountTokensRequest(model = "local", messages = branch)
+    assert unset.studio_tool_history is None
+    assert inference_route._only_studio_tool_history(unset) is False
+
+
 def test_can_reset_false_replays_an_epoch_but_never_starts_one():
     """The second lock on the same door: `_fit_context` already routes a request that may
     not reset to the rolling window, so reaching here with False means something upstream
