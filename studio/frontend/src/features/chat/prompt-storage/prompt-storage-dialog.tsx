@@ -1741,9 +1741,16 @@ function NewPromptForm({
   const setText = (value: string) => onDraftChange({ ...draft, text: value });
   // A create outlives the form that started it. Selecting a row, switching tabs
   // or reopening New all unmount this one, and reopening mounts a different one,
-  // so this answers "is the form the user is looking at still mine".
+  // so this answers "is the form the user is looking at still mine". Set in
+  // setup, not just at the ref: StrictMode replays setup, cleanup, setup, and
+  // the flag would stay false from that first cleanup for the pane's whole life.
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const handleSave = useCallback(
     () =>
@@ -2057,9 +2064,14 @@ function NewPromptListForm({
   const { name, items } = draft;
   const setName = (value: string) => onDraftChange({ ...draft, name: value });
   const setItems = (value: string[]) => onDraftChange({ ...draft, items: value });
-  // See NewPromptForm.
+  // See NewPromptForm, including why the flag is set in setup.
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const handleSave = useCallback(
     () =>

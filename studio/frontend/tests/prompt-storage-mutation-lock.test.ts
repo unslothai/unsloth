@@ -356,3 +356,27 @@ test("only the visible tab's selection is corrected", async () => {
   );
   assert.doesNotMatch(source, /onClick=\{\(\) => setActiveTab\(tab\)\}/);
 });
+
+// main.tsx wraps the app in StrictMode, which replays an effect as setup,
+// cleanup, setup on mount. A flag only initialised at the ref stays false from
+// that first cleanup, so every create reported an unmounted form and the New
+// form never closed on success.
+test("the New form's mounted flag is set in effect setup", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.equal(
+    source.split("mounted.current = true;").length - 1,
+    2,
+    "a New form only sets its mounted flag at the ref, which StrictMode clears",
+  );
+  assert.doesNotMatch(
+    source,
+    /useEffect\(\(\) => \(\) => \{ mounted\.current = false; \}, \[\]\);/,
+    "the cleanup-only effect is back",
+  );
+});
