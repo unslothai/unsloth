@@ -39,6 +39,23 @@ from core.training.diffusion_train_common import (
 )
 
 
+@pytest.fixture(autouse = True)
+def _not_rocm(monkeypatch):
+    """Pin the ROCm gate off: every case here describes an NVIDIA capability tier.
+
+    _patch_capability simulates a card by patching get_device_capability, but the ROCm gate
+    reads the INSTALLED torch, which no amount of capability patching changes. On an AMD
+    development box it therefore short-circuits before the simulated capability is ever
+    consulted, and train_precision_modes / _resolve_base_precision answer for the real machine
+    instead of the one under test. test_dense_quant_rocm_gate_9396.py pins it the other way to
+    exercise the gate itself."""
+    import core.training.diffusion_dit_trainer as _dit
+    import core.training.diffusion_train_common as _dtc
+
+    for _mod in (_dtc, _dit):
+        monkeypatch.setattr(_mod, "torch_is_rocm", lambda: False)
+
+
 def test_specs_cover_the_dit_families():
     assert set(_SPECS) == {
         "flux.1",
