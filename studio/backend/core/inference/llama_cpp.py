@@ -24216,7 +24216,9 @@ class LlamaCppBackend:
                     + self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
                     + int(inputs.get("ctx_compute_per_device") or 0)
                 ),
-                host_ram_headroom_bytes = self._HOST_RAM_HEADROOM_MIB * 1024 * 1024,
+                # Module-level, unlike _PIPELINE_PER_DEVICE_OVERHEAD_MIB on the line
+                # above, so it is not reachable through self.
+                host_ram_headroom_bytes = _HOST_RAM_HEADROOM_MIB * 1024 * 1024,
                 # -nkvo is not a reason to decline: it moves the cache and the
                 # recurrent state OUT of VRAM, so the deficit is smaller, not
                 # larger.

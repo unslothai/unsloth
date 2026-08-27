@@ -61,10 +61,15 @@ def sparse_adapter(tmp_path_factory):
 
 
 class _Stub:
-    """Only what the seam touches."""
+    """Only what the seam touches.
+
+    Deliberately does NOT declare _HOST_RAM_HEADROOM_MIB. That constant is
+    module-level, not a class attribute, so declaring it here let the seam read it off
+    the double while the real backend raised AttributeError on every planned load. The
+    double must not be able to supply an attribute the real class lacks.
+    """
 
     _PIPELINE_PER_DEVICE_OVERHEAD_MIB = 1024
-    _HOST_RAM_HEADROOM_MIB = 2048
     # Discrete by default, so every existing case here is a discrete host. The
     # unified answer is the APU's, and it is exercised deliberately below.
     _unified = False
@@ -187,6 +192,31 @@ def _plan(
 
 
 # ------------------------------------------------------------------ the gate
+
+
+def test_the_seam_reads_no_attribute_the_real_backend_lacks():
+    """The planner is default-on, so every GGUF load runs this seam against the REAL
+    class, not the double above.
+
+    _planned_tensor_spill read the host-RAM headroom as self._HOST_RAM_HEADROOM_MIB,
+    copying the shape of _PIPELINE_PER_DEVICE_OVERHEAD_MIB on the line above it, but
+    that one is a class attribute and the headroom is module-level. Every load that
+    reached the planning call raised
+
+        'LlamaCppBackend' object has no attribute '_HOST_RAM_HEADROOM_MIB'
+
+    and came back as a 500. Observed loading a 67.6 GB GGUF on a Colab T4 high-RAM VM.
+    The whole seam suite stayed green because the double declared the attribute the
+    real class was missing."""
+    import inspect
+
+    for name in ("_HOST_RAM_HEADROOM_MIB",):
+        assert not hasattr(_Stub, name), (
+            f"the double declares {name}, so it can hide a missing attribute on the "
+            "real backend again"
+        )
+    source = inspect.getsource(LlamaCppBackend._planned_tensor_spill)
+    assert "self._HOST_RAM_HEADROOM_MIB" not in source
 
 
 def test_the_planner_is_on_by_default():
