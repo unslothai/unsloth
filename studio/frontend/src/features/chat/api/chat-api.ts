@@ -1310,23 +1310,109 @@ export interface KvCacheEstimate {
   kv_bytes: number | null;
   weights_bytes: number | null;
   native_context: number | null;
+  /** Extra MTP draft reserve; null for ngram or a model with no MTP head. */
+  spec_bytes: number | null;
+  /** Context the estimate was computed at, which is the native length when the
+   *  request omitted one. */
+  n_ctx: number | null;
+  /** Vision projector footprint, at its worst-case VRAM multiple. Null when the
+   *  model ships none or vision is disabled. */
+  projector_bytes: number | null;
+  /** True when the configured speculative mode attaches a drafter the route did
+   *  not price (dspark/dflash, and Auto where it promotes to one). The total is
+   *  then a floor, not an answer. */
+  spec_unpriced: boolean;
+  /** The share of kv_bytes llama.cpp keeps in HOST heap rather than on the card:
+   *  the SWA checkpoint snapshots. Included in kv_bytes, so a VRAM figure has to
+   *  subtract it; the planner's own GPU total does exactly that. */
+  kv_checkpoint_bytes: number | null;
+  /** The share of spec_bytes no shorter context can reduce, being the separate
+   *  drafter's resident weights. Auto-fit softening must not cover it. */
+  spec_fixed_bytes: number | null;
+  /** The load planner's compute buffers, which every launch reserves on top of
+   *  weights and cache. Scales with slots and micro-batch. */
+  compute_bytes: number | null;
+  /** The planner's complete GPU-resident figure, and its everything-total. */
+  gpu_bytes: number | null;
+  total_bytes: number | null;
+  /** What still lands on the card at the shortest context: the share no context
+   *  reduction can recover. */
+  gpu_floor_bytes: number | null;
+  /** False only when the loader is free to shrink the context to fit. An
+   *  inherited LLAMA_ARG_CTX_SIZE is kept, not fitted. */
+  context_is_pinned: boolean | null;
+  /** An inherited LLAMA_ARG_DEVICE confines the launch to the cards it names, so
+   *  an aggregate VRAM budget describes a pool it will not open. */
+  inherited_device_pin: boolean | null;
 }
 
-/** Estimate KV cache + weight bytes for a downloaded quant at a context length,
- * for the load dialog's memory warning. */
+export interface KvCacheEstimateOptions {
+  cacheTypeKv?: string | null;
+  /** --parallel slots; scales per-slot KV stream padding. */
+  nParallel?: number | null;
+  /** Speculative mode, so an MTP draft reserve is priced into the estimate. */
+  speculativeType?: string | null;
+  /** --spec-draft-n-max; a Hybrid Mamba target keeps one rollback state per
+   *  drafted token, which dominates its reserve. */
+  specDraftNMax?: number | null;
+  /** Draft KV dtype, quantized independently of the main cache. */
+  specDraftCacheType?: string | null;
+  /** --ctx-checkpoints; each adds an SWA snapshot per slot. */
+  ctxCheckpoints?: number | null;
+  /** Batch and micro-batch size the compute buffers scale with. */
+  nBatch?: number | null;
+  nUbatch?: number | null;
+  /** Tensor mode replicates buffers on every device in the pool. */
+  tensorParallel?: boolean | null;
+  /** Vision off frees the projector, so it is not charged. */
+  disableVision?: boolean;
+  signal?: AbortSignal;
+}
+
+/** Estimate KV cache + weight + speculative bytes for a downloaded quant, for
+ * the load dialog's memory warning and the picker's memory bar. Omit `nCtx` to
+ * size against the model's own context length; the response says which was
+ * used. */
 export async function estimateKvCache(
   repoId: string,
   quant: string,
-  nCtx: number,
-  cacheTypeKv?: string | null,
-  signal?: AbortSignal,
+  nCtx?: number,
+  options: KvCacheEstimateOptions = {},
 ): Promise<KvCacheEstimate> {
-  const params = new URLSearchParams({
-    repo_id: repoId,
-    quant,
-    n_ctx: String(nCtx),
-  });
+  const {
+    cacheTypeKv,
+    nParallel,
+    speculativeType,
+    specDraftNMax,
+    specDraftCacheType,
+    ctxCheckpoints,
+    nBatch,
+    nUbatch,
+    tensorParallel,
+    disableVision,
+    signal,
+  } = options;
+  const params = new URLSearchParams({ repo_id: repoId, quant });
+  if (nCtx && nCtx > 0) params.set("n_ctx", String(nCtx));
   if (cacheTypeKv) params.set("cache_type_kv", cacheTypeKv);
+  // Any positive override goes, including 1: omitting it means "use the
+  // server's slot count", which now defaults to more than one.
+  if (nParallel && nParallel > 0) params.set("n_parallel", String(nParallel));
+  if (speculativeType) params.set("speculative_type", speculativeType);
+  // Zero is a real choice for both of these (no rollback states, no
+  // checkpoints), so they are sent whenever set rather than when truthy.
+  if (specDraftNMax != null && specDraftNMax >= 0)
+    params.set("spec_draft_n_max", String(specDraftNMax));
+  if (specDraftCacheType)
+    params.set("spec_draft_cache_type", specDraftCacheType);
+  if (ctxCheckpoints != null && ctxCheckpoints >= 0)
+    params.set("ctx_checkpoints", String(ctxCheckpoints));
+  // The compute buffers scale with these, and the planner defaults them when
+  // they are absent, which underprices a config that raised either.
+  if (nBatch && nBatch > 0) params.set("n_batch", String(nBatch));
+  if (nUbatch && nUbatch > 0) params.set("n_ubatch", String(nUbatch));
+  if (tensorParallel) params.set("tensor_parallel", "true");
+  if (disableVision) params.set("disable_vision", "true");
   const response = await authFetch(
     `/api/models/kv-cache-estimate?${params}`,
     signal ? { signal } : undefined,

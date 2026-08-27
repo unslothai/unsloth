@@ -15,8 +15,10 @@ export interface GgufFitInput {
   systemRamGb?: number;
 }
 
-/** Fraction of GPU VRAM treated as usable, matching the backend's 0.90 budget. */
-const VRAM_HEADROOM_RATIO = 0.9;
+/** Fraction of GPU VRAM treated as usable, matching the backend's 0.90 budget.
+ * Exported so the picker's memory bar draws its track against the same budget
+ * this classifier judges against. */
+export const VRAM_HEADROOM_RATIO = 0.9;
 /** GGUF weights are file size; runtime activations add roughly this fraction. */
 const ACTIVATIONS_RATIO = 0.15;
 /** Flat KV/context allowance at a typical 4K window. */

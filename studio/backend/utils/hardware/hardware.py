@@ -4672,6 +4672,13 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                     "memory_total_gb": td["total_gb"],
                     "shared_memory": bool(td.get("shared_memory")),
                     "shared_memory_host_backed_gb": td.get("shared_memory_host_backed_gb"),
+                    # Surfaced from the inventory's own `_rocm_known_unified`
+                    # rather than re-derived: a ROCm APU's total is the GTT pool,
+                    # which moves with host usage and is not a VRAM ceiling a fit
+                    # verdict can be measured against. Distinct from
+                    # `shared_memory`, which is that flag AND Windows, so a Linux
+                    # APU reads as not-shared while still having no such ceiling.
+                    "unified_memory": bool(td.get("_rocm_known_unified")),
                 }
                 for td in torch_devices
             ]

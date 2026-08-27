@@ -2488,6 +2488,22 @@ def _pick_dspark(candidates: list[str]) -> Optional[str]:
     return files[0] if files else None
 
 
+def _pick_mtp(candidates: list[str]) -> Optional[str]:
+    """The MTP drafter a listing offers, or None. Module level for the same reason
+    ``_pick_dspark`` is: both are handed a live repo listing as well as a snapshot,
+    and ``/kv-cache-estimate`` has to price the drafter the launch will open."""
+    # Root-level only: MTP/ subdir copies now share the mtp- prefix but
+    # are explicit-selection, not auto-fetch (they'd sort ahead of root).
+    # The mtp- prefix also excludes AppleDouble shadows ("._mtp-x.gguf"), which
+    # is why this picker needs no drop_shadowed_appledouble_names of its own.
+    mtp_files = sorted(
+        f
+        for f in candidates
+        if f.lower().endswith(".gguf") and "/" not in f and Path(f).name.lower().startswith("mtp-")
+    )
+    return mtp_files[0] if mtp_files else None
+
+
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
     from hub.utils.gguf import drop_shadowed_appledouble_names
 
@@ -12756,18 +12772,6 @@ class LlamaCppBackend:
         higher-precision copies under ``MTP/`` are for explicit selection and
         are intentionally skipped. Returns the local path, or None.
         """
-
-        def _pick_mtp(candidates: list[str]) -> Optional[str]:
-            # Root-level only: MTP/ subdir copies now share the mtp- prefix but
-            # are explicit-selection, not auto-fetch (they'd sort ahead of root).
-            mtp_files = sorted(
-                f
-                for f in candidates
-                if f.lower().endswith(".gguf")
-                and "/" not in f
-                and Path(f).name.lower().startswith("mtp-")
-            )
-            return mtp_files[0] if mtp_files else None
 
         if near_path:
             cached = _companion_snapshot_sibling(near_path, _pick_mtp)
