@@ -695,6 +695,30 @@ def fix_transformers5_bare_annotation_configs():
 _SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"
 
 
+def _sdpa_mask_is_patched(masking_utils):
+    """Are the live bindings ours, right now?
+
+    Asked of the FUNCTIONS rather than of a flag on the module. A module-level
+    flag outlives what it describes: `importlib.reload(masking_utils)` re-runs
+    the module body in the existing namespace, so `sdpa_mask` and the registry
+    entry go back to upstream while any attribute we added survives. Gating on
+    that flag would then refuse to re-patch a build that is once again
+    vulnerable, which is the opposite of what an idempotence guard is for.
+
+    Both bindings must carry the mark, so a half-installed state re-runs.
+    """
+    flagged = lambda fn: bool(getattr(fn, _SDPA_MASK_PATCH_FLAG, False))
+    if not flagged(getattr(masking_utils, "sdpa_mask", None)):
+        return False
+    interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
+    if interface is None:
+        return True
+    try:
+        return flagged(interface["sdpa"])
+    except Exception:
+        return False
+
+
 def _unmask_rows_attending_to_nothing(mask):
     """Give a query row that attends to no key uniform attention instead.
 
@@ -724,8 +748,16 @@ def _left_padded_probe_mask(torch):
     real callers hand it a bool. Probing with an int mask gets an int mask back
     and a `dtype == torch.bool` check then answers "not affected" for a reason
     that has nothing to do with the bug.
+
+    CPU explicitly, never the ambient default: under a `torch.set_default_device`
+    of "meta" this lands on meta, where `sdpa_mask` builds its index tensors on
+    CPU and raises, or returns a meta mask whose truth value cannot be read. The
+    first answers "not affected" for the wrong reason; the second aborts the
+    import. The probe is two elements, so pinning it to CPU costs nothing.
     """
-    return torch.tensor([[False, True], [True, True]], dtype = torch.bool)
+    return torch.tensor(
+        [[False, True], [True, True]], dtype = torch.bool, device = "cpu",
+    )
 
 
 def _sdpa_mask_leaves_rows_fully_masked():
@@ -766,17 +798,22 @@ def _sdpa_mask_leaves_rows_fully_masked():
     if "q_length" in params:
         kwargs["q_length"] = 2
     elif "cache_position" in params:
-        kwargs["cache_position"] = torch.arange(2)
+        kwargs["cache_position"] = torch.arange(2, device = "cpu")
     else:
         return False
+    if "device" in params:
+        kwargs["device"] = torch.device("cpu")
     try:
         mask = sdpa_mask(**kwargs)
+        if mask is None or mask.is_floating_point():
+            return False
+        # Inside the guard as well: reading a mask's truth value is what fails
+        # on a meta or otherwise unmaterialised tensor, and a probe that raises
+        # would take `import unsloth` down with it.
+        return bool((~mask.any(dim = -1)).any())
     except Exception:
         # Signature moved under us. Patching blind would be worse than not.
         return False
-    if mask is None or mask.is_floating_point():
-        return False
-    return bool((~mask.any(dim = -1)).any())
 
 
 def fix_transformers_fully_masked_rows():
@@ -820,7 +857,7 @@ def fix_transformers_fully_masked_rows():
         logger.info(f"Unsloth: Skipping the fully-masked-row fix ({e})")
         return
 
-    if getattr(masking_utils, _SDPA_MASK_PATCH_FLAG, False):
+    if _sdpa_mask_is_patched(masking_utils):
         return
 
     original = masking_utils.sdpa_mask
@@ -834,6 +871,9 @@ def fix_transformers_fully_masked_rows():
     # the tests both reach for it, and a future wraps-less edit must not
     # silently make the patch un-probeable and un-undoable.
     sdpa_mask.__wrapped__ = original
+    # The mark travels ON the wrapper, so the guard above reads the live
+    # binding and a reload that drops it is re-patched rather than skipped.
+    setattr(sdpa_mask, _SDPA_MASK_PATCH_FLAG, True)
 
     try:
         # BOTH bindings, and they are not the same object. `eager_mask` calls

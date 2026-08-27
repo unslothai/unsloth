@@ -31,6 +31,7 @@ masking_utils = pytest.importorskip("transformers.masking_utils")
 
 from unsloth.import_fixes import (  # noqa: E402
     _left_padded_probe_mask,
+    _sdpa_mask_is_patched,
     _unmask_rows_attending_to_nothing,
     _sdpa_mask_leaves_rows_fully_masked,
     fix_transformers_fully_masked_rows,
@@ -206,6 +207,60 @@ def test_a_batch_with_no_padding_is_untouched(unpatched):
     fix_transformers_fully_masked_rows()
     after = _call_sdpa_mask(masking_utils.sdpa_mask, attention_mask).bool()
     assert torch.equal(before, after)
+
+
+def test_the_probe_is_pinned_to_cpu_whatever_the_default_device_is(unpatched):
+    """A meta default device must answer the question, not abort the import.
+
+    `torch.set_default_device("meta")` around `import unsloth` used to put the
+    probe mask on meta, where `sdpa_mask` builds its own index tensors on CPU
+    and raises, or hands back a meta mask whose truth value cannot be read --
+    and that read sat outside the guard, so it propagated out of the import.
+    """
+    torch.set_default_device("meta")
+    try:
+        assert _left_padded_probe_mask(torch).device.type == "cpu"
+        assert _sdpa_mask_leaves_rows_fully_masked() is True
+    finally:
+        torch.set_default_device(None)
+
+
+def test_a_reloaded_masking_utils_is_patched_again(unpatched):
+    """The guard reads the live bindings, not a mark on the module.
+
+    `importlib.reload` re-executes the module body in the SAME namespace, so
+    `sdpa_mask` and the registry entry revert to upstream while any attribute
+    we set on the module survives. Gating on that attribute refuses to re-patch
+    a build that is vulnerable again -- protection lost, silently.
+    """
+    fix_transformers_fully_masked_rows()
+    assert _sdpa_mask_is_patched(masking_utils)
+
+    # Exactly what a reload leaves behind: upstream functions, our marker.
+    interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
+    masking_utils.sdpa_mask = unpatched
+    if interface is not None:
+        interface.register("sdpa", unpatched)
+    assert getattr(masking_utils, "_unsloth_patched_sdpa_mask", False) is True
+    assert not _sdpa_mask_is_patched(masking_utils)
+
+    fix_transformers_fully_masked_rows()
+    assert _sdpa_mask_is_patched(masking_utils)
+    mask = _call_sdpa_mask(masking_utils.sdpa_mask, _left_padded_probe_mask(torch))
+    assert int((~mask.bool().any(dim = -1)).sum()) == 0
+
+
+def test_a_half_installed_patch_is_completed_rather_than_skipped(unpatched):
+    """Module global ours, registry upstream: not patched, so run again."""
+    interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
+    if interface is None:
+        pytest.skip("this transformers has no ALL_MASK_ATTENTION_FUNCTIONS")
+    fix_transformers_fully_masked_rows()
+    interface.register("sdpa", unpatched)
+    assert not _sdpa_mask_is_patched(masking_utils)
+    fix_transformers_fully_masked_rows()
+    assert interface["sdpa"] is masking_utils.sdpa_mask
+    assert _sdpa_mask_is_patched(masking_utils)
 
 
 def test_the_correction_itself_on_every_dtype_it_can_meet():
