@@ -7,6 +7,15 @@ import { createContext, useContext } from "react";
 export type TauriRepairController = {
   /** Reruns the bundled installer over the managed environment, then restarts the backend. */
   repairInstall: () => Promise<void>;
+  /**
+   * True when the desktop is attached to a backend someone started in a terminal.
+   *
+   * start_managed_repair refuses to touch that environment, but startRepair switches the
+   * whole shell to the repairing screen before the refusal comes back, so an offered
+   * action would drop a connected user on the repair-error screen. The consumer hides
+   * itself instead. The settings update row already suppresses its action this way.
+   */
+  isExternalServer: boolean;
 };
 
 // Null outside Tauri and on the startup screen, where the app shell has not mounted. The

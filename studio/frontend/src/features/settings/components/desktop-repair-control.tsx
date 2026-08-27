@@ -25,13 +25,17 @@ import { SettingsRow } from "./settings-row";
  * to paste the install one-liner into a terminal.
  *
  * Desktop-only: outside Tauri there is no controller in context and the row renders nothing.
+ * Hidden for an externally started backend too: start_managed_repair refuses to mutate an
+ * environment the desktop does not manage, but the refusal arrives after startRepair has
+ * already cleared the external-server state and swapped the shell to the repairing screen,
+ * so a connected user would end up on the repair-error screen instead of on their server.
  * Confirmed before it runs, because it stops the backend and rewrites the environment.
  */
 export function DesktopRepairControl(): ReactElement | null {
   const t = useT();
   const repair = useTauriRepairController();
   const [confirmOpen, setConfirmOpen] = useState(false);
-  if (!repair) return null;
+  if (!repair || repair.isExternalServer) return null;
 
   return (
     <>

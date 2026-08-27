@@ -573,8 +573,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const repairController = useMemo(
     () => ({
       repairInstall: () => startRepairRef.current({ forceInstaller: true }),
+      isExternalServer,
     }),
-    [],
+    [isExternalServer],
   );
 
   const appliedWindowModeRef = useRef<TauriWindowMode | null>(null);

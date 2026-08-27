@@ -10690,7 +10690,6 @@ class LlamaCppBackend:
             cuda_bin_x64 = os.path.join(cuda_path, "bin", "x64")
             if os.path.isdir(cuda_bin_x64):
                 path_dirs.append(cuda_bin_x64)
-        LlamaCppBackend._warn_missing_windows_cuda_runtime(binary_dir, path_dirs)
         return path_dirs
 
     @staticmethod
@@ -10715,6 +10714,15 @@ class LlamaCppBackend:
             )
             existing_path = env.get("PATH", "")
             env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+            # Warn against the FULL search path, inherited entries included. A hand
+            # installed CUDA toolkit puts cudart64_*.dll on PATH without the managed
+            # venv or CUDA_PATH knowing about it, and Windows resolves it from there,
+            # so warning on the prepended directories alone told working custom setups
+            # to repair an installation that is fine.
+            LlamaCppBackend._warn_missing_windows_cuda_runtime(
+                binary_dir,
+                path_dirs + [d for d in existing_path.split(";") if d],
+            )
 
             # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
             # kernel files (rocblas/library/*.dat + *.hsaco); the DLL searches

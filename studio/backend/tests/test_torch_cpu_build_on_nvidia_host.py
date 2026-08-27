@@ -80,7 +80,12 @@ def _fake_torch(vendor: str):
     return torch
 
 
-def _smi(monkeypatch, stdout: str, *, returncode: int = 0):
+def _smi(
+    monkeypatch,
+    stdout: str,
+    *,
+    returncode: int = 0,
+):
     """Pin what nvidia-smi answers, at the subprocess boundary."""
     monkeypatch.setattr(
         nvidia.subprocess,
@@ -146,6 +151,7 @@ def test_a_probe_that_cannot_answer_returns_a_result_rather_than_raising(
     if failure is None:
         _smi(monkeypatch, stdout, returncode = returncode)
     else:
+
         def _raise(*_args, **_kwargs):
             raise failure
 
@@ -273,9 +279,7 @@ def _detect(monkeypatch):
         return hw._detect_hardware_locked()
 
 
-def test_chat_only_stops_claiming_this_host_has_no_gpu(
-    monkeypatch, cpu_torch_on_an_nvidia_host
-):
+def test_chat_only_stops_claiming_this_host_has_no_gpu(monkeypatch, cpu_torch_on_an_nvidia_host):
     device = _detect(monkeypatch)
 
     assert device == hw.DeviceType.CPU
@@ -370,3 +374,113 @@ def test_a_cpu_host_with_no_cards_publishes_neither_field(monkeypatch):
     assert gpu["devices"] == []
     assert "mismatch" not in gpu
     assert "physical_devices" not in gpu
+
+
+# ========== What the review round after the first one added ==========
+
+
+@pytest.mark.parametrize("local", ["cpu", "cpu.cxx11.abi", "cpu.cxx11abi", "CPU"])
+def test_extended_cpu_local_tags_are_still_cpu_builds(monkeypatch, local):
+    """PyTorch publishes CPU wheels whose local tag carries a suffix.
+
+    An exact "cpu" match called those CUDA wheels whose runtime failed to start, and
+    the UI then pointed the user at a driver rather than at the reinstall that is the
+    actual fix.
+    """
+    import sys
+
+    wheel = _fake_torch("cpu")
+    wheel.__version__ = f"2.8.0+{local}"
+    monkeypatch.setitem(sys.modules, "torch", wheel)
+    assert hw.classify_torch_build() == "torch_cpu_build"
+
+
+def test_a_cuda_local_tag_is_not_mistaken_for_a_cpu_one(monkeypatch):
+    import sys
+
+    wheel = _fake_torch("cuda_dead")
+    wheel.__version__ = "2.6.0+cu124"
+    monkeypatch.setitem(sys.modules, "torch", wheel)
+    assert hw.classify_torch_build() == "torch_cuda_unavailable"
+
+
+def test_export_and_video_stop_saying_no_accelerator_was_found(monkeypatch):
+    """Those two pages render the message verbatim, so it has to match the System tab.
+
+    Telling a two-A4000 host that no supported accelerator was found contradicts the
+    inventory the same server just published, and points at hardware instead of at the
+    repair.
+    """
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
+    monkeypatch.setattr(hw, "_has_torch", lambda: True)
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+
+    export = hw.export_capability()
+    assert export["export_supported"] is False
+    assert export["export_unsupported_reason"] == "torch_cpu_build"
+    assert "2.11.0+cpu" in export["export_unsupported_message"]
+    assert "No supported" not in export["export_unsupported_message"]
+
+    video = hw.video_capability()
+    assert video["video_supported"] is False
+    assert video["video_unsupported_reason"] == "torch_cpu_build"
+    assert "No supported accelerator" not in video["video_unsupported_message"]
+
+    # The driver case reads differently, because the remedy differs.
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cuda_unavailable")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.6.0+cu124")
+    assert hw.export_capability()["export_unsupported_reason"] == "torch_cuda_unavailable"
+    assert "driver" in hw.video_capability()["video_unsupported_message"]
+
+
+def test_a_genuinely_gpu_less_host_keeps_the_old_wording(monkeypatch):
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "no_gpu")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
+    monkeypatch.setattr(hw, "_has_torch", lambda: True)
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+
+    assert hw.export_capability()["export_unsupported_reason"] == "no_accelerator"
+    assert hw.video_capability()["video_unsupported_reason"] == "no_accelerator"
+
+
+def test_nvidia_smi_is_resolved_from_the_standard_windows_locations(monkeypatch):
+    """A driver install can leave nvidia-smi.exe off PATH entirely.
+
+    The bare name then raises FileNotFoundError and the inventory comes back empty on
+    exactly the host this feature exists for. setup.ps1 already falls back to these two
+    paths, so the backend has to as well.
+    """
+    monkeypatch.setattr(nvidia.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(nvidia.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+
+    # os.path.join, not a literal: this test runs on Linux, where the separator differs.
+    nvsmi = nvidia.os.path.join(r"C:\Program Files", r"NVIDIA Corporation\NVSMI\nvidia-smi.exe")
+    monkeypatch.setattr(nvidia.os.path, "isfile", lambda p: p == nvsmi)
+    assert nvidia._nvidia_smi_executable() == nvsmi
+
+    # The driver store copy is the second chance.
+    system32 = nvidia.os.path.join(r"C:\Windows", r"System32\nvidia-smi.exe")
+    monkeypatch.setattr(nvidia.os.path, "isfile", lambda p: p == system32)
+    assert nvidia._nvidia_smi_executable() == system32
+
+    # Nothing anywhere: hand back the bare name so the caller's OSError path still runs.
+    monkeypatch.setattr(nvidia.os.path, "isfile", lambda _p: False)
+    assert nvidia._nvidia_smi_executable() == "nvidia-smi"
+
+
+def test_path_resolution_is_a_no_op_off_windows_and_when_path_has_it(monkeypatch):
+    monkeypatch.setattr(nvidia.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(nvidia.shutil, "which", lambda _name: None)
+    assert nvidia._nvidia_smi_executable() == "nvidia-smi"
+
+    # PATH wins whenever it answers, on every platform.
+    monkeypatch.setattr(nvidia.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(nvidia.shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
+    assert nvidia._nvidia_smi_executable() == "/usr/bin/nvidia-smi"

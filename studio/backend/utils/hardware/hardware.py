@@ -366,7 +366,6 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
 
     try:
         from . import nvidia
-
         result = nvidia.get_physical_gpu_inventory()
     except Exception as e:
         logger.debug("NVIDIA physical inventory probe failed: %s", e)
@@ -397,9 +396,7 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
                         "name": record.get("name"),
                         # Absent when the driver wrote neither dedicated-memory value.
                         # None, not 0: an unknown capacity is not an empty card.
-                        "memory_total_gb": (
-                            round(dedicated / 1024**3, 2) if dedicated else None
-                        ),
+                        "memory_total_gb": (round(dedicated / 1024**3, 2) if dedicated else None),
                         "source": "directx-registry",
                     }
                 )
@@ -437,7 +434,6 @@ def _torch_version_label() -> Optional[str]:
     """``torch.__version__`` when it can be read, else None. Never raises."""
     try:
         import torch
-
         return str(torch.__version__)
     except Exception:
         return None
@@ -489,7 +485,11 @@ def classify_torch_build() -> Optional[str]:
         local = version.partition("+")[2].strip().lower()
         cuda_tag = getattr(getattr(torch, "version", None), "cuda", None)
         hip_tag = getattr(getattr(torch, "version", None), "hip", None)
-        if local == "cpu":
+        if local == "cpu" or local.startswith("cpu."):
+            # PyTorch publishes extended CPU local tags such as "2.8.0+cpu.cxx11.abi".
+            # An exact match calls those CUDA builds whose runtime failed to start, and
+            # the UI then tells the user to check a driver instead of reinstalling the
+            # GPU wheel that was never there.
             return "torch_cpu_build"
         if not local and cuda_tag is None and hip_tag is None:
             # Untagged and built against no GPU runtime: the PyPI macOS/CPU wheel
@@ -899,6 +899,32 @@ def get_device() -> DeviceType:
     return ensure_hardware_detected()
 
 
+def _gpu_present_but_unusable_message(feature: str) -> Optional[str]:
+    """The capability message for a host whose GPUs are real but unreachable by torch.
+
+    ``None`` when this host is not in that state. detect_hardware() records
+    ``torch_cpu_build`` / ``torch_cuda_unavailable`` only after the OS inventory has
+    actually found a card, so reaching this point means the "no supported accelerator
+    was found" wording below would contradict the System tab and send the user after
+    hardware they already own. Both reasons are surfaced verbatim by the Export and
+    Video pages and by rejected export API calls.
+    """
+    if CHAT_ONLY_REASON not in ("torch_cpu_build", "torch_cuda_unavailable"):
+        return None
+    installed = f" (installed {CHAT_ONLY_DETAIL})" if CHAT_ONLY_DETAIL else ""
+    if CHAT_ONLY_REASON == "torch_cpu_build":
+        return (
+            f"This host has a GPU, but the installed PyTorch is a CPU-only build{installed}, "
+            f"so {feature} cannot use it. Repair the installation from Settings to reinstall "
+            f"the GPU build."
+        )
+    return (
+        f"This host has a GPU, but the installed PyTorch{installed} cannot initialise it, so "
+        f"{feature} cannot use it. This is usually a driver or runtime mismatch; repairing the "
+        f"installation from Settings reinstalls a matching PyTorch build."
+    )
+
+
 def export_capability() -> dict:
     """Whether model export can run here, with a torch-aware reason when it cannot.
 
@@ -934,6 +960,9 @@ def export_capability() -> dict:
             "PyTorch is not installed. Model export requires PyTorch with a supported accelerator "
             "(NVIDIA, AMD, or Intel GPU) or Apple Silicon (MLX). Install PyTorch to enable export."
         )
+    elif _gpu_present_but_unusable_message("export") is not None:
+        reason = CHAT_ONLY_REASON
+        message = _gpu_present_but_unusable_message("export")
     else:
         reason = "no_accelerator"
         message = (
@@ -1015,6 +1044,9 @@ def video_capability() -> dict:
             "PyTorch is not installed. Video generation requires PyTorch with an NVIDIA, AMD or "
             "Intel GPU. Install PyTorch to enable video generation."
         )
+    elif _gpu_present_but_unusable_message("video generation") is not None:
+        reason = CHAT_ONLY_REASON
+        message = _gpu_present_but_unusable_message("video generation")
     else:
         reason = "no_accelerator"
         message = (

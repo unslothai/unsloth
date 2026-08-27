@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import os
+import platform
+import shutil
 import subprocess
 from typing import Any, Optional
 
@@ -236,6 +239,33 @@ def get_visible_gpu_utilization(
     }
 
 
+def _nvidia_smi_executable() -> str:
+    """The nvidia-smi to run, resolving the standard Windows locations off PATH.
+
+    A driver install can leave nvidia-smi.exe in the NVSMI directory or the driver
+    store without putting either on PATH, and a bare "nvidia-smi" then raises
+    FileNotFoundError. That would leave the physical inventory empty on exactly the
+    host this inventory exists for: real GPUs, a PyTorch that cannot see them. Same
+    two locations setup.ps1 already falls back to. Returns the bare name when nothing
+    better is found, so the caller's existing OSError handling still applies.
+    """
+    found = shutil.which("nvidia-smi")
+    if found:
+        return found
+    if platform.system() != "Windows":
+        return "nvidia-smi"
+    for base, tail in (
+        (os.environ.get("ProgramFiles"), r"NVIDIA Corporation\NVSMI\nvidia-smi.exe"),
+        (os.environ.get("SystemRoot"), r"System32\nvidia-smi.exe"),
+    ):
+        if not base:
+            continue
+        candidate = os.path.join(base, tail)
+        if os.path.isfile(candidate):
+            return candidate
+    return "nvidia-smi"
+
+
 def _query_gpu_inventory(caller: str) -> Optional[list[dict[str, Any]]]:
     """``[{index, name, memory_total_gb}]`` for every GPU nvidia-smi enumerates.
 
@@ -253,7 +283,7 @@ def _query_gpu_inventory(caller: str) -> Optional[list[dict[str, Any]]]:
     try:
         result = subprocess.run(
             [
-                "nvidia-smi",
+                _nvidia_smi_executable(),
                 "--query-gpu=index,name,memory.total",
                 "--format=csv,noheader,nounits",
             ],

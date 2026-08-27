@@ -34,7 +34,12 @@ const sidebarSrc = await readFile(
   "utf8",
 );
 
-function lift(src: string, pattern: RegExp, what: string, where: string): string {
+function lift(
+  src: string,
+  pattern: RegExp,
+  what: string,
+  where: string,
+): string {
   const found = pattern.exec(src);
   assert.ok(found, `could not find ${what} in ${where}`);
   return found[0];
@@ -52,8 +57,18 @@ const UNKNOWN = "settings.resources.environment.unknown";
 // gpuInventory itself carries a TS cast, so it is asserted on as source below and supplied
 // here as an input instead. Everything downstream of it is run.
 const derivation = [
-  lift(tabSrc, /const gpuMismatch = [\s\S]*?;/, "gpuMismatch", "resources-tab.tsx"),
-  lift(tabSrc, /const physicalDevices = [\s\S]*?;/, "physicalDevices", "resources-tab.tsx"),
+  lift(
+    tabSrc,
+    /const gpuMismatch = [\s\S]*?;/,
+    "gpuMismatch",
+    "resources-tab.tsx",
+  ),
+  lift(
+    tabSrc,
+    /const physicalDevices = [\s\S]*?;/,
+    "physicalDevices",
+    "resources-tab.tsx",
+  ),
   lift(
     tabSrc,
     /const gpuMismatchMessage = [\s\S]*?;/,
@@ -85,7 +100,10 @@ function mismatchFor(gpuInventory: Inventory | null) {
 test("a CPU-only wheel and a dead accelerator wheel get different sentences", () => {
   const cpuBuild = mismatchFor({
     mismatch: { reason: "torch_cpu_build", torch_version: "2.11.0+cpu" },
-    physical_devices: [{ name: "NVIDIA RTX A4000" }, { name: "NVIDIA RTX A4000" }],
+    physical_devices: [
+      { name: "NVIDIA RTX A4000" },
+      { name: "NVIDIA RTX A4000" },
+    ],
   });
   assert.equal(cpuBuild.gpuMismatchMessage, CPU_BUILD);
   assert.equal(cpuBuild.physicalDevices.length, 2);
@@ -93,14 +111,21 @@ test("a CPU-only wheel and a dead accelerator wheel get different sentences", ()
   // Reinstalling torch is the wrong advice for a healthy cu124 wheel whose runtime will
   // not start, so the two reasons must not collapse into one string.
   const dead = mismatchFor({
-    mismatch: { reason: "torch_cuda_unavailable", torch_version: "2.6.0+cu124" },
+    mismatch: {
+      reason: "torch_cuda_unavailable",
+      torch_version: "2.6.0+cu124",
+    },
     physical_devices: [{ name: "NVIDIA RTX A4000" }],
   });
   assert.equal(dead.gpuMismatchMessage, UNAVAILABLE);
 });
 
 test("a healthy host, and one that really has no GPU, get no banner at all", () => {
-  for (const inventory of [null, {}, { mismatch: null }] as (Inventory | null)[]) {
+  for (const inventory of [
+    null,
+    {},
+    { mismatch: null },
+  ] as (Inventory | null)[]) {
     const out = mismatchFor(inventory);
     assert.equal(out.gpuMismatch, null);
     assert.equal(out.gpuMismatchMessage, null);
@@ -108,7 +133,9 @@ test("a healthy host, and one that really has no GPU, get no banner at all", () 
     // would otherwise render an unexplained list of greyed-out cards.
     assert.deepEqual(out.physicalDevices, []);
   }
-  const strayRows = mismatchFor({ physical_devices: [{ name: "NVIDIA RTX A4000" }] });
+  const strayRows = mismatchFor({
+    physical_devices: [{ name: "NVIDIA RTX A4000" }],
+  });
   assert.deepEqual(strayRows.physicalDevices, []);
 });
 
@@ -122,7 +149,11 @@ test("the verdict is taken from a settled read only, and from the training view"
     "gpuInventory",
     "resources-tab.tsx",
   );
-  assert.match(inventory, /hostUnread\s*\n?\s*\?\s*null/, "gated on the read having settled");
+  assert.match(
+    inventory,
+    /hostUnread\s*\n?\s*\?\s*null/,
+    "gated on the read having settled",
+  );
   // systemInfo.gpu, NOT displayedGpu: a Vulkan llama.cpp makes displayedGpu fall back to the
   // inference inventory, and a card Vulkan enumerates while torch cannot is exactly the host
   // that must be told (the second report in #8473).
@@ -187,7 +218,10 @@ test("videoNavHint stops telling a two-GPU host to get a GPU", () => {
     assert.equal(videoNavHint(false, reason), undefined);
   }
   // And the genuine no-GPU host keeps the sentence that is true for it.
-  assert.equal(videoNavHint(true, "no_gpu"), "Video generation needs an NVIDIA or AMD GPU.");
+  assert.equal(
+    videoNavHint(true, "no_gpu"),
+    "Video generation needs an NVIDIA or AMD GPU.",
+  );
 });
 
 test("the sidebar's Train hint stops doing the same", () => {
@@ -216,7 +250,10 @@ test("the sidebar's Train hint stops doing the same", () => {
     assert.ok(withoutDetail);
     assert.doesNotMatch(withoutDetail, /needs an NVIDIA or AMD GPU/);
   }
-  assert.equal(forReason("no_gpu", null), "Training needs an NVIDIA or AMD GPU.");
+  assert.equal(
+    forReason("no_gpu", null),
+    "Training needs an NVIDIA or AMD GPU.",
+  );
   assert.equal(forReason("detection_failed", null), undefined);
 });
 
@@ -224,12 +261,24 @@ test("the sidebar's Train hint stops doing the same", () => {
 
 test("every string the banner reaches for exists", () => {
   const gpu = en.settings.resources.gpu as Record<string, string>;
-  const liveMonitor = en.settings.resources.liveMonitor as Record<string, string>;
-  for (const key of ["noUsableGpu", "mismatchCpuBuild", "mismatchUnavailable", "unusableDevice"]) {
+  const liveMonitor = en.settings.resources.liveMonitor as Record<
+    string,
+    string
+  >;
+  for (const key of [
+    "noUsableGpu",
+    "mismatchCpuBuild",
+    "mismatchUnavailable",
+    "unusableDevice",
+  ]) {
     assert.equal(typeof gpu[key], "string", `settings.resources.gpu.${key}`);
   }
   for (const key of ["gpuUnusable", "gpuUnusableDetail"]) {
-    assert.equal(typeof liveMonitor[key], "string", `settings.resources.liveMonitor.${key}`);
+    assert.equal(
+      typeof liveMonitor[key],
+      "string",
+      `settings.resources.liveMonitor.${key}`,
+    );
   }
   // The version is what turns "PyTorch is CPU-only" into something a user can check
   // against their own install, so both sentences have to carry it.
@@ -238,4 +287,52 @@ test("every string the banner reaches for exists", () => {
   // And the CPU-only host's line is still the one it always was.
   assert.equal(t(NO_GPU), NO_GPU);
   assert.match(gpu.noGpu, /No visible GPU detected/);
+});
+
+// The repair row must not be offered for a backend the desktop does not manage.
+//
+// start_managed_repair rejects that mutation through block_external_conflict, but the
+// rejection arrives only after startRepair has already cleared isExternalServer, stopped
+// the external-server poll and swapped the shell to the repairing screen. A connected user
+// clicking the row therefore lands on the repair-error screen instead of on their server.
+// The settings update control suppresses its own action in the same state.
+test("the repair row hides itself for an externally started backend", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/settings/components/desktop-repair-control.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /if\s*\(!repair\s*\|\|\s*repair\.isExternalServer\)\s*return null;/,
+    "the control must bail out on an external server as well as outside Tauri",
+  );
+
+  const context = await readFile(
+    new URL("../src/hooks/tauri-repair-context.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    context,
+    /isExternalServer:\s*boolean;/,
+    "the controller has to carry the flag for the control to read it",
+  );
+
+  const provider = await readFile(
+    new URL("../src/app/provider.tsx", import.meta.url),
+    "utf8",
+  );
+  const memo = provider.slice(provider.indexOf("const repairController"));
+  assert.match(
+    memo.slice(0, 300),
+    /isExternalServer,/,
+    "the provider has to publish the flag",
+  );
+  assert.match(
+    memo.slice(0, 300),
+    /\[isExternalServer\]/,
+    "and list it as a dependency, or the context freezes on the first render's value",
+  );
 });
