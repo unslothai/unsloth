@@ -1172,6 +1172,7 @@ export const ja = {
         processMemory: "プロセスメモリ",
         notInstalled: "未インストール",
         unknown: "不明",
+        vramWithShared: "{vram} VRAM + {shared} 共有メモリ",
       },
     },
     agents: {
