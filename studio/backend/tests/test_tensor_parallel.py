@@ -1778,7 +1778,7 @@ class TestLegacyBuildQuantizedKvInTensorMode:
                 },
             )()
 
-        backend._wait_for_health = lambda timeout: not self._doomed(spawns[-1])
+        backend._wait_for_health = lambda timeout, **_kw: not self._doomed(spawns[-1])
         error: list[BaseException] = []
         with patch.object(subprocess, "Popen", side_effect = fake_popen):
             try:

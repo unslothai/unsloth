@@ -21834,7 +21834,7 @@ class LlamaCppBackend:
                             target = self._drain_stdout, daemon = True, name = "llama-stdout"
                         )
                         self._stdout_thread.start()
-                        if self._wait_for_health(timeout = 600.0):
+                        if self._wait_for_health(timeout = 600.0, cancelled = _load_cancelled):
                             if _did_rocm_retry:
                                 # Proved on this host: every later child skips the
                                 # prepend instead of crashing into it first.
@@ -22976,7 +22976,7 @@ class LlamaCppBackend:
                             self._is_vision = False
                             self._mmproj_has_audio = False
                             self._start_llama_process(cmd, env)
-                            if self._wait_for_health(timeout = 600.0):
+                            if self._wait_for_health(timeout = 600.0, cancelled = _load_cancelled):
                                 healthy = True
                                 # The child that serves this session never read the
                                 # CPU-pinned projector, so the host-memory advisory the
@@ -25707,6 +25707,7 @@ class LlamaCppBackend:
         self,
         timeout: float = 120.0,
         interval: float = 0.5,
+        cancelled: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Poll llama-server's /health until 200; also detect early exit/crash."""
         deadline = time.monotonic() + timeout
@@ -25715,11 +25716,15 @@ class LlamaCppBackend:
         if health_probe_event is None:  # Backward-compatible with lightweight test doubles.
             health_probe_event = self._health_probe_event = threading.Event()
 
-        cancel_event = getattr(self, "_cancel_event", None)
+        if cancelled is None:
+            # A scoped /load carries its own cancel event, so load_model passes its own
+            # predicate; fall back to the unload flag for callers that have none.
+            cancel_event = getattr(self, "_cancel_event", None)
+            cancelled = cancel_event.is_set if cancel_event is not None else None
 
         while time.monotonic() < deadline:
             # unload_model() blocks on self._lock, which the load holds across this wait.
-            if cancel_event is not None and cancel_event.is_set():
+            if cancelled is not None and cancelled():
                 logger.info("llama-server startup cancelled before it became healthy")
                 return False
             # Cleared before probing so output during the request stays latched for

@@ -103,6 +103,23 @@ class TestWaitForHealthResilience:
         assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
         assert len(probes) == 3
 
+    def test_a_scoped_load_cancel_stops_the_wait(self, monkeypatch):
+        """An auto-switch or a /load carrying load_request_id cancels through its own
+        event and never calls unload_model, so _cancel_event stays clear. The wait has
+        to honor the predicate load_model passes down or it polls the full timeout."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+        b._cancel_event = threading.Event()  # no unload was issued
+        scoped = threading.Event()
+        scoped.set()
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        started = time.monotonic()
+        assert b._wait_for_health(
+            timeout = 30.0, interval = 0.01, cancelled = scoped.is_set
+        ) is False
+        assert time.monotonic() - started < 1.0
+        assert not any("health check timed out" in ln for ln in b._stdout_lines)
+
     def test_read_error_loops_to_subprocess_poll(self, monkeypatch):
         """WinError 10054 (httpx.ReadError) must be swallowed; the next iteration sees the dead subprocess and returns False with a structured exit-code log."""
         b = _make_backend()
