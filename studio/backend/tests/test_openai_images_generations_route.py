@@ -245,9 +245,8 @@ def test_url_response_shape(client):
 
 
 def test_generation_resets_the_image_progress_stream_before_the_run(client, monkeypatch):
-    # This route shares the image progress stream with /api/inference/images/generate, so it
-    # has to rearm it the same way: a run that starts at or above where the previous one
-    # stopped would otherwise be read as still being that run and log no milestones.
+    # Shares the image progress stream with /api/inference/images/generate, so it has to rearm
+    # the same way or a run starting where the last one stopped emits no milestones.
     order = []
     monkeypatch.setattr(
         inference_routes,

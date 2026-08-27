@@ -358,9 +358,8 @@ def test_generate_progress_route_logs_backend_snapshot(client, monkeypatch):
 
 
 def test_generate_resets_the_progress_stream_before_the_run(client, monkeypatch):
-    # Milestones are keyed on the previous poll, so a run that starts at or above where the
-    # last one stopped reads as the same run and logs nothing. The video route already
-    # rearms; the image one must too, and before generate() so no poll can precede it.
+    # Milestones are keyed on the previous poll, so a run starting at or above where the last
+    # one stopped logs nothing. The image routes must rearm like video, and before generate().
     client.post(
         "/api/inference/images/load",
         json = {

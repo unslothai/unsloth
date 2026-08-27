@@ -128,10 +128,9 @@ def test_idle_image_poll_is_silent_and_next_run_is_detected(capture):
 
 
 def test_a_repeat_run_is_silent_until_the_stream_is_reset(capture):
-    # The UI drops its 300 ms poll the moment the POST settles, so the last reading a run
-    # leaves behind is often its final active one. A next run of the same length whose
-    # first poll lands at that same step is neither a restart (step is not lower) nor a
-    # new bucket, so without a reset at the start of the run it logs nothing at all.
+    # The UI drops its 300 ms poll as soon as the POST settles, so a run's last recorded
+    # reading is often its final active one. A next run of the same length whose first poll
+    # lands on that step is neither a restart nor a new bucket, so it logs nothing.
     media_progress.log_media_generation_progress("image", _progress(step = 10))
     assert [fields["percent"] for _event, fields in capture.events] == [100]
 

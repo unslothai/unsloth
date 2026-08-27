@@ -30036,9 +30036,8 @@ async def generate_diffusion_image(
     )
 
     backend = get_active_diffusion_engine()
-    # Ahead of the run, like the video route: generate-progress milestones are keyed on the
-    # previous poll, and a run that starts at or above where the last one stopped would
-    # otherwise read as the same one and log nothing.
+    # Ahead of the run, like the video route: milestones are keyed on the previous poll, so a
+    # run starting at or above where the last one stopped would read as it and log nothing.
     reset_media_generation_progress("image")
     try:
         result = await asyncio.to_thread(
