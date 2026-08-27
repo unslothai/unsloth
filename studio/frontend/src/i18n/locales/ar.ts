@@ -1189,6 +1189,7 @@ export const ar = {
         processMemory: "ذاكرة العملية",
         notInstalled: "غير مثبّت",
         unknown: "غير معروف",
+        vramWithShared: "{vram} VRAM + {shared} ذاكرة مشتركة",
       },
     },
     agents: {

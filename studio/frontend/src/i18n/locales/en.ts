@@ -1185,6 +1185,8 @@ export const en = {
         processMemory: "Process memory",
         notInstalled: "Not installed",
         unknown: "Unknown",
+        // {vram} is the dedicated total, {shared} the shared pool beside it.
+        vramWithShared: "{vram} VRAM + {shared} shared",
       },
     },
     agents: {

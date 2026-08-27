@@ -20,6 +20,8 @@ export interface GpuDevice {
   vram_utilization_pct?: number | null;
   /** True when the reported GPU budget comes from shared system memory. */
   shared_memory?: boolean;
+  /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
+  shared_memory_host_backed_gb?: number | null;
 }
 
 export interface SystemGpuInfo {

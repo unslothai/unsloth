@@ -1192,6 +1192,7 @@ export const hi = {
         processMemory: "प्रोसेस मेमोरी",
         notInstalled: "इंस्टॉल नहीं है",
         unknown: "अज्ञात",
+        vramWithShared: "{vram} VRAM + {shared} साझा मेमोरी",
       },
     },
     agents: {
