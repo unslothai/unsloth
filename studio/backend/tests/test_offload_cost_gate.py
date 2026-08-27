@@ -198,11 +198,21 @@ def test_the_moe_fallback_places_about_what_the_planner_places():
     """
     layout = moe_layout()
     small = _fit_fallback_placement(
-        layout, gated(), 11 * GIB, 8192, quantised = False, kv_bytes_floor = 0,
+        layout,
+        gated(),
+        11 * GIB,
+        8192,
+        quantised = False,
+        kv_bytes_floor = 0,
         kv_on_host = False,
     )
     large = _fit_fallback_placement(
-        layout, gated(), 15 * GIB, 8192, quantised = False, kv_bytes_floor = 0,
+        layout,
+        gated(),
+        15 * GIB,
+        8192,
+        quantised = False,
+        kv_bytes_floor = 0,
         kv_on_host = False,
     )
     assert small is not None and large is not None
