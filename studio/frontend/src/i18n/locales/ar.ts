@@ -1405,6 +1405,7 @@ export const ar = {
         blockedHint:
           "فعّل «{setting}» في الإعدادات ← الدردشة للسماح لـ Canvas بتحميل الموارد الخارجية، أو اسمح بذلك لهذا الـ Canvas فقط.",
         blockedSettingsAction: "فتح الإعدادات",
+        blockedDismiss: "تجاهل",
       },
       data: "البيانات",
       exportHistory: "تصدير سجل المحادثات",

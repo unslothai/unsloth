@@ -1421,6 +1421,7 @@ export const ru = {
         blockedHint:
           "Включите «{setting}» в разделе Настройки → Чат, чтобы Canvas мог загружать внешние ресурсы, или разрешите только для этого Canvas.",
         blockedSettingsAction: "Открыть настройки",
+        blockedDismiss: "Закрыть",
       },
       data: "Данные",
       exportHistory: "Экспортировать историю чатов",

@@ -1445,6 +1445,7 @@ export const de = {
         blockedHint:
           "Aktiviere „{setting}“ unter Einstellungen → Chat, damit Canvases externe Ressourcen laden können, oder erlaube es nur für dieses Canvas.",
         blockedSettingsAction: "Einstellungen öffnen",
+        blockedDismiss: "Schließen",
       },
       data: "Daten",
       exportHistory: "Chatverlauf exportieren",

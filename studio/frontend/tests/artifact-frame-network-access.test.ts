@@ -159,15 +159,14 @@ test("no write resets the blocked list wholesale", () => {
 
 const GRANT_SETTER = /\bsetGranted\w*\(/;
 
-/** Arguments of every `setGrantedCode(...)` call, with the enclosing JSX handler. */
-function readGrantCalls(): { argument: string; handler: string | null }[] {
+/** Arguments of every `<setter>(...)` call, with the enclosing JSX handler. */
+function readSetterCalls(
+  setter: string,
+): { argument: string; handler: string | null }[] {
   const source = sourceFile(FRAME);
   const calls: { argument: string; handler: string | null }[] = [];
   const visit = (node: ts.Node): void => {
-    if (
-      ts.isCallExpression(node) &&
-      node.expression.getText() === "setGrantedCode"
-    ) {
+    if (ts.isCallExpression(node) && node.expression.getText() === setter) {
       let handler: string | null = null;
       for (let at: ts.Node = node; at.parent; at = at.parent) {
         if (ts.isJsxAttribute(at.parent)) {
@@ -182,6 +181,8 @@ function readGrantCalls(): { argument: string; handler: string | null }[] {
   source.forEachChild(visit);
   return calls;
 }
+
+const readGrantCalls = () => readSetterCalls("setGrantedCode");
 
 // The canvas is what reports being blocked, so the grant must never be reachable
 // from that path or a page could post its way onto the network. Only a JSX click
@@ -359,4 +360,57 @@ test("blocked-resource state is capped against the untrusted canvas", () => {
     "the cap must be checked before the duplicate scan",
   );
   assert.match(updater, BAILS_OUT);
+});
+
+test("only a click can dismiss the banner, and only for the code on screen", () => {
+  const calls = readSetterCalls("setDismissedCode");
+  assert.ok(calls.length > 0, "setDismissedCode is never called");
+  for (const { argument, handler } of calls) {
+    assert.equal(argument, "code", "the dismissal stores the current code");
+    assert.equal(
+      handler,
+      "onClick",
+      "the dismissal must come from a click handler",
+    );
+  }
+});
+
+test("the dismissal is tied to the code it was dismissed for", () => {
+  assert.equal(readConst("dismissedForCanvas"), "dismissedCode === code");
+  assert.match(readConst("showBlockedBanner"), /!dismissedForCanvas/);
+});
+
+test("the banner deep-links to the network access setting", () => {
+  const source = sourceFile(FRAME);
+  const deepLinks: { tab: string; options: string; handler: string | null }[] =
+    [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText().endsWith(".openDialog")
+    ) {
+      let handler: string | null = null;
+      for (let at: ts.Node = node; at.parent; at = at.parent) {
+        if (ts.isJsxAttribute(at.parent)) {
+          handler = at.parent.name.getText();
+          break;
+        }
+      }
+      deepLinks.push({
+        tab: node.arguments[0]?.getText() ?? "",
+        options: node.arguments[1]?.getText() ?? "",
+        handler,
+      });
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  assert.equal(
+    deepLinks.length,
+    1,
+    "the banner opens the settings dialog once",
+  );
+  assert.equal(deepLinks[0].tab, '"chat"');
+  assert.match(deepLinks[0].options, /scrollTarget:\s*"chat-canvas-network"/);
+  assert.equal(deepLinks[0].handler, "onClick");
 });

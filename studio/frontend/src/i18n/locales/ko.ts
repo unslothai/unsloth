@@ -1402,6 +1402,7 @@ export const ko = {
         blockedHint:
           "설정 → 채팅에서 “{setting}”을 켜면 Canvas가 외부 리소스를 불러올 수 있습니다. 이 Canvas에서만 허용할 수도 있습니다.",
         blockedSettingsAction: "설정 열기",
+        blockedDismiss: "닫기",
       },
       data: "데이터",
       exportHistory: "채팅 기록 내보내기",

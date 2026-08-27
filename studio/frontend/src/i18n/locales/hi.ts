@@ -1411,6 +1411,7 @@ export const hi = {
         blockedHint:
           "Canvas को बाहरी संसाधन लोड करने देने के लिए सेटिंग्स → चैट में “{setting}” चालू करें, या केवल इस Canvas के लिए अनुमति दें।",
         blockedSettingsAction: "सेटिंग्स खोलें",
+        blockedDismiss: "खारिज करें",
       },
       data: "डेटा",
       exportHistory: "चैट इतिहास एक्सपोर्ट करें",

@@ -1398,6 +1398,7 @@ export const en = {
         blockedHint:
           "Turn on “{setting}” in Settings → Chat to let canvases load external resources, or allow it just for this canvas.",
         blockedSettingsAction: "Open Settings",
+        blockedDismiss: "Dismiss",
       },
       data: "Data",
       exportHistory: "Export chat history",

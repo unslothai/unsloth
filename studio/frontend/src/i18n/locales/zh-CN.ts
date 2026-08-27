@@ -1376,6 +1376,7 @@ export const zhCN = {
         blockedHint:
           "在“设置 → 聊天”中开启“{setting}”以允许 Canvas 加载外部资源，或仅对此 Canvas 允许。",
         blockedSettingsAction: "打开设置",
+        blockedDismiss: "关闭",
       },
       data: "数据",
       exportHistory: "导出聊天记录",

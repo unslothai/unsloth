@@ -1410,6 +1410,7 @@ export const it = {
         blockedHint:
           "Attiva “{setting}” in Impostazioni → Chat per consentire ai Canvas di caricare risorse esterne, oppure consentilo solo per questo Canvas.",
         blockedSettingsAction: "Apri impostazioni",
+        blockedDismiss: "Ignora",
       },
       data: "Dati",
       exportHistory: "Esporta la cronologia delle chat",

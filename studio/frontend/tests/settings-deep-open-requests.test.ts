@@ -123,3 +123,12 @@ test("consuming a scroll target clears it", () => {
   store.getState().consumeScrollTarget("about-updates");
   assert.equal(store.getState().scrollTarget, null);
 });
+
+test("the canvas network target lands on Chat and stays until Chat reads it", () => {
+  reset();
+  store.getState().openDialog("chat", { scrollTarget: "chat-canvas-network" });
+  assert.equal(store.getState().activeTab, "chat");
+  assert.equal(store.getState().scrollTarget, "chat-canvas-network");
+  store.getState().setActiveTab("about");
+  assert.equal(store.getState().scrollTarget, null);
+});

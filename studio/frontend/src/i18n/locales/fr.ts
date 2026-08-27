@@ -1442,6 +1442,7 @@ export const fr = {
         blockedHint:
           "Activez « {setting} » dans Paramètres → Chat pour que les Canvas chargent des ressources externes, ou autorisez-le uniquement pour ce Canvas.",
         blockedSettingsAction: "Ouvrir les paramètres",
+        blockedDismiss: "Ignorer",
       },
       data: "Données",
       exportHistory: "Exporter l'historique des discussions",

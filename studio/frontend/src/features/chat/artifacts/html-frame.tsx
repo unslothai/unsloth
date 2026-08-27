@@ -3,14 +3,19 @@
 
 "use client";
 
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  Alert,
+  AlertAction,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 // eslint-disable-next-line no-restricted-imports -- the settings barrel imports this feature back
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useT } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { ShieldAlertIcon } from "lucide-react";
+import { ShieldAlertIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { hashArtifactCode } from "./types";
@@ -129,6 +134,8 @@ export function ArtifactHtmlFrame({
   const [grantedCode, setGrantedCode] = useState<string | null>(null);
   const grantedForCanvas = grantedCode === code;
   const networkAllowed = networkAccessEnabled || grantedForCanvas;
+  const [dismissedCode, setDismissedCode] = useState<string | null>(null);
+  const dismissedForCanvas = dismissedCode === code;
   const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
   // Identifies this load to the frame, which stamps its blocked reports with it.
   const codeVersion = useMemo(() => hashArtifactCode(code), [code]);
@@ -200,7 +207,8 @@ export function ArtifactHtmlFrame({
     // canvas on screen, rather than relying on postArtifactHtml changing.
   }, [postArtifactHtml, code, codeVersion]);
 
-  const showBlockedBanner = !networkAllowed && blockedForCanvas.uris.length > 0;
+  const showBlockedBanner =
+    !networkAllowed && !dismissedForCanvas && blockedForCanvas.uris.length > 0;
   const shownHosts = blockedForCanvas.hosts
     .slice(0, BLOCKED_HOSTS_SHOWN)
     .join(", ");
@@ -225,6 +233,16 @@ export function ArtifactHtmlFrame({
         <div className="absolute inset-x-0 top-0 p-2">
           <Alert className="border-amber-500/40 bg-background/95 shadow-md backdrop-blur">
             <ShieldAlertIcon className="text-amber-500" />
+            <AlertAction>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label={t("settings.chat.artifacts.blockedDismiss")}
+                onClick={() => setDismissedCode(code)}
+              >
+                <XIcon />
+              </Button>
+            </AlertAction>
             <AlertTitle>{t("settings.chat.artifacts.blockedTitle")}</AlertTitle>
             <AlertDescription>
               <p>

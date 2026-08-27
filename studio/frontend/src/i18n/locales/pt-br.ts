@@ -1424,6 +1424,7 @@ export const ptBR = {
         blockedHint:
           "Ative “{setting}” em Configurações → Chat para que os Canvas carreguem recursos externos, ou permita apenas neste Canvas.",
         blockedSettingsAction: "Abrir configurações",
+        blockedDismiss: "Dispensar",
       },
       data: "Dados",
       exportHistory: "Exportar histórico de chat",

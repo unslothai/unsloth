@@ -1436,6 +1436,7 @@ export const es = {
         blockedHint:
           "Activa “{setting}” en Ajustes → Chat para que los Canvas carguen recursos externos, o permítelo solo en este Canvas.",
         blockedSettingsAction: "Abrir ajustes",
+        blockedDismiss: "Descartar",
       },
       data: "Datos",
       exportHistory: "Exportar historial de chat",

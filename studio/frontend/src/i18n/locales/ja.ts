@@ -1391,6 +1391,7 @@ export const ja = {
         blockedHint:
           "設定 → チャットで「{setting}」をオンにすると Canvas が外部リソースを読み込めます。この Canvas だけ許可することもできます。",
         blockedSettingsAction: "設定を開く",
+        blockedDismiss: "閉じる",
       },
       data: "データ",
       exportHistory: "チャット履歴をエクスポート",
