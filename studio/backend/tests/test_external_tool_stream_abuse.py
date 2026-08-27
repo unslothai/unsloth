@@ -6,7 +6,7 @@
 ``tests/test_external_tool_edge_cases.py`` covers malformed and adversarial
 *chunks*. This file covers the channel itself: the loop relays provider bytes on
 the very same SSE stream it writes its own control frames to, so anything the
-provider can put on that stream is a candidate for impersonating Studio. It also
+provider can put on that stream is a candidate for impersonating Unsloth. It also
 covers the framing layer underneath (CRLF, comments, multi-line ``data:``,
 frames after ``[DONE]``), the tool-call fields the loop trusts to name a tool,
 and the liveness properties the loop has to hold against an endpoint that simply
@@ -366,10 +366,10 @@ def test_studio_own_control_frames_still_reach_the_client(executed):
 
 
 def test_a_provider_cannot_forge_studio_private_chunk_keys(executed):
-    """``_toolEvent`` and friends are Studio extensions, not provider fields.
+    """``_toolEvent`` and friends are Unsloth extensions, not provider fields.
 
     The same card can be painted from inside an otherwise ordinary chunk, because
-    the client also lifts ``_toolEvent`` straight out of one. Studio stamps that
+    the client also lifts ``_toolEvent`` straight out of one. Unsloth stamps that
     key itself on the provider-hosted tool events it synthesises, so a copy
     arriving from the endpoint is indistinguishable downstream.
     """
@@ -592,7 +592,7 @@ def test_a_tool_marker_split_around_a_multibyte_char_still_heals(executed):
 def test_a_tool_the_user_did_not_enable_is_never_executed(executed):
     """The catalog is the authorization list, not a suggestion.
 
-    ``python`` exists in Studio, but this request only offered ``web_search``.
+    ``python`` exists in Unsloth, but this request only offered ``web_search``.
     Executing it because the provider named it would let any endpoint run
     arbitrary code the user never switched on. It is a no-op, not an error, so no
     card is painted; the model is told in the conversation instead, which is what
@@ -778,7 +778,7 @@ def test_no_enabled_tool_names_never_means_any_tool(executed):
 
     ``heal_gate`` is handed the selected catalog precisely so a ``None``
     allowlist can never reach the parser: ``None`` there means "match anything",
-    which turns a marked block naming any Studio tool into an execution.
+    which turns a marked block naming any Unsloth tool into an execution.
     """
     payload = json.dumps({"name": "python", "arguments": {"code": "import os"}})
     body = f"<tool_call>{payload}</tool_call>"

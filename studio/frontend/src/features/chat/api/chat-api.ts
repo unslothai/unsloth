@@ -16,7 +16,10 @@ import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
-import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
+import {
+  type ModelRuntime,
+  withModelLoadNotice,
+} from "@/lib/model-lifecycle-events";
 import type {
   MessageRecord,
   ModelType,
@@ -51,6 +54,11 @@ export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 // they built from a history this one has just changed.
 export { CHAT_HISTORY_REVISION_KEY } from "../utils/chat-history-revision";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
+
+export type ChatHistoryUpdatedDetail = {
+  thread?: ThreadRecord;
+  coalesce?: boolean;
+};
 
 // bounds the request itself so a wedged socket cannot stall every reader waiting on the write
 const THREAD_WRITE_TIMEOUT_MS = 30_000;
@@ -118,14 +126,16 @@ export class GenerationLengthError extends Error {
  * `coalesce` is for the per-chunk streaming path alone: it holds the cross-tab write until
  * the writes stop. Structural changes must not use it.
  */
-export function notifyChatHistoryUpdated(options?: {
-  coalesce?: boolean;
-}): void {
+export function notifyChatHistoryUpdated(
+  detail: ChatHistoryUpdatedDetail = {},
+): void {
   if (typeof window !== "undefined") {
-    const coalesce = options?.coalesce === true;
+    const coalesce = detail.coalesce === true;
     // detail lets a listener tell a chunk save from a structural change (isCoalescedHistoryEvent)
     window.dispatchEvent(
-      new CustomEvent(CHAT_HISTORY_UPDATED_EVENT, { detail: { coalesce } }),
+      new CustomEvent<ChatHistoryUpdatedDetail>(CHAT_HISTORY_UPDATED_EVENT, {
+        detail: { ...detail, coalesce },
+      }),
     );
     // The event above is same-document; a storage write is what crosses.
     publishChatHistoryRevision(coalesce);
@@ -254,6 +264,9 @@ export async function loadModel(
   options?: {
     signal?: AbortSignal;
     onRequestStart?: () => void;
+    /** What is taking the slot. Chat ignores its own loads when reconciling, so an
+     *  Audio load announced as "chat" left chat naming a model it had evicted. */
+    runtime?: ModelRuntime;
   },
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
@@ -268,20 +281,24 @@ export async function loadModel(
   // Announced after the token prompt, so a cancelled load never shows a row.
   // The indicator otherwise had nothing to show until its next 5s poll, while
   // the toast reported the load immediately.
-  return withModelLoadNotice("chat", payload.model_path ?? null, async () => {
-    const response = await authFetch("/api/inference/load", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...payload,
-        hf_token: preparedToken.token,
-        native_path_lease: payload.nativePathLease ?? null,
-        nativePathLease: undefined,
-      }),
-      signal: options?.signal,
-    });
-    return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
-  });
+  return withModelLoadNotice(
+    options?.runtime ?? "chat",
+    payload.model_path ?? null,
+    async () => {
+      const response = await authFetch("/api/inference/load", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...payload,
+          hf_token: preparedToken.token,
+          native_path_lease: payload.nativePathLease ?? null,
+          nativePathLease: undefined,
+        }),
+        signal: options?.signal,
+      });
+      return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+    },
+  );
 }
 
 export async function countChatInputTokens(payload: {
@@ -460,6 +477,7 @@ export interface CachedGgufRepo {
   has_vision?: boolean;
   /** HF pipeline task inferred from the GGUF architecture ("text-to-image" for diffusion), so the Images picker can show only diffusion GGUFs. Optional for older backends. */
   task?: string | null;
+  audio_type?: string | null;
   /** True when some quant has a download manifest or cancel marker. Optional
    * for older-backend compatibility. */
   has_variant_state?: boolean;
@@ -562,6 +580,7 @@ export interface LocalModelInfo {
   updated_at?: number | null;
   // HF pipeline task inferred from the GGUF architecture, so the Images picker can filter to diffusion ("text-to-image"). Optional for older backends.
   task?: string | null;
+  audio_type?: string | null;
 }
 
 interface LocalModelListResponse {
@@ -598,6 +617,7 @@ export interface CachedModelRepo {
   last_modified?: number;
   /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo (model_index.json present), so the chat picker can hide it. Absent = chat. */
   task?: string | null;
+  audio_type?: string | null;
   /** True when the snapshot is incomplete (a cancelled/partial download): such a repo must not count as downloaded, or a click re-downloads the full weights. */
   partial?: boolean;
   /** True for a diffusion repo with no model_index.json: a single-file checkpoint loadable only via from_single_file, so task pickers must not offer it as a pipeline load unless the curated catalog carries its artifact. */
@@ -847,7 +867,7 @@ export async function saveChatThread(
     throw new ChatThreadDeletedError(parseErrorText(response.status, body));
   }
   const savedThread = await parseJsonOrThrow<ThreadRecord>(response);
-  notifyChatHistoryUpdated();
+  notifyChatHistoryUpdated({ thread: savedThread });
   return savedThread;
 }
 
@@ -899,7 +919,7 @@ export async function updateChatThread(
     options.signal,
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);
-  if (options.notify !== false) notifyChatHistoryUpdated();
+  if (options.notify !== false) notifyChatHistoryUpdated({ thread });
   return thread;
 }
 
@@ -926,7 +946,7 @@ export async function forkChatThread(
     messages: MessageRecord[];
     containerSnapshotWarning: string | null;
   }>(response);
-  notifyChatHistoryUpdated();
+  notifyChatHistoryUpdated({ thread: data.thread });
   return data;
 }
 

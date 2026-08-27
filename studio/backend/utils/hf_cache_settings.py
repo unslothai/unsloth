@@ -3,7 +3,7 @@
 
 """Live, persisted Hugging Face cache routing for Unsloth Studio.
 
-Hugging Face reads cache environment variables at import time.  Studio therefore
+Hugging Face reads cache environment variables at import time.  Unsloth therefore
 owns an explicit cache snapshot for each operation instead of trying to refresh
 ``huggingface_hub.constants`` in the long-running API process.
 """
@@ -32,7 +32,7 @@ _CACHE_ENV_KEYS = (
     "HUGGINGFACE_HUB_CACHE",
     "HF_XET_CACHE",
 )
-# Imported by storage_roots._setup_cache_env before Studio seeds defaults.
+# Imported by storage_roots._setup_cache_env before Unsloth seeds defaults.
 _EXPLICIT_CACHE_ENV = {
     key: value.strip()
     for key in _CACHE_ENV_KEYS
@@ -279,9 +279,9 @@ def _validate_cache_home(raw_path: str) -> Path:
             with tempfile.NamedTemporaryFile(prefix = ".unsloth-write-test-", dir = child):
                 pass
     except PermissionError as exc:
-        raise ValueError("Studio does not have permission to write to this folder.") from exc
+        raise ValueError("Unsloth does not have permission to write to this folder.") from exc
     except OSError as exc:
-        raise ValueError(f"Studio cannot use this cache folder: {exc}") from exc
+        raise ValueError(f"Unsloth cannot use this cache folder: {exc}") from exc
     return resolved
 
 

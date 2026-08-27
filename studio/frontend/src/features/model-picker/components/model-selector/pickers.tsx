@@ -80,7 +80,6 @@ import {
   AudioWave01Icon,
   Cancel01Icon,
   DashboardCircleIcon,
-  Download01Icon,
   Flag01Icon,
   FlimSlateIcon,
   Folder02Icon,
@@ -601,20 +600,27 @@ function FormatTag({ tone, label }: { tone: FormatTone; label: string }) {
   );
 }
 
-/** "Already on disk", shown on Hub rows that are also downloaded. */
+/** "Already on disk", shown on Hub rows that are also downloaded. The Hub's own
+ *  on-device dot: a download arrow read as "click to fetch" on the one row that
+ *  needs no fetching. Hit area and tooltip as FormatTag. */
 function DownloadedBadge() {
   return (
-    <span
-      title="Already downloaded"
-      aria-label="Already downloaded"
-      className="flex h-[18px] shrink-0 items-center justify-center text-status-success"
-    >
-      <HugeiconsIcon
-        icon={Download01Icon}
-        className="size-3"
-        strokeWidth={1.8}
-      />
-    </span>
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        <span
+          aria-label="On device"
+          className="flex h-[18px] w-[14px] shrink-0 items-center justify-center"
+        >
+          <span
+            aria-hidden="true"
+            className="size-[5px] rounded-full bg-status-success"
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        On device
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -760,12 +766,12 @@ const META_COLUMN = {
   // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
   quant: "min-[560px]:w-[7.2em]",
   // The badge slot holds capability glyphs (18px), the vision badge (24px) and the Hub lists'
-  // "on disk" mark (12px), gap-1 between them. Each width below is the widest set its scope can
+  // "on disk" mark (14px), gap-1 between them. Each width below is the widest set its scope can
   // draw, since anything wider makes min-w-min expand the slot and shift every column after it.
   // Scope draws no glyph: the vision badge alone, or the disk mark alone.
   badge: "min-w-min min-[560px]:w-[24px]",
-  // One glyph plus the disk mark (18 + 4 + 12).
-  badgeMid: "min-w-min min-[560px]:w-[34px]",
+  // One glyph plus the disk mark (18 + 4 + 14).
+  badgeMid: "min-w-min min-[560px]:w-[36px]",
   // Unscoped chat: a generation glyph and audio, plus whichever of vision (On Device rows) or the
   // disk mark (Hub rows) that list carries -- the two never appear on the same row (18+4+18+4+24).
   badgeWide: "min-w-min min-[560px]:w-[68px]",
@@ -3045,7 +3051,7 @@ export function HubModelPicker({
     (id: string) => {
       if (!catalog) return true;
       // Downloaded weights keep their row. They may have been pulled on a machine that could run
-      // them, and hiding what is already on disk reads as Studio having lost the model.
+      // them, and hiding what is already on disk reads as Unsloth having lost the model.
       if (downloadedSet.has(id.toLowerCase())) return true;
       const hit = artifactForRepoId(id, catalog);
       return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass) : true;
@@ -3331,7 +3337,12 @@ export function HubModelPicker({
   const hubEvidenceById = useMemo(() => {
     const map = new Map<
       string,
-      { baseModel?: string | null; tags?: string[]; libraryName?: string | null }
+      {
+        baseModel?: string | null;
+        tags?: string[];
+        libraryName?: string | null;
+        audioType?: string | null;
+      }
     >();
     for (const r of [
       ...results,
@@ -3351,12 +3362,31 @@ export function HubModelPicker({
     // here the same row picked from the unscoped Chat picker was judged on its id alone
     // and refused routing to the page that does list it.
     for (const c of cachedModels) {
-      if (map.has(c.repo_id)) continue;
+      const existing = map.get(c.repo_id);
+      if (existing) {
+        map.set(c.repo_id, {
+          ...existing,
+          audioType: existing.audioType ?? c.audio_type,
+        });
+        continue;
+      }
       map.set(c.repo_id, {
         baseModel: null,
         tags: c.tags,
         libraryName: c.library_name,
+        audioType: c.audio_type,
       });
+    }
+    for (const c of cachedGguf) {
+      const existing = map.get(c.repo_id);
+      if (existing) {
+        map.set(c.repo_id, {
+          ...existing,
+          audioType: existing.audioType ?? c.audio_type,
+        });
+        continue;
+      }
+      map.set(c.repo_id, { audioType: c.audio_type });
     }
     return map;
   }, [
@@ -3365,6 +3395,7 @@ export function HubModelPicker({
     communityQuerySearch.results,
     communityBrowse.results,
     cachedModels,
+    cachedGguf,
   ]);
 
   // Tag-accurate capabilities keyed by repo id, pooled from both HF listings, then the
@@ -3440,10 +3471,11 @@ export function HubModelPicker({
             audioPickIsRoutable({
               id: c.repo_id,
               task: c.task,
+              audioType: c.audio_type,
               isGguf: true,
               isCurated: artifactForRepoId(c.repo_id, AUDIO_CATALOG) !== null,
-              // _repo_gguf_task reads these off the arch too, so the same rule holds: a
-              // speech tag means llama-csm even when the repo id names another family.
+              // The task and codec both came from GGUF classification; codec provenance
+              // separates runnable Orpheus from unsupported CSM.
               taskFromGgufArch: true,
             }),
         ),
@@ -3487,6 +3519,7 @@ export function HubModelPicker({
                   id: c.repo_id,
                   tags: c.tags,
                   libraryName: c.library_name,
+                  audioType: c.audio_type,
                 }) &&
                 macTtsHubRowIsRunnable({
                   isMac,
@@ -3539,15 +3572,16 @@ export function HubModelPicker({
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
-            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,
+              audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
               isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
-              // These rows are tasked by _local_model_task reading the GGUF's own arch,
-              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              // Task and codec came from the filesystem classifier, so a renamed CSM file
+              // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
             }) &&
             // The backend tags every local model with its task for exactly this: on the Images/Video pages a chat GGUF must not be offered.
@@ -3585,15 +3619,16 @@ export function HubModelPicker({
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
-            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,
+              audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
               isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
-              // These rows are tasked by _local_model_task reading the GGUF's own arch,
-              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              // Task and codec came from the filesystem classifier, so a renamed CSM file
+              // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
             }) &&
             passesTaskGate(
@@ -3634,15 +3669,16 @@ export function HubModelPicker({
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
-            // Studio, ./models or a scan folder is just as undecodable, and routing it to
+            // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,
+              audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
               isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
-              // These rows are tasked by _local_model_task reading the GGUF's own arch,
-              // so a text-to-speech tag here means llama-csm, whatever the file is named.
+              // Task and codec came from the filesystem classifier, so a renamed CSM file
+              // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
             }) &&
             passesTaskGate(

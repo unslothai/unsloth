@@ -9,14 +9,14 @@ the two places that decide what a payload already contains. Two ways that produc
 something nobody ran:
 
   A RESUME UNDER A DIFFERENT CONFIGURATION SKIPPED EVERYTHING. `--branch main --ab other --resume`
-  into a directory holding a finished `main -> fix` run installs and launches two Studios, finds
+  into a directory holding a finished `main -> fix` run installs and launches two Unsloth instances, finds
   every `cell_id` already complete, exits 0, and -- because `_render_ab` keeps the previous table
   when this session measured nothing -- leaves the OLD comparison standing in `ab.md` to be read
   as the answer for `other`.
 
   A FRESH RUN APPENDED TO THE PREVIOUS ONE. `Recorder` opens the payload with `"a"`. The README's
   own two invocations wrote into one `--out`, and when the second was interrupted the file held a
-  fast-tier 100K cell from an attached Studio next to standard-tier 1K and 10K cells from `main`.
+  fast-tier 100K cell from an attached Unsloth next to standard-tier 1K and 10K cells from `main`.
   `--report` scored that as one ladder, took its header from the FIRST `run_meta`, and said
   `complete: true`.
 """

@@ -3,7 +3,7 @@
 
 """Runtime LAN listener for Unsloth Studio.
 
-Studio binds 127.0.0.1 by default, so a phone or laptop on the same network
+Unsloth binds 127.0.0.1 by default, so a phone or laptop on the same network
 cannot reach it without relaunching with ``-H 0.0.0.0``. This module adds a
 second uvicorn listener over the already-running app, on the machine's own
 network addresses and the same port, and takes it away again -- no restart, and

@@ -166,7 +166,7 @@ def test_xet_worker_is_sized_from_the_machine(monkeypatch):
 
 
 def test_the_zoo_decides_and_studio_does_not_second_guess_it(monkeypatch):
-    """Studio used to force the flag off here. Two copies of one rule drifted, and on a 2TB host the
+    """Unsloth used to force the flag off here. Two copies of one rule drifted, and on a 2TB host the
     worker ended up with a 24GB laptop's buffer, 3.4x slower than the machine's own setting."""
     import utils.hf_xet_fallback as shim
 
@@ -198,7 +198,7 @@ def test_the_zoo_decides_and_studio_does_not_second_guess_it(monkeypatch):
 def test_high_performance_is_cleared_even_without_the_tuning_module(monkeypatch):
     """An unsloth_zoo with no `hf_xet_tuning` is exactly the version that sets
     HF_XET_HIGH_PERFORMANCE=1 at import, so routing the clear through the (then empty) overrides
-    would hand the worker a 64GB buffer ceiling on the installs Studio alone cannot fix."""
+    would hand the worker a 64GB buffer ceiling on the installs Unsloth alone cannot fix."""
     import utils.hf_xet_fallback as shim
 
     monkeypatch.setattr(shim, "apply_xet_env", lambda *a, **k: None)

@@ -43,6 +43,7 @@ export {
   applyActiveModelStatusToStore,
   resolveInferenceCheckpointId,
 } from "./lib/apply-inference-status-to-store";
+export { isSpeechOnlyStatus } from "./lib/speech-only-status";
 export {
   ChatSettingsPanel,
   ParamSlider,
@@ -287,6 +288,7 @@ export {
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
 export {
+  COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
   buildFineTuneJsonl,
   bulkExportConversationsByScope,

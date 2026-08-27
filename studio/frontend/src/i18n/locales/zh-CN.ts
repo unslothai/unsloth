@@ -848,8 +848,8 @@ export const zhCN = {
           "下面的内容全部根据你自己的历史记录统计。不会收集任何数据，也不会发送给 Unsloth。",
         retry: "重试",
         privacyNote:
-          "统计数据由你本地 Unsloth 保存的聊天和训练历史计算得出。不收集任何数据，也不会发送给 Unsloth 或任何第三方。",
-        emptyChats: "暂无聊天。开始一段对话后，这里就会显示你的统计数据。",
+          "统计数据由本地 Unsloth 的聊天、API 使用和训练历史计算得出。统计功能绝不会保存 API 提示词、回复或密钥，也不会向 Unsloth 或任何第三方发送数据。",
+        emptyChats: "暂无聊天或 API 使用记录。请开始一段对话，或发起经过认证的本地 API 请求。",
         lifetimeTokens: "累计 token",
         peakTokens: "单日峰值",
         longestChat: "最长的聊天",
@@ -871,6 +871,9 @@ export const zhCN = {
         totalMessages: "消息总数",
         tokensIn: "发送的 token",
         tokensOut: "生成的 token",
+        totalTokens: "Token 总数",
+        studioChatTokens: "Unsloth Chat token",
+        apiTokens: "API token",
         cachedTokens: "缓存的 token",
         cachedValue: "{tokens}（占输入的 {percent}%）",
         avgTokensPerChat: "每个聊天的平均 token",
@@ -1162,6 +1165,7 @@ export const zhCN = {
         processMemory: "进程内存",
         notInstalled: "未安装",
         unknown: "未知",
+        vramWithShared: "{vram} 显存 + {shared} 共享内存",
       },
     },
     agents: {
@@ -1190,6 +1194,15 @@ export const zhCN = {
       docs: "文档",
       agentDocs: "打开 {agent} 的配置文档",
       copyGeneratedCommand: "复制生成的命令",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex 需要通过 llama-server 提供服务的 GGUF 模型。其他智能体也可以使用基于 transformers 的模型；去掉 --model 即可使用 Unsloth 中已加载的模型。",
       subagent: {
@@ -1308,7 +1321,7 @@ export const zhCN = {
         title: "网页搜索",
         images: "显示网页搜索图片",
         imagesDescription:
-          "让网页搜索返回图片，并为回答中列出的每一项各获取一张。缩略图由 Studio 获取并缩放，浏览器不会直接访问图片来源。",
+          "让网页搜索返回图片，并为回答中列出的每一项各获取一张。缩略图由 Unsloth 获取并缩放，浏览器不会直接访问图片来源。",
       },
       artifacts: {
         title: "Canvas",
@@ -1329,7 +1342,7 @@ export const zhCN = {
       exportingAction: "导出中...",
       exportConversations: "导出最近对话与项目",
       exportConversationsDescription:
-        "将最近对话（或加上项目内对话）导出为 Raw JSONL、CSV 或 ShareGPT JSONL，可合并为单个文件或每个对话一个文件。",
+        "将最近对话（或加上项目内对话）导出为 Training JSONL、CSV 或 ShareGPT JSONL，可合并为单个文件或每个对话一个文件。Message JSONL 仅支持每个对话单独导出。",
       exportConversationsAction: "导出",
       exportScopeRecents: "最近对话",
       exportScopeAll: "最近对话 + 项目",

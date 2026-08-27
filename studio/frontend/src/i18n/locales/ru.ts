@@ -871,9 +871,9 @@ export const ru = {
           "Всё ниже считается по вашей собственной истории. Ничего не собирается и не отправляется в Unsloth.",
         retry: "Повторить",
         privacyNote:
-          "Статистика рассчитывается по истории чатов и обучения, которая хранится в вашей установке Unsloth. Ничего не собирается и ничего не отправляется ни в Unsloth, ни третьим лицам.",
+          "Статистика рассчитывается по локальной истории чатов, использования API и обучения в вашей установке Unsloth. Запросы, ответы и ключи API для статистики никогда не сохраняются. Ничего не отправляется ни в Unsloth, ни третьим лицам.",
         emptyChats:
-          "Чатов пока нет. Начните разговор, и статистика появится здесь.",
+          "Чатов и использования API пока нет. Начните разговор или выполните аутентифицированный запрос к локальному API.",
         lifetimeTokens: "Токенов за всё время",
         peakTokens: "Пиковый день",
         longestChat: "Самый длинный чат",
@@ -895,6 +895,9 @@ export const ru = {
         totalMessages: "Всего сообщений",
         tokensIn: "Отправлено токенов",
         tokensOut: "Сгенерировано токенов",
+        totalTokens: "Всего токенов",
+        studioChatTokens: "Токены Unsloth Chat",
+        apiTokens: "Токены API",
         cachedTokens: "Токенов из кеша",
         cachedValue: "{tokens} ({percent}% ввода)",
         avgTokensPerChat: "В среднем токенов на чат",
@@ -1192,6 +1195,7 @@ export const ru = {
         processMemory: "Память процесса",
         notInstalled: "Не установлено",
         unknown: "Неизвестно",
+        vramWithShared: "{vram} VRAM + {shared} общей памяти",
       },
     },
     agents: {
@@ -1221,6 +1225,15 @@ export const ru = {
       docs: "Документация",
       agentDocs: "Открыть документацию по настройке {agent}",
       copyGeneratedCommand: "Копировать сформированную команду",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex требует модель GGUF, обслуживаемую llama-server. Другие агенты могут работать и с моделями на основе transformers; уберите --model, чтобы использовать модель, уже загруженную в Unsloth.",
       subagent: {
@@ -1348,7 +1361,7 @@ export const ru = {
         title: "Веб-поиск",
         images: "Показывать изображения из веб-поиска",
         imagesDescription:
-          "Позволяет веб-поиску возвращать изображения и подбирает по одному для каждого пункта, который перечисляет ответ. Миниатюры загружает и уменьшает Studio, поэтому браузер никогда не обращается к хостам изображений.",
+          "Позволяет веб-поиску возвращать изображения и подбирает по одному для каждого пункта, который перечисляет ответ. Миниатюры загружает и уменьшает Unsloth, поэтому браузер никогда не обращается к хостам изображений.",
       },
       artifacts: {
         title: "Canvas",
@@ -1369,7 +1382,7 @@ export const ru = {
       exportingAction: "Экспорт…",
       exportConversations: "Экспортировать «Недавние» и проекты",
       exportConversationsDescription:
-        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Raw JSONL, CSV или ShareGPT JSONL, объединённо или по чатам.",
+        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV или ShareGPT JSONL, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
       exportConversationsAction: "Экспорт",
       exportScopeRecents: "Недавние",
       exportScopeAll: "Недавние + проекты",

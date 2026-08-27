@@ -50,6 +50,7 @@ import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy"
 import type { CatalogGroup } from "./model-selector/model-catalog";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
+import { loraOptionLabel } from "./model-selector/row-meta";
 import { isFineTunedSource } from "./model-selector/source-tabs";
 import type {
   DeletedModelRef,
@@ -693,10 +694,7 @@ export function ModelSelector({
       all.set(model.id, model);
     }
     for (const lora of loraModels) {
-      // Strip "/ suffix" from display name (e.g. "foo_123/foo" → "foo_123")
-      const displayName = lora.name.includes("/")
-        ? lora.name.split("/")[0].trim()
-        : lora.name;
+      const displayName = loraOptionLabel(lora);
       // Show type tag instead of base model name
       const isLocal = lora.source === "local";
       const isTraining = lora.source === "training";

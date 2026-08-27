@@ -525,6 +525,18 @@ async function loadModel(payload: any) {
   if (result instanceof Error) throw result;
   return result;
 }
+
+// The speech-only verdict, mirroring
+// studio/frontend/src/features/chat/lib/speech-only-status.ts. Real logic rather than a
+// neutral stub: a stub that always answered false would keep every scenario green if the
+// queued path's guard were removed.
+export function isSpeechOnlyStatus(status: any): boolean {
+  return (
+    Boolean(status?.is_audio) &&
+    status?.audio_type !== "whisper" &&
+    status?.audio_type !== "audio_vlm"
+  );
+}
 """
 
 SCENARIO_HELPERS = """
@@ -1371,7 +1383,7 @@ def test_a_cached_text_generation_repo_still_auto_loads():
 
 def test_a_provisional_mac_platform_does_not_hide_a_remote_backends_models():
     """Before the probe lands chatOnly is a browser guess: a Mac browser on a
-    remote Linux Studio would hide every local safetensors model."""
+    remote Linux Unsloth would hide every local safetensors model."""
     safetensors = (
         "{ ...LOCAL_GGUF, id: 'st', load_id: 'st', path: '/models/st',"
         " model_format: 'safetensors' }"

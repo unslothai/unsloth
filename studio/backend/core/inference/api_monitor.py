@@ -1,18 +1,31 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Small in-memory monitor for OpenAI-compatible API traffic."""
+"""In-memory API monitor with an optional content-free terminal receipt sink."""
 
 from __future__ import annotations
 
 import math
+import logging
 import os
 import threading
 import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+from storage.api_usage_db import (
+    MAX_ENDPOINT_CHARS,
+    MAX_STATUS_CHARS,
+    ApiUsageReceipt,
+    canonical_api_model,
+    canonical_api_subject,
+)
+
+
+logger = logging.getLogger(__name__)
+TerminalCallback = Callable[[ApiUsageReceipt], None]
 
 
 _MAX_ENTRIES = 50
@@ -23,7 +36,7 @@ _MAX_DECODE_MS = 24 * 60 * 60 * 1000
 # Far above any real context window; larger means a broken upstream payload.
 _MAX_TOKEN_COUNT = 1 << 40
 
-# Opt-in startup kill switch for Studio's in-memory API monitor.
+# Opt-in startup kill switch for Unsloth's in-memory API monitor.
 _DISABLE_ENV = "UNSLOTH_STUDIO_DISABLE_API_MONITOR"
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
@@ -75,7 +88,7 @@ class ApiMonitorEntry:
     updated_at: float
     # Who this row is attributed to; on a shared row it does not restrict visibility.
     subject: Optional[str] = None
-    # True for sk-unsloth callers only: the panel auto-opens on these, not Studio's chat.
+    # True for sk-unsloth callers only: the panel auto-opens on these, not Unsloth's chat.
     via_api_key: bool = False
     # Monotonic anchors so duration math survives wall-clock steps (NTP).
     started_monotonic: float = 0.0
@@ -197,19 +210,56 @@ class ApiMonitor:
         max_entries: int = _MAX_ENTRIES,
         *,
         enabled: bool = True,
+        terminal_callback: Optional[TerminalCallback] = None,
     ):
         self._entries: deque[ApiMonitorEntry] = deque()
         # Shared rows one subject cleared: deleting would erase another caller's history.
         self._hidden_shared: dict[str, set[str]] = {}
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
+        self._callback_condition = threading.Condition(self._lock)
         self._enabled = enabled
+        self._terminal_callback = terminal_callback
+        self._terminal_callback_leases: dict[str, TerminalCallback] = {}
+        self._terminal_callbacks_inflight: dict[Optional[str], int] = {}
 
     @property
     def enabled(self) -> bool:
         """Whether rows are being recorded. Read-only: the kill switch is a
         startup env var, so nothing may flip it on a live monitor."""
         return self._enabled
+
+    def set_terminal_callback(self, callback: Optional[TerminalCallback]) -> None:
+        """Replace the unleased terminal sink used by tests and embedders."""
+        with self._lock:
+            self._terminal_callback = callback
+
+    def acquire_terminal_callback(self, callback: TerminalCallback) -> str:
+        """Register a callback owned by one lifespan and return its lease token.
+
+        Only the newest live lease is notified, so overlapping lifespans do not
+        duplicate durable receipts. Releasing an older lease cannot disable a
+        newer owner, while releasing the newer one falls back to the older.
+        """
+        lease = uuid.uuid4().hex
+        with self._lock:
+            self._terminal_callback_leases[lease] = callback
+        return lease
+
+    def release_terminal_callback(self, lease: str) -> None:
+        """Remove only the terminal callback registration owned by ``lease``."""
+        with self._callback_condition:
+            self._terminal_callback_leases.pop(lease, None)
+            # A notification may already have captured this callback. Let its
+            # fast enqueue finish before the owner drains/stops the writer.
+            while self._terminal_callbacks_inflight.get(lease, 0):
+                self._callback_condition.wait()
+
+    def _terminal_callback_locked(self) -> tuple[Optional[str], Optional[TerminalCallback]]:
+        if self._terminal_callback_leases:
+            lease = next(reversed(self._terminal_callback_leases))
+            return lease, self._terminal_callback_leases[lease]
+        return None, self._terminal_callback
 
     def start(
         self,
@@ -226,7 +276,7 @@ class ApiMonitor:
             return ""
         now = time.time()
         entry = ApiMonitorEntry(
-            id = f"apireq_{uuid.uuid4().hex[:12]}",
+            id = f"apireq_{uuid.uuid4().hex}",
             endpoint = endpoint,
             method = method,
             # str(): a raw JSON body can carry any type, and a non-string breaks the UI.
@@ -337,7 +387,7 @@ class ApiMonitor:
             return
         with self._lock:
             entry = self._find_locked(entry_id)
-            if entry is None:
+            if entry is None or entry.finished_at is not None:
                 return
             # Only a streaming delta stamps TTFT; a full-response append is end-to-end latency.
             if stamp_first_token:
@@ -477,7 +527,7 @@ class ApiMonitor:
         context_length = _token_count_or_none(context_length)
         with self._lock:
             entry = self._find_locked(entry_id)
-            if entry is None:
+            if entry is None or entry.finished_at is not None:
                 return
             if prompt_tokens is not None:
                 entry.prompt_tokens = prompt_tokens
@@ -503,6 +553,7 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
+        notification = None
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
@@ -520,22 +571,28 @@ class ApiMonitor:
             self._entries.remove(entry)
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
+            notification = self._terminal_notification_locked(entry)
+        self._notify_terminal(notification)
 
     def fail_open(self, entry_id: Optional[str], error: str) -> None:
         """Fail only a still-open row: unlike :meth:`fail`, a catch-all in a
         ``finally`` cannot stamp an error onto a request that already succeeded."""
         if not entry_id:
             return
+        notification = None
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None or entry.finished_at is not None:
                 return
             # Same lock as the check, so a finish() cannot land in between.
             self._fail_locked(entry, error)
+            notification = self._terminal_notification_locked(entry)
+        self._notify_terminal(notification)
 
     def fail(self, entry_id: Optional[str], error: str) -> None:
         if not entry_id:
             return
+        notification = None
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
@@ -546,6 +603,8 @@ class ApiMonitor:
                     entry.error = _trim(error, 1000)
                 return
             self._fail_locked(entry, error)
+            notification = self._terminal_notification_locked(entry)
+        self._notify_terminal(notification)
 
     def _fail_locked(self, entry: ApiMonitorEntry, error: str) -> None:
         self._settle_stop_reason_locked(entry, False)
@@ -558,6 +617,59 @@ class ApiMonitor:
         self._entries.remove(entry)
         self._entries.appendleft(entry)
         self._trim_terminal_locked()
+
+    def _terminal_notification_locked(
+        self, entry: ApiMonitorEntry
+    ) -> Optional[tuple[Optional[str], TerminalCallback, ApiUsageReceipt]]:
+        callback_owner, callback = self._terminal_callback_locked()
+        subject = canonical_api_subject(entry.subject)
+        if (
+            callback is None
+            or entry.kind != "request"
+            or entry.via_api_key is not True
+            or not subject
+            or entry.finished_at is None
+        ):
+            return None
+        self._terminal_callbacks_inflight[callback_owner] = (
+            self._terminal_callbacks_inflight.get(callback_owner, 0) + 1
+        )
+        return (
+            callback_owner,
+            callback,
+            ApiUsageReceipt(
+                id = entry.id,
+                subject = subject,
+                endpoint = str(entry.endpoint)[:MAX_ENDPOINT_CHARS],
+                model = canonical_api_model(entry.model),
+                status = str(entry.status)[:MAX_STATUS_CHARS],
+                prompt_tokens = entry.prompt_tokens or 0,
+                completion_tokens = entry.completion_tokens or 0,
+                total_tokens = entry.total_tokens or 0,
+                created_at = int(entry.finished_at * 1000),
+                kind = entry.kind,
+                via_api_key = entry.via_api_key,
+            ),
+        )
+
+    def _notify_terminal(
+        self, notification: Optional[tuple[Optional[str], TerminalCallback, ApiUsageReceipt]]
+    ) -> None:
+        if notification is None:
+            return
+        callback_owner, callback, receipt = notification
+        try:
+            callback(receipt)
+        except Exception:  # noqa: BLE001 - monitoring must never break inference.
+            logger.warning("api_monitor.terminal_callback_failed", exc_info = True)
+        finally:
+            with self._callback_condition:
+                remaining = self._terminal_callbacks_inflight.get(callback_owner, 0) - 1
+                if remaining > 0:
+                    self._terminal_callbacks_inflight[callback_owner] = remaining
+                else:
+                    self._terminal_callbacks_inflight.pop(callback_owner, None)
+                self._callback_condition.notify_all()
 
     def snapshot(
         self,
