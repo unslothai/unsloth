@@ -1088,7 +1088,6 @@ class TestTorchFlavorTagVocabulary:
         assert stack_mod._torch_flavor_tag(version) == tag
 
 
-
 class TestUnknownFamilyPinIsNotOverridden:
     """An explicit index pin whose leaf names no flavor is applied verbatim at install
     time, so this pass has no standing to second-guess it. The only expectation it could
@@ -1141,9 +1140,7 @@ class TestExpectedXpuFlavorIsEnforced:
         assert any("xpu" in str(a) for a in args)
 
     def test_a_healthy_xpu_venv_is_untouched(self):
-        ok, mock_pip = _run_flavor_invariant(
-            installed = "2.9.1+xpu", expected_env = "xpu"
-        )
+        ok, mock_pip = _run_flavor_invariant(installed = "2.9.1+xpu", expected_env = "xpu")
         assert ok is True
         mock_pip.assert_not_called()
 
@@ -1157,8 +1154,10 @@ class TestExpectedXpuFlavorIsEnforced:
     def test_a_cuda_mask_does_not_cancel_an_xpu_repair(self):
         """CUDA_VISIBLE_DEVICES hides an NVIDIA GPU, not an Arc one."""
         ok, mock_pip = _run_flavor_invariant(
-            installed = "2.11.0+cpu", repaired = "2.9.1+xpu",
-            expected_env = "xpu", cvd = "",
+            installed = "2.11.0+cpu",
+            repaired = "2.9.1+xpu",
+            expected_env = "xpu",
+            cvd = "",
         )
         assert ok is True
         mock_pip.assert_called_once()
@@ -1171,7 +1170,9 @@ class TestExpectedXpuFlavorIsEnforced:
         rebuilt from a guessed URL -- but it IS repaired, because it runs at step 2b,
         before the dependency steps that can put PyPI's CPU wheel here."""
         ok, mock_pip = _run_flavor_invariant(
-            installed = "2.11.0+cpu", repaired = "2.11.0+rocm7.2", expected_env = "rocm",
+            installed = "2.11.0+cpu",
+            repaired = "2.11.0+rocm7.2",
+            expected_env = "rocm",
         )
         mock_pip.rocm_repair.assert_called_once()
         # Not called directly: this pass must not invent a repo.amd.com URL of its own.
@@ -1179,9 +1180,7 @@ class TestExpectedXpuFlavorIsEnforced:
         assert ok is True
 
     def test_a_healthy_rocm_venv_does_not_call_the_repair(self):
-        ok, mock_pip = _run_flavor_invariant(
-            installed = "2.11.0+rocm7.2", expected_env = "rocm"
-        )
+        ok, mock_pip = _run_flavor_invariant(installed = "2.11.0+rocm7.2", expected_env = "rocm")
         mock_pip.rocm_repair.assert_not_called()
         mock_pip.assert_not_called()
         assert ok is True
@@ -1196,6 +1195,93 @@ class TestExpectedXpuFlavorIsEnforced:
         assert ok is False
 
 
+class TestAnExplicitPinOutranksTheManifest:
+    """Direct `python install_python_stack.py` on Windows, which the invariant supports.
+
+    The manifest records what a PREVIOUS run installed; a pin is the instruction for
+    THIS one. Resolving the manifest first let a freshly set cu128 pin lose to a stale
+    cu124 record, and _expected_torch_index_url then rejected the cu128 pin as a family
+    mismatch and repaired from the PUBLIC cu124 index -- undoing both the family and the
+    source the user had just chosen.
+    """
+
+    def test_a_new_family_pin_beats_a_stale_manifest(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.10.0+cu124",
+            repaired = "2.10.0+cu128",
+            expected_env = None,
+            recorded = "cu124",
+            index_family = "cu128",
+        )
+        assert ok is True
+        assert "cu128" in _index_url(mock_pip)
+        assert "cu124" not in _index_url(mock_pip)
+        assert "--force-reinstall" in [str(a) for a in mock_pip.call_args.args]
+
+    def test_a_pinned_url_beats_a_stale_manifest_and_is_the_repair_source(self):
+        # A credentialed mirror is only repairable from the credentialed URL, so losing
+        # to the manifest also loses the source, not just the family.
+        pin = "https://mirror.corp.example/whl/cu128"
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.10.0+cu124",
+            repaired = "2.10.0+cu128",
+            expected_env = None,
+            recorded = "cu124",
+            index_url = pin,
+        )
+        assert ok is True
+        assert _index_url(mock_pip) == pin
+
+    def test_a_rocm_pin_collapses_to_the_flavor_vocabulary(self):
+        # Every AMD leaf (rocm6.4, gfx1151) is "rocm" in the tag vocabulary, or the
+        # comparison against the installed flavor could never match.
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+rocm7.2",
+            expected_env = None,
+            recorded = "cu124",
+            backend = "rocm",
+            index_family = "gfx1151",
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    def test_a_cpu_pin_beats_a_gpu_manifest(self):
+        # A deliberate move to CPU must not be reverted by the previous install.
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu",
+            expected_env = None,
+            recorded = "cu124",
+            index_family = "cpu",
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    def test_an_unrecognised_pin_still_falls_through_to_the_manifest(self):
+        # A /simple mirror names no family, so it answers nothing here; the caller's
+        # unknown-pin gate is what stops the manifest being acted on.
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cpu",
+            expected_env = None,
+            recorded = "cu124",
+            index_url = "https://mirror.corp.example/simple",
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    def test_the_setup_handover_still_wins_over_a_pin(self):
+        # setup.ps1 consults the pin when it picks its index, so the handover already
+        # reflects it. If they disagree, the handover describes the run that just
+        # installed, which is the better account of what is actually in the venv.
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.10.0+cu124",
+            repaired = "2.10.0+cu126",
+            expected_env = "cu126",
+            index_family = "cu128",
+        )
+        assert ok is True
+        assert "cu126" in _index_url(mock_pip)
+
+
 class TestExplicitlyPinnedGpuFlavorsAreStillEnforced:
     """An explicit GPU pin sets _TORCH_BACKEND at import, and an XPU pin additionally
     reads as an "unknown family" to the shared helper, whose known set predates XPU.
@@ -1205,16 +1291,20 @@ class TestExplicitlyPinnedGpuFlavorsAreStillEnforced:
 
     def test_a_pinned_xpu_backend_is_enforced_when_it_agrees(self):
         ok, mock_pip = _run_flavor_invariant(
-            installed = "2.11.0+cpu", repaired = "2.9.1+xpu",
-            backend = "xpu", expected_env = "xpu",
+            installed = "2.11.0+cpu",
+            repaired = "2.9.1+xpu",
+            backend = "xpu",
+            expected_env = "xpu",
         )
         assert ok is True
         mock_pip.assert_called_once()
 
     def test_a_pinned_rocm_backend_is_enforced_when_it_agrees(self):
         ok, mock_pip = _run_flavor_invariant(
-            installed = "2.11.0+cpu", repaired = "2.11.0+rocm7.2",
-            backend = "rocm", expected_env = "rocm",
+            installed = "2.11.0+cpu",
+            repaired = "2.11.0+rocm7.2",
+            backend = "rocm",
+            expected_env = "rocm",
         )
         assert ok is True
         mock_pip.rocm_repair.assert_called_once()
@@ -1224,8 +1314,11 @@ class TestExplicitlyPinnedGpuFlavorsAreStillEnforced:
         and it is the right index to repair from."""
         pin = "https://mirror.corp.example/whl/xpu"
         ok, mock_pip = _run_flavor_invariant(
-            installed = "2.11.0+cpu", repaired = "2.9.1+xpu",
-            backend = "xpu", expected_env = "xpu", index_url = pin,
+            installed = "2.11.0+cpu",
+            repaired = "2.9.1+xpu",
+            backend = "xpu",
+            expected_env = "xpu",
+            index_url = pin,
         )
         assert ok is True
         assert pin in mock_pip.call_args[0]
@@ -1233,7 +1326,9 @@ class TestExplicitlyPinnedGpuFlavorsAreStillEnforced:
     def test_an_unknown_pin_is_still_left_alone(self):
         """Regression guard: narrowing the veto must not reopen the case it closed."""
         ok, mock_pip = _run_flavor_invariant(
-            installed = "2.11.0+cpu", expected_env = None, recorded = "cu124",
+            installed = "2.11.0+cpu",
+            expected_env = None,
+            recorded = "cu124",
             index_url = "https://mirror.corp.example/simple",
         )
         assert ok is True

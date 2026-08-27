@@ -2924,16 +2924,33 @@ def _expected_torch_flavor_tag() -> str:
       1. UNSLOTH_EXPECTED_TORCH_TAG -- the setup script's own answer, exported by
          setup.ps1 immediately before it hands over, so it describes the index the torch
          install arm actually used (pin, preserved venv, GPU probe and all).
-      2. The flavor the last completed install recorded in the manifest. Read at import
+      2. An explicit index pin, when its family is one this vocabulary can name. The
+         manifest records what a PREVIOUS run installed; a pin is the instruction for
+         THIS one, so a freshly selected family has to outrank a stale record. Resolving
+         the manifest first let a cu128 pin lose to a cu124 manifest, and
+         _expected_torch_index_url then rejected the cu128 pin as a family mismatch and
+         repaired from the PUBLIC cu124 index -- undoing both the family and the source
+         the user had just chosen.
+      3. The flavor the last completed install recorded in the manifest. Read at import
          (_RECORDED_TORCH_TAG), because install_python_stack() drops the manifest before
          the dependency pass.
-      3. A live probe, for a run nothing set up: `python install_python_stack.py` by hand.
+      4. A live probe, for a run nothing set up: `python install_python_stack.py` by hand.
          Only an NVIDIA host, or an explicit pin, can expect a GPU build -- otherwise
          return "" rather than invent an expectation from an absent GPU.
     """
     env = os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip().lower()
     if env:
         return env
+    pin = _explicit_torch_index_url()
+    if pin is not None:
+        leaf = _torch_index_leaf(pin)
+        # "rocm" is the flavor vocabulary's single name for every AMD leaf (rocm6.4,
+        # gfx1151); cu*/xpu/cpu are already spelled the way the comparison expects. An
+        # unreadable leaf names no family, so it falls through rather than guessing.
+        if _is_pip_rocm_family_leaf(leaf):
+            return "rocm"
+        if _is_cuda_family_leaf(leaf) or leaf in ("xpu", "cpu"):
+            return leaf
     if _RECORDED_TORCH_TAG:
         return _RECORDED_TORCH_TAG
     # _detect_cuda_torch_index_url honours UNSLOTH_TORCH_INDEX_URL / _FAMILY before it
