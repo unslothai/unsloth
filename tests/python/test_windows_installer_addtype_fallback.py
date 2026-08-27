@@ -8,7 +8,7 @@ Windows PowerShell 5.1 -- the interpreter studio/src-tauri/src/install.rs spawns
 -- compiles by writing the source into %TEMP% and running csc.exe, so a %TEMP%
 that cannot hold a file (or a scanner that eats what was just written there)
 makes Add-Type throw CS2001. That exception used to travel up Get-StudioPathHash
-and end a first launch as "Could not create the Studio install lock" (#9140),
+and end a first launch as "Could not create the Unsloth install lock" (#9140),
 with nothing about the message pointing at the compiler.
 
 These run under pwsh on any platform: the failure being guarded is that a thrown
@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 import pytest
+from unsloth_pwsh_runner import run_pwsh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -89,7 +90,11 @@ def _run_powershell(script: str, env: dict[str, str] | None = None) -> subproces
     os.close(handle)
     try:
         Path(name).write_text(script, encoding = "utf-8-sig")
-        return subprocess.run(
+        # run_pwsh, not subprocess.run: every test in this file reads this result as
+        # "did the Add-Type fallback chain survive", and an interpreter that aborted at
+        # startup produces the same empty stdout as a helper that never ran its fallback.
+        # See tests/_shared/unsloth_pwsh_runner.py.
+        return run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name],
             capture_output = True,
             text = True,
@@ -382,7 +387,7 @@ Write-Output "KEPT:$(Test-Path -LiteralPath $replacement)"
     # TEMP was absent; restoring it as "" would change how every later child
     # resolves its own temp directory.
     assert _lines(result, "TEMPSET:") == ["TEMPSET:False"]
-    # It survives on purpose: an autostarted Studio inherited it as its own %TEMP%,
+    # It survives on purpose: an autostarted Unsloth inherited it as its own %TEMP%,
     # and the host's real one is broken. Stale ones are swept on the next run.
     assert _lines(result, "KEPT:") == ["KEPT:True"]
 
@@ -637,22 +642,78 @@ Write-Output "TMP:[$env:TMP]"
 
 
 @requires_pwsh
-def test_final_normalization_keeps_a_volume_guid_rooted():
-    """\\\\?\\C:\\x still names a drive once the prefix comes off. A volume GUID does not.
+def test_final_normalization_strips_every_extended_prefix():
+    r"""This string is hashed into the runtime mutex, so Python decides its shape.
 
-    Stripping it leaves the unrooted "Volume{GUID}\\x", which hashes to a
-    different identity than the same directory reached by drive letter and leaves
-    GetPathRoot empty, so the relaxed process comparison cannot run either.
+    unsloth_cli/_studio_runtime_gate.py::_resolved_windows_path strips \\?\
+    unconditionally, after one special case for \\?\UNC\. A volume GUID kept its
+    prefix here for a while, on the reasoning that the bare "Volume{GUID}\x" is
+    not rooted. That is true, and it matters while a LINK TARGET is being
+    anchored, which is why Resolve-StudioLinkTarget still keeps the extended
+    form. It does not matter here, and keeping it made the installer and a
+    running Unsloth compute different names for one directory.
     """
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     body = _extract(r"    function Resolve-StudioFinalPathInfo \{.*?\n    \}\n", source)
-    guid = body.index("\\\\?\\Volume{")
-    dos = body.index("$resolved.Substring(4)")
-    # The volume-GUID branch has to come BEFORE the general one, which would
-    # otherwise swallow it and strip the prefix anyway.
-    assert guid < dos
-    branch = body[guid:dos]
-    assert "Substring" not in branch
+    assert "'\\\\?\\Volume{'" not in body
+    assert "$resolved.Substring(4)" in body
+
+    gate = (REPO_ROOT / "unsloth_cli" / "_studio_runtime_gate.py").read_text(encoding = "utf-8")
+    # The two sides have to agree about which prefixes come off, and there are
+    # exactly two rules on the Python side.
+    assert 'resolved.startswith("\\\\\\\\?\\\\UNC\\\\")' in gate
+    assert "resolved = resolved[4:]" in gate
+    assert "Volume{" not in gate
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "resolved,expected",
+    [
+        ("\\\\?\\C:\\Users\\bob\\studio", "C:\\Users\\bob\\studio"),
+        ("\\\\?\\UNC\\server\\share\\studio", "\\\\server\\share\\studio"),
+        (
+            "\\\\?\\Volume{11111111-2222-3333-4444-555555555555}\\data\\studio",
+            "Volume{11111111-2222-3333-4444-555555555555}\\data\\studio",
+        ),
+    ],
+    ids = ["extended-dos", "extended-unc", "volume-guid"],
+)
+def test_the_installer_and_the_runtime_gate_normalize_alike(resolved: str, expected: str):
+    """Byte-for-byte agreement, or the two sides key their lock on different names."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    body = _extract(r"    function Resolve-StudioFinalPathInfo \{.*?\n    \}\n", source)
+    branch = _extract(
+        r"        if \(\$resolved\.StartsWith\('\\\\\?\\UNC\\'.*?\n        \}\n", body
+    )
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                f"$resolved = '{resolved}'",
+                branch,
+                'Write-Output "OUT:$resolved"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    got = _lines(result, "OUT:")[0][len("OUT:") :]
+    assert got == expected
+
+    # And the same input through the Python gate's own rules.
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_studio_runtime_gate", REPO_ROOT / "unsloth_cli" / "_studio_runtime_gate.py"
+    )
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    python_side = resolved
+    if python_side.startswith("\\\\?\\UNC\\"):
+        python_side = "\\\\" + python_side[8:]
+    elif python_side.startswith("\\\\?\\"):
+        python_side = python_side[4:]
+    assert got == python_side
 
 
 @requires_pwsh
@@ -670,7 +731,7 @@ def test_a_subst_drive_folds_onto_its_target(path: str, expected: str):
     """The Python runtime gate resolves a SUBST drive; Path.resolve does that.
 
     Left unresolved here, one directory reached under two spellings produces two
-    different install mutexes, and a Studio running from the physical spelling is
+    different install mutexes, and an Unsloth running from the physical spelling is
     invisible to the in-use scan. Measured on windows-latest: subst.exe is the
     only source available without a compiler -- Get-PSDrive.DisplayRoot,
     Win32_LogicalDisk.ProviderName, GetFullPath and Resolve-Path all reveal
@@ -698,18 +759,18 @@ def test_a_subst_drive_folds_onto_its_target(path: str, expected: str):
 def test_the_recorded_owner_outranks_the_name(tmp_path: Path):
     """The PID in the name is the INSTALLER's, and it exits.
 
-    The process that keeps using the directory is the Studio the installer
+    The process that keeps using the directory is the Unsloth the installer
     autostarted, which is what owner.pid records. Reading only the name would
-    clear a live Studio's %TEMP% on the next run.
+    clear a live Unsloth's %TEMP% on the next run.
     """
     root = tmp_path / "root"
     root.mkdir()
     # Name says dead, owner.pid says alive: keep it.
-    keep = root / f"ust-{_DEAD_PID}-a"
+    keep = root / f"ust-{_DEAD_PID}-000000aa"
     keep.mkdir()
     (keep / "owner.pid").write_text(str(os.getpid()), encoding = "utf-8")
     # Name says alive, owner.pid says dead: the recorded owner wins, so sweep it.
-    drop = root / f"ust-{os.getpid()}-b"
+    drop = root / f"ust-{os.getpid()}-000000bb"
     drop.mkdir()
     (drop / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
 
@@ -731,7 +792,7 @@ def test_the_recorded_owner_outranks_the_name(tmp_path: Path):
 
 @requires_pwsh
 def test_the_sweep_keeps_a_directory_whose_owner_is_still_running(tmp_path: Path):
-    """A Studio autostarted by an earlier install owns one of these as its %TEMP%.
+    """An Unsloth autostarted by an earlier install owns one of these as its %TEMP%.
 
     It can outlive the one-day cutoff without ever writing to the directory, and
     the sweep runs before the runtime mutex is taken, so age alone must not be
@@ -739,11 +800,13 @@ def test_the_sweep_keeps_a_directory_whose_owner_is_still_running(tmp_path: Path
     """
     root = tmp_path / "root"
     root.mkdir()
-    live = root / f"ust-{os.getpid()}-old"
+    live = root / f"ust-{os.getpid()}-01d01d01"
     live.mkdir()
     (live / "in-use.txt").write_text("a live process owns this", encoding = "utf-8")
-    abandoned = root / f"ust-{_DEAD_PID}-old"
+    abandoned = root / f"ust-{_DEAD_PID}-01d01d01"
     abandoned.mkdir()
+    # Recorded, not guessed: an unrecorded owner is now treated as unknown.
+    (abandoned / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
 
     aged = time.time() - 3 * 24 * 3600
     os.utime(live, (aged, aged))
@@ -774,8 +837,10 @@ def test_a_healthy_temp_still_sweeps_what_an_earlier_degraded_run_left(tmp_path:
     local_app_data = tmp_path / "localappdata"
     root = local_app_data / "Unsloth Studio" / "temp"
     root.mkdir(parents = True)
-    abandoned = root / f"ust-{_DEAD_PID}-old"
+    abandoned = root / f"ust-{_DEAD_PID}-01d01d01"
     abandoned.mkdir()
+    # Recorded, not guessed: an unrecorded owner is now treated as unknown.
+    (abandoned / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     (abandoned / "leftover.bin").write_text("half a download", encoding = "utf-8")
     aged = time.time() - 3 * 24 * 3600
     os.utime(abandoned, (aged, aged))
@@ -803,6 +868,268 @@ Write-Output "OVERRIDE:$($null -ne $script:StudioTempOverride)"
 
 
 @requires_pwsh
+def test_probing_the_host_temp_never_creates_it(tmp_path: Path):
+    """An inherited TMP that names nothing is unusable, not an instruction.
+
+    New-Item -Force builds the whole parent chain, so treating the host's own
+    TMP as creatable would have the installer materialize a tree at a path
+    nobody chose, on a stale or mistyped value, and then trust it as temp.
+    """
+    ghost = tmp_path / "ghost" / "deeper"
+    result = _run_powershell(
+        _script(
+            f"""
+Write-Output "USABLE:$(Test-StudioDirectoryUsable -Path '{ghost}')"
+Write-Output "EXISTS:$(Test-Path -LiteralPath '{ghost}')"
+""",
+            sabotage = False,
+            names = ("Write-StudioLine", "Test-StudioDirectoryUsable"),
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "USABLE:") == ["USABLE:False"]
+    assert _lines(result, "EXISTS:") == ["EXISTS:False"]
+    assert not ghost.exists()
+    # A directory the installer owns is a different matter: that one it creates.
+    owned = tmp_path / "owned" / "ust-1-aaaaaaaa"
+    result = _run_powershell(
+        _script(
+            f"Write-Output \"USABLE:$(Test-StudioDirectoryUsable -Path '{owned}' -CreateIfMissing)\"",
+            sabotage = False,
+            names = ("Write-StudioLine", "Test-StudioDirectoryUsable"),
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "USABLE:") == ["USABLE:True"]
+    assert owned.is_dir()
+
+
+@requires_pwsh
+def test_an_undeletable_probe_file_is_reclaimed_next_time(tmp_path: Path):
+    """The probe cannot clean up after itself when deletion is what failed.
+
+    Without a sweep every such run leaves one more file in the host's own
+    temp, forever, since nothing else knows the name. Aged, so a probe running
+    concurrently in another process is never touched.
+    """
+    good = tmp_path / "good"
+    good.mkdir()
+    stale = good / "unsloth-probe-deadbeef.tmp"
+    stale.write_text("left by a run that could not delete it", encoding = "utf-8")
+    fresh = good / "unsloth-probe-cafebabe.tmp"
+    fresh.write_text("another process is using this right now", encoding = "utf-8")
+    # Same prefix, same suffix, not the shape the probe writes. This sweep runs in
+    # the HOST's temp directory, so a name that merely starts the same way is
+    # somebody else's file however old it is.
+    theirs = good / "unsloth-probe-report.tmp"
+    theirs.write_text("not ours", encoding = "utf-8")
+    theirs_long = good / "unsloth-probe-deadbeefcafe.tmp"
+    theirs_long.write_text("not ours either", encoding = "utf-8")
+    aged = time.time() - 3 * 24 * 3600
+    for path in (stale, theirs, theirs_long):
+        os.utime(path, (aged, aged))
+
+    result = _run_powershell(
+        _script(
+            f"Write-Output \"USABLE:$(Test-StudioDirectoryUsable -Path '{good}')\"",
+            sabotage = False,
+            names = ("Write-StudioLine", "Test-StudioDirectoryUsable"),
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "USABLE:") == ["USABLE:True"]
+    assert not stale.exists()
+    assert fresh.exists()
+    assert theirs.exists(), "the sweep took a file that only shares the prefix"
+    assert theirs_long.exists(), "the sweep took a file that only shares the prefix"
+
+
+@requires_pwsh
+def test_a_root_that_fails_its_probe_is_not_left_behind(tmp_path: Path):
+    """A failed install must not conjure the data directory tree.
+
+    The probe creates each candidate before testing it, so on a host where
+    every root fails, giving up used to leave a "Unsloth Studio" tree on a
+    machine Unsloth was never installed on.
+    """
+    local_app_data = tmp_path / "localappdata"
+    local_app_data.mkdir()
+    user_profile = tmp_path / "userprofile"
+    user_profile.mkdir()
+
+    # Pre-existing content under one of the same parents: the unwind must stop.
+    keep = local_app_data / "Unsloth Studio" / "studio.port"
+    keep.parent.mkdir(parents = True)
+    keep.write_text("41343", encoding = "utf-8")
+
+    env = os.environ.copy()
+    env["LOCALAPPDATA"] = str(local_app_data)
+    env["USERPROFILE"] = str(user_profile)
+
+    result = _run_powershell(
+        _script(
+            """
+# Every candidate fails its probe, whatever the filesystem says.
+function Test-StudioDirectoryUsable {
+    param([string]$Path, [switch]$CreateIfMissing)
+    # Creates unconditionally, the way the real probe did before it took the
+    # switch, so this measures the caller rather than the stub.
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    return $false
+}
+Write-Output "PRIVATE:$(New-StudioPrivateTempDirectory)"
+""",
+            sabotage = False,
+            names = (
+                "Write-StudioLine",
+                "Remove-StudioStalePrivateTempDirectories",
+                "Get-StudioPrivateTempRoots",
+                "New-StudioPrivateTempDirectory",
+            ),
+        ),
+        env = env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "PRIVATE:") == ["PRIVATE:"]
+    # Not just the ust-* leaf: -Force built the whole chain, so "Unsloth Studio"
+    # and "temp" were conjured too and a run that gave up must not leave a data
+    # directory tree on a machine Unsloth was never installed on.
+    # ~\.unsloth itself is shared and stays; everything the probe made under it goes.
+    assert not (user_profile / ".unsloth" / ".cache").exists()
+    assert not list(user_profile.rglob("ust-*")), list(user_profile.rglob("*"))
+    assert keep.exists()
+    assert not list(local_app_data.rglob("ust-*")), list(local_app_data.rglob("*"))
+    assert not (local_app_data / "Unsloth Studio" / "temp").exists()
+
+
+@requires_pwsh
+def test_the_sweep_only_takes_directories_the_allocator_could_have_made(tmp_path: Path):
+    """Shape, not prefix. The delete is recursive and this is the only owner test.
+
+    A prefix match takes "ust-legacy" and "ust-user-cache" as well, and neither
+    has a parseable PID, so the liveness check is skipped for exactly the names
+    least likely to be ours. scripts/uninstall.ps1 already required the shape;
+    the installer sweep had drifted away from it.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    aged = time.time() - 3 * 24 * 3600
+
+    ours = root / f"ust-{_DEAD_PID}-abcdef01"
+    ours.mkdir()
+    # Recorded, not guessed: an unrecorded owner is now treated as unknown.
+    (ours / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
+    (ours / "scratch.bin").write_text("x", encoding = "utf-8")
+    keep = []
+    # Case-insensitively ours: Windows filenames are case-insensitive, so refusing
+    # the uppercase spelling would leak a directory we created.
+    upper = root / f"ust-{_DEAD_PID}-ABCDEF01"
+    upper.mkdir()
+    (upper / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
+    for name in ("ust-legacy", "ust-user-cache", "ust-notapid-abcdef01", "ust-", "ust-12-abcdefg1"):
+        victim = root / name
+        victim.mkdir()
+        (victim / "keep.txt").write_text("not ours", encoding = "utf-8")
+        keep.append(victim)
+    for path in [ours, upper] + keep:
+        os.utime(path, (aged, aged))
+
+    result = _run_powershell(
+        _script(
+            f"Remove-StudioStalePrivateTempDirectories -Root '{root}'",
+            sabotage = False,
+            names = ("Remove-StudioStalePrivateTempDirectories",),
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert not ours.exists()
+    assert not upper.exists()
+    for victim in keep:
+        assert (victim / "keep.txt").exists(), f"{victim.name} was swept"
+
+
+@requires_pwsh
+def test_a_native_resolver_that_throws_says_so_once(tmp_path: Path):
+    """Compiling and then failing to resolve is not the same as no compiler.
+
+    The install still proceeds on the lexical answer, and Exact = $false already
+    makes the runtime lock fail closed, but nothing said so: the degraded warning
+    fires only when the COMPILE failed. That left an operator with a silently
+    inexact identity on a host that looks perfectly healthy.
+    """
+    studio = tmp_path / "studio"
+    studio.mkdir()
+    result = _run_powershell(
+        _script(
+            f"""
+# The helper is "available" and throws anyway, which is what a rename between
+# the Test-Path walk and CreateFileW looks like.
+function Initialize-StudioFinalPathNativeType {{ return $true }}
+Add-Type -TypeDefinition @'
+public class UnslothStudioFinalPathV2 {{
+    public static string Resolve(string path) {{ throw new System.Exception("access is denied"); }}
+}}
+'@
+foreach ($i in 1..3) {{ $null = Resolve-StudioFinalPathInfo -Path '{studio}' }}
+$info = Resolve-StudioFinalPathInfo -Path '{studio}'
+Write-Output "EXACT:$($info.Exact)"
+Write-Output "PATH:$($info.Path)"
+""",
+            sabotage = False,
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "EXACT:") == ["EXACT:False"]
+    assert _lines(result, "PATH:")[0].endswith("studio")
+    warnings = [line for line in result.stdout.splitlines() if "native helper; continuing" in line]
+    assert len(warnings) == 1, warnings
+
+
+@requires_pwsh
+def test_an_unrecorded_owner_is_unknown_rather_than_abandoned(tmp_path: Path):
+    """The name's PID is the installer's, and it can be dead while Unsloth is not.
+
+    An installer killed between Start-Process and the owner.pid write leaves a
+    directory whose only owner evidence is a dead installer PID, while the
+    Unsloth it started is using that directory as its own %TEMP%. Reading is
+    proof; guessing from the name is not, so the two get different patience.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    two_days = time.time() - 2 * 24 * 3600
+    eight_days = time.time() - 8 * 24 * 3600
+
+    # No owner.pid, dead name PID, two days old: unknown, so it stays.
+    unknown = root / f"ust-{_DEAD_PID}-aaaaaaaa"
+    unknown.mkdir()
+    (unknown / "in-use.txt").write_text("a live Unsloth may own this", encoding = "utf-8")
+    os.utime(unknown, (two_days, two_days))
+
+    # Same, but a week past: collected, so the pile still stays bounded.
+    ancient = root / f"ust-{_DEAD_PID}-bbbbbbbb"
+    ancient.mkdir()
+    os.utime(ancient, (eight_days, eight_days))
+
+    # Recorded dead owner, two days old: proof, so it goes at the usual cutoff.
+    recorded = root / f"ust-{_DEAD_PID}-cccccccc"
+    recorded.mkdir()
+    (recorded / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
+    os.utime(recorded, (two_days, two_days))
+
+    result = _run_powershell(
+        _script(
+            f"Remove-StudioStalePrivateTempDirectories -Root '{root}'",
+            sabotage = False,
+            names = ("Remove-StudioStalePrivateTempDirectories",),
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert (unknown / "in-use.txt").exists(), "an unrecorded owner was read as abandoned"
+    assert not ancient.exists(), "an unrecorded owner is never collected at all"
+    assert not recorded.exists(), "a recorded dead owner should still go at one day"
+
+
+@requires_pwsh
 def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     root = tmp_path / "root"
     root.mkdir()
@@ -811,12 +1138,15 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     (precious / "keepme.txt").write_text("do not delete", encoding = "utf-8")
     # A dead owner PID, or the sweep keeps the directory for the live process its
     # name says owns it; that case is the test below.
-    stale = root / f"ust-{_DEAD_PID}-old"
+    stale = root / f"ust-{_DEAD_PID}-01d01d01"
     stale.mkdir()
+    # Recorded, not guessed: an unrecorded owner is now treated as unknown.
+    (stale / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     (stale / "junk").write_text("x", encoding = "utf-8")
-    fresh = root / f"ust-{_DEAD_PID}-new"
+    fresh = root / f"ust-{_DEAD_PID}-0e0e0e0e"
     fresh.mkdir()
-    link = root / f"ust-{_DEAD_PID}-link"
+    (fresh / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
+    link = root / f"ust-{_DEAD_PID}-11111111"
     try:
         link.symlink_to(precious, target_is_directory = True)
     except (OSError, NotImplementedError):
@@ -915,20 +1245,330 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
     # install.ps1 falls through from a set-but-unusable LOCALAPPDATA to the known
     # folder, so the variable being non-blank does not say where the tree landed.
     assert "foreach ($root in @($env:LOCALAPPDATA, $knownLocalAppData)) {" in uninstall
-    assert "foreach ($d in $defaultDataDirs) { _RemoveDataDirKeepingWslIcon $d }" in uninstall
-    assert "_RemoveDataDirKeepingWslIcon $defaultDataDir " not in uninstall
+    # And the second spelling gets the TEMP TREE ONLY. It can name a different
+    # user's profile, and the data-dir delete is recursive with no ownership
+    # sentinel, so widening that to both roots would have been the larger bug.
+    assert 'Join-Path $root "Unsloth Studio\\temp"' in uninstall
+    assert "_RemoveStudioPrivateTempTrees -Paths $privateTempDirs" in uninstall
+    assert "foreach ($d in $defaultDataDirs)" not in uninstall
 
 
 @requires_pwsh
-def test_the_uninstaller_reclaims_both_local_app_data_spellings(tmp_path: Path):
+def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_path: Path):
+    """An uninstall stops the Unsloth instances under the roots it knows about, not others.
+
+    An Unsloth from another install root, or another user, can be alive on one of
+    these directories as its %TEMP%; install.ps1's own sweep preserves it and so
+    must this one. And a temp directory that is itself a link must not be walked:
+    the target's children carry no ReparsePoint attribute, so a recursive delete
+    would take an unrelated tree.
+    """
+    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
+    block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
+    preamble = (
+        '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
+    )
+
+    # 1. A live owner is left alone; a dead one goes.
+    temp = tmp_path / "Unsloth Studio" / "temp"
+    temp.mkdir(parents = True)
+    live = temp / "ust-1234-abcdef01"
+    live.mkdir()
+    (live / "owner.pid").write_text(str(os.getpid()), encoding = "utf-8")
+    dead = temp / "ust-1234-abcdef02"
+    dead.mkdir()
+    (dead / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
+
+    result = _run_powershell(
+        "\n".join(
+            [
+                preamble,
+                block,
+                f"_RemoveStudioPrivateTempTrees -Paths @('{temp}') -PrimaryPath '{temp}'",
+                'Write-Output "DONE:1"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "DONE:") == ["DONE:1"]
+    assert (live / "owner.pid").exists(), "a live owner's temp was removed"
+    assert not dead.exists()
+
+    # 2. A linked temp directory is refused outright.
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "ust-1234-abcdef03").mkdir()
+    (victim / "ust-1234-abcdef03" / "precious.txt").write_text("not ours", encoding = "utf-8")
+    linked = tmp_path / "Linked Unsloth" / "temp"
+    linked.parent.mkdir()
+    linked.symlink_to(victim, target_is_directory = True)
+
+    result = _run_powershell(
+        "\n".join(
+            [
+                preamble,
+                block,
+                f"_RemoveStudioPrivateTempTrees -Paths @('{linked}') -PrimaryPath '{linked}'",
+                'Write-Output "DONE:2"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "DONE:") == ["DONE:2"]
+    assert (
+        victim / "ust-1234-abcdef03" / "precious.txt"
+    ).exists(), "the sweep walked through a link"
+
+
+@requires_pwsh
+def test_a_live_owner_survives_the_data_directory_removal(tmp_path: Path):
+    """Preserving a directory is worth nothing if the next line deletes its parent.
+
+    The primary private temp directory sits inside the data directory, and the
+    data directory is removed wholesale. An Unsloth from another install root can
+    be alive on that temp directory as its %TEMP%, so the sweep has to run first
+    and the removal has to be told what the sweep kept.
+    """
+    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
+
+    # The order is a property of the script body, not of any one function, so it
+    # is checked as one: every wholesale data-dir removal is preceded by the
+    # sweep and carries what the sweep kept.
+    body = uninstall[uninstall.index("function Uninstall-UnslothStudio") :]
+    calls = [
+        line.strip()
+        for line in body.splitlines()
+        if (
+            "_RemoveDataDirKeepingWslIcon $defaultDataDir" in line
+            or "_RemoveStudioPrivateTempTrees -Paths" in line
+        )
+    ]
+    assert calls, "neither call is in the script body"
+    for index, line in enumerate(calls):
+        if "_RemoveDataDirKeepingWslIcon" not in line:
+            continue
+        assert "-Preserve" in line, f"data dir removed without the preserved list: {line}"
+        assert (
+            index > 0 and "_RemoveStudioPrivateTempTrees" in calls[index - 1]
+        ), f"the data dir is removed before the temp sweep runs: {line}"
+
+    blocks = "\n".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", uninstall)
+        for name in (
+            "_RemoveStudioPrivateTempTrees",
+            "_RemoveTreeKeeping",
+            "_RemoveDataDirKeepingWslIcon",
+        )
+    )
+
+    data = tmp_path / "Unsloth Studio"
+    temp = data / "temp"
+    temp.mkdir(parents = True)
+    live = temp / "ust-4321-abcdef05"
+    live.mkdir()
+    (live / "owner.pid").write_text(str(os.getpid()), encoding = "utf-8")
+    (live / "scratch.bin").write_text("in use", encoding = "utf-8")
+    dead = temp / "ust-4321-abcdef06"
+    dead.mkdir()
+    (dead / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
+    other = data / "launcher.db"
+    other.write_text("data", encoding = "utf-8")
+
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                "function _Substep { param([string]$Msg, [string]$Color) }",
+                "function _RemovePath { param([string]$Path)"
+                " Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue }",
+                blocks,
+                f"$kept = @(_RemoveStudioPrivateTempTrees -Paths @('{temp}') -PrimaryPath '{temp}')",
+                'Write-Output ("KEPT:" + @($kept).Count)',
+                f"_RemoveDataDirKeepingWslIcon -DataDir '{data}' -ShortcutDirs @() -Preserve $kept",
+                'Write-Output "DONE:1"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "DONE:") == ["DONE:1"]
+    assert _lines(result, "KEPT:") == ["KEPT:1"]
+    assert (live / "scratch.bin").exists(), "a live Unsloth's %TEMP% went with the data dir"
+    assert not dead.exists()
+    assert not other.exists(), "the rest of the data dir was left behind"
+
+
+@requires_pwsh
+def test_a_link_high_above_another_profile_is_still_a_link(tmp_path: Path):
+    r"""A junction does not have to sit next to the temp directory to redirect it.
+
+    LocalAppData itself, the profile, or the drive root can be the reparse
+    point, and then "<root>\Unsloth Studio\temp" and its parent both look like
+    perfectly ordinary directories while the enumeration lands somewhere else
+    entirely. For a spelling that is not the profile being uninstalled, that
+    somewhere else can be another user, so every ancestor has to be ordinary.
+
+    The profile this uninstall IS for is deliberately not held to that: a
+    redirected LocalAppData there is the same user's own storage, and refusing
+    would leave the installer's own temp tree behind on every host that uses
+    folder redirection.
+    """
+    if os.path.realpath(tmp_path) != str(tmp_path):
+        pytest.skip("the temp root itself is a link, which is what this test plants")
+
+    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
+    block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
+    preamble = (
+        '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
+    )
+
+    # The real profile, with an Unsloth temp tree in it that belongs to a dead
+    # owner: nothing about the entries themselves protects them.
+    real = tmp_path / "real profile"
+    real_temp = real / "localappdata" / "Unsloth Studio" / "temp"
+    real_temp.mkdir(parents = True)
+    stale = real_temp / "ust-1234-abcdef04"
+    stale.mkdir()
+    (stale / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
+    (stale / "precious.txt").write_text("another profile", encoding = "utf-8")
+
+    # Three levels above the temp directory, so neither it nor its parent is a
+    # link. Only a full walk sees this.
+    redirected = tmp_path / "redirected profile"
+    redirected.symlink_to(real, target_is_directory = True)
+    aliased = redirected / "localappdata" / "Unsloth Studio" / "temp"
+
+    other = tmp_path / "mine" / "Unsloth Studio" / "temp"
+    other.mkdir(parents = True)
+
+    result = _run_powershell(
+        "\n".join(
+            [
+                preamble,
+                block,
+                f"_RemoveStudioPrivateTempTrees -Paths @('{aliased}') -PrimaryPath '{other}'",
+                'Write-Output "DONE:1"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "DONE:") == ["DONE:1"]
+    assert (stale / "precious.txt").exists(), "the sweep walked through a link high above the root"
+
+    # Same shape, but now it is this uninstall's own profile: the tree goes.
+    result = _run_powershell(
+        "\n".join(
+            [
+                preamble,
+                block,
+                f"_RemoveStudioPrivateTempTrees -Paths @('{aliased}') -PrimaryPath '{aliased}'",
+                'Write-Output "DONE:2"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "DONE:") == ["DONE:2"]
+    assert not stale.exists(), "a redirected profile cannot clean its own temp tree"
+
+
+@requires_pwsh
+def test_a_pre_existing_fallback_parent_is_not_unwound(tmp_path: Path):
+    """Only what the probe created may be taken back.
+
+    A pre-provisioned "Unsloth Studio\temp" with its own ACLs, or an empty
+    relocation junction, is configuration this installer did not create. Empty
+    and correctly named is not the same as ours.
+    """
+    local_app_data = tmp_path / "localappdata"
+    provisioned = local_app_data / "Unsloth Studio" / "temp"
+    provisioned.mkdir(parents = True)
+    user_profile = tmp_path / "userprofile"
+    user_profile.mkdir()
+
+    env = os.environ.copy()
+    env["LOCALAPPDATA"] = str(local_app_data)
+    env["USERPROFILE"] = str(user_profile)
+
+    result = _run_powershell(
+        _script(
+            """
+function Test-StudioDirectoryUsable {
+    param([string]$Path, [switch]$CreateIfMissing)
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    return $false
+}
+Write-Output "PRIVATE:$(New-StudioPrivateTempDirectory)"
+""",
+            sabotage = False,
+            names = (
+                "Write-StudioLine",
+                "Remove-StudioStalePrivateTempDirectories",
+                "Get-StudioPrivateTempRoots",
+                "New-StudioPrivateTempDirectory",
+            ),
+        ),
+        env = env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "PRIVATE:") == ["PRIVATE:"]
+    # The candidate the probe made is gone; the directory that was already there stays.
+    assert not list(provisioned.glob("ust-*"))
+    assert provisioned.is_dir(), "a pre-existing temp directory was unwound"
+    # And the tree the probe DID create under the other root is still taken back.
+    assert not (user_profile / ".unsloth" / ".cache").exists()
+
+
+@requires_pwsh
+def test_the_uninstall_sweep_needs_a_recorded_owner_outside_its_own_profile(tmp_path: Path):
+    """The alternate LocalAppData spelling can be another user's profile.
+
+    install.ps1 reads a missing owner.pid as unknown rather than abandoned,
+    because an installer killed before writing it leaves a live Unsloth holding
+    the directory. Deleting that out of somebody else's profile is not this
+    uninstall's business. Under our own profile the shape is enough, since that
+    is what is being removed.
+    """
+    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
+    block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
+    preamble = (
+        '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
+    )
+
+    mine = tmp_path / "mine" / "Unsloth Studio" / "temp"
+    theirs = tmp_path / "theirs" / "Unsloth Studio" / "temp"
+    for root in (mine, theirs):
+        root.mkdir(parents = True)
+        (root / "ust-1234-abcdef01").mkdir()
+
+    result = _run_powershell(
+        "\n".join(
+            [
+                preamble,
+                block,
+                f"_RemoveStudioPrivateTempTrees -Paths @('{mine}','{theirs}') -PrimaryPath '{mine}'",
+                'Write-Output "DONE:1"',
+            ]
+        )
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "DONE:") == ["DONE:1"]
+    assert not (mine / "ust-1234-abcdef01").exists(), "our own profile should be reclaimed"
+    assert (
+        theirs / "ust-1234-abcdef01"
+    ).is_dir(), "another profile was swept without a recorded owner"
+
+
+@requires_pwsh
+def test_the_uninstaller_reclaims_the_temp_tree_at_both_spellings(tmp_path: Path):
     """A set-but-unusable LOCALAPPDATA is the case that produced two roots.
 
     install.ps1 skips such a path and places its private temp under the known
-    folder instead. An uninstaller that stops at the first non-blank candidate
-    then deletes a directory that was never used and leaves the real one behind.
+    folder instead, so an uninstaller that stops at the first non-blank
+    candidate leaves the real tree behind. What the second root must NOT get is
+    the recursive, sentinel-free data-dir delete: the two spellings differ
+    mainly when one of them names a DIFFERENT USER's profile.
     """
     uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
-    block = _extract(r"    # BOTH LocalAppData spellings.*?\n    \}\n", uninstall)
+    block = _extract(r"    # The SECOND LocalAppData spelling.*?\n    \}\n", uninstall)
 
     dead = str(tmp_path / "gone" / "localappdata")
     env = os.environ.copy()
@@ -938,7 +1578,7 @@ def test_the_uninstaller_reclaims_both_local_app_data_spellings(tmp_path: Path):
             [
                 '$ErrorActionPreference = "Stop"',
                 block,
-                '$defaultDataDirs | ForEach-Object { Write-Output "DIR:$_" }',
+                '$privateTempDirs | ForEach-Object { Write-Output "DIR:$_" }',
             ]
         ),
         env = env,
@@ -947,41 +1587,50 @@ def test_the_uninstaller_reclaims_both_local_app_data_spellings(tmp_path: Path):
     dirs = [line[len("DIR:") :] for line in _lines(result, "DIR:")]
     assert len(dirs) == 2, dirs
     assert any(d.startswith(dead) for d in dirs), dirs
-    assert all(d.rstrip("\\/").endswith("Unsloth Studio") for d in dirs), dirs
-    # Deduplicated, so the ordinary host where both spellings agree is untouched.
+    # The temp tree, not the data directory.
+    assert all(d.rstrip("\\/").endswith("temp") for d in dirs), dirs
     assert len(set(dirs)) == len(dirs)
 
 
-def test_path_resolution_and_process_identity_no_longer_need_the_compiler():
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+@requires_pwsh
+def test_the_private_temp_removal_only_takes_what_it_created(tmp_path: Path):
+    """Narrow on purpose: this runs against a root that may be another user's.
 
-    # The resolver callers reach is now a dispatcher; only the initializer builds.
-    assert "Add-Type" not in _extract(r"    function Get-StudioFinalPath \{.*?\n    \}\n", source)
-    assert "Add-Type" not in _extract(
-        r"    function Resolve-StudioFinalPathInfo \{.*?\n    \}\n", source
+    Only ust-<pid>-<hex> directories go, matched by shape rather than prefix,
+    and the temp directory and its parent only when they are left empty.
+    """
+    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
+    block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
+
+    data = tmp_path / "Unsloth Studio"
+    temp = data / "temp"
+    temp.mkdir(parents = True)
+    (temp / "ust-1234-abcdef01").mkdir()
+    (temp / "ust-1234-abcdef01" / "scratch.bin").write_text("x", encoding = "utf-8")
+    (temp / "ust-legacy").mkdir()
+    (temp / "ust-notapid-abcdef01").mkdir()
+    (temp / "somebody-elses").mkdir()
+    (data / "studio.port").write_text("41343", encoding = "utf-8")
+
+    result = _run_powershell(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                "function _Substep { param([string]$Msg, [string]$Color) }",
+                block,
+                # The profile being uninstalled, so shape alone is enough here.
+                f"_RemoveStudioPrivateTempTrees -Paths @('{temp}') -PrimaryPath '{temp}'",
+                'Write-Output "DONE:1"',
+            ]
+        )
     )
-    assert "Add-Type" not in _extract(r"    function Get-StudioLexicalPath \{.*?\n    \}\n", source)
-
-    # Every rung of the fallback must keep the "confirmed executable image only"
-    # contract, or a degraded host would block on a name match.
-    image = _extract(r"    function Get-StudioProcessImagePath \{.*?\n    \}\n", source)
-    assert ".CommandLine" not in image
-    assert "Win32_Process" in image
-    assert "QueryFullProcessImageNameW" not in image
-
-    # Source rather than behaviour on purpose: PowerShell 7 does not follow a link
-    # on -Recurse, so the test above passes with or without this guard. Windows
-    # PowerShell 5.1, the shell the desktop app spawns, does follow it.
-    sweep = _extract(
-        r"    function Remove-StudioStalePrivateTempDirectories \{.*?\n    \}\n", source
-    )
-    assert "ReparsePoint" in sweep
-    reparse_branch = sweep.index("ReparsePoint")
-    branch = sweep[reparse_branch : sweep.index("continue", reparse_branch)]
-    assert "-Recurse" not in branch
-    # Remove-Item without -Recurse is no answer either: on 5.1 it reports the
-    # junction target's contents and refuses as "directory not empty", so the link is
-    # never reclaimed (observed on windows-latest).
-    assert "Remove-Item" not in branch
-    assert "[System.IO.Directory]::Delete(" in branch
-    assert ", $false)" in branch
+    assert result.returncode == 0, result.stderr
+    assert _lines(result, "DONE:") == ["DONE:1"]
+    assert not (temp / "ust-1234-abcdef01").exists()
+    # Prefix, not shape, would have taken all three of these.
+    assert (temp / "ust-legacy").is_dir()
+    assert (temp / "ust-notapid-abcdef01").is_dir()
+    assert (temp / "somebody-elses").is_dir()
+    # And neither directory went, because neither was left empty.
+    assert temp.is_dir()
+    assert (data / "studio.port").exists()

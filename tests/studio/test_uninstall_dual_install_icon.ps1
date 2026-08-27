@@ -18,10 +18,18 @@ $uninstallPath = (Resolve-Path $uninstallPath).Path
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($uninstallPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "uninstall.ps1 has parse errors" }
-$fn = $ast.FindAll({ param($n)
-    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "_RemoveDataDirKeepingWslIcon"
-}, $true)
-if ($fn.Count -ne 1) { throw "expected exactly one _RemoveDataDirKeepingWslIcon, found $($fn.Count)" }
+# _RemoveTreeKeeping does the actual deleting: the helper delegates to it so a
+# directory a previous pass decided to keep (a live Unsloth's private %TEMP%)
+# survives the data-dir removal.
+$wanted = @("_RemoveDataDirKeepingWslIcon", "_RemoveTreeKeeping")
+$fn = @()
+foreach ($name in $wanted) {
+    $found = $ast.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name
+    }.GetNewClosure(), $true)
+    if ($found.Count -ne 1) { throw "expected exactly one $name, found $($found.Count)" }
+    $fn += $found[0]
+}
 
 # Stubs the helper depends on (nested in Uninstall-UnslothStudio in production).
 function _Substep { param([string]$Msg, [string]$Color = "Gray") }
@@ -31,7 +39,7 @@ function _RemovePath {
         Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
-. ([ScriptBlock]::Create($fn[0].Extent.Text))   # defines _RemoveDataDirKeepingWslIcon
+foreach ($f in $fn) { . ([ScriptBlock]::Create($f.Extent.Text)) }
 
 $failures = 0
 function Check($name, $cond) {

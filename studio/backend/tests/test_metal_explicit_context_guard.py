@@ -8,7 +8,7 @@ Auto was moved to it: an explicit request was passed through verbatim, on the th
 "--fit on" is a backstop. It is one, but not a trustworthy one here. llama.cpp will reduce
 an explicit context (fit_params_min_ctx defaults to 4096; only "-c 0" disables it), but it
 decides from ggml-metal's free-memory report, off the device's recommendedMaxWorkingSetSize,
-which knows nothing of Studio's own resident gigabyte or two, other running apps, or the
+which knows nothing of Unsloth's own resident gigabyte or two, other running apps, or the
 iogpu wired limit actually being blown. When that estimate is optimistic the request stands
 and the launch over-commits wired memory, which Jetsam cannot reclaim, so the machine
 panics instead of the load failing. An M1 Max 32 GB hit exactly that on
@@ -55,7 +55,11 @@ if "jwt" not in sys.modules:
         _jwt_stub.InvalidTokenError = type("InvalidTokenError", (Exception,), {})
         sys.modules["jwt"] = _jwt_stub
 
-from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
+from core.inference.llama_cpp import (  # noqa: E402
+    _FIT_MIN_CTX,
+    GgufLoadIntent,
+    LlamaCppBackend,
+)
 
 _message = LlamaCppBackend._metal_context_overcommit_message
 _ENV = LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV
@@ -116,6 +120,7 @@ def _launch(
     weights_bytes = 1024,
     kv_per_token = 1024,
     native = NATIVE,
+    mmproj_bytes = 0,
 ):
     """Drive the real load_model with no GPU enumerated (the Metal condition).
 
@@ -150,8 +155,12 @@ def _launch(
     if not real_fit:
         backend._fit_context_to_vram = lambda target, *a, **k: min(int(target), CEILING)
     backend._get_gguf_size_bytes = lambda _path: weights_bytes
-    backend._mmproj_vram_bytes = lambda _path: 0
-    backend._resolve_launch_mmproj_path = lambda **kwargs: None
+    backend._mmproj_vram_bytes = lambda _path: mmproj_bytes
+    backend._resolve_launch_mmproj_path = (
+        (lambda **kwargs: str(_write_gguf(tmp_path / "mmproj-F16.gguf")))
+        if mmproj_bytes
+        else (lambda **kwargs: None)
+    )
     backend._apu_ram_shortfall_message = lambda *a, **k: None
     # This harness does not model host RAM, and None is the documented way to say so: both
     # _apu_ram_shortfall_message and _host_offload_shortfall_message treat unknown
@@ -202,6 +211,7 @@ def _launch(
                 gpu_layers = gpu_layers,
                 extra_args = extra_args,
                 cache_type_kv = cache_type_kv,
+                is_vision = bool(mmproj_bytes),
             )
         )
     captured["backend"] = backend
@@ -766,10 +776,17 @@ class TestWhenNothingFitsAtAll:
         assert _ctx_values(cmd)[-1] == "8192"
 
     def test_auto_is_untouched(self, tmp_path, monkeypatch):
-        """Auto has always launched at the 4096 floor on this host. Changing that is a
-        larger claim than this guard makes, and it is not what was reported."""
+        """Auto launches at this arm's floor on this host, and the guard still does not
+        move it.
+
+        That floor was a hardcoded 4096 and is now _FIT_MIN_CTX, which is the larger
+        claim this docstring used to decline to make -- made deliberately elsewhere, so
+        that Metal stops publishing half the context a discrete GPU does for the same
+        model. What this test owns is unchanged: the explicit-context guard leaves Auto
+        alone. Spelled against the constant so the next floor move does not land here.
+        """
         cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, **self.NOTHING_FITS)["cmd"]
-        assert _ctx_values(cmd)[-1] == "4096"
+        assert _ctx_values(cmd)[-1] == str(_FIT_MIN_CTX)
 
     def test_a_fixed_manual_layer_count_is_still_exempt(self, tmp_path, monkeypatch):
         cmd = _launch(
@@ -870,3 +887,67 @@ class TestAModelWhoseNativeLengthIsAtTheFloor:
             kv_per_token = _FAT_KV,
         )["cmd"]
         assert _ctx_values(cmd)[-1] == "256"
+
+
+class TestACpuPinnedProjectorOnUnifiedMemory:
+    """--no-mmproj-offload moves the projector off a discrete card. On unified memory
+    there is nowhere to move it to: "host RAM" and "VRAM" are one pool, so its bytes
+    still sit in the budget this guard measures.
+
+    Dropping them overstates the context that fits and walks straight past the refusal
+    into an OOM, which is the one outcome the guard exists to prevent. The APU shortfall
+    guard already weighs a pinned projector for exactly this reason.
+
+    Sized so the projector alone decides it: budget 8192 MiB against 1024 of weights and
+    ~5120 of fixed overhead, with KV at 32 KiB per token. At 32768 the KV is 1024 MiB, so
+    without the projector 7168 fits and with its 1536 the footprint is 8704 and does not.
+    A KV rate any smaller and the pin is lost in the slack, which is how the first two
+    versions of this test passed against the bug.
+    """
+
+    _COMMON = dict(real_fit = True, weights_bytes = 1024**3, kv_per_token = 32 * 1024)
+
+    def test_the_pinned_projector_still_counts_against_the_budget(self, tmp_path, monkeypatch):
+        with pytest.raises(RuntimeError, match = "unified"):
+            _launch(
+                tmp_path,
+                monkeypatch,
+                n_ctx = 32768,
+                budget_bytes = 8 * 1024**3,
+                mmproj_bytes = int(1.5 * 1024**3),
+                extra_args = ["--no-mmproj-offload"],
+                **self._COMMON,
+            )
+
+    def test_the_same_load_without_the_projector_is_allowed(self, tmp_path, monkeypatch):
+        """The control, and the whole point: 32768 fits on this machine once the
+        projector is not in the pool, so the refusal above is about those bytes and not
+        about a budget too small for anything."""
+        captured = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 32768,
+            budget_bytes = 8 * 1024**3,
+            **self._COMMON,
+        )
+        assert _ctx_values(captured["cmd"])[-1] == "32768"
+
+    def test_the_pinned_projector_is_charged_once_and_not_twice(self, tmp_path, monkeypatch):
+        """The other side of the same coin. The shared-pool charge now lives in the
+        common fit total, so an Apple-specific one on top of it prices the encoder
+        twice and refuses loads that do fit.
+
+        Sized so only the second charge decides it: 1024 of weights, ~5120 of fixed
+        overhead and 1280 of KV at 40960 tokens leave 768 MiB of the 8192 budget, and
+        a 512 MiB projector fits in that once but not twice.
+        """
+        captured = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 40960,
+            budget_bytes = 8 * 1024**3,
+            mmproj_bytes = 512 * 1024**2,
+            extra_args = ["--no-mmproj-offload"],
+            **self._COMMON,
+        )
+        assert _ctx_values(captured["cmd"])[-1] == "40960"

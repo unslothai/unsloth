@@ -10,7 +10,7 @@ name. Joining that onto the output directory relocated the file, because
 
     ntpath.join(r"C:\\exp\\_gguf", r"D:\\M\\X.Q5_K_M.gguf") == r"D:\\M\\X.Q5_K_M.gguf"
 
-The GGUF landed next to the base model and Studio logged ``(none)``.
+The GGUF landed next to the base model and Unsloth logged ``(none)``.
 
 These run on Linux and still assert the Windows answers, deliberately:
 ``os.path.basename`` returns the whole ``D:\\...`` string on POSIX, so a fix built

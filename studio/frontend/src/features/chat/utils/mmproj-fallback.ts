@@ -14,12 +14,19 @@ export const CPU_FALLBACK_MESSAGE =
   "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session.";
 
 const MMPROJ_FALLBACK_MESSAGES: Record<MmprojFallbackReason, string> = {
+  // Three routes reach this one placement: the fit estimate predicting the
+  // projector will not fit in VRAM, a GPU allocation failure at startup, and a
+  // bare signal crash with no non-projector diagnostic. So the message names the
+  // outcome and no cause. "Could not start on the GPU" is untrue of the predicted
+  // route, which never attempts a GPU load, and "does not fit in VRAM" is untrue
+  // of the crash routes -- and that one is worse than vague, because it sends
+  // someone whose GPU runtime is broken off to cut context and offload layers.
   cpu_offload:
-    "The vision projector could not start on the GPU, so Studio moved it to system memory. Image input remains available, but image processing may be slower.",
+    "Unsloth is running the vision projector in system memory rather than on the GPU. Image input remains available, but image processing may be slower.",
   projector_incompatible:
-    "The vision projector is incompatible with the installed llama.cpp build, so Studio reloaded this model in text-only mode. Update Studio, then reload the model to restore image input.",
+    "The vision projector is incompatible with the installed llama.cpp build, so Unsloth reloaded this model in text-only mode. Update Unsloth, then reload the model to restore image input.",
   projector_startup_failure:
-    "The vision projector could not start on the GPU or CPU, so Studio reloaded this model in text-only mode. Free memory or check the GPU logs, then reload the model to restore image input.",
+    "The vision projector could not start on the GPU or CPU, so Unsloth reloaded this model in text-only mode. Free memory or check the GPU logs, then reload the model to restore image input.",
 };
 
 export function isTextOnlyMmprojFallback(

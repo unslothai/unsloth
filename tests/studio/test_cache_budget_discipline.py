@@ -372,6 +372,35 @@ def test_the_pip_cache_save_action_is_gated_on_the_default_branch():
         )
 
 
+def test_the_pip_cache_key_carries_the_interpreter_minor_not_its_patch():
+    """
+    A key field more specific than anything the workflows request is pure churn.
+
+    No step in this repo pins a patch version: 53 ask for '3.12' and the one matrix
+    offers '3.11' and '3.13'. So the patch is whatever the hosted image ships that
+    week, and putting it in the key duplicates the ENTIRE cache each time GitHub
+    bumps it. Measured 2026-08-20: two entries alike in everything but 3.12.13 vs
+    3.12.14 held 10.85 and 11.21 GiB, 44% of the 50 GiB budget between them, with the
+    same pairing in 10 of the 12 pip entries.
+
+    Nothing goes red when that happens. The cache simply sits at 99% full and evicts
+    entries someone else was about to read, which is the failure this whole file is
+    about.
+    """
+    body = (REPO / ".github" / "actions" / "pip-cache-restore" / "action.yml").read_text(
+        encoding = "utf-8"
+    )
+    assert 'print("%d.%d" % sys.version_info[:2])' in body, (
+        "the pip cache key no longer derives the interpreter version as a minor. If it "
+        "went back to sys.version_info[:3], every runner-image patch bump silently "
+        "doubles the largest family in the cache."
+    )
+    assert "sys.version_info[:3]" not in body, (
+        "the pip cache key is back to the full patch version, which duplicated 22.06 "
+        "GiB across two otherwise identical entries the last time it was measured"
+    )
+
+
 def _workflows_by_name():
     return dict(_workflows())
 

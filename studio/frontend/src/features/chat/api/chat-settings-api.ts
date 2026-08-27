@@ -41,6 +41,8 @@ export interface PersistedChatSettings {
   preserveThinking?: boolean;
   collapseHtmlArtifacts?: boolean;
   allowArtifactNetworkAccess?: boolean;
+  /** web_search also returns image results the model can place inline. */
+  searchImages?: boolean;
   autoHealToolCalls?: boolean;
   nudgeToolCalls?: boolean;
   maxToolCallsPerMessage?: number;
@@ -71,6 +73,10 @@ export interface PersistedChatSettings {
   expandQuantizations?: boolean;
   showAllQuantizations?: boolean;
   fitOnDeviceOnly?: boolean;
+  /** Local GGUF chats: drop oldest turns instead of erroring at the window. */
+  autoCompactEnabled?: boolean;
+  contextPolicy?: "inherit" | "checkpoint" | "rolling";
+  compactionHeadroomRatio?: number;
 }
 
 interface ChatSettingsResponse {

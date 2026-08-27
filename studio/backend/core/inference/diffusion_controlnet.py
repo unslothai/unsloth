@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from utils.paths.storage_roots import studio_root
+from utils.paths.path_utils import is_appledouble_metadata
 
 # Control map types. "passthrough": the supplied image IS the control map. "canny": derive an edge map here.
 CONTROL_TYPES = ("passthrough", "canny")
@@ -77,7 +78,7 @@ _CURATED: tuple[ControlNetCatalogEntry, ...] = (
 
 
 def controlnets_dir() -> Path:
-    """Local directory Studio scans for user-provided ControlNet model folders."""
+    """Local directory Unsloth scans for user-provided ControlNet model folders."""
     d = studio_root() / "controlnets" / "diffusion"
     d.mkdir(parents = True, exist_ok = True)
     return d
@@ -104,8 +105,12 @@ def _has_controlnet_weights(p: Path) -> bool:
     )
     if any((p / n).exists() for n in names):
         return True
+
     try:
-        return any(child.suffix == ".safetensors" for child in p.iterdir())
+        return any(
+            child.suffix == ".safetensors" and not is_appledouble_metadata(child)
+            for child in p.iterdir()
+        )
     except OSError:
         return False
 

@@ -24,6 +24,10 @@ export interface LoraModelOption extends ModelOption {
   baseModel?: string;
   updatedAt?: number;
   source?: "training" | "exported" | "local";
+
+  /** This local GGUF is one directly loadable artifact, not a repo whose quant
+   * variants must be listed first. */
+  isDirectGguf?: boolean;
   exportType?: "lora" | "merged" | "gguf";
   /** Codec when the checkpoint fine-tunes an audio model, else null. */
   audioType?: string | null;
@@ -47,7 +51,7 @@ export interface ModelSelectorChangeMeta {
   /** Native GGUF context, threaded so a staged pick can seed the slider. */
   contextLength?: number | null;
   /** Direct local .gguf file picked without a variant (custom folder / LM
-   *  Studio). Marks it as a GGUF source for the deferred-load staging flow. */
+   *  Unsloth). Marks it as a GGUF source for the deferred-load staging flow. */
   isGguf?: boolean;
   /** Staged metadata confirmed the separate DiffusionGemma runner. */
   isDiffusion?: boolean;
