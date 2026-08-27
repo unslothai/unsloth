@@ -228,7 +228,7 @@ def test_keyless_examples_match_transport_tool_and_full_scope_policy():
     eligibility = KEYLESS_ELIGIBILITY_TS.read_text(encoding = "utf-8")
     assert 'exposure === "colab" || exposure === "public_url"' in eligibility
     assert "if (isLoopbackHost(host)) return true;" in eligibility
-    assert "return scope === \"inference\";" in eligibility
+    assert 'return scope === "inference";' in eligibility
     assert "!(useTunnel && cloudflareUrl)" in src
     assert "useExampleModelName(keylessBase && !apiKey)" in src
     section = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
