@@ -251,7 +251,9 @@ export async function fetchDeviceType(options?: {
     if (usePlatformStore.getState().fetched || superseded()) {
       return usePlatformStore.getState().deviceType;
     }
-    forcedWritten = read || forcedWritten;
+    // Deliberately not advancing forcedWritten: this is the browser's guess, seeded so
+    // the chat-only guard has an answer on a cold start. A real reply still in flight
+    // must be allowed to replace it, whenever it lands.
     const deviceType = detectLocalPlatform();
     const chatOnly = deviceType === "mac";
     usePlatformStore.setState({ deviceType, chatOnly, fetched: false });

@@ -135,6 +135,10 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
 };
 
 /** Chip styling matching the on-device list's StatChip, no icon. */
+// How long the pointer has to settle on the options button before its path is fetched.
+// Long enough that crossing a catalog costs nothing, short enough to be over before the
+// menu has finished opening.
+const HOVER_PREFETCH_MS = 150;
 const CHIP_BASE =
   "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-ui-11p5 font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
 const CHIP_DEFAULT =
@@ -329,12 +333,24 @@ export function QuantOptionsMenu({
     inFlightRef.current = { key: pathKey, path };
     return path;
   }, [repoId, quant, pathKey]);
+  const hoverTimerRef = useRef<number | null>(null);
+  const cancelPrefetch = useCallback(() => {
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  }, []);
   const prefetchCachedPath = useCallback(() => {
     if (!downloaded || cachedPathRef.current?.key === pathKey) {
       return;
     }
     void resolveCachedPath().catch(() => undefined);
   }, [downloaded, pathKey, resolveCachedPath]);
+  const armPrefetch = useCallback(() => {
+    cancelPrefetch();
+    hoverTimerRef.current = window.setTimeout(prefetchCachedPath, HOVER_PREFETCH_MS);
+  }, [cancelPrefetch, prefetchCachedPath]);
+  useEffect(() => cancelPrefetch, [cancelPrefetch]);
   // An inventory bump while the menu is open changes the key under it, and no pointer
   // or open event is coming to notice: prefetchCachedPath's identity moves with the
   // key, so this re-runs and the copy still finds a path waiting for it.
@@ -376,8 +392,11 @@ export function QuantOptionsMenu({
         <button
           type="button"
           onClick={(e) => e.stopPropagation()}
-          // The pointer crosses the trigger before the item, so start here, not on open.
-          onPointerEnter={prefetchCachedPath}
+          // The pointer crosses the trigger before the item, so start here, not on open --
+          // but only once it settles: each resolve is a full scan of the Hugging Face
+          // caches, and a pointer crossing a full catalog would start one per card.
+          onPointerEnter={armPrefetch}
+          onPointerLeave={cancelPrefetch}
           onFocus={prefetchCachedPath}
           aria-label={`More options for ${label}`}
           className={cn(

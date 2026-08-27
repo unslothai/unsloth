@@ -261,3 +261,34 @@ test("a later failed refresh does not discard an earlier success", async () => {
     "the only answer either read got was dropped because a failed one started later",
   );
 });
+
+test("a failed refresh does not supersede a success still in flight", async () => {
+  // Nothing measured yet, which is what lets the catch path below write at all.
+  usePlatformStore.setState({ fetched: false, cloudflareUrl: null });
+
+  let releaseSlow = () => {};
+  next = async () => {
+    await new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    return AUTHED;
+  };
+  const slow = fetchDeviceType({ force: true });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // A later read fails and seeds the browser guess, because nothing authoritative is
+  // stored yet. That seed must not outrank the real reply still on its way.
+  next = async () => {
+    throw new Error("network");
+  };
+  await fetchDeviceType({ force: true });
+
+  releaseSlow();
+  await slow;
+  assert.equal(
+    usePlatformStore.getState().deviceType,
+    "linux",
+    "a browser guess from a failed read outranked the measurement that arrived after it",
+  );
+  assert.equal(usePlatformStore.getState().cloudflareUrl, TUNNEL);
+});

@@ -162,9 +162,14 @@ test("the model path starts resolving before the menu item is reachable", () => 
     GGUF.indexOf("</DropdownMenuTrigger>", open),
   );
   assert.ok(
-    trigger.includes("onPointerEnter={prefetchCachedPath}"),
+    trigger.includes("onPointerEnter={armPrefetch}"),
     "on open is too late: the click would await the fetch",
   );
+  assert.ok(
+    trigger.includes("onPointerLeave={cancelPrefetch}"),
+    "a pointer crossing a full catalog would start a cache scan per card",
+  );
+  assert.match(GGUF, /setTimeout\(prefetchCachedPath, HOVER_PREFETCH_MS\)/);
   assert.ok(trigger.includes("onFocus={prefetchCachedPath}"));
 });
 
