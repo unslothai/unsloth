@@ -17391,7 +17391,6 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
             # out is what the cap exists to prevent. Decode with the bounded
             # reader the GGUF path uses, which stops at the cap as frames arrive.
             import torch
-
             samples, sr = _decode_audio_mono(raw)
             waveform = torch.from_numpy(samples).unsqueeze(0)
     finally:
