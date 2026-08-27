@@ -17,7 +17,13 @@ from unsloth.registry._mistral import register_mistral_models
 from unsloth.registry._phi import register_phi_models
 from unsloth.registry._qwen import register_qwen_models
 from unsloth.registry._llama import LlamaModelInfo
-from unsloth.registry.registry import MODEL_REGISTRY, QUANT_TAG_MAP, ModelInfo, QuantType, register_model
+from unsloth.registry.registry import (
+    MODEL_REGISTRY,
+    QUANT_TAG_MAP,
+    ModelInfo,
+    QuantType,
+    register_model,
+)
 
 MODEL_NAMES = [
     "llama",
@@ -114,11 +120,14 @@ def test_unquantized_default_quant_type_is_usable():
 
     # QuantType.NONE already meant no tag, and a real quant type still gets one.
     assert ModelInfo.append_quant_type("Llama-3.1-8B", QuantType.NONE) == "Llama-3.1-8B"
-    assert ModelInfo.append_quant_type("Llama-3.1-8B",
-                                       QuantType.BNB) == "Llama-3.1-8B-" + QUANT_TAG_MAP[QuantType.BNB]
+    assert (
+        ModelInfo.append_quant_type("Llama-3.1-8B", QuantType.BNB)
+        == "Llama-3.1-8B-" + QUANT_TAG_MAP[QuantType.BNB]
+    )
 
-    info = LlamaModelInfo(org = "unsloth", base_name = "Llama", version = "3.1", size = 8,
-                          instruct_tag = "Instruct")
+    info = LlamaModelInfo(
+        org = "unsloth", base_name = "Llama", version = "3.1", size = 8, instruct_tag = "Instruct"
+    )
     assert info.quant_type is None
     assert info.model_path == "unsloth/Llama-3.1-8B-Instruct"
 
