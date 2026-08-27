@@ -623,9 +623,10 @@ def test_the_redirect_job_is_triggered_by_what_it_protects():
     document = yaml.safe_load(host.read_text(encoding = "utf-8")) or {}
     triggers = document.get(True, document.get("on")) or {}
     on_pull_request = triggers.get("pull_request") if isinstance(triggers, dict) else None
-    if not (isinstance(on_pull_request, dict) and (
-        on_pull_request.get("paths") or on_pull_request.get("paths-ignore")
-    )):
+    if not (
+        isinstance(on_pull_request, dict)
+        and (on_pull_request.get("paths") or on_pull_request.get("paths-ignore"))
+    ):
         # Unfiltered: it runs for every pull request, which is strictly wider than any
         # list of paths could be.
         return
