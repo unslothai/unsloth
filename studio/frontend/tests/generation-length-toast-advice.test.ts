@@ -21,7 +21,12 @@ const TOAST_BRANCH =
 const FROM_THE_ERROR = /description:\s*\n?\s*msg \|\|/;
 const THE_ERROR_CLASS = /class GenerationLengthError/;
 const CAP_REMEDY = /Increase Max Tokens or disable thinking/;
-const WINDOW_REMEDY = /raising it will not help -- increase the Context /;
+// Retargeted. The old wording claimed Max Tokens was "already unlimited", which is
+// only true for one of the two cases that reach this branch: a finite cap the prompt
+// left no room for lands here too, and telling that user their cap is unlimited
+// contradicts the number in their own Settings.
+const WINDOW_REMEDY = /cannot create room the window does not have/;
+const NO_UNLIMITED_CLAIM = /already unlimited/;
 const WINDOW_SETTING = /Length in Model settings/;
 
 test("the toast repeats the advice the error chose, not the Max Tokens advice", () => {
@@ -49,4 +54,5 @@ test("the two remedies really are different text, so passing it through matters"
   assert.match(chatApi, CAP_REMEDY);
   assert.match(chatApi, WINDOW_REMEDY);
   assert.match(chatApi, WINDOW_SETTING);
+  assert.doesNotMatch(chatApi, NO_UNLIMITED_CLAIM);
 });

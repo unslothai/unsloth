@@ -800,3 +800,38 @@ def test_a_reply_pairs_with_the_newest_pending_call_of_a_reused_id():
     assert compacted == 1
     assert body_b not in json.dumps(fitted[3]), "the call that actually ran was not compacted"
     assert body_a in json.dumps(fitted[1]), "an unanswered call was called executed"
+
+
+def test_a_mixed_batch_is_blamed_on_the_call_that_made_it_large():
+    """Any `edit_file` in a parallel batch won the file wording, whatever its size.
+
+    A small edit beside an oversized `python` payload was therefore diagnosed as a file
+    that is too large, and the advice -- ask for a smaller file -- cannot shrink the
+    payload that actually caused the refusal.
+    """
+    from core.inference.context_window import _blamed_role  # noqa: PLC0415
+
+    message = {
+        "role": "assistant",
+        "tool_calls": [
+            _call("c1", "edit_file", path = "a.py", edits = [{"old_string": "a", "new_string": "b"}]),
+            _call("c2", "python", code = "x" * 40000),
+        ],
+    }
+
+    assert _blamed_role(message) == "assistant_tool_payload"
+
+
+def test_a_batch_whose_bulk_is_the_file_edit_still_gets_the_file_wording():
+    """The other side of the same choice, so the fix cannot swallow the file case."""
+    from core.inference.context_window import _blamed_role  # noqa: PLC0415
+
+    message = {
+        "role": "assistant",
+        "tool_calls": [
+            _call("c1", "edit_file", path = "a.py", new_string = "x" * 40000),
+            _call("c2", "python", code = "print(1)"),
+        ],
+    }
+
+    assert _blamed_role(message) == "assistant_tool_call"

@@ -767,3 +767,30 @@ def test_the_in_loop_answer_continuation_is_priced_as_a_continuation(monkeypatch
     assert len(payloads) == 2, "the continuation was refused"
     assert payloads[1].get("continue_final_message") is True
     assert True in seen, "the continuation was admitted as an ordinary prompt"
+
+
+def test_an_attempt_that_reports_no_usage_is_not_charged_the_previous_one(monkeypatch):
+    """Only the finish reason was reset when a continuation was accepted.
+
+    `_metadata_usage` and `_metadata_timings` survived, so an attempt that reported
+    nothing was charged the previous attempt's numbers a second time: the reply's own
+    total double-counts, and a cap read off that total can look spent while there is
+    still room.
+    """
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": _HALF_AN_ANSWER}), _usage(700), _finish("length"), _done()],
+            # No usage chunk at all, which llama-server omits on some builds.
+            [_sse({"content": _SECOND_HALF}), _done()],
+        ],
+        payloads,
+    )
+
+    usage = _metadata(_run_no_tools(backend))["usage"]
+
+    assert usage["completion_tokens"] == 700, (
+        f"the first attempt's 700 tokens were counted twice: {usage['completion_tokens']}"
+    )

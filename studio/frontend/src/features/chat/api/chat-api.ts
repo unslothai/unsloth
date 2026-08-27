@@ -121,6 +121,12 @@ export class GenerationLengthError extends Error {
    * cannot be followed: it is at its maximum and raising it changes nothing. Observed on a
    * 4096-token window where the prompt left roughly a thousand tokens to answer in, which
    * medium thinking spent before writing anything.
+   *
+   * The false branch is NOT only that case. A finite cap the prompt left no room for
+   * lands here too (cap 2048, prompt 3000, window 4096), and the context-length remedy
+   * is right there as well -- which is why the wording says raising the cap cannot
+   * create room, rather than describing the cap itself as having no limit. That
+   * description would contradict the finite value the user can see in Settings.
    */
   constructor(maxTokensWasSet = true) {
     super(
@@ -128,9 +134,9 @@ export class GenerationLengthError extends Error {
         ? "The model reached the Max Tokens limit before producing a final answer. " +
             "Increase Max Tokens or disable thinking, then retry."
         : "The model ran out of room to answer: thinking used what the context window " +
-            "had left after the prompt, before any answer was written. Max Tokens is " +
-            "already unlimited, so raising it will not help -- increase the Context " +
-            "Length in Model settings, or disable thinking, then retry.",
+            "had left after the prompt, before any answer was written. Raising Max " +
+            "Tokens cannot create room the window does not have -- increase the " +
+            "Context Length in Model settings, or disable thinking, then retry.",
     );
     this.name = "GenerationLengthError";
   }

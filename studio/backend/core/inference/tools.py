@@ -9453,6 +9453,23 @@ def _edit_file_apply_all(
     """
     spans: list[tuple[int, int, str, int]] = []
     for index, (old, new, replace_all) in enumerate(edits, 1):
+        if not old:
+            # Defence in depth, not a live path: `_edit_file` rejects every empty
+            # `old_string` before calling this. It matters because the failure mode if
+            # that guard ever moves is not a wrong answer but a HANG -- `find(old, start
+            # + len(old))` cannot advance on a zero-length pattern, and the worker keeps
+            # a core after its caller has timed out.
+            return (
+                "",
+                0,
+                "",
+                "",
+                0,
+                (
+                    f"Error: edit {index} has an empty 'old_string'. Only a single edit "
+                    "may be empty, and only to create the file."
+                ),
+            )
         count = before.count(old)
         if count == 0:
             return (

@@ -847,13 +847,23 @@ def _blamed_role(message: dict) -> str:
         # oversized `python`, `terminal`, web or MCP call and told the user to ask for a
         # smaller file when the payload was a program, a command or a query -- naming the
         # wrong cause and offering an action that cannot shrink it.
+        # From the call that accounts for the turn's SIZE, not from whichever call
+        # happens to be a file tool. A parallel batch holding a small `edit_file` beside
+        # an oversized `python` or MCP payload was diagnosed as a file that is too large,
+        # so the advice was to ask for a smaller file -- an action that cannot shrink the
+        # payload that actually caused the refusal.
+        _dominant = None
+        _dominant_size = -1
         for call in message.get("tool_calls") or []:
             function = call.get("function") if isinstance(call, dict) else None
-            if (
-                isinstance(function, dict)
-                and str(function.get("name") or "") in _FILE_WRITING_TOOLS
-            ):
-                return "assistant_tool_call"
+            if not isinstance(function, dict):
+                continue
+            _size = len(str(function.get("arguments") or ""))
+            if _size > _dominant_size:
+                _dominant_size = _size
+                _dominant = str(function.get("name") or "")
+        if _dominant in _FILE_WRITING_TOOLS:
+            return "assistant_tool_call"
         return "assistant_tool_payload"
     return role
 

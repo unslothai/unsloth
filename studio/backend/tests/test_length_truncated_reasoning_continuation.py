@@ -795,3 +795,60 @@ def test_a_continuation_one_eviction_short_is_not_abandoned(monkeypatch):
 
     assert len(payloads) == 2, "the continuation was abandoned instead of making room"
     assert "Done." in "".join(_texts(events, "content"))
+
+
+def test_a_continuation_is_sized_by_what_is_left_of_the_cap(monkeypatch):
+    """`prompt_budget` shrinks as `max_tokens` grows, so the two must agree.
+
+    The remainder was applied to the payload only AFTER the preflight had already fitted
+    the chat against the caller's original cap. A continuation with 100 of 1000 tokens
+    left was therefore priced as if it could still emit 1000, and under
+    `truncate_oldest` that evicts history the request never needed to lose.
+    """
+
+    targets: list[int] = []
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": "Half an answer"}), _usage(900), _finish("length"), _done()],
+            [_sse({"content": " and the rest."}), _usage(50), _done()],
+        ],
+        payloads,
+    )
+
+    import core.inference.llama_cpp as _lc  # noqa: PLC0415
+
+    real_budget = _lc.prompt_budget
+
+    def recording_budget(context_length, max_tokens):
+        targets.append(max_tokens)
+        return real_budget(context_length, max_tokens)
+
+    monkeypatch.setattr(_lc, "prompt_budget", recording_budget)
+
+    def fake_count(messages, *_args, **_kwargs):
+        return 200 + sum(len(str(m.get("content") or "")) // 4 for m in messages)
+
+    monkeypatch.setattr(backend, "count_chat_tokens", fake_count)
+
+    old_turns: list[dict] = []
+    for index in range(8):
+        old_turns.append({"role": "user", "content": f"Question {index}. " + "x" * 600})
+        old_turns.append({"role": "assistant", "content": f"Answer {index}. " + "y" * 600})
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [*old_turns, {"role": "user", "content": "Show me the HTML inline"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 3,
+            max_tokens = 1000,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    assert len(payloads) == 2, "the answer was not continued"
+    assert payloads[1]["max_tokens"] == 100, "the payload did not get the remainder"
+    assert 100 in targets, (
+        f"every sizing decision still used the whole cap: {sorted(set(targets))}"
+    )

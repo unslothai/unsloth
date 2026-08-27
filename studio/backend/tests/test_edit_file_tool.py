@@ -851,3 +851,37 @@ class TestBatchSize:
 
         assert not result.startswith("Error:")
         assert target.read_text(encoding = "utf-8") == "c b c b c"
+
+
+class TestEmptyPatternSafety:
+    def test_a_batched_empty_old_string_is_refused_not_scanned(self, workdir):
+        """The refusal is the point, and so is the speed of it.
+
+        A zero-length pattern cannot advance `find(old, start + len(old))`, so reaching
+        the span scan with one would spin rather than answer. `_edit_file` rejects it
+        first; this pins that, and `_edit_file_apply_all` carries its own guard so a
+        future caller cannot reintroduce the hang.
+        """
+        target = workdir / "f.py"
+        target.write_text("hello world\n")
+
+        result = _edit(
+            path = "f.py",
+            edits = [
+                {"old_string": "hello", "new_string": "hi"},
+                {"old_string": "", "new_string": "x", "replace_all": True},
+            ],
+        )
+
+        assert "empty 'old_string'" in result
+        assert target.read_text() == "hello world\n", "a refused batch wrote anyway"
+
+    def test_the_span_scanner_refuses_an_empty_pattern_on_its_own(self):
+        """Called directly, because the tool never lets one through."""
+        from core.inference.tools import _edit_file_apply_all
+
+        _after, _total, _old, _new, _at, error = _edit_file_apply_all(
+            "hello world\n", [("hello", "hi", False), ("", "x", True)], "f.py"
+        )
+
+        assert "empty 'old_string'" in error

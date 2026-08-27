@@ -1443,10 +1443,17 @@ _UNSET = object()
 # is the WINDOW's answer, not the tool's, so two calls with different arguments that both
 # end here are not two different answers -- they are the same dead end reached twice.
 _WINDOW_NOTICE_MARKER = "chars for the model;"
+# The OTHER shape the same cause produces. At a budget of zero there is no room for a
+# body at all, so `_truncate` returns `_zero_room_stub` instead of a truncated result
+# with a notice appended, and that text carries neither the marker above nor any of the
+# result. Missing it is the case this classification exists for: the nudge is skipped and
+# the no-progress key falls back to including the arguments, so a model reading a file in
+# different slices repeats forever, which is the loop the guard was written to stop.
+_ZERO_ROOM_MARKER = "no context room left"
 
 
 def _is_window_notice(result: str) -> bool:
-    return _WINDOW_NOTICE_MARKER in result
+    return _WINDOW_NOTICE_MARKER in result or _ZERO_ROOM_MARKER in result
 
 
 # How far back the classifier looks for llama.cpp's argument-parsing error. It
@@ -26645,6 +26652,15 @@ class LlamaCppBackend:
             _reasoning_kw = self._request_reasoning_kwargs(
                 _effective_enable_thinking, _effective_reasoning_effort, preserve_thinking
             )
+            # What THIS request may generate, which on a continuation is the remainder of
+            # the caller's cap rather than the whole of it. Read before the payload
+            # consumes it below, because every sizing decision this iteration makes runs
+            # first: `prompt_budget` shrinks as `max_tokens` grows, so pricing a
+            # 600-token continuation as if it could still emit 1000 evicts history the
+            # request never needed to lose.
+            _iteration_max_tokens = (
+                _continuation_max_tokens if _continuation_max_tokens is not None else max_tokens
+            )
             _preflight_context_length = None
             _preflight_succeeded = False
             if (
@@ -26674,7 +26690,7 @@ class LlamaCppBackend:
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
                         context_length = self._effective_context_length,
-                        max_tokens = max_tokens,
+                        max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
                                 fitted, _markup_cache, self.markup_profile
@@ -26838,7 +26854,7 @@ class LlamaCppBackend:
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
                         context_length = self._effective_context_length,
-                        max_tokens = max_tokens,
+                        max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
                                 fitted, _markup_cache, self.markup_profile
@@ -26963,7 +26979,12 @@ class LlamaCppBackend:
                 # much of the window a reply is owed. Over it means tight, not fatal, so
                 # this compacts and never refuses -- a turn that fits is always sent.
                 if self._effective_context_length and conversation:
-                    _reply_target = prompt_budget(self._effective_context_length, max_tokens)
+                    # Same remainder the preflight used: this check decides whether to
+                    # compact, and pricing a continuation as if it had the whole cap
+                    # compacts a turn that had room.
+                    _reply_target = prompt_budget(
+                        self._effective_context_length, _iteration_max_tokens
+                    )
                     if estimate_messages_tokens_dense(conversation) > 0.7 * _reply_target:
                         try:
                             _prompt_now = self.count_chat_tokens(
@@ -29591,6 +29612,13 @@ class LlamaCppBackend:
                             _accumulated_predicted_n += _it_f.get("predicted_n", 0)
                             _stream_done = False
                             _metadata_finish_reason = None
+                            # Per attempt, like the finish reason. This attempt's usage has
+                            # just been folded into the accumulator, so leaving it here lets
+                            # a next attempt that reports none be charged these numbers a
+                            # second time -- and the cap read off that total can then look
+                            # spent when it is not.
+                            _metadata_usage = None
+                            _metadata_timings = None
                             # The next attempt starts from what is on screen now, so a
                             # continuation that shows nothing new is judged on its own.
                             _attempt_started_at = _last_emitted
@@ -29689,6 +29717,13 @@ class LlamaCppBackend:
                                 _accumulated_predicted_n += _it_r.get("predicted_n", 0)
                                 _stream_done = False
                                 _metadata_finish_reason = None
+                                # Per attempt, like the finish reason. This attempt's usage has
+                                # just been folded into the accumulator, so leaving it here lets
+                                # a next attempt that reports none be charged these numbers a
+                                # second time -- and the cap read off that total can then look
+                                # spent when it is not.
+                                _metadata_usage = None
+                                _metadata_timings = None
                                 # The next attempt starts from what is on screen now, so a
                                 # continuation that shows nothing new is judged on its own.
                                 _attempt_started_at = _last_emitted

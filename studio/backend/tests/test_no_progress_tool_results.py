@@ -393,3 +393,29 @@ def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
     assert (
         not ends_on_the_call
     ), "a prompt was priced with the pending call's own arguments rendered away"
+
+
+def test_the_zero_room_stub_counts_as_a_window_notice(monkeypatch):
+    """At a budget of zero there is no truncated body to append a notice to.
+
+    `_truncate` returns `_zero_room_stub` instead, whose text carries neither the
+    truncation marker nor any of the result. Missing it is exactly the case this
+    classification exists for: the nudge is skipped and the no-progress key falls back to
+    including the arguments, so a model reading one file in different slices gets the
+    same empty stub forever without ever being told why.
+    """
+    from core.inference.tools import _zero_room_stub
+
+    stub = _zero_room_stub(2401, None, True)
+    assert "chars for the model;" not in stub, "fixture no longer exercises the gap"
+
+    _starve_the_budget(monkeypatch)
+    streams = [[_call("read the file", 0), _done()], [_sse({"content": "Done."}), _done()]]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: stub)
+
+    results = _tool_results(_run(backend))
+
+    assert any(stub in r for r in results)
+    assert any(r != stub for r in results), "the starved-result nudge was not added"
