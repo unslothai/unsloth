@@ -1631,15 +1631,50 @@ def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
 # pixel limits, so transport size never enters into it), but mtmd wraps the embeddings
 # in delimiters. Measured on llama-server b10639: 4098 for a 2048x2048 image on
 # Qwen3-VL-4B, 258 on Gemma 3 4B. The wrapper allowance is far above the two measured
-# so longer delimiters still fit. A projector whose embeddings alone exceed the cap
-# (tiling or multi-crop, or a hand-started llama-server with a raised
-# --image-max-tokens; Studio never passes one) needs a projector-aware allowance read
-# off the loaded mmproj, not a bigger number here.
+# so longer delimiters still fit. Only the DEFAULT, though: a load may raise the cap
+# (`_openai_llama_admission_image_tokens`), and a projector whose embeddings exceed it
+# on their own (tiling or multi-crop families) still wants an allowance read off the
+# loaded mmproj rather than a bigger number here.
 _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP = 4096
 _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS = 128
 _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
     _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
 )
+
+
+def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
+    """The ``--image-max-tokens N`` a load passed through, or None. Last wins.
+
+    Both spellings, since llama-server accepts ``--flag N`` and ``--flag=N``.
+    """
+    args = [str(arg) for arg in (extra_args or ())]
+    found = None
+    for index, raw in enumerate(args):
+        if raw.startswith("--image-max-tokens="):
+            value = raw.partition("=")[2]
+        elif raw == "--image-max-tokens" and index + 1 < len(args):
+            value = args[index + 1]
+        else:
+            continue
+        parsed = _positive_int_or_none(value)
+        if parsed is not None:
+            found = parsed
+    return found
+
+
+def _openai_llama_admission_image_tokens(llama_backend) -> int:
+    """Per-image KV allowance for the backend that is actually running.
+
+    ``--image-max-tokens`` is not an Unsloth-managed flag, so a load can raise the
+    projector's ceiling through ``llama_extra_args`` and make one image cost far more
+    than the default. Measured on b10639 with ``--image-max-tokens 8192``: a 4096x4096
+    Qwen3-VL image costs 8102, against 4098 at the default. Reserving the default
+    against that backend would admit concurrent requests the cache cannot hold.
+    """
+    cap = _extra_args_image_max_tokens(getattr(llama_backend, "_extra_args", None))
+    if cap is None:
+        return _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+    return cap + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
 
 
 def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict], int]:
@@ -1684,22 +1719,27 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
     return estimate_messages, image_parts
 
 
-def _openai_llama_admission_media_tokens(payload, *, message_image_parts: int = 0) -> int:
+def _openai_llama_admission_media_tokens(
+    payload,
+    *,
+    message_image_parts: int = 0,
+    image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+) -> int:
     """Estimate media KV usage without charging transport bytes as prompt tokens.
 
-    Both builders inject the legacy top-level image only when the messages carry none
-    (`_messages_carry_an_image`), and Studio sends the same image in both spellings, so
-    charging both would reserve it twice. The allowance is fixed because the real mtmd
-    count follows the loaded projector, not base64 length.
+    Charges the legacy top-level image on exactly the condition both builders splice it
+    on, ``_legacy_image_is_distinct``: Studio echoes one image into both spellings, so
+    charging that twice reserves it twice, while a legacy image the messages do not
+    already carry is a second image really sent. The allowance is per-image rather than
+    per-byte because the real mtmd count follows the loaded projector, not base64 length.
 
     Audio and video keep the old top-level accounting until they have a model-specific
     estimate; this is scoped to the image path that regressed vision concurrency.
     """
     extra = 0
-    extra += max(0, message_image_parts) * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
-    image = getattr(payload, "image_base64", None)
-    if message_image_parts == 0 and isinstance(image, str) and image:
-        extra += _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+    extra += max(0, message_image_parts) * image_tokens
+    if _legacy_image_is_distinct(payload):
+        extra += image_tokens
     for attribute in ("audio_base64", "video_base64"):
         value = getattr(payload, attribute, None)
         if isinstance(value, str) and value:
@@ -1713,6 +1753,7 @@ def _openai_llama_admission_tokens(
     budget: Optional[int],
     capacity: int,
     tool_loop: bool = False,
+    image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
@@ -1737,6 +1778,7 @@ def _openai_llama_admission_tokens(
             prompt_tokens += _openai_llama_admission_media_tokens(
                 payload,
                 message_image_parts = message_image_parts,
+                image_tokens = image_tokens,
             )
         except Exception:
             prompt_tokens = None
@@ -1806,6 +1848,7 @@ def _openai_llama_admission_reserve(
             budget = budget,
             capacity = capacity,
             tool_loop = tool_loop,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
         )
         if payload is not None
         else None,
@@ -16380,26 +16423,42 @@ def _legacy_image_is_distinct(payload) -> bool:
     against that one value alone: matching any image in the thread let a client
     resend an older image, or an assistant's, and hid a real attachment.
     """
-    if not payload.image_base64:
+    image = getattr(payload, "image_base64", None)
+    if not image:
         return False
-    return _latest_user_image_payload(payload.messages) != payload.image_base64
+    return _latest_user_image_payload(getattr(payload, "messages", None)) != image
 
 
-def _latest_user_image_payload(messages: list) -> "Optional[str]":
+def _latest_user_image_payload(messages) -> "Optional[str]":
     """The value ``findLatestUserImageBase64`` would put in ``image_base64``.
 
     Its scan order: newest turn first, user turns only, first image part, ``data:``
     prefix stripped the way :func:`_extract_content_parts` strips it. A part that
     yields nothing does not end the scan, since the frontend walks on past a falsy
     read; stopping on one refused Studio's echo of a valid earlier image.
+
+    Reads models and plain dicts alike: the generation paths only ever hold models, but
+    the KV admission estimate sees whatever the caller passed, and both have to answer
+    "is the legacy field an echo?" the same way or the reservation stops matching the
+    prompt.
     """
-    for msg in reversed(messages):
-        if msg.role != "user" or not isinstance(msg.content, list):
+    for msg in reversed(list(messages or ())):
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        if role != "user" or not isinstance(content, list):
             continue
-        for part in msg.content:
-            if part.type != "image_url":
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") != "image_url":
+                    continue
+                image_url = part.get("image_url")
+                url = image_url.get("url") if isinstance(image_url, dict) else image_url
+            else:
+                if getattr(part, "type", None) != "image_url":
+                    continue
+                url = getattr(getattr(part, "image_url", None), "url", None)
+            if not isinstance(url, str):
                 continue
-            url = part.image_url.url
             encoded = url.partition(",")[2] if url.startswith("data:") else url
             if encoded:
                 return encoded
@@ -27708,23 +27767,6 @@ def _splice_image_into_last_user(messages: list[dict], image_part: dict) -> None
         messages.append({"role": "user", "content": [image_part]})
 
 
-def _messages_carry_an_image(messages: list[dict]) -> bool:
-    """Whether the built message list already has a message-level image part.
-
-    One place, because both builders and the KV estimate must answer it the same way.
-    Studio sends the image as an ``image_url`` part AND the legacy top-level field, so a
-    builder that splices the legacy copy on top sends two images against a reservation
-    for one. Two copies of this predicate is how that drift happened.
-    """
-    return any(
-        isinstance(msg.get("content"), list)
-        and any(
-            isinstance(part, dict) and part.get("type") == "image_url" for part in msg["content"]
-        )
-        for msg in messages
-    )
-
-
 def _openai_messages_for_passthrough(payload) -> list[dict]:
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.
@@ -27740,17 +27782,17 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     support) and spliced into the last user message as an OpenAI ``image_url``
     content part so vision + function-calling requests work transparently.
 
-    Only when the messages carry none of their own, matching
-    ``_openai_messages_for_gguf_chat``. Studio echoes the image into both spellings, so
-    splicing unconditionally sent a tools or response_format request two copies against
-    a reservation for one: 4417 reserved against 8466 charged, which overcommits the KV
-    cache wherever the slot count lets that gap accumulate.
+    Only when it is a real second image, matching ``_openai_messages_for_gguf_chat`` and
+    what admission charges for. Studio echoes the current image into both spellings, so
+    splicing that unconditionally sent a tools or response_format request two copies
+    against a reservation for one: 4417 reserved against 8466 charged, which overcommits
+    the KV cache wherever the slot count lets that gap accumulate.
     """
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
     )
 
-    if not payload.image_base64 or _messages_carry_an_image(messages):
+    if not _legacy_image_is_distinct(payload):
         return messages
 
     try:
@@ -27835,7 +27877,11 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
             )
         )
     )
-    if payload.image_base64 and not _messages_carry_an_image(messages):
+    # `_legacy_image_is_distinct`, not "the messages carry no image": Studio's echo is
+    # byte-equal to a part already here and must not be spliced twice, but a legacy
+    # image the thread does not hold is a real attachment, and dropping it answers
+    # without the image the client just sent. Admission charges on the same predicate.
+    if _legacy_image_is_distinct(payload):
         # Legacy bytes can be any format; the normalizer below sniffs and
         # re-encodes to PNG, so the declared mime is rewritten anyway.
         image_part = {

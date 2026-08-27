@@ -34,6 +34,18 @@ def _image_b64(kib: int = 200) -> str:
     return base64.b64encode(b"\x89PNG" + b"x" * (kib * 1024)).decode()
 
 
+# Two real, decodable, DIFFERENT PNGs. The builders decode and re-encode, unlike the
+# estimator, so the synthetic fixture above cannot reach them; and the pair has to
+# differ for a distinct-legacy-image case to be distinct at all.
+_TINY_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC"
+)
+_OTHER_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQED"
+    "asKb6QAAAABJRU5ErkJggg=="
+)
+
+
 class TestMediaIsCharged:
     def test_legacy_image_costs_what_the_same_image_inline_costs(self):
         image = _image_b64()
@@ -109,6 +121,10 @@ class TestMediaIsCharged:
         echo; `_openai_messages_for_passthrough` (taken when a client sends ``tools`` or
         a ``response_format``) spliced it in regardless, sending two copies against a
         reservation for one: 4417 reserved against 8466 charged on llama-server b10639.
+
+        The echo is the only thing that may be dropped. A legacy image the thread does
+        not already hold is a real attachment, so both builders send it and admission
+        charges for it -- keyed on the same predicate, or the two answers drift again.
         """
         from models.inference import ChatCompletionRequest
         from routes.inference import (
@@ -118,11 +134,7 @@ class TestMediaIsCharged:
             _openai_messages_for_passthrough,
         )
 
-        # A real 1x1 PNG: the builders decode and re-encode, unlike the estimator.
-        image = (
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQ"
-            "AAAABJRU5ErkJggg=="
-        )
+        image = _TINY_PNG
         inline_part = {
             "type": "image_url",
             "image_url": {"url": f"data:image/png;base64,{image}"},
@@ -154,6 +166,19 @@ class TestMediaIsCharged:
                 max_tokens = 128,
                 messages = [{"role": "user", "content": "what is this?"}],
                 image_base64 = image,
+            ),
+            # An older image in history plus a genuinely different one attached to this
+            # turn through the legacy field: two images, and both must be charged.
+            "history image plus a distinct legacy attachment": ChatCompletionRequest(
+                model = "m",
+                max_tokens = 128,
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "and this?"}, inline_part],
+                    }
+                ],
+                image_base64 = _OTHER_PNG,
             ),
         }
 
@@ -196,6 +221,38 @@ class TestMediaIsCharged:
             assert (
                 _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS >= tokens
             ), f"per-image allowance under-reserves {model}"
+
+    def test_the_allowance_follows_a_raised_image_token_cap(self):
+        """A load can raise the projector ceiling, and the reservation has to follow it.
+
+        ``--image-max-tokens`` is not Unsloth-managed, so ``llama_extra_args`` forwards
+        it verbatim. Measured on b10639 with ``--image-max-tokens 8192``: a 4096x4096
+        Qwen3-VL image costs 8102, against 4098 at the default. Reserving the default
+        against that backend admits concurrent requests the cache cannot hold.
+        """
+        from routes.inference import _openai_llama_admission_image_tokens
+
+        class _Backend:
+            def __init__(self, extra_args):
+                self._extra_args = extra_args
+
+        assert _openai_llama_admission_image_tokens(_Backend(None)) == (
+            _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        )
+        for spelling in (["--image-max-tokens", "8192"], ["--image-max-tokens=8192"]):
+            allowance = _openai_llama_admission_image_tokens(_Backend(spelling))
+            assert allowance > _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+            assert allowance >= 8102, f"{spelling} under-reserves the measured cost"
+        # A lowered cap reserves less, which is the whole point of reading it.
+        assert (
+            _openai_llama_admission_image_tokens(_Backend(["--image-max-tokens", "512"]))
+            < _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+        )
+        # Junk must not be mistaken for a cap, and must not raise.
+        for junk in (["--image-max-tokens"], ["--image-max-tokens", "abc"], ["-c", "40000"]):
+            assert _openai_llama_admission_image_tokens(_Backend(junk)) == (
+                _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
+            )
 
     def test_two_large_studio_image_chats_can_be_admitted_together(self):
         """A large base64 transport must not turn each vision request into a full-cache lease."""
