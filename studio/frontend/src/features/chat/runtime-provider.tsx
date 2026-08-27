@@ -94,7 +94,9 @@ import {
   generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationNeedsRecovery,
+  generationRawContent,
   loadGenerationOverlaySnapshot,
+  recoveredContentToImport,
   recoveredReasoningSummaryMetadata,
   recoveredGenerationFinalMetadata,
   generationRecoveryMetadata,
@@ -733,33 +735,6 @@ type GenerationRecovery = {
 
 const generationRecoveries = new Map<string, GenerationRecovery>();
 
-function generationRawContent(content: MessageRecord["content"]): {
-  raw: string;
-  reasoningOpen: boolean;
-} {
-  if (typeof content === "string") {
-    return { raw: content, reasoningOpen: false };
-  }
-  if (!Array.isArray(content)) return { raw: "", reasoningOpen: false };
-  let raw = "";
-  let reasoningOpen = false;
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue;
-    const record = part as { type?: string; text?: unknown };
-    const text = typeof record.text === "string" ? record.text : "";
-    if (record.type === "reasoning") {
-      if (reasoningOpen) raw += text;
-      else raw += `<think>${text}`;
-      reasoningOpen = true;
-    } else if (record.type === "text") {
-      if (reasoningOpen) raw += "</think>";
-      raw += text;
-      reasoningOpen = false;
-    }
-  }
-  return { raw, reasoningOpen };
-}
-
 function scheduleGenerationRecovery(
   threadId: string,
   storedMessage: MessageRecord,
@@ -871,7 +846,14 @@ function scheduleGenerationRecovery(
                   ...item,
                   message: {
                     ...item.message,
-                    content,
+                    // The status and the metadata are always this publish's:
+                    // they are what the recovery is following the run FOR. The
+                    // body is not, because a run this tab is also streaming is
+                    // replayed hundreds of characters behind the live reply.
+                    content: recoveredContentToImport(
+                      item.message.content,
+                      content,
+                    ),
                     status: generationNeedsRecovery(nextMetadata)
                       ? { type: "running" as const }
                       : restoredAssistantStatus({ custom: nextMetadata }),
