@@ -24,6 +24,7 @@ probe is best-effort: an unsupported scheme yields None and the caller loads GGU
 from __future__ import annotations
 
 import re as _re
+import sys as _sys
 import threading as _threading
 from typing import Any, Optional
 
@@ -726,9 +727,16 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
 # SIGKILL may be OOM and SIGTERM is timeout cleanup, so neither is a scheme verdict.
 _PROBE_CRASH_SIGNALS = frozenset({4, 6, 7, 8, 11})  # ILL, ABRT, BUS, FPE, SEGV
 
+# Windows reports no signal here. multiprocessing hands back GetExitCodeProcess verbatim, so a
+# native fault arrives as the raw NTSTATUS -- an access violation is 0xC0000005 (3221225477), and
+# UCRT's abort() __fastfail's to 0xC0000409 -- never as -SIGSEGV. Only TERMINATE is mapped to a
+# negative (-SIGTERM), which is why the sign is tested before this floor: the error severity bits
+# say the child did not choose to exit, while a deliberate sys.exit stays in the small positives.
+_NTSTATUS_ERROR_FLOOR = 0xC0000000
+
 
 def _crashed_child_verdict(proc: Any, device: str) -> Optional[dict[str, Optional[bool]]]:
-    """Return an all-false table after a fatal probe signal, otherwise None.
+    """Return an all-false table after a fatal probe crash, otherwise None.
 
     The child may die before identifying the scheme, and every scheme shares ``quantize_``. Disable
     the table rather than repeating a proven-fatal probe in the backend.
@@ -737,15 +745,23 @@ def _crashed_child_verdict(proc: Any, device: str) -> Optional[dict[str, Optiona
         exitcode = proc.exitcode if proc is not None else None
     except Exception:  # noqa: BLE001 -- no handle left: nothing proven, fall back as before
         return None
-    if exitcode is None or exitcode >= 0 or -exitcode not in _PROBE_CRASH_SIGNALS:
+    if exitcode is None:
+        return None
+    if exitcode < 0:
+        if -exitcode not in _PROBE_CRASH_SIGNALS:
+            return None
+        cause = f"signal {-exitcode}"
+    elif _sys.platform == "win32" and exitcode >= _NTSTATUS_ERROR_FLOOR:
+        cause = f"status 0x{exitcode:08X}"
+    else:
         return None
     import logging
 
     logging.getLogger(__name__).warning(
-        "diffusion.transformer_quant: probe child died on signal %s quantising on %s; treating "
+        "diffusion.transformer_quant: probe child died on %s quantising on %s; treating "
         "every dense quant scheme as unusable here rather than re-running the same probe in this "
         "process, which would take the server down the same way",
-        -exitcode,
+        cause,
         device,
     )
     return {scheme: False for scheme in TQ_SCHEMES}
