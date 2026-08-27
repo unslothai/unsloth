@@ -168,8 +168,37 @@ function isShadowed(identifier: ts.Identifier): boolean {
   return false;
 }
 
+/**
+ * True when this identifier sits in a heritage clause that survives to runtime,
+ * i.e. `class C extends K`. `implements` is erased, and so is `interface I
+ * extends J`, but a base class is an ordinary expression evaluated when the
+ * class is defined. TypeScript still wraps it in an ExpressionWithTypeArguments,
+ * which `ts.isTypeNode` accepts, so it has to be excluded by hand.
+ */
+function inRuntimeHeritage(node: ts.Node): boolean {
+  // Follow the expression spine only. A type argument on the base class hangs
+  // off `typeArguments` rather than `expression`, so it stays erased, while
+  // `extends ns.K` and `extends makeBase(K)` are both reached.
+  let current: ts.Node = node;
+  let parent = current.parent;
+  while (parent && !ts.isExpressionWithTypeArguments(parent)) {
+    if (!ts.isExpression(parent)) return false;
+    current = parent;
+    parent = parent.parent;
+  }
+  if (!parent || parent.expression !== current) return false;
+  const clause = parent.parent;
+  if (!clause || !ts.isHeritageClause(clause)) return false;
+  if (clause.token !== ts.SyntaxKind.ExtendsKeyword) return false;
+  const declaration = clause.parent;
+  return Boolean(
+    declaration && (ts.isClassDeclaration(declaration) || ts.isClassExpression(declaration)),
+  );
+}
+
 /** True when this identifier sits anywhere inside erased type syntax. */
 function insideTypeSyntax(node: ts.Node): boolean {
+  if (inRuntimeHeritage(node)) return false;
   for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
     if (
       ts.isTypeNode(current) ||
@@ -269,17 +298,43 @@ function eagerReads(source: ts.SourceFile, names: Set<string>): string[] {
     }
     const next = deferred || defersEvaluation(node);
     node.forEachChild((child) => {
-      // `class C { [KEY] = 1 }` evaluates KEY when the class is defined, even
-      // though the initializer waits for construction.
+      // A computed member name is evaluated where the member is written, even
+      // when the body or initializer beneath it waits: `class C { [KEY] = 1 }`
+      // and `{ [KEY]() {} }` both read KEY as the class or object is created.
+      // Applies to every named member, not just fields, so a computed method
+      // name cannot hide an eager read behind its own deferred body.
       const eagerName =
-        ts.isPropertyDeclaration(node) &&
-        child === node.name &&
-        ts.isComputedPropertyName(child);
+        child === (node as ts.NamedDeclaration).name && ts.isComputedPropertyName(child);
       visit(child, eagerName ? deferred : next);
     });
   };
   source.forEachChild((child) => visit(child, false));
   return found;
+}
+
+/**
+ * True when this import/export contributes nothing at runtime, so it cannot
+ * pull the target into the barrel's initialization.
+ *
+ * A bare `import "./x"` is kept: a side-effect import is the one clause-less
+ * form that does evaluate the target.
+ */
+function isErasedEdge(statement: ts.ImportDeclaration | ts.ExportDeclaration): boolean {
+  if (ts.isImportDeclaration(statement)) {
+    const clause = statement.importClause;
+    if (!clause) return false; // side-effect import
+    if (clause.isTypeOnly) return true;
+    if (clause.name) return false; // default import
+    const bound = clause.namedBindings;
+    if (!bound || ts.isNamespaceImport(bound)) return false;
+    // `import {} from "./x"` still evaluates the target, and `every` is vacuously
+    // true on an empty list, so the length check is load-bearing.
+    return bound.elements.length > 0 && bound.elements.every((e) => e.isTypeOnly);
+  }
+  if (statement.isTypeOnly) return true;
+  const clause = statement.exportClause;
+  if (!clause || ts.isNamespaceExport(clause)) return false;
+  return clause.elements.length > 0 && clause.elements.every((e) => e.isTypeOnly);
 }
 
 function parse(fileName: string, text: string): ts.SourceFile {
@@ -335,8 +390,9 @@ function barrelInitClosure(files: string[]): Set<string> {
         (ts.isImportDeclaration(st) || ts.isExportDeclaration(st)) && st.moduleSpecifier;
       if (!spec || !ts.isStringLiteral(spec)) continue;
       // A type-only edge is erased and cannot drag a module into evaluation.
-      if (ts.isImportDeclaration(st) && st.importClause?.isTypeOnly) continue;
-      if (ts.isExportDeclaration(st) && st.isTypeOnly) continue;
+      // `import { type A, type B }` sets no declaration-level flag but is just
+      // as erased as `import type { A, B }`, so check the specifiers too.
+      if (isErasedEdge(st)) continue;
       const target = resolve(spec.text, file);
       if (target) out.push(target);
     }
@@ -436,6 +492,27 @@ test("the scan catches every shape the regex version missed", () => {
       "module-scope read in a file that also shadows the name in a block",
       `import { K } from "${BARREL}";\n{ const K = 1; use(K); }\nconst a = [K];\n`,
     ],
+    ["class extends", `import { K } from "${BARREL}";\nclass C extends K {}\n`],
+    [
+      "class extends through a namespace",
+      `import * as chat from "${BARREL}";\nclass C extends chat.K {}\n`,
+    ],
+    [
+      "class extends a call on the import",
+      `import { K } from "${BARREL}";\nclass C extends makeBase(K) {}\n`,
+    ],
+    [
+      "computed object literal method name",
+      `import { K } from "${BARREL}";\nconst x = { [K]() {} };\n`,
+    ],
+    [
+      "computed accessor name",
+      `import { K } from "${BARREL}";\nclass C { get [K]() { return 1; } }\n`,
+    ],
+    [
+      "computed method name on a class",
+      `import { K } from "${BARREL}";\nclass C { [K]() {} }\n`,
+    ],
   ];
   for (const [label, code] of cases) {
     assert.equal(analyse("t.ts", code).length, 1, `${label} should be flagged`);
@@ -500,6 +577,22 @@ test("deferred reads and non-references are left alone", () => {
     [
       "interface member typed through the namespace",
       `import * as chat from "${BARREL}";\ninterface I { e: chat.Entry }\n`,
+    ],
+    [
+      "implements clause",
+      `import { K } from "${BARREL}";\nclass C implements K {}\n`,
+    ],
+    [
+      "interface extending an imported type",
+      `import { K } from "${BARREL}";\ninterface I extends K {}\n`,
+    ],
+    [
+      "type argument on a base class",
+      `import { K } from "${BARREL}";\nclass C extends Base<K> {}\n`,
+    ],
+    [
+      "computed method name deferred body",
+      `import { K } from "${BARREL}";\nclass C { m() { return K; } }\n`,
     ],
   ];
   for (const [label, code] of cases) {
