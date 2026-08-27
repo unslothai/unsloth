@@ -892,6 +892,7 @@ def _get_new_mapper():
                     literal = None
                 if isinstance(literal, dict):
                     source_table = literal
+
         def _source_before_the_builder(name):
             """The source table as the builder receives it, mutations included.
 
@@ -936,6 +937,28 @@ def _get_new_mapper():
                                 current[ast.literal_eval(target.slice)] = ast.literal_eval(
                                     node.value
                                 )
+                            except Exception:
+                                continue
+                elif isinstance(node, ast.Delete):
+                    # `del __INT_TO_FLOAT_MAPPER["vendor/removed-bnb-4bit"]` takes the
+                    # entry away before the builder ever sees it, so replaying only the
+                    # additions left the probe reporting support for a model the newer
+                    # mapper had just dropped. `del` on the whole name unbinds it, and
+                    # there is nothing left to read.
+                    for target in node.targets:
+                        if isinstance(target, ast.Name) and target.id == name:
+                            # Unbound, not "never seen": an EMPTY table rather than
+                            # None, so the last binding in the file is not read as a
+                            # fallback for a name the module deliberately took away.
+                            current = {}
+                        elif (
+                            isinstance(target, ast.Subscript)
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == name
+                            and current is not None
+                        ):
+                            try:
+                                current.pop(ast.literal_eval(target.slice), None)
                             except Exception:
                                 continue
                 elif (

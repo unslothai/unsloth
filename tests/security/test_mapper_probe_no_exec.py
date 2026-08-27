@@ -628,3 +628,39 @@ def test_a_body_that_installs_nothing_still_reports_nothing(monkeypatch):
     for body in ("", "x = 1\n", "__INT_TO_FLOAT_MAPPER = {}\n"):
         with _serving(body, monkeypatch):
             assert loader_utils._get_new_mapper() == ({}, {}, {}, {}, {}), body
+
+
+def test_a_source_entry_deleted_before_the_builder_is_gone(monkeypatch):
+    """`del __INT_TO_FLOAT_MAPPER[...]` removes it from what the builder is handed.
+
+    Replaying only the additions left the probe reporting support for a model the
+    newer mapper had just dropped, which raises the upgrade-only NotImplementedError
+    for a name upgrading would not support either.
+    """
+    lines = REAL_MAPPER.splitlines(True)
+    insert = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers("))
+    with _serving(REAL_MAPPER, monkeypatch):
+        expected = loader_utils._get_new_mapper()
+    victim = next(iter(expected[0]))
+
+    removed = "".join(
+        lines[:insert]
+        + [f'del __INT_TO_FLOAT_MAPPER[{victim!r}]\n']
+        + lines[insert:]
+    )
+    with _serving(removed, monkeypatch):
+        tables = loader_utils._get_new_mapper()
+
+    assert victim in expected[0], "the fixture picked a name the probe never reported"
+    assert victim not in tables[0], "a deleted source entry was still reported"
+
+
+def test_deleting_the_whole_source_table_leaves_nothing_to_read(monkeypatch):
+    """`del __INT_TO_FLOAT_MAPPER` unbinds it, so the builder is handed nothing."""
+    lines = REAL_MAPPER.splitlines(True)
+    insert = next(i for i, line in enumerate(lines) if line.startswith("def build_mappers("))
+    removed = "".join(
+        lines[:insert] + ["del __INT_TO_FLOAT_MAPPER\n"] + lines[insert:]
+    )
+    with _serving(removed, monkeypatch):
+        assert loader_utils._get_new_mapper() == ({}, {}, {}, {}, {})
