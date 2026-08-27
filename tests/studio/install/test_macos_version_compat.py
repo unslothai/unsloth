@@ -182,9 +182,10 @@ class TestPreflightMacosInstalledBinaries:
         # Must not raise on a macOS 15 host.
         ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
 
-    def test_skips_when_host_version_unknown(self, tmp_path):
+    def test_skips_the_minos_comparison_when_host_version_unknown(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (26, 0))
-        # Unknown host version -> defer to runtime validation, do not raise.
+        # No host version to compare against, so the static check cannot run.
+        # These fixtures are not executable, so the load probe finds nothing either.
         ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host(None))
 
     def test_noop_on_non_macos_host(self, tmp_path):
@@ -260,6 +261,20 @@ class TestMacosDyldLoadProbe:
         install_dir, binaries = self._bundle(tmp_path, exit_code = 0)
         binaries[0].chmod(0o644)
         ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((15, 5)))
+
+    def test_the_probe_still_runs_when_the_host_version_is_unknown(self, tmp_path):
+        """Only the static comparison needs the version; dyld does not.
+
+        Skipping both left the checksummed path with no check at all, since the
+        runtime validation it deferred to is disabled by default (#5854).
+        """
+        install_dir, binaries = self._bundle(
+            tmp_path,
+            exit_code = 1,
+            message = "dyld[1]: Library not loaded: /usr/lib/librdma.dylib",
+        )
+        with pytest.raises(PrebuiltFallback, match = "does not load on this host"):
+            ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host(None))
 
     def test_a_nonzero_exit_with_program_output_is_not_a_link_failure(self, tmp_path):
         """llama-quantize answers --version by printing its quantization table and

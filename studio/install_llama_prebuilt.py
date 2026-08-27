@@ -5313,22 +5313,28 @@ def preflight_macos_installed_binaries(
     """Reject a macos prebuilt whose minimum-OS is newer than the host, or that
     dyld will not load at all. The upstream selector pins a loadable release up
     front, so here this is the post-download backstop; the published/fork path
-    also uses it to advance the walk-back. No-op when the host macOS version is
-    unknown (runtime validates).
+    also uses it to advance the walk-back.
 
     The load probe is the macOS counterpart of preflight_linux_installed_binaries'
     ldd sweep, which this side went without: a bundle whose libggml-rpc.0.dylib
     links a /usr/lib/librdma.dylib that exists on the builder and nowhere else
     passed the minos scan, was logged "prebuilt installed and validated", and
     then died on first launch. Raising PrebuiltFallback here spends a source
-    build instead of installing something that cannot start."""
-    if not host.is_macos or host.macos_version is None:
+    build instead of installing something that cannot start.
+
+    Only the static comparison needs the host version; dyld does not. An
+    unreadable or unparseable ``platform.mac_ver()`` used to skip both, deferring
+    to a runtime validation that is disabled by default for checksummed bundles
+    (#5854) -- so the one host that could still give a definitive answer was the
+    one that got no check at all."""
+    if not host.is_macos:
         return
-    issues = macos_binary_minos_issues(binaries, install_dir, host)
-    if issues:
-        raise PrebuiltFallback(
-            "macos prebuilt requires a newer macOS than this host:\n" + "\n".join(issues)
-        )
+    if host.macos_version is not None:
+        issues = macos_binary_minos_issues(binaries, install_dir, host)
+        if issues:
+            raise PrebuiltFallback(
+                "macos prebuilt requires a newer macOS than this host:\n" + "\n".join(issues)
+            )
     load_issues = macos_dyld_load_issues(binaries, install_dir, host)
     if load_issues:
         raise PrebuiltFallback(
