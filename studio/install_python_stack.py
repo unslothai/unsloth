@@ -1816,6 +1816,21 @@ def _runtime_gfx_target(
         if gfx_devices
         else None
     )
+    if runtime_gfx in _SHADOWING_INTEGRATED_GFX and not _visible_devices_pinned():
+        # Unpinned mixed host: only enumeration order put the integrated GPU first, and the
+        # wheel family is picked for ONE arch, so letting the APU decide strands the discrete
+        # card the generic index was already serving. Same #7776 preference
+        # _detect_windows_gfx_arch applies, and it stops at a set mask for the same reason:
+        # a pin is the user naming a device, and is honoured verbatim.
+        _discrete = next((g for g in gfx_devices if g not in _SHADOWING_INTEGRATED_GFX), None)
+        if _discrete is not None:
+            _safe_print(
+                f"   multiple AMD GPUs detected "
+                f"({', '.join(dict.fromkeys(gfx_devices))}); installing for {_discrete}\n"
+                f"   instead of the integrated {runtime_gfx}. Set HIP_VISIBLE_DEVICES to the\n"
+                f"   GPU index you want (then rerun) to install for a different device.\n"
+            )
+            runtime_gfx = _discrete
     return runtime_gfx, list(dict.fromkeys(gfx_devices)), physical_gfx
 
 

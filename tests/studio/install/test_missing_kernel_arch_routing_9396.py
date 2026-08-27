@@ -515,3 +515,42 @@ def test_the_strix_banner_redacts_mirror_credentials():
         env = {"UNSLOTH_AMD_ROCM_MIRROR": _SECRET_MIRROR},
     )
     assert "s3cr3t-token" not in _run_install.printed, _run_install.printed
+
+
+# ── which card decides the family on a mixed host ────────────────────────────
+
+
+@pytest.mark.parametrize("apu", ["gfx1103", "gfx1036", "gfx1035", "gfx1033"])
+def test_a_leading_integrated_gpu_does_not_pick_the_family(apu):
+    """Enumeration order alone puts the APU first on a Ryzen desktop or laptop with a
+    Radeon card in it. The family is chosen for ONE arch, so letting the APU decide
+    installs wheels with no kernels for the discrete card the generic index was serving.
+    _SHADOWING_INTEGRATED_GFX is the existing policy (#7776) and lists every one of these."""
+    calls = _run_install(gfx_devices = (apu, "gfx1200"))
+    assert _GENERIC in calls, calls
+    assert _AMD not in calls, calls
+
+
+def test_the_discrete_card_still_decides_when_it_needs_the_amd_index():
+    """Deposing the APU is about which card decides, not about avoiding the reroute."""
+    calls = _run_install(gfx_devices = ("gfx1103", "gfx1032"))
+    assert f"{_AMD}/gfx103X-all/" in calls, calls
+
+
+def test_a_visible_device_mask_still_wins_over_the_preference():
+    """A pin is the user naming a device and is honoured verbatim, exactly as
+    _visible_devices_pinned documents and _detect_windows_gfx_arch already behaves."""
+    calls = _run_install(gfx_devices = ("gfx1103", "gfx1200"), env = {"HIP_VISIBLE_DEVICES": "0"})
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+def test_a_lone_integrated_gpu_is_never_deposed():
+    """Nothing else to run on, so the APU is the runtime target."""
+    calls = _run_install(gfx_devices = ("gfx1103",))
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
+
+
+def test_an_all_integrated_host_is_never_deposed():
+    """Every candidate is a shadowing APU, so there is no discrete card to prefer."""
+    calls = _run_install(gfx_devices = ("gfx1103", "gfx1036"))
+    assert f"{_AMD}/gfx110X-all/" in calls, calls
