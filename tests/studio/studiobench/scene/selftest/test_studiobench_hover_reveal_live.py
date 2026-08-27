@@ -12,7 +12,7 @@ both pointed the wrong way:
 That reads like an overlay, or a collapsed sidebar, or a zero-size button, and it was none of
 them. Asking the live app directly returned a control that is 20x20 at (243, 319), `visibility:
 visible`, `display: flex`, one instance, nothing drawn over it -- and `pointer-events: none` with
-`opacity: 0`. Studio styles it as a hover-revealed action:
+`opacity: 0`. Unsloth styles it as a hover-revealed action:
 
     .sidebar-header-action { opacity-0 pointer-events-none }
     .group\\/sidebar-header:hover .sidebar-header-action { opacity-100 pointer-events-auto }
@@ -44,7 +44,7 @@ if str(_STUDIO_TESTS) not in sys.path:
 from studiobench.runtime.types import ActionContext, Cell  # noqa: E402
 from studiobench.scene import actions as A  # noqa: E402
 
-#: Studio's own geometry: a 20x20 action inside a 279x49 sticky header row, at the same offset the
+#: Unsloth's own geometry: a 20x20 action inside a 279x49 sticky header row, at the same offset the
 #: live probe measured. The numbers matter -- a control large enough to be hit by chance would let
 #: the test pass for the wrong reason.
 FIXTURE = """

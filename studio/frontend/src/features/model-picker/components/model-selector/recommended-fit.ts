@@ -168,11 +168,22 @@ export function loadScopedGpu<
     memoryTotalGb: number;
     maxDeviceMemoryGb: number;
     loadDeviceMemoryGb: number;
+    loadDeviceSharedMemory?: boolean;
+    systemRamAvailableGb: number;
+    systemRamAvailableHostGb?: number;
   },
 >(gpu: T, taskScoped: boolean): T {
   if (!taskScoped || !gpu.available) return gpu;
   const deviceGb = gpu.loadDeviceMemoryGb || gpu.maxDeviceMemoryGb;
-  return deviceGb > 0 ? { ...gpu, memoryTotalGb: deviceGb } : gpu;
+  if (deviceGb <= 0) return gpu;
+  return {
+    ...gpu,
+    memoryTotalGb: deviceGb,
+    systemRamAvailableGb:
+      gpu.loadDeviceSharedMemory === false
+        ? (gpu.systemRamAvailableHostGb ?? gpu.systemRamAvailableGb)
+        : gpu.systemRamAvailableGb,
+  };
 }
 
 /** One fit predicate for both search lists (curated matches and the Hub rows

@@ -953,10 +953,18 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             # Module-qualified for the same reason as _cached_row_task: binding the bare
             # name re-points a load that resolved to routes.models before the move.
             from hub.services.models import catalog_classification
-            models = [
-                model.model_copy(update = {"task": catalog_classification._local_model_task(model)})
-                for model in response.models
-            ]
+
+            models = []
+            for model in response.models:
+                task, audio_type = catalog_classification._local_model_classification(model)
+                models.append(
+                    model.model_copy(
+                        update = {
+                            "task": task,
+                            "audio_type": audio_type,
+                        }
+                    )
+                )
             return response.model_copy(update = {"models": models})
         except Exception as e:  # noqa: BLE001 -- classification never breaks the listing
             logger.warning("Could not classify local model tasks: %s", e)

@@ -89,6 +89,7 @@ import {
   PromptStorageDialog,
   exportConversationShareGPT,
   exportConversationRawJsonl,
+  exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
 } from "./prompt-storage/prompt-storage-dialog";
@@ -121,7 +122,7 @@ import {
   loadModel,
   validateModel,
 } from "./api/chat-api";
-import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/preset-policy";
+import { resolveFitMaxSeqLength, resolveExplicitCtxPin } from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
@@ -1617,16 +1618,13 @@ export function SharedComposer({
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
-        // Keep an explicit Manual+Auto context pin the load just applied (so a
-        // later Apply/Reset doesn't silently revert the model to auto-fit
-        // sizing), mirroring the interactive path's keepCustomCtx. Non-GGUF
-        // compare loads don't send the pin, so their baseline clears.
+        // This pane's own saved Context Length, not compareMaxSeqLength: the wire
+        // value is Auto-resolved for a same-model reload, so pinning it would
+        // convert Auto into a number the user never set (see resolveExplicitCtxPin).
+        // Non-GGUF compare loads send a sequence length rather than an n_ctx, so
+        // their baseline clears.
         const keepCustomCtx = targetIsGguf
-          ? resolveManualAutoCtxPin(
-              effectiveGpuMemoryMode,
-              effectiveGpuLayers,
-              effectiveCustomContextLength,
-            )
+          ? resolveExplicitCtxPin(effectiveCustomContextLength)
           : null;
         // Slots this compare load committed. Diffusion ignores --parallel, so a
         // count there would mint a phantom override a preset carries onto a GGUF.
@@ -1696,12 +1694,10 @@ export function SharedComposer({
           loadedVisionDisabledByUser: resp.vision_disabled_by_user ?? false,
           mmprojFallbackReason: resp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: resp.is_local_model ?? false,
-          // Record the context this pane loaded with (like the single-model path)
-          // so when it becomes the active model, the UI and later reload/save use
-          // its context, not the previous/default one.
-          customContextLength: targetIsGguf
-            ? (ownConfig.customContextLength ?? keepCustomCtx)
-            : null,
+          // Same value as the baseline above, so that when this pane becomes the
+          // active model the UI and later reload/save use the context it actually
+          // loaded with, not the previous/default one.
+          customContextLength: keepCustomCtx,
           ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
           ggufNativeContextLength: resp.is_gguf
             ? (resp.native_context_length ?? null)
@@ -1732,6 +1728,7 @@ export function SharedComposer({
         const synced = {
           isVision: Boolean(resp.is_vision),
           isGguf: Boolean(resp.is_gguf),
+          isMlx: Boolean(resp.is_mlx),
           isAudio: Boolean(resp.is_audio),
           audioType: resp.audio_type ?? null,
           hasAudioInput: Boolean(resp.has_audio_input),
@@ -2031,7 +2028,8 @@ export function SharedComposer({
           className="unsloth-plus-menu w-[208px]"
         >
           {[
-            { label: "Raw JSONL", fn: exportConversationRawJsonl },
+            { label: "Training JSONL", fn: exportConversationRawJsonl },
+            { label: "Message JSONL", fn: exportConversationMessagesJsonl },
             { label: "CSV", fn: exportConversationCsv },
             { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
             {

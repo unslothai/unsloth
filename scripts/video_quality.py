@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Video quality-vs-cost harness for the Studio video backend.
+"""Video quality-vs-cost harness for the Unsloth video backend.
 
 The video analogue of scripts/diffusion_quality.py: hold the prompt + seed +
 shape fixed, render one clip with a high-fidelity reference configuration

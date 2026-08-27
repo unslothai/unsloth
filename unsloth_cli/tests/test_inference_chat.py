@@ -1262,7 +1262,7 @@ def test_load_gguf_backend_forwards_source_and_runtime_options(
 
 
 def test_load_gguf_backend_hands_a_local_dflash_sidecar_to_the_load(monkeypatch):
-    """The managed CLI resolves the sidecar next to a local weight exactly as Studio
+    """The managed CLI resolves the sidecar next to a local weight exactly as Unsloth
     does, and dropping it here is silent: the load simply comes up with no drafter and
     nothing says the sidecar sitting beside the model was ever found."""
     import unsloth_cli._inference as inference
@@ -2023,7 +2023,7 @@ def test_catalog_local_folder_entries_require_loadable_payloads(monkeypatch, tmp
 
 
 def test_catalog_trained_and_exported_entries_drop_non_chat_checkpoints(monkeypatch, tmp_path):
-    """Studio trains Whisper and other audio models, so an outputs or exports folder
+    """Unsloth trains Whisper and other audio models, so an outputs or exports folder
     legitimately holds a checkpoint that cannot answer a text turn. Neither builder
     classified anything, so both offered it for chat."""
     from unsloth_cli._inference import ensure_studio_backend_path

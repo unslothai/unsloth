@@ -5,6 +5,7 @@
 
 import asyncio
 import os
+from pathlib import Path
 
 import pytest
 
@@ -90,6 +91,32 @@ def test_an_audio_only_projector_does_not_flag_vision(in_tmp_cwd):
 
     response = _variants(os.fspath(in_tmp_cwd / "model-Q4_K_M.gguf"))
     assert [v.quant for v in response.variants] == ["Q4_K_M"]
+    assert response.has_vision is False
+
+
+def test_online_only_projector_is_not_opened(in_tmp_cwd, monkeypatch):
+    """Projector discovery skips content only when metadata marks it unhydrated."""
+    from hub.utils import gguf
+
+    (in_tmp_cwd / "config.json").write_text("{}")
+    weight = in_tmp_cwd / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"GGUF")
+    projector = in_tmp_cwd / "mmproj-F16.gguf"
+    projector.write_bytes(b"online-only placeholder")
+
+    monkeypatch.setattr(
+        gguf,
+        "file_contents_available_locally",
+        lambda path, stat_result = None: Path(path) != projector,
+    )
+
+    def forbidden(_path):
+        raise AssertionError("online-only projector was opened")
+
+    monkeypatch.setattr(gguf, "mmproj_accepts_image", forbidden)
+    response = _variants(os.fspath(weight))
+
+    assert [variant.quant for variant in response.variants] == ["Q4_K_M"]
     assert response.has_vision is False
 
 
